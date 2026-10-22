@@ -483,8 +483,8 @@ of it. A call to `classify` that raises fails its result: it is counted in
 the hard cases does not read as more accurate. A call through the package's own client
 (`threetears.evals.providers`) that the provider declined (a 429 that is not a spent quota, or a 529 overloaded or
 503 unavailable) is the provider's, not the model's: the client sends it again first, at most three attempts in all,
-and if the provider still declines it the result is excluded and the run goes on; a refusal of the calling account
-stops the run. A 500 or 502 is an error, not a refusal, so it counts against the model. Let that
+and if the provider still declines it the result is excluded and the run goes on (a run whose every result was
+excluded measured nothing, and ends `failed`); a refusal of the calling account stops the run. A 500 or 502 is an error, not a refusal, so it counts against the model. Let that
 `ProviderError` propagate out of `classify`; a rate limit or overload from any other client, or one `classify` wraps
 in another exception, counts against the model, so retry those inside `classify`.
 

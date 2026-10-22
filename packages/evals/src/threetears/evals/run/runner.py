@@ -64,7 +64,7 @@ from contextlib import (
 )
 from dataclasses import dataclass, field, replace
 from functools import partial
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, Protocol
 
 from threetears.evals.kernel.candidate_kind import (
     CandidateKind,
@@ -365,18 +365,25 @@ class EveryCellApparatusFailedError(RuntimeError):
 _QUOTED_ERRORS = 3
 _QUOTED_ERROR_CHARS = 400
 
+#: How a :class:`NothingMeasuredError` opens, and so how the ``error_details`` entry the job manager writes for it
+#: opens: what a reader of a stored run (a sweep settling its arms) tells that fault apart by.
+NOTHING_MEASURED_FAULT: Final = "the run measured nothing"
+
 
 class NothingMeasuredError(RuntimeError):
     """Raised by :func:`execute_run` when every cell of the run was excluded for a fault outside the candidate.
 
     The sibling of :class:`EveryCellApparatusFailedError` for any ``infra`` exclusion
-    (:func:`~threetears.evals.kernel.result_condition.trial_exclusion`): a provider that declined every call (a
-    rate limit or an overload that lasted the run, or an OpenRouter model no allowed provider serves), a judge call
-    that failed on every cell, or a mix of those with apparatus faults. Each cell is recorded and persisted first;
-    this is raised after the last one, so the job manager files the run ``failed`` with the cells' own errors as its
-    reason. A run that measured nothing is a setup fault to fix before a relaunch, not a run that finished. A run
-    lost entirely to a judge that could not tell, or to judge replies cut off at their cap, is not this: those
-    exclusions are the judge's reading of evidence the run did measure.
+    (:func:`~threetears.evals.kernel.result_condition.trial_exclusion`) the harness recorded on the cell
+    (``infra_error``): a provider that declined every call (a rate limit or an overload that lasted the run, or an
+    OpenRouter model no allowed provider serves), a candidate that could not be built, or a mix of those with
+    apparatus faults. Each cell is recorded and persisted first; this is raised after the last one, so the job
+    manager files the run ``failed`` with the cells' own errors as its reason. A run that measured nothing is a setup
+    fault to fix before a relaunch, not a run that finished.
+
+    Not this: a run lost only to judge-call errors (``judge_error`` alone), which a re-judge recovers without paying
+    for the candidate again; nor a run lost entirely to a judge that could not tell, or to judge replies cut off at
+    their cap, which are the judge's reading of evidence the run did measure.
 
     :ivar total: The cells the run produced, every one excluded.
     :ivar errors: Each cell's error, in execution order.
@@ -400,7 +407,7 @@ class NothingMeasuredError(RuntimeError):
         more = len(distinct) - _QUOTED_ERRORS
         shown = "; ".join(quoted) + (f"; and {more} more" if more > 0 else "")
         super().__init__(
-            f"the run measured nothing: every one of its {total} cell(s) was excluded for a fault outside the "
+            f"{NOTHING_MEASURED_FAULT}: every one of its {total} cell(s) was excluded for a fault outside the "
             f"candidate, so fix what the errors name before relaunching: {shown}"
         )
 
@@ -3557,8 +3564,9 @@ async def execute_run(
     ended is recorded excluded and the loop goes on. Only when EVERY cell of the run ended that
     way does the loop raise :class:`EveryCellApparatusFailedError`, after the last cell is saved:
     the rig never worked, so the run measured nothing, and the job manager files it ``failed``. When every
-    cell was excluded for an ``infra`` cause but not all by the rig (a provider that declined every call, say),
-    it raises :class:`NothingMeasuredError` the same way.
+    cell was excluded for an ``infra`` fault the harness recorded on it but not all by the rig (a provider that
+    declined every call, say), it raises :class:`NothingMeasuredError` the same way. A cell lost to a judge call's
+    error alone does not count toward it: a re-judge recovers that cell.
 
     Cancellation: a cancel that lands while a cell runs is delivered once that cell is recorded —
     excluded under the ``cancelled`` termination, with the spend its sink holds — and saved, so
@@ -3580,7 +3588,8 @@ async def execute_run(
         reached before a cell would start.
     :raises AccountExhaustedError: A cell's call was refused for the calling account.
     :raises EveryCellApparatusFailedError: An apparatus fault excluded every cell the run produced.
-    :raises NothingMeasuredError: Every cell was excluded for an ``infra`` cause, not every one by an apparatus fault.
+    :raises NothingMeasuredError: Every cell was excluded for an ``infra`` fault the harness recorded on it, not every
+        one by an apparatus fault.
     :raises asyncio.CancelledError: The run was cancelled; the cell it struck is recorded first.
     """
     from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError
@@ -3930,8 +3939,9 @@ async def execute_run(
             raise run_defect
         if sink.errors.apparatus_failed:
             apparatus_failures.append(sink.errors.infra_error or "an apparatus fault")
-        if trial_exclusion(result) == "infra":
-            infra_exclusions.append(result.infra_error or result.judge_error or "an infra fault")
+        # The harness's own fault on the cell, not a judge call's alone: a re-judge recovers that one.
+        if trial_exclusion(result) == "infra" and result.infra_error:
+            infra_exclusions.append(result.infra_error)
         async with reporting:
             if callbacks.on_result is not None:
                 await callbacks.on_result(result)
@@ -4005,7 +4015,7 @@ async def execute_run(
     # cells measured completes, and its completeness record counts the ones the rig excluded.
     if total and len(apparatus_failures) == total:
         raise EveryCellApparatusFailedError(total, faults=apparatus_failures)
-    # Every cell was excluded for a fault outside the candidate, not all of them the rig's: most often a provider
+    # Every cell was excluded for a fault the harness recorded on it, not all of them the rig's: most often a provider
     # that declined every call (a rate limit or overload that lasted the run, or an OpenRouter model no allowed
     # provider serves). Measured nothing all the same, so it fails as the rig's case does, quoting the cells' errors
     # (the status and the provider's own message), rather than completing with a page that says to rerun.
@@ -4023,6 +4033,7 @@ __all__ = [
     "ErrorLedger",
     "EveryCellApparatusFailedError",
     "GoalCheckUnevaluable",
+    "NOTHING_MEASURED_FAULT",
     "NothingMeasuredError",
     "template_as_graded",
     "KindFactory",

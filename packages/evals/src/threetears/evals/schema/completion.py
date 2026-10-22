@@ -37,7 +37,9 @@ JSON_OBJECT_RESPONSE_FORMAT: dict[str, Any] = {"type": "json_object"}
 #: request (``Ceilings().generation_ceiling_s``, ``Ceilings().judge_phase_ceiling_s``
 #: of :class:`~threetears.evals.run.Ceilings`, and :func:`~threetears.evals.analysis.reporter_cell_timeout_s`) is a count of requests times this, so
 #: an answer below the client's real worst case cancels requests that were still going to finish,
-#: after they were billed.
+#: after they were billed. On the package's ``Model``, the resends of a declined call all end within
+#: one request's timeout of the first attempt (:class:`~threetears.evals.providers.DeclinedRetry`), so
+#: one request takes its first attempt's time or one timeout, whichever is longer.
 RequestCeiling = Callable[[int], float]
 
 

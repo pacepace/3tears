@@ -7,6 +7,7 @@ recording.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -756,22 +757,34 @@ class Answers:
     def __init__(self, *answers: tuple[int, Mapping[str, Any], Mapping[str, str]]) -> None:
         self._answers = list(answers)
         self.sent = 0
+        self.bodies: list[dict[str, Any]] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.sent += 1
+        self.bodies.append(json.loads(request.content))
         status, body, headers = self._answers.pop(0) if len(self._answers) > 1 else self._answers[0]
         return httpx.Response(status, json=body, headers=dict(headers))
 
 
-def answering(server: Answers, waits: Waits, *, timeout: float = 600.0, **retry: Any) -> Model:
-    """An Anthropic model sending through ``server``, waiting through ``waits``."""
+def answering(
+    server: Any,
+    waits: Waits,
+    *,
+    timeout: float = 600.0,
+    model_id: str = "claude-haiku-5-5",
+    provider: Any = "anthropic",
+    temperature: float | None = None,
+    **retry: Any,
+) -> Model:
+    """A model (Anthropic's, unless named) sending through ``server``, waiting through ``waits``."""
     client = httpx.AsyncClient(transport=httpx.MockTransport(server), timeout=timeout)
     return Model(
-        "claude-haiku-5-5",
-        provider="anthropic",
+        model_id,
+        provider=provider,
         api_key="test-key",
         catalogue=catalogue(),
         http=client,
+        temperature=temperature,
         retry=DeclinedRetry(sleep=waits, **retry),
     )
 
@@ -800,8 +813,8 @@ async def test_a_call_declined_on_every_attempt_raises_the_providers_answer_afte
 
 @pytest.mark.parametrize(
     ("retry_after", "waited"),
-    [("2", 2.0), ("0.5", 0.5), ("120", 20.0), ("soon", 1.0)],
-    ids=["seconds", "a fraction", "capped", "unreadable: the backoff's own"],
+    [("2", 2.0), ("0.5", 0.5), ("20", 20.0), ("soon", 1.0)],
+    ids=["seconds", "a fraction", "at the cap", "unreadable: the backoff's own"],
 )
 async def test_a_resend_waits_the_providers_retry_after_at_most_the_cap(retry_after: str, waited: float) -> None:
     status, reply = message()
@@ -810,13 +823,96 @@ async def test_a_resend_waits_the_providers_retry_after_at_most_the_cap(retry_af
     assert waits.asked == [waited]
 
 
-async def test_a_retry_after_given_as_a_date_waits_until_then() -> None:
+@pytest.mark.parametrize(
+    ("offset_s", "zone", "low", "high"),
+    [(10, "GMT", 8.0, 10.0), (10, "-0000", 8.0, 10.0), (-60, "GMT", 0.0, 0.0)],
+    ids=["ahead", "a date naming no zone (-0000), read as UTC", "past: resent at once"],
+)
+async def test_a_retry_after_given_as_a_date_waits_until_then(
+    offset_s: int, zone: str, low: float, high: float
+) -> None:
     status, reply = message()
-    when = (datetime.now(UTC) + timedelta(seconds=10)).strftime("%a, %d %b %Y %H:%M:%S GMT")
+    when = (datetime.now(UTC) + timedelta(seconds=offset_s)).strftime(f"%a, %d %b %Y %H:%M:%S {zone}")
     server, waits = Answers((529, _OVERLOADED, {"retry-after": when}), (status, reply, {})), Waits()
     await answering(server, waits).generate(system="", user="x")
     [wait] = waits.asked
-    assert 8.0 <= wait <= 10.0
+    assert low <= wait <= high
+
+
+async def test_a_provider_that_asks_to_wait_past_the_cap_is_not_sent_the_call_again() -> None:
+    """Waiting 20 s for a provider that asked for 120 would meet the same answer: its answer is raised at once."""
+    server, waits = Answers((429, _OVERLOADED, {"retry-after": "120"})), Waits()
+    with pytest.raises(ProviderError) as raised:
+        await answering(server, waits).generate(system="", user="x")
+    assert server.sent == 1 and waits.asked == []
+    assert (raised.value.owner, raised.value.attempts) == ("provider", 1)
+
+
+async def test_a_decline_in_a_200_body_is_sent_again_as_a_declined_status_is() -> None:
+    """OpenRouter answers an upstream's overload as a 200 carrying the code; it is the same decline."""
+    status, reply = chat()
+    server, waits = Answers((200, {"error": {"code": 529, "message": "Overloaded"}}, {}), (status, reply, {})), Waits()
+    completion = await answering(server, waits, model_id="vendor/m", provider="openrouter").generate(
+        system="", user="x"
+    )
+    assert completion.content == "hello" and server.sent == 2 and waits.asked == [1.0]
+
+    every, waits = Answers((200, {"error": {"code": 503, "message": "No allowed providers"}}, {})), Waits()
+    with pytest.raises(ProviderError) as raised:
+        await answering(every, waits, model_id="vendor/m", provider="openrouter").generate(system="", user="x")
+    assert every.sent == 3 and (raised.value.status, raised.value.owner, raised.value.attempts) == (503, "provider", 3)
+
+
+async def test_an_error_in_a_200_body_that_is_no_decline_is_never_sent_again() -> None:
+    server, waits = Answers((200, {"error": {"code": 502, "message": "upstream died"}}, {})), Waits()
+    with pytest.raises(ProviderError, match="openrouter 502: upstream died$"):
+        await answering(server, waits, model_id="vendor/m", provider="openrouter").generate(system="", user="x")
+    assert server.sent == 1 and waits.asked == []
+
+
+async def test_a_resend_still_running_at_the_calls_time_bound_is_cut_and_the_decline_raised() -> None:
+    """No attempt outlives one request's timeout from the call's first: the resend is cut, the 529 before it stands."""
+    sent: list[float] = []
+
+    async def overloaded_then_slow(request: httpx.Request) -> httpx.Response:
+        sent.append(time.monotonic())
+        if len(sent) == 1:
+            return httpx.Response(529, json=_OVERLOADED, headers={"retry-after": "0"})
+        await asyncio.sleep(30)
+        raise AssertionError("unreachable: the resend is cut at the bound")
+
+    waits = Waits()
+    started = time.monotonic()
+    with pytest.raises(ProviderError) as raised:
+        await answering(overloaded_then_slow, waits, timeout=0.5).generate(system="", user="x")
+    took = time.monotonic() - started
+    assert len(sent) == 2 and took < 5.0, "the resend was cut at the bound, not run to its own end"
+    assert (raised.value.status, raised.value.owner, raised.value.attempts) == (529, "provider", 2)
+
+
+async def test_a_derived_model_keeps_its_retry_policy() -> None:
+    status, reply = message()
+    server, waits = Answers((529, _OVERLOADED, {}), (status, reply, {})), Waits()
+    derived = answering(server, waits, first_wait_s=0.25).derive(temperature=None)
+    await derived.generate(system="", user="x")
+    assert server.sent == 2 and waits.asked == [0.25]
+
+
+async def test_a_decline_then_a_setting_refusal_is_resent_once_for_each() -> None:
+    """The 529 is sent again after its wait; the temperature the provider then refused is dropped and sent once more."""
+    status, reply = message()
+    refused = {
+        "type": "error",
+        "error": {"type": "invalid_request_error", "message": "`temperature` is deprecated for this model."},
+    }
+    server = Answers((529, _OVERLOADED, {}), (400, refused, {}), (status, reply, {}))
+    waits = Waits()
+    completion = await answering(server, waits, model_id="claude-sonnet-4-6", temperature=0.5).generate(
+        system="", user="x"
+    )
+    assert server.sent == 3 and waits.asked == [1.0]
+    assert ["temperature" in body for body in server.bodies] == [True, True, False]
+    assert completion.temperature is None
 
 
 @pytest.mark.parametrize(

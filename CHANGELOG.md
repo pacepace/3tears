@@ -16,16 +16,18 @@ packages (bumped in lock-step).
   `account` and stops the run, as before. A declined repair or parse retry says so in its error, and the page's
   setup-fault words cover a declined call.
 - **The package's client sends a declined call again before it gives up (#849).** `Model` resends a 429 that is not
-  `insufficient_quota`, a 529 or a 503 after a wait: the provider's `retry-after` (seconds or a date) or one then two
-  seconds, any wait at most 20 seconds and none past one request's own timeout, at most three attempts in all, each
-  resend logged at WARNING. `retry=DeclinedRetry(...)` sets the policy (`attempts=1` sends once). The error that stands
-  says how many attempts it took. An account's or the candidate's failure is never sent again.
-- **A run that measured nothing ends `failed` (#849).** When every cell was excluded for an infra cause (most often a
-  provider that declined every call: a rate limit or overload that lasted the run, or an OpenRouter model no allowed
-  provider serves), the run fails with `NothingMeasuredError`, quoting the cells' errors, instead of completing. The
-  quick command exits 1, and the page says nothing was measured and asks for the cause to be fixed, not rerun. A run
-  that measured at least one cell completes as before, its exclusions shown; a run lost entirely to a judge that could
-  not tell, or to judge replies cut off at their cap, still completes.
+  `insufficient_quota`, a 529 or a 503, as a status or as the code a 200's body carries, after a wait: the provider's
+  `retry-after` (seconds or a date) or one then two seconds, at most three attempts in all, each resend logged at
+  WARNING. A provider that asks to wait longer than 20 seconds is not sent it again. Every wait and resend ends within
+  one request's timeout of the first attempt. `retry=DeclinedRetry(...)` sets the policy (`attempts=1` sends once).
+  The error that stands says how many attempts it took. An account's or the candidate's failure is never sent again.
+- **A run that measured nothing ends `failed` (#849).** When every cell was excluded for a fault the harness recorded
+  (most often a provider that declined every call: a rate limit or overload that lasted the run, or an OpenRouter
+  model no allowed provider serves), the run fails with `NothingMeasuredError`, quoting the cells' errors, instead of
+  completing. The quick command exits 1, and the page says nothing was measured and asks for the cause to be fixed
+  before a rerun, not waited out. A run that measured at least one cell completes as before, its exclusions shown; so
+  does a run lost only to judge-call errors (a re-judge recovers it), or entirely to a judge that could not tell or to
+  judge replies cut off at their cap. A sweep goes on past an arm that measured nothing.
 - **A person's rating is recorded only when the host vouches for the person (#848, part 1).** A new action,
   `result_rate_person`, records a rating relayed by a caller as the person's when `EvalHost(attests_person=...)`
   returns the host's own name for that person, and refuses (403) otherwise. The rating carries its `source` and

@@ -42,6 +42,7 @@ from threetears.evals.providers.wire import (
     Reply,
     declared_facts,
     directive_of,
+    in_body_error,
     read_reply,
     reported_cost,
     request_body,
@@ -292,53 +293,94 @@ class _Live:
             )
 
     async def _post(self, body: Mapping[str, Any]) -> tuple[int, Mapping[str, Any]]:  # Any: JSON
+        """The provider's answer to ``body``, parsed, the call sent again while the provider declines it.
+
+        A declined answer (the ``provider`` owner: a 429 that is no spent quota, a 529, a 503, as a status or as the
+        code a 200's body carries) is sent again up to the policy's attempts, after its wait (:class:`DeclinedRetry`),
+        all within one request's timeout of the first attempt. Any other failure, and the last decline, is raised as
+        it came; an error in a 200's body that is no decline is left to :func:`read_reply`, as before.
+        """
         if self.provider == "anthropic":
             path, headers = "/messages", {"x-api-key": self._key, "anthropic-version": "2023-06-01"}
         else:
             path, headers = "/chat/completions", {"authorization": f"Bearer {self._key}"}
-        response = await self._send(path, body, headers)
-        try:
-            parsed = response.json()
-        except ValueError as unreadable:
-            raise ProviderError(self.provider, response.status_code, "the reply is not JSON") from unreadable
-        if not isinstance(parsed, Mapping):
-            raise ProviderError(self.provider, response.status_code, "the reply is not a JSON object")
-        return response.status_code, parsed
-
-    async def _send(
-        self, path: str, body: Mapping[str, Any], headers: Mapping[str, str]
-    ) -> httpx.Response:  # Any: JSON
-        """The provider's successful answer, the call sent again while the provider declines it.
-
-        A declined answer (the ``provider`` owner: a 429 that is no spent quota, a 529, a 503) is sent again up to
-        the policy's attempts, after its wait, and only while the request's own timeout, counted from the first
-        attempt, would not run out in the wait. Any other failure, and the last declined answer, is raised as it came.
-        """
         client = self.http_client()
         budget = client.timeout.read
         started = time.monotonic()
         made = 0
+        previous: httpx.Response | None = None
         while True:
-            response = await client.post(self._url + path, json=body, headers=headers)
+            if previous is not None and budget is not None:
+                response = await self._resend(client, path, body, headers, until=started + budget)
+                if response is None:
+                    log.warning(
+                        "eval.providers cut a resend at the call's time bound provider=%s model=%s attempt=%d bound_s=%.1f",
+                        self.provider,
+                        self.model_name,
+                        made + 1,
+                        budget,
+                    )
+                    error, _ = self._read(previous, made + 1)
+                    assert error is not None, "the answer before a resend is a decline"
+                    raise error
+            else:
+                response = await client.post(self._url + path, json=body, headers=headers)
             made += 1
-            if response.is_success:
-                return response
-            error = error_from_response(self.provider, response.status_code, response.content, attempts=made)
+            error, parsed = self._read(response, made)
+            if error is None:
+                assert parsed is not None
+                return response.status_code, parsed
             if error.owner != "provider" or made >= self._retry.attempts:
                 raise error
             wait = self._retry.wait_s(made, response.headers.get("retry-after"))
-            if budget is not None and time.monotonic() - started + wait > budget:
+            if wait is None or (budget is not None and time.monotonic() - started + wait >= budget):
                 raise error
             log.warning(
                 "eval.providers sending a declined call again provider=%s model=%s status=%s attempt=%d/%d wait_s=%.1f",
                 self.provider,
                 self.model_name,
-                response.status_code,
+                error.status,
                 made + 1,
                 self._retry.attempts,
                 wait,
             )
             await self._retry.sleep(wait)
+            previous = response
+
+    def _read(
+        self, response: httpx.Response, made: int
+    ) -> tuple[ProviderError | None, Mapping[str, Any] | None]:  # Any: JSON
+        """The answer's failure, or its parsed body: a failed status, a body that is no JSON object, or a decline a
+        200's body carries is the failure; any other error in a 200's body is left in the body for ``read_reply``."""
+        if not response.is_success:
+            return error_from_response(self.provider, response.status_code, response.content, attempts=made), None
+        try:
+            parsed = response.json()
+        except ValueError:
+            # NOSILENT: an unreadable reply is returned as the call's failure, which the caller raises.
+            return ProviderError(self.provider, response.status_code, "the reply is not JSON", attempts=made), None
+        if not isinstance(parsed, Mapping):
+            return ProviderError(
+                self.provider, response.status_code, "the reply is not a JSON object", attempts=made
+            ), None
+        failed = in_body_error(self.provider, response.status_code, parsed, attempts=made)
+        if failed is not None and failed.owner == "provider":
+            return failed, None
+        return None, parsed
+
+    async def _resend(
+        self, client: httpx.AsyncClient, path: str, body: Mapping[str, Any], headers: Mapping[str, str], *, until: float
+    ) -> httpx.Response | None:  # Any: JSON
+        """Send ``body`` again, or ``None`` when the resend was still running at ``until`` (``time.monotonic``)."""
+        window = asyncio.timeout(max(until - time.monotonic(), 0.0))
+        try:
+            async with window:
+                return await client.post(self._url + path, json=body, headers=headers)
+        except TimeoutError:
+            if not window.expired():
+                raise
+            # NOSILENT: the resend ran past the call's time bound; the caller logs it and raises the decline before it.
+            return None
 
     async def generate(
         self, *, system: str, user: str, response_format: dict[str, Any] | None = None
@@ -510,9 +552,11 @@ class Model:
     and nothing else is retried. A provider's refusal of a setting the request carried, which the provider did not
     bill, is answered with the closest setting the model then takes, learned for every model sharing the
     :class:`~threetears.evals.providers.Catalogue`. A call the provider declined at that moment (a 429 that is no
-    spent quota, a 529 overloaded, a 503 unavailable), which it also did not bill, is sent again after a wait, at
-    most three attempts in all (``retry=``, :class:`~threetears.evals.providers.DeclinedRetry`), each resend logged
-    at WARNING; the answer that stands names how many attempts it took.
+    spent quota, a 529 overloaded, a 503 unavailable, as a status or as the code a 200's body carries), which it also
+    did not bill, is sent again after a wait, at most three attempts in all, all within one request's timeout of the
+    first (``retry=``, :class:`~threetears.evals.providers.DeclinedRetry`), each resend logged at WARNING; a provider
+    that asks to wait longer than the policy's longest wait is not sent it again. The answer that stands names how
+    many attempts it took.
 
     **Recording.** Given ``recording=``, a file that exists is replayed, offline and free, and ``RECORD=1`` in the
     environment records it again live (started afresh by the first model built on it in the run). A file that does

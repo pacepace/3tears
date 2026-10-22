@@ -317,7 +317,8 @@ the arms are prepared and started. That campaign is created exploratory, since a
 question of what it found, `campaign_create` an aspect over the sweep's runs (`run_ids` from `job_poll`) with its arms
 named by `from_run_ids`; the question reads as asked after the runs, and the page discloses when. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
 the arms in flight and launches none after them. An arm refused at its launch, or whose run ends `failed`, ends
-the sweep `failed`. The judge and simulator are the sweep's. Where it names none, the role's default is resolved
+the sweep `failed`, except an arm whose run failed because it measured nothing (every cell excluded, as for a model
+no allowed provider serves): that arm fails alone and the sweep goes on to the others. The judge and simulator are the sweep's. Where it names none, the role's default is resolved
 once for every arm (by the one interleaved launch, or from the first arm's run when they launch one by one), so a
 role default that moves mid-sweep cannot split the arms.
 

@@ -165,28 +165,60 @@ def cap_words(exclusions: Iterable[ArmExclusions] = ()) -> str:
     return said + (", and unreported on some" if unreported else "")
 
 
-#: The remedy for ``infra`` losses on an arm that measured nothing (:func:`measured_nothing`), in place of the
-#: rerun the infra remedy offers: a provider that declined every call is a setup to change, not a moment to wait out.
+#: The remedy for ``infra`` losses on an arm that measured nothing and whose run failed for it
+#: (:func:`measured_nothing`), in place of the rerun the infra remedy offers: a provider that declined every call is a
+#: setup to change, not a moment to wait out. The verdict says nothing was measured; this says what to do.
 NOTHING_MEASURED_REMEDY: Final = (
-    "nothing was measured, so its run failed: fix what the lost trials' errors below name (a broken part of the setup,"
-    " a model no allowed provider serves, or a rate limit or overload that lasted the run), then rerun {every}"
+    "fix what the lost trials' errors below name (a broken part of the setup, a model no allowed provider serves, or"
+    " a rate limit or overload that lasted the run), then rerun {every}"
+)
+
+#: The remedy for ``infra`` losses on an arm whose run stopped because the provider refused the calling account
+#: (status ``exhausted``): the cause is the account, which no rerun or other setting changes.
+ACCOUNT_REFUSED_REMEDY: Final = (
+    "the provider refused the account paying for the run (out of credit, or its key refused), so the run stopped:"
+    " top up the account or fix its key, then rerun {every}"
 )
 
 
-def measured_nothing(exclusions: Iterable[ArmExclusions]) -> bool:
-    """Whether an arm's every trial was lost to an ``infra`` cause, so it measured nothing and its run failed.
+def arm_run_statuses(bundle: AnalysisContextBundle) -> dict[str, frozenset[str]]:
+    """Each arm's member runs' stored statuses, by variant key: ``completed`` for a run ``incomplete_runs`` omits.
+
+    :param bundle: The campaign's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :return: The statuses, for every arm the realized design places.
+    :rtype: dict[str, frozenset[str]]
+    """
+    design = bundle.design
+    arms = [*([design.control_arm] if design.control_arm is not None else []), *design.contrasts]
+    return {
+        placed.variant_key: frozenset(bundle.incomplete_runs.get(run_id, "completed") for run_id in placed.run_ids)
+        for placed in arms
+    }
+
+
+def measured_nothing(exclusions: Iterable[ArmExclusions], run_statuses: Iterable[str]) -> bool:
+    """Whether an arm measured nothing and its run failed for it: every trial lost to ``infra``, every run ``failed``.
+
+    Read off the run's stored status as well as the losses, so a run a cap, a cancel or the account stopped, and a run
+    stored before a run that measured nothing failed, keep their own words.
 
     :param exclusions: The arm's cells' exclusions (:func:`arm_exclusions`).
     :ptype exclusions: Iterable[ArmExclusions]
-    :return: True when the arm ran trials and every one was excluded as ``infra``.
+    :param run_statuses: The arm's runs' statuses (:func:`arm_run_statuses`).
+    :ptype run_statuses: Iterable[str]
+    :return: True when the arm ran trials, every one was excluded as ``infra``, and every run of it ended ``failed``.
     :rtype: bool
     """
     cells = list(exclusions)
     ran = sum(cell.n_trials for cell in cells)
-    return ran > 0 and sum(cell.by_cause.get("infra", 0) for cell in cells) == ran
+    statuses = set(run_statuses)
+    return statuses == {"failed"} and ran > 0 and sum(cell.by_cause.get("infra", 0) for cell in cells) == ran
 
 
-def loss_words(cause: str, *, exclusions: Iterable[ArmExclusions] = (), arms: int = 2) -> CauseWords:
+def loss_words(
+    cause: str, *, exclusions: Iterable[ArmExclusions] = (), arms: int = 2, run_statuses: Iterable[str] = ()
+) -> CauseWords:
     """Why trials were lost to ``cause``, in words, with its remedy.
 
     :param cause: The loss cause.
@@ -196,9 +228,11 @@ def loss_words(cause: str, *, exclusions: Iterable[ArmExclusions] = (), arms: in
     :ptype exclusions: Iterable[ArmExclusions]
     :param arms: How many arms the campaign ran, which the remedy names.
     :ptype arms: int
+    :param run_statuses: The arm's runs' stored statuses (:func:`arm_run_statuses`); none known, the cause's own words.
+    :ptype run_statuses: Iterable[str]
     :return: The words. A cause this build has no words for is named as itself and says so, rather than taking another
-        cause's remedy. ``infra`` on an arm that measured nothing (:func:`measured_nothing`) takes
-        :data:`NOTHING_MEASURED_REMEDY`, never the rerun.
+        cause's remedy. ``infra`` on an arm whose run the account stopped takes :data:`ACCOUNT_REFUSED_REMEDY`, and on
+        an arm that measured nothing (:func:`measured_nothing`) :data:`NOTHING_MEASURED_REMEDY`, never the rerun.
     :rtype: CauseWords
     """
     cells = list(exclusions)
@@ -210,7 +244,12 @@ def loss_words(cause: str, *, exclusions: Iterable[ArmExclusions] = (), arms: in
     cap = cap_words(cells)
     sent = f"sent {cap.split(' tokens', 1)[0]}" if " tokens" in cap and cap[0].isdigit() else cap
     every = "both arms" if arms == 2 else "every arm"
-    remedy = NOTHING_MEASURED_REMEDY if cause == "infra" and measured_nothing(cells) else worded.remedy
+    statuses = frozenset(run_statuses)
+    remedy = worded.remedy
+    if cause == "infra" and statuses == {"exhausted"}:
+        remedy = ACCOUNT_REFUSED_REMEDY
+    elif cause == "infra" and measured_nothing(cells, statuses):
+        remedy = NOTHING_MEASURED_REMEDY
     return CauseWords(
         words=worded.words.format(cap=cap), remedy=remedy.format(sent=sent, every=every), short=worded.short
     )
@@ -395,19 +434,32 @@ def _setup_gate(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str
     named = over or [max(boards, key=lost_share)]
     named = sorted(named, key=lambda board: (-lost_share(board), arm(board.variant_key)))
     exclusions = arm_exclusions(bundle)
+    statuses = arm_run_statuses(bundle)
+
+    def nothing(board: ArmScoreboard) -> bool:
+        return measured_nothing(exclusions.get(board.variant_key, ()), statuses.get(board.variant_key, ()))
+
+    # Said once: in the lead when no arm measured anything, else on each arm that measured nothing.
+    every_arm = all(nothing(board) for board in boards)
     parts = []
     remedies: list[str] = []
     for board in named:
         lost = sum(board.lost.values())
         cause = max(sorted(board.lost), key=lambda name: board.lost[name])
-        said = loss_words(cause, exclusions=exclusions.get(board.variant_key, ()), arms=len(boards))
+        said = loss_words(
+            cause,
+            exclusions=exclusions.get(board.variant_key, ()),
+            arms=len(boards),
+            run_statuses=statuses.get(board.variant_key, ()),
+        )
         most = "all" if board.lost[cause] == lost else "most"
-        parts.append(f"{arm(board.variant_key)} lost {lost} of {board.ran} trials, {most} because {said.words}.")
+        alone = " Nothing was measured on it, and its run failed." if nothing(board) and not every_arm else ""
+        parts.append(f"{arm(board.variant_key)} lost {lost} of {board.ran} trials, {most} because {said.words}.{alone}")
         if said.remedy not in remedies:
             remedies.append(said.remedy)
     gap_words = "" if over else " The arms lost different shares of their trials, so they were not measured alike."
     lead = "the test setup failed, not the models"
-    if all(measured_nothing(exclusions.get(board.variant_key, ())) for board in boards):
+    if every_arm:
         lead = "nothing was measured, because the test setup failed or the provider declined every call"
     return f"No verdict: {lead}. {' '.join(parts)}{gap_words} Fix: {'; '.join(remedies)}."
 
@@ -459,6 +511,7 @@ def _separated(bundle: AnalysisContextBundle, arm: Callable[[str], str], *, aske
 
 __all__ = [
     "FAIL_CAUSE_WORDS",
+    "ACCOUNT_REFUSED_REMEDY",
     "LOSS_CAUSE_WORDS",
     "NOTHING_MEASURED_REMEDY",
     "MIN_CASES",
@@ -468,6 +521,7 @@ __all__ = [
     "VerdictLine",
     "VerdictRule",
     "arm_exclusions",
+    "arm_run_statuses",
     "cap_words",
     "cause_short",
     "fail_words",

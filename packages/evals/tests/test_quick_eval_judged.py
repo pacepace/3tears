@@ -19,6 +19,7 @@ from typing import Any, Self
 import pytest
 
 from threetears.evals import Eval, Example, Judge
+from threetears.evals.providers.failures import error_from_response
 from threetears.evals.schema import JudgedArtifact, RubricDim, StopReason
 from threetears.evals.kernel.host import EvalHost, KindContract, TemplateChecks
 from threetears.evals.quick.one_call import (
@@ -78,12 +79,13 @@ class _Reply:
 class _FakeJudgeClient:
     """A judge that gives a committed answer 5 and a hedge 2, or a reply set up per test."""
 
-    def __init__(self, *, priced: bool = True, reply: str | None = None) -> None:
+    def __init__(self, *, priced: bool = True, reply: str | None = None, stop_reason: StopReason = "end_turn") -> None:
         self.model_name = JUDGE_MODEL
         self.calls: list[tuple[str, str]] = []
         self.aclose_calls = 0
         self._priced = priced
         self._reply = reply
+        self._stop_reason = stop_reason
 
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Reply:
         self.calls.append((system, user))
@@ -98,6 +100,7 @@ class _FakeJudgeClient:
             output_tokens=30,
             cost_usd=JUDGE_COST_USD if self._priced else None,
             price_source="scripted rate" if self._priced else None,
+            stop_reason=self._stop_reason,
         )
 
     async def aclose(self) -> None:
@@ -244,11 +247,9 @@ async def test_a_judge_that_prices_nothing_leaves_its_spend_unknown_never_zero()
 async def test_a_judge_reply_that_will_not_parse_excludes_the_cell_and_says_so() -> None:
     summary = await _summary(CASES[:1], answer, [short, _judge(_FakeJudgeClient(reply="no json here"))])
     assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (0, 0, 1)
-    # The run's one cell was excluded, so it measured nothing and failed, quoting the judge's error.
-    assert summary.status == "failed"
-    cells = [error for error in summary.errors if "the run measured nothing" not in error]
-    assert cells and all(": judge: " in error for error in cells)
-    assert any("the run measured nothing" in error and "Failed to parse" in error for error in summary.errors)
+    assert summary.errors and all(": judge: " in error for error in summary.errors)
+    # Lost to the judge's call alone, which a re-judge recovers: the run completes, never "measured nothing".
+    assert summary.status == "completed"
     # Every attempt the judge made was paid for, parsed or not, so its spend is still counted.
     assert (
         summary.role_spend("judge").calls >= 2
@@ -273,6 +274,29 @@ async def test_a_run_the_judge_could_not_tell_on_anywhere_still_completes() -> N
     (dimension,) = summary.judged
     assert dimension.n == 0 and dimension.cannot_tell == len(CASES)
     assert summary.status == "completed" and summary.n_excluded == 0
+    assert not any("the run measured nothing" in error for error in summary.errors)
+
+
+async def test_a_run_whose_every_judge_reply_was_cut_off_at_its_cap_still_completes() -> None:
+    """A cut-off judge reply is the judge's request running out of room over evidence the run did measure."""
+    summary = await _summary(CASES, answer, [_judge(_FakeJudgeClient(stop_reason="max_tokens"))])
+    assert summary.status == "completed"
+    assert (summary.n_scored, summary.n_excluded) == (0, len(CASES))
+    assert not any("the run measured nothing" in error for error in summary.errors)
+
+
+async def test_a_run_with_one_cell_declined_and_the_other_judge_cut_off_still_completes() -> None:
+    """One cell lost to the provider, one to a cut-off judge reply: the second measured the candidate, so it completes."""
+    declined = error_from_response("anthropic", 529, json.dumps({"error": {"message": "Overloaded"}}))
+
+    async def runner(case: Mapping[str, Any]) -> str:
+        if case == CASES[0]:
+            raise declined
+        return await answer(case)
+
+    summary = await _summary(CASES, runner, [_judge(_FakeJudgeClient(stop_reason="max_tokens"))])
+    assert summary.status == "completed"
+    assert (summary.n_scored, summary.n_excluded) == (0, 2)
     assert not any("the run measured nothing" in error for error in summary.errors)
 
 

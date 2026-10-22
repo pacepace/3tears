@@ -71,6 +71,7 @@ from threetears.evals.run.jobs import JOB_TIMEOUT_CAP_S
 from threetears.evals.run.launch import LaunchGroup, launch_as_group, quote_launch, start_run
 from threetears.evals.kernel.job_leases import SWEEP_JOB, require_held, write_held_record
 from threetears.evals.run.lifecycle import get_run
+from threetears.evals.run.runner import NOTHING_MEASURED_FAULT
 from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
@@ -410,6 +411,15 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
         fenced(why)
 
 
+def _measured_nothing(run: EvalRun) -> bool:
+    """Whether ``run`` failed because every cell was excluded (:class:`~threetears.evals.run.NothingMeasuredError`).
+
+    Read off the ``error_details`` entry the job manager wrote for that error, which opens with
+    :data:`~threetears.evals.run.runner.NOTHING_MEASURED_FAULT`.
+    """
+    return any(detail.startswith(NOTHING_MEASURED_FAULT) for detail in run.error_details)
+
+
 class _SweepRun:
     """One sweep's job as it runs: its arms in flight, what failed, and how each schedule launches its arms."""
 
@@ -467,7 +477,10 @@ class _SweepRun:
             run = await run_blocking(
                 eval_host.blocking_executor, get_run, eval_host.storage, run_id, self.sweep.scope_id
             )
-            if run.status == "failed":
+            # An arm that measured nothing (every cell excluded: a model no allowed provider serves, a decline that
+            # lasted its run) failed as a measurement of that arm alone, so the sweep goes on to the others; any
+            # other failure of an arm's run ends the sweep.
+            if run.status == "failed" and not _measured_nothing(run):
                 after = "so no further arm was launched" if done is not None else "beside its siblings"
                 self.failure.append(f"arm {label!r}'s run {run_id} ended failed, {after}")
         finally:

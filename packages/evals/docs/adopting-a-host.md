@@ -278,9 +278,12 @@ and not only the cap, and as the effort word its share of the cap reads as (`hig
 (`unsent_reasoning_max_tokens=8192`); a budget not below `max_tokens` is refused naming both, never clamped;
 the simulated user likewise from `SIMULATOR_REQUEST_SETTINGS` (`low`). Two resends, and nothing else is retried: one
 answers a provider's refusal of a setting, below; the other sends a call the provider declined (a 429 that is not a
-spent quota, a 529 overloaded, a 503 unavailable) again after a wait, the provider's `retry-after` or one then two
-seconds, any wait at most 20 seconds and none past the request's own timeout, at most three attempts in all, each
-resend logged at WARNING (`retry=DeclinedRetry(...)` on `Model` sets it; `attempts=1` sends once). Neither is billed.
+spent quota, a 529 overloaded, a 503 unavailable, as a status or as the code a 200's body carries) again after a
+wait, the provider's `retry-after` or one then two seconds, at most three attempts in all, each resend logged at
+WARNING (`retry=DeclinedRetry(...)` on `Model` sets it; `attempts=1` sends once). A provider that asks to wait longer
+than 20 seconds is not sent it again: its answer stands. Every wait and resend ends within one request's timeout of
+the first attempt (a resend still running then is cut, and the decline before it stands), so a call ends one
+request's timeout after it started, or when its first attempt does if that took longer. Neither resend is billed.
 `describe_failure` reads the client's one error type, `ProviderError` (the provider, the status and its own message,
 never the body, `after 3 attempts` when it was sent again, and its `owner`: `account` for a refused key or spent
 credit, which stops a run), and an `httpx` transport error by the host it was sending to.
@@ -1805,11 +1808,13 @@ tool boundary re-raises it instead of turning it into an ordinary tool failure. 
 `invoke`, the engine records that cell excluded (termination `apparatus_failed`) with whatever spend
 the kind had reported through its sink, and goes on. A run whose every cell the rig excluded measured
 nothing, and ends `failed` (`EveryCellApparatusFailedError`). So does a run whose every cell was excluded for any
-other fault outside the candidate (`NothingMeasuredError`): a provider that declined every call, a judge call that
-failed on every cell, a candidate that could not be built. Its reason quotes the cells' own errors, the status and
-the provider's message among them, so a sustained rate limit or overload, or an OpenRouter model no allowed provider
-serves, reads as a setup fault to fix rather than a run to wait out. A run lost entirely to a judge that could not
-tell, or to judge replies cut off at their cap, still completes: the judge read evidence the run did measure.
+other fault the harness recorded on the cell (`NothingMeasuredError`): a provider that declined every call, a
+candidate that could not be built. Its reason quotes the cells' own errors, the status and the provider's message
+among them, so a sustained rate limit or overload, or an OpenRouter model no allowed provider serves, reads as a
+setup fault to fix rather than a run to wait out. A run lost only to judge-call errors still completes, since a
+re-judge recovers it without paying for the candidate again; so does a run lost entirely to a judge that could not
+tell, or to judge replies cut off at their cap: the judge read evidence the run did measure. In a sweep, an arm that
+measured nothing fails alone, and the other arms still run.
 
 A cell cut off by its deadline or by its run's cancel is recorded the same way, from its sink; when the
 cut lands while the cell is being judged, the evidence and the scores that came back are kept and the

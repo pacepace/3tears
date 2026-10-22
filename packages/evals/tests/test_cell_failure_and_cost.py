@@ -237,18 +237,6 @@ async def _driven(kind_for: KindFor | None = None, **kwargs: Any) -> _Drive:
     return drive
 
 
-async def _driven_to_nothing_measured(**kwargs: Any) -> _Drive:
-    """:func:`_drive` over one cell its judge excluded, run to its end: having measured nothing, the run raises.
-
-    The one cell is stored first, as every excluded cell is; the run then ends as one that measured nothing does
-    (``NothingMeasuredError``, which the job manager files ``failed``), never as a defect stopping it early.
-    """
-    drive, go = off_loop(_drive, None, **kwargs)
-    with pytest.raises(NothingMeasuredError):
-        await go()
-    return drive
-
-
 def _dim_of(system: str) -> str:
     """The dim a judge prompt asks to be scored."""
     match = re.search(r'the single key "(.+?)"', system)
@@ -342,7 +330,7 @@ async def test_a_cannot_tell_whose_reasoning_is_not_a_string_is_a_judge_defect_n
         default={"reasoning": {"missing": "the totals"}, "criteria_scores": {FAITHFULNESS_DIM: CANNOT_TELL}}
     )
 
-    drive = await _driven_to_nothing_measured(judge=judge)
+    drive = await _driven(judge=judge)
 
     (result,) = drive.results
     assert result.judge_error is not None and FAITHFULNESS_DIM in result.judge_error
@@ -433,6 +421,56 @@ async def test_an_apparatus_fault_mid_cell_excludes_that_cell_with_its_spend_and
     assert [result.termination for result in others] == ["completed", "completed"]
 
 
+class _DeclinedAfterBillingKind(ToyExtractorKind):
+    """A toy extractor whose provider declined every call, after a first call it was billed for.
+
+    It reports the decline as the package's kinds do, on ``infra_errors``, so each cell is excluded for a fault the
+    harness recorded on it, with its spend.
+    """
+
+    async def invoke(self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
+        return CandidateOutput(
+            infra_errors=[
+                "apparatus: the extractor call was declined by the provider: openrouter 503: No allowed providers"
+            ],
+            telemetry=CandidateTelemetry(
+                usage=[
+                    RoleUsage(
+                        role="candidate",
+                        model=instance.model,
+                        prompt_tokens=300,
+                        completion_tokens=20,
+                        cost_usd=_SPENT_BEFORE_THE_FAULT,
+                        price_source="toyhost_script",
+                        call_count=1,
+                    )
+                ],
+            ),
+        )
+
+
+def _declined_after_billing(world: Any) -> _DeclinedAfterBillingKind:
+    return _DeclinedAfterBillingKind(client=ScriptedExtractionClient(), world=world, goal_checks=_TOY_CHECKS)
+
+
+async def test_a_run_whose_every_cell_was_declined_ends_measuring_nothing_after_storing_each_cell() -> None:
+    drive, go = off_loop(_drive, _declined_after_billing, n_cases=3)
+    with pytest.raises(NothingMeasuredError, match="openrouter 503: No allowed providers") as raised:
+        await go()
+    assert raised.value.total == 3 and len(drive.results) == 3
+    assert all(classify_result(result) is ResultOutcome.INFRA_EXCLUDE for result in drive.results)
+
+
+async def test_a_run_its_cost_cap_stopped_is_budget_stopped_even_when_every_cell_it_ran_was_declined() -> None:
+    """The cap stops it before its matrix ends, so it ends ``budget_stopped``; it is never relabelled ``failed``."""
+    cap = EvalRunCostCap("toy-run", 0.001, enabled=True)
+    drive, go = off_loop(_drive, _declined_after_billing, n_cases=3, cap=cap)
+    with pytest.raises(BudgetStoppedError):
+        await go()
+    assert 1 <= len(drive.results) < 3, "the cap stopped the run before its last cell"
+    assert all(result.infra_error is not None for result in drive.results)
+
+
 class _RigFailsToPrepareKind(ToyExtractorKind):
     """A toy extractor whose preparation meets a corrupt recording on its first cell only."""
 
@@ -516,7 +554,7 @@ def _two_dim_template() -> EvalTemplate:
 async def test_a_deadline_in_the_judge_phase_keeps_the_evidence_and_the_scores_that_came_back():
     judge = _ScriptedJudge(replies={FAITHFULNESS_DIM: _scored(FAITHFULNESS_DIM, 5)}, hangs={_SECOND_DIM})
 
-    drive = await _driven_to_nothing_measured(judge=judge, template=_two_dim_template(), cell_timeout_s=0.3)
+    drive = await _driven(judge=judge, template=_two_dim_template(), cell_timeout_s=0.3)
 
     (result,) = drive.results
     assert result.termination == "cell_timeout"
@@ -537,7 +575,7 @@ async def test_a_deadline_in_the_judge_phase_keeps_the_evidence_and_the_scores_t
 
 async def test_a_cell_whose_judging_the_deadline_cut_is_recovered_by_a_rejudge_of_the_unfinished_dim():
     judge = _ScriptedJudge(replies={FAITHFULNESS_DIM: _scored(FAITHFULNESS_DIM, 5)}, hangs={_SECOND_DIM})
-    drive = await _driven_to_nothing_measured(judge=judge, template=_two_dim_template(), cell_timeout_s=0.3)
+    drive = await _driven(judge=judge, template=_two_dim_template(), cell_timeout_s=0.3)
     (result,) = drive.results
     judge.hangs.clear()
     judge.replies[_SECOND_DIM] = _scored(_SECOND_DIM, 3)
@@ -648,15 +686,15 @@ async def test_a_run_failed_by_a_judge_completion_s_defect_says_so_where_an_oper
     await manager.shutdown()
 
 
-async def test_a_provider_error_on_a_judge_call_stays_that_dim_s_error_and_never_stops_the_run_as_a_defect():
+async def test_a_provider_error_on_a_judge_call_stays_that_dim_s_error_and_the_run_completes():
     """The counterpart: a provider's failure is a judging outcome, recorded on the dim it struck.
 
-    The run's one cell is excluded for it, so the run ends having measured nothing, after the cell is stored: never
-    stopped mid-cell as the defect above stops it.
+    The run's one cell is excluded for it, and the run still completes: a judge call's error alone is recovered by a
+    re-judge, so it never counts toward a run that measured nothing.
     """
     judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), raises={_SECOND_DIM})
 
-    drive = await _driven_to_nothing_measured(judge=judge, template=_two_dim_template())
+    drive = await _driven(judge=judge, template=_two_dim_template())
 
     (result,) = drive.results
     assert [score.dim for score in result.rubric_scores] == [FAITHFULNESS_DIM]

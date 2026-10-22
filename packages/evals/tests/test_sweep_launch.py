@@ -7,6 +7,7 @@ to, one at a time, where it cancels part-way and finds the finished runs already
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import pytest
@@ -22,6 +23,7 @@ from threetears.evals.ops import (
     job_poll,
     sweep_launch,
 )
+from threetears.evals.providers.failures import error_from_response
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
 from packages.evals.tests.fixtures.toyhost.kind import TOY_SCRIPTS, ScriptedExtractionClient
@@ -32,11 +34,30 @@ from packages.evals.tests.off_loop import off_loop
 STYLES = ("terse", "standard", "verbose")
 
 
-def _host(*, latency_s: float) -> tuple[OpsHost, EvalStorage]:
+class _DecliningClient(ScriptedExtractionClient):
+    """The toy extractor's client, whose provider declines every call to the models in ``declines``.
+
+    The decline is OpenRouter's answer for a model no allowed provider serves: a 503 every time.
+    """
+
+    def __init__(self, scripts: Any, *, declines: frozenset[str]) -> None:
+        super().__init__(scripts)
+        self.declines = declines
+
+    async def extract(self, request: Any) -> Any:
+        if request.model in self.declines:
+            raise error_from_response("openrouter", 503, json.dumps({"error": {"code": 503, "message": _ROUTING}}))
+        return await super().extract(request)
+
+
+_ROUTING = "No allowed providers are available for the selected model."
+
+
+def _host(*, latency_s: float, declines: frozenset[str] = frozenset()) -> tuple[OpsHost, EvalStorage]:
     storage = EvalStorage(InMemoryDocumentStore())
     storage.save_template(toyhost_template())
-    client = ScriptedExtractionClient(
-        tuple(type(script)(**{**vars(script), "latency_s": latency_s}) for script in TOY_SCRIPTS)
+    client = _DecliningClient(
+        tuple(type(script)(**{**vars(script), "latency_s": latency_s}) for script in TOY_SCRIPTS), declines=declines
     )
     launch, _client = toyhost_launch_host(storage=storage, client=client)
     return OpsHost(launch=launch), storage
@@ -202,3 +223,27 @@ async def test_an_arm_whose_run_fails_ends_the_sweep_launching_nothing_after_it(
     assert done.progress["arms"] == {"broken": "failed", "fine": "not_launched"}
     campaign = off_loop(storage.load_campaign, job.target_id, TOYHOST_SCOPE)
     assert campaign is not None and len(campaign.run_ids) == 1
+
+
+@pytest.mark.parametrize("schedule", ["sequential", "interleaved"])
+async def test_an_arm_that_measured_nothing_fails_alone_and_the_sweep_goes_on(schedule: str) -> None:
+    """One model no allowed provider serves measures nothing; its run fails, and the other arms still run."""
+    host, storage = off_loop(_host, latency_s=0.0, declines=frozenset({RUN_MODELS[1]}))
+    arms = [
+        SweepArm(model=RUN_MODELS[1], label="misrouted"),
+        SweepArm(model=RUN_MODELS[0], label="fine"),
+    ]
+    (job,) = (await sweep_launch(host, _sweep(arms=arms, arm_schedule=schedule), TOYHOST_SCOPE, created_by="t")).jobs
+    done = await _watch(host, job.job_id, lambda status: status.done, [])
+
+    assert done.state == "completed" and done.detail is None
+    assert done.progress["arms"] == {"misrouted": "failed", "fine": "completed"}
+    campaign = off_loop(storage.load_campaign, job.target_id, TOYHOST_SCOPE)
+    assert campaign is not None
+    runs = {run.candidate_model: run for run in off_loop(storage.load_eval_runs, campaign.run_ids, TOYHOST_SCOPE)}
+    misrouted = runs[RUN_MODELS[1]]
+    assert misrouted.status == "failed"
+    assert any(
+        detail.startswith("the run measured nothing") and _ROUTING in detail for detail in misrouted.error_details
+    )
+    assert runs[RUN_MODELS[0]].status == "completed"

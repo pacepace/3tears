@@ -372,11 +372,13 @@ Six steps, each fixing the last:
    account's refusal stops a run. Declined means a 429 that is not a spent quota, or the provider overloaded (529)
    or unavailable (503); a 500 or 502 is an error, not a refusal, so it stays the candidate's. The package's client
    sends a declined call again before it is excluded (at most three attempts, waiting the provider's `retry-after`
-   or a doubling backoff, capped), since a provider that declined a call billed nothing and may serve it a moment
-   later: a burst of 529s then costs a few seconds rather than every trial it struck. A run that measured nothing
-   because every cell was excluded for an infra cause ends `failed`, quoting the cells' errors (owner,
-   2026-10-22): a decline that lasted the whole run, or an OpenRouter model no allowed provider serves, is a setup
-   fault, and completing with a page that says "rerun" hid it. A model's own
+   or a doubling backoff, all within one request's timeout, and never when the provider asks for longer than the
+   longest wait), since a provider that declined a call billed nothing and may serve it a moment later: a burst of
+   529s then costs a few seconds rather than every trial it struck. A run that measured nothing because every cell
+   was excluded for a fault the harness recorded ends `failed`, quoting the cells' errors (owner, 2026-10-22): a
+   decline that lasted the whole run, or an OpenRouter model no allowed provider serves, is a setup fault, and
+   completing with a page that says "rerun" hid it. A run lost only to judge-call errors completes, since a
+   re-judge recovers it; a sweep goes on past an arm that measured nothing. A model's own
    failures stay its outcome, as in step 4: a declined call is the provider declining it, not the model failing
    it. The lost trials are bounded in every verdict, and an arm
    that loses more than a tenth of its trials to one cause is flagged (`differential_exclusions`). Rejected: a
