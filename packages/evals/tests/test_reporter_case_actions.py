@@ -34,7 +34,7 @@ from threetears.evals.kernel.host import EvalHost
 from threetears.evals.providers import ProviderError, describe_failure
 from threetears.evals.providers.failures import error_from_response
 from threetears.evals.schema import EvalResult, EvalRun, ProviderFailureDescriber
-from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
+from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError, EvalRunCostCap
 from threetears.evals.kernel import NotFoundError, ValidationFailedError, delivered_a_turn
 from threetears.evals.schema.models import EvalTestCase
 from threetears.evals.kernel.declaration import Aspect
@@ -45,7 +45,7 @@ from threetears.evals.ops import (
     reporter_case_archive,
     reporter_cases_list,
 )
-from threetears.evals.run.runner import RunnerOptions, execute_run
+from threetears.evals.run.runner import EveryCellApparatusFailedError, RunnerOptions, execute_run
 from packages.evals.tests.factories import make_campaign, make_eval_run
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture, settled
@@ -390,7 +390,7 @@ async def _reporter_result(client: FixturedClient, *, cap: EvalRunCostCap | None
     Under ``cap`` the run is held to it as a launch holds one, and a stop it causes is left to the caller to see on
     the result.
     """
-    host, run = await _reporter_run(client, cap=cap)
+    host, run, _stopped = await _reporter_run(client, cap=cap)
     (result,) = off_loop(host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
     campaign = make_campaign(scope_id=TOYHOST_SCOPE, run_ids=[run.id])
     return result, off_loop(assemble_context_bundle, campaign, storage=host.storage, profile=host.profile)
@@ -402,11 +402,13 @@ async def _reporter_run(
     cap: EvalRunCostCap | None = None,
     k_runs: int = 1,
     failure_describer: ProviderFailureDescriber | None = None,
-) -> tuple[EvalHost, EvalRun]:
-    """Run the reporter kind ``k_runs`` times over a frozen case with ``client``, and return the host and the run.
+) -> tuple[EvalHost, EvalRun, Exception | None]:
+    """Run the reporter kind ``k_runs`` times over a frozen case with ``client``: the host, the run, and what stopped it.
 
     ``failure_describer`` replaces the toy host's (which withholds every failure as the candidate's), as a host
-    whose client is the package's own names :func:`~threetears.evals.providers.describe_failure`.
+    whose client is the package's own names :func:`~threetears.evals.providers.describe_failure`. What stopped the
+    run is the account's refusal (``AccountExhaustedError``) or every cell excluded
+    (``EveryCellApparatusFailedError``), each raised after the cells are stored; ``None`` when nothing stopped it.
     """
     fixture = off_loop(reporter_fixture)
     host = fixture.host.eval_host
@@ -440,7 +442,9 @@ async def _reporter_run(
         )
     except BudgetStoppedError:
         assert cap is not None
-    return host, run
+    except (AccountExhaustedError, EveryCellApparatusFailedError) as stopped:
+        return host, run, stopped
+    return host, run, None
 
 
 async def test_a_memo_refused_after_its_billed_calls_returned_keeps_their_cost() -> None:
@@ -483,47 +487,82 @@ async def test_a_memo_whose_first_call_was_refused_delivered_no_turn() -> None:
     assert (cell.n_candidate_failed, cell.n_no_turn, cell.all_failed) == (1, 1, True)
 
 
-class _AnsweredOnceWith(FixturedClient):
-    """A generator client whose provider answers its first call with ``error``, and serves every call after it."""
+class _ProviderAnswersOnce(FixturedClient):
+    """A generator client whose provider answers call number ``at`` (from 0) with ``error``, and serves every other."""
 
-    def __init__(self, body: str, error: ProviderError) -> None:
+    def __init__(self, body: str, error: ProviderError, *, at: int = 0) -> None:
         super().__init__(body)
-        self.error: ProviderError | None = error
+        self.error = error
+        self.at = at
+        self.asked = 0
 
     async def generate(self, *, system: str, user: str, response_format: Any = None, tools: Any = None) -> Any:
-        """Raise the provider's answer once, then hand back the prepared completion."""
-        if self.error is not None:
-            error, self.error = self.error, None
-            raise error
+        """Raise the provider's answer on call ``at``, else hand back the prepared completion."""
+        asked, self.asked = self.asked, self.asked + 1
+        if asked == self.at:
+            raise self.error
         return await super().generate(system=system, user=user, response_format=response_format, tools=tools)
 
 
 @pytest.mark.parametrize(
-    ("status", "body", "charged"),
+    ("status", "body", "owner"),
     [
         # The provider rationed the call: the cell measured the provider, so it is excluded and the run goes on.
-        (429, {"error": {"code": 429, "message": "Rate limit exceeded: upstream"}}, False),
+        (429, {"error": {"code": 429, "message": "Rate limit exceeded: upstream"}}, "provider"),
+        # The account was refused: every later call would be too, so the cell is excluded and the run stops.
+        (402, {"error": {"code": 402, "message": "Insufficient credits"}}, "account"),
         # A provider fault that is no rationing stays the candidate's, as any failure is.
-        (500, {"error": {"code": 500, "message": "upstream died"}}, True),
+        (500, {"error": {"code": 500, "message": "upstream died"}}, "candidate"),
     ],
 )
-async def test_a_generator_call_the_provider_rationed_excludes_its_cell_and_the_run_goes_on(
-    status: int, body: dict[str, Any], charged: bool
+async def test_whose_failure_a_generator_call_was_decides_whether_its_cell_fails_is_excluded_or_stops_the_run(
+    status: int, body: dict[str, Any], owner: str
 ) -> None:
     error = error_from_response("openrouter", status, json.dumps(body))
-    client = _AnsweredOnceWith("this is not a memo", error)
-    # Only the account's refusal stops a run (``AccountExhaustedError``, which the run would raise here).
-    host, run = await _reporter_run(client, k_runs=2, failure_describer=describe_failure)
+    client = _ProviderAnswersOnce("this is not a memo", error)
+    host, run, stopped = await _reporter_run(client, k_runs=2, failure_describer=describe_failure)
 
     results = off_loop(host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
-    assert len(results) == 2, "the run went on to its other cell"
     [answered] = [result for result in results if str(error) in (result.candidate_error or result.infra_error or "")]
-    if charged:
+    if owner == "candidate":
+        assert stopped is None
         assert answered.candidate_error == f"reporter: the generator call failed: {error}"
         assert answered.infra_error is None
-    else:
+    elif owner == "provider":
+        assert stopped is None, "a rationed call stops nothing: the next one may be served"
+        assert len(results) == 2, "the run went on to its other cell"
         assert answered.candidate_error is None, "a rationed call is never charged to the candidate"
         assert answered.infra_error == f"apparatus: reporter: the provider rationed the generator call: {error}"
+    else:
+        assert isinstance(stopped, AccountExhaustedError), "every later call is behind the same refused key"
+        assert answered.candidate_error is None
+        assert (
+            answered.infra_error
+            == f"apparatus: reporter: the generator call was refused for the calling account: {error}"
+        )
+
+
+async def test_a_repair_call_the_provider_rationed_excludes_its_cell_naming_the_repair_and_keeps_the_first_calls_cost() -> (
+    None
+):
+    """The first reply was refused, so the generator bought a repair, and the provider rationed that.
+
+    What the repair would have returned is unknown, so the cell is excluded rather than charged; its record names the
+    repair and the refused first reply, and the first call's turn and spend stay on it.
+    """
+    error = error_from_response("openrouter", 429, json.dumps({"error": {"code": 429, "message": "Rate limit"}}))
+    client = _ProviderAnswersOnce("this is not a memo", error, at=1)
+    client.completion.cost_usd = 0.15
+    host, run, stopped = await _reporter_run(client, failure_describer=describe_failure)
+
+    assert not isinstance(stopped, AccountExhaustedError), "a rationed repair stops nothing"
+    (result,) = off_loop(host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
+    assert result.candidate_error is None, "a rationed repair is never charged to the candidate"
+    assert result.infra_error == (
+        "apparatus: reporter: the provider rationed the generator's repair call, after its first reply was refused: "
+        f"{error}"
+    )
+    assert (result.turns_delivered, result.cost_usd) == (1, pytest.approx(0.15))
 
 
 async def test_a_generator_repair_past_the_runs_cap_is_sent_and_both_calls_keep_their_cost_for_the_cap_to_read() -> (

@@ -709,6 +709,17 @@ def test_whose_failure_a_providers_answer_is_read_off_its_status_and_body(
     assert describe_failure(error).owner == owner
 
 
+@pytest.mark.parametrize(("code", "owner"), [(429, "provider"), (402, "account"), (502, "candidate")])
+def test_an_error_in_a_200_body_is_owned_by_the_code_it_names(code: int, owner: str) -> None:
+    """OpenRouter answers some failures with a 200 and the status in the body: the body's code is the one read."""
+    from threetears.evals.providers.wire import read_reply
+
+    with pytest.raises(ProviderError) as raised:
+        read_reply("openrouter", "vendor/m", 200, {"error": {"code": code, "message": "upstream said no"}})
+    assert raised.value.status == code
+    assert raised.value.owner == owner and describe_failure(raised.value).owner == owner
+
+
 @pytest.mark.parametrize(
     "exc",
     [

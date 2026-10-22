@@ -886,15 +886,22 @@ class ReporterKind:
                     failure = describe_failure(
                         self._host.failure_describer, exc, logger=log, where="Reporter generator call"
                     )
+                    # A call after one that returned is the repair the first reply's refusal bought: named, so a
+                    # reader of an excluded cell knows the candidate had already written a memo that was refused.
+                    call = (
+                        "generator's repair call, after its first reply was refused"
+                        if recorder.results
+                        else "generator call"
+                    )
                     if failure.owner == "account":
                         # Every model behind the key gets the same answer, so this cell measured the
                         # account, not the candidate: excluded, and ``account_refused`` stops the RUN.
                         log_provider_failure(
-                            log, failure, exc, "Reporter candidate's generator call was refused for the calling account"
+                            log, failure, exc, "Reporter candidate's %s was refused for the calling account", call
                         )
                         return CandidateOutput(
                             infra_errors=[
-                                f"apparatus: reporter: the generator call was refused for the calling account: {failure.description}"
+                                f"apparatus: reporter: the {call} was refused for the calling account: {failure.description}"
                             ],
                             account_refused=True,
                             telemetry=telemetry,
@@ -906,20 +913,21 @@ class ReporterKind:
                             log,
                             failure,
                             exc,
-                            "Reporter candidate's generator call was rationed by the provider",
+                            "Reporter candidate's %s was rationed by the provider",
+                            call,
                             level=logging.WARNING,
                         )
                         return CandidateOutput(
                             infra_errors=[
-                                f"apparatus: reporter: the provider rationed the generator call: {failure.description}"
+                                f"apparatus: reporter: the provider rationed the {call}: {failure.description}"
                             ],
                             telemetry=telemetry,
                         )
                     log_provider_failure(
-                        log, failure, exc, "Reporter candidate's generator call failed", level=logging.WARNING
+                        log, failure, exc, "Reporter candidate's %s failed", call, level=logging.WARNING
                     )
                     return CandidateOutput(
-                        candidate_errors=[f"reporter: the generator call failed: {failure.description}"],
+                        candidate_errors=[f"reporter: the {call} failed: {failure.description}"],
                         telemetry=telemetry,
                     )
                 # Everything else is the harness's: a defect below the kind. Failing the candidate for either would score it for the rig.

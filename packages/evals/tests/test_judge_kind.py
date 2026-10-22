@@ -10,6 +10,7 @@ labels, agreement with the judge's own repeats and parse validity, and every cen
 
 from __future__ import annotations
 
+import contextlib
 import types
 
 import json
@@ -27,6 +28,7 @@ from threetears.evals.kernel import (
     JUDGE_PARSE_VALID_MEASURE,
     JudgeKindOverlays,
     ValidationFailedError,
+    VariantConfig,
     judge_case_of,
     judge_trial_of,
     production_replicating_cost,
@@ -363,6 +365,27 @@ async def test_a_judge_campaign_meters_only_judge_spend_and_never_rebuys_the_can
     assert labelled, "a scored trial of a labelled case lands its agreement with the label"
 
 
+class _Window:
+    """A cell's tracing windows when the trial is driven alone: both open nothing."""
+
+    def identity(self) -> contextlib.AbstractContextManager[None]:
+        return contextlib.nullcontext()
+
+    collecting = identity
+
+
+async def _prepared(kind: JudgeKind) -> Any:
+    """``kind`` prepared for one trial driven alone, on the toy judge's model."""
+    return await kind.prepare(
+        subject_snapshot=None,
+        variant_config=VariantConfig(candidate_model=TOY_JUDGE_MODEL),
+        world_seed=None,
+        span_window=_Window(),
+        cassettes=None,
+        world=None,
+    )
+
+
 async def test_a_trial_on_a_case_with_no_judge_case_is_a_harness_fault() -> None:
     campaign = await _campaign()
     stored = off_loop(campaign.host.storage.load_test_case, campaign.case_ids[0], TOYHOST_SCOPE)
@@ -374,24 +397,7 @@ async def test_a_trial_on_a_case_with_no_judge_case_is_a_harness_fault() -> None
         failure_describer=withhold_failure_detail,
     )
 
-    class _Window:
-        def identity(self) -> Any:
-            import contextlib
-
-            return contextlib.nullcontext()
-
-        collecting = identity
-
-    from threetears.evals.kernel import VariantConfig
-
-    prepared = await kind.prepare(
-        subject_snapshot=None,
-        variant_config=VariantConfig(candidate_model=TOY_JUDGE_MODEL),
-        world_seed=None,
-        span_window=_Window(),
-        cassettes=None,
-        world=None,
-    )
+    prepared = await _prepared(kind)
     output = await kind.invoke(prepared, bare, sink=None)  # type: ignore[arg-type]
     assert output.infra_errors and JUDGE_CASE_KEY in output.infra_errors[0]
     assert not output.telemetry.usage, "nothing was asked, so nothing was spent"
@@ -407,24 +413,7 @@ async def test_a_judge_trial_holds_its_call_against_the_runs_cap_and_counts_what
         failure_describer=withhold_failure_detail,
     )
 
-    class _Window:
-        def identity(self) -> Any:
-            import contextlib
-
-            return contextlib.nullcontext()
-
-        collecting = identity
-
-    from threetears.evals.kernel import VariantConfig
-
-    prepared = await kind.prepare(
-        subject_snapshot=None,
-        variant_config=VariantConfig(candidate_model=TOY_JUDGE_MODEL),
-        world_seed=None,
-        span_window=_Window(),
-        cassettes=None,
-        world=None,
-    )
+    prepared = await _prepared(kind)
 
     room = FakeCellSink()
     answered = await kind.invoke(prepared, stored, sink=room)
@@ -459,7 +448,7 @@ class _ProviderAnswers:
         ({"error": {"code": 500, "message": "upstream died"}}, "candidate"),
     ],
 )
-async def test_a_judge_call_the_provider_rationed_is_excluded_and_never_charged_to_the_judge(
+async def test_whose_failure_a_judge_call_was_decides_whether_its_trial_fails_is_excluded_or_stops_the_run(
     body: dict[str, Any], owner: str
 ) -> None:
     """A 429 says the provider declined the call, as it would any request: the trial measured nothing of the judge.
@@ -479,24 +468,7 @@ async def test_a_judge_call_the_provider_rationed_is_excluded_and_never_charged_
         failure_describer=describe_failure,
     )
 
-    class _Window:
-        def identity(self) -> Any:
-            import contextlib
-
-            return contextlib.nullcontext()
-
-        collecting = identity
-
-    from threetears.evals.kernel import VariantConfig
-
-    prepared = await kind.prepare(
-        subject_snapshot=None,
-        variant_config=VariantConfig(candidate_model=TOY_JUDGE_MODEL),
-        world_seed=None,
-        span_window=_Window(),
-        cassettes=None,
-        world=None,
-    )
+    prepared = await _prepared(kind)
     output = await kind.invoke(prepared, stored, sink=FakeCellSink())
 
     assert output.kind_payload is not None and output.kind_payload["outcome"] == "no_reply"
@@ -513,6 +485,54 @@ async def test_a_judge_call_the_provider_rationed_is_excluded_and_never_charged_
     else:
         assert excluded.startswith("apparatus: judge: the call was refused for the calling account: ")
         assert output.account_refused is True
+
+
+class _UnreadableThenProviderAnswers:
+    """The judge's client: its first reply is one no parser reads, and the provider answers the retry with ``error``."""
+
+    def __init__(self, inner: Any, error: ProviderError) -> None:
+        self.inner = inner
+        self.error = error
+        self.asked = 0
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
+        self.asked += 1
+        if self.asked > 1:
+            raise self.error
+        reply = await self.inner.generate(system=system, user=user, response_format=response_format)
+        return ToyJudgeCompletion(**{**reply.__dict__, "content": "I would rather not say."})
+
+
+async def test_a_parse_retry_the_provider_rationed_excludes_its_trial_naming_the_retry_and_keeps_the_first_calls_cost() -> (
+    None
+):
+    """The judge's first reply did not parse, so it bought a retry, and the provider rationed that.
+
+    What the retry would have returned is unknown, so the trial is excluded rather than charged to the judge; its record
+    names the retry and the unreadable first reply, and the first call's turn and spend stay on it.
+    """
+    campaign = await _campaign()
+    stored = off_loop(campaign.host.storage.load_test_case, campaign.case_ids[0], TOYHOST_SCOPE)
+    assert stored is not None
+    error = error_from_response("openai", 429, json.dumps({"error": {"code": 429, "message": "Rate limit"}}))
+    answering = _UnreadableThenProviderAnswers(campaign.judge, error)
+    kind = JudgeKind(
+        clients=lambda role, model, *, temperature=None: answering,
+        model=TOY_JUDGE_MODEL,
+        failure_describer=describe_failure,
+    )
+    prepared = await _prepared(kind)
+    output = await kind.invoke(prepared, stored, sink=FakeCellSink())
+
+    assert output.candidate_errors == [], "a rationed retry is never the judge's failure"
+    [excluded] = output.infra_errors
+    assert excluded.startswith("apparatus: judge: the provider rationed the call: ")
+    assert f"LLM call's parse retry, after its first reply did not parse, was rationed by the provider: {error}" in (
+        excluded
+    )
+    assert output.account_refused is False
+    assert output.telemetry.turns_delivered == 1
+    assert sum(row.cost_usd or 0.0 for row in output.telemetry.usage) > 0, "the first call's spend is kept"
 
 
 class _Untempered:
@@ -544,24 +564,7 @@ async def test_a_trial_whose_completion_carries_no_temperature_fails_the_run_and
         failure_describer=withhold_failure_detail,
     )
 
-    class _Window:
-        def identity(self) -> Any:
-            import contextlib
-
-            return contextlib.nullcontext()
-
-        collecting = identity
-
-    from threetears.evals.kernel import VariantConfig
-
-    prepared = await kind.prepare(
-        subject_snapshot=None,
-        variant_config=VariantConfig(candidate_model=TOY_JUDGE_MODEL),
-        world_seed=None,
-        span_window=_Window(),
-        cassettes=None,
-        world=None,
-    )
+    prepared = await _prepared(kind)
     room = FakeCellSink()
 
     with pytest.raises(CompletionProtocolDefect, match="check_completion_conformance"):

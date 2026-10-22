@@ -350,7 +350,7 @@ a call that may skip a warning (the override would leave no record of what it ov
 
 ### A failure is charged to whoever caused it
 
-Five steps, each fixing the last:
+Six steps, each fixing the last:
 
 1. An errored trial scored 0, so a candidate could not hide failures by erroring; excluding it was
    rejected because it diverges denominators.
@@ -365,8 +365,18 @@ Five steps, each fixing the last:
    its cost. A failure still counts against its arm in every rate, accuracy included, but latency and cost
    read only over results that delivered a turn, and an arm with none reads "no successful results". A kind
    reports how many turns it delivered, so a conversation that failed on its sixth turn keeps the first five.
+6. A provider rationing a call (a 429 that is not a spent quota) was charged to the candidate, so the model
+   the provider throttled first read as the worse one. One field now says whose failure a call was
+   (`ProviderFailure.owner`: `account`, `provider` or `candidate`): a rationed call is excluded and the run
+   goes on, on every path the package runs (a quick run, the reporter, the judge kind), and only the account's
+   refusal stops a run. A model's own failures stay its outcome, as in step 4: rationing is the provider
+   declining the call, not the model failing it. The lost trials are bounded in every verdict, and an arm
+   that loses more than a tenth of its trials to one cause is flagged (`differential_exclusions`). Rejected: a second `rationed` flag beside `account_refused`,
+   two flags for one question that could both be set.
 
 *Evidence:* agent with tools, account spend limit reached mid-campaign, 54 runs voided, 2026-10, single campaign.
+Rationing: a model decision whose arm met sustained 429s from a pinned upstream in six of seven runs, 2026-10,
+scored as candidate failures and written up as the other build eliminating silent turn drops.
 
 ### The subject key, and evaluability
 

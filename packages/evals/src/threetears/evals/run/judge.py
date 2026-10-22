@@ -572,8 +572,11 @@ async def run_judge_llm(
                 args=(label, case_id),
             )
             reason = _FAILED_BECAUSE[failure.owner]
+            # A call after one that returned is the retry an unreadable reply bought: named, so a reader of the
+            # lost score knows the judge had already answered once in a shape that did not parse.
+            call = "LLM call" if attempts_made == 0 else "LLM call's parse retry, after its first reply did not parse,"
             return {
-                "error": f"{label} LLM call {reason}: {failure.description}",
+                "error": f"{label} {call} {reason}: {failure.description}",
                 "owner": failure.owner,
                 "judge_usage": _cumulative_usage(),
             }
