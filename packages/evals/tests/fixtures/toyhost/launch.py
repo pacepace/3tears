@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from threetears.evals.kernel import default_job_timeout
-from threetears.evals.kernel import DEFAULT_JOB_LEASE_S
+from threetears.evals.schema import DEFAULT_JOB_LEASE_S
 from threetears.evals.schema import EvalRun, WorldSeed
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.host import CompletionClients, HostProfile

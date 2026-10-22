@@ -630,6 +630,22 @@ code follows the same rule. A synchronous function that takes the storage or the
 fn, ...)`, as the action catalogue does for every synchronous operation. An async operation (`run_launch`,
 `job_poll`) offloads its own.
 
+**Size the database pool for the job leases too.** Beside the store calls on `blocking_executor`, each process
+renews its jobs' leases on a pool of its own, `LEASE_POOL_WORKERS` threads, every one of which may want a connection
+at once. Give the pool your `blocking_executor`'s workers plus `LEASE_POOL_WORKERS`, so a renewal never waits for a
+connection behind cell work, and keep a checkout's wait under the renewal interval, the lease times
+`JOB_LEASE_RENEWAL_FRACTION` (20s at `DEFAULT_JOB_LEASE_S`): a renewal that cannot get a connection then fails and is
+tried again within its lease, rather than holding up the next one. Read the numbers instead of copying them;
+`threetears.evals.schema` loads no other part of the engine, so your config can import it as it loads:
+
+```python
+from threetears.evals.schema import DEFAULT_JOB_LEASE_S, JOB_LEASE_RENEWAL_FRACTION, LEASE_POOL_WORKERS
+
+job_lease_s = DEFAULT_JOB_LEASE_S  # or the LaunchHost.job_lease_s you set
+pool_size = blocking_workers + LEASE_POOL_WORKERS
+checkout_timeout_s = job_lease_s * JOB_LEASE_RENEWAL_FRACTION
+```
+
 **If your database driver is async**, write your adapter against it as an `AsyncDocumentStore` (in
 `threetears.evals.schema`: the same port, every method awaited and `iter_by_doc_type` an async iterator;
 `AsyncStoreClock` for its clock) and hand the

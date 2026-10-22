@@ -692,9 +692,12 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.schema.StoreClock",
         "threetears.evals.schema.AsyncStoreClock",
         "threetears.evals.schema.StoreConflict",
-        # How many threads the job leases' own pool runs store round-trips on: a host sizing a database pool per
-        # process adds it, so a renewal never waits on a connection behind cell work.
-        "threetears.evals.kernel.LEASE_POOL_WORKERS",
+        # The job lease's numbers, on a root that loads no kernel: a host sizing a database pool per process adds the
+        # lease pool's width, and keeps a connection's checkout wait under the renewal interval (the lease times its
+        # renewal fraction), so a renewal never waits on a connection behind cell work.
+        "threetears.evals.schema.DEFAULT_JOB_LEASE_S",
+        "threetears.evals.schema.JOB_LEASE_RENEWAL_FRACTION",
+        "threetears.evals.schema.LEASE_POOL_WORKERS",
         # The checks every store runs on `by_doc_type`'s `field_in` before it queries, so a host's store refuses what
         # the engine's refuse.
         "threetears.evals.schema.field_in_values",
@@ -1203,7 +1206,7 @@ STABLE: frozenset[str] = frozenset(
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 529  # campaign rewrite (owner-approved 525 -> 529): the campaign of aspects drops CampaignDesign, Question and DecisionRule and declares AspectDesign, Floor, CampaignCall, OverriddenBar and campaign_record, which a host declares and records a call with, and CampaignReport and CampaignReadings, which it serves. Before: the host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's; LEASE_POOL_WORKERS, which a host sizing its database pool reads; field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.; ANALYSIS_PREPARATION_BUDGET_S, which a host cites for a generation's wall time; bind_cell_identity (#824), so a host binds the identity the engine reads across its own task boundary.
+DECLARED_CEILING = 531  # lease numbers (owner-approved 529 -> 531): DEFAULT_JOB_LEASE_S, JOB_LEASE_RENEWAL_FRACTION and LEASE_POOL_WORKERS join the host contract on schema, which a host sizing its database pool reads without loading the kernel, and kernel.LEASE_POOL_WORKERS leaves the surface with no shim (evals keeps no back-compat; the one host re-pins). Before: campaign rewrite (owner-approved 525 -> 529): the campaign of aspects drops CampaignDesign, Question and DecisionRule and declares AspectDesign, Floor, CampaignCall, OverriddenBar and campaign_record, which a host declares and records a call with, and CampaignReport and CampaignReadings, which it serves. Before: the host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's; LEASE_POOL_WORKERS, which a host sizing its database pool reads; field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.; ANALYSIS_PREPARATION_BUDGET_S, which a host cites for a generation's wall time; bind_cell_identity (#824), so a host binds the identity the engine reads across its own task boundary.
 
 
 def tier_of(qualified: str) -> Tier:

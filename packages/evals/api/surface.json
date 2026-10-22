@@ -356,6 +356,11 @@
       "signature": "current_cell_identity() -> CellIdentity | None",
       "tier": "host-contract"
     },
+    "threetears.evals.schema.DEFAULT_JOB_LEASE_S": {
+      "kind": "constant (float)",
+      "signature": "",
+      "tier": "host-contract"
+    },
     "threetears.evals.schema.DEFAULT_JUDGE_TEMPERATURE": {
       "kind": "constant (float)",
       "signature": "",
@@ -591,6 +596,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.JOB_LEASE_RENEWAL_FRACTION": {
+      "kind": "constant (float)",
+      "signature": "",
+      "tier": "host-contract"
+    },
     "threetears.evals.schema.JobLease": {
       "kind": "model",
       "signature": "",
@@ -750,6 +760,11 @@
       "kind": "model",
       "signature": "LatencyMetrics(total_ms: Annotated[float, Field(ge=0.0)] | None = None, llm_ms: Annotated[float, Field(ge=0.0)] | None = None, tool_ms: Annotated[float, Field(ge=0.0)] | None = None, async_wait_ms: Annotated[float, Field(ge=0.0)] | None = None, judge_ms: Annotated[float, Field(ge=0.0)] | None = None)",
       "tier": "stable"
+    },
+    "threetears.evals.schema.LEASE_POOL_WORKERS": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "host-contract"
     },
     "threetears.evals.schema.LeasedRecord": {
       "kind": "protocol",
@@ -1706,11 +1721,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.DEFAULT_JOB_LEASE_S": {
-      "kind": "constant (float)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.default_job_timeout": {
       "kind": "function",
       "signature": "default_job_timeout(budget_s: float) -> AsyncIterator[float]",
@@ -2270,11 +2280,6 @@
       "kind": "function",
       "signature": "",
       "tier": "provisional"
-    },
-    "threetears.evals.kernel.LEASE_POOL_WORKERS": {
-      "kind": "constant (int)",
-      "signature": "",
-      "tier": "host-contract"
     },
     "threetears.evals.kernel.LEASE_WRITE_ATTEMPTS": {
       "kind": "constant (int)",

@@ -14,11 +14,11 @@ from typing import Any
 
 from threetears.evals.actions import Caller
 from threetears.evals.analysis import assemble_campaign_bundle
-from threetears.evals.kernel import DEFAULT_JOB_LEASE_S, EvalCampaign, EvalStorage
+from threetears.evals.kernel import EvalCampaign, EvalStorage
 from threetears.evals.kernel.host import EvalHost, HostProfile
 from threetears.evals.ops import AnalysisGeneration, JobsStarted, JobStatus, OpsHost, await_job, job_poll
 from threetears.evals.run import LaunchSettings
-from threetears.evals.schema import DocumentStore
+from threetears.evals.schema import DEFAULT_JOB_LEASE_S, DocumentStore
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
