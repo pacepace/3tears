@@ -258,10 +258,10 @@ async def test_a_judge_call_the_account_was_refused_stops_a_quick_run_and_one_th
     stopped = await _one(helpful, _FakeDecliningJudgeClient(refused, every=True))
     assert stopped.status == "exhausted", "every later judge call is behind the same refused key"
 
-    rationed = error_from_response("openrouter", 429, json.dumps({"error": {"code": 429, "message": "Rate limit"}}))
-    summary = await _one(helpful, _FakeDecliningJudgeClient(rationed))
-    assert summary.status == "completed", "a rationed call stops nothing"
-    assert (summary.n_candidate_failed, summary.n_excluded) == (0, 1), "the rationed cell is excluded, never failed"
+    limited = error_from_response("openrouter", 429, json.dumps({"error": {"code": 429, "message": "Rate limit"}}))
+    summary = await _one(helpful, _FakeDecliningJudgeClient(limited))
+    assert summary.status == "completed", "a rate-limited call stops nothing"
+    assert (summary.n_candidate_failed, summary.n_excluded) == (0, 1), "the declined cell is excluded, never failed"
 
     overloaded = error_from_response(
         "anthropic", 529, json.dumps({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}})

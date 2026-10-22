@@ -504,12 +504,12 @@ class ProviderFailure:
     answer, and a caller excludes the cell and stops the run (``CandidateOutput.account_refused``).
     ``"provider"``: the provider declined to serve the call at that moment — a rate limit (429), or
     the provider overloaded or unavailable (529, 503) — which says nothing about the model and would
-    meet any request, so a caller excludes the cell and the run goes on. ``"candidate"``: anything else, charged to whoever made the call. It is a
-    field of the port rather than a type eval matches on because only the host knows its
-    client's error types; a describer that cannot tell says ``"candidate"``, and the failure is
-    then charged as any other. An owner outside :data:`FailureOwner` is refused at construction,
-    so a misspelt one surfaces as a describer that raised rather than as a silent charge to the
-    candidate.
+    meet any request, so a caller excludes the cell and the run goes on. ``"candidate"``:
+    anything else, charged to whoever made the call. It is a field of the port rather than a
+    type eval matches on because only the host knows its client's error types; a describer that
+    cannot tell says ``"candidate"``, and the failure is then charged as any other. An owner
+    outside :data:`FailureOwner` is refused at construction, so a misspelt one surfaces as a
+    describer that raised rather than as a silent charge to the candidate.
     """
 
     description: str

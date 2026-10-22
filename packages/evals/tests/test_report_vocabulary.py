@@ -103,8 +103,8 @@ def test_a_setup_loss_says_a_declined_call_needs_no_fix_only_a_rerun() -> None:
     worded = loss_words("infra")
     assert worded.words.endswith(", or the provider declined a call")
     assert worded.remedy.endswith(
-        "a call the provider declined needs no fix, only a rerun once it can serve it (later, or with fewer calls at"
-        " once)"
+        "a call the provider declined needs no fix, only a rerun once the provider can serve it (later, or with"
+        " fewer calls at once)"
     )
 
 

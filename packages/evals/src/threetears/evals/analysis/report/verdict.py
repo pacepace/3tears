@@ -77,8 +77,8 @@ LOSS_CAUSE_WORDS: Final[dict[str, CauseWords]] = {
         ),
         remedy=(
             "read the lost trials' errors below: fix the part of the setup that faulted, then rerun every arm; a call"
-            " the provider declined needs no fix, only a rerun once it can serve it (later, or with fewer calls at"
-            " once)"
+            " the provider declined needs no fix, only a rerun once the provider can serve it (later, or with fewer"
+            " calls at once)"
         ),
         short="setup fault",
     ),

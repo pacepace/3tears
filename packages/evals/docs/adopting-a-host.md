@@ -124,8 +124,9 @@ pass it to every entrypoint. It holds:
 - your `failure_describer` — how a raised provider call reads. It is the only thing that can say whose failure a
   call was (`ProviderFailure.owner`): the calling `account`'s (a refused key, spent credit), which stops a run
   rather than excluding its cells; the `provider`'s (it declined the call: a 429 rate limit, or a 529 overloaded or
-  503 unavailable), which excludes the cell and lets the run go on; or the `candidate`'s, charged as any failure. `withhold_failure_detail` is the honest one for an
-  app with no error types of its own, and says `candidate` for every failure;
+  503 unavailable), which excludes the cell and lets the run go on; or the `candidate`'s, charged as any failure.
+  `withhold_failure_detail` is the honest one for an app with no error types of its own, and says `candidate` for
+  every failure;
 - your tracing, executor and cell-timeout choices. None of these last three has a default: each is named
   where the host is built;
 - your template checks, `template_checks=TemplateChecks(...)` (from `threetears.evals.kernel.host`): the questions
