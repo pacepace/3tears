@@ -1577,6 +1577,7 @@
 "threetears.evals.providers.CATALOGUE_FETCH_TIMEOUT_S": "host-contract",
 "threetears.evals.providers.Clients": "host-contract",
 "threetears.evals.providers.Completion": "stable",
+"threetears.evals.providers.DeclinedRetry": "provisional",
 "threetears.evals.providers.describe_failure": "host-contract",
 "threetears.evals.providers.Model": "host-contract",
 "threetears.evals.providers.PriceRefresh": "host-contract",

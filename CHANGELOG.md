@@ -15,6 +15,11 @@ packages (bumped in lock-step).
   or a 502 is an error rather than a refusal, so it stays the candidate's. A 429 `insufficient_quota` (or a 402) is
   `account` and stops the run, as before. A declined repair or parse retry says so in its error, and the page's
   setup-fault words cover a declined call.
+- **The package's client sends a declined call again before it gives up (#849).** `Model` resends a 429 that is not
+  `insufficient_quota`, a 529 or a 503 after a wait: the provider's `retry-after` (seconds or a date) or one then two
+  seconds, any wait at most 20 seconds and none past one request's own timeout, at most three attempts in all, each
+  resend logged at WARNING. `retry=DeclinedRetry(...)` sets the policy (`attempts=1` sends once). The error that stands
+  says how many attempts it took. An account's or the candidate's failure is never sent again.
 - **A person's rating is recorded only when the host vouches for the person (#848, part 1).** A new action,
   `result_rate_person`, records a rating relayed by a caller as the person's when `EvalHost(attests_person=...)`
   returns the host's own name for that person, and refuses (403) otherwise. The rating carries its `source` and

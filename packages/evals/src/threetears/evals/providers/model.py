@@ -33,6 +33,7 @@ from threetears.evals.negotiation import (
 )
 from threetears.evals.providers.catalogue import Catalogue, PriceRefresh
 from threetears.evals.providers.failures import Provider, ProviderError, error_from_response
+from threetears.evals.providers.retry import DeclinedRetry
 from threetears.evals.providers.wire import (
     BASE_URLS,
     FAMILIES,
@@ -60,7 +61,7 @@ log = get_logger(__name__)
 DEFAULT_MAX_TOKENS: Final = 8192
 
 #: How long one request may take, in seconds, on a client the model opens itself, unless ``timeout=`` says
-#: otherwise. Nothing is retried.
+#: otherwise. A call the provider declined is sent again within it (:class:`DeclinedRetry`); nothing else is.
 _REQUEST_TIMEOUT: Final = httpx.Timeout(600.0, connect=20.0)
 
 #: What a catalogue-priced cost's source gains when a cache read or write was priced at a rate the catalogue row does
@@ -217,8 +218,10 @@ class _Live:
         timeout: float | httpx.Timeout | None,
         headers: Mapping[str, str] | None,
         catalogue_fetch_timeout: float | None,
+        retry: DeclinedRetry,
     ) -> None:
         self.model_name = model_name
+        self._retry = retry
         self._catalogue_fetch_timeout = catalogue_fetch_timeout
         self.provider: Provider = provider
         self._key = key
@@ -293,9 +296,7 @@ class _Live:
             path, headers = "/messages", {"x-api-key": self._key, "anthropic-version": "2023-06-01"}
         else:
             path, headers = "/chat/completions", {"authorization": f"Bearer {self._key}"}
-        response = await self.http_client().post(self._url + path, json=body, headers=headers)
-        if not response.is_success:
-            raise error_from_response(self.provider, response.status_code, response.content)
+        response = await self._send(path, body, headers)
         try:
             parsed = response.json()
         except ValueError as unreadable:
@@ -303,6 +304,41 @@ class _Live:
         if not isinstance(parsed, Mapping):
             raise ProviderError(self.provider, response.status_code, "the reply is not a JSON object")
         return response.status_code, parsed
+
+    async def _send(
+        self, path: str, body: Mapping[str, Any], headers: Mapping[str, str]
+    ) -> httpx.Response:  # Any: JSON
+        """The provider's successful answer, the call sent again while the provider declines it.
+
+        A declined answer (the ``provider`` owner: a 429 that is no spent quota, a 529, a 503) is sent again up to
+        the policy's attempts, after its wait, and only while the request's own timeout, counted from the first
+        attempt, would not run out in the wait. Any other failure, and the last declined answer, is raised as it came.
+        """
+        client = self.http_client()
+        budget = client.timeout.read
+        started = time.monotonic()
+        made = 0
+        while True:
+            response = await client.post(self._url + path, json=body, headers=headers)
+            made += 1
+            if response.is_success:
+                return response
+            error = error_from_response(self.provider, response.status_code, response.content, attempts=made)
+            if error.owner != "provider" or made >= self._retry.attempts:
+                raise error
+            wait = self._retry.wait_s(made, response.headers.get("retry-after"))
+            if budget is not None and time.monotonic() - started + wait > budget:
+                raise error
+            log.warning(
+                "eval.providers sending a declined call again provider=%s model=%s status=%s attempt=%d/%d wait_s=%.1f",
+                self.provider,
+                self.model_name,
+                response.status_code,
+                made + 1,
+                self._retry.attempts,
+                wait,
+            )
+            await self._retry.sleep(wait)
 
     async def generate(
         self, *, system: str, user: str, response_format: dict[str, Any] | None = None
@@ -470,10 +506,13 @@ class Model:
     naming the variable, unless a recording will serve every call.
 
     Implements :class:`~threetears.evals.schema.CompletionClient` and
-    :class:`~threetears.evals.schema.BoundCompletionClient`; ``generate`` is safe to call concurrently. Nothing is
-    retried: the only resend answers a provider's refusal of a setting the request carried, which the provider did
-    not bill, with the closest setting the model then takes, learned for every model sharing the
-    :class:`~threetears.evals.providers.Catalogue`.
+    :class:`~threetears.evals.schema.BoundCompletionClient`; ``generate`` is safe to call concurrently. Two resends,
+    and nothing else is retried. A provider's refusal of a setting the request carried, which the provider did not
+    bill, is answered with the closest setting the model then takes, learned for every model sharing the
+    :class:`~threetears.evals.providers.Catalogue`. A call the provider declined at that moment (a 429 that is no
+    spent quota, a 529 overloaded, a 503 unavailable), which it also did not bill, is sent again after a wait, at
+    most three attempts in all (``retry=``, :class:`~threetears.evals.providers.DeclinedRetry`), each resend logged
+    at WARNING; the answer that stands names how many attempts it took.
 
     **Recording.** Given ``recording=``, a file that exists is replayed, offline and free, and ``RECORD=1`` in the
     environment records it again live (started afresh by the first model built on it in the run). A file that does
@@ -511,6 +550,7 @@ class Model:
         timeout: float | httpx.Timeout | None = None,
         headers: Mapping[str, str] | None = None,
         catalogue_fetch_timeout: float | None = None,
+        retry: DeclinedRetry | None = None,
     ) -> None:
         """Build the client; nothing is sent until the first call.
 
@@ -561,6 +601,10 @@ class Model:
             a fetch it starts itself on a client the catalogue opens. ``None`` is
             :data:`~threetears.evals.providers.CATALOGUE_FETCH_TIMEOUT_S`. Models sharing a catalogue each keep their own.
         :ptype catalogue_fetch_timeout: float | None
+        :param retry: How a call the provider declined (a 429 that is no spent quota, a 529, a 503) is sent again;
+            ``None`` is :class:`~threetears.evals.providers.DeclinedRetry`'s defaults: three attempts, waiting the
+            provider's ``retry-after`` or one then two seconds, any wait at most twenty.
+        :ptype retry: DeclinedRetry | None
         :raises ValueError: A bare id with no provider, an unknown provider, no key for a live model (naming the
             variable), ``transport``, ``timeout`` or ``headers`` beside ``http``, ``own_http`` without it, or a
             setting that is the caller's error (an effort that is neither a word nor a budget, a budget not below
@@ -590,6 +634,7 @@ class Model:
             "timeout": timeout,
             "headers": headers,
             "catalogue_fetch_timeout": catalogue_fetch_timeout,
+            "retry": retry,
         }
         #: The client handed in that :meth:`aclose` closes, live or replaying: ``http`` when the model owns it.
         self._owned_http = http if own_http else None
@@ -635,6 +680,7 @@ class Model:
             timeout=timeout,
             headers=headers,
             catalogue_fetch_timeout=catalogue_fetch_timeout,
+            retry=retry if retry is not None else DeclinedRetry(),
         )
         self._live = live
         if self.recording is None:

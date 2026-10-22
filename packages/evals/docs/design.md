@@ -370,7 +370,10 @@ Six steps, each fixing the last:
    (`ProviderFailure.owner`: `account`, `provider` or `candidate`): a call the provider declined is excluded and
    the run goes on, on every path the package runs (a quick run, the reporter, the judge kind), and only the
    account's refusal stops a run. Declined means a 429 that is not a spent quota, or the provider overloaded (529)
-   or unavailable (503); a 500 or 502 is an error, not a refusal, so it stays the candidate's. A model's own
+   or unavailable (503); a 500 or 502 is an error, not a refusal, so it stays the candidate's. The package's client
+   sends a declined call again before it is excluded (at most three attempts, waiting the provider's `retry-after`
+   or a doubling backoff, capped), since a provider that declined a call billed nothing and may serve it a moment
+   later: a burst of 529s then costs a few seconds rather than every trial it struck. A model's own
    failures stay its outcome, as in step 4: a declined call is the provider declining it, not the model failing
    it. The lost trials are bounded in every verdict, and an arm
    that loses more than a tenth of its trials to one cause is flagged (`differential_exclusions`). Rejected: a

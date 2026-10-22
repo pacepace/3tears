@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 import httpx
 import pytest
@@ -24,6 +24,7 @@ from threetears.evals.providers import (
     Catalogue,
     Clients,
     Completion,
+    DeclinedRetry,
     Model,
     PriceSource,
     ProviderError,
@@ -737,6 +738,128 @@ def test_an_error_in_a_200_body_is_owned_by_the_code_it_names(code: int, owner: 
         read_reply("openrouter", "vendor/m", 200, {"error": {"code": code, "message": "upstream said no"}})
     assert raised.value.status == code
     assert raised.value.owner == owner and describe_failure(raised.value).owner == owner
+
+
+class Waits:
+    """The retry's sleep, waiting for nothing and keeping each wait it was asked for, in seconds."""
+
+    def __init__(self) -> None:
+        self.asked: list[float] = []
+
+    async def __call__(self, seconds: float) -> None:
+        self.asked.append(seconds)
+
+
+class Answers:
+    """A provider answering each request in turn with a status, a body and headers (the last answer repeating)."""
+
+    def __init__(self, *answers: tuple[int, Mapping[str, Any], Mapping[str, str]]) -> None:
+        self._answers = list(answers)
+        self.sent = 0
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.sent += 1
+        status, body, headers = self._answers.pop(0) if len(self._answers) > 1 else self._answers[0]
+        return httpx.Response(status, json=body, headers=dict(headers))
+
+
+def answering(server: Answers, waits: Waits, *, timeout: float = 600.0, **retry: Any) -> Model:
+    """An Anthropic model sending through ``server``, waiting through ``waits``."""
+    client = httpx.AsyncClient(transport=httpx.MockTransport(server), timeout=timeout)
+    return Model(
+        "claude-haiku-5-5",
+        provider="anthropic",
+        api_key="test-key",
+        catalogue=catalogue(),
+        http=client,
+        retry=DeclinedRetry(sleep=waits, **retry),
+    )
+
+
+_OVERLOADED: Final = {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}
+_UNAVAILABLE: Final = {"type": "error", "error": {"type": "api_error", "message": "Service unavailable"}}
+
+
+async def test_an_overloaded_call_is_sent_again_and_its_answer_returned() -> None:
+    status, reply = message()
+    server, waits = Answers((529, _OVERLOADED, {}), (status, reply, {})), Waits()
+    completion = await answering(server, waits).generate(system="", user="x")
+    assert completion.content == "hello"
+    assert server.sent == 2 and waits.asked == [1.0], "one resend, after the first backoff wait"
+
+
+async def test_a_call_declined_on_every_attempt_raises_the_providers_answer_after_three() -> None:
+    server, waits = Answers((503, _UNAVAILABLE, {})), Waits()
+    with pytest.raises(ProviderError) as raised:
+        await answering(server, waits).generate(system="", user="x")
+    assert server.sent == 3 and waits.asked == [1.0, 2.0], "three attempts, the wait doubling"
+    assert (raised.value.owner, raised.value.attempts, raised.value.status) == ("provider", 3, 503)
+    assert str(raised.value) == "anthropic 503: Service unavailable (after 3 attempts)"
+    assert describe_failure(raised.value).owner == "provider"
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "waited"),
+    [("2", 2.0), ("0.5", 0.5), ("120", 20.0), ("soon", 1.0)],
+    ids=["seconds", "a fraction", "capped", "unreadable: the backoff's own"],
+)
+async def test_a_resend_waits_the_providers_retry_after_at_most_the_cap(retry_after: str, waited: float) -> None:
+    status, reply = message()
+    server, waits = Answers((429, _OVERLOADED, {"retry-after": retry_after}), (status, reply, {})), Waits()
+    await answering(server, waits).generate(system="", user="x")
+    assert waits.asked == [waited]
+
+
+async def test_a_retry_after_given_as_a_date_waits_until_then() -> None:
+    status, reply = message()
+    when = (datetime.now(UTC) + timedelta(seconds=10)).strftime("%a, %d %b %Y %H:%M:%S GMT")
+    server, waits = Answers((529, _OVERLOADED, {"retry-after": when}), (status, reply, {})), Waits()
+    await answering(server, waits).generate(system="", user="x")
+    [wait] = waits.asked
+    assert 8.0 <= wait <= 10.0
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (401, {"type": "error", "error": {"type": "authentication_error", "message": "invalid x-api-key"}}),
+        (500, {"type": "error", "error": {"type": "api_error", "message": "Internal server error"}}),
+        (502, {"type": "error", "error": {"type": "api_error", "message": "Bad gateway"}}),
+        (429, {"error": {"message": "quota", "code": "insufficient_quota"}}),
+    ],
+    ids=["the account's 401", "the candidate's 500", "the candidate's 502", "the account's spent quota"],
+)
+async def test_a_failure_the_provider_did_not_decline_is_never_sent_again(status: int, body: dict[str, Any]) -> None:
+    server, waits = Answers((status, body, {"retry-after": "1"})), Waits()
+    with pytest.raises(ProviderError) as raised:
+        await answering(server, waits).generate(system="", user="x")
+    assert server.sent == 1 and waits.asked == []
+    assert raised.value.attempts == 1 and "attempts" not in str(raised.value)
+
+
+async def test_one_attempt_sends_a_declined_call_once() -> None:
+    server, waits = Answers((529, _OVERLOADED, {})), Waits()
+    with pytest.raises(ProviderError) as raised:
+        await answering(server, waits, attempts=1).generate(system="", user="x")
+    assert server.sent == 1 and waits.asked == [] and raised.value.owner == "provider"
+
+
+async def test_no_resend_waits_past_the_requests_own_timeout() -> None:
+    """A wait that would end after one request's timeout, counted from the first attempt, is not waited."""
+    server, waits = Answers((529, _OVERLOADED, {"retry-after": "5"})), Waits()
+    with pytest.raises(ProviderError) as raised:
+        await answering(server, waits, timeout=3.0).generate(system="", user="x")
+    assert server.sent == 1 and waits.asked == [] and raised.value.attempts == 1
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [{"attempts": 0}, {"attempts": True}, {"first_wait_s": -1.0}, {"max_wait_s": float("inf")}],
+    ids=["no attempt", "a bool", "a negative wait", "an unbounded cap"],
+)
+def test_a_retry_policy_that_sends_nothing_or_waits_unboundedly_is_refused(policy: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="DeclinedRetry"):
+        DeclinedRetry(**policy)
 
 
 @pytest.mark.parametrize(

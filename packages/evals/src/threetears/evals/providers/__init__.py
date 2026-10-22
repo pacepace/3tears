@@ -22,7 +22,9 @@ What a completion carries, member by member:
   and ``model_context_window_exceeded``, is ``truncated``, logged at WARNING with ``provider_stop_reason``, the raw
   value.
 * ``temperature`` and ``sent_settings`` are what the served request carried: the closest settings the model takes
-  (:mod:`threetears.evals.negotiation` chooses them, reads a refusal and resends; nothing else is retried).
+  (:mod:`threetears.evals.negotiation` chooses them, reads a refusal and resends). A call the provider declined (a
+  429 that is no spent quota, a 529, a 503) is sent again after a wait, at most three attempts in all
+  (:class:`DeclinedRetry`); nothing else is retried.
 * ``cost_usd``: on OpenRouter its own reported figure, and under bring-your-own-key that figure plus
   ``cost_details.upstream_inference_cost`` (a BYOK reply without it is unpriced, as is a reply carrying no
   ``is_byok``); on Anthropic and OpenAI, the reply's tokens priced by OpenRouter's catalogue row for the matching
@@ -45,6 +47,7 @@ from __future__ import annotations
 from threetears.evals.providers.catalogue import CATALOGUE_FETCH_TIMEOUT_S, Catalogue, PriceRefresh
 from threetears.evals.providers.failures import Provider, ProviderError, describe_failure
 from threetears.evals.providers.model import Clients, Completion, Model
+from threetears.evals.providers.retry import DeclinedRetry
 from threetears.evals.providers.wire import PriceSource
 
 __all__ = [
@@ -52,6 +55,7 @@ __all__ = [
     "Catalogue",
     "Clients",
     "Completion",
+    "DeclinedRetry",
     "Model",
     "PriceRefresh",
     "PriceSource",

@@ -276,10 +276,14 @@ the provider takes one (Anthropic's `thinking.budget_tokens`, OpenRouter's `reas
 and not only the cap, and as the effort word its share of the cap reads as (`high`) where only words are taken
 (OpenAI's chat completions, a model that refused a budget), which the completion's `sent_settings` names
 (`unsent_reasoning_max_tokens=8192`); a budget not below `max_tokens` is refused naming both, never clamped;
-the simulated user likewise from `SIMULATOR_REQUEST_SETTINGS` (`low`). Nothing is retried: the only resends answer a
-provider's refusal of a setting, below. `describe_failure` reads the client's one error type, `ProviderError` (the
-provider, the status and its own message, never the body, and `account` for a refused key or spent credit, which
-stops a run), and an `httpx` transport error by the host it was sending to.
+the simulated user likewise from `SIMULATOR_REQUEST_SETTINGS` (`low`). Two resends, and nothing else is retried: one
+answers a provider's refusal of a setting, below; the other sends a call the provider declined (a 429 that is not a
+spent quota, a 529 overloaded, a 503 unavailable) again after a wait, the provider's `retry-after` or one then two
+seconds, any wait at most 20 seconds and none past the request's own timeout, at most three attempts in all, each
+resend logged at WARNING (`retry=DeclinedRetry(...)` on `Model` sets it; `attempts=1` sends once). Neither is billed.
+`describe_failure` reads the client's one error type, `ProviderError` (the provider, the status and its own message,
+never the body, `after 3 attempts` when it was sent again, and its `owner`: `account` for a refused key or spent
+credit, which stops a run), and an `httpx` transport error by the host it was sending to.
 
 **A model that lacks a setting still answers, sent the closest one it takes.** The choosing, the refusal reading and
 the resending are `threetears.evals.negotiation`'s, the same a client of your own uses (below), and each completion's

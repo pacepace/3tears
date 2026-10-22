@@ -74,12 +74,16 @@ class ProviderError(Exception):
     :ivar provider: The provider that answered.
     :ivar status: The HTTP status, or the code an in-body error named (OpenRouter answers some failures with a 200).
     :ivar message: The provider's own message, or ``None`` when its answer carried none.
+    :ivar attempts: How many times the call was sent before this answer stood: more than one when the provider
+        declined it and the client sent it again (:class:`~threetears.evals.providers.DeclinedRetry`).
     :ivar owner: Whose failure it was. ``account``: a 401 or 403 (OpenRouter's 403 is moderation, so not there), a
         402, Anthropic's 400 credit-balance notice, or OpenAI's 429 ``insufficient_quota``. ``provider``: any other
         429, a 529 or a 503. ``candidate``: everything else, a 500 and a 502 among it.
     """
 
-    def __init__(self, provider: Provider, status: int, message: str | None, *, body: object = None) -> None:
+    def __init__(
+        self, provider: Provider, status: int, message: str | None, *, body: object = None, attempts: int = 1
+    ) -> None:
         """Name the failure; ``body`` is kept for :meth:`refusal` alone and never shown.
 
         :param provider: The provider that answered.
@@ -90,10 +94,13 @@ class ProviderError(Exception):
         :ptype message: str | None
         :param body: The response body, parsed or as text, which the refusal readers read.
         :ptype body: object
+        :param attempts: How many times the call was sent, this answer's attempt included.
+        :ptype attempts: int
         """
         self.provider: Provider = provider
         self.status = status
         self.message = message[:_MESSAGE_LIMIT] if message else None
+        self.attempts = attempts
         self._body = body
         code = _error_object(_parsed(body)).get("code")
         credit = status == 400 and provider == "anthropic" and _CREDIT_NOTICE in (message or "").lower()
@@ -106,7 +113,8 @@ class ProviderError(Exception):
         )
         self.owner: FailureOwner = "account" if account else "provider" if status in _DECLINED else "candidate"
         said = f": {self.message}" if self.message else " (the response carried no message)"
-        super().__init__(f"{provider} {status}{said}")
+        tried = f" (after {attempts} attempts)" if attempts > 1 else ""
+        super().__init__(f"{provider} {status}{said}{tried}")
 
     def refusal(self) -> SettingRefusal | None:
         """The setting this answer refused, read off the status and body by the provider's shared reader, or ``None``.
@@ -124,7 +132,7 @@ class ProviderError(Exception):
         return read_openai_refusal(self.status, self._body)
 
 
-def error_from_response(provider: Provider, status: int, body: object) -> ProviderError:
+def error_from_response(provider: Provider, status: int, body: object, *, attempts: int = 1) -> ProviderError:
     """The error for a response the provider answered with a failure, its message read off the body.
 
     :param provider: The provider that answered.
@@ -133,6 +141,8 @@ def error_from_response(provider: Provider, status: int, body: object) -> Provid
     :ptype status: int
     :param body: The body, parsed or as text.
     :ptype body: object
+    :param attempts: How many times the call was sent, this answer's attempt included.
+    :ptype attempts: int
     :return: The error to raise.
     :rtype: ProviderError
     """
@@ -140,7 +150,8 @@ def error_from_response(provider: Provider, status: int, body: object) -> Provid
     message = _error_object(parsed).get("message")
     if parsed is None and body:
         message = "the response body is not JSON"
-    return ProviderError(provider, status, message if isinstance(message, str) and message else None, body=body)
+    text = message if isinstance(message, str) and message else None
+    return ProviderError(provider, status, text, body=body, attempts=attempts)
 
 
 def describe_failure(exc: BaseException) -> ProviderFailure:
