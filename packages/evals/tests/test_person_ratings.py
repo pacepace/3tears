@@ -13,8 +13,8 @@ own check (``EvalHost.attests_person``) vouches for that caller and that person.
   is written, before the result is even read; a check that raises, or answers other than a name, propagates as the
   host's defect, and nothing is written;
 - a relay replaces the person's rating given at or before its own time, direct or relayed, and says what it
-  replaced; one they gave later stands, and the relay is refused as a conflict; it dates the rating when the person
-  gave it, between the result's scoring and now;
+  replaced; with a date, one they gave later stands and the relay is refused as a conflict, and without one it
+  replaces whatever another clock stamped; it dates the rating when the person gave it, not in the future;
 - an agent's rating through ``result_rate`` is unchanged, and carries no relay record;
 - the document holds a relay record whole, on a person's rating only, and reads one stored before the field as none.
 
@@ -25,7 +25,8 @@ Mutations that turn this file red (each run against a saved copy and restored fr
   as a refusal; accepting an answer that is not a name, or a blank one; logging no warning on a refusal; reporting no replacement,
   or not its source; logging no replacement.
 - ``rate_result``: not storing ``source`` and ``collected_by``; not copying the score's label key; ignoring
-  ``rated_at``; accepting a future one, or one before the result was scored; replacing a rating given later.
+  ``rated_at``; accepting a future one; replacing a rating given later; ordering an undated write against the
+  stored one; failing on a stored time that cannot be ordered.
 - ``CalibrationRating``: removing the relay-record check.
 - the action: recording a fixed identity as ``collected_by`` rather than the call's caller.
 - ``result_rate``: recording the agent as a ``person``.
@@ -34,7 +35,7 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -377,15 +378,95 @@ async def test_a_relay_of_an_older_rating_never_replaces_the_persons_newer_one()
     assert (stood.score, stood.source, stood.rated_at) == (5, SOURCE, datetime.fromisoformat(t3).isoformat())
 
 
+def _stamped(storage: Any, rating_id: str, rated_at: str) -> None:
+    """Restamp a stored rating's ``rated_at``, as another process's clock, or a host's own code, would have written it."""
+    (stored,) = [rating for rating in storage.query_calibration_ratings(TOYHOST_SCOPE) if rating.id == rating_id]
+    storage.save_calibration_rating(stored.model_copy(update={"rated_at": rated_at}))
+
+
+async def test_an_undated_relay_replaces_a_rating_stamped_ahead_by_another_clock() -> None:
+    """Clock skew cannot refuse the person's word now: only a dated write is ordered against the stored one."""
+    fixture = off_loop(ops_fixture)
+    storage = fixture.host.eval_host.storage
+    judged = _judged(fixture)
+    host = _host(fixture, _attests())
+    tool = _evals()
+    first = await tool.call(_relay(judged.id, score=2), host=host, caller=CALLER)
+    assert first.structured is not None
+    ahead = (datetime.now(UTC) + timedelta(seconds=30)).isoformat()
+    off_loop(_stamped, storage, first.structured["rating_id"], ahead)
+
+    again = await tool.call(_relay(judged.id, score=4), host=host, caller=CALLER)
+
+    assert not again.is_error, again.text
+    assert again.structured is not None and again.structured["replaced"] is True
+    (rating,) = off_loop(storage.query_calibration_ratings, TOYHOST_SCOPE, result_id=judged.id)
+    assert rating.score == 4 and rating.rated_at != ahead
+
+
+async def test_an_agent_re_rating_through_result_rate_replaces_its_own_earlier_rating() -> None:
+    fixture = off_loop(ops_fixture)
+    judged = _judged(fixture)
+    tool = _evals()
+
+    def rate(score: int) -> dict[str, Any]:
+        return {
+            "action": "result_rate",
+            "result_id": judged.id,
+            "rubric_dim": TOYHOST_JUDGED_DIMENSION,
+            "score": score,
+            "rating_reason": "mine",
+        }
+
+    first = await tool.call(rate(2), host=fixture.host, caller=CALLER)
+    off_loop(
+        _stamped,
+        fixture.host.eval_host.storage,
+        first.structured["rating_id"] if first.structured else "",
+        (datetime.now(UTC) + timedelta(seconds=30)).isoformat(),
+    )
+    second = await tool.call(rate(5), host=fixture.host, caller=CALLER)
+
+    assert second.structured is not None and second.structured["replaced"] is True, second.text
+    (rating,) = off_loop(fixture.host.eval_host.storage.query_calibration_ratings, TOYHOST_SCOPE, result_id=judged.id)
+    assert (rating.rater_kind, rating.score) == ("agent", 5)
+
+
+@pytest.mark.parametrize("stored_at", ["yesterday", "2026-10-05T12:00:00"], ids=["not-iso", "naive"])
+async def test_a_stored_time_that_cannot_be_ordered_does_not_block_a_dated_relay_and_is_recorded(
+    stored_at: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    fixture = off_loop(ops_fixture)
+    storage = fixture.host.eval_host.storage
+    judged = _judged(fixture)
+    host = _host(fixture, _attests())
+    tool = _evals()
+    first = await tool.call(_relay(judged.id, score=2), host=host, caller=CALLER)
+    assert first.structured is not None
+    off_loop(_stamped, storage, first.structured["rating_id"], stored_at)
+
+    with caplog.at_level(logging.WARNING, logger="threetears.evals"):
+        dated = await tool.call(
+            _relay(judged.id, score=4, rated_at="2026-10-17T10:30:00+00:00"), host=host, caller=CALLER
+        )
+
+    assert not dated.is_error, dated.text
+    (rating,) = off_loop(storage.query_calibration_ratings, TOYHOST_SCOPE, result_id=judged.id)
+    assert (rating.score, rating.rated_at) == (4, "2026-10-17T10:30:00+00:00")
+    assert any(
+        f"stored rated_at {stored_at!r} is not an aware ISO-8601 instant" in record.getMessage()
+        for record in caplog.records
+    )
+
+
 @pytest.mark.parametrize(
     ("rated_at", "says"),
     [
         ("2026-10-17T10:30:00", "with an offset"),
         ("2999-01-01T00:00:00+00:00", "later than now"),
         ("17 Oct", "offset"),
-        ("1970-01-01T00:00:00+00:00", "earlier than the result was scored"),
     ],
-    ids=["no-offset", "future", "not-iso", "before-the-result"],
+    ids=["no-offset", "future", "not-iso"],
 )
 async def test_a_relay_time_that_is_not_a_past_dated_instant_is_refused(rated_at: str, says: str) -> None:
     fixture = off_loop(ops_fixture)

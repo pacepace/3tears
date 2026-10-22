@@ -717,9 +717,9 @@ class ResultRatePersonParams(ResultRateParams):
         Field(
             min_length=1,
             description=(
-                "When the person gave the rating, ISO-8601 with an offset, after the result was scored; omitted is "
-                "now. It replaces their stored rating of the same thing given at the same time or earlier; one they "
-                "gave later stands, and this call is refused (conflict, 409)."
+                "When the person gave the rating, ISO-8601 with an offset, not in the future; omitted is now and "
+                "replaces their stored rating of the same thing. Dated, it replaces one given at the same time or "
+                "earlier; one they gave later stands, and this call is refused (conflict, 409)."
             ),
         ),
     ] = None
@@ -2541,8 +2541,8 @@ def engine_actions() -> tuple[Action, ...]:
                 "Recorded with rater_kind person, under the host's name for the person, so it counts in the judge's "
                 "agreement with people and is a label for judge cases of its output. The stored rating names the "
                 "source and the caller that relayed it. It replaces the person's rating of the same dimension of the "
-                "same result given at or before rated_at, and the result says what it replaced; one they gave later "
-                "stands, and the call is refused (conflict, 409). The host decides whether this caller "
+                "same result, and the result says what it replaced; with rated_at, one they gave later stands, and "
+                "the call is refused (conflict, 409). The host decides whether this caller "
                 "relays this person's ratings; without its word the call is refused (refused, 403) and nothing is "
                 "written. An agent's own opinion goes through result_rate."
             ),

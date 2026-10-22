@@ -253,12 +253,13 @@ with `person` and `rating_source` (where they gave it, such as `blind_read:2026-
 `attests_person` check says this caller relays this person's ratings ([Adopting a host](adopting-a-host.md)).
 Otherwise the call is refused and nothing is written. The rating is stored under the host's name for the person,
 and carries `source` and `collected_by` (the caller), so it counts as the person's and still names who put it there.
-Pass `rated_at` with when the person rated (after the result was scored, not in the future). A person holds one
-rating of one dimension of one result, and the one they gave last stands. A relay replaces their stored rating,
-direct or from another source, when that was given at the same time or earlier, and the result says so
-(`replaced`, `replaced_source`). When the stored rating was given later, the relay is refused (`conflict`, 409),
-naming that rating's time and source, and nothing is written. In your own code, `rate_result` takes `source=`,
-`collected_by=` and `rated_at=`, and follows the same rule.
+Pass `rated_at` with when the person rated (not in the future). A person holds one rating of one dimension of one
+result, and the one they gave last stands. A dated relay replaces their stored rating, direct or from another
+source, when that was given at the same time or earlier. When the stored rating was given later, the relay is
+refused (`conflict`, 409), naming that rating's time and source, and nothing is written. An undated relay is the
+person's word now and replaces the stored rating. Either way the result says what it replaced (`replaced`,
+`replaced_source`). In your own code, `rate_result` takes `source=`, `collected_by=` and `rated_at=`, and follows
+the same rule.
 
 ### A rating is bound to what was read, not only to the result
 

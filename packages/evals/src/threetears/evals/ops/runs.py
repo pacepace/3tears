@@ -744,10 +744,11 @@ def result_rate_person(
     stored under the name the host returns, so two spellings the host knows as one person are one rater.
 
     One person holds one rating of one dimension of one result, and the one they gave last stands. So the relay
-    carries when the person rated (``rated_at``): it replaces their stored rating (given directly, or relayed from
-    another source) when that was given at the same time or earlier, and says what it replaced (``replaced``,
-    ``replaced_source``), as a log line does; when the stored rating was given later, the relay is refused (409,
-    naming that rating's time and source) and nothing is written.
+    may carry when the person rated (``rated_at``): dated, it replaces their stored rating (given directly, or
+    relayed from another source) when that was given at the same time or earlier, and when the stored rating was
+    given later the relay is refused (409, naming that rating's time and source) and nothing is written. Undated, it
+    is the person's word now and replaces the stored rating. Either way the result says what it replaced
+    (``replaced``, ``replaced_source``), as a log line does.
 
     A host check that raises is a defect in the host, not a refusal: it propagates, and nothing is written.
 
@@ -769,20 +770,20 @@ def result_rate_person(
     :ptype source: str
     :param collected_by: The calling identity that relays it, as the host resolved it.
     :ptype collected_by: str
-    :param rated_at: When the person gave the rating, ISO-8601 with an offset, between the result's ``scored_at``
-        and now; ``None`` for now, the relay's own time.
+    :param rated_at: When the person gave the rating, ISO-8601 with an offset and not in the future; ``None`` for
+        now, the relay's own time.
     :ptype rated_at: str | None
     :return: What was written, and what it replaced.
     :rtype: ResultRated
     :raises EvalServiceError: Status 403: the host supplies no ``attests_person``, or it does not attest this caller
         for this person. Nothing is written.
-    :raises ConflictError: The person's stored rating of the same thing was given later than ``rated_at``; it stands,
-        and nothing is written.
+    :raises ConflictError: ``rated_at`` is named, and the person's stored rating of the same thing was given later;
+        it stands, and nothing is written.
     :raises TypeError: The host's check returned something other than a non-blank name or ``None``: a defect in the
         host.
     :raises NotFoundError: No such result in the scope.
     :raises ValidationFailedError: The judge scored no such dimension, the score is off its scale, a name is blank, or
-        ``rated_at`` is not an ISO-8601 time with an offset between the result's ``scored_at`` and now.
+        ``rated_at`` is not an ISO-8601 time with an offset at or before now.
     :raises StorageError: The write failed.
     """
     attests = host.attests_person
