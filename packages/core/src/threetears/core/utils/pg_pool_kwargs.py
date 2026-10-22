@@ -567,9 +567,12 @@ class _AttemptConnections:
             if task is not current and not task.done():
                 task.cancel()
                 stopped += 1
-        # counted before ``pool.terminate()``, which closes the ones the pool already holds.
+        # every connection the attempt opened is counted, whoever closes it: from asyncpg 0.32 a pool
+        # whose initialisation failed terminates its own holders before the error reaches here, so
+        # counting only the ones still open read 0 for an attempt that had opened three. the ones
+        # still open (asyncpg <0.32, or a connect that completed after) are closed below.
+        stopped += len(self.opened)
         still_open = [connection for connection in self.opened if not connection.is_closed()]
-        stopped += len(still_open)
         if isinstance(pool, asyncpg.Pool):
             pool.terminate()
         for connection in still_open:

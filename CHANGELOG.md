@@ -39,6 +39,61 @@ address and so is not held to one.
 
 ## v0.75.0 -- 2026-10-21
 
+### mcp: 3tears runs on mcp 2.x and fastmcp 4.x, and still supports mcp 1.x
+
+**Changed:** the workspace now locks `mcp` 2.3 and `fastmcp` 4.0, and declares `mcp>=1.27,<3`
+(3tears-mcp, 3tears-models) and `fastmcp>=3.4.2,<5` (evals). A consumer still on mcp 1.x keeps
+working; one that moves to 2.x needs nothing from 3tears to do it. fastmcp follows mcp on its own
+(fastmcp 3 requires mcp 1, fastmcp 4 mcp 2). mcp 1.x support stays until the owner drops it; no
+release is set for that.
+
+- `McpServer` registers its handlers through whichever API the installed SDK has: 1.x's
+  `@list_tools()` / `@call_tool()` decorators, or 2.x's `Server(on_list_tools=, on_call_tool=)`.
+  It now also does itself what 1.x's decorator did and 2.x dropped: it checks arguments against the
+  tool's `inputSchema` ("Input validation error: ...", before the handler runs), passes a call with
+  no arguments as `{}`, and returns every success as a `CallToolResult`. One difference stays the
+  SDK's: a bug that escapes dispatch (not a refusal -- those are answered as `isError` results on
+  both) reaches the client as an `isError` result on 1.x and as a JSON-RPC error on 2.x.
+  3tears-mcp now declares `jsonschema`, which mcp already depends on.
+- The CLI pool's per-borrower tool server (`bind_tool_server_to_context`) works on either SDK.
+- CI runs the MCP packages' tests on mcp 1.30 as well (`scripts/test-mcp-v1.sh`).
+
+**For a consumer moving to mcp 2.x** (from mcp's own changes, not 3tears'): result and tool
+objects lose their camelCase attributes -- read `result.is_error`, `.structured_content`,
+`tool.input_schema`, or `model_dump(by_alias=True)["isError"]` on either major;
+`streamable_http_client` yields two values, not three; a low-level `Server` takes its handlers in
+the constructor; `mcp.server.fastmcp.FastMCP` is `mcp.server.mcpserver.MCPServer`. Clients and
+servers on different majors interoperate (tested: 1.28 with 2.3, both directions, over stateless
+streamable HTTP).
+
+### Dependencies: security fixes, and the lock brought current
+
+**Fixed:** known vulnerabilities in `pyjwt` (2.13 -> 2.15), `cryptography` (49 -> 50), `aiohttp`,
+`urllib3`, `soupsieve`, `anyio`, `multidict`, `langgraph-sdk` and `snowflake-connector-python`,
+found by `pip-audit` over the lock (Dependabot alerts are off for this repository); and
+`redshift-connector` 2.1.7 -> 2.1.17, a remote code execution through `eval()` (CVE-2026-8838),
+now the declared floor of the `redshift` extra. Every other dependency moves to its newest release past the 14-day cooldown,
+including the majors `anthropic` 1.x, `openai` 3, `websockets` 16, `xxhash` 4 and SQLAlchemy 2.1.
+
+**Changed:** 3tears-object-store opens S3 clients through `aiobotocore` 3 directly instead of
+`aioboto3`. aioboto3's last release (15.5.0, 2025-10) pins aiobotocore 2.25 and with it a boto3
+too old for the redshift fix above, so while the workspace held aioboto3 that fix could not
+resolve. `S3ObjectStore(session=...)` still accepts an aioboto3 session (`.client`) as well as an
+aiobotocore one (`.create_client`); the default is aiobotocore's.
+
+**Changed by an upstream release:** trafilatura 2.3 folds repeated paragraphs into one, so a page
+whose text is one paragraph many times over now extracts as that paragraph once -- and, below
+`thin_page_chars`, reads as a thin page (whose single same-site frame `extract` then follows).
+pydantic 2.14 no longer reports `populate_by_name`'s `validate_by_*` expansion in `model_config`;
+aliased fields still validate by either name.
+asyncpg 0.32 terminates a pool's connections itself when its initialisation fails;
+`create_pool_with_startup_timeout`'s retry warning still counts every connection the failed attempt
+opened (`connections_closed`), and still closes any asyncpg left open.
+
+**Not yet:** `pillow` 13.0 (24 advisories) and `certifi` 2026.10.19 are younger than the lock's
+14-day cooldown and land when they clear it (Oct 30, Nov 3). `ruff` stays below 0.16, which
+reformats 56 files: that is its own change, after this release.
+
 ### evals: a rationed call is the provider's; a person's rating needs the host's word; a finding traces to its evidence; a holder's own writes keep its lease
 
 - **A call the provider rationed is never charged to the candidate (#849).** `ProviderFailure.account_refused` is
@@ -217,6 +272,43 @@ now records the same ledgers as a full render.
 profiles are refused on read until dropped and generated again; hosts push the new writer prompt seed; bundle shape
 59 -> 60, so a frozen reporter case holding a shape-59 bundle is frozen again; `ReadingScope.question_post_hoc` is
 replaced by `question_after_runs`. See `packages/evals/MIGRATIONS.toml`.
+
+### core, observe: a 5xx retry line says what the upstream answered
+
+**Fixed:** `TracedHttpClient` signalled a retryable 5xx with a message-less private exception, so
+every retry line and the exhaustion line from `retry_with_backoff` ended in an empty reason, and the
+exhaustion was an ERROR with a traceback naming only `_Retryable` (handmcp, 2026-10-21: three blank
+lines for a `PUT` answered HTTP 500). Each line now reads `HTTP 500 from PUT https://host/path`; the
+URL drops its query string and userinfo, and the body is left out. `UpstreamHttpError`'s message
+ends `(last answer: HTTP 500)`, or `(no answer: ConnectError)` when no response arrived; `status_code`
+and `body` are unchanged. A request with `idempotent=False` that stops on a 5xx or a failure after it
+left now logs a WARNING naming it, where it logged nothing. `retry_with_backoff` names a message-less
+failure by its type on every line, and takes `caller_raises=True` from a caller that raises its own
+error on `False`: the exhaustion is then a WARNING without a traceback. The default is unchanged
+(contained at ERROR with the traceback), because the registry's startup steps discard the result and
+that line is their only record.
+
+### observe: `retry_bounded` waits as long as a failure asked
+
+**Added:** `asked_pause` reads how long a failure itself asked to wait (an HTTP `Retry-After`),
+and the pause before the next attempt is at least that, over the schedule and over `backs_off`.
+An attempt made sooner is only refused again. A failure asking for longer than
+`max_asked_pause` (default `max_delay`), or for longer than the deadline leaves, is raised at
+once, so the bound still holds. metallm's composed turn uses it to ask a rate-limited model
+round again. Both parameters are optional; existing callers are unchanged.
+
+### models: starting a Claude CLI no longer forks the worker
+
+**Fixed:** under uvloop the SDK's `anyio.open_process` is libuv's `uv_spawn`, a full `fork()` of
+the worker made with the interpreter lock held, so no thread ran until the child exec'd. The stall
+grows with resident memory (one spawn, idle host: 23 ms at 0.5 GB, 95 ms at 2 GB); in metallm's
+~500 MB production workers it was 2-12 s, and uvicorn killed the worker at 5 s (2026-10-14..21: 134 of
+208 freeze reports in `PooledCliSession.start`). A pooled start and a call's own CLI now start the
+CLI with `subprocess.Popen` (vfork) in a worker thread and join its pipes to the loop: under 9 ms at any
+size. The child is reaped by a thread of its own, so a CLI that outlives the loop that started it is
+still collected. Setting `ClaudeAgentOptions.user` brings the stall back: with a uid to change,
+CPython's `_posixsubprocess` cannot vfork and makes a full `fork()`. The `claude-cli` extra declares
+`anyio`, which it imports.
 
 ## v0.74.0 -- 2026-10-20
 

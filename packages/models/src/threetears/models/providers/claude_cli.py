@@ -200,7 +200,7 @@ from threetears.models.claude_cli_pool import (
     own_cli_asked,
     TOOL_SERVER_NAME,
 )
-from threetears.models._claude_sdk_internals import cli_process_pid
+from threetears.models._claude_sdk_internals import cli_process_pid, spawn_clis_without_fork
 from threetears.models.errors import ModelProviderError, ModelRateLimitError, ModelRefusalError
 from threetears.models.providers._junk_tool_calls import drop_junk_tool_calls
 from threetears.models.tool_name_translation import NameMangledToolProxy, build_name_translation
@@ -863,6 +863,8 @@ def _subscription_model_cls() -> type:
                         )
                 opened = time.monotonic()
                 if client is None:
+                    # started without forking the worker, as a pooled CLI is (_claude_cli_spawn)
+                    spawn_clis_without_fork()
                     client = await stack.enter_async_context(ClaudeSDKClient(options=options))
                 try:
                     yield client

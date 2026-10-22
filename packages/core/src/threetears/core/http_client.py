@@ -154,8 +154,58 @@ class _Retryable(Exception):
 
     raised inside the per-attempt closure on a 5xx response so
     :func:`threetears.observe.retry_with_backoff` retries; never crosses
-    the :meth:`TracedHttpClient.request` boundary.
+    the :meth:`TracedHttpClient.request` boundary. its message is the
+    :func:`_answer_line` of the response, which is what each retry line logs.
     """
+
+
+def _answer_line(method: str, response: httpx.Response) -> str:
+    """name what the upstream answered, for a log line: ``HTTP 500 from PUT https://host/path``.
+
+    the URL loses its query string and userinfo, which can carry tokens; the body is left out
+    for size and for whatever secret it may hold. the status line is what an operator needs.
+
+    :param method: the HTTP verb sent
+    :ptype method: str
+    :param response: the response the upstream gave
+    :ptype response: httpx.Response
+    :return: the status, verb and scrubbed URL
+    :rtype: str
+    """
+    url = response.request.url.copy_with(query=None, fragment=None, userinfo=b"")
+    return f"HTTP {response.status_code} from {method.upper()} {url}"
+
+
+def _exhausted_message(
+    what: str,
+    host: str | None,
+    attempts: int,
+    status: int | None,
+    transport_error: BaseException | None,
+) -> str:
+    """the :class:`UpstreamHttpError` message: where, how many attempts, and what the last one got.
+
+    :param what: ``"request"`` or ``"stream"``
+    :ptype what: str
+    :param host: the upstream's host, or ``None`` when none is known
+    :ptype host: str | None
+    :param attempts: how many attempts were made
+    :ptype attempts: int
+    :param status: the last HTTP status, or ``None`` when no response arrived
+    :ptype status: int | None
+    :param transport_error: the last transport failure, when no response arrived
+    :ptype transport_error: BaseException | None
+    :return: the message
+    :rtype: str
+    """
+    message = (
+        f"upstream {what} to {host or 'the upstream'} failed after {attempts} attempt{'s' if attempts != 1 else ''}"
+    )
+    if status is not None:
+        message += f" (last answer: HTTP {status})"
+    elif transport_error is not None:
+        message += f" (no answer: {type(transport_error).__name__})"
+    return message
 
 
 class TracedHttpClient:
@@ -438,6 +488,12 @@ class TracedHttpClient:
                 if self._circuit_breaker is not None:
                     self._circuit_breaker.record_failure()
                 if not idempotent and not isinstance(exc, _NOT_SENT):
+                    log.warning(
+                        "%s attempt %d failed and is not sent again (idempotent=False): %s",
+                        _SPAN_NAME,
+                        attempts,
+                        str(exc) or type(exc).__name__,
+                    )
                     stopped = True
                     return
                 raise
@@ -456,9 +512,15 @@ class TracedHttpClient:
                 if self._circuit_breaker is not None:
                     self._circuit_breaker.record_failure()
                 if not idempotent:
+                    log.warning(
+                        "%s attempt %d failed and is not sent again (idempotent=False): %s",
+                        _SPAN_NAME,
+                        attempts,
+                        _answer_line(method, response),
+                    )
                     stopped = True
                     return
-                raise _Retryable
+                raise _Retryable(_answer_line(method, response))
             if response.status_code < 400 and self._circuit_breaker is not None:
                 # 2xx/3xx is a genuine upstream success; a 4xx client error
                 # leaves the breaker untouched.
@@ -470,6 +532,7 @@ class TracedHttpClient:
             max_attempts=self._max_attempts,
             initial_backoff=self._initial_backoff,
             max_backoff=self._max_backoff,
+            caller_raises=True,
         )
 
         # host for the span/error: the response's when one arrived, else the path's own host
@@ -487,8 +550,9 @@ class TracedHttpClient:
             status = captured.status_code if captured is not None else None
             body = captured.content if captured is not None else b""
             raise UpstreamHttpError(
-                f"upstream request to {self._host or request_host or 'the upstream'} "
-                f"failed after {attempts} attempt{'s' if attempts != 1 else ''}",
+                _exhausted_message(
+                    "request", self._host or request_host, attempts, status, transport_error or local_error
+                ),
                 status_code=status,
                 body=body,
                 attempts=attempts,
@@ -719,7 +783,7 @@ class TracedHttpClient:
                 response = resp
                 if self._circuit_breaker is not None:
                     self._circuit_breaker.record_failure()
-                raise _Retryable
+                raise _Retryable(_answer_line(method, resp))
             if resp.status_code < 400 and self._circuit_breaker is not None:
                 self._circuit_breaker.record_success()
             stream_cm = cm
@@ -731,6 +795,7 @@ class TracedHttpClient:
             max_attempts=self._max_attempts,
             initial_backoff=self._initial_backoff,
             max_backoff=self._max_backoff,
+            caller_raises=True,
         )
         request_host = response.request.url.host if response is not None else (httpx.URL(path).host or None)
         self._record_span_attributes(
@@ -742,8 +807,9 @@ class TracedHttpClient:
         if not succeeded or stream_cm is None or response is None:
             status = response.status_code if response is not None else None
             raise UpstreamHttpError(
-                f"upstream stream to {self._host or request_host or 'the upstream'} "
-                f"failed after {attempts} attempt{'s' if attempts != 1 else ''}",
+                _exhausted_message(
+                    "stream", self._host or request_host, attempts, status, transport_error or local_error
+                ),
                 status_code=status,
                 body=error_body,
                 attempts=attempts,
