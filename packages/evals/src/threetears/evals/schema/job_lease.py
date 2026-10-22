@@ -6,7 +6,7 @@ must carry, or every process answers it from its own memory and two of them answ
 the process that did not start a job would read a live job as lost, and a cancel there would be refused.
 
 So the record carries a **lease** (:class:`JobLease`): the holding process's id and an expiry, renewed by the
-holder with a conditional write every third of its duration. A record that has not ended by its own account
+holder with a conditional write every :data:`JOB_LEASE_RENEWAL_FRACTION` of its duration. A record that has not ended by its own account
 and whose lease has expired — or that carries none — is **lost**, and every process reads it so. The first
 reader to see that writes it down (:class:`JobLoss`, with the record's own ending beside it), so the answer
 is durable and the same everywhere rather than recomputed.
@@ -30,6 +30,10 @@ optional, and a record none of them has been written on reads it as None, or as 
 
 Times are ISO-8601 in UTC, stamped in the store's time when the store keeps a clock
 (:class:`~threetears.evals.schema.store_port.StoreClock`) and in the writer's own otherwise.
+
+**The lease's numbers live here too** (:data:`DEFAULT_JOB_LEASE_S`, :data:`JOB_LEASE_RENEWAL_FRACTION`,
+:data:`LEASE_POOL_WORKERS`), defined once and read by the lease machinery in ``kernel``, so a host sizing its database
+pool reads them from a module that loads nothing beyond ``schema`` instead of copying them.
 """
 
 from __future__ import annotations
@@ -40,6 +44,21 @@ from typing import Annotated, Final, Protocol
 from pydantic import Field, StringConstraints
 
 from threetears.evals.schema.base import CoreShapeModel, EvalBaseModel
+
+
+#: How long a job lease lasts unless renewed, in seconds, when the launching host sets none of its own
+#: (``LaunchHost.job_lease_s``): a job is read lost this long after its process last renewed it.
+DEFAULT_JOB_LEASE_S: Final[float] = 60.0
+
+#: How often a held lease is renewed, as a share of its duration: a third, so two renewals in a row may fail before it
+#: lapses. A host whose store calls can wait longer than ``job_lease_s * JOB_LEASE_RENEWAL_FRACTION`` for a database
+#: connection lets a renewal miss its turn.
+JOB_LEASE_RENEWAL_FRACTION: Final[float] = 1 / 3
+
+#: How many threads the job leases' own pool runs store round-trips on: enough that every lease a busy launch holds (a
+#: launch and each of its runs) renews at once; renewals past it wait only for each other. A host sizing a database
+#: pool per process adds it, so a renewal never waits on a connection behind cell work.
+LEASE_POOL_WORKERS: Final[int] = 8
 
 
 class JobLease(EvalBaseModel, CoreShapeModel):
@@ -208,8 +227,11 @@ class LeasedRecord(Protocol):
 
 
 __all__ = [
+    "DEFAULT_JOB_LEASE_S",
     "JOB_FAULTS_MAX",
     "JOB_FAULT_MAX_CHARS",
+    "JOB_LEASE_RENEWAL_FRACTION",
+    "LEASE_POOL_WORKERS",
     "CancelRequestReasonField",
     "CancelRequestedAtField",
     "FaultsField",

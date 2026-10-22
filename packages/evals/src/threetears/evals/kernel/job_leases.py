@@ -6,7 +6,8 @@ did not start a job read a live one as lost, and a cancel there was refused. Her
 
 - **The holder keeps a lease.** A job's record is written with a lease (:class:`~threetears.evals.schema.JobLease`:
   the holding process's id and an expiry) before its work starts, and :class:`JobLeases` — one per job manager,
-  so one per process — renews it with a conditional write every third of its duration while the work runs.
+  so one per process — renews it with a conditional write every
+  :data:`~threetears.evals.schema.JOB_LEASE_RENEWAL_FRACTION` of its duration while the work runs.
 - **A job is lost only when its record has not ended and its lease has lapsed** (or it carries none: a run a
   launch prepared and never started). Every process answers that the same, and the first reader to see it WRITES it
   (:func:`settle_job_record`): the record takes its own ending and :class:`~threetears.evals.schema.JobLoss`, with
@@ -57,24 +58,24 @@ from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.scoring import reconstruct_completeness
 from threetears.evals.kernel.storage import RUN_LOST_STATUS, JobRecordStore, LeaseStore
 from threetears.evals.schema.base import EvalDocumentModel
-from threetears.evals.schema.job_lease import JobLease, JobLoss, LeasedRecord, with_fault
+from threetears.evals.schema.job_lease import (
+    DEFAULT_JOB_LEASE_S,
+    JOB_LEASE_RENEWAL_FRACTION,
+    LEASE_POOL_WORKERS,
+    JobLease,
+    JobLoss,
+    LeasedRecord,
+    with_fault,
+)
 from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, EvalRun
 from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
 
-#: How long a lease lasts unless renewed, in seconds: the engine's default. A host sets its own on the launching
-#: host (``LaunchHost.job_lease_s``); a job is read lost this long after its process last renewed it.
-DEFAULT_JOB_LEASE_S = 60.0
-
 #: How many times a lease write (a renewal, a lost write, a holder's own write) re-reads and re-applies after losing
 #: its conditional write to another writer, before it gives up for now. Small: each attempt is a fresh read, and a
 #: record that refuses three in a row is contended past what a retry fixes — the next renewal tries again.
 LEASE_WRITE_ATTEMPTS = 3
-
-#: How many threads the leases' own pool (:class:`JobLeases`) runs store round-trips on: enough that every lease a busy
-#: launch holds (a launch and each of its runs) renews at once; renewals past it wait only for each other.
-LEASE_POOL_WORKERS = 8
 
 #: How many more times a renewal that lost :data:`LEASE_WRITE_ATTEMPTS` races to the holder's own writes is tried again,
 #: within the same interval, before it waits the whole interval.
@@ -559,7 +560,8 @@ class JobLeases:
     every record it holds. A job is held from its record's first write (:meth:`grant` stamps the lease that write
     carries, :meth:`hold` starts renewing it) to its own terminal write (:meth:`release`).
 
-    Every :attr:`renew_every_s` (a third of :attr:`lease_s`) each held record is re-read and its lease extended with
+    Every :attr:`renew_every_s` (:data:`~threetears.evals.schema.JOB_LEASE_RENEWAL_FRACTION` of :attr:`lease_s`) each
+    held record is re-read and its lease extended with
     a conditional write. What the read finds is acted on there: a cancel asked of the job is handed to the job's
     ``cancel`` (once), and a record ended by someone else, or a lease that lapsed before it was renewed, stops the
     job through its ``stop`` and releases it — the holder writes nothing more. **A holder whose renewals keep
@@ -587,7 +589,8 @@ class JobLeases:
 
         :param store: Where every held record lives.
         :ptype store: LeaseStore
-        :param lease_s: How long a lease lasts unless renewed, in seconds; renewed every third of it.
+        :param lease_s: How long a lease lasts unless renewed, in seconds; renewed every
+            :data:`~threetears.evals.schema.JOB_LEASE_RENEWAL_FRACTION` of it.
         :ptype lease_s: float
         :raises ValueError: ``lease_s`` is not positive.
         """
@@ -615,8 +618,9 @@ class JobLeases:
 
     @property
     def renew_every_s(self) -> float:
-        """How often every held lease is renewed: a third of :attr:`lease_s`, so two renewals may fail before it lapses."""
-        return self._lease_s / 3
+        """How often every held lease is renewed: :data:`~threetears.evals.schema.JOB_LEASE_RENEWAL_FRACTION` of
+        :attr:`lease_s`."""
+        return self._lease_s * JOB_LEASE_RENEWAL_FRACTION
 
     def grant(self) -> JobLease:
         """A fresh lease for a record about to be written: this process, until :attr:`lease_s` from the store's now.
@@ -1080,7 +1084,6 @@ class JobLeases:
 
 __all__ = [
     "ANALYSIS_JOB",
-    "DEFAULT_JOB_LEASE_S",
     "LEASE_WRITE_ATTEMPTS",
     "RUN_JOB",
     "SHUTDOWN_CAUSE",

@@ -194,6 +194,8 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump is a baseline reset, appends one line here and moves `CORE_BASELINE_VERSION` with it.
   <br>`= 15`
 - **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
+- **`DEFAULT_JOB_LEASE_S`** · *host contract* · constant (float) · How long a job lease lasts unless renewed, in seconds, when the launching host sets none of its own (`LaunchHost.job_lease_s`): a job is read lost this long after its process last renewed it.
+  <br>`= 60.0`
 - **`DEFAULT_JUDGE_TEMPERATURE`** · constant (float) · The temperature every judge call is requested at unless a `JudgeConfig` for its dimension says otherwise, and that config's own default (#633).
   <br>`= 0.0`
 - **`DOC_TYPE_FACTS`** · constant (mappingproxy) · Every `doc_type` the engine stores, and its facts.
@@ -205,7 +207,11 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`DURABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The durable version this build writes.
   <br>`= 16`
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
+- **`JOB_LEASE_RENEWAL_FRACTION`** · *host contract* · constant (float) · How often a held lease is renewed, as a share of its duration: a third, so two renewals in a row may fail before it lapses.
+  <br>`= 0.3333333333333333`
 - **`JUDGE_WORDING_CHANGE_SENTENCE`** · *host contract* · constant (str) · The sentence a release's `MIGRATIONS.toml` notes carry, verbatim, when it changes the wording of a built-in judge prompt (`builtin_judge_config_id`) or of the reply-format suffix a configured judge is sent (`configured_judge_config_id`).
+- **`LEASE_POOL_WORKERS`** · *host contract* · constant (int) · How many threads the job leases' own pool runs store round-trips on: enough that every lease a busy launch holds (a launch and each of its runs) renews at once; renewals past it wait only for each other.
+  <br>`= 8`
 - **`METERED_CALL_ORIGINS`** · *host contract* · constant (tuple) · The values of `MeteredCallOrigin` this build knows, in the order its readers list them.
 - **`MODEL_ROLE_ORIGINS`** · *host contract* · constant (tuple) · The values of `ModelRoleOrigin` this build knows, in the order its readers list them.
 - **`NON_TERMINAL_RUN_STATUSES`** · *host contract* · constant (frozenset) · Statuses a run can still leave under its own power — it is either queued or executing, and something in-process is expected to write its terminal status.
@@ -359,8 +365,6 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`= 'template'`
 - **`KIND_TEXT`** · *host contract* · constant (str) · A seed whose constant is a single string, registered with a shared-prompt registry.
   <br>`= 'text'`
-- **`LEASE_POOL_WORKERS`** · *host contract* · constant (int) · How many threads the leases' own pool (`JobLeases`) runs store round-trips on: enough that every lease a busy launch holds (a launch and each of its runs) renews at once; renewals past it wait only for each other.
-  <br>`= 8`
 - **`MATCH_MEASURE`** · constant (str) · The core measure one classification's verdict is reported under — the one a classifier kind lands on `host_measures`, a bool.
   <br>`= 'match'`
 - **`METRIC_DESCRIPTORS`** · constant (dict) · The engine's own measures, each one's descriptor keyed by its name.
