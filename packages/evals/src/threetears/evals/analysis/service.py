@@ -2208,7 +2208,9 @@ def freeze_reporter_case(
             f"{bundle.campaign_id!r} with {memo_text} has no live case — every stored case of it is superseded or "
             "retired, so there is nothing for this freeze to replace",
             remedy=(
-                "freeze without supersedes: the new case is the pair's live case, and the retired ones stay as they are"
+                "freeze without supersedes: the new case is the pair's live case, and the retired ones stay as they "
+                "are; supersedes takes only a live case, so to retire a retired case for good, restore it first "
+                "(reporter_case_archive with archived=false), then freeze with supersedes naming it"
             ),
         )
     same_labels = len(live) == 1 and _label_set(live[0][1].labels, criterion=True) == wanted_labels

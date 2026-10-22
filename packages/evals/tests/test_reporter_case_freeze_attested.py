@@ -17,7 +17,8 @@ label names (``reader``), or its own when a label names none. Pinned here:
 - a label naming neither is stored without either key, as the build before stored it; a relayed one carries both;
 - a label refuses a blank reader or relay, and a relay with no reader;
 - a case an agent labelled before readers were recorded is retired for good by superseding it with a freeze of its
-  memo that carries no labels (asking nothing, inventing no verdict): restoring it then makes nothing live.
+  memo that carries no labels (asking nothing, inventing no verdict): restoring it then makes nothing live; one
+  already archived is restored first, since ``supersedes`` takes only a live case, and the refusal says so.
 
 Mutations that turn this file red (each run against a saved copy and restored from it):
 
@@ -330,10 +331,11 @@ def _frozen_store() -> tuple[OpsFixture, EvalTestCase, str]:
     """The toy host's operations fixture over a store holding the frozen analysis and case.
 
     The case's labels, the shape under test, are kept exactly as stored. Its evidence is taken from this machine's own
-    freeze of the same campaign and memo: bundle fingerprints hash full-precision floats that differ in the last digit
-    between Python builds (GCC vs Clang libm), so the build that froze the fixture and the test pool's re-assemble
-    this corpus to two fingerprints, and a re-freeze whose evidence moved is refused for that reason alone, which
-    would hide what this file pins.
+    freeze of the same campaign and memo: the Python build's own maths (``lgamma``, ``NormalDist.inv_cdf``) differs in
+    the last digit between builds, and the fixture's bundle fingerprint hashed those digits, so the build that froze
+    it and the test pool's re-assembled this corpus to two fingerprints (fixed in #907 by rounding computed floats to
+    12 significant figures). A re-freeze whose evidence moved is refused for that reason alone, which would hide what
+    this file pins.
     """
     from threetears.evals.analysis import freeze_reporter_case
     from threetears.evals.run import get_template
@@ -445,6 +447,32 @@ def test_superseding_a_case_an_agent_labelled_retires_it_for_good_without_invent
     live = {entry.case.test_case_id: entry.live for entry in listing.cases}
     assert live == {stored.id: False, replacement.test_case_id: True}, "a restore brings no superseded verdict back"
     assert replacement.labels == []
+
+
+def test_an_archived_agent_labelled_case_is_restored_first_then_superseded() -> None:
+    """``supersedes`` takes only a live case: the refusal of an archived one says to restore it first."""
+    fixture, stored, analysis_id = _frozen_store()
+    eval_host = _host(fixture, None).eval_host
+    reporter_case_archive(eval_host, stored.id, TOYHOST_SCOPE, archived=True, reason="an agent's own verdicts")
+    freeze = ReporterCaseFreeze(
+        template_id=reporter_template().id,
+        campaign_id=fixture.campaign.id,
+        recorded_analysis_id=analysis_id,
+        supersedes=[stored.id],
+    )
+
+    with pytest.raises(ValidationFailedError, match="has no live case") as refused:
+        reporter_case_freeze(eval_host, freeze, TOYHOST_SCOPE, collected_by=CALLER.identity)
+    assert "restore it first" in (refused.value.remedy or "")
+
+    reporter_case_archive(eval_host, stored.id, TOYHOST_SCOPE, archived=False)
+    replacement = reporter_case_freeze(eval_host, freeze, TOYHOST_SCOPE, collected_by=CALLER.identity)
+
+    listing = reporter_cases_list(eval_host, reporter_template().id, TOYHOST_SCOPE, include_archived=True)
+    assert {entry.case.test_case_id: entry.live for entry in listing.cases} == {
+        stored.id: False,
+        replacement.test_case_id: True,
+    }
 
 
 _STAMPED = LabelCriterion(description="Every claim traces to the evidence.", scale="ordinal")
