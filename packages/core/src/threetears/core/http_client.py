@@ -400,6 +400,9 @@ class TracedHttpClient:
         # status-less UpstreamHttpError that cannot say whether the upstream timed out or
         # refused the connection -- two failures that call for different operator action.
         transport_error: BaseException | None = None
+        # the last failure that was NOT the upstream's (a corrupt encoding, too many redirects): retried
+        # like any failure but not charged to the breaker, and chained when it ends the last attempt
+        local_error: BaseException | None = None
         # set when a request that must not run twice failed after it left: no further attempt
         stopped = False
         # a failure that is not the upstream's, held to reach the caller as itself once a request that must not run
@@ -407,11 +410,12 @@ class TracedHttpClient:
         escaped: Exception | None = None
 
         async def _attempt_once() -> None:
-            nonlocal captured, attempts, transport_error, stopped, escaped
+            nonlocal captured, attempts, transport_error, local_error, stopped, escaped
             attempts += 1
             # each attempt starts clean, so exhaustion describes the last attempt, never an earlier answer
             captured = None
             transport_error = None
+            local_error = None
             try:
                 response = await self._client.request(
                     method,
@@ -442,6 +446,7 @@ class TracedHttpClient:
                 # Retried like any failure when sending twice is safe; a request that must not run twice may already
                 # have acted, so it stops here and the exception reaches the caller as itself, after the loop.
                 if idempotent:
+                    local_error = exc
                     raise
                 escaped = exc
                 stopped = True
@@ -487,7 +492,7 @@ class TracedHttpClient:
                 status_code=status,
                 body=body,
                 attempts=attempts,
-            ) from transport_error
+            ) from transport_error or local_error
 
         captured.extensions[ATTEMPTS_EXTENSION] = attempts
         result = captured
@@ -668,15 +673,17 @@ class TracedHttpClient:
         response: httpx.Response | None = None
         error_body = b""
         attempts = 0
+        local_error: BaseException | None = None
         transport_error: BaseException | None = None
 
         async def _open_once() -> None:
-            nonlocal stream_cm, response, error_body, attempts, transport_error
+            nonlocal stream_cm, response, error_body, attempts, transport_error, local_error
             attempts += 1
             # each attempt starts clean, so exhaustion describes the last attempt, never an earlier answer
             response = None
             error_body = b""
             transport_error = None
+            local_error = None
             cm = self._client.stream(
                 method,
                 path,
@@ -691,6 +698,10 @@ class TracedHttpClient:
                 transport_error = exc
                 if self._circuit_breaker is not None:
                     self._circuit_breaker.record_failure()
+                raise
+            except Exception as exc:
+                # not the upstream's (too many redirects): retried, not charged, chained if it is the last
+                local_error = exc
                 raise
             if resp.status_code >= 500:
                 # Read the (small) error body for the exhaustion error, then close
@@ -736,7 +747,7 @@ class TracedHttpClient:
                 status_code=status,
                 body=error_body,
                 attempts=attempts,
-            ) from transport_error
+            ) from transport_error or local_error
 
         response.extensions[ATTEMPTS_EXTENSION] = attempts
         try:

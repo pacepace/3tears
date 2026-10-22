@@ -200,6 +200,31 @@ async def test_exhaustion_chains_a_connect_error_as_the_cause() -> None:
     assert isinstance(exc_info.value.__cause__, httpx.ConnectError)
 
 
+async def test_exhaustion_on_a_local_fault_chains_it_as_the_cause() -> None:
+    """A last attempt that failed locally (a corrupt encoding, too many redirects) is still the reason.
+
+    Not the upstream's failure, so it is retried but never charged to the breaker -- and when it
+    ends the last attempt it must reach the caller as the cause, or the error has neither a status
+    nor a cause and cannot say why the request failed.
+    """
+    transport, calls = _raising_transport(httpx.DecodingError("corrupt gzip"))
+    async with _client(transport, max_attempts=2) as client:
+        with pytest.raises(UpstreamHttpError) as exc_info:
+            await client.request("GET", "/garbled")
+    assert exc_info.value.status_code is None
+    assert isinstance(exc_info.value.__cause__, httpx.DecodingError)
+    assert calls[0] == 2, "a local fault is retried like any failure"
+
+
+async def test_a_stream_exhausted_on_a_local_fault_chains_it_as_the_cause() -> None:
+    transport, _calls = _raising_transport(httpx.TooManyRedirects("redirect loop"))
+    async with _client(transport, max_attempts=2) as client:
+        with pytest.raises(UpstreamHttpError) as exc_info:
+            async with client.stream("GET", "/loop"):
+                pass
+    assert isinstance(exc_info.value.__cause__, httpx.TooManyRedirects)
+
+
 async def test_retries_remote_protocol_error_then_succeeds() -> None:
     """A server that disconnects without sending a response is a transient
     failure -- the request never got an answer, so re-issuing it is safe and
