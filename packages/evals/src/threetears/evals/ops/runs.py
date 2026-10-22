@@ -913,7 +913,8 @@ def attested_person(
             details={"person": person, "collected_by": collected_by},
             remedy=refused_remedy,
         )
-    return canonical
+    # one person, one name: checked stripped above, so returned (and stored) stripped too
+    return canonical.strip()
 
 
 def _prior(

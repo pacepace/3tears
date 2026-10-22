@@ -24,6 +24,7 @@ from threetears.search.contracts import (
     SearchFailure,
     SearchResultsMetadata,
     Spend,
+    TransportFailed,
 )
 from packages.search.tests.search_instances import ALL_INSTANCES, METADATA, SPEND
 
@@ -71,6 +72,8 @@ def test_every_failure_roundtrips_through_its_record(failure_class: str) -> None
         kwargs["retry_after_seconds"] = 12.5
     if failure_type is LocalCapExceeded:
         kwargs["scope"] = "persona:capy"
+    if failure_type is TransportFailed:
+        kwargs["status"] = 502
     original = failure_type(
         "it broke",
         spend=SPEND,
@@ -97,6 +100,9 @@ def test_every_failure_roundtrips_through_its_record(failure_class: str) -> None
     if isinstance(original, LocalCapExceeded):
         assert isinstance(rebuilt, LocalCapExceeded)
         assert rebuilt.scope == original.scope
+    if isinstance(original, TransportFailed):
+        assert isinstance(rebuilt, TransportFailed)
+        assert rebuilt.status == original.status
 
 
 def test_every_failure_carries_spend() -> None:

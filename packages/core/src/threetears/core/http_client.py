@@ -11,8 +11,9 @@ the three concerns are reused, never hand-rolled:
   so every call emits an OTel span (zero-cost when OTel is absent).
 - retry -- :func:`threetears.observe.retry_with_backoff` drives bounded
   exponential backoff over the per-attempt closure; transient failures
-  (connect errors, timeouts, a server disconnect with no response, HTTP 5xx)
-  retry, 4xx does not.
+  (a connect, read, write or close failure, a timeout, a server disconnect
+  with no response, HTTP 5xx) retry, 4xx does not. exhaustion raises
+  :class:`UpstreamHttpError`, which describes the last attempt.
 - circuit breaking -- a
   :class:`threetears.models.circuit_breaker.CircuitBreaker` is *injected*
   through the structural :class:`CircuitBreakerLike` protocol so this module
@@ -98,18 +99,22 @@ class UpstreamHttpError(RuntimeError):
 
     carries the last upstream HTTP status + response body so callers can
     pattern-match on error shape without re-issuing the request.
-    ``status_code`` is ``None`` when the failure never produced a response
-    (connect error / timeout on every attempt); in that case ``__cause__``
-    carries the last transport exception, so a caller reporting the failure
-    onward can tell a timeout from a refused connection. a 5xx exhaustion
-    produced responses and therefore chains nothing.
+    both describe the LAST attempt: ``status_code`` is ``None`` when it
+    produced no response (a connect, read or write failure, or a timeout),
+    and then ``__cause__`` carries that attempt's transport exception, so a
+    caller reporting the failure onward can tell a timeout from a refused
+    connection. a last attempt answered with a 5xx carries its status and
+    chains nothing. an earlier attempt's answer never leaks into the error.
 
-    :ivar status_code: last upstream HTTP status, or ``None`` when no
-        response was ever received
-    :ivar body: last upstream response body (bytes; empty when no response)
+    :ivar status_code: the last attempt's upstream HTTP status, or ``None``
+        when the last attempt got no response
+    :ivar body: the last attempt's response body (bytes; empty when it got
+        no response)
+    :ivar attempts: how many attempts were made, when the raiser counted
+        them
     """
 
-    def __init__(self, message: str, *, status_code: int | None, body: bytes) -> None:
+    def __init__(self, message: str, *, status_code: int | None, body: bytes, attempts: int | None = None) -> None:
         """capture status + body alongside the message.
 
         :param message: human-readable error description
@@ -119,13 +124,25 @@ class UpstreamHttpError(RuntimeError):
         :ptype status_code: int | None
         :param body: last upstream response body
         :ptype body: bytes
+        :param attempts: how many attempts were made, when counted
+        :ptype attempts: int | None
         :return: nothing
         :rtype: None
         """
         super().__init__(message)
         self.status_code = status_code
         self.body = body
+        self.attempts = attempts
 
+
+#: transport failures on the upstream's side of the wire, recorded against the breaker and chained onto
+#: exhaustion: a connect, read, write or close failure, a timeout, or a broken reply. a local fault (an
+#: unsupported scheme, a malformed request) is not the upstream's and is not among them
+_UPSTREAM_FAILURES: tuple[type[Exception], ...] = (
+    httpx.NetworkError,
+    httpx.TimeoutException,
+    httpx.RemoteProtocolError,
+)
 
 #: transport failures that mean the request never reached the upstream: safe to send again even
 #: when sending it twice would not be (``idempotent=False``)
@@ -137,8 +154,58 @@ class _Retryable(Exception):
 
     raised inside the per-attempt closure on a 5xx response so
     :func:`threetears.observe.retry_with_backoff` retries; never crosses
-    the :meth:`TracedHttpClient.request` boundary.
+    the :meth:`TracedHttpClient.request` boundary. its message is the
+    :func:`_answer_line` of the response, which is what each retry line logs.
     """
+
+
+def _answer_line(method: str, response: httpx.Response) -> str:
+    """name what the upstream answered, for a log line: ``HTTP 500 from PUT https://host/path``.
+
+    the URL loses its query string and userinfo, which can carry tokens; the body is left out
+    for size and for whatever secret it may hold. the status line is what an operator needs.
+
+    :param method: the HTTP verb sent
+    :ptype method: str
+    :param response: the response the upstream gave
+    :ptype response: httpx.Response
+    :return: the status, verb and scrubbed URL
+    :rtype: str
+    """
+    url = response.request.url.copy_with(query=None, fragment=None, userinfo=b"")
+    return f"HTTP {response.status_code} from {method.upper()} {url}"
+
+
+def _exhausted_message(
+    what: str,
+    host: str | None,
+    attempts: int,
+    status: int | None,
+    transport_error: BaseException | None,
+) -> str:
+    """the :class:`UpstreamHttpError` message: where, how many attempts, and what the last one got.
+
+    :param what: ``"request"`` or ``"stream"``
+    :ptype what: str
+    :param host: the upstream's host, or ``None`` when none is known
+    :ptype host: str | None
+    :param attempts: how many attempts were made
+    :ptype attempts: int
+    :param status: the last HTTP status, or ``None`` when no response arrived
+    :ptype status: int | None
+    :param transport_error: the last transport failure, when no response arrived
+    :ptype transport_error: BaseException | None
+    :return: the message
+    :rtype: str
+    """
+    message = (
+        f"upstream {what} to {host or 'the upstream'} failed after {attempts} attempt{'s' if attempts != 1 else ''}"
+    )
+    if status is not None:
+        message += f" (last answer: HTTP {status})"
+    elif transport_error is not None:
+        message += f" (no answer: {type(transport_error).__name__})"
+    return message
 
 
 class TracedHttpClient:
@@ -357,7 +424,9 @@ class TracedHttpClient:
             only when it never left -- a refused connection, a connect or pool
             timeout -- because a read timeout, a dropped connection or a 5xx may
             mean the upstream acted on it; any of those ends the call at once with
-            :class:`UpstreamHttpError`. ``True`` (the default) retries as above
+            :class:`UpstreamHttpError`, and any other failure (a corrupt encoding,
+            too many redirects) ends it at once as itself. ``True`` (the default)
+            retries as above
         :ptype idempotent: bool
         :return: full upstream response (caller inspects any non-2xx; not
             raised on 4xx/5xx except retry exhaustion). carries the attempt
@@ -365,9 +434,9 @@ class TracedHttpClient:
         :rtype: httpx.Response
         :raises CircuitOpenError: when the injected breaker is OPEN
         :raises UpstreamHttpError: when every attempt fails (5xx /
-            connect / timeout) up to ``max_attempts``; chains the last
-            transport exception as ``__cause__`` when no response was
-            ever received
+            connect / read / timeout) up to ``max_attempts``; it describes
+            the last attempt, chaining its transport exception as
+            ``__cause__`` when that attempt got no response
         """
         if self._circuit_breaker is not None:
             # a tripped breaker fast-fails; CircuitOpenError escapes untouched
@@ -381,12 +450,22 @@ class TracedHttpClient:
         # status-less UpstreamHttpError that cannot say whether the upstream timed out or
         # refused the connection -- two failures that call for different operator action.
         transport_error: BaseException | None = None
+        # the last failure that was NOT the upstream's (a corrupt encoding, too many redirects): retried
+        # like any failure but not charged to the breaker, and chained when it ends the last attempt
+        local_error: BaseException | None = None
         # set when a request that must not run twice failed after it left: no further attempt
         stopped = False
+        # a failure that is not the upstream's, held to reach the caller as itself once a request that must not run
+        # twice has stopped on it (the retry loop would otherwise send it again)
+        escaped: Exception | None = None
 
         async def _attempt_once() -> None:
-            nonlocal captured, attempts, transport_error, stopped
+            nonlocal captured, attempts, transport_error, local_error, stopped, escaped
             attempts += 1
+            # each attempt starts clean, so exhaustion describes the last attempt, never an earlier answer
+            captured = None
+            transport_error = None
+            local_error = None
             try:
                 response = await self._client.request(
                     method,
@@ -404,22 +483,44 @@ class TracedHttpClient:
                     # follow", so "caller said nothing" must defer to the client default.
                     follow_redirects=follow_redirects if follow_redirects is not None else httpx.USE_CLIENT_DEFAULT,
                 )
-            except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as exc:
+            except _UPSTREAM_FAILURES as exc:
                 transport_error = exc
                 if self._circuit_breaker is not None:
                     self._circuit_breaker.record_failure()
                 if not idempotent and not isinstance(exc, _NOT_SENT):
+                    log.warning(
+                        "%s attempt %d failed and is not sent again (idempotent=False): %s",
+                        _SPAN_NAME,
+                        attempts,
+                        str(exc) or type(exc).__name__,
+                    )
                     stopped = True
                     return
                 raise
+            except Exception as exc:
+                # not the upstream's failure (a corrupt encoding, too many redirects), so the breaker is not charged.
+                # Retried like any failure when sending twice is safe; a request that must not run twice may already
+                # have acted, so it stops here and the exception reaches the caller as itself, after the loop.
+                if idempotent:
+                    local_error = exc
+                    raise
+                escaped = exc
+                stopped = True
+                return
             captured = response
             if response.status_code >= 500:
                 if self._circuit_breaker is not None:
                     self._circuit_breaker.record_failure()
                 if not idempotent:
+                    log.warning(
+                        "%s attempt %d failed and is not sent again (idempotent=False): %s",
+                        _SPAN_NAME,
+                        attempts,
+                        _answer_line(method, response),
+                    )
                     stopped = True
                     return
-                raise _Retryable
+                raise _Retryable(_answer_line(method, response))
             if response.status_code < 400 and self._circuit_breaker is not None:
                 # 2xx/3xx is a genuine upstream success; a 4xx client error
                 # leaves the breaker untouched.
@@ -431,6 +532,7 @@ class TracedHttpClient:
             max_attempts=self._max_attempts,
             initial_backoff=self._initial_backoff,
             max_backoff=self._max_backoff,
+            caller_raises=True,
         )
 
         # host for the span/error: the response's when one arrived, else the path's own host
@@ -442,15 +544,19 @@ class TracedHttpClient:
             host=request_host,
         )
 
+        if escaped is not None:
+            raise escaped
         if stopped or not succeeded or captured is None:
             status = captured.status_code if captured is not None else None
             body = captured.content if captured is not None else b""
             raise UpstreamHttpError(
-                f"upstream request to {self._host or request_host or 'the upstream'} "
-                f"failed after {attempts} attempt{'s' if attempts != 1 else ''}",
+                _exhausted_message(
+                    "request", self._host or request_host, attempts, status, transport_error or local_error
+                ),
                 status_code=status,
                 body=body,
-            ) from transport_error
+                attempts=attempts,
+            ) from transport_error or local_error
 
         captured.extensions[ATTEMPTS_EXTENSION] = attempts
         result = captured
@@ -621,7 +727,8 @@ class TracedHttpClient:
         :rtype: AsyncIterator[httpx.Response]
         :raises CircuitOpenError: when the injected breaker is OPEN
         :raises UpstreamHttpError: when establishing the response fails every
-            attempt (5xx / connect / timeout) up to ``max_attempts``
+            attempt (5xx / connect / read / timeout) up to ``max_attempts``; it
+            describes the last attempt
         """
         if self._circuit_breaker is not None:
             self._circuit_breaker.check()
@@ -630,11 +737,17 @@ class TracedHttpClient:
         response: httpx.Response | None = None
         error_body = b""
         attempts = 0
+        local_error: BaseException | None = None
         transport_error: BaseException | None = None
 
         async def _open_once() -> None:
-            nonlocal stream_cm, response, error_body, attempts, transport_error
+            nonlocal stream_cm, response, error_body, attempts, transport_error, local_error
             attempts += 1
+            # each attempt starts clean, so exhaustion describes the last attempt, never an earlier answer
+            response = None
+            error_body = b""
+            transport_error = None
+            local_error = None
             cm = self._client.stream(
                 method,
                 path,
@@ -645,20 +758,32 @@ class TracedHttpClient:
             )
             try:
                 resp = await cm.__aenter__()
-            except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as exc:
+            except _UPSTREAM_FAILURES as exc:
                 transport_error = exc
                 if self._circuit_breaker is not None:
                     self._circuit_breaker.record_failure()
                 raise
+            except Exception as exc:
+                # not the upstream's (too many redirects): retried, not charged, chained if it is the last
+                local_error = exc
+                raise
             if resp.status_code >= 500:
                 # Read the (small) error body for the exhaustion error, then close
-                # this failed stream before retrying so nothing is left open.
-                error_body = await resp.aread()
+                # this failed stream before retrying so nothing is left open --
+                # whether or not the read itself fails.
+                try:
+                    error_body = await resp.aread()
+                except _UPSTREAM_FAILURES as exc:
+                    transport_error = exc
+                    if self._circuit_breaker is not None:
+                        self._circuit_breaker.record_failure()
+                    raise
+                finally:
+                    await cm.__aexit__(None, None, None)
                 response = resp
-                await cm.__aexit__(None, None, None)
                 if self._circuit_breaker is not None:
                     self._circuit_breaker.record_failure()
-                raise _Retryable
+                raise _Retryable(_answer_line(method, resp))
             if resp.status_code < 400 and self._circuit_breaker is not None:
                 self._circuit_breaker.record_success()
             stream_cm = cm
@@ -670,6 +795,7 @@ class TracedHttpClient:
             max_attempts=self._max_attempts,
             initial_backoff=self._initial_backoff,
             max_backoff=self._max_backoff,
+            caller_raises=True,
         )
         request_host = response.request.url.host if response is not None else (httpx.URL(path).host or None)
         self._record_span_attributes(
@@ -681,11 +807,13 @@ class TracedHttpClient:
         if not succeeded or stream_cm is None or response is None:
             status = response.status_code if response is not None else None
             raise UpstreamHttpError(
-                f"upstream stream to {self._host or request_host or 'the upstream'} "
-                f"failed after {self._max_attempts} attempts",
+                _exhausted_message(
+                    "stream", self._host or request_host, attempts, status, transport_error or local_error
+                ),
                 status_code=status,
                 body=error_body,
-            ) from transport_error
+                attempts=attempts,
+            ) from transport_error or local_error
 
         response.extensions[ATTEMPTS_EXTENSION] = attempts
         try:

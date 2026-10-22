@@ -191,9 +191,65 @@ class TimedOut(SearchFailure):
 
 class TransportFailed(SearchFailure):
     """The request could not complete at the transport: connect failure,
-    TLS failure, 5xx-after-retries. Give up rather than retry (SR-J1)."""
+    TLS failure, 5xx-after-retries. Give up rather than retry (SR-J1).
+
+    Carries the HTTP status when the provider answered with one no other
+    class claims, so a caller tells a served 5xx (the provider's fault,
+    transient) from a 3xx or 4xx (usually a misconfigured base URL) without
+    parsing the message. ``None`` when no status reached the adapter: a
+    connect or TLS failure, a final attempt that never got an answer, or an
+    exception the adapter could not map.
+    """
 
     failure_class: ClassVar[str] = "transport-failed"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        spend: Spend,
+        provider_instance: str | None = None,
+        remediation: str | None = None,
+        egress: str | None = None,
+        occurred_at: datetime | None = None,
+        status: int | None = None,
+    ) -> None:
+        """Record a transport failure.
+
+        :param message: what happened
+        :ptype message: str
+        :param spend: what the call consumed (SR-E3)
+        :ptype spend: Spend
+        :param provider_instance: which provider instance failed, when one
+            was involved
+        :ptype provider_instance: str | None
+        :param remediation: how to fix it, where known
+        :ptype remediation: str | None
+        :param egress: which egress the failing call left by, when known
+        :ptype egress: str | None
+        :param occurred_at: when the failure happened (timezone-aware)
+        :ptype occurred_at: datetime | None
+        :param status: the HTTP status the provider answered with, when it
+            reached the adapter; ``None`` when none did
+        :ptype status: int | None
+        """
+        super().__init__(
+            message,
+            spend=spend,
+            provider_instance=provider_instance,
+            remediation=remediation,
+            egress=egress,
+            occurred_at=occurred_at,
+        )
+        self.status = status
+
+    def to_record(self) -> FailureRecord:
+        """Project this failure, keeping the status the provider answered with.
+
+        :return: the JSON-safe wire record
+        :rtype: FailureRecord
+        """
+        return super().to_record().model_copy(update={"status": self.status})
 
 
 class MalformedResponse(SearchFailure):
@@ -316,6 +372,9 @@ class FailureRecord(ContractModel):
     retry_after_seconds: float | None = None
     #: refusing budget scope; only meaningful for ``local-cap-exceeded``.
     scope: str | None = None
+    #: the HTTP status the provider answered with; only meaningful for
+    #: ``transport-failed``, and None there when no status reached the adapter.
+    status: int | None = None
 
     def to_failure(self) -> SearchFailure:
         """Rebuild the typed exception this record projects.
@@ -350,6 +409,16 @@ class FailureRecord(ContractModel):
                 egress=self.egress,
                 occurred_at=self.occurred_at,
                 scope=self.scope,
+            )
+        if failure_type is TransportFailed:
+            return TransportFailed(
+                self.message,
+                spend=self.spend,
+                provider_instance=self.provider_instance,
+                remediation=self.remediation,
+                egress=self.egress,
+                occurred_at=self.occurred_at,
+                status=self.status,
             )
         return failure_type(
             self.message,

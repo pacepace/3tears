@@ -63,6 +63,7 @@ def _make_tool(
     name: str = "probe",
     permission: str = "t.probe.read",
     handler: Any | None = None,
+    input_schema: dict[str, Any] | None = None,
 ) -> McpTool:
     """build a sample McpTool descriptor."""
     if handler is None:
@@ -74,13 +75,13 @@ def _make_tool(
     return McpTool(
         name=name,
         description="probe tool",
-        input_schema={"type": "object", "properties": {}},
+        input_schema=input_schema if input_schema is not None else {"type": "object", "properties": {}},
         required_permission=permission,
         handler=handler,
     )
 
 
-async def _call_tool(server: McpServer, tool_name: str, arguments: dict[str, Any]) -> mcp_types.CallToolResult:
+async def _call_tool(server: McpServer, tool_name: str, arguments: dict[str, Any] | None) -> mcp_types.CallToolResult:
     """call ``tool_name`` on ``server`` through a real MCP client session.
 
     starts the server, serves its Streamable-HTTP app in-process, and
@@ -100,13 +101,21 @@ async def _call_tool(server: McpServer, tool_name: str, arguments: dict[str, Any
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://mcp.test")
     try:
         async with app.router.lifespan_context(app), client:
-            async with streamable_http_client("http://mcp.test/mcp", http_client=client) as (read, write, _sid):
+            async with streamable_http_client("http://mcp.test/mcp", http_client=client) as streams:
+                read, write = streams[0], streams[1]  # 1.x yields a third value (the session id), 2.x two
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     result = await session.call_tool(tool_name, arguments)
     finally:
         await server.stop()
     return result
+
+
+def _leaves(error: BaseException) -> list[BaseException]:
+    """the exceptions inside ``error``, unwrapping the task groups the in-process client raises through."""
+    if isinstance(error, BaseExceptionGroup):
+        return [leaf for inner in error.exceptions for leaf in _leaves(inner)]
+    return [error]
 
 
 def _payload_from_result(result: mcp_types.CallToolResult) -> dict[str, Any]:
@@ -147,10 +156,10 @@ class TestDispatchHappyPath:
         result = await _call_tool(server, "probe", {"foo": "bar"})
         # the server returns list[TextContent] and the SDK's call_tool decorator
         # wraps it in CallToolResult(isError=False, ...) at the protocol layer.
-        assert result.isError is False
+        assert result.model_dump(by_alias=True)["isError"] is False
         assert len(result.content) == 1
         assert "called with {'foo': 'bar'}" in _content_text(result)
-        assert result.structuredContent is None
+        assert result.model_dump(by_alias=True)["structuredContent"] is None
 
     @pytest.mark.asyncio
     async def test_dict_handler_result_rides_both_faces(self) -> None:
@@ -174,9 +183,9 @@ class TestDispatchHappyPath:
             registry=_registry_with(tool),
         )
         result = await _call_tool(server, "probe", {})
-        assert result.isError is False
+        assert result.model_dump(by_alias=True)["isError"] is False
         assert json.loads(_content_text(result)) == {"status": "ok", "count": 3}
-        assert result.structuredContent == {"status": "ok", "count": 3}
+        assert result.model_dump(by_alias=True)["structuredContent"] == {"status": "ok", "count": 3}
 
     @pytest.mark.asyncio
     async def test_a_non_dict_structured_result_is_wrapped_under_a_key(self) -> None:
@@ -199,8 +208,8 @@ class TestDispatchHappyPath:
             registry=_registry_with(tool),
         )
         result = await _call_tool(server, "probe", {})
-        assert result.isError is False
-        assert result.structuredContent == {"result": [1, 2, 3]}
+        assert result.model_dump(by_alias=True)["isError"] is False
+        assert result.model_dump(by_alias=True)["structuredContent"] == {"result": [1, 2, 3]}
 
     @pytest.mark.asyncio
     async def test_a_string_handler_result_still_returns_a_content_list(self) -> None:
@@ -218,10 +227,10 @@ class TestDispatchHappyPath:
             registry=_registry_with(tool),
         )
         result = await _call_tool(server, "probe", {})
-        assert result.isError is False
+        assert result.model_dump(by_alias=True)["isError"] is False
         assert len(result.content) == 1
         assert _content_text(result) == "plain prose"
-        assert result.structuredContent is None
+        assert result.model_dump(by_alias=True)["structuredContent"] is None
 
     @pytest.mark.asyncio
     async def test_handler_returning_text_content_list_passes_through(self) -> None:
@@ -240,9 +249,9 @@ class TestDispatchHappyPath:
             registry=_registry_with(tool),
         )
         result = await _call_tool(server, "probe", {})
-        assert result.isError is False
+        assert result.model_dump(by_alias=True)["isError"] is False
         assert result.content == [text_content]
-        assert result.structuredContent is None
+        assert result.model_dump(by_alias=True)["structuredContent"] is None
 
     @pytest.mark.asyncio
     async def test_handler_returning_call_tool_result_passes_through(self) -> None:
@@ -265,9 +274,9 @@ class TestDispatchHappyPath:
         )
         result = await _call_tool(server, "probe", {})
         # forwarded unchanged -- not re-wrapped into an isError=False text body
-        assert result.isError is True
+        assert result.model_dump(by_alias=True)["isError"] is True
         assert result.content == error_result.content
-        assert result.structuredContent is None
+        assert result.model_dump(by_alias=True)["structuredContent"] is None
 
 
 # ---------------------------------------------------------------------
@@ -284,7 +293,7 @@ class TestDispatchErrorPaths:
     ``isError`` inside the text body would surface to clients as
     ``isError=False`` at the protocol layer -- the failure signal
     would be invisible to clients that check
-    ``CallToolResult.isError``.
+    ``CallToolResult.model_dump(by_alias=True)["isError"]``.
     """
 
     @pytest.mark.asyncio
@@ -298,7 +307,7 @@ class TestDispatchErrorPaths:
             registry=ToolRegistry(),
         )
         result = await _call_tool(server, "nonesuch", {})
-        assert result.isError is True
+        assert result.model_dump(by_alias=True)["isError"] is True
         envelope = _payload_from_result(result)
         assert envelope["error"]["code"] == "UNKNOWN_TOOL"
         assert envelope["tool_name"] == "nonesuch"
@@ -315,7 +324,7 @@ class TestDispatchErrorPaths:
             registry=_registry_with(_make_tool()),
         )
         result = await _call_tool(server, "probe", {})
-        assert result.isError is True
+        assert result.model_dump(by_alias=True)["isError"] is True
         assert _payload_from_result(result)["error"]["code"] == "IDENTITY_UNAVAILABLE"
 
     @pytest.mark.asyncio
@@ -335,15 +344,16 @@ class TestDispatchErrorPaths:
             registry=_registry_with(_make_tool()),
         )
         result = await _call_tool(server, "probe", {})
-        assert result.isError is True
+        assert result.model_dump(by_alias=True)["isError"] is True
         assert _payload_from_result(result)["error"]["code"] == "IDENTITY_UNAVAILABLE"
 
     @pytest.mark.asyncio
     async def test_a_bug_in_the_identity_provider_is_not_read_as_identity_unavailable(self) -> None:
         """only the Protocol's RuntimeError means "no identity"; any other raise is a bug and propagates.
 
-        the dispatch does not answer it, so it reaches the MCP SDK's own catch-all, which returns the
-        bare exception text rather than this server's ``IDENTITY_UNAVAILABLE`` envelope.
+        the dispatch does not answer it, so it reaches the MCP SDK's own catch-all, which reports the
+        bare exception text rather than this server's ``IDENTITY_UNAVAILABLE`` envelope: mcp 1.x as an
+        ``isError`` result, 2.x as a JSON-RPC error the client raises.
         """
         provider = MagicMock()
         provider.identify = AsyncMock(side_effect=AttributeError("a bug in the provider"))
@@ -354,9 +364,14 @@ class TestDispatchErrorPaths:
             authorizer=_authorizer(allows=True),
             registry=_registry_with(_make_tool(handler=handler)),
         )
-        result = await _call_tool(server, "probe", {})
-        assert result.isError is True
-        assert _content_text(result) == "a bug in the provider"
+        try:
+            result = await _call_tool(server, "probe", {})
+        except BaseException as raised:  # noqa: BLE001 -- mcp 2.x: the client raises the server's JSON-RPC error
+            reported = [str(leaf) for leaf in _leaves(raised) if type(leaf).__name__ in {"MCPError", "McpError"}]
+            assert reported == ["a bug in the provider"], raised
+        else:  # mcp 1.x: the SDK's call_tool decorator answered an isError result
+            assert result.model_dump(by_alias=True)["isError"] is True
+            assert _content_text(result) == "a bug in the provider"
         handler.assert_not_called()
 
     @pytest.mark.asyncio
@@ -374,7 +389,7 @@ class TestDispatchErrorPaths:
             registry=_registry_with(_make_tool()),
         )
         result = await _call_tool(server, "probe", {})
-        assert result.isError is True
+        assert result.model_dump(by_alias=True)["isError"] is True
         assert _payload_from_result(result)["error"]["code"] == "AUTHZ_ERROR"
 
     @pytest.mark.asyncio
@@ -399,7 +414,7 @@ class TestDispatchErrorPaths:
             registry=_registry_with(_make_tool()),
         )
         result = await _call_tool(server, "probe", {})
-        assert result.isError is True
+        assert result.model_dump(by_alias=True)["isError"] is True
         assert _payload_from_result(result)["error"]["code"] == "AUTHZ_ERROR"
 
     @pytest.mark.asyncio
@@ -444,7 +459,7 @@ class TestDispatchErrorPaths:
             registry=_registry_with(_make_tool()),
         )
         result = await _call_tool(server, "probe", {})
-        assert result.isError is True
+        assert result.model_dump(by_alias=True)["isError"] is True
         envelope = _payload_from_result(result)
         assert envelope["error"]["code"] == "PERMISSION_DENIED"
         assert "t.probe.read" in envelope["error"]["message"]
@@ -465,7 +480,7 @@ class TestDispatchErrorPaths:
             registry=_registry_with(tool),
         )
         result = await _call_tool(server, "probe", {})
-        assert result.isError is True
+        assert result.model_dump(by_alias=True)["isError"] is True
         envelope = _payload_from_result(result)
         assert envelope["error"]["code"] == "HANDLER_ERROR"
         assert "ValueError" in envelope["error"]["message"]
@@ -475,6 +490,51 @@ class TestDispatchErrorPaths:
 # ---------------------------------------------------------------------
 # server lifecycle
 # ---------------------------------------------------------------------
+
+
+class TestTheSdkDecoratorsDutiesHoldOnEitherSdk:
+    """what mcp 1.x's ``call_tool`` decorator did for the server, McpServer now does on 2.x too.
+
+    2.x's low-level server dropped the decorator: it neither checks arguments against the tool's
+    ``inputSchema`` nor fills in a missing ``arguments``. 3tears supports both majors until the owner drops 1.x,
+    and each of these holds on both (``scripts/test-mcp-v1.sh`` runs this file on 1.x).
+    """
+
+    @pytest.mark.asyncio
+    async def test_arguments_that_break_the_input_schema_are_refused_before_the_handler(self) -> None:
+        handler = AsyncMock(return_value="must not run")
+        server = McpServer(
+            name="test",
+            identity_provider=_identity_provider(identity=Identity(principal_type="user", principal_id=uuid4())),
+            authorizer=_authorizer(allows=True),
+            registry=_registry_with(
+                _make_tool(
+                    handler=handler,
+                    input_schema={
+                        "type": "object",
+                        "properties": {"count": {"type": "integer"}},
+                        "required": ["count"],
+                    },
+                )
+            ),
+        )
+        result = await _call_tool(server, "probe", {"count": "three"})
+        assert result.model_dump(by_alias=True)["isError"] is True
+        assert _content_text(result).startswith("Input validation error")
+        handler.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_call_that_sends_no_arguments_reaches_the_handler_with_none(self) -> None:
+        handler = AsyncMock(return_value="ran")
+        server = McpServer(
+            name="test",
+            identity_provider=_identity_provider(identity=Identity(principal_type="user", principal_id=uuid4())),
+            authorizer=_authorizer(allows=True),
+            registry=_registry_with(_make_tool(handler=handler)),
+        )
+        result = await _call_tool(server, "probe", None)
+        assert result.model_dump(by_alias=True)["isError"] is False
+        handler.assert_awaited_once_with()
 
 
 class TestServerLifecycle:

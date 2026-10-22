@@ -12,6 +12,8 @@ lands on a span attribute).
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections.abc import AsyncIterator
 from unittest.mock import patch
 
 import httpx
@@ -199,6 +201,31 @@ async def test_exhaustion_chains_a_connect_error_as_the_cause() -> None:
     assert isinstance(exc_info.value.__cause__, httpx.ConnectError)
 
 
+async def test_exhaustion_on_a_local_fault_chains_it_as_the_cause() -> None:
+    """A last attempt that failed locally (a corrupt encoding, too many redirects) is still the reason.
+
+    Not the upstream's failure, so it is retried but never charged to the breaker -- and when it
+    ends the last attempt it must reach the caller as the cause, or the error has neither a status
+    nor a cause and cannot say why the request failed.
+    """
+    transport, calls = _raising_transport(httpx.DecodingError("corrupt gzip"))
+    async with _client(transport, max_attempts=2) as client:
+        with pytest.raises(UpstreamHttpError) as exc_info:
+            await client.request("GET", "/garbled")
+    assert exc_info.value.status_code is None
+    assert isinstance(exc_info.value.__cause__, httpx.DecodingError)
+    assert calls[0] == 2, "a local fault is retried like any failure"
+
+
+async def test_a_stream_exhausted_on_a_local_fault_chains_it_as_the_cause() -> None:
+    transport, _calls = _raising_transport(httpx.TooManyRedirects("redirect loop"))
+    async with _client(transport, max_attempts=2) as client:
+        with pytest.raises(UpstreamHttpError) as exc_info:
+            async with client.stream("GET", "/loop"):
+                pass
+    assert isinstance(exc_info.value.__cause__, httpx.TooManyRedirects)
+
+
 async def test_retries_remote_protocol_error_then_succeeds() -> None:
     """A server that disconnects without sending a response is a transient
     failure -- the request never got an answer, so re-issuing it is safe and
@@ -233,6 +260,124 @@ async def test_5xx_exhaustion_has_no_transport_cause() -> None:
         with pytest.raises(UpstreamHttpError) as exc_info:
             await client.request("GET", "/down")
     assert exc_info.value.__cause__ is None
+
+
+def _script(*steps: int | Exception) -> tuple[httpx.MockTransport, list[int]]:
+    """a mock transport answering each attempt in turn: a status, or an exception it raises."""
+    calls = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        step = steps[min(calls[0], len(steps) - 1)]
+        calls[0] += 1
+        if isinstance(step, Exception):
+            raise step
+        return httpx.Response(step, content=f"body-{step}".encode())
+
+    return httpx.MockTransport(handler), calls
+
+
+class TestExhaustionDescribesTheLastAttempt:
+    """An earlier attempt's answer never leaks into the error: a caller reads the status as "the upstream answered
+    the last attempt" and the cause as "the last attempt got no answer", and both must be true when they say so."""
+
+    async def test_a_connect_failure_then_5xx_carries_the_last_status_and_no_cause(self) -> None:
+        transport, calls = _script(httpx.ConnectError("refused"), 503, 503)
+        async with _client(transport, max_attempts=3) as client:
+            with pytest.raises(UpstreamHttpError) as exc_info:
+                await client.request("GET", "/flapping")
+        assert calls[0] == 3
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.body == b"body-503"
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.attempts == 3
+
+    async def test_a_5xx_then_read_failures_carries_no_stale_status(self) -> None:
+        """A connection reset mid-read is a transport failure like a refused connect: recorded and chained."""
+        failure = httpx.ReadError("connection reset")
+        transport, calls = _script(503, failure, failure)
+        async with _client(transport, max_attempts=3) as client:
+            with pytest.raises(UpstreamHttpError) as exc_info:
+                await client.request("GET", "/resetting")
+        assert calls[0] == 3
+        assert exc_info.value.status_code is None
+        assert exc_info.value.body == b""
+        assert exc_info.value.__cause__ is failure
+
+    async def test_a_read_failure_counts_against_the_breaker(self) -> None:
+        breaker = CircuitBreaker(provider_name="test-upstream", failure_threshold=2)
+        transport, _calls = _script(httpx.ReadError("connection reset"))
+        async with _client(transport, max_attempts=2, circuit_breaker=breaker) as client:
+            with pytest.raises(UpstreamHttpError):
+                await client.request("GET", "/resetting")
+        with pytest.raises(CircuitOpenError):
+            breaker.check()
+
+    async def test_a_non_idempotent_request_whose_read_failed_is_not_sent_again(self) -> None:
+        """It left, so the upstream may have acted on it: one attempt only."""
+        failure = httpx.ReadError("connection reset")
+        transport, calls = _script(failure, 200)
+        async with _client(transport, max_attempts=3) as client:
+            with pytest.raises(UpstreamHttpError) as exc_info:
+                await client.request("POST", "/jobs", idempotent=False)
+        assert calls[0] == 1
+        assert exc_info.value.__cause__ is failure
+        assert exc_info.value.attempts == 1
+
+    async def test_a_non_idempotent_request_is_not_sent_again_after_a_local_failure(self) -> None:
+        """A corrupt encoding is not the upstream's failure, but the request left: it ends the call as itself."""
+        failure = httpx.DecodingError("corrupt gzip")
+        transport, calls = _script(failure, 200)
+        async with _client(transport, max_attempts=3) as client:
+            with pytest.raises(httpx.DecodingError) as exc_info:
+                await client.request("POST", "/jobs", idempotent=False)
+        assert calls[0] == 1
+        assert exc_info.value is failure
+
+    async def test_a_local_failure_does_not_count_against_the_breaker(self) -> None:
+        """non-vacuous beside the read-failure pin: only the upstream's failures charge the breaker."""
+        breaker = CircuitBreaker(provider_name="test-upstream", failure_threshold=1)
+        transport, calls = _script(httpx.DecodingError("corrupt gzip"))
+        async with _client(transport, max_attempts=2, circuit_breaker=breaker) as client:
+            with pytest.raises(UpstreamHttpError):
+                await client.request("GET", "/corrupt")
+        assert calls[0] == 2, "sending twice is safe here, so it was retried"
+        breaker.check()
+
+    async def test_a_stream_whose_error_body_read_fails_is_closed_and_says_why(self) -> None:
+        """The 5xx's body is read for the error; a read that fails still closes the stream, and is the cause."""
+        failure = httpx.ReadError("connection reset")
+        closed: list[bool] = []
+
+        class _BrokenBody(httpx.AsyncByteStream):
+            async def __aiter__(self) -> AsyncIterator[bytes]:
+                raise failure
+                yield b""  # pragma: no cover -- makes this an async generator
+
+            async def aclose(self) -> None:
+                closed.append(True)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, stream=_BrokenBody())
+
+        with pytest.raises(UpstreamHttpError) as exc_info:
+            async with _client(httpx.MockTransport(handler), max_attempts=2) as client:
+                async with client.stream("GET", "/down"):
+                    pass  # pragma: no cover -- establishment never succeeds
+        assert len(closed) == 2, "each failed attempt's stream is closed"
+        assert exc_info.value.status_code is None
+        assert exc_info.value.__cause__ is failure
+
+    async def test_a_stream_whose_last_attempt_got_no_answer_carries_no_stale_status(self) -> None:
+        failure = httpx.ConnectError("refused")
+        transport, calls = _script(503, failure)
+        with pytest.raises(UpstreamHttpError) as exc_info:
+            async with _client(transport, max_attempts=2) as client:
+                async with client.stream("GET", "/down"):
+                    pass  # pragma: no cover -- establishment never succeeds
+        assert calls[0] == 2
+        assert exc_info.value.status_code is None
+        assert exc_info.value.__cause__ is failure
+        assert exc_info.value.attempts == 2
 
 
 async def test_circuit_open_fast_fails_without_request() -> None:
@@ -848,3 +993,116 @@ class TestARequestThatMustNotRunTwice:
         async with _client(transport) as client:
             response = await client.post("/jobs", idempotent=False)
         assert response.status_code == 409 and calls[0] == 1
+
+
+_RETRY_LOGGER = "threetears.observe.resilience"
+_CLIENT_LOGGER = "threetears.core.http_client"
+
+
+def _always(status: int) -> httpx.MockTransport:
+    """a transport answering ``status`` with a JSON body on every call.
+
+    :param status: the HTTP status to answer
+    :ptype status: int
+    :return: the transport
+    :rtype: httpx.MockTransport
+    """
+    return httpx.MockTransport(lambda _request: httpx.Response(status, json={"error": "boom"}))
+
+
+def _records(caplog: pytest.LogCaptureFixture, logger: str) -> list[logging.LogRecord]:
+    """the records ``logger`` wrote, in order.
+
+    :param caplog: pytest's log capture
+    :ptype caplog: pytest.LogCaptureFixture
+    :param logger: the logger's name
+    :ptype logger: str
+    :return: its records
+    :rtype: list[logging.LogRecord]
+    """
+    return [record for record in caplog.records if record.name == logger]
+
+
+class TestA5xxIsNamedInEveryLineAndInTheError:
+    """an upstream answering 5xx: each retry line, the exhaustion line and the error say which status."""
+
+    async def test_each_retry_line_and_the_error_carry_the_status(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.INFO)
+        async with _client(_always(500), max_attempts=3) as client:
+            with pytest.raises(UpstreamHttpError) as exc_info:
+                await client.request("PUT", "/thing", params={"token": "s3cret"})
+        lines = _records(caplog, _RETRY_LOGGER)
+        retries = [record for record in lines if "retrying" in record.getMessage()]
+        assert len(retries) == 2
+        for record in retries:
+            assert "HTTP 500 from PUT https://api.example.test/thing" in record.getMessage()
+            assert "s3cret" not in record.getMessage()
+        assert "500" in str(exc_info.value)
+        assert "failed after 3 attempts (last answer: HTTP 500)" in str(exc_info.value)
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.body == b'{"error":"boom"}'
+
+    async def test_the_exhaustion_is_a_warning_without_a_traceback(self, caplog: pytest.LogCaptureFixture) -> None:
+        """the caller receives the error and decides how bad it is; a private signal's traceback says nothing."""
+        caplog.set_level(logging.INFO)
+        async with _client(_always(503), max_attempts=2) as client:
+            with pytest.raises(UpstreamHttpError):
+                await client.request("GET", "/down")
+        exhausted = [record for record in _records(caplog, _RETRY_LOGGER) if "failed after" in record.getMessage()]
+        assert len(exhausted) == 1
+        assert exhausted[0].levelno == logging.WARNING
+        assert not exhausted[0].exc_info
+        assert "HTTP 503 from GET https://api.example.test/down" in exhausted[0].getMessage()
+
+    async def test_a_transport_exhaustion_names_what_failed(self) -> None:
+        transport, _calls = _raising_transport(httpx.ConnectError("refused"))
+        async with _client(transport, max_attempts=2) as client:
+            with pytest.raises(UpstreamHttpError) as exc_info:
+                await client.request("GET", "/dead")
+        assert "failed after 2 attempts (no answer: ConnectError)" in str(exc_info.value)
+
+    async def test_a_request_that_must_not_run_twice_logs_the_status_it_stopped_on(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.INFO)
+        async with _client(_always(500), max_attempts=3) as client:
+            with pytest.raises(UpstreamHttpError) as exc_info:
+                await client.post("/jobs?key=s3cret", idempotent=False)
+        stopped = [record for record in _records(caplog, _CLIENT_LOGGER) if record.levelno == logging.WARNING]
+        assert len(stopped) == 1
+        assert "HTTP 500 from POST https://api.example.test/jobs" in stopped[0].getMessage()
+        assert "s3cret" not in stopped[0].getMessage()
+        assert "failed after 1 attempt (last answer: HTTP 500)" in str(exc_info.value)
+
+    async def test_a_request_that_must_not_run_twice_logs_the_transport_failure(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.INFO)
+        transport, _calls = _raising_transport(httpx.ReadTimeout("read timed out"))
+        async with _client(transport, max_attempts=3) as client:
+            with pytest.raises(UpstreamHttpError) as exc_info:
+                await client.post("/jobs", idempotent=False)
+        stopped = [record for record in _records(caplog, _CLIENT_LOGGER) if record.levelno == logging.WARNING]
+        assert len(stopped) == 1
+        assert "read timed out" in stopped[0].getMessage()
+        assert "(no answer: ReadTimeout)" in str(exc_info.value)
+
+    async def test_a_stream_names_the_status_in_each_line_and_the_error(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.INFO)
+        with pytest.raises(UpstreamHttpError) as exc_info:
+            async with _client(_always(502), max_attempts=3) as client:
+                async with client.stream("GET", "/big.zip", params={"sig": "s3cret"}):
+                    pass  # pragma: no cover -- establishment never succeeds
+        lines = _records(caplog, _RETRY_LOGGER)
+        retries = [record for record in lines if "retrying" in record.getMessage()]
+        assert len(retries) == 2
+        for record in retries:
+            assert "HTTP 502 from GET https://api.example.test/big.zip" in record.getMessage()
+            assert "s3cret" not in record.getMessage()
+        exhausted = [record for record in lines if "failed after" in record.getMessage()]
+        assert len(exhausted) == 1
+        assert exhausted[0].levelno == logging.WARNING
+        assert not exhausted[0].exc_info
+        assert "upstream stream to api.example.test failed after 3 attempts (last answer: HTTP 502)" in str(
+            exc_info.value
+        )

@@ -78,12 +78,12 @@ packages/models/src/threetears/models/_claude_sdk_internals.py:send_control_requ
 packages/models/src/threetears/models/_claude_sdk_internals.py:send_control_request#0:_send_control_request
 # rationale: Claude Agent SDK routes a CLI's tools/call through Query.sdk_mcp_servers, and Query is reachable only via ClaudeSDKClient._query; swapping the per-checkout tool server has no public API (reconnect_mcp_server refuses SDK servers), and test_claude_sdk_internals checks the member against the installed SDK
 packages/models/src/threetears/models/_claude_sdk_internals.py:install_tool_server#0:_query
-# rationale: Claude Agent SDK routes a CLI's tools/call through Query.sdk_mcp_servers, and Query is reachable only via ClaudeSDKClient._query; swapping the per-checkout tool server has no public API (reconnect_mcp_server refuses SDK servers), and test_claude_sdk_internals checks the member against the installed SDK
-packages/models/src/threetears/models/_claude_sdk_internals.py:remove_tool_server#0:_query
 # rationale: Claude Agent SDK 0.2.163 routes a CLI's tools/call through Query._sdk_mcp_bridges, one SdkMcpBridge per in-process server built when the client connects; a server swapped in per checkout needs its own bridge (and the replaced one closed), and there is no public API for either; test_claude_sdk_internals checks the member against the installed SDK
 packages/models/src/threetears/models/_claude_sdk_internals.py:install_tool_server#0:_sdk_mcp_bridges
 # rationale: Claude Agent SDK 0.2.163 routes a CLI's tools/call through Query._sdk_mcp_bridges, one SdkMcpBridge per in-process server built when the client connects; a server swapped in per checkout needs its own bridge (and the replaced one closed), and there is no public API for either; test_claude_sdk_internals checks the member against the installed SDK
 packages/models/src/threetears/models/_claude_sdk_internals.py:_close_bridge#0:_sdk_mcp_bridges
+# rationale: Claude Agent SDK routes a CLI's tools/call through Query.sdk_mcp_servers, and Query is reachable only via ClaudeSDKClient._query; swapping the per-checkout tool server has no public API (reconnect_mcp_server refuses SDK servers), and test_claude_sdk_internals checks the member against the installed SDK
+packages/models/src/threetears/models/_claude_sdk_internals.py:remove_tool_server#0:_query
 # rationale: Claude Agent SDK routes a CLI's tools/call through Query.sdk_mcp_servers, and Query is reachable only via ClaudeSDKClient._query; removing the per-checkout tool server has no public API, and test_claude_sdk_internals checks the member against the installed SDK
 packages/models/src/threetears/models/_claude_sdk_internals.py:remove_tool_server#1:_query
 # rationale: Claude Agent SDK exposes the CLI subprocess nowhere; ClaudeSDKClient._transport._process.pid is the only way to get the pid the CLI pool kills on dispose (it falls back to a /proc marker scan when this answers None), and test_claude_sdk_internals checks both members against the installed SDK
@@ -91,6 +91,13 @@ packages/models/src/threetears/models/_claude_sdk_internals.py:cli_process_pid#0
 # rationale: Claude Agent SDK exposes the CLI subprocess nowhere; ClaudeSDKClient._transport._process.pid is the only way to get the pid the CLI pool kills on dispose (it falls back to a /proc marker scan when this answers None), and test_claude_sdk_internals checks both members against the installed SDK
 packages/models/src/threetears/models/_claude_sdk_internals.py:cli_process_pid#0:_transport
 
+# rationale: mcp 2.x (verified 2.3.0) keeps Server request handlers in the private _request_handlers table behind public get/add_request_handler, with no public way to copy it; copy.copy(server) shares it, so the CLI pool's per-borrower copy must get its own table before add_request_handler rebinds tools/call, or the rebinding lands on the original every borrower shares. this module is its one owner; the pool's context-binding tests run it against the installed SDK.
+packages/models/src/threetears/models/_mcp_sdk_internals.py:give_own_request_handlers#0:_request_handlers
+# rationale: the write half of the same copy (see #0): the copy's own table replaces the one copy.copy shared with the original, so add_request_handler on the copy cannot rebind the original's tools/call. mcp 2.x offers no public setter.
+packages/models/src/threetears/models/_mcp_sdk_internals.py:give_own_request_handlers#1:_request_handlers
+
+# rationale: nats-py Client._nuid: nats-py names every inbox, request token and ephemeral consumer from a sequential NUID one observed name predicts, and offers no public way to supply the generator; the CSPRNG one is installed before connect
+packages/nats/src/threetears/nats/_nats_py_internals.py:install_csprng_nuid#0:_nuid
 # rationale: nats-py Client._transport: the round trip writes the pending buffer and its PING to the socket in one synchronous step; nats-py's public flush writes the PING ahead of the buffer, so its PONG proves nothing about a SUB/UNSUB sent just before
 packages/nats/src/threetears/nats/_nats_py_internals.py:write_pending_then_ping#0:_transport
 # rationale: nats-py Client._flush_queue: wakes nats-py's own flusher after the synchronous write, for a transport that sends only when drained (websocket); there is no public wake
@@ -115,8 +122,6 @@ packages/nats/src/threetears/nats/_nats_py_internals.py:take_queued_messages#0:_
 packages/nats/src/threetears/nats/_nats_py_internals.py:take_queued_messages#0:_pending_size
 # rationale: nats-py Client._process_op_err: nats-py has no public force-reconnect; this is the entry its own read loop uses when a connection goes stale
 packages/nats/src/threetears/nats/_nats_py_internals.py:force_reconnect#0:_process_op_err
-# rationale: nats-py Client._nuid: nats-py names every inbox, request token and ephemeral consumer from a sequential NUID one observed name predicts, and offers no public way to supply the generator; the CSPRNG one is installed before connect
-packages/nats/src/threetears/nats/_nats_py_internals.py:install_csprng_nuid#0:_nuid
 
 # rationale: opentelemetry-api trace._TRACER_PROVIDER_SET_ONCE: the set-once guard on set_tracer_provider (>= 1.39) has no public reset, and init_telemetry must install a provider again after shutdown_telemetry
 packages/observe/src/threetears/observe/_otel_internals.py:allow_tracer_provider_reset#0:_TRACER_PROVIDER_SET_ONCE

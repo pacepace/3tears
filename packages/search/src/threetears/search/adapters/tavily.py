@@ -1076,8 +1076,9 @@ class TavilyAdapter:
                 spend=spend,
                 provider_instance=self._provider_instance,
                 remediation=TAVILY_400_REMEDIATION,
+                status=status,
             )
-        raise TransportFailed(message, spend=spend, provider_instance=self._provider_instance)
+        raise TransportFailed(message, spend=spend, provider_instance=self._provider_instance, status=status)
 
     def _spend_for(self, plan: _Plan, response: TransportResponse, *, billed: bool) -> Spend:
         """What one exchange consumed (SR-E1, SR-E4, D6).

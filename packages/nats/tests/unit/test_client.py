@@ -1955,13 +1955,26 @@ async def test_pull_fetch_dispatches_each_message_success() -> None:
     m1.ack.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_pull_fetch_timeout_is_idle_zero() -> None:
-    """a fetch that times out with no message is the idle case: returns 0, not an error."""
+def _nats_timeout() -> BaseException:
     from nats.errors import TimeoutError as NatsTimeoutError
 
+    return NatsTimeoutError()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "timeout",
+    [_nats_timeout, asyncio.TimeoutError],
+    ids=["nats-timeout", "bare-asyncio-timeout"],
+)
+async def test_pull_fetch_timeout_is_idle_zero(timeout: Callable[[], BaseException]) -> None:
+    """a fetch that times out with no message is the idle case: returns 0, not an error.
+
+    nats-py's fetch raises a bare asyncio.TimeoutError when its deadline runs out between the
+    no-wait probe and the lingering request, so both shapes must read as idle.
+    """
     psub = MagicMock()
-    psub.fetch = AsyncMock(side_effect=NatsTimeoutError())
+    psub.fetch = AsyncMock(side_effect=timeout())
     client, _js = _pull_js(psub=psub)
 
     consumer = await client.jetstream_pull_subscribe(

@@ -59,7 +59,7 @@ dependencies = [
 # declare all of them up front even though only redshift + asyncpg-
 # backed (postgres / yugabyte / agent_internal) drivers ship today
 # (snowflake / bigquery drivers are stubs).
-redshift = ["redshift-connector>=2.1"]
+redshift = ["redshift-connector>=2.1.14"]  # eval() RCE fix (CVE-2026-8838)
 # query spans from the drivers (drivers.base, asyncpg_driver, redshift_driver); without it they are off
 tracing = ["opentelemetry-api>=1.20,<2"]
 snowflake = ["snowflake-connector-python>=3.0"]

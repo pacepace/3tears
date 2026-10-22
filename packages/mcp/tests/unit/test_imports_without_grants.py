@@ -80,11 +80,12 @@ async def main() -> None:
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://mcp.test")
     try:
         async with app.router.lifespan_context(app), client:
-            async with streamable_http_client("http://mcp.test/mcp", http_client=client) as (read, write, _):
+            async with streamable_http_client("http://mcp.test/mcp", http_client=client) as streams:
+                read, write = streams[0], streams[1]  # 1.x yields a third value (the session id), 2.x two
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     result = await session.call_tool("echo", {"value": "hi"})
-                    assert result.isError is False, result
+                    assert result.model_dump(by_alias=True)["isError"] is False, result
                     assert json.loads(result.content[0].text) == {"value": "hi"}
     finally:
         await server.stop()
