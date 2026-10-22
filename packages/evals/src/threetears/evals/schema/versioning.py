@@ -525,7 +525,23 @@ DURABLE_SCHEMA_VERSION: int = 16
 #:   person gave it) and ``collected_by`` (the caller the host attested for that person), both default None, set
 #:   together and on a person's rating only. A rating stored at v16.0 reads with neither: no relay was recorded for
 #:   it. Neither is in the rating's id, so a relayed rating of what the person already rated replaces it, unless
-#:   the relay is dated and theirs was given later.
+#:   the relay is dated and theirs was given later. An authored judge case says who relayed it too: the judge case a
+#:   judge template's test case carries (``JudgeCase``) may name, beside its author, the caller the host attested
+#:   for that author (``JudgeCaseAuthoring.collected_by``, default None: written by the host's own code, such as its
+#:   seed corpus, or stored at v16.0). It is in no digest pre-image, so it moves no case's id or content hash, and it
+#:   is written only when set: an authored case no caller relayed is stored exactly as v16.0 stored it. A build at
+#:   v16.0 cannot read a relayed authored case: it lists it as unreadable, by name, and refuses every launch of its
+#:   judge template that would run it (one naming no case set runs every live case), until it upgrades; it keeps the
+#:   test case's payload verbatim on every write. A reporter case's reader verdicts say who gave and relayed them:
+#:   each label of the reporter case a reporter template's test case carries (``ReporterLabel``) may name its
+#:   ``reader`` (the host's name for that person) and ``collected_by`` (the caller the host attested for them), both
+#:   default None and written only when set, so a label naming neither is stored exactly as v16.0 stored it. Neither
+#:   is part of what makes two freezes the same case. Every labelled freeze through the action names both, and a
+#:   build at v16.0 cannot read such a case, and a reporter template's bank is undecidable while any of its cases is
+#:   unreadable: on a v16.0 build, one relayed label stops that whole template, refusing its launches, their prices,
+#:   its freezes, its calibration reads and its restores, until that build upgrades. So during a rolling deploy
+#:   across 16.0 and 16.1, the first labelled freeze through the action stops that template on the 16.0 builds. A
+#:   v16.0 build keeps the test case's payload verbatim on every write.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 DURABLE_SCHEMA_MINOR: int = 1
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""

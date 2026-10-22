@@ -11,6 +11,7 @@ labels, agreement with the judge's own repeats and parse validity, and every cen
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import types
 
 import json
@@ -1026,11 +1027,17 @@ def test_a_freeze_naming_no_run_no_labels_and_no_authored_case_is_refused() -> N
         freeze_judge_cases(host.storage, template=_judge_template(), scope_id=TOYHOST_SCOPE)
 
 
+def _vouches_for_itself(*, scope_id: str, caller: str, person: str) -> str | None:
+    """A host's check that attests each caller authoring as itself, and for no one else."""
+    return person if person == caller else None
+
+
 async def test_the_author_operation_writes_a_case_on_a_template_s_dimension_as_the_caller() -> None:
     from threetears.evals.actions import engine_actions
     from threetears.evals.ops import JudgeCaseAuthor, judge_case_author
 
-    host = toyhost_host()
+    # The operation writes only what the host attests: here, each caller authoring as itself.
+    host = dataclasses.replace(toyhost_host(), attests_person=_vouches_for_itself)
     subject = toyhost_judged_template()
     off_loop(host.storage.save_template, subject)
     template = _judge_template()
@@ -1045,7 +1052,7 @@ async def test_the_author_operation_writes_a_case_on_a_template_s_dimension_as_t
         note="three of four fields missing is not faithful",
     )
 
-    report = off_loop(judge_case_author, host, hard, TOYHOST_SCOPE, author=_AUTHOR)
+    report = off_loop(judge_case_author, host, hard, TOYHOST_SCOPE, collected_by=_AUTHOR)
 
     (frozen,) = report.cases
     stored = off_loop(host.storage.load_test_case, frozen.test_case_id, TOYHOST_SCOPE)
@@ -1058,7 +1065,7 @@ async def test_the_author_operation_writes_a_case_on_a_template_s_dimension_as_t
     (line,) = [line for line in action.render(report).splitlines() if line.startswith("- test_case_id=")]
     assert f"dim={FAITHFULNESS_DIM}" in line and f"authored_by={_AUTHOR}" in line
     # Authoring it again names the stored case.
-    assert off_loop(judge_case_author, host, hard, TOYHOST_SCOPE, author=_AUTHOR).cases[0].created is False
+    assert off_loop(judge_case_author, host, hard, TOYHOST_SCOPE, collected_by=_AUTHOR).cases[0].created is False
     # A dimension the template does not have, and a verdict its scale cannot hold, are each refused by name.
     with pytest.raises(ValidationFailedError, match="has no rubric dimension 'extraction.tone'"):
         off_loop(
@@ -1066,7 +1073,7 @@ async def test_the_author_operation_writes_a_case_on_a_template_s_dimension_as_t
             host,
             hard.model_copy(update={"criterion": "extraction.tone"}),
             TOYHOST_SCOPE,
-            author=_AUTHOR,
+            collected_by=_AUTHOR,
         )
     with pytest.raises(
         ValidationFailedError, match=rf"criterion '{FAITHFULNESS_DIM}' .* cannot hold the verdict 'fail'"
@@ -1076,5 +1083,5 @@ async def test_the_author_operation_writes_a_case_on_a_template_s_dimension_as_t
             host,
             JudgeCaseAuthor.model_validate({**hard.model_dump(), "expected": "fail"}),
             TOYHOST_SCOPE,
-            author=_AUTHOR,
+            collected_by=_AUTHOR,
         )

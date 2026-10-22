@@ -8,6 +8,7 @@ model and writes nothing.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 from threetears.evals.actions import Caller, MountedTool, eval_catalogue, read_only_tools, standard_tools
@@ -43,9 +44,15 @@ def _judge_template() -> EvalTemplate:
     )
 
 
+def _vouches_for_itself(*, scope_id: str, caller: str, person: str) -> str | None:
+    """A host's check that attests each caller authoring as itself, and for no one else."""
+    return person if person == caller else None
+
+
 def _author(host: Any, expected: int, output: str) -> str:
+    # The operation writes only what the host attests: here, each caller authoring as itself.
     report = judge_case_author(
-        host.eval_host,
+        replace(host.eval_host, attests_person=_vouches_for_itself),
         JudgeCaseAuthor(
             template_id=_judge_template().id,
             criterion_template_id=toyhost_judged_template().id,
@@ -56,7 +63,7 @@ def _author(host: Any, expected: int, output: str) -> str:
             note="because",
         ),
         TOYHOST_SCOPE,
-        author=_AUTHOR,
+        collected_by=_AUTHOR,
     )
     return report.cases[0].test_case_id
 

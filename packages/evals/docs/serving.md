@@ -614,7 +614,9 @@ frozen case, never a generated one.
 
 - `reporter_case_freeze` (write) freezes a campaign's analysis bundle into a case of a reporter template —
   with `recorded_analysis_id`, the memo the campaign got too, and any reader `labels` on it — and answers
-  with the case id, its bundle fingerprint and the `limits` the freeze recorded.
+  with the case id, its bundle fingerprint and the `limits` the freeze recorded. Each label is a reader's verdict:
+  it names its `reader` (omitted, the caller), and the host's `attests_person` must vouch that the caller relays
+  that reader's verdict, or the freeze is refused (403) and nothing is written; a freeze with no labels asks nothing.
 - `reporter_cases_list` reads the template's bank: which case each campaign and memo launches, and what
   superseded or retired the rest.
 - `reporter_case_archive` retires a case or restores it.

@@ -149,6 +149,7 @@ from threetears.evals.kernel.declaration import Margin, OverriddenBar
 from threetears.evals.ops.analysis import MEMBERSHIP_ASPECT_DESCRIPTION
 from threetears.evals.ops.cases import CaseRenamed, case_rename
 from threetears.evals.ops.judge_cases import JudgeCaseListing, judge_cases_list
+from threetears.evals.ops.runs import PERSON_DESCRIPTION
 from threetears.evals.schema.models import RUN_LABELS_MAX, SecondJudge
 from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
 from threetears.evals.run import (
@@ -703,12 +704,7 @@ class ResultRateParams(EvalBaseModel):
 class ResultRatePersonParams(ResultRateParams):
     """``result_rate_person``."""
 
-    person: Annotated[
-        str,
-        Field(
-            min_length=1, description="Who gave the rating, as the host names its people; the host must attest them."
-        ),
-    ]
+    person: Annotated[str, Field(min_length=1, description=PERSON_DESCRIPTION)]
     rating_source: Annotated[
         str, Field(min_length=1, description="Where the person gave the rating, e.g. a blind read's id.")
     ]
@@ -1161,10 +1157,10 @@ async def _cases_rename(host: OpsHost, caller: Caller, params: CasesRenameParams
 async def _judge_case_author(host: OpsHost, caller: Caller, params: JudgeCaseAuthorParams) -> JudgeCaseFreezeReport:
     eval_host = host.eval_host
     case = JudgeCaseAuthor.model_validate(params.model_dump())
-    # The caller authors the case: its verdict is their label, as a rating is its rater's.
+    # The caller relays the case, authoring it as itself or for the person it names; the host attests which.
     return await run_blocking(
         eval_host.blocking_executor,
-        partial(judge_case_author, author=caller.identity),
+        partial(judge_case_author, collected_by=caller.identity),
         eval_host,
         case,
         caller.scope_id,
@@ -1192,7 +1188,14 @@ async def _judge_profiles_list(host: OpsHost, caller: Caller, params: JudgeProfi
 async def _reporter_case_freeze(host: OpsHost, caller: Caller, params: ReporterCaseFreezeParams) -> FrozenReporterCase:
     eval_host = host.eval_host
     freeze = ReporterCaseFreeze.model_validate(params.model_dump())
-    return await run_blocking(eval_host.blocking_executor, reporter_case_freeze, eval_host, freeze, caller.scope_id)
+    # The caller relays each label's verdict, its own or a reader's it names; the host attests which.
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(reporter_case_freeze, collected_by=caller.identity),
+        eval_host,
+        freeze,
+        caller.scope_id,
+    )
 
 
 async def _reporter_cases_list(host: OpsHost, caller: Caller, params: ReporterCasesListParams) -> ReporterCaseListing:
@@ -2160,8 +2163,11 @@ def engine_actions() -> tuple[Action, ...]:
                 "candidate replays and labels are written about; without it only a generating candidate can run "
                 "the case. One campaign and memo is one case: a freeze matching the pair's live case returns it, and "
                 "one that differs (other labels, or evidence that moved) is refused unless supersedes names the live "
-                "case. limits states what the frozen evidence cannot support. Then run_launch the template; "
-                "reporter_cases_list reads its bank, reporter_case_archive retires a case. Calls no model."
+                "case. Each label is a reader's verdict, its reader named in the label or, omitted, you; the host "
+                "must vouch that you relay each reader's verdict, or the freeze is refused and nothing is written. "
+                "Who gave or relayed a verdict is not part of the case's identity: re-freezing the same verdicts "
+                "returns the stored case. limits states what the frozen evidence cannot support. Then run_launch the "
+                "template; reporter_cases_list reads its bank, reporter_case_archive retires a case. Calls no model."
             ),
         ),
         Action(
@@ -2282,9 +2288,13 @@ def engine_actions() -> tuple[Action, ...]:
                 "it, and the judge reads the case as it reads a stored result (that template's intent unless scenario "
                 "is given, the case material, the output). The verdict is 'pass'/'fail' (or 1/0) on a pass/fail "
                 "dimension and 1-5 on an ordinal one; a verdict the scale cannot hold is refused, naming both. The "
-                "verdict is the case's one label and the caller its author, so a judge campaign's agreement and a "
-                "judge profile read it as a labelled case. Authoring the same case again names the stored one. It "
-                "mints no case set: case_set_mint lists the cases a launch runs. Calls no model."
+                "verdict is the case's one label, a person's, so a judge campaign's agreement and a judge profile "
+                "read it as a person's: its author is person, and omitting person means the caller authors it as "
+                "itself. The host must vouch that the caller authors for that person, or the call is refused and "
+                "nothing is written. The case is stored under "
+                "the host's name for that person and records the caller that relayed it. Authoring the same case "
+                "again names the stored one. It mints no case set: case_set_mint lists the cases a launch runs. "
+                "Calls no model."
             ),
         ),
         Action(

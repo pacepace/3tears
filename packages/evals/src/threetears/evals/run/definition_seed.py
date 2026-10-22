@@ -58,7 +58,9 @@ tombstone, so a template deleted straight from the store still empties its slot.
 
 **Authored judge cases seed through the door every authored case passes.** A ``judge_cases`` slot holds
 :class:`SeedJudgeCase` values: ``judge_case_author``'s arguments with its two templates named by ``name``
-(a corpus cannot know a generated id), plus the author. Each is built through
+(a corpus cannot know a generated id), plus the author. The corpus is the host's own, so its authors are taken as it
+names them: no ``attests_person`` is asked and no relay is recorded (``collected_by`` None), as a host's own code may
+record a person's rating directly. Each is built through
 :func:`~threetears.evals.run.judge_kind.author_judge_case` (the criterion read from the template that words it, the
 verdict held to its scale) and frozen with :func:`~threetears.evals.run.freeze_judge_cases` (``authored=``) into
 its judge template, so it is the :class:`~threetears.evals.kernel.AuthoredJudgeCase` ``judge_case_author`` writes,
@@ -184,7 +186,9 @@ class SeedJudgeCase(EvalBaseModel):
     ``judge_case_author`` names it (its wording is what a judge profile is keyed by). The seed builds it into a
     :class:`~threetears.evals.kernel.AuthoredJudgeCase` through the same door (``author_judge_case``). Its own
     ``name`` is the corpus's handle on it, which a :class:`SeedCaseSet` lists; it is not part of the case, so two
-    cases that differ only by name are one case.
+    cases that differ only by name are one case. Its ``author`` is trusted as written: the corpus is the host's own,
+    so no ``attests_person`` is asked, and the case records no relay (``collected_by`` None), which leaves it the
+    same case, under the same id, as one an attested caller authors.
     """
 
     model_config = ConfigDict(frozen=True)
