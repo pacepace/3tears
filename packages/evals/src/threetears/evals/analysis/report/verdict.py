@@ -199,27 +199,52 @@ def arm_run_statuses(bundle: AnalysisContextBundle) -> dict[str, frozenset[str]]
     }
 
 
-def measured_nothing(exclusions: Iterable[ArmExclusions], run_statuses: Iterable[str]) -> bool:
-    """Whether an arm measured nothing and its run failed for it: every trial lost to ``infra``, every run ``failed``.
+def arm_failure_reasons(bundle: AnalysisContextBundle) -> dict[str, tuple[str | None, ...]]:
+    """Each arm's member runs' stored failure reasons (``EvalRun.failed_because``), by variant key, None for a run that
+    recorded none (it did not fail, failed for another reason, or the bundle predates shape 61).
 
-    Read off the run's stored status as well as the losses, so a run a cap, a cancel or the account stopped, and a run
-    stored before a run that measured nothing failed, keep their own words.
+    :param bundle: The campaign's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :return: The reasons, one per member run, for every arm the realized design places.
+    :rtype: dict[str, tuple[str | None, ...]]
+    """
+    design = bundle.design
+    arms = [*([design.control_arm] if design.control_arm is not None else []), *design.contrasts]
+    return {
+        placed.variant_key: tuple(bundle.failed_because.get(run_id) for run_id in placed.run_ids) for placed in arms
+    }
+
+
+def measured_nothing(exclusions: Iterable[ArmExclusions], run_reasons: Iterable[str | None]) -> bool:
+    """Whether an arm measured nothing: every run of it records ``nothing_measured`` as why it failed.
+
+    Read off the runs' stored reason, never inferred from a status and the losses, so a run that failed for anything
+    else (a storage fault part-way, a defect on its first cell) keeps its own words. The arm's trials must agree: each
+    one an exclusion the harness recorded a fault on (``ArmExclusions.n_harness_faults``), the runner's predicate, so a
+    loss to a judge call's error alone never reads as nothing measured.
 
     :param exclusions: The arm's cells' exclusions (:func:`arm_exclusions`).
     :ptype exclusions: Iterable[ArmExclusions]
-    :param run_statuses: The arm's runs' statuses (:func:`arm_run_statuses`).
-    :ptype run_statuses: Iterable[str]
-    :return: True when the arm ran trials, every one was excluded as ``infra``, and every run of it ended ``failed``.
+    :param run_reasons: The arm's runs' stored failure reasons (:func:`arm_failure_reasons`).
+    :ptype run_reasons: Iterable[str | None]
+    :return: True when the arm ran trials, every run of it failed for measuring nothing, and every trial was a
+        harness fault.
     :rtype: bool
     """
+    reasons = list(run_reasons)
     cells = list(exclusions)
     ran = sum(cell.n_trials for cell in cells)
-    statuses = set(run_statuses)
-    return statuses == {"failed"} and ran > 0 and sum(cell.by_cause.get("infra", 0) for cell in cells) == ran
+    every_run = bool(reasons) and all(reason == "nothing_measured" for reason in reasons)
+    return every_run and ran > 0 and sum(cell.n_harness_faults for cell in cells) == ran
 
 
 def loss_words(
-    cause: str, *, exclusions: Iterable[ArmExclusions] = (), arms: int = 2, run_statuses: Iterable[str] = ()
+    cause: str,
+    *,
+    exclusions: Iterable[ArmExclusions] = (),
+    arms: int = 2,
+    run_statuses: Iterable[str] = (),
+    run_reasons: Iterable[str | None] = (),
 ) -> CauseWords:
     """Why trials were lost to ``cause``, in words, with its remedy.
 
@@ -232,6 +257,8 @@ def loss_words(
     :ptype arms: int
     :param run_statuses: The arm's runs' stored statuses (:func:`arm_run_statuses`); none known, the cause's own words.
     :ptype run_statuses: Iterable[str]
+    :param run_reasons: The arm's runs' stored failure reasons (:func:`arm_failure_reasons`).
+    :ptype run_reasons: Iterable[str | None]
     :return: The words. A cause this build has no words for is named as itself and says so, rather than taking another
         cause's remedy. ``infra`` on an arm whose run the account stopped takes :data:`ACCOUNT_REFUSED_REMEDY`, and on
         an arm that measured nothing (:func:`measured_nothing`) :data:`NOTHING_MEASURED_REMEDY`, never the rerun.
@@ -250,7 +277,7 @@ def loss_words(
     remedy = worded.remedy
     if cause == "infra" and statuses == {"exhausted"}:
         remedy = ACCOUNT_REFUSED_REMEDY
-    elif cause == "infra" and measured_nothing(cells, statuses):
+    elif cause == "infra" and measured_nothing(cells, run_reasons):
         remedy = NOTHING_MEASURED_REMEDY
     return CauseWords(
         words=worded.words.format(cap=cap), remedy=remedy.format(sent=sent, every=every), short=worded.short
@@ -437,9 +464,10 @@ def _setup_gate(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str
     named = sorted(named, key=lambda board: (-lost_share(board), arm(board.variant_key)))
     exclusions = arm_exclusions(bundle)
     statuses = arm_run_statuses(bundle)
+    reasons = arm_failure_reasons(bundle)
 
     def nothing(board: ArmScoreboard) -> bool:
-        return measured_nothing(exclusions.get(board.variant_key, ()), statuses.get(board.variant_key, ()))
+        return measured_nothing(exclusions.get(board.variant_key, ()), reasons.get(board.variant_key, ()))
 
     # Said once: in the lead when no arm measured anything, else on each arm that measured nothing.
     every_arm = all(nothing(board) for board in boards)
@@ -453,9 +481,15 @@ def _setup_gate(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str
             exclusions=exclusions.get(board.variant_key, ()),
             arms=len(boards),
             run_statuses=statuses.get(board.variant_key, ()),
+            run_reasons=reasons.get(board.variant_key, ()),
         )
         most = "all" if board.lost[cause] == lost else "most"
-        alone = " Nothing was measured on it, and its run failed." if nothing(board) and not every_arm else ""
+        if nothing(board):
+            alone = "" if every_arm else " Nothing was measured on it, and its run failed."
+        elif "failed" in statuses.get(board.variant_key, ()):
+            alone = " Its run failed; the run's own error says why."
+        else:
+            alone = ""
         parts.append(f"{arm(board.variant_key)} lost {lost} of {board.ran} trials, {most} because {said.words}.{alone}")
         if said.remedy not in remedies:
             remedies.append(said.remedy)
@@ -523,6 +557,7 @@ __all__ = [
     "VerdictLine",
     "VerdictRule",
     "arm_exclusions",
+    "arm_failure_reasons",
     "arm_run_statuses",
     "cap_words",
     "cause_short",

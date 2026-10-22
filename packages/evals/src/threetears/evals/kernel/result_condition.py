@@ -62,6 +62,7 @@ __all__ = [
     "counted_rubric_scores",
     "counted_score",
     "delivered_a_turn",
+    "harness_fault_exclusion",
     "resolve_result_condition",
 ]
 
@@ -503,6 +504,22 @@ def trial_exclusion(result: EvalResult) -> ExclusionCause | None:
     if outcome is ResultOutcome.OK and not judged_on_every_dim(result):
         return "judge_cannot_tell"
     return None
+
+
+def harness_fault_exclusion(result: EvalResult) -> bool:
+    """Whether ``result`` is an ``infra`` exclusion the harness recorded a fault on (``infra_error``).
+
+    The one predicate behind "the run measured nothing": the runner fails a run whose every cell is one
+    (:class:`~threetears.evals.run.NothingMeasuredError`), and the bundle counts them per arm for the page. A cell lost
+    to a judge call's error alone is an ``infra`` exclusion too, but not one of these: a re-judge recovers it without
+    paying for the candidate again.
+
+    :param result: The result.
+    :ptype result: EvalResult
+    :return: True when the result is excluded as ``infra`` and carries the harness's own fault.
+    :rtype: bool
+    """
+    return trial_exclusion(result) == "infra" and bool(result.infra_error)
 
 
 def judge_truncated_dims(result: EvalResult) -> list[str]:

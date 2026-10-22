@@ -168,7 +168,8 @@ now records the same ledgers as a full render.
 
 **Breaking (pre-release line, no shims):** regenerable schema 12 -> 13, so stored analyses, insights and judge
 profiles are refused on read until dropped and generated again; hosts push the new writer prompt seed; bundle shape
-59 -> 60, so a frozen reporter case holding a shape-59 bundle is frozen again; `ReadingScope.question_post_hoc` is
+59 -> 61 (60 for a late question, 61 for a failed run's reason and an arm's harness faults), so a frozen reporter
+case holding a shape-59 bundle is frozen again and a shape-60 one rebuilds; `ReadingScope.question_post_hoc` is
 replaced by `question_after_runs`. See `packages/evals/MIGRATIONS.toml`.
 
 ## v0.74.0 -- 2026-10-20

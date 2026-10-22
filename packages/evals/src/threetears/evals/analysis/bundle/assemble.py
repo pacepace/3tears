@@ -672,6 +672,7 @@ def assemble_context_bundle(
         # here is what lets the generator say a partial arm is partial instead of reading its
         # truncated case count as a real one.
         incomplete_runs={run.id: str(run.status) for run in runs if run.status != "completed"},
+        failed_because={run.id: run.failed_because for run in runs if run.failed_because is not None},
         # Status cannot answer how much of the matrix a run delivered: a run that reaches the
         # end of its loop stamps ``completed`` whatever its cells produced, so the shortfall is
         # read off the completeness record instead. Rendered through the shared helper so this

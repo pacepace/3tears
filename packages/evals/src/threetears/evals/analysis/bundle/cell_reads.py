@@ -44,6 +44,7 @@ from threetears.evals.kernel.result_condition import (
     ResultOutcome,
     classify_result,
     delivered_a_turn,
+    harness_fault_exclusion,
     harness_faulted,
     judge_truncated_dims,
     trial_exclusion,
@@ -399,6 +400,7 @@ def _arm_exclusions(results_by_cell: Mapping[_CellKey, list[EvalResult]]) -> lis
     arms: list[ArmExclusions] = []
     for (variant_key, apparatus_class_id), members in results_by_cell.items():
         by_cause: Counter[ExclusionCause] = Counter()
+        harness_faults = 0
         caps: set[int] = set()
         unreported = False
         for result in members:
@@ -406,6 +408,7 @@ def _arm_exclusions(results_by_cell: Mapping[_CellKey, list[EvalResult]]) -> lis
             if cause is None:
                 continue
             by_cause[cause] += 1
+            harness_faults += harness_fault_exclusion(result)
             if cause == "truncated":
                 for dim in judge_truncated_dims(result):
                     sent = result.judge_cut_short[dim].sent_settings
@@ -422,6 +425,7 @@ def _arm_exclusions(results_by_cell: Mapping[_CellKey, list[EvalResult]]) -> lis
                 by_cause=dict(sorted(by_cause.items())),
                 truncated_sent_caps=sorted(caps),
                 truncated_cap_unreported=unreported,
+                n_harness_faults=harness_faults,
             )
         )
     return arms

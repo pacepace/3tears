@@ -96,7 +96,7 @@ from threetears.evals.kernel.host.timeouts import EvalCellTimeout
 from threetears.evals.schema.traces import CellIdentity, CellTrace, TraceSink, bind_cell_identity
 from threetears.evals.kernel.identity import DerivedVariantIdentity, resolve_variant_identity
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, undeclarable_host_measures
-from threetears.evals.kernel.result_condition import trial_exclusion
+from threetears.evals.kernel.result_condition import harness_fault_exclusion
 from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
@@ -3940,7 +3940,7 @@ async def execute_run(
         if sink.errors.apparatus_failed:
             apparatus_failures.append(sink.errors.infra_error or "an apparatus fault")
         # The harness's own fault on the cell, not a judge call's alone: a re-judge recovers that one.
-        if trial_exclusion(result) == "infra" and result.infra_error:
+        if harness_fault_exclusion(result) and result.infra_error:
             infra_exclusions.append(result.infra_error)
         async with reporting:
             if callbacks.on_result is not None:

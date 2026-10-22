@@ -159,25 +159,51 @@ async def test_a_run_that_measured_one_cell_and_had_the_rest_declined_completes_
     assert "nothing was measured" not in report_markdown(result.report)
 
 
-@pytest.mark.parametrize(
-    "status",
-    ["completed", "budget_stopped", "cancelled"],
-    ids=["a run stored before a run that measured nothing failed", "a cap stopped it", "it was cancelled"],
-)
-async def test_a_page_says_nothing_was_measured_only_of_a_run_that_failed_for_it(status: str) -> None:
-    """The words come from the run's stored status, not from its losses alone: the same losses on a run that did not
-    fail for them keep the setup's own words."""
+async def test_a_run_that_measured_nothing_records_why_and_its_page_says_so() -> None:
+    """The run's stored reason is what the page reads, and the bundle carries it with the arm's harness faults."""
     error = error_from_response("anthropic", 529, _OVERLOADED)
     result = await Eval(CASES, _declining(error), [size], k=1).run(store=MEMORY, scope=SCOPE)
     bundle = result.report.bundle
     (run_id,) = bundle.incomplete_runs
-    assert bundle.incomplete_runs[run_id] == "failed"
-    failed = verdict_line(bundle, lambda _key: "calls").text
-    assert failed.startswith("No verdict: nothing was measured,")
-    restated = bundle.model_copy(update={"incomplete_runs": {} if status == "completed" else {run_id: status}})
+    assert (bundle.incomplete_runs[run_id], bundle.failed_because) == ("failed", {run_id: "nothing_measured"})
+    (cells,) = bundle.exclusions
+    assert (cells.n_trials, cells.by_cause, cells.n_harness_faults) == (3, {"infra": 3}, 3)
+    said = verdict_line(bundle, lambda _key: "calls").text
+    assert said.startswith("No verdict: nothing was measured, because the test setup failed or the provider")
+    assert "needs no fix" not in said
+
+
+@pytest.mark.parametrize(
+    ("status", "tail"),
+    [
+        ("completed", ""),
+        ("budget_stopped", ""),
+        ("cancelled", ""),
+        ("failed", " Its run failed; the run's own error says why."),
+    ],
+    ids=[
+        "a run stored before a run that measured nothing failed",
+        "a cap stopped it",
+        "it was cancelled",
+        "it failed for another reason, a storage fault part-way say",
+    ],
+)
+async def test_a_page_says_nothing_was_measured_only_of_a_run_whose_stored_reason_says_so(
+    status: str, tail: str
+) -> None:
+    """The same losses on a run whose stored reason is not ``nothing_measured`` keep the setup's own words: a status, a
+    run's losses or both together never stand in for the reason the run recorded."""
+    error = error_from_response("anthropic", 529, _OVERLOADED)
+    result = await Eval(CASES, _declining(error), [size], k=1).run(store=MEMORY, scope=SCOPE)
+    bundle = result.report.bundle
+    (run_id,) = bundle.incomplete_runs
+    restated = bundle.model_copy(
+        update={"incomplete_runs": {} if status == "completed" else {run_id: status}, "failed_because": {}}
+    )
     said = verdict_line(restated, lambda _key: "calls").text
     assert said.startswith("No verdict: the test setup failed, not the models.")
     assert "nothing was measured" not in said and "needs no fix, only a rerun" in said
+    assert (tail in said) if tail else "Its run failed" not in said
 
 
 async def test_a_run_the_account_stopped_names_the_account_in_its_remedy() -> None:

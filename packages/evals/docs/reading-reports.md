@@ -491,9 +491,10 @@ description stay editable, and an amended question is a new campaign that adopts
 A trial is left out of an arm's measures for one of three causes (`trial_exclusion`): `infra`, the harness faulted
 it or the provider declined one of its calls (a 429 that is not a spent quota, or a 529 overloaded or 503
 unavailable, which says nothing about the model: it needs no fix, only a rerun once the provider can serve it, and the
-trial's error says which it was; but when an arm lost every trial this way and its run ended `failed` for it, the
-page says nothing was measured and asks for the cause to be fixed before a rerun, not waited out; and when the
-account stopped the run, the fix names the account);
+trial's error says which it was; but when an arm lost every trial this way and its run recorded that it measured
+nothing (`failed_because`), the page says nothing was measured and asks for the cause to be fixed before a rerun, not
+waited out; when the account stopped the run, the fix names the account; and a run that failed for any other reason
+says only that its run failed, and its own error says why);
 `truncated`, a judge reply was cut off at the output cap it was sent and was not bought again; and
 `judge_cannot_tell`, the judge could not score a capability dimension, which leaves the trial out of pass^k and the
 composite only. A candidate's own failure is never an exclusion: it fails, and is counted. The bundle's

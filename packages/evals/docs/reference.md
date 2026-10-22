@@ -1211,7 +1211,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schema_version` | `int` | `60` | Bundle-shape version, for future evolution + fingerprint clarity. |
+| `schema_version` | `int` | `61` | Bundle-shape version, for future evolution + fingerprint clarity. |
 | `campaign_id` | `str` | required | The campaign this bundle summarises. |
 | `subject_id` | `str` | required | The analysed subject's stable id. |
 | `subject_kind` | `str` | `''` | Discriminator; data, never a code branch. |
@@ -1238,6 +1238,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `declared` | `AspectDeclaration \| None` | `None` | What the campaign SET OUT to do, as this aspect reads it: the campaign's one question and when it was asked, its control arm, and the aspect's margin, design and floors. |
 | `design` | `RealizedDesign` | `RealizedDesign(control_arm=None, earlier_control=None, control_excluded=None, stale_control_disclosure=None, contrasts=[], unplaced_run_ids=[], shape='undesignated')` | What kind of experiment this is, inferred from the runs — never a declaration, and never to be called declared: the run carrying the declared control, each cell's moved levers, and whether the design is one-factor-at-a-time. |
 | `incomplete_runs` | `dict[str, str]` | `{}` | Run id → status, for every resolved member run that did not reach 'completed'. |
+| `failed_because` | `dict[str, str]` | `{}` | Run id → why it failed (`EvalRun.failed_because`), for every resolved member run that failed with a recorded reason: `nothing_measured` when every cell was excluded for a fault the harness recorded. |
 | `short_runs` | `dict[str, str]` | `{}` | Run id → the disclosure sentence for every resolved member run that delivered fewer cells than it promised, whatever status it ended on. |
 | `completeness_unknown_run_ids` | `list[str]` | `[]` | Resolved member runs carrying no completeness record, so whether they came up short is unknown rather than answered. |
 | `short_cells` | `list[ShortCell]` | `[]` | Every cell holding fewer repetitions than the declaration's `intended_repetitions`, ordered by (variant_key, apparatus_class_id), each with the sentence to quote. |

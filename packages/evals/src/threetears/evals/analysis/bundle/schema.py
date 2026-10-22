@@ -2205,6 +2205,15 @@ class ArmExclusions(EvalDocumentModel):
             "unknown: said as 'cap unreported', never filled from the run's asked settings."
         ),
     )
+    n_harness_faults: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Of the `infra` trials, those the harness recorded a fault on (`infra_error`), the runner's own predicate "
+            "for a run that measured nothing (`harness_fault_exclusion`): a trial lost to a judge call's error alone "
+            "is `infra` but not counted here, since a re-judge recovers it. 0 in a bundle of a shape before 61."
+        ),
+    )
 
     @model_validator(mode="after")
     def _counts_add_up(self) -> ArmExclusions:
@@ -2213,6 +2222,11 @@ class ArmExclusions(EvalDocumentModel):
             raise ValueError(
                 f"arm {self.variant_key!r}: {self.n_usable} usable and {sum(self.by_cause.values())} excluded trials "
                 f"are not its {self.n_trials}"
+            )
+        if self.n_harness_faults > self.by_cause.get("infra", 0):
+            raise ValueError(
+                f"arm {self.variant_key!r}: {self.n_harness_faults} harness faults are more than its "
+                f"{self.by_cause.get('infra', 0)} infra trials"
             )
         return self
 
@@ -2428,8 +2442,12 @@ class AnalysisContextBundle(EvalDocumentModel):
     # not enforced), so it builds its family, scopes the reading scope and the verdict order, and confirms its
     # readings over unchanged runs; `reading_scope.question_post_hoc` is replaced by `reading_scope.question_after_runs`
     # (both times), which every page and listing says.
+    # 61: a failed member run says why (`failed_because`, run id -> `EvalRun.failed_because`, beside
+    # `incomplete_runs`), and each arm's exclusions count the trials the harness recorded a fault on
+    # (`ArmExclusions.n_harness_faults`), so a page says "nothing was measured" only of a run whose stored reason says
+    # so, and counts judge-only losses as the runner does. Both additive, so a reporter case frozen at 60 rebuilds.
     schema_version: int = Field(
-        default=60, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=61, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -2570,6 +2588,15 @@ class AnalysisContextBundle(EvalDocumentModel):
             "cancelled or budget-stopped run contributes however many cases it got through, as though "
             "it were a full arm. Empty means every run reached a 'completed' status — NOT that every "
             "run delivered its whole matrix, which is what short_runs answers."
+        ),
+    )
+    failed_because: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Run id → why it failed (`EvalRun.failed_because`), for every resolved member run that failed with a "
+            "recorded reason: `nothing_measured` when every cell was excluded for a fault the harness recorded. A "
+            "failed run with no recorded reason is absent here and present in incomplete_runs. Empty in a bundle of "
+            "a shape before 61."
         ),
     )
     short_runs: dict[str, str] = Field(

@@ -19,6 +19,9 @@ from typing import Any, Self
 import pytest
 
 from threetears.evals import Eval, Example, Judge
+from threetears.evals.schema import CompletionProtocolDefect
+from threetears.evals.analysis.report.verdict import verdict_line
+from threetears.evals.analysis import report_markdown
 from threetears.evals.providers.failures import error_from_response
 from threetears.evals.schema import JudgedArtifact, RubricDim, StopReason
 from threetears.evals.kernel.host import EvalHost, KindContract, TemplateChecks
@@ -298,6 +301,54 @@ async def test_a_run_with_one_cell_declined_and_the_other_judge_cut_off_still_co
     assert summary.status == "completed"
     assert (summary.n_scored, summary.n_excluded) == (0, 2)
     assert not any("the run measured nothing" in error for error in summary.errors)
+
+
+async def test_judge_only_losses_are_not_harness_faults_on_the_page_as_in_the_runner() -> None:
+    """Every cell lost to a judge reply that will not parse: excluded as ``infra``, but no harness fault, so the run
+    completes and the page never reads it as nothing measured, even under a reason that says so."""
+    summary_host = await Eval(CASES, answer, [_judge(_FakeJudgeClient(reply="no json here"))], k=1).run(
+        store=MEMORY, scope=SCOPE
+    )
+    assert summary_host.summary.status == "completed"
+    bundle = summary_host.report.bundle
+    (cells,) = bundle.exclusions
+    assert (cells.by_cause, cells.n_harness_faults) == ({"infra": len(CASES)}, 0)
+    (run_id,) = summary_host.run_ids.values()
+    restated = bundle.model_copy(
+        update={"incomplete_runs": {run_id: "failed"}, "failed_because": {run_id: "nothing_measured"}}
+    )
+    assert "nothing was measured" not in verdict_line(restated, lambda _key: "judged").text
+
+
+class _TemperaturelessReply:
+    """A judge completion of a host's type that carries no ``temperature``: it breaks the completion protocol."""
+
+    def __init__(self, reply: _Reply) -> None:
+        for name, value in vars(reply).items():
+            if name != "temperature":
+                setattr(self, name, value)
+
+
+# parity-with: threetears.evals.schema.CompletionClient
+class _TemperaturelessJudgeClient(_FakeJudgeClient):
+    """The scripted judge, answering with a completion that breaks the protocol."""
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
+        return _TemperaturelessReply(await super().generate(system=system, user=user, response_format=response_format))
+
+
+@pytest.mark.expect_contained(
+    CompletionProtocolDefect, why="the job manager contains the defect that fails the run, which is the case under test"
+)
+async def test_a_single_cell_run_failed_by_a_defect_on_its_cell_never_reads_as_nothing_measured() -> None:
+    """A defect in the host's client fails the run on its first cell: it failed, but not for measuring nothing."""
+    result = await Eval(CASES[:1], answer, [_judge(_TemperaturelessJudgeClient())], k=1).run(store=MEMORY, scope=SCOPE)
+    assert result.summary.status == "failed" and result.exit_code() == 1
+    bundle = result.report.bundle
+    assert bundle.failed_because == {}, "the run recorded no reason: it failed for a defect"
+    page = report_markdown(result.report)
+    assert "nothing was measured" not in page
+    assert "Its run failed; the run's own error says why." in page
 
 
 async def test_a_rubric_of_engine_dimensions_keeps_their_names_and_scales() -> None:
