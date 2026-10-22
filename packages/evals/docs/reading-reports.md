@@ -195,7 +195,10 @@ reading.
 ### The rest of the page
 
 The sections follow in this order, each reached from a sticky nav; Cases, Trials, Not tested, Methods and the
-Glossary start folded, and a nav link opens the one it lands on.
+Glossary start folded, and a nav link lands on the folded section's heading, which the reader opens. No link on the
+page lands inside a closed fold the reader has not opened, since not every browser opens one for a link: a term lands
+on the Glossary's heading (its definition is also the link's hover text), and a case's trial id on the Trials
+heading.
 
 - **Decision**: the aspect's floors, in the `Floors on <aspect>` table: one row per floor and reading, the floor's
   own sentence first (`no pass rate drops by more than 5 points`; a floor naming one reading says `no tone rate drops
@@ -231,6 +234,15 @@ Glossary start folded, and a nav link opens the one it lands on.
   tested (`The analysis also noted: …`). The memo's words are held to the page's style (below).
   A campaign's summary and recommendation are on its first screen, not in a fold; the writer's summary of the aspect
   opens the fold ([one memo per campaign](#having-a-model-write-the-analysis-over-frozen-evidence)).
+  **Each finding traces to its evidence, in HTML.** Each figure in its table links to a cell printing the same
+  figure of the same reading on the same arm: a contrast's arm or control, a guardrail's mean, a one-arm page's
+  reading, an arm's cost per reply; a figure printed only in the closed `Bars` table links to that fold. A figure is
+  never linked to a different number: a contrast that read fewer cases prints a paired mean, which is another figure.
+  Each trial id in its `Evidence` fold links to the Trials heading; one the page does not hold is not linked. On a
+  campaign's page each finding's `Evidence` fold lists what it cites with its figure, each linked to the heading of
+  the aspect's fold that prints it. Code draws every link from the cells and trials the
+  memo cites, never from its words; a finding none of whose figures or trials the page prints says
+  `No contrast, guardrail, bar or cost on this page shows this finding's figures.` in its fold.
 - **Contrasts**: one table headed by its control (`Against v1`), a row per reading: `Reading | ▸ control | arm | Change |
   Interval (99%) | Verdict | Cases`, each value with its interval, the change and its interval drawn in the row
   ([the marks](#the-marks)); one line instead when no contrast can resolve under the case floor. Then the effect
@@ -255,9 +267,10 @@ Glossary start folded, and a nav link opens the one it lands on.
   not shown to beat doing nothing, the measures with no margin and how to declare one, each judge not yet calibrated,
   a finding that names no reading, the readings no declared question asked about, and, folded, a cost not measured.
   With none of these, `Nothing declared went untested.`
-- **Methods**: a table (arms, judge, settings sent, test cost, the analysis's writer, the bundle); the coverage map
-  in a closed `Coverage` fold (one row per lever: its status, how many findings name it, the next steps that do),
-  which restates no finding; and the engine's own disclosures in a closed fold. Then the **Glossary**: every term of
+- **Methods**: a table (arms, judge, settings sent, test cost, the analysis's writer, the bundle); and the engine's own
+  disclosures in a closed fold. The per-lever coverage map (status, findings that name it, next steps) is in the
+  bundle's `coverage`, in the `bundle-<aspect>.json` written beside a saved page (the command line's `report --out`); the page lists each `thin` or `unswept` lever under Not tested.
+  `threetears.evals.analysis.build_report` lays it out as a closed `Coverage` fold, one row per lever, for one analysis. Then the **Glossary**: every term of
   art the page links, in one plain sentence. Every column header that is a term of art links its entry, and in HTML a
   hover reads it.
 
@@ -475,7 +488,9 @@ description stay editable, and an amended question is a new campaign that adopts
 ## Excluded trials by cause
 
 A trial is left out of an arm's measures for one of three causes (`trial_exclusion`): `infra`, the harness faulted
-it; `truncated`, a judge reply was cut off at the output cap it was sent and was not bought again; and
+it or the provider rationed one of its calls (a 429 that is not a spent quota, which says nothing about the model:
+it needs no fix, only a rerun once the provider has capacity, and the trial's error says which it was);
+`truncated`, a judge reply was cut off at the output cap it was sent and was not bought again; and
 `judge_cannot_tell`, the judge could not score a capability dimension, which leaves the trial out of pass^k and the
 composite only. A candidate's own failure is never an exclusion: it fails, and is counted. The bundle's
 `exclusions` gives every arm its trial count, its usable count and its exclusions by cause, with the caps the

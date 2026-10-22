@@ -52,7 +52,7 @@ import httpx
 from pydantic import JsonValue
 
 from threetears.core.config import DEFAULT_HTTP_TIMEOUT_SECONDS
-from threetears.core.http_client import ATTEMPTS_EXTENSION, CircuitBreakerLike, TracedHttpClient
+from threetears.core.http_client import ATTEMPTS_EXTENSION, CircuitBreakerLike, TracedHttpClient, UpstreamHttpError
 from threetears.search.contracts import EGRESS_DIRECT, LocalCapExceeded, Spend, TransportResponse
 from threetears.search.standalone import (
     DEFAULT_MAX_RESPONSE_BYTES,
@@ -264,9 +264,12 @@ class TracedSearchTransport:
         :rtype: TransportResponse
         :raises threetears.search.contracts.errors.LocalCapExceeded: when the
             URL is not on this transport's configured upstream
-        :raises Exception: whatever the traced client raises on exhaustion or
-            an open breaker; the calling adapter maps it onto the taxonomy
-            (SR-J1)
+        :raises Exception: whatever the traced client raises when the last
+            attempt got no answer (a connect, read or write failure, or a
+            timeout) or the breaker is open; the calling adapter maps it onto the taxonomy
+            (SR-J1). A 5xx the upstream answered on the last attempt is
+            returned, not raised, as ``StandaloneTransport`` returns it, so the
+            adapter maps it with its status.
         """
         if _origin(url) != self._origin:
             raise LocalCapExceeded(
@@ -323,6 +326,23 @@ class TracedSearchTransport:
                     json=dict(json_body) if json_body is not None else None,
                     timeout=effective_timeout,
                 )
+        except UpstreamHttpError as exhausted:
+            # The last attempt was answered with a 5xx: that answer is the result,
+            # and its status is what tells a caller the provider's fault from a
+            # misconfigured URL. The error describes the last attempt only, so a
+            # last attempt that got no answer carries no status and stays raised.
+            if exhausted.status_code is None:
+                raise
+            return TransportResponse(
+                status_code=exhausted.status_code,
+                body=exhausted.body,
+                final_url=url,
+                egress=self.egress_name,
+                elapsed_seconds=time.monotonic() - started,
+                # the client counts its attempts on every exhaustion it raises
+                attempts=exhausted.attempts if exhausted.attempts is not None else self._max_attempts,
+                headers={},
+            )
         finally:
             await client.aclose()
 

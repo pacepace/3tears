@@ -70,6 +70,15 @@ was read under (the way an unpriced cost is a floor the page names), and what a 
 silence, on the first screen, when the one reading a question asks about was withheld. Discodon's G2 (2026-10) hit
 this: 19 of 24 results were concurrent, and the only trace was a memo finding citing no reading.
 
+### A reader cannot ask a memo a follow-up question (deferred)
+
+Decided in [#629](https://github.com/pacepace/3tears/issues/629): a reader who wants more of the data behind a
+finding follows its trace (each finding links to the readings and trials it cites, drawn by code), and free-text
+questions over the frozen bundle are deferred until readers using the trace still ask for more. Answering one would
+need a new metered generation over one analysis's frozen bundle that may cite only bundle readings, every number in
+it a code-rendered reference as in a memo, stored with its question and the bundle's fingerprint; and its own writer
+evaluation, since an answer is a second way for a model to state a finding and nothing yet measures how well it does.
+
 ### The analysis writer may propose a next step naming no reading
 
 No issue filed yet. A memo's next step is the writer's words held to the

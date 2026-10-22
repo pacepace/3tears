@@ -830,9 +830,10 @@ class ReporterKind:
         harness's (``infra_errors``, the cell excluded); a generation the
         engine refused, or the candidate's own provider call failing, is the candidate's
         (``candidate_errors``, the cell failed, no judge) — unless the host's describer says the
-        call was refused for the calling account, which excludes the cell and stops the run
-        (``account_refused``). Spend is reported on every exit that reached the provider, because
-        a refused generation was still billed — and to ``sink`` as each call returns, because a
+        call was the account's, which excludes the cell and stops the run (``account_refused``), or
+        the provider's (it rationed the call), which excludes the cell and lets the run go on. Spend
+        is reported on every exit that reached the provider, because a refused generation was still
+        billed — and to ``sink`` as each call returns, because a
         generation is up to two calls and a deadline in the second must not lose the first. Each call is
         counted on the sink's candidate total as it returns; the run's cost cap is read between cells, so no
         call is refused inside the cell.
@@ -885,24 +886,48 @@ class ReporterKind:
                     failure = describe_failure(
                         self._host.failure_describer, exc, logger=log, where="Reporter generator call"
                     )
-                    if failure.account_refused:
+                    # A call after one that returned is the repair the first reply's refusal bought: named, so a
+                    # reader of an excluded cell knows the candidate had already written a memo that was refused.
+                    call = (
+                        "generator's repair call, after its first reply was refused,"
+                        if recorder.results
+                        else "generator call"
+                    )
+                    if failure.owner == "account":
                         # Every model behind the key gets the same answer, so this cell measured the
                         # account, not the candidate: excluded, and ``account_refused`` stops the RUN.
                         log_provider_failure(
-                            log, failure, exc, "Reporter candidate's generator call was refused for the calling account"
+                            log, failure, exc, "Reporter candidate's %s was refused for the calling account", call
                         )
                         return CandidateOutput(
                             infra_errors=[
-                                f"apparatus: reporter: the generator call was refused for the calling account: {failure.description}"
+                                f"apparatus: reporter: the {call} was refused for the calling account: {failure.description}"
                             ],
                             account_refused=True,
                             telemetry=telemetry,
                         )
+                    if failure.owner == "provider":
+                        # The provider declined to serve the call at that moment, as it would any request: the
+                        # cell measured the provider, not the candidate, so it is excluded and the run goes on.
+                        log_provider_failure(
+                            log,
+                            failure,
+                            exc,
+                            "Reporter candidate's %s was rationed by the provider",
+                            call,
+                            level=logging.WARNING,
+                        )
+                        return CandidateOutput(
+                            infra_errors=[
+                                f"apparatus: reporter: the {call} was rationed by the provider: {failure.description}"
+                            ],
+                            telemetry=telemetry,
+                        )
                     log_provider_failure(
-                        log, failure, exc, "Reporter candidate's generator call failed", level=logging.WARNING
+                        log, failure, exc, "Reporter candidate's %s failed", call, level=logging.WARNING
                     )
                     return CandidateOutput(
-                        candidate_errors=[f"reporter: the generator call failed: {failure.description}"],
+                        candidate_errors=[f"reporter: the {call} failed: {failure.description}"],
                         telemetry=telemetry,
                     )
                 # Everything else is the harness's: a defect below the kind. Failing the candidate for either would score it for the rig.

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
+import json
 import math
 from collections.abc import Mapping
 from typing import Any
@@ -26,6 +27,7 @@ from threetears.evals import Eval, grader
 from threetears.evals.analysis.stats import wilson_interval
 from threetears.evals.kernel import ValidationFailedError, classifier_label_measure, confusion_cell, confusion_of
 from threetears.evals.kernel.host import EvalHost, KindContract
+from threetears.evals.providers.failures import error_from_response
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, field_scorer
 from threetears.evals.quick.one_call import CALLABLE_KIND, CALLABLE_KIND_CONTRACT, callable_host
 from threetears.evals.run import get_result_trace, list_results, list_runs, list_templates
@@ -63,6 +65,38 @@ async def test_a_raising_runner_fails_its_cell_and_says_why() -> None:
     assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (2, 1, 0)
     assert summary.measures[0].n == 2 and summary.measures[0].mean == pytest.approx(2.0)
     assert len(summary.errors) == 1 and "the candidate raised RuntimeError: cannot do two" in summary.errors[0]
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "owner"),
+    [
+        (429, {"error": {"code": 429, "message": "Rate limit exceeded: upstream"}}, "provider"),
+        (402, {"error": {"code": 402, "message": "Insufficient credits"}}, "account"),
+        (500, {"error": {"code": 500, "message": "upstream died"}}, "candidate"),
+    ],
+)
+async def test_whose_failure_a_runners_provider_call_was_decides_whether_its_cell_fails_is_excluded_or_stops_the_run(
+    status: int, body: dict[str, Any], owner: str
+) -> None:
+    """A rationed call is excluded and the run goes on; the account's refusal stops it; any other failure fails."""
+    error = error_from_response("openrouter", status, json.dumps(body))
+
+    async def calls(case: Mapping[str, Any]) -> int:
+        if case["n"] == 2:
+            raise error
+        return int(case["n"])
+
+    summary = (await Eval(CASES, calls, [size], k=1).run(store=MEMORY, scope=SCOPE)).summary
+    if owner == "candidate":
+        assert summary.status == "completed"
+        assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (2, 1, 0)
+    elif owner == "provider":
+        assert summary.status == "completed", "a rationed call stops nothing: the next one may be served"
+        assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (2, 0, 1)
+        assert any(f"the candidate's provider call was rationed by the provider: {error}" in e for e in summary.errors)
+    else:
+        assert summary.status == "exhausted", "every later call is behind the same refused key"
+        assert summary.n_candidate_failed == 0
 
 
 @pytest.mark.parametrize(

@@ -28,12 +28,14 @@ The page, screen by screen:
 
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 from itertools import chain
+from typing import Literal, Protocol
 
 from threetears.evals.analysis.agreement import tier_sentence
 from threetears.evals.analysis.arms import arm_names, multi_rig_variants, short_digest, surface_order
@@ -42,6 +44,7 @@ from threetears.evals.analysis.bundle.schema import (
     ArmScoreboard,
     CellCoordinate,
     ComparedCell,
+    FLOOR_COST_MEASURE,
     FamilyComparison,
     GoalCheckProofReading,
     TrialRow,
@@ -50,7 +53,7 @@ from threetears.evals.analysis.bundle.schema import (
     refuse_a_bundle_before_aspects,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
-from threetears.evals.analysis.campaign_bundle import CampaignBundle
+from threetears.evals.analysis.campaign_bundle import CampaignBundle, campaign_trial_ids
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.kinds import campaign_kind
@@ -70,6 +73,7 @@ from threetears.evals.analysis.report.figures import (
 from threetears.evals.analysis.report.model import (
     CellValue,
     ChartBlock,
+    FOLDED_SECTIONS,
     SECTION_TITLES,
     DisclosureBlock,
     DisclosureSource,
@@ -88,6 +92,7 @@ from threetears.evals.analysis.report.model import (
     TrialBlock,
     Verdict,
     VerdictReason,
+    reading_anchor,
     table_row,
 )
 from threetears.evals.analysis.report.decision import (
@@ -125,6 +130,7 @@ from threetears.evals.analysis.report.words import (
     BAR_DECISION_WORDS,
     CONFIDENCE_WORDS,
     NO_RECOMMENDATION_WORDS,
+    UNTRACED,
     comparison_words,
     evidence_rows,
     guardrail_words,
@@ -560,6 +566,7 @@ def _page(
     # with what was not tested, though they are laid out with the questions).
     order = list(SECTION_TITLES)
     blocks.sort(key=lambda block: order.index(block.section))
+    blocks = _traced(blocks, bundle)
     return Report(
         basis=basis,
         title=_title(bundle, name, arm),
@@ -569,6 +576,84 @@ def _page(
         verdicts=[*guardrails_read, *bars_read, *contrasts_read],
         bundle=bundle,
     )
+
+
+def _traced(blocks: Sequence[ReportBlock], bundle: AnalysisContextBundle) -> list[ReportBlock]:
+    """The page with each finding's trace drawn: from its figures to the cells printing the same figures, and from its
+    trial ids to the trials.
+
+    Every cell printing a reading's own figure at a cell carries that reading's id (:func:`_at`), and one cell keeps
+    it: a cell shown open before one in a closed table, a contrast before any other table, else the first on the page.
+    A finding's figure links to that cell where it is shown open. Where it sits in a table shown closed, the figure
+    links to the table's fold, which every browser shows, since a browser that leaves the fold shut would not show a
+    cell inside it; a cell deeper in the page's folds is linked to from nowhere. A finding whose figures link nowhere
+    and whose trials the page does not hold says so (:data:`UNTRACED`) in its ``Evidence`` fold, after its facts,
+    rather than leave a reader looking for a link.
+    """
+    placed = list(blocks)
+    landing: dict[str, str] = {}
+    claimed: set[str] = set()
+    tables = {index: block for index, block in enumerate(placed) if isinstance(block, TableBlock)}
+    rank = {"open": 0, "folded": 1, "hidden": 2}
+    order = sorted(tables, key=lambda index: (rank[_shown(tables[index])], tables[index].section != "contrasts", index))
+    for index in order:
+        table = tables[index]
+        shown = _shown(table)
+        fold = f"t-{table.name}"
+        rows = []
+        for row in table.rows:
+            kept = {}
+            for key, cell in row.items():
+                if cell.anchor is not None and cell.anchor in claimed:
+                    cell = cell.model_copy(update={"anchor": None})
+                elif cell.anchor is not None:
+                    claimed.add(cell.anchor)
+                    if shown == "open":
+                        landing[cell.anchor] = cell.anchor
+                    elif shown == "folded":
+                        landing[cell.anchor] = fold
+                kept[key] = cell
+            rows.append(kept)
+        update: dict[str, object] = {"rows": rows}
+        if shown == "folded" and fold in {landing.get(cell.anchor or "") for row in rows for cell in row.values()}:
+            update["anchor"] = fold
+        placed[index] = table.model_copy(update=update)
+    held = {trial.trial_id for trial in bundle.trials}
+    traced: list[ReportBlock] = []
+    for block in placed:
+        if isinstance(block, TableBlock) and block.name == "evidence" and block.finding is not None:
+            rows = [
+                {
+                    key: cell if cell.ref is None else cell.model_copy(update={"ref": landing.get(cell.ref)})
+                    for key, cell in row.items()
+                }
+                for row in block.rows
+            ]
+            block = block.model_copy(update={"rows": rows})
+        traced.append(block)
+        if isinstance(block, TableBlock) and block.name == "finding_facts" and block.finding is not None:
+            position = block.finding
+            linked = any(
+                cell.ref is not None
+                for other in traced
+                if isinstance(other, TableBlock) and other.name == "evidence" and other.finding == position
+                for row in other.rows
+                for cell in row.values()
+            )
+            trials = str(block.rows[0]["trials"].value).split(", ") if "trials" in block.rows[0] else []
+            if not linked and not held.intersection(trials):
+                traced.append(
+                    DisclosureBlock(section="memo", source="memo", text=UNTRACED, finding=position, fold="Evidence")
+                )
+    return traced
+
+
+def _shown(table: TableBlock) -> Literal["open", "folded", "hidden"]:
+    """How a table is laid out: ``open``; ``folded``, a closed table of its own in an open section, whose fold every
+    browser shows; or ``hidden``, inside a closed section or a closed fold of several blocks."""
+    if table.fold is not None or table.section in FOLDED_SECTIONS:
+        return "hidden"
+    return "folded" if table.details else "open"
 
 
 # =============================================================================
@@ -802,13 +887,21 @@ def _scoreboard_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str])
         TableColumn(key="cost", header=f"Cost {_per_reply(bundle)}", term="cost per reply"),
     ]
     rows = [{column.key: row[column.key] for column in columns} for row in rows]
+    surface = bundle_decision_surface(bundle)
+    cells = [
+        {
+            **_scoreboard_cells(row),
+            "cost": _arm_cost_at(_scoreboard_cells(row)["cost"], surface, board.variant_key, board.reply_cost_usd),
+        }
+        for row, board in zip(rows, boards, strict=True)
+    ]
     blocks: list[ReportBlock] = [
         TableBlock(
             section="scoreboard",
             name="scoreboard",
             title="Scoreboard",
             columns=columns,
-            rows=[_scoreboard_cells(row) for row in rows],
+            rows=cells,
             order="the control first, then the other arms by name",
             total_rows=len(rows),
         ),
@@ -837,6 +930,15 @@ def _scoreboard_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str])
             )
         )
     return blocks
+
+
+def _arm_cost_at(cell: TableCell, surface: DecisionSurface, variant_key: str, figure: float | None) -> TableCell:
+    """An arm's cost per reply, carrying the id a finding citing that cost lands on where the arm ran under one test
+    setup, so the arm is one cell, and the figure is that cell's own (:func:`_at`)."""
+    held = [cell for cell in surface.cells if cell.variant_key == variant_key]
+    if len(held) != 1:
+        return cell
+    return _at(cell, surface, held[0], FLOOR_COST_MEASURE, "measure", figure)
 
 
 def _scoreboard_cells(row: Mapping[str, CellValue]) -> dict[str, TableCell]:
@@ -1497,24 +1599,25 @@ def _guardrail_standing(keys: Sequence[str], bundle: AnalysisContextBundle, arm:
     return " | ".join(parts) or None
 
 
-def _campaign_trials(analysis: EvalAnalysis, aspect: str) -> dict[str, str]:
-    """The writer's trial ids that name a trial of ``aspect``, each to that trial's id in the aspect's bundle.
+def _campaign_trials(analysis: EvalAnalysis) -> dict[str, tuple[str, str]]:
+    """The writer's trial ids, each to its aspect and that trial's id in the aspect's bundle.
 
     The writer names trials across the campaign, ``T1`` … ``TN`` aspect after aspect, as its campaign bundle numbers
-    them (:meth:`~threetears.evals.analysis.campaign_bundle.CampaignBundle.trial_ids`); a page lays out one aspect's
+    them (:func:`~threetears.evals.analysis.campaign_bundle.campaign_trial_ids`); a page lays out one aspect's
     bundle, whose trials carry their own ids, so every id the memo names is read through this before the page links
     or counts it.
     """
-    found: dict[str, str] = {}
-    count = 0
-    for held in analysis.aspects:
-        listed = held.bundle.get("trials")
-        for trial in listed if isinstance(listed, list) else []:
-            count += 1
-            trial_id = trial.get("trial_id") if isinstance(trial, Mapping) else None
-            if held.label == aspect and isinstance(trial_id, str):
-                found[f"T{count}"] = trial_id
-    return found
+    return campaign_trial_ids((held.label, _frozen_trial_ids(held)) for held in analysis.aspects)
+
+
+def _frozen_trial_ids(held: AspectAnalysis) -> list[str]:
+    """The trial ids an aspect's frozen bundle carries, in its order, read without parsing the bundle."""
+    listed = held.bundle.get("trials")
+    return [
+        trial_id
+        for trial in (listed if isinstance(listed, list) else [])
+        if isinstance(trial, Mapping) and isinstance(trial_id := trial.get("trial_id"), str)
+    ]
 
 
 def _bundle_trials(analysis: EvalAnalysis | None, bundle: AnalysisContextBundle, trials: Sequence[str]) -> list[str]:
@@ -1522,18 +1625,14 @@ def _bundle_trials(analysis: EvalAnalysis | None, bundle: AnalysisContextBundle,
     aspect's trial is left out, and an id no map holds is kept as written."""
     if analysis is None:
         return list(trials)
-    mapped = _campaign_trials(analysis, bundle.aspect)
-    others = {f"T{index + 1}" for index in range(sum(_trial_counts(analysis)))} - set(mapped)
-    return [mapped.get(trial, trial) for trial in trials if trial not in others]
-
-
-def _trial_counts(analysis: EvalAnalysis) -> list[int]:
-    """How many trials each aspect's frozen bundle carries, in the campaign's order."""
-    counts = []
-    for held in analysis.aspects:
-        listed = held.bundle.get("trials")
-        counts.append(len(listed) if isinstance(listed, list) else 0)
-    return counts
+    numbered = _campaign_trials(analysis)
+    kept = []
+    for trial in trials:
+        if trial not in numbered:
+            kept.append(trial)
+        elif numbered[trial][0] == bundle.aspect:
+            kept.append(numbered[trial][1])
+    return kept
 
 
 def _cases_of(
@@ -1797,9 +1896,11 @@ def _evidence_table(
             (evidence.aspect if by_aspect else "", name),
             {**lead, "arm": TableCell(value=name), **{key: TableCell(value=None) for key in keys.values()}},
         )
-        line[keys[str(row["measure"].value)]] = _with_interval(
-            row["value"], analysis, evidence, charts, str(row["measure"].value)
-        )
+        figure = _with_interval(row["value"], analysis, evidence, charts, str(row["measure"].value))
+        # The figure names its reading at its cell; :func:`_traced` links it to a cell printing the same figure, or to
+        # the closed fold holding one, and drops the link where none does.
+        place = reading_anchor(evidence.cell_ref, evidence.measure_id, evidence.reading)
+        line[keys[str(row["measure"].value)]] = figure.model_copy(update={"ref": place})
         cases = row["cases"].value
         held = line.get("cases")
         if held is None or (isinstance(cases, int) and isinstance(held.value, int) and cases > held.value):
@@ -2064,6 +2165,42 @@ def _figure(value: float | None, ruler: MeasureRuler) -> TableCell:
     return TableCell(value=value * ruler.factor, unit=ruler.unit)
 
 
+class _OneCell(Protocol):
+    """Anything naming one cell: an arm's variant under one rig."""
+
+    @property
+    def variant_key(self) -> str: ...
+
+    @property
+    def apparatus_class_id(self) -> str: ...
+
+
+def _at(
+    cell: TableCell, surface: DecisionSurface, at: _OneCell, name: str, reading: str, figure: float | None
+) -> TableCell:
+    """``cell``, printing ``figure`` for ``name`` read at ``at``'s cell, carrying the id a finding citing that reading
+    links to (:func:`~threetears.evals.analysis.report.model.reading_anchor`) where ``figure`` is the cell's own: the
+    mean a finding's evidence resolves to (:func:`~threetears.evals.analysis.references.resolve_reading`). A figure
+    read over other cases (a paired test's mean over the cases both sides ran, a guardrail's mean of per-case means)
+    is another number, and a link from the finding's figure never lands on another number; such a cell is handed back
+    as it was.
+
+    :func:`_traced` keeps the first such cell on the page.
+    """
+    kind: ReadingKind | None = "measure" if reading == "measure" else "judged" if reading == "judged" else None
+    if figure is None or cell.value is None or kind is None:
+        return cell
+    ref = cell_ref(at.variant_key, at.apparatus_class_id)
+    try:
+        own = resolve_reading(surface, ref, name, kind).mean
+    except UnresolvableReference:
+        # NOSILENT: the cell holds no figure of its own for this reading, so a finding's figure has nothing to match
+        return cell
+    if not math.isclose(figure, own, rel_tol=1e-9, abs_tol=1e-12):
+        return cell
+    return cell.model_copy(update={"anchor": reading_anchor(ref, name, reading)})
+
+
 def _change(
     delta: float | None,
     ruler: MeasureRuler,
@@ -2091,9 +2228,18 @@ def _change(
     )
 
 
+def _side_cell(
+    surface: DecisionSurface, comparison: FamilyComparison, side: ComparedCell, ruler: MeasureRuler
+) -> TableCell:
+    """One arm's figure on a contrast's reading (:func:`_side_text`), carrying the id a finding's figure lands on where
+    it is the cell's own."""
+    text, figure = _side_text(surface, comparison, side, ruler)
+    return _at(TableCell(value=text), surface, side, comparison.name, comparison.reading, figure)
+
+
 def _side_text(
     surface: DecisionSurface, comparison: FamilyComparison, side: ComparedCell, ruler: MeasureRuler
-) -> str | None:
+) -> tuple[str | None, float | None]:
     """One arm's figure on a contrast's reading, with its own interval where the cell has one: ``98.9% [88.1%,
     100%]``.
 
@@ -2101,9 +2247,11 @@ def _side_text(
     where the test read every case the cell holds, so the pair is one estimate; where cases were left out, or the
     reading is the pass rate, which no cell holds as a measure, the figure is the mean the test read, alone. None
     where the side has no mean.
+
+    :return: The text, and the figure it prints, unscaled.
     """
     if side.mean is None:
-        return None
+        return None, None
     if comparison.reading in ("measure", "judged") and side.n_left_out == 0:
         try:
             resolved = resolve_reading(
@@ -2112,8 +2260,8 @@ def _side_text(
         except UnresolvableReference:
             resolved = None
         if resolved is not None and resolved.ci_low is not None and resolved.ci_high is not None:
-            return _mean_text(resolved.mean, ruler) + _interval(resolved.ci_low, resolved.ci_high, ruler)
-    return _mean_text(side.mean, ruler)
+            return _mean_text(resolved.mean, ruler) + _interval(resolved.ci_low, resolved.ci_high, ruler), resolved.mean
+    return _mean_text(side.mean, ruler), side.mean
 
 
 def _interval_cell(low: float, high: float, unit: str) -> str:
@@ -2333,8 +2481,8 @@ def _comparison_blocks(
                     "reading": TableCell(value=heading),
                     "contrast": TableCell(value=verdict.arm),
                     "control_label": TableCell(value=verdict.control),
-                    "control": TableCell(value=_side_text(surface, comparison, comparison.control, ruler)),
-                    "arm": TableCell(value=_side_text(surface, comparison, comparison.contrast, ruler)),
+                    "control": _side_cell(surface, comparison, comparison.control, ruler),
+                    "arm": _side_cell(surface, comparison, comparison.contrast, ruler),
                     "change": _change(
                         comparison.delta,
                         ruler,
@@ -2665,8 +2813,22 @@ def _guardrail_blocks(
             {
                 "guardrail": TableCell(value=ruler.scaled(verdict.heading)),
                 "arm": TableCell(value=verdict.arm),
-                "control_mean": _figure(check.control.mean, ruler),
-                "arm_mean": _figure(check.contrast.mean, ruler),
+                "control_mean": _at(
+                    _figure(check.control.mean, ruler),
+                    surface,
+                    check.control,
+                    check.name,
+                    check.reading,
+                    check.control.mean,
+                ),
+                "arm_mean": _at(
+                    _figure(check.contrast.mean, ruler),
+                    surface,
+                    check.contrast,
+                    check.name,
+                    check.reading,
+                    check.contrast.mean,
+                ),
                 "cases": TableCell(
                     value=(
                         f"{check.control.n_cases} paired"
@@ -2723,7 +2885,9 @@ def _bar_blocks(surface: DecisionSurface, verdicts: Sequence[Verdict], rulers: R
                 {
                     "bar": TableCell(value=ruler.scaled(verdict.heading)),
                     "arm": TableCell(value=verdict.arm),
-                    "value": _figure(verdict.value, ruler),
+                    "value": _at(
+                        _figure(verdict.value, ruler), surface, verdict, verdict.name, verdict.reading, verdict.value
+                    ),
                     "interval": TableCell(
                         value=None
                         if verdict.interval is None
@@ -2793,6 +2957,8 @@ def _readings_blocks(
     cell_name = _cell_namer(surface, names)
     catalog = bundle.measure_catalog
     rows: list[dict[str, CellValue]] = []
+    # Each row's figure is where a finding citing that reading at that cell lands.
+    places: list[tuple[CellFacts, str, str, float | None]] = []
     for cell in surface.cells:
         label = cell_name(cell.variant_key, cell.apparatus_class_id)
         measures = {summary.name: summary for summary in cell.measures.measures}
@@ -2808,6 +2974,7 @@ def _readings_blocks(
         ]
         for name in sorted(readings, key=lambda name: reading_heading(surface, name)):
             summary = measures[name]
+            places.append((cell, name, "measure", summary.rate if summary.rate is not None else summary.mean))
             rows.append(
                 {
                     "arm": label,
@@ -2818,6 +2985,7 @@ def _readings_blocks(
             )
         for reading in sorted(cell.judged, key=lambda reading: reading_name(reading.dimension)):
             ruler = rulers.of(reading.dimension, "judged")
+            places.append((cell, reading.dimension, "judged", reading.mean))
             rows.append(
                 {
                     "arm": label,
@@ -2840,7 +3008,13 @@ def _readings_blocks(
             name="readings",
             title="All cases",
             columns=columns,
-            rows=[table_row({column.key: row[column.key] for column in columns}) for row in rows],
+            rows=[
+                {
+                    **table_row({column.key: row[column.key] for column in columns}),
+                    "value": _at(TableCell(value=row["value"]), surface, *place),
+                }
+                for row, place in zip(rows, places, strict=True)
+            ],
             order="each measure by name, then each judged dimension",
             total_rows=len(rows),
         )

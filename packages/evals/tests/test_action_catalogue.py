@@ -144,6 +144,7 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "analysis_archive": "write",
         "result_regrade": "write",
         "result_rate": "write",
+        "result_rate_person": "write",
         "reporter_case_archive": "write",
         "run_delete": "destructive",
         "analysis_delete": "destructive",

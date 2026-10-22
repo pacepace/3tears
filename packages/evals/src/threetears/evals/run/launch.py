@@ -84,7 +84,8 @@ from threetears.evals.run.jobs import (
 )
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
-from threetears.evals.kernel.job_leases import DEFAULT_JOB_LEASE_S, JobLeases
+from threetears.evals.kernel.job_leases import JobLeases
+from threetears.evals.schema.job_lease import DEFAULT_JOB_LEASE_S
 from threetears.evals.run.lifecycle import record_completeness
 from threetears.evals.run.arm_schedule import CellInterleaver, resolve_arm_schedule
 from threetears.evals.run.executor import DEFAULT_MAX_CONCURRENT_CELLS, CellExecutor
@@ -523,10 +524,11 @@ class LaunchHost:
         :class:`~threetears.evals.ops.RegressionWatch` to check a completed run against its contestant's
         history — or ``None`` for nobody.
     :ivar job_lease_s: How long a job's lease lasts unless renewed, in seconds
-        (:data:`~threetears.evals.kernel.job_leases.DEFAULT_JOB_LEASE_S` by default); renewed every third of it. A
-        job whose process stops renewing reads lost this long after its last renewal, in every process, so
-        it bounds both how soon a dead process's jobs are answered lost and how long a cancel asked from
-        another process waits (a third of it).
+        (:data:`~threetears.evals.schema.DEFAULT_JOB_LEASE_S` by default); renewed every
+        :data:`~threetears.evals.schema.JOB_LEASE_RENEWAL_FRACTION` of it (a third). A job whose process stops
+        renewing reads lost this long after its last renewal, in every process, so it bounds both how soon a dead
+        process's jobs are answered lost and how long a cancel asked from another process waits (one renewal
+        interval).
     :ivar job_leases: The process's job leases, built here over :attr:`eval_host`'s storage and executor: every
         job this host starts — a run, a sweep, an analysis generation — carries one on its record.
     :ivar job_manager: The process's job manager, built here over :attr:`eval_host`'s storage and

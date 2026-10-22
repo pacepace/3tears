@@ -480,8 +480,11 @@ matrix and `summary.labels` gives each label's precision and recall with their i
 never predicted has no precision, one never expected no recall, and neither has an F1); `render()` prints all
 of it. A call to `classify` that raises fails its result: it is counted in
 `summary.n_candidate_failed` and, as a miss, under `(unusable answer)` in the matrix, so a model that refuses
-the hard cases does not read as more accurate. A provider's rate-limit error counts against the model the same
-way, so retry transient errors inside `classify`.
+the hard cases does not read as more accurate. A call through the package's own client
+(`threetears.evals.providers`) that the provider rationed (a 429 that is not a spent quota) is the provider's, not
+the model's: its result is excluded and the run goes on, and a refusal of the calling account stops the run. Let
+that `ProviderError` propagate out of `classify`; a rate limit from any other client, or one `classify` wraps in
+another exception, counts against the model, so retry those inside `classify`.
 
 An answer that is no label (`None`, a blank string, a list) is counted under its own predicted
 label, `UNUSABLE_ANSWER` (printed `(unusable answer)`), and never matches: the unusable label above, applied

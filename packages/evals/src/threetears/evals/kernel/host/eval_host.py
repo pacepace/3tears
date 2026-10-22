@@ -150,6 +150,33 @@ class TemplateCaseFields(Protocol):
         ...  # pragma: no cover — protocol
 
 
+class AttestsPerson(Protocol):
+    """The host's word that a rating relayed to it is a person's: the one thing the engine never decides itself.
+
+    An action caller is whoever the host's surface let in, often an agent acting for an account. A rating it records
+    as a person's would enter the judge's agreement with people, so a caller cannot make one by naming a person: the
+    host, which knows its accounts and how the rating reached it, says whether this caller may record this person's
+    rating, and under which name. Keyword-only, so the caller and the person cannot be swapped where the host writes
+    the check.
+    """
+
+    def __call__(self, *, scope_id: str, caller: str, person: str) -> str | None:
+        """The person's name as the host knows them, when it vouches that ``caller`` relays that person's rating.
+
+        :param scope_id: The scope the rating is written in, as the host resolved it for the call.
+        :ptype scope_id: str
+        :param caller: The calling identity, as the host resolved it for the call (``Caller.identity``).
+        :ptype caller: str
+        :param person: Who the caller says gave the rating, in the caller's spelling.
+        :ptype person: str
+        :return: The host's own name for that person (one name however the caller spells them: the rating is stored
+            under it, so an alias or a case-folded email is the same rater); ``None`` refuses, and nothing is written.
+            A check that raises is a defect in the host: it propagates, and nothing is written.
+        :rtype: str | None
+        """
+        ...  # pragma: no cover — protocol
+
+
 @dataclass(frozen=True, kw_only=True)
 class TemplateChecks:
     """The questions about a template, and about one of its own cases, that only the host can answer, and the kinds it
@@ -224,6 +251,10 @@ class EvalHost:
     :ivar template_checks: The host's checks on a template (:class:`TemplateChecks`), which every path that admits a
         template reads from here. ``None`` for a product that authors no template through the engine (a quick
         ``Eval`` stores its own), and an entrypoint that admits one refuses rather than admitting it unchecked.
+    :ivar attests_person: The host's check that a caller relays a person's rating (:class:`AttestsPerson`), read by
+        the one operation that records a person's rating for a caller (``result_rate_person``). ``None`` for a host
+        that vouches for no one, and that operation then refuses every call: the engine never takes a rating as a
+        person's on a caller's word.
     """
 
     profile: HostProfile
@@ -234,6 +265,7 @@ class EvalHost:
     cell_timeout: CellTimeoutFactory
     clients: CompletionClients | None = None
     template_checks: TemplateChecks | None = None
+    attests_person: AttestsPerson | None = None
 
     def completion_clients(self, purpose: str) -> CompletionClients:
         """The host's client factory, or a refusal naming what needed one.
@@ -271,6 +303,7 @@ class EvalHost:
 
 
 __all__ = [
+    "AttestsPerson",
     "CompletionClients",
     "CompletionRole",
     "EvalHost",

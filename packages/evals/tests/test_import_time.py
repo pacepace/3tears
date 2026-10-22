@@ -3,7 +3,8 @@ on first use.
 
 A host imports ``threetears.evals`` for ``PUBLIC_ROOTS`` or to reach a root (``from threetears.evals import ops``); the
 quick path's ladder (``Eval``, ``Judge``, ``Model``, ...) is served by the root's module ``__getattr__`` from the
-module defining each, so none of it is imported until a name is asked for. Each probe runs in a fresh interpreter,
+module defining each, so none of it is imported until a name is asked for. The job lease's numbers, which a host's
+config reads to size its database pool, load nothing beyond ``schema``. Each probe runs in a fresh interpreter,
 since a module another test imported first would read as loaded.
 """
 
@@ -45,6 +46,19 @@ def test_a_root_reached_through_the_package_loads_no_quick_path() -> None:
     loaded = _loaded_after(_PROBE.replace("import threetears.evals\n", "from threetears.evals import schema\n"))
 
     assert not [name for name in loaded if name.startswith("threetears.evals.quick")]
+
+
+def test_the_job_lease_numbers_load_no_engine_module_beyond_schema() -> None:
+    """A host sizing its database pool reads the lease's numbers as its config loads, so they pull in no kernel."""
+    loaded = _loaded_after(
+        _PROBE.replace(
+            "import threetears.evals\n",
+            "from threetears.evals.schema import DEFAULT_JOB_LEASE_S, JOB_LEASE_RENEWAL_FRACTION, LEASE_POOL_WORKERS\n",
+        )
+    )
+
+    assert "threetears.evals.schema.job_lease" in loaded, "the probe imported nothing, so this says nothing"
+    assert [name for name in loaded if not name.startswith("threetears.evals.schema")] == []
 
 
 def test_asking_for_a_ladder_name_loads_the_quick_path() -> None:

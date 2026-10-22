@@ -279,8 +279,11 @@ the launch and reads each run with `run_get`. One `job_cancel` of a launch stops
 A job id names the durable record its work writes, so
 every process sharing the store answers it alike, and it is still answerable after a restart. Whether a job is
 still running is its record's answer: the process running it holds a **lease** on the record and renews it
-(every third of `LaunchHost.job_lease_s`, 60s by default; all held leases at once, on a pool of its own that
-cell work never queues behind). A job whose record has not ended and whose lease has
+(every `JOB_LEASE_RENEWAL_FRACTION`, a third, of `LaunchHost.job_lease_s`, `DEFAULT_JOB_LEASE_S` (60s) by default;
+all held leases at once, on a pool of its own, `LEASE_POOL_WORKERS` threads, that cell work never queues behind;
+each in `threetears.evals.schema`), and each of the job's own writes of its record that lands extends it as a renewal
+does, so a job busy writing its record keeps its lease though its renewals lose the race. A job whose record has not
+ended and whose lease has
 lapsed reads `lost`, and the first read to see that writes it on the record: not only `job_poll`, but every read
 of the record — `run_get`, `runs_list`, a campaign's or a report's read of its runs, a sweep's, an analysis
 attempt's — so a job whose process died reads `lost` everywhere once its lease lapses, and nothing counts it as
@@ -311,7 +314,8 @@ launches one arm after another and `concurrent` launches them all at once, each 
 also declare `measure_latency`, which every arm's launch takes and which runs the arms sequential. Launched one after
 another or all at once, each run joins the named campaign as it is created; interleaved, every run joins once all
 the arms are prepared and started. That campaign is created exploratory, since a sweep takes no design, and its readings are leads: to ask a
-question of what it found, declare a campaign before the runs that answer it. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
+question of what it found, `campaign_create` an aspect over the sweep's runs (`run_ids` from `job_poll`) with its arms
+named by `from_run_ids`; the question reads as asked after the runs, and the page discloses when. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
 the arms in flight and launches none after them. An arm refused at its launch, or whose run ends `failed`, ends
 the sweep `failed`. The judge and simulator are the sweep's. Where it names none, the role's default is resolved
 once for every arm (by the one interleaved launch, or from the first arm's run when they launch one by one), so a

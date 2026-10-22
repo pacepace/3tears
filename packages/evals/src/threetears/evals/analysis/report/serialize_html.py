@@ -27,10 +27,13 @@ from __future__ import annotations
 
 import html
 import re
+from dataclasses import dataclass
+from html.parser import HTMLParser
 from collections.abc import Sequence
 
 from threetears.evals.analysis.report.model import (
     FIRST_SCREEN,
+    FOLDED_SECTIONS,
     SECTION_TITLES,
     CampaignAspectFold,
     CampaignReport,
@@ -47,6 +50,9 @@ from threetears.evals.analysis.report.serialize_md import RESOLUTION_WORDS, SUMM
 from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg, interval_glyph_svg
 from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
 from threetears.evals.analysis.style import GLOSSARY
+from threetears.evals.schema.logs import contain, get_logger
+
+log = get_logger(__name__)
 
 #: The page's stylesheet: the system's own fonts (named once, as variables — the page loads no font), a readable
 #: measure, light and dark from the reader's setting (and a ``data-theme`` a host's page may set), with the charts'
@@ -109,6 +115,7 @@ td.prose { max-width: 36ch; }
 td.glyph { white-space: nowrap; }
 td.glyph .figure { display: inline-block; min-width: 6ch; text-align: right; }
 td.glyph .no-glyph { display: inline-block; width: 7.5em; margin-right: 6px; }
+td:target, tr:target > td { background: var(--rule); }
 .axis { color: var(--muted); font-size: 0.8125rem; margin: 0 0 8px; }
 [data-table="scoreboard"] table { font-size: 1rem; }
 figure { margin: 16px 0; overflow-x: auto; }
@@ -159,8 +166,6 @@ dl.glossary dd { margin: 2px 0 0 16px; max-width: 72ch; }
 }
 """
 
-#: The sections a reader opens on demand: everything after the result, the decision, what it means and the contrasts.
-_FOLDED_SECTIONS: frozenset[str] = frozenset({"cases", "trials", "not_tested", "methods", "glossary"})
 
 #: The folded sections whose own table lists every one of their units, so the summary can say how many: the cases.
 #: Not the trials — their table lists only the failed and lost, and the section's census line counts the rest.
@@ -172,6 +177,11 @@ _CODE = re.compile(r"`([^`]+)`")
 
 #: A trial id in a table cell, linked to its drill-down.
 _TRIAL_ID = re.compile(r"\bT\d+\b")
+
+#: The columns whose trial ids link to their records: the cases table's, the trials table's and a finding's facts.
+_TRIAL_COLUMNS: frozenset[tuple[str, str]] = frozenset(
+    {("cases", "trials"), ("trials", "trial"), ("finding_facts", "trials")}
+)
 
 #: A case as the cases table numbers it, whose number its row's anchor is made of; a case named by its author anchors
 #: by its name (``case-double-charge``).
@@ -212,14 +222,12 @@ def report_html(report: Report) -> str:
     present = _present_sections(report)
     nav = [*present, *(["glossary"] if report.terms else [])]
     parts.append(
-        "<nav>"
-        + "".join(f'<a href="#{_section_anchor(section)}">{_escape(titles[section])}</a>' for section in nav)
-        + "</nav>"
+        "<nav>" + "".join(f'<a href="#{section}">{_escape(titles[section])}</a>' for section in nav) + "</nav>"
     )
     parts += _sections(report, present)
     parts += _glossary(report.terms)
     parts += ["</article>", "</body>", "</html>"]
-    return "\n".join(parts) + "\n"
+    return _links_in_sight("\n".join(parts) + "\n")
 
 
 def campaign_report_html(report: CampaignReport) -> str:
@@ -264,10 +272,11 @@ def campaign_report_html(report: CampaignReport) -> str:
     # What the memo says reads before the folds; how the page was made (the methods) after them.
     before = [section for section in present if section == "memo"]
     after = [section for section in present if section != "memo"]
-    links = [(_section_anchor(section), SECTION_TITLES[section]) for section in before]
-    links += [(f"aspect-{slug}-body", fold.aspect) for fold, slug in zip(report.aspects, slugs, strict=True)]
-    links += [(_section_anchor(section), SECTION_TITLES[section]) for section in after]
-    links += [("glossary-body", SECTION_TITLES["glossary"])] if report.terms else []
+    # Each nav link names the section itself, whose heading every browser shows, a closed one's included.
+    links = [(section, SECTION_TITLES[section]) for section in before]
+    links += [(f"aspect-{slug}", fold.aspect) for fold, slug in zip(report.aspects, slugs, strict=True)]
+    links += [(section, SECTION_TITLES[section]) for section in after]
+    links += [("glossary", SECTION_TITLES["glossary"])] if report.terms else []
     parts.append("<nav>" + "".join(f'<a href="#{href}">{_escape(text)}</a>' for href, text in links) + "</nav>")
     for section in before:
         parts += _campaign_section(report, section)
@@ -277,7 +286,7 @@ def campaign_report_html(report: CampaignReport) -> str:
         parts += _campaign_section(report, section)
     parts += _glossary(report.terms)
     parts += ["</article>", "</body>", "</html>"]
-    return "\n".join(parts) + "\n"
+    return _links_in_sight("\n".join(parts) + "\n")
 
 
 def _campaign_section(report: CampaignReport, section: str) -> list[str]:
@@ -378,26 +387,19 @@ def _section(section: str, title: str, body: Sequence[str], *, count: int | None
     ``title`` is the heading as this page heads the section (:attr:`Report.section_titles`), which can differ from
     the section's fixed id: a one-arm page heads ``contrasts`` as ``Readings``.
 
-    A closed section's body is one element with an id of its own (``cases-body``), the one the nav links: a browser
-    opens a closed ``<details>`` for a link that lands inside its content and not for one that lands on the
-    ``<section>`` around it, which would scroll to a shut summary. Every id inside the fold — a trial, a case, a
-    term — is inside that element too, so a link to any of them opens the fold as well.
+    A closed section's body is one element with an id of its own (``cases-body``), which the stylesheet keeps clear of
+    the sticky nav; the nav links the ``<section>`` around it, whose heading every browser shows.
     """
     heading = f"<h2>{_escape(title)}</h2>"
-    if section not in _FOLDED_SECTIONS:
+    if section not in FOLDED_SECTIONS:
         return [heading, *body]
     size = f' <span class="count">· {count}</span>' if count is not None else ""
     return [
         f'<details class="section"><summary>{heading}{size}</summary>',
-        f'<div class="section-body" id="{_section_anchor(section)}">',
+        f'<div class="section-body" id="{section}-body">',
         *body,
         "</div></details>",
     ]
-
-
-def _section_anchor(section: str) -> str:
-    """The id a link to a section lands on: the section itself when open, its body inside the fold when closed."""
-    return f"{section}-body" if section in _FOLDED_SECTIONS else section
 
 
 def _section_count(section: str, blocks: Sequence[tuple[int, ReportBlock]]) -> int | None:
@@ -487,7 +489,10 @@ def _table(block: TableBlock) -> str:
     if block.title_ref is not None:
         title = f'<a href="#{_escape(block.title_ref)}">{title}</a>'
     if block.details:
-        return f'<details data-table="{_escape(block.name)}"><summary>{title}</summary>{grid}</details>'
+        # A closed table carries its own id where a finding's figure lands on it: on the fold, which every browser
+        # shows, never on a cell inside it, which a browser that leaves the fold shut would not.
+        anchor = f' id="{_escape(block.anchor)}"' if block.anchor is not None else ""
+        return f'<details{anchor} data-table="{_escape(block.name)}"><summary>{title}</summary>{grid}</details>'
     if block.fold is not None:
         return f'<div class="table-block" data-table="{_escape(block.name)}">{grid}</div>'
     return f'<div class="table-block" data-table="{_escape(block.name)}"><h3>{title}</h3>{grid}</div>'
@@ -535,7 +540,10 @@ def _grid(block: TableBlock) -> str:
         for column in block.columns:
             cell = row[column.key]
             text = _code(cell.text)
-            if (block.name == "cases" and column.key == "trials") or (block.name == "trials" and column.key == "trial"):
+            if cell.ref is not None:
+                # A finding's figure, linked to a cell printing the same figure, or to the closed fold holding it.
+                text = f'<a href="#{cell.ref}">{text}</a>'
+            if (block.name, column.key) in _TRIAL_COLUMNS:
                 text = _TRIAL_ID.sub(lambda match: f'<a href="#{match.group(0)}">{match.group(0)}</a>', text)
             if block.name == "cases" and column.key == "trials":
                 # Navigation beside the marks, not information: the stylesheet mutes it.
@@ -545,7 +553,8 @@ def _grid(block: TableBlock) -> str:
                 text = _glyph(cell, column.key, scales) + f'<span class="figure">{text}</span>'
             else:
                 css = classes[column.key] or (' class="prose"' if len(cell.text) >= _PROSE_CELL else "")
-            cells.append(f"<td{css}>{text}</td>")
+            anchor = f' id="{cell.anchor}"' if cell.anchor is not None else ""
+            cells.append(f"<td{anchor}{css}>{text}</td>")
         anchor = ""
         if block.name == "cases" and "case" in row:
             # prose-canary: allow — the cases table's "case N" cell, which code numbered, not anything a model wrote
@@ -749,6 +758,149 @@ def _markdown(text: str) -> str:
 def _inline(text: str) -> str:
     """Escape ``text``, then turn its bold and code spans into markup."""
     return _CODE.sub(r"<code>\1</code>", _BOLD.sub(r"<strong>\1</strong>", _escape(text)))
+
+
+#: Elements HTML never closes, which hold nothing.
+_VOID_ELEMENTS: frozenset[str] = frozenset({"meta", "br", "hr", "img", "input", "link", "wbr"})
+
+#: A link's target in the start tag the parser read as that link: the one ``href`` attribute, double-quoted.
+_HREF = re.compile(r'(?<![\w-])href="#([^"]*)"')
+
+
+@dataclass
+class _Link:
+    """One ``<a href="#…">`` as the parser read it: where its start tag and its end tag sit in the page, what it
+    names, and the closed folds holding it."""
+
+    start: int
+    tag: str
+    target: str
+    shut: frozenset[int]
+    end: int | None = None
+
+
+class _Outline(HTMLParser):
+    """The page's own markup read once: each id with the ids around it, each with the closed folds holding it, and
+    each link with where it sits and the closed folds holding it.
+
+    A closed fold is a ``<details>`` without ``open``. A place inside one is shown only once the reader opens it, which
+    a browser does on its own for a link landing there in some browsers and not in others, so where a link may land
+    depends on the folds the reader has already opened to see the link.
+    """
+
+    def __init__(self, page: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self._lines = [0, *(index + 1 for index, char in enumerate(page) if char == "\n")]
+        self._open: list[tuple[str, str | None, int | None, frozenset[int]]] = []
+        self._folds = 0
+        self._link: _Link | None = None
+        self.places: dict[str, list[tuple[str, frozenset[int]]]] = {}
+        self.links: list[_Link] = []
+
+    def _offset(self) -> int:
+        line, column = self.getpos()
+        return self._lines[line - 1] + column
+
+    def _shut(self) -> frozenset[int]:
+        return frozenset(fold for _, _, fold, _ in self._open if fold is not None)
+
+    def _read(self, tag: str, attrs: list[tuple[str, str | None]]) -> tuple[str | None, int | None]:
+        found = dict(attrs)
+        shut = self._shut()
+        href = found.get("href") or ""
+        if tag == "a" and href.startswith("#"):
+            self._link = _Link(self._offset(), self.get_starttag_text() or "", href[1:], shut)
+            self.links.append(self._link)
+        if (name := found.get("id")) is not None:
+            around = [(held, above) for _, held, _, above in reversed(self._open) if held is not None]
+            self.places[name] = [(name, shut), *around]
+        fold = None
+        if tag == "details" and "open" not in found:
+            self._folds += 1
+            fold = self._folds
+        return found.get("id"), fold
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        shut = self._shut()
+        name, fold = self._read(tag, attrs)
+        if tag not in _VOID_ELEMENTS:
+            self._open.append((tag, name, fold, shut))
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._read(tag, attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a" and self._link is not None:
+            self._link.end = self._offset()
+            self._link = None
+        if any(open_tag == tag for open_tag, _, _, _ in self._open):
+            while self._open.pop()[0] != tag:
+                pass
+
+
+def _links_in_sight(page: str) -> str:
+    """``page`` with every link drawn to the nearest place a reader sees: the place it names where no closed fold the
+    reader has not opened holds it, else the nearest place around it outside every such fold — a closed section's own
+    ``<section>``, a closed table's own ``<details>``, an aspect's fold's ``<section>`` — whose heading every browser
+    shows. No link may land inside a closed ``<details>``: a browser that does not open it on its own would leave the
+    reader where they were, and the page runs no script to open it. A trial id naming a trial the page does not hold
+    is not linked.
+
+    The links are the parser's own, rewritten where it found them, so nothing else has to agree with it on what a link
+    is. A link this cannot redraw keeps the target it was written with, and is recorded; the page always renders.
+
+    :param page: The page, as the serializer laid it out.
+    :ptype page: str
+    :return: The page, every link landing in sight.
+    :rtype: str
+    """
+    try:
+        outline = _Outline(page)
+        outline.feed(page)
+        outline.close()
+    except Exception as exc:
+        contain(exc, log=log, what="the page's outline could not be read, so its links keep the targets they name")
+        return page
+    drawn: list[str] = []
+    cursor = 0
+    for link in outline.links:
+        drawn.append(page[cursor : link.start])
+        try:
+            replacement, cursor = _redrawn(page, link, outline)
+        except ValueError as exc:
+            contain(
+                exc,
+                log=log,
+                what="a link could not be redrawn, so it keeps the target it names",
+                extra={"target": link.target},
+            )
+            replacement, cursor = link.tag, link.start + len(link.tag)
+        drawn.append(replacement)
+    drawn.append(page[cursor:])
+    return "".join(drawn)
+
+
+def _redrawn(page: str, link: _Link, outline: _Outline) -> tuple[str, int]:
+    """One link redrawn to land in sight, and where in the page what it replaces ends: its start tag with its target
+    moved, or, for a trial id the page does not hold, the id alone in place of the whole link.
+
+    :raises ValueError: The page does not hold the start tag where the parser read it, or the tag names its target
+        other than once, double-quoted.
+    """
+    after = link.start + len(link.tag)
+    if page[link.start : after] != link.tag:
+        raise ValueError(f"the link to #{link.target} is not where the outline read it")
+    chain = outline.places.get(link.target)
+    if chain is None:
+        text = page[after : link.end] if link.end is not None else ""
+        # prose-canary: allow — a trial id (T4), which code numbered, not anything a model wrote
+        if link.end is not None and _TRIAL_ID.fullmatch(text):
+            return text, page.index(">", link.end) + 1
+        return link.tag, after
+    landing = next((place for place, above in chain if above <= link.shut), link.target)
+    if _HREF.findall(link.tag) != [link.target]:
+        raise ValueError(f"the link to #{link.target} names it other than once, double-quoted: {link.tag}")
+    return _HREF.sub(f'href="#{landing}"', link.tag), after
 
 
 def _escape(text: str) -> str:
