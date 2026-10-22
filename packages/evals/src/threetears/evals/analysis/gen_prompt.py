@@ -40,7 +40,7 @@ established (:mod:`threetears.evals.analysis.null_claims`), and whether it names
 (:mod:`threetears.evals.analysis.arm_mentions`). Rule 9 states both as rules for the reader and names none of the
 phrases: a prompt coaching toward a check's words teaches the writer to reword the claim, not to drop it.
 
-**It is budgeted:** at most 24,500 characters and 13 rules (:data:`PROMPT_CHAR_BUDGET`,
+**It is budgeted:** at most 24,100 characters and 13 rules (:data:`PROMPT_CHAR_BUDGET`,
 :data:`PROMPT_RULE_BUDGET`), and the budget only falls; ``tests/test_gen_prompt_budget.py`` fails the
 build past either. A new rule names the one it replaces, in the rule ledger
 ``GEN_PROMPT_RULES.md`` beside this module, which records what each rule prevents and why. The same
@@ -61,9 +61,9 @@ to this constant — it is always handed a prompt resolved from the registry.
 from __future__ import annotations
 
 #: The prompt's character ceiling. It only falls -- once raised, 24,000 to 24,500 (owner, 2026-10-16), for the one-claim
-#: clause, rather than trading away the reasons other rules give; making the prompt shorter is a measured change
-#: (an eval of the writer), not a cut by eye.
-PROMPT_CHAR_BUDGET = 24_500
+#: clause, rather than trading away the reasons other rules give. It sits just above the prompt (24,050 characters), so
+#: the prompt cannot grow unnoticed; making it shorter is a measured change (an eval of the writer), not a cut by eye.
+PROMPT_CHAR_BUDGET = 24_100
 
 #: The most rules the prompt carries, not its numbered headings. It only falls.
 PROMPT_RULE_BUDGET = 13
