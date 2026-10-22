@@ -233,6 +233,25 @@ class ReporterLabel(BaseModel):
         ),
     )
 
+    @model_validator(mode="after")
+    def _a_relay_names_its_reader(self) -> ReporterLabel:
+        """Refuse a blank reader or relay, and a relay with no reader.
+
+        ``quote`` is kept verbatim, so this model strips nothing; a name that is only whitespace names no one. A relay
+        records who carried a named reader's verdict, so it has no meaning without one, as a rating's ``source`` and
+        ``collected_by`` are set together.
+
+        :raises ValueError: ``reader`` or ``collected_by`` is blank, or ``collected_by`` is set without ``reader``.
+        """
+        for name, value in (("reader", self.reader), ("collected_by", self.collected_by)):
+            if value is not None and not value.strip():
+                raise ValueError(f"a reporter label's {name} names who it is, and {value!r} is blank")
+        if self.collected_by is not None and self.reader is None:
+            raise ValueError(
+                f"a reporter label relayed by {self.collected_by!r} names the reader whose verdict it relays"
+            )
+        return self
+
 
 class ReporterCase(BaseModel):
     """What one reporter case pins: a frozen bundle, optionally the memo it got, and its labels.

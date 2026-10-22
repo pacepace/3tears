@@ -14,7 +14,10 @@ label names (``reader``), or its own when a label names none. Pinned here:
 - who gave or relayed a verdict is not part of the case: a re-freeze of the same verdicts by another caller returns
   the stored case, whose record stands; a case stored before readers were recorded (a frozen v16.0 document) is
   returned by an attested re-freeze of its verdicts, without ``supersedes``;
-- a label naming neither is stored without either key, as the build before stored it; a relayed one carries both.
+- a label naming neither is stored without either key, as the build before stored it; a relayed one carries both;
+- a label refuses a blank reader or relay, and a relay with no reader;
+- a case an agent labelled before readers were recorded is retired for good by superseding it with a freeze of its
+  memo that carries no labels (asking nothing, inventing no verdict): restoring it then makes nothing live.
 
 Mutations that turn this file red (each run against a saved copy and restored from it):
 
@@ -37,6 +40,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.actions import Caller, MountedTool, eval_catalogue, standard_tools
+from threetears.evals.analysis import LabelCriterion, ReporterLabel
 from threetears.evals.analysis.reporter_kind import reporter_case_of
 from threetears.evals.kernel import EvalServiceError, ValidationFailedError
 from threetears.evals.ops import (
@@ -44,7 +48,9 @@ from threetears.evals.ops import (
     OpsHost,
     ReporterCaseFreeze,
     analysis_generate,
+    reporter_case_archive,
     reporter_case_freeze,
+    reporter_cases_list,
 )
 from threetears.evals.schema import EvalTestCase
 from threetears.evals.storage import InMemoryDocumentStore
@@ -324,9 +330,10 @@ def _frozen_store() -> tuple[OpsFixture, EvalTestCase, str]:
     """The toy host's operations fixture over a store holding the frozen analysis and case.
 
     The case's labels, the shape under test, are kept exactly as stored. Its evidence is taken from this machine's own
-    freeze of the same campaign and memo: a bundle's fingerprint is not reproducible across machines (the freezing
-    machine and the test pool re-assemble this corpus to two fingerprints), and a re-freeze whose evidence moved is
-    refused for that reason alone, which would hide what this file pins.
+    freeze of the same campaign and memo: bundle fingerprints hash full-precision floats that differ in the last digit
+    between Python builds (GCC vs Clang libm), so the build that froze the fixture and the test pool's re-assemble
+    this corpus to two fingerprints, and a re-freeze whose evidence moved is refused for that reason alone, which
+    would hide what this file pins.
     """
     from threetears.evals.analysis import freeze_reporter_case
     from threetears.evals.run import get_template
@@ -412,3 +419,54 @@ async def test_a_label_naming_no_reader_is_stored_as_the_build_before_stored_it(
     frozen = json.loads(_FROZEN_V16_0.read_text(encoding="utf-8"))
     (before,) = frozen["reporter_case"]["host_payload"]["reporter_case"]["labels"]
     assert set(label) == set(before), "the same keys the build before wrote"
+
+
+def test_superseding_a_case_an_agent_labelled_retires_it_for_good_without_inventing_a_verdict() -> None:
+    """Archiving alone is undone by any caller's restore; a supersession is not, and a freeze with no labels asks
+    nothing of the host, so the old verdicts leave the bank without anyone vouching for new ones."""
+    fixture, stored, analysis_id = _frozen_store()
+    eval_host = _host(fixture, None).eval_host
+
+    replacement = reporter_case_freeze(
+        eval_host,
+        ReporterCaseFreeze(
+            template_id=reporter_template().id,
+            campaign_id=fixture.campaign.id,
+            recorded_analysis_id=analysis_id,
+            supersedes=[stored.id],
+        ),
+        TOYHOST_SCOPE,
+        collected_by=CALLER.identity,
+    )
+    reporter_case_archive(eval_host, stored.id, TOYHOST_SCOPE, archived=True, reason="an agent's own verdicts")
+    reporter_case_archive(eval_host, stored.id, TOYHOST_SCOPE, archived=False)
+
+    listing = reporter_cases_list(eval_host, reporter_template().id, TOYHOST_SCOPE, include_archived=True)
+    live = {entry.case.test_case_id: entry.live for entry in listing.cases}
+    assert live == {stored.id: False, replacement.test_case_id: True}, "a restore brings no superseded verdict back"
+    assert replacement.labels == []
+
+
+_STAMPED = LabelCriterion(description="Every claim traces to the evidence.", scale="ordinal")
+
+
+@pytest.mark.parametrize(
+    ("fields", "says"),
+    [
+        ({"reader": "   "}, "reader names who it is"),
+        ({"reader": PERSON, "collected_by": " "}, "collected_by names who it is"),
+        ({"collected_by": "agent:relay"}, "names the reader whose verdict it relays"),
+    ],
+    ids=["blank-reader", "blank-relay", "relay-without-reader"],
+)
+def test_a_label_refuses_a_blank_name_and_a_relay_with_no_reader(fields: dict[str, Any], says: str) -> None:
+    with pytest.raises(ValueError, match=says):
+        ReporterLabel(dimension=GROUNDED, direction="high", quote="q", criterion=_STAMPED, **fields)
+
+
+def test_a_label_naming_a_reader_alone_or_with_its_relay_is_admitted() -> None:
+    alone = ReporterLabel(dimension=GROUNDED, direction="high", quote="q", criterion=_STAMPED, reader=PERSON)
+    relayed = alone.model_copy(update={"collected_by": "agent:relay"})
+
+    assert ReporterLabel.model_validate(relayed.model_dump()) == relayed
+    assert (alone.reader, alone.collected_by) == (PERSON, None)

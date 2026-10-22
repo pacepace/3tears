@@ -845,8 +845,8 @@ def attested_person(
     """The person's name as the host knows them, when the host attests ``collected_by`` relaying their ``what``.
 
     The one trust boundary every operation that records something as a person's, on a caller's word, passes: a
-    person's rating (``result_rate_person``) and an authored judge case, whose verdict is read as its author's label
-    (``judge_case_author``). The engine never decides it: the host's check (``EvalHost.attests_person``) does. A
+    person's rating (``result_rate_person``), an authored judge case, whose verdict is read as its author's label
+    (``judge_case_author``), and a reporter case's reader verdicts, each asked per reader (``reporter_case_freeze``). The engine never decides it: the host's check (``EvalHost.attests_person``) does. A
     refusal is logged as a warning, so an operator sees it, and raised to the caller; the operation writes nothing.
 
     A host check that raises is a defect in the host, not a refusal: it propagates.
@@ -861,7 +861,8 @@ def attested_person(
     :ptype person: str
     :param operation: The operation asking, as its log event names it (``eval.<operation> refused ...``).
     :ptype operation: str
-    :param what: What is relayed, as a refusal words it after "no" and "a" (``rating``, ``judge case``).
+    :param what: What is relayed, as a refusal words it after "no" and "a" (``rating``, ``judge case``,
+        ``reader verdict``).
     :ptype what: str
     :param unchecked_remedy: The refusal's remedy when the host supplies no check.
     :ptype unchecked_remedy: str

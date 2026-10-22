@@ -26,8 +26,9 @@ packages (bumped in lock-step).
   nothing. Cases agents authored before this keep reading as person labels: find them with `judge_cases_list`
   (`authored_by`) and keep them out of launches with a case set, or archive them. `reporter_case_freeze` asks it
   for each reader a label names (omitted, the caller), and records the reader and the relaying caller on the label,
-  outside the case's identity; existing reporter cases are found with `reporter_cases_list` and retired with
-  `reporter_case_archive`.
+  outside the case's identity; an existing case an agent labelled is found with `reporter_cases_list` and retired
+  for good by superseding it (a re-freeze of its memo, with no labels or attested ones, and `supersedes`), since
+  any action caller can restore an archived one.
 - **A memo finding traces to the readings and trials behind it (#629).** On the aspect page each figure in a
   finding links to a cell that prints that same figure; on the campaign page each finding has an Evidence fold with
   the figures, linked into its aspect's fold. A finding with nothing to link says so. No link on either page lands
@@ -54,8 +55,11 @@ moves before upgrading); `DEFAULT_JOB_LEASE_S` and `LEASE_POOL_WORKERS` move fro
 and host; the `judge_case_author` action and operation need `attests_person` (a host without one authors no judge case through
 either, its own direct call included), and the operation's `author=` keyword becomes `collected_by=`; the
 `reporter_case_freeze` action and operation need `attests_person` for reader verdicts (a freeze with labels), and the
-operation takes `collected_by=`; `ReporterLabel` gains `reader` and `collected_by`; durable schema 16.1. See
-`packages/evals/MIGRATIONS.toml`.
+operation takes `collected_by=`; `ReporterLabel` gains `reader` and `collected_by`; durable schema 16.1. A v16.0 pod
+cannot read a relayed case: one relayed reporter label stops that whole reporter template there (launches, prices,
+freezes, calibration reads, restores), and a relayed judge case stops every launch of its judge template that runs
+it, until the pod upgrades. So during a rolling deploy across 16.0 and 16.1, the first labelled freeze through the
+action stops that template on the old pods. See `packages/evals/MIGRATIONS.toml`.
 
 ## v0.75.0 -- 2026-10-21
 
