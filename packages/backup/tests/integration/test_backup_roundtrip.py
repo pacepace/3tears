@@ -233,3 +233,70 @@ async def test_default_table_count_assertion_and_subprocess_hook(backup_database
     assert result.hook_ran is True
     assert result.checks["tables"] >= 1  # the built-in default assertion
     assert hook_output.read_text().strip() == str(_ROW_COUNT)  # the hook ran against the restored db
+
+
+@pytest.mark.skipif(not shutil.which("psql"), reason="psql not on PATH")
+@pytest.mark.asyncio
+async def test_a_role_that_does_not_own_an_extension_can_restore_a_database_holding_it(
+    backup_container: str, tmp_path: Path
+) -> None:
+    """The real deployment shape: a superuser installs the extension, the application role restores.
+
+    The dump carries ``COMMENT ON EXTENSION``, which only the extension's owner may run, so before
+    the filter this restore failed with "must be owner of extension pageinspect". ``pageinspect``
+    is not a trusted extension, so only the superuser can create it -- as with pgvector on a
+    managed cluster.
+    """
+    parsed = urlsplit(backup_container)
+    suffix = uuid4().hex[:8]
+    role, source_db, target_db = f"app_{suffix}", f"ext_src_{suffix}", f"ext_dst_{suffix}"
+    superuser = urlunsplit(parsed._replace(path="/postgres"))
+
+    def as_app(database: str) -> str:
+        return urlunsplit(parsed._replace(netloc=f"{role}:{role}@{parsed.hostname}:{parsed.port}", path=f"/{database}"))
+
+    def as_superuser(database: str) -> str:
+        return urlunsplit(parsed._replace(path=f"/{database}"))
+
+    admin = await asyncpg.connect(superuser)
+    try:
+        await admin.execute(f"CREATE ROLE {role} LOGIN PASSWORD '{role}'")
+        for database in (source_db, target_db):
+            await admin.execute(f'CREATE DATABASE "{database}" OWNER {role}')
+    finally:
+        await admin.close()
+    try:
+        for database in (source_db, target_db):
+            conn = await asyncpg.connect(as_superuser(database))
+            try:
+                await conn.execute("CREATE EXTENSION pageinspect")
+            finally:
+                await conn.close()
+        conn = await asyncpg.connect(as_app(source_db))
+        try:
+            await conn.execute("CREATE TABLE notes (id int PRIMARY KEY, body text NOT NULL)")
+            await conn.executemany("INSERT INTO notes VALUES ($1, $2)", [(i, f"note-{i}") for i in range(_ROW_COUNT)])
+        finally:
+            await conn.close()
+
+        engine = _engine(tmp_path)
+        record = await engine.create_backup(as_app(source_db))
+        await engine.restore_into(as_app(target_db), record.key)
+
+        conn = await asyncpg.connect(as_app(target_db))
+        try:
+            assert await conn.fetchval("SELECT count(*) FROM notes") == _ROW_COUNT
+            assert await conn.fetchval("SELECT count(*) FROM pg_extension WHERE extname = 'pageinspect'") == 1
+        finally:
+            await conn.close()
+    finally:
+        admin = await asyncpg.connect(superuser)
+        try:
+            for database in (source_db, target_db):
+                await admin.execute(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1", database
+                )
+                await admin.execute(f'DROP DATABASE IF EXISTS "{database}"')
+            await admin.execute(f"DROP ROLE IF EXISTS {role}")
+        finally:
+            await admin.close()
