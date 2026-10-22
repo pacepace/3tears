@@ -29,7 +29,8 @@ packages (bumped in lock-step).
   outside the case's identity; an existing case an agent labelled is found with `reporter_cases_list` and retired
   for good by superseding it (a re-freeze of its memo, with no labels or attested ones, and `supersedes`), since
   any action caller can restore an archived one; `supersedes` takes only a live case, so restore an archived one
-  first.
+  first. Superseding retires a case and every reader verdict on it for good, and asks no one, so supersede only a
+  case you mean to retire.
 - **A memo finding traces to the readings and trials behind it (#629).** On the aspect page each figure in a
   finding links to a cell that prints that same figure; on the campaign page each finding has an Evidence fold with
   the figures, linked into its aspect's fold. A finding with nothing to link says so. No link on either page lands
