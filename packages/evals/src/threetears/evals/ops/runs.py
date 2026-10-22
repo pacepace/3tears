@@ -825,6 +825,8 @@ def result_rate_person(
             details={"person": person, "collected_by": collected_by},
             remedy="rate it as yourself with result_rate, or relay it as a caller the host attests for that person",
         )
+    # one person, one name: the host's answer is checked stripped above, so it is stored stripped too
+    canonical = canonical.strip()
     prior = _prior(host, scope_id, result_id, rubric_dim, canonical, "person")
     rating = rate_result(
         host.storage,

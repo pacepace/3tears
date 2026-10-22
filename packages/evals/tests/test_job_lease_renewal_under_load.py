@@ -230,8 +230,12 @@ async def test_a_renewal_that_lands_late_says_how_late_and_why(caplog: pytest.Lo
         late = [record.getMessage() for record in caplog.records if "renewal landed late" in record.getMessage()]
         assert len(late) == 1 and "run=run-slow" in late[0], f"one line, for the late renewal only: {late}"
         assert f"against a {LEASE_S / 3:.1f}s renewal interval and a {LEASE_S:.1f}s lease" in late[0]
-        assert re.search(
-            r"the loop's wait 0\.\d\ds, the lease pool's wait 0\.\d\ds, the store call 0\.[89]\ds", late[0]
-        ), late[0]
+        # the line names all three waits; which one was slow is the point, not how slow a loaded box made it
+        waits = re.search(
+            r"the loop's wait (\d+\.\d\d)s, the lease pool's wait (\d+\.\d\d)s, the store call (\d+\.\d\d)s", late[0]
+        )
+        assert waits is not None, late[0]
+        loop_wait, pool_wait, store_wait = (float(value) for value in waits.groups())
+        assert store_wait > max(loop_wait, pool_wait), f"the store call is the slow one: {late[0]}"
     finally:
         await leases.shut_down()

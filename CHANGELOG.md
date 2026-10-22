@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.75.0 -- 2026-10-21
+
 ### evals: a rationed call is the provider's; a person's rating needs the host's word; a finding traces to its evidence; a holder's own writes keep its lease
 
 - **A call the provider rationed is never charged to the candidate (#849).** `ProviderFailure.account_refused` is
@@ -43,8 +45,6 @@ packages (bumped in lock-step).
 moves before upgrading); `DEFAULT_JOB_LEASE_S` and `LEASE_POOL_WORKERS` move from `threetears.evals.kernel` to
 `threetears.evals.schema`; `RatingStore.query_calibration_ratings` and `AttestsPerson` are new on a host's own store
 and host; durable schema 16.1. See `packages/evals/MIGRATIONS.toml`.
-
-## v0.75.0 -- 2026-10-21
 
 ### backup: a restore no longer fails on an extension the restoring role does not own
 
