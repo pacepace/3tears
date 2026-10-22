@@ -525,8 +525,8 @@ DURABLE_SCHEMA_VERSION: int = 16
 #:   person gave it) and ``collected_by`` (the caller the host attested for that person), both default None, set
 #:   together and on a person's rating only. A rating stored at v16.0 reads with neither: no relay was recorded for
 #:   it. Neither is in the rating's id, so a relayed rating of what the person already rated replaces it, unless
-#:   the relay is dated and theirs was given later. An older build that ignores these fields reads the document
-#:   correctly, and its writes leave it true.
+#:   the relay is dated and theirs was given later.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 DURABLE_SCHEMA_MINOR: int = 1
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
