@@ -242,6 +242,43 @@ profiles are refused on read until dropped and generated again; hosts push the n
 59 -> 60, so a frozen reporter case holding a shape-59 bundle is frozen again; `ReadingScope.question_post_hoc` is
 replaced by `question_after_runs`. See `packages/evals/MIGRATIONS.toml`.
 
+### core, observe: a 5xx retry line says what the upstream answered
+
+**Fixed:** `TracedHttpClient` signalled a retryable 5xx with a message-less private exception, so
+every retry line and the exhaustion line from `retry_with_backoff` ended in an empty reason, and the
+exhaustion was an ERROR with a traceback naming only `_Retryable` (handmcp, 2026-10-21: three blank
+lines for a `PUT` answered HTTP 500). Each line now reads `HTTP 500 from PUT https://host/path`; the
+URL drops its query string and userinfo, and the body is left out. `UpstreamHttpError`'s message
+ends `(last answer: HTTP 500)`, or `(no answer: ConnectError)` when no response arrived; `status_code`
+and `body` are unchanged. A request with `idempotent=False` that stops on a 5xx or a failure after it
+left now logs a WARNING naming it, where it logged nothing. `retry_with_backoff` names a message-less
+failure by its type on every line, and takes `caller_raises=True` from a caller that raises its own
+error on `False`: the exhaustion is then a WARNING without a traceback. The default is unchanged
+(contained at ERROR with the traceback), because the registry's startup steps discard the result and
+that line is their only record.
+
+### observe: `retry_bounded` waits as long as a failure asked
+
+**Added:** `asked_pause` reads how long a failure itself asked to wait (an HTTP `Retry-After`),
+and the pause before the next attempt is at least that, over the schedule and over `backs_off`.
+An attempt made sooner is only refused again. A failure asking for longer than
+`max_asked_pause` (default `max_delay`), or for longer than the deadline leaves, is raised at
+once, so the bound still holds. metallm's composed turn uses it to ask a rate-limited model
+round again. Both parameters are optional; existing callers are unchanged.
+
+### models: starting a Claude CLI no longer forks the worker
+
+**Fixed:** under uvloop the SDK's `anyio.open_process` is libuv's `uv_spawn`, a full `fork()` of
+the worker made with the interpreter lock held, so no thread ran until the child exec'd. The stall
+grows with resident memory (one spawn, idle host: 23 ms at 0.5 GB, 95 ms at 2 GB); in metallm's
+~500 MB production workers it was 2-12 s, and uvicorn killed the worker at 5 s (2026-10-14..21: 134 of
+208 freeze reports in `PooledCliSession.start`). A pooled start and a call's own CLI now start the
+CLI with `subprocess.Popen` (vfork) in a worker thread and join its pipes to the loop: under 9 ms at any
+size. The child is reaped by a thread of its own, so a CLI that outlives the loop that started it is
+still collected. Setting `ClaudeAgentOptions.user` brings the stall back: with a uid to change,
+CPython's `_posixsubprocess` cannot vfork and makes a full `fork()`. The `claude-cli` extra declares
+`anyio`, which it imports.
+
 ## v0.74.0 -- 2026-10-20
 
 ### models: a circuit breaker's probe always ends, so a breaker never refuses every request forever

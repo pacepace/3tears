@@ -957,6 +957,7 @@ dependencies = [
 [package.optional-dependencies]
 claude-cli = [
     { name = "3tears-langgraph" },
+    { name = "anyio" },
     { name = "claude-agent-sdk" },
     { name = "langchain-claude-code" },
     { name = "mcp" },
@@ -984,6 +985,7 @@ requires-dist = [
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "3tears-tool-schema", editable = "packages/tool-schema" },
     { name = "anthropic", specifier = ">=0.116" },
+    { name = "anyio", marker = "extra == 'claude-cli'", specifier = ">=4.0" },
     { name = "claude-agent-sdk", marker = "extra == 'claude-cli'", specifier = ">=0.2.163,<0.3" },
     { name = "httpx", marker = "extra == 'image'", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'whisper'", specifier = ">=0.27" },
