@@ -52,6 +52,7 @@ from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     QuestionAfterRuns,
     evidence_digest,
+    fingerprint_digest,
     refuse_a_bundle_before_aspects,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
@@ -65,7 +66,6 @@ from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.evals.schema.base import EvalDocumentModel
-from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
@@ -194,23 +194,35 @@ class CampaignBundle(EvalDocumentModel):
 
     # ------------------------------------------------------------------ identity and storage
 
-    def frame(self) -> dict[str, Any]:
+    def frame(self, *, like: str | None = None) -> dict[str, Any]:
         """What the campaign adds over its aspects' bundles, as a stored analysis keeps it.
 
+        :param like: A stored campaign fingerprint, to name each aspect's bundle by its fingerprint in that one's
+            version (:func:`~threetears.evals.analysis.bundle.schema.fingerprint_digest`); None for the current one,
+            which is what a stored analysis keeps.
+        :ptype like: str | None
         :return: Every field but the aspects' bundles, which become ``{aspect, fingerprint}`` pairs.
         :rtype: dict[str, Any]
         """
         frame = self.model_dump(mode="json", exclude={"aspects"})
-        frame["aspects"] = [{"aspect": bundle.aspect, "fingerprint": bundle.fingerprint()} for bundle in self.aspects]
+        frame["aspects"] = [
+            {"aspect": bundle.aspect, "fingerprint": bundle.fingerprint(like=like)} for bundle in self.aspects
+        ]
         return frame
 
-    def fingerprint(self) -> str:
-        """The sha256 of the campaign bundle: its frame, which names each aspect's bundle by its fingerprint.
+    def fingerprint(self, *, like: str | None = None) -> str:
+        """The campaign bundle's fingerprint: its frame's, which names each aspect's bundle by its fingerprint.
 
-        :return: A 64-character lowercase hex digest.
+        Its floats rounded to twelve significant figures, so one campaign's evidence fingerprints alike on every
+        Python build (:meth:`AnalysisContextBundle.fingerprint` says why).
+
+        :param like: A fingerprint stored earlier, to compute this one in that one's version so the two compare;
+            None for the current version.
+        :ptype like: str | None
+        :return: ``v2:`` and a 64-character lowercase hex digest, or, ``like`` an unprefixed one, the bare digest.
         :rtype: str
         """
-        return canonical_digest(self.frame())
+        return fingerprint_digest(self.frame(like=like), like=like)
 
     @staticmethod
     def refuse_another_shape(data: Mapping[str, Any], *, what: str, remedy: str) -> None:
@@ -292,7 +304,13 @@ class CampaignBundle(EvalDocumentModel):
         """
         cls.refuse_another_shape(frame, what=what, remedy="generate the analysis again (analysis_generate)")
         named = [(entry["aspect"], entry["fingerprint"]) for entry in frame.get("aspects") or []]
-        held = [(bundle.aspect, bundle.fingerprint()) for bundle in bundles]
+        # Each bundle in the version its frame entry was stored in, so a frame stored before fingerprints rounded
+        # their floats still names its bundles.
+        likes = [fingerprint for _, fingerprint in named]
+        held = [
+            (bundle.aspect, bundle.fingerprint(like=likes[index] if index < len(likes) else None))
+            for index, bundle in enumerate(bundles)
+        ]
         if named != held:
             raise ValueError(f"{what}'s campaign bundle names aspects {named}, and its aspects hold {held}")
         return cls.model_validate(
@@ -434,7 +452,7 @@ class CampaignBundle(EvalDocumentModel):
         return short_digest(variant_key)
 
 
-def campaign_evidence_digest(document: Mapping[str, Any]) -> str:
+def campaign_evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> str:
     """A whole campaign bundle document's fingerprint, as :meth:`CampaignBundle.fingerprint` computes it.
 
     For a reader holding the stored document rather than the model: a frozen reporter case checks the bundle it
@@ -442,15 +460,18 @@ def campaign_evidence_digest(document: Mapping[str, Any]) -> str:
 
     :param document: A campaign bundle, as :meth:`CampaignBundle.to_dict` wrote it.
     :ptype document: Mapping[str, Any]
-    :return: A 64-character lowercase hex digest.
+    :param like: The fingerprint recorded beside it, to compute this one in that one's version; None for the
+        current version.
+    :ptype like: str | None
+    :return: The fingerprint.
     :rtype: str
     """
     frame = {key: value for key, value in document.items() if key != "aspects"}
     frame["aspects"] = [
-        {"aspect": aspect.get("aspect"), "fingerprint": evidence_digest(aspect)}
+        {"aspect": aspect.get("aspect"), "fingerprint": evidence_digest(aspect, like=like)}
         for aspect in document.get("aspects") or []
     ]
-    return canonical_digest(frame)
+    return fingerprint_digest(frame, like=like)
 
 
 def build_campaign_bundle(
@@ -780,7 +801,7 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
             }
             for reading in bundle.readings.on_aspect(label)
         ],
-        "scoreboard": namer.walk(payload["scoreboard"], label),
+        "scoreboard": [_figured(row, _SCOREBOARD_FIGURES) for row in namer.walk(payload["scoreboard"], label)],
         "design": namer.walk(payload["design"], label),
         "runs": [
             {
@@ -810,7 +831,10 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
         "contrasts_withheld": payload["multiple_comparisons"].get("withheld"),
         "contrasts": _contrasts(aspect, namer),
         "guardrails": namer.walk([_without(check, "control") for check in payload["guardrails"]["checks"]], label),
-        "bars": namer.walk(payload["bar_adjudications"], label),
+        "bars": [
+            {**bar, "verdicts": [_figured(verdict, _BAR_VERDICT_FIGURES) for verdict in bar["verdicts"]]}
+            for bar in namer.walk(payload["bar_adjudications"], label)
+        ],
         "judge_evidence_tiers": namer.walk(payload["judge_evidence_tiers"], label),
         "goal_check_proofs": payload["goal_check_proofs"],
         "arm_mechanisms": namer.walk(payload["arm_mechanisms"], label),
@@ -1063,6 +1087,18 @@ def _figure(value: float | None) -> float | None:
         return 0.0
     # Rounded as a number, not spelled: the view is JSON, and json writes the float.
     return round(value, _FIGURES - 1 - math.floor(math.log10(abs(value))))
+
+
+#: The figures code computes on an arm's scoreboard row, which the writer reads as :func:`_figure` keeps them.
+_SCOREBOARD_FIGURES: frozenset[str] = frozenset({"test_cost_usd", "reply_cost_usd"})
+
+#: The figures code computes on a bar's verdict for one cell; its margin is declared, and read as declared.
+_BAR_VERDICT_FIGURES: frozenset[str] = frozenset({"value", "sem", "ci_low", "ci_high"})
+
+
+def _figured(node: dict[str, Any], names: frozenset[str]) -> dict[str, Any]:
+    """``node`` with each of ``names`` it holds as :func:`_figure` keeps it."""
+    return {key: _figure(value) if key in names else value for key, value in node.items()}
 
 
 def _figures(values: Sequence[float] | None) -> list[float | None] | None:

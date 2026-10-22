@@ -38,11 +38,18 @@ packages (bumped in lock-step).
   characters (#822). The nine provisional names Discodon imports (the campaign bundle, `kernel.Aspect`, the launch
   quote, the reader conformance suite, `FailureOwner` and others) are
   stable, and its import list is refreshed.
+- **A bundle fingerprints alike on every Python build.** The fingerprint hashed the bundle's floats in full, and
+  their last bits come from C maths that two builds of one Python (uv-managed and Debian's CPython 3.14.6) compute
+  differently, so a reporter case re-frozen on another machine was refused as moved evidence and recorded a false
+  "does not reproduce" limit. A fingerprint is now `v2:` and a digest with every float rounded to twelve significant
+  figures, in the fingerprint only. A fingerprint stored before is compared as it was taken, so stored cases and
+  analyses keep matching. The page JSON serves its computed readings to twelve figures, and the writer's view keeps
+  a bar verdict's figures and a scoreboard row's costs to its four.
 
 **Breaking (pre-release line, no shims):** `ProviderFailure` and `ProviderError` take `owner` (every host describer
 moves before upgrading); `DEFAULT_JOB_LEASE_S` and `LEASE_POOL_WORKERS` move from `threetears.evals.kernel` to
 `threetears.evals.schema`; `RatingStore.query_calibration_ratings` and `AttestsPerson` are new on a host's own store
-and host; durable schema 16.1. See `packages/evals/MIGRATIONS.toml`.
+and host; a bundle fingerprint is `v2:`-prefixed; durable schema 16.1. See `packages/evals/MIGRATIONS.toml`.
 
 ## v0.75.0 -- 2026-10-21
 

@@ -418,8 +418,8 @@ def rebuild_bundle(case: ReporterCase) -> CampaignBundle:
     A case frozen under an older bundle shape could hand the generator and the judge a bundle
     that is not the one the case pins. Three checks make that loud:
 
-    - the frozen document must still digest to the fingerprint stored beside it, so the case
-      holds the bundle it says it holds;
+    - the frozen document must still digest to the fingerprint stored beside it, in that fingerprint's version
+      (an unprefixed one predates rounding floats), so the case holds the bundle it says it holds;
     - it must validate strictly — a field the bundle model no longer declares is refused, as on
       every stored read;
     - every frozen value must survive the rebuild unchanged — none altered by validation.
@@ -451,7 +451,7 @@ def rebuild_bundle(case: ReporterCase) -> CampaignBundle:
     what = f"the reporter case frozen over bundle {case.bundle_fingerprint}"
     remedy = "freeze the case again from its campaign, so its bundle is the campaign bundle its writer now reads"
     CampaignBundle.refuse_another_shape(frozen, what=what, remedy=remedy)
-    frozen_digest = campaign_evidence_digest(frozen)
+    frozen_digest = campaign_evidence_digest(frozen, like=case.bundle_fingerprint)
     if frozen_digest != case.bundle_fingerprint:
         raise ValueError(
             f"the case's frozen bundle digests to {frozen_digest} and the case recorded "

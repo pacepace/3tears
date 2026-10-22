@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from typing import Any, Final
 
 
 class UnhashableContentError(TypeError):
@@ -69,6 +69,73 @@ def canonical_digest(payload: Any) -> str:
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
+#: The significant figures :func:`round_figures` keeps. Two builds of one Python that compute a statistic through
+#: their own C maths (``math.lgamma``, ``math.exp``, ``NormalDist().inv_cdf``) can disagree in its last bit or two,
+#: which is past the 15th figure; twelve leaves three figures of headroom above that and below nothing a reader acts on.
+IDENTITY_FIGURES: Final[int] = 12
+
+
+def round_figures(value: float) -> float:
+    """``value`` to :data:`IDENTITY_FIGURES` significant figures: the form a computed float is compared or served in.
+
+    A float a computation produced carries bits past the 15th figure that depend on the Python build that computed
+    it, so the same evidence compared, hashed or served in full would differ between two machines. Rounded here, it
+    does not. A typed float (``0.7``, ``2.5``) has fewer figures than this and comes back unchanged.
+
+    ``-0.0`` becomes ``0.0``, since the two are equal and a sign on nothing is not a difference. NaN and the
+    infinities come back as they are: each has one value, which JSON writes as one token (``NaN``, ``Infinity``,
+    ``-Infinity``), so they are already deterministic.
+
+    :param value: The float.
+    :ptype value: float
+    :return: The float to twelve significant figures.
+    :rtype: float
+    """
+    rounded = float(f"{value:.{IDENTITY_FIGURES}g}")
+    return 0.0 if rounded == 0 else rounded
+
+
+def _figures_rounded(payload: Any) -> Any:
+    """``payload`` with every float, at any depth of dicts, lists and tuples, as :func:`round_figures` gives it."""
+    if isinstance(payload, float):
+        return round_figures(payload)
+    if isinstance(payload, dict):
+        return {key: _figures_rounded(value) for key, value in payload.items()}
+    if isinstance(payload, list | tuple):
+        return [_figures_rounded(value) for value in payload]
+    return payload
+
+
+def identity_json(payload: Any) -> str:
+    """Render ``payload`` as canonical JSON for comparing it by identity: every float rounded to twelve figures.
+
+    :func:`canonical_json` with one change: every float, at any depth, is first :func:`round_figures`'d, so a
+    document holding computed statistics renders the same on every Python build that computed them. Nothing else
+    differs: sorted keys, tight separators, a bool stays a bool and an int an int, and a value JSON cannot encode
+    raises as it does there. **For what is hashed or compared, never for what is stored or shown**: it is the
+    pre-image of an identity, and the document itself keeps what it holds.
+
+    :param payload: Any JSON-encodable structure.
+    :ptype payload: Any
+    :return: The canonical JSON encoding, floats rounded.
+    :rtype: str
+    :raises UnhashableContentError: ``payload`` holds something JSON cannot encode.
+    """
+    return canonical_json(_figures_rounded(payload))
+
+
+def identity_digest(payload: Any) -> str:
+    """Return the full sha256 hex digest of ``payload``'s :func:`identity_json`.
+
+    :param payload: Any JSON-encodable structure.
+    :ptype payload: Any
+    :return: A 64-character lowercase hex digest.
+    :rtype: str
+    :raises UnhashableContentError: ``payload`` holds something JSON cannot encode.
+    """
+    return hashlib.sha256(identity_json(payload).encode("utf-8")).hexdigest()
+
+
 def bytes_digest(payload: bytes) -> str:
     """Return the full sha256 hex digest of raw bytes, with no JSON encoding step.
 
@@ -84,4 +151,13 @@ def bytes_digest(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-__all__ = ["UnhashableContentError", "bytes_digest", "canonical_digest", "canonical_json"]
+__all__ = [
+    "IDENTITY_FIGURES",
+    "UnhashableContentError",
+    "bytes_digest",
+    "canonical_digest",
+    "canonical_json",
+    "identity_digest",
+    "identity_json",
+    "round_figures",
+]

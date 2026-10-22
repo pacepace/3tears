@@ -525,7 +525,12 @@ DURABLE_SCHEMA_VERSION: int = 16
 #:   person gave it) and ``collected_by`` (the caller the host attested for that person), both default None, set
 #:   together and on a person's rating only. A rating stored at v16.0 reads with neither: no relay was recorded for
 #:   it. Neither is in the rating's id, so a relayed rating of what the person already rated replaces it, unless
-#:   the relay is dated and theirs was given later.
+#:   the relay is dated and theirs was given later. A reporter case's ``bundle_fingerprint`` (in a reporter
+#:   template's ``EvalTestCase.host_payload``) frozen from this minor on is ``v2:`` and the digest of the bundle with
+#:   every float rounded to twelve significant figures, so one evidence fingerprints alike on every Python build; one
+#:   frozen before is unprefixed and is still checked, and compared, as the unrounded digest it is. A v16.0 build
+#:   reads a ``v2:`` case's fingerprint as one its frozen bundle does not digest to, so it cannot rebuild that case's
+#:   bundle and reports each of its cells as an infrastructure error until it upgrades.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 DURABLE_SCHEMA_MINOR: int = 1
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
