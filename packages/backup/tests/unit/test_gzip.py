@@ -22,7 +22,13 @@ async def _collect(stream: AsyncIterator[bytes]) -> bytes:
     return bytes(buf)
 
 
-@pytest.mark.parametrize("payload", [b"", b"tiny", b"CREATE TABLE t (id int);\n" * 5000, bytes(range(256)) * 40])
+# explicit ids: pytest names a bytes parameter after its contents, and the 125 KB one became a test id
+# so long that GitHub's log stalled on the `-v` line and the CI step hung until it was killed
+@pytest.mark.parametrize(
+    "payload",
+    [b"", b"tiny", b"CREATE TABLE t (id int);\n" * 5000, bytes(range(256)) * 40],
+    ids=["empty", "tiny", "sql-125KB", "binary-10KB"],
+)
 @pytest.mark.asyncio
 async def test_round_trip(payload: bytes) -> None:
     assert await _collect(gunzip_stream(gzip_stream(_emit(payload)))) == payload

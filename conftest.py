@@ -102,6 +102,10 @@ def _package_of(nodeid: str) -> str:
     return parts[0]
 
 
+#: the longest test id the suite accepts (the longest in it today is about 650)
+_MAX_TEST_ID_LENGTH = 1024
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """put every test of one package on one xdist worker, in its usual order.
@@ -117,5 +121,14 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     :return: nothing
     :rtype: None
     """
+    too_long = [item.nodeid[:120] for item in items if len(item.nodeid) > _MAX_TEST_ID_LENGTH]
+    if too_long:
+        # a test id is printed whole on every `-v` line, and a 130,000-character one (a bytes
+        # parameter named after its contents) stalled GitHub's log reader: the CI step froze
+        # mid-run with no output and was killed minutes later, on whichever branch hit it.
+        raise pytest.UsageError(
+            f"test ids longer than {_MAX_TEST_ID_LENGTH} characters; give the parametrize `ids=`:\n  "
+            + "\n  ".join(too_long)
+        )
     for item in items:
         item.add_marker(pytest.mark.xdist_group(_package_of(item.nodeid)))
