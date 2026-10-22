@@ -65,6 +65,87 @@ reformats 56 files: that is its own change, after this release.
 
 ### evals: a declined call is the provider's; a person's rating needs the host's word; a finding traces to its evidence; a holder's own writes keep its lease
 
+- **A call the provider declined is never charged to the candidate (#849).** `ProviderFailure.account_refused` is
+  replaced by `owner`, one of `account`, `provider` or `candidate` (`FailureOwner`), and `ProviderError.account` by
+  `ProviderError.owner`. A 429 that is not `insufficient_quota` is `provider`, and so are a 529 (overloaded) and a 503
+  (unavailable): on a reporter or judge call, and on the quick path, the cell is excluded and the run goes on. A 500
+  or a 502 is an error rather than a refusal, so it stays the candidate's. A 429 `insufficient_quota` (or a 402) is
+  `account` and stops the run, as before. A declined repair or parse retry says so in its error, and the page's
+  setup-fault words cover a declined call.
+- **The package's client sends a declined call again before it gives up (#849).** `Model` resends a 429 that is not
+  `insufficient_quota`, a 529 or a 503, as a status or as the code a 200's body carries, after a wait: the provider's
+  `retry-after` (seconds or a date) or one then two seconds, at most three attempts in all, each resend logged at
+  WARNING. A provider that asks to wait longer than 20 seconds is not sent it again. Every wait and resend ends within
+  one request's timeout of the first attempt; a resend cut there may already have been billed, and that spend is not
+  recorded. A resend lost on the way raises the decline before it. `retry=DeclinedRetry(...)` sets the policy
+  (`attempts=1` sends once).
+  The error that stands says how many attempts it took. An account's or the candidate's failure is never sent again.
+- **A run that measured nothing ends `failed` (#849).** When every cell was excluded for a fault the harness recorded
+  (most often a provider that declined every call: a rate limit or overload that lasted the run, or an OpenRouter
+  model no allowed provider serves), the run fails with `NothingMeasuredError`, quoting the cells' errors, instead of
+  completing. The quick command exits 1, and the page says nothing was measured and asks for the cause to be fixed
+  before a rerun, not waited out. A run that measured at least one cell completes as before, its exclusions shown; so
+  does a run lost only to judge-call errors (a re-judge recovers it), or entirely to a judge that could not tell or to
+  judge replies cut off at their cap. The run records why on `EvalRun.failed_because` (`nothing_measured`, core
+  v15.6), and a sweep reads it to go on past an arm that measured nothing, naming the arm on its detail.
+- **A person's rating is recorded only when the host vouches for the person (#848, part 1).** A new action,
+  `result_rate_person`, records a rating relayed by a caller as the person's when `EvalHost(attests_person=...)`
+  returns the host's own name for that person, and refuses (403) otherwise. The rating carries its `source` and
+  `collected_by`. A relay may carry the person's own `rated_at`; a dated relay older than that person's stored rating
+  is refused (409), so a newer opinion stands. `ResultRated` says what a write replaced. An authored judge case's
+  verdict is a person's label too, so `judge_case_author` asks the same check: a caller authors for the `person` it
+  names, or as itself, only when the host attests it, and the case records the caller as `collected_by`, outside its
+  identity; the freeze receipt and `judge_cases_list` show it. A host attests a caller as itself only for a person's
+  own account, never an agent's. A seed corpus's cases, and an `AuthoredJudgeCase` the host freezes itself, ask
+  nothing. Cases agents authored before this keep reading as person labels: find them with `judge_cases_list`
+  (`authored_by`) and keep them out of launches with a case set, or archive them. `reporter_case_freeze` asks it
+  for each reader a label names (omitted, the caller), and records the reader and the relaying caller on the label,
+  outside the case's identity; an existing case an agent labelled is found with `reporter_cases_list` and retired
+  for good by superseding it (a re-freeze of its memo, with no labels or attested ones, and `supersedes`), since
+  any action caller can restore an archived one; `supersedes` takes only a live case, so restore an archived one
+  first. Superseding retires a case and every reader verdict on it for good, and asks no one, so supersede only a
+  case you mean to retire.
+- **A memo finding traces to the readings and trials behind it (#629).** On the aspect page each figure in a
+  finding links to a cell that prints that same figure; on the campaign page each finding has an Evidence fold with
+  the figures, linked into its aspect's fold. A finding with nothing to link says so. No link on either page lands
+  inside a closed fold, since a host's sandboxed frame runs no script to open one: nav, glossary and trial links land
+  on the fold or section heading when their exact target is folded away.
+- **A lease holder's own writes keep its lease (#811).** A run's progress and status writes, and every held record
+  write, extend the lease as a renewal does, through one method (`JobLeases.write_own`); a lapsed lease is never
+  revived. A renewal that hangs is never resent and costs one retired pool thread, not the job. A renewal landing late
+  logs one line separating loop, pool and store waits. A grid test runs launches at several widths and store
+  latencies, with a degraded control that must lapse (#810).
+- **The lease numbers live on the light schema (#825).** `DEFAULT_JOB_LEASE_S`, `JOB_LEASE_RENEWAL_FRACTION` and
+  `LEASE_POOL_WORKERS` are host-contract on `threetears.evals.schema`, which imports no kernel, so a host sizing its
+  pool reads them cheaply.
+- **Smaller fixes.** `sweep_launch`'s help names a route that works: declare the design afterwards with
+  `campaign_create` over the sweep's `run_ids`, which a sweep's job result now carries (#843). `measuring-soundly.md`
+  says how to choose which levers to sweep (#772). The writer prompt's ceiling sits just above the prompt, at 24,300
+  characters (24,100 for #822, raised to 24,300 for #910's floor clause). The nine provisional names Discodon imports (the campaign bundle, `kernel.Aspect`, the launch
+  quote, the reader conformance suite, `FailureOwner` and others) are
+  stable, and its import list is refreshed.
+- **A bundle fingerprints alike across Python builds**, except, rarely, a value that falls exactly on a 12th-figure
+  rounding boundary. The fingerprint hashed the bundle's floats in full, and their last bits come from C maths that
+  two builds of one Python (uv-managed and Debian's CPython 3.14.6) compute differently, so a reporter case re-frozen
+  on another machine was refused as moved evidence and recorded a false "does not reproduce" limit. A fingerprint is
+  now `v2:` and a digest with every float rounded to twelve significant figures, in the fingerprint only. A fingerprint
+  stored before is compared as it was taken, so stored cases keep matching on the build that recorded them. The page
+  JSON and the writer's message serve every float to twelve figures, and the writer's view keeps a bar verdict's
+  figures and a scoreboard row's costs to its four. Finish a rolling deploy before generating: a pod on the previous
+  build can't render what this one generates.
+
+**Breaking (pre-release line, no shims):** `ProviderFailure` and `ProviderError` take `owner` (every host describer
+moves before upgrading); `DEFAULT_JOB_LEASE_S` and `LEASE_POOL_WORKERS` move from `threetears.evals.kernel` to
+`threetears.evals.schema`; `RatingStore.query_calibration_ratings` and `AttestsPerson` are new on a host's own store
+and host; the `judge_case_author` action and operation need `attests_person` (a host without one authors no judge case through
+either, its own direct call included), and the operation's `author=` keyword becomes `collected_by=`; the
+`reporter_case_freeze` action and operation need `attests_person` for reader verdicts (a freeze with labels), and the
+operation takes `collected_by=`; `ReporterLabel` gains `reader` and `collected_by`; a bundle fingerprint is `v2:`-prefixed; durable schema 16.1. A v16.0 pod
+cannot read a relayed case: one relayed reporter label stops that whole reporter template there (launches, prices,
+freezes, calibration reads, restores), and a relayed judge case stops every launch of its judge template that runs
+it, until the pod upgrades. So during a rolling deploy across 16.0 and 16.1, the first labelled freeze through the
+action stops that template on the old pods. See `packages/evals/MIGRATIONS.toml`.
+
 ### search: a transport failure says which HTTP status the provider answered with; core's retry error describes the last attempt
 
 **Added:** `TransportFailed.status` (`int | None`), and `status` on its `FailureRecord`. The SearXNG and Tavily
