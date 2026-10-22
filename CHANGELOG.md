@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.75.0 -- 2026-10-21
+
 ### search: the standalone transport's address guard can no longer be got past by DNS rebinding
 
 **Fixed:** `StandaloneTransport` resolved a URL's host, refused it if any address was private,
@@ -37,7 +39,8 @@ private nor reserved and which some clusters and overlay networks use for pods a
 rebinding there is the proxy's job. A transport built with `allow_private_addresses=True` checks no
 address and so is not held to one.
 
-## v0.75.0 -- 2026-10-21
+A losing connect that fails with a fault other than a connect failure is raised only after every
+other attempt is stopped and the winning connection -- which the caller never receives -- is closed.
 
 ### mcp: 3tears runs on mcp 2.x and fastmcp 4.x, and still supports mcp 1.x
 
