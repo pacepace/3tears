@@ -63,8 +63,8 @@ packages (bumped in lock-step).
   pool reads them cheaply.
 - **Smaller fixes.** `sweep_launch`'s help names a route that works: declare the design afterwards with
   `campaign_create` over the sweep's `run_ids`, which a sweep's job result now carries (#843). `measuring-soundly.md`
-  says how to choose which levers to sweep (#772). The writer prompt's ceiling sits just above the prompt, at 24,100
-  characters (#822). The nine provisional names Discodon imports (the campaign bundle, `kernel.Aspect`, the launch
+  says how to choose which levers to sweep (#772). The writer prompt's ceiling sits just above the prompt, at 24,300
+  characters (#822; 24,100, raised for #910's floor clause). The nine provisional names Discodon imports (the campaign bundle, `kernel.Aspect`, the launch
   quote, the reader conformance suite, `FailureOwner` and others) are
   stable, and its import list is refreshed.
 - **A bundle fingerprints alike across Python builds**, except, rarely, a value that falls exactly on a 12th-figure

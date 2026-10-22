@@ -41,8 +41,8 @@ another arm shown ahead (``behind_on``) or a missed bar (``bars_missed``), each 
 (:mod:`threetears.evals.analysis.arm_mentions`). Rule 9 states both as rules for the reader and names none of the
 phrases: a prompt coaching toward a check's words teaches the writer to reword the claim, not to drop it.
 
-**It is budgeted:** at most 24,100 characters and 13 rules (:data:`PROMPT_CHAR_BUDGET`,
-:data:`PROMPT_RULE_BUDGET`), and the budget only falls; ``tests/test_gen_prompt_budget.py`` fails the
+**It is budgeted:** at most 24,300 characters and 13 rules (:data:`PROMPT_CHAR_BUDGET`,
+:data:`PROMPT_RULE_BUDGET`), and the budget only falls (unless the owner rules a fix needs the room); ``tests/test_gen_prompt_budget.py`` fails the
 build past either. A new rule names the one it replaces, in the rule ledger
 ``GEN_PROMPT_RULES.md`` beside this module, which records what each rule prevents and why. The same
 test holds the ledger to the prompt: a rule without its row, or a row whose rule is gone, fails it.
@@ -63,8 +63,9 @@ from __future__ import annotations
 
 #: The prompt's character ceiling. It only falls, and sits just above the prompt so any growth fails
 #: ``test_gen_prompt_budget.py``; making the prompt shorter is a measured change (an eval of the writer), not a cut by
-#: eye.
-PROMPT_CHAR_BUDGET = 24_100
+#: eye. It rises only when the owner rules that a fix needs the room: 24,100 -> 24,300 for #910's floor clause in rule
+#: 11 (2026-10-22).
+PROMPT_CHAR_BUDGET = 24_300
 
 #: The most rules the prompt carries, not its numbered headings. It only falls.
 PROMPT_RULE_BUDGET = 13
