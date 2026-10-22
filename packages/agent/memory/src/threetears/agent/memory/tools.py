@@ -2915,7 +2915,10 @@ def load_memory_keep_tool(
         if denied:
             return denied
         entity = await memories_collection.get((agent_id, memory_uuid))
-        if entity is None or entity.user_id != user_id:
+        # the by-id read answers from the cache tiers, which the host's read filter cannot reach;
+        # find_for_recall carries it, so a memory this task may not read is not found here either
+        readable = await memories_collection.find_for_recall(memory_id=memory_uuid, user_id=user_id, agent_id=agent_id)
+        if entity is None or readable is None or entity.user_id != user_id:
             return _tool_error("memory_keep", "memory_id", f"No memory [memory:{memory_uuid}].")
         if entity.evergreen:
             return f"[memory:{memory_uuid}] was already kept permanently."

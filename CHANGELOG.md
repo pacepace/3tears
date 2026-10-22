@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### agent-memory: a host can restrict every memory read with its own predicate over the row's tags
+
+**Added:** `threetears.agent.memory.read_filter.ReadFilter`, a callable `(tags, bind) -> str | None`.
+`MemoriesCollection`, `MemoryChunkCollection` and `MediaContentCollection` carry a `read_filter` (default `None`)
+and `set_read_filter(f)`. Every read that returns memory rows, content, ids, counts or scores ANDs the filter's
+fragment into its `WHERE`, before `ORDER BY ... LIMIT`, in every arm of a hybrid search, so a filtered read never
+under-fills and no arm lets an excluded row in. `tags` is the SQL for the row's `tags` array; `bind(value)` adds a
+parameter after the query's own and returns its `$n`. The filter is asked on every query, never cached, so a host
+can answer from a contextvar per task; `None` means no restriction, and with no filter the SQL is as before. A
+chunk is decided on its parent memory's tags, a media-content row on the tags of the memory its media row is
+paired with; a row whose memory cannot be found is excluded while a filter applies. For a host that keeps
+per-audience labels in `tags`; the package knows nothing of what they mean.
+
+Writes and bookkeeping are not filtered (`save_memory`, `delete_by_tags`, `count_by_user`, `mark_retracted`,
+`clear_retracted`, the salience passes, `mark_superseded`), nor the framework's primary-key `get`, which answers
+from the cache tiers. Two places acted on a memory found by `get` alone, and now also need the filtered
+`find_for_recall` to find it: the `memory_keep` tool, which printed the memory it kept, and the extractor's
+UPDATE and DELETE, whose target id the resolution model names. A guard test makes every public coroutine of the
+three collections declare itself filtered, or unfiltered with its reason.
+
 ## v0.75.0 -- 2026-10-21
 
 ### evals: a rationed call is the provider's; a person's rating needs the host's word; a finding traces to its evidence; a holder's own writes keep its lease
