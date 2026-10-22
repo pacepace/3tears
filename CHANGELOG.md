@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.75.0 -- 2026-10-21
+
 ### agent-memory: a host can restrict every memory read with its own predicate over the row's tags
 
 **Added:** `threetears.agent.memory.read_filter.ReadFilter`, a callable `(tags, bind) -> str | None`.
@@ -25,8 +27,6 @@ from the cache tiers. Two places acted on a memory found by `get` alone, and now
 `find_for_recall` to find it: the `memory_keep` tool, which printed the memory it kept, and the extractor's
 UPDATE and DELETE, whose target id the resolution model names. A guard test makes every public coroutine of the
 three collections declare itself filtered, or unfiltered with its reason.
-
-## v0.75.0 -- 2026-10-21
 
 ### evals: a rationed call is the provider's; a person's rating needs the host's word; a finding traces to its evidence; a holder's own writes keep its lease
 
