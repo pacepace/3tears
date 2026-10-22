@@ -49,6 +49,7 @@ from threetears.evals.kernel.host.bars import (
     BarRegistrationError,
 )
 from threetears.evals.kernel.host.eval_host import (
+    AttestsPerson,
     CompletionClients,
     CompletionRole,
     EvalHost,
@@ -139,6 +140,7 @@ __all__ = [
     "PassThreshold",
     "load_bar_registry",
     "pass_threshold_label",
+    "AttestsPerson",
     "BarProposal",
     "BarRegistrationError",
     "BarRegistry",

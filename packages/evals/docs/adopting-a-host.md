@@ -144,7 +144,13 @@ pass it to every entrypoint. It holds:
   unchecked; a check with nothing to refuse is a function that returns `None`. To test one of your checks alone,
   call `admit_template(template, profile=, checks=, active_judge_config=)` (from `threetears.evals.run`), the one list
   of create-time gates `create_template` and the seed both admit through, with your `TemplateChecks`: it takes no
-  store, and returns the admitted template or raises the refusal.
+  store, and returns the admitted template or raises the refusal;
+- if callers relay people's ratings (an agent carrying a person's blind-read verdicts), your word on who may:
+  `attests_person=<check>`, called as `check(scope_id=, caller=, person=)` and returning whether that caller relays
+  that person's ratings (`AttestsPerson`, from `threetears.evals.kernel.host`). The `result_rate_person` action asks it
+  before it reads anything, and records the rating as the person's only on `True`; on `False`, or with no check
+  (`None`, the default), it is refused (`refused`, 403) and nothing is written. The engine never takes a caller's word
+  that a rating is a person's, so this is the only way one reaches judge-versus-human agreement through an action.
 
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.
 

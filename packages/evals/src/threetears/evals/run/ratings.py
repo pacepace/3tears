@@ -33,6 +33,11 @@ evidence, the score carries no label key), the person's judgment is still record
 ``rated_withheld`` set to the refusal, and a warning is logged naming it. It is a label that cannot outlive its
 evidence, and every reader that rebuilds cases from labels names it.
 
+**A person's rating relayed for them names who relayed it** (durable v16.1): ``collected_by``, the caller the host
+attested for that person, and ``source``, where the person gave it. An agent relaying a person's blind-read verdicts
+records them as the person's through :func:`~threetears.evals.ops.result_rate_person`, which asks the host
+(``EvalHost.attests_person``) before it writes; the engine never decides on its own that a rating is a person's.
+
 **Deleting a result does not delete its ratings.** They stay, and every agreement read lists them as
 ``result_unresolved`` — a person's judgement is not regenerable, and a rating that silently
 disappeared would shrink a dimension's n with nothing saying why.
@@ -94,6 +99,8 @@ def rate_result(
     rater_kind: RaterKind,
     score: int,
     reason: str,
+    source: str | None = None,
+    collected_by: str | None = None,
 ) -> CalibrationRating:
     """Record one rater's score for one judged dimension of one result — a person's, or an agent's.
 
@@ -116,6 +123,13 @@ def rate_result(
     :ptype score: int
     :param reason: The rater's own words for the score.
     :ptype reason: str
+    :param source: Where the person gave the rating, when someone else relays it for them (a blind read's id);
+        ``None`` for a rating its rater, or the host for its person, records directly. Set with ``collected_by``.
+    :ptype source: str | None
+    :param collected_by: Who relayed the person's rating: the caller the host attested for that person. The caller
+        vouches here, not this function: a host's own code is the host, and an action caller reaches this only through
+        :func:`~threetears.evals.ops.result_rate_person`, which asks the host first. Set with ``source``.
+    :ptype collected_by: str | None
     :return: The rating as written, carrying the judge score's label key (the fingerprints of the output read
         and of the criterion) when the score has one, and what was rated (``rated``) or why it could not be
         rebuilt (``rated_withheld``). A second rating by the same rater, of the same kind, of the same dimension
@@ -123,8 +137,9 @@ def rate_result(
     :rtype: CalibrationRating
     :raises NotFoundError: No such result in the scope.
     :raises ValidationFailedError: The judge scored no such dimension on the result; or the score is
-        not on its scale, the dimension name is not namespaced, the rater or reason is blank, or ``rater_kind``
-        is neither ``person`` nor ``agent``.
+        not on its scale, the dimension name is not namespaced, the rater or reason is blank, ``rater_kind``
+        is neither ``person`` nor ``agent``, or ``source`` and ``collected_by`` are not both set on a person's rating
+        or both ``None``.
     :raises StorageError: The write failed.
     """
     result = storage.load_eval_result(result_id, scope_id)
@@ -155,6 +170,8 @@ def rate_result(
             scale=judged.scale,
             score=score,
             reason=reason,
+            source=source,
+            collected_by=collected_by,
             # What the rater read, as the judge stamped it: the label then holds for every judgement of a
             # byte-identical output on the same criterion, not only this result's (#628).
             output_fingerprint=judged.output_fingerprint,
@@ -177,7 +194,7 @@ def rate_result(
             rating.rated_withheld,
         )
     log.info(
-        "eval.rate_result result=%s run=%s scope=%s dim=%s rater=%s rater_kind=%s score=%s",
+        "eval.rate_result result=%s run=%s scope=%s dim=%s rater=%s rater_kind=%s score=%s collected_by=%s",
         result.id,
         result.eval_run_id,
         result.scope_id,
@@ -185,6 +202,7 @@ def rate_result(
         rater,
         rater_kind,
         score,
+        collected_by,
     )
     return rating
 

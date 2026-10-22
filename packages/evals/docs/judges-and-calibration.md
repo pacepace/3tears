@@ -247,6 +247,14 @@ for result in results:  # in practice: the results a person has read
 result again replaces that rater's rating. Only `rater_kind="person"` counts as agreement with people. A rating
 an agent wrote is listed as `rated_by_an_agent` and never pooled.
 
+A person's verdicts often reach the store through an agent: the agent ran a blind read and holds what the person
+said. `result_rate` would record them as the agent's own opinion. `result_rate_person` records them as the person's,
+with `person` and `rating_source` (where they gave it, such as `blind_read:2026-10-17`), and only when your host's
+`attests_person` check says this caller relays this person's ratings ([Adopting a host](adopting-a-host.md)).
+Otherwise the call is refused and nothing is written. The rating carries `source` and `collected_by` (the caller),
+so it counts as the person's and still names who put it there. In your own code, `rate_result` takes the same two
+as `source=` and `collected_by=`.
+
 ### A rating is bound to what was read, not only to the result
 
 The judge stamps every score with a **label key** (`RubricScore.label_key`): a fingerprint of the evidence it read

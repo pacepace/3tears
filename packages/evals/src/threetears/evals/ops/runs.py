@@ -13,10 +13,11 @@ from typing import Annotated, Any
 from pydantic import Field, model_validator
 
 from threetears.evals.schema.base import EvalBaseModel
-from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.kernel.errors import EvalServiceError, ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.schema.models import (
     DEFAULT_LAUNCH_K_RUNS,
+    CalibrationRating,
     NON_TERMINAL_RUN_STATUSES,
     ArmSchedule,
     CaseSet,
@@ -627,7 +628,7 @@ def run_label(host: EvalHost, run_id: str, scope_id: str, *, labels: list[str]) 
 
 
 class ResultRated(EvalBaseModel):
-    """A rating an agent wrote: what it rated, and that it is an agent's, never read as a person's."""
+    """A rating written through an action: what it rated, whose it is, and who relayed it when it is a person's."""
 
     rating_id: str
     result_id: str
@@ -635,7 +636,16 @@ class ResultRated(EvalBaseModel):
     score: int
     rater: str
     rater_kind: str = Field(
-        description="Always `agent` through an action: the agent rated, whatever account it acts for."
+        description=(
+            "`agent` through result_rate: the agent rated, whatever account it acts for. `person` through "
+            "result_rate_person, which the host attested."
+        )
+    )
+    source: str | None = Field(
+        default=None, description="Where the person gave the rating; None on an agent's own rating."
+    )
+    collected_by: str | None = Field(
+        default=None, description="The caller that relayed the person's rating; None on an agent's own rating."
     )
     output_fingerprint: str | None = Field(
         default=None,
@@ -657,8 +667,9 @@ def result_rate(
 
     The operation an agent-facing surface rates through, so ``rater_kind`` is fixed here rather than taken from
     the caller: an agent writing through a tool is an ``agent`` whatever account it acts for, and only a person's
-    rating is judge-versus-human agreement (:func:`~threetears.evals.run.rate_result`). A host recording a
-    person's rating calls :func:`~threetears.evals.run.rate_result` with ``rater_kind="person"`` itself.
+    rating is judge-versus-human agreement (:func:`~threetears.evals.run.rate_result`). A person's rating relayed by
+    a caller goes through :func:`result_rate_person`, which the host attests; a host recording a person's rating in
+    its own code calls :func:`~threetears.evals.run.rate_result` with ``rater_kind="person"`` itself.
 
     :param host: The host whose store holds the result.
     :ptype host: EvalHost
@@ -690,6 +701,92 @@ def result_rate(
         score=score,
         reason=reason,
     )
+    return _rated(rating)
+
+
+def result_rate_person(
+    host: EvalHost,
+    result_id: str,
+    scope_id: str,
+    *,
+    rubric_dim: str,
+    score: int,
+    reason: str,
+    person: str,
+    source: str,
+    collected_by: str,
+) -> ResultRated:
+    """Record a person's rating of one judged dimension of one result, relayed by a caller the host attests for them.
+
+    A person's verdicts (a blind read, a review session) reach the store through someone else: an agent, or a host's
+    import. Recorded as the person's (``rater_kind="person"``), the rating enters the judge's agreement with people,
+    follows its output into judge cases and profiles by its label key, and names its ``source`` and the caller that
+    relayed it (``collected_by``). So the engine asks the host first (``EvalHost.attests_person``) and records nothing
+    unless the host vouches that this caller relays this person's rating: a caller cannot make its own opinion a
+    person's by naming one. Checked before the result is read, so a refused caller learns nothing of it.
+
+    :param host: The host whose store holds the result, and whose check attests the person.
+    :ptype host: EvalHost
+    :param result_id: The result rated.
+    :ptype result_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param rubric_dim: The judged dimension, spelled as the result's score spells it.
+    :ptype rubric_dim: str
+    :param score: The person's score, on the dimension's scale.
+    :ptype score: int
+    :param reason: The person's own words for the score.
+    :ptype reason: str
+    :param person: Who gave the rating, as the host names its people.
+    :ptype person: str
+    :param source: Where the person gave it (a blind read's id).
+    :ptype source: str
+    :param collected_by: The calling identity that relays it, as the host resolved it.
+    :ptype collected_by: str
+    :return: What was written.
+    :rtype: ResultRated
+    :raises EvalServiceError: Status 403: the host supplies no ``attests_person``, or it does not attest this caller
+        for this person. Nothing is written.
+    :raises NotFoundError: No such result in the scope.
+    :raises ValidationFailedError: The judge scored no such dimension, the score is off its scale, or a name is blank.
+    :raises StorageError: The write failed.
+    """
+    attests = host.attests_person
+    if attests is None:
+        raise EvalServiceError(
+            f"host {host.profile.host_id!r} vouches for no person (it supplies no attests_person), so no rating is "
+            "recorded as a person's through an action",
+            status_code=403,
+            details={"person": person, "collected_by": collected_by},
+            remedy=(
+                "rate it as yourself with result_rate; a host that relays people's ratings is built with "
+                "attests_person=<its check>"
+            ),
+        )
+    if not attests(scope_id=scope_id, caller=collected_by, person=person):
+        raise EvalServiceError(
+            f"the host does not attest {collected_by!r} relaying a rating for {person!r}, so it is not recorded as "
+            "that person's",
+            status_code=403,
+            details={"person": person, "collected_by": collected_by},
+            remedy="rate it as yourself with result_rate, or relay it as a caller the host attests for that person",
+        )
+    rating = rate_result(
+        host.storage,
+        result_id=result_id,
+        scope_id=scope_id,
+        rubric_dim=rubric_dim,
+        rater=person,
+        rater_kind="person",
+        score=score,
+        reason=reason,
+        source=source,
+        collected_by=collected_by,
+    )
+    return _rated(rating)
+
+
+def _rated(rating: CalibrationRating) -> ResultRated:
     return ResultRated(
         rating_id=rating.id,
         result_id=rating.result_id,
@@ -697,6 +794,8 @@ def result_rate(
         score=rating.score,
         rater=rating.rater,
         rater_kind=rating.rater_kind,
+        source=rating.source,
+        collected_by=rating.collected_by,
         output_fingerprint=rating.output_fingerprint,
         criterion_fingerprint=rating.criterion_fingerprint,
     )
@@ -1050,6 +1149,7 @@ __all__ = [
     "run_delete",
     "run_get",
     "result_rate",
+    "result_rate_person",
     "run_launch",
     "runs_list",
     "runs_unreadable",
