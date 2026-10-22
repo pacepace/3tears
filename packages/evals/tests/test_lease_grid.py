@@ -1,4 +1,4 @@
-"""A launch keeps its job leases across a grid of runs, cell width and store latency.
+"""A launch keeps its job leases across a grid of runs, cell width and store latency, and the grid can tell when not.
 
 The lease tests beside this one drive :class:`~threetears.evals.kernel.JobLeases` directly, or one launch at a time.
 This drives the whole path — launches through the operations layer, runs on the job manager, cells writing their
@@ -7,13 +7,19 @@ asserts that no record anywhere in the grid lapsed: none is written lost, none c
 completes.
 
 The lease is short so a run outlives it twice over, and the store's latency is a far larger share of that lease than
-a production store's is of a production lease (milliseconds against a minute), so a renewal that would lose its
-lease at some width or latency loses it here first. A lapse names its grid cell.
+a production store's is of a production lease (milliseconds against a minute): along the latency axis a contended
+renewal spends most of its interval on the store, so a renewal that would lose its lease at some width or latency loses
+it here first. A lapse names its grid cell. The control cell starves the renewals (the leases' pool cut to one thread at the
+higher latency) and must report a lapse, so a green grid is a grid that could have gone red.
+
+The grid runs in the unit lane, in an xdist group of its own (:data:`pytestmark`), so its half-minute of wall clock
+runs beside the package's other tests rather than after them.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -22,7 +28,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.kernel import EvalStorage
+from threetears.evals.kernel import EvalStorage, job_leases
 from threetears.evals.ops import LaunchArguments, OpsHost, await_job, job_poll, run_job_id, run_launch
 from threetears.evals.schema import EvalRun
 from threetears.evals.storage import InMemoryDocumentStore
@@ -33,37 +39,50 @@ from packages.evals.tests.ops_support import TOYHOST_SCOPE, TOYHOST_SUBJECT
 from packages.evals.tests.off_loop import off_loop
 
 #: The lease every grid cell runs under, renewed every third of it. Long enough that a healthy renewal clears a
-#: scheduling stall on a machine running the whole suite (the margin a renewal leaves before a lapse is two thirds of
-#: it), short enough that every run outlives two of them.
-LEASE_S = 1.8
+#: scheduling stall on a loaded machine running the whole suite (a renewal has two thirds of it, 2 s, before a lapse),
+#: short enough that every run outlives two of them in seconds.
+LEASE_S = 3.0
 
-#: How long one extraction takes. Each run executes three waves of cells, and its store calls, late, take longer
-#: still; the test holds every run to outliving two leases, or it would prove nothing about keeping them.
-EXTRACT_S = 0.6
+#: How long one extraction takes. Each run executes two waves of cells, so it runs past two leases while its cells stay
+#: few, and its store calls, late, take longer still; the test holds every run to outliving two leases, or it would
+#: prove nothing.
+EXTRACT_S = 3.5
 
-#: The toy corpus's cases, each run's cells per repeat.
-CASES = 3
+#: The xdist group the grid runs in, on a worker of its own.
+pytestmark = pytest.mark.xdist_group("evals-lease-grid")
 
 
 @dataclass(frozen=True)
 class GridCell:
-    """One point of the grid: how many runs in flight, how many of each run's cells at once, and the store's latency."""
+    """One point of the grid: runs in flight, each run's cells at once, the store's latency, and each run's repeats.
+
+    ``pool_workers``, when set, cuts the leases' own pool to that many threads: the control cell, starved on purpose.
+    """
 
     runs: int
     width: int
     latency_s: float
-
-    @property
-    def repeats(self) -> int:
-        """Each run's ``k_runs``: enough cells for three waves at its width."""
-        return self.width
+    repeats: int
+    pool_workers: int | None = None
 
     def __str__(self) -> str:
-        return f"{self.runs} runs x width {self.width} at {self.latency_s * 1000:g} ms per store call"
+        starved = f", lease pool cut to {self.pool_workers}" if self.pool_workers is not None else ""
+        return f"{self.runs} runs x width {self.width} at {self.latency_s * 1000:g} ms per store call{starved}"
 
 
-#: The production shape (8 runs of 4 cells in flight each, 32 at once) and a wider one (16 of 8, 128 at once).
-GRID = (GridCell(runs=8, width=4, latency_s=0.02), GridCell(runs=16, width=8, latency_s=0.02))
+#: The production shape (8 runs of 4 cells in flight each, 32 at once), the same shape at a latency where a renewal
+#: that loses its three attempts to the run's own writes spends most of its interval on the store (six round-trips,
+#: 0.78 s of 1 s), and a wider shape (16 runs of 8, 128 at once).
+GRID = (
+    GridCell(runs=8, width=4, latency_s=0.02, repeats=2),
+    GridCell(runs=8, width=4, latency_s=0.13, repeats=2),
+    GridCell(runs=16, width=8, latency_s=0.02, repeats=3),
+)
+
+#: The control: the higher-latency cell of :data:`GRID`, which keeps every lease, with the leases' pool cut to one
+#: thread. Its twelve leases (eight runs, four launches) then renew one after another, at 0.26 s each uncontended and
+#: up to 0.78 s contended, a round longer than the lease, so a lease lapses: the grid must say so, naming this cell.
+CONTROL = GridCell(runs=8, width=4, latency_s=0.13, repeats=2, pool_workers=1)
 
 
 class LatentStore(InMemoryDocumentStore):
@@ -148,7 +167,11 @@ class LatentStore(InMemoryDocumentStore):
 
 
 def _grid_host(cell: GridCell) -> OpsHost:
-    """The toy host over a late store: every run of ``cell``'s launches admitted at once, at ``cell``'s width."""
+    """The toy host over a late store: every run of ``cell``'s launches admitted and executing at once, at its width.
+
+    The job manager runs as many jobs at once as the cell has runs (``LaunchHost.max_concurrent_jobs``), so every run is
+    in flight together, as at the production shape; at the engine's default of two, most would wait their turn.
+    """
     storage = EvalStorage(LatentStore(cell.latency_s))
     storage.save_template(toyhost_template())
     client = ScriptedExtractionClient(tuple(type(s)(**{**vars(s), "latency_s": EXTRACT_S}) for s in TOY_SCRIPTS))
@@ -162,17 +185,17 @@ def _grid_host(cell: GridCell) -> OpsHost:
         job_lease_s=LEASE_S,
         kind_max_concurrent_cells=cell.width,
     )
-    return OpsHost(launch=launch)
+    return OpsHost(launch=dataclasses.replace(launch, max_concurrent_jobs=cell.runs))
 
 
 async def _settled(host: OpsHost, job_id: str, cell: GridCell) -> Any:
-    """Poll a run's job until it has ended; a run still going long after it should have ended fails, naming the cell."""
+    """Poll a job until it has ended; one still going long after it should have ended fails, naming the cell."""
     try:
-        async with asyncio.timeout(60):
+        async with asyncio.timeout(90):
             while not (status := await job_poll(host, job_id, TOYHOST_SCOPE)).done:
                 await asyncio.sleep(0.05)
     except TimeoutError:
-        pytest.fail(f"[{cell}] {job_id} had not ended a minute after its launch")
+        pytest.fail(f"[{cell}] {job_id} had not ended long after its launch")
     return status
 
 
@@ -180,9 +203,8 @@ def _runs(host: OpsHost) -> list[EvalRun]:
     return host.eval_host.storage.query_eval_runs(TOYHOST_SCOPE)
 
 
-@pytest.mark.integration
-@pytest.mark.parametrize("cell", GRID, ids=str)
-async def test_a_launch_keeps_every_job_lease_across_the_grid(cell: GridCell) -> None:
+async def _drive(cell: GridCell) -> tuple[list[str], list[EvalRun]]:
+    """Launch ``cell``'s runs and wait for every one to end: each lapse found, naming the cell, and the runs."""
     host = off_loop(_grid_host, cell)
     arguments = LaunchArguments(
         template_id=toyhost_template().id,
@@ -195,16 +217,36 @@ async def test_a_launch_keeps_every_job_lease_across_the_grid(cell: GridCell) ->
     )
     launches = [status for one in started for status in await await_job(host, one, TOYHOST_SCOPE)]
     run_ids = [run_id for launch in launches for run_id in launch.run_ids]
-    runs = [await _settled(host, run_job_id(run_id), cell) for run_id in run_ids]
+    jobs = [*launches, *[await _settled(host, run_job_id(run_id), cell) for run_id in run_ids]]
+    runs = off_loop(_runs, host)
+    lapses = [
+        f"[{cell}] {job.job_id} lost its lease: state {job.state}, {job.detail}, faults {job.faults}"
+        for job in jobs
+        if job.state == "lost" or job.faults
+    ] + [f"[{cell}] run {run.id} lapsed: {run.lost}, {run.faults}" for run in runs if run.lost or run.faults]
+    return lapses, runs
 
-    assert len(run_ids) == cell.runs, f"[{cell}] every run was launched: {[launch.detail for launch in launches]}"
-    for job in [*launches, *runs]:
-        assert job.state != "lost" and not job.faults, (
-            f"[{cell}] {job.job_id} lost its lease: state {job.state}, {job.detail}, faults {job.faults}"
-        )
-    for run in off_loop(_runs, host):
-        assert run.lost is None and not run.faults, f"[{cell}] run {run.id} lapsed: {run.lost}, {run.faults}"
+
+@pytest.mark.parametrize("cell", GRID, ids=str)
+async def test_a_launch_keeps_every_job_lease_across_the_grid(cell: GridCell) -> None:
+    lapses, runs = await _drive(cell)
+
+    assert lapses == [], "\n".join(lapses)
+    assert len(runs) == cell.runs, f"[{cell}] {len(runs)} of {cell.runs} runs were launched"
+    for run in runs:
         assert run.status == "completed", f"[{cell}] run {run.id} ended {run.status}: {run.cancellation_reason}"
         assert run.completed_at is not None
         lasted = (datetime.fromisoformat(run.completed_at) - datetime.fromisoformat(run.created_at)).total_seconds()
         assert lasted >= 2 * LEASE_S, f"[{cell}] run {run.id} lasted {lasted:.1f}s, not two leases: it proves nothing"
+
+
+async def test_the_grid_reports_a_lapse_naming_its_cell_when_renewals_are_starved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert CONTROL.pool_workers is not None
+    monkeypatch.setattr(job_leases, "LEASE_POOL_WORKERS", CONTROL.pool_workers)
+
+    lapses, _ = await _drive(CONTROL)
+
+    assert lapses, f"[{CONTROL}] starved renewals lapsed no lease: the grid cannot see a lapse"
+    assert all(line.startswith(f"[{CONTROL}] ") for line in lapses), lapses

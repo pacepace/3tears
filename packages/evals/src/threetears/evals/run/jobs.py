@@ -37,7 +37,7 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, TypeVar
 
-from threetears.evals.kernel.errors import AdmissionRefusedError, ConflictError, StorageError
+from threetears.evals.kernel.errors import AdmissionRefusedError, ConflictError, JobFenced, StorageError
 from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, BudgetStop, EvalRun
 from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import JobStore
@@ -1377,7 +1377,9 @@ class EvalJobManager:
         # fan-out, the API. Only the round-trip moves: the logging and the broadcast
         # below stay on the loop, so ``on_progress`` is still invoked from the thread
         # its callers were written against.
-        write = run_blocking(self._blocking_executor, update_eval_run, self._storage, run_id, scope_id, _stamp)
+        write = run_blocking(
+            self._blocking_executor, update_eval_run, self._storage, run_id, scope_id, _stamp, leases=self._leases
+        )
         if status in TERMINAL_RUN_STATUSES:
             outcome = await _finish_even_if_cancelled(write)
         else:
@@ -1500,8 +1502,16 @@ class EvalJobManager:
         data = run.to_dict()
         data["progress"] = progress
         data["status"] = "running"
+        ticked = EvalRun.from_dict(data)
         try:
-            self._storage.save_eval_run(EvalRun.from_dict(data), if_match=etag)
+            if self._leases is not None:
+                # The run's own write: it extends the run's lease, so a run ticking faster than its renewals land
+                # keeps it.
+                self._leases.write_own(run, ticked, lambda written: self._storage.save_eval_run(written, if_match=etag))
+            else:
+                self._storage.save_eval_run(ticked, if_match=etag)
+        except JobFenced:
+            return "fenced"
         except ConflictError, StorageError:
             return "refused"
         return "saved"

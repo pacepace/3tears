@@ -2279,7 +2279,7 @@
     "threetears.evals.kernel.LEASE_POOL_WORKERS": {
       "kind": "constant (int)",
       "signature": "",
-      "tier": "provisional"
+      "tier": "host-contract"
     },
     "threetears.evals.kernel.LEASE_WRITE_ATTEMPTS": {
       "kind": "constant (int)",

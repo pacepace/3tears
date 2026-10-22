@@ -49,6 +49,6 @@ names = ["LEASE_POOL_WORKERS"]
 why = """
 The lease pool's width moved to `schema`, beside the lease's duration and renewal fraction, so a host sizing its
 database pool reads all three without loading the kernel. It shipped as host-contract from `kernel`, so it keeps
-working there for one minor release, beside its new home; dropped from `kernel` now, a host importing it from there
-would break with no release in between.
+working there, host-contract still, for one minor release beside its new home; dropped from `kernel` now, a host
+importing it from there would break with no release in between. The next minor release drops it from `kernel`.
 """

@@ -23,7 +23,8 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
-from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
+from threetears.evals.kernel.errors import ConflictError, JobFenced, NotFoundError, StorageError, ValidationFailedError
+from threetears.evals.kernel.job_leases import JobLeases
 from threetears.evals.kernel.remedies import FIND_RUN
 from threetears.evals.schema.models import RUN_LABELS_MAX, EvalRun, run_label_problem
 from threetears.evals.kernel.storage import JobStore, UnreadableRunError
@@ -56,6 +57,7 @@ def update_eval_run(
     mutate: Callable[[EvalRun], dict[str, Any] | None],
     *,
     attempts: int = RUN_DOCUMENT_WRITE_ATTEMPTS,
+    leases: JobLeases | None = None,
 ) -> RunUpdateOutcome:
     """Read a run, apply ``mutate`` to it, and write it back under its own ETag.
 
@@ -96,6 +98,10 @@ def update_eval_run(
     :ptype mutate: Callable[[EvalRun], dict[str, Any] | None]
     :param attempts: How many read-modify-writes before giving up.
     :ptype attempts: int
+    :param leases: The leases of the process running the run, when this is the run's own write: it is then made as
+        the holder's own (:meth:`~threetears.evals.kernel.JobLeases.write_own`), which extends the run's lease, and a
+        run whose lease that write finds lapsed is ``"declined"`` — it no longer holds the run, and writes nothing.
+    :ptype leases: JobLeases | None
     :return: ``"saved"`` when the write landed; ``"declined"`` when ``mutate`` returned
         ``None``, which is a decision and not a failure — the stored document is
         the one that should stand, and a caller must not report or broadcast the
@@ -128,8 +134,18 @@ def update_eval_run(
         document = mutate(current)
         if document is None:
             return "declined"
+
+        def save(run: EvalRun, etag: str | None = etag) -> None:
+            store.save_eval_run(run, if_match=etag)
+
         try:
-            store.save_eval_run(EvalRun.from_dict(document), if_match=etag)
+            if leases is not None:
+                leases.write_own(current, EvalRun.from_dict(document), save)
+            else:
+                store.save_eval_run(EvalRun.from_dict(document), if_match=etag)
+        except JobFenced:
+            log.warning("eval.update_run run=%s scope=%s: its lease lapsed — not written", run_id, scope_id)
+            return "declined"
         except ConflictError:
             # A lost race: another writer's document now stands. Says what happens NEXT, so the last line does not
             # promise a re-apply that is not coming — the caller's own error log is what follows it.

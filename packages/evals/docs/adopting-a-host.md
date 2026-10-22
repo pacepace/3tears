@@ -1014,6 +1014,9 @@ def test_we_bind_only_declared_names() -> None:
     assert [name for name in ours if surface_tier(name) == "provisional"] == []
 ```
 
+A host-contract name that moves keeps its tier at its old home through the minor release it keeps working there, so
+this gate passes on the release that moves it and fails, as a `KeyError`, only on the release that removes it.
+
 ## Upgrading: names that move
 
 **Every name that leaves a public root is written down, and only a host-contract name is kept for compatibility.**

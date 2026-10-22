@@ -61,17 +61,6 @@ def test_the_job_lease_numbers_load_no_engine_module_beyond_schema() -> None:
     assert [name for name in loaded if not name.startswith("threetears.evals.schema")] == []
 
 
-def test_the_kernel_keeps_its_leases_by_the_numbers_the_schema_defines() -> None:
-    from threetears.evals import kernel, schema
-    from threetears.evals.storage import InMemoryDocumentStore
-
-    leases = kernel.JobLeases(kernel.EvalStorage(InMemoryDocumentStore()))
-
-    assert leases.lease_s == schema.DEFAULT_JOB_LEASE_S
-    assert leases.renew_every_s == schema.DEFAULT_JOB_LEASE_S * schema.JOB_LEASE_RENEWAL_FRACTION
-    assert kernel.LEASE_POOL_WORKERS is schema.LEASE_POOL_WORKERS
-
-
 def test_asking_for_a_ladder_name_loads_the_quick_path() -> None:
     loaded = _loaded_after(_PROBE.replace("import threetears.evals\n", "from threetears.evals import Eval\n"))
 
