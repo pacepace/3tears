@@ -55,7 +55,6 @@ from threetears.evals.kernel.scoring import (
     pass_hat_k_at,
     PassHatKCell,
     UnpooledReason,
-    join_unrecorded,
     pass_hat_k_cell,
     pass_hat_k_cell_reason,
     pool_pass_hat_k,
@@ -341,12 +340,13 @@ class PassHatKCellReading(EvalBaseModel):
 
     The point's pass^k, its interval, its bar decision and every verdict read its headline cell alone. **The headline
     is chosen in one order, stated here and nowhere else:** a cell whose runs recorded a measurement context comes
-    before one that recorded none, and one whose context resolved at this build's identity version before one that
-    did not; then the cell with the most runs, then the most results, then the alphabetically first run id. Every other
-    cell stands beside it, with its own pass^k at the point's depth and the reason it is not the headline, read off the
-    first field of the cell record in which the two differ
-    (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_reason`). Its runs are kept out of the headline, never
-    dropped. The point's composite, cost and latency still pool every run of the variant under one rig
+    before one that recorded none, one whose context resolved at this build's identity version before one that did
+    not, one whose runs froze a template digest before one that froze none, and one whose responses named a served
+    model before one whose responses named none; then the cell with the most runs, then the most results, then the
+    alphabetically first run id. Every other cell stands beside it, with its own pass^k at the point's depth and the
+    reason it is not the headline, read off the first field of the cell record in which the two differ
+    (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_reason`), or, for a run that left part of its cell
+    unrecorded, what it did not record. Its runs are kept out of the headline, never dropped. The point's composite, cost and latency still pool every run of the variant under one rig
     (:data:`PASS_HAT_K_CELL_READING`).
     """
 
@@ -358,12 +358,6 @@ class PassHatKCellReading(EvalBaseModel):
     detail: str | None = None
     #: The models the provider's responses named for this cell's candidate calls.
     served_models: list[str] = []
-    #: Runs whose responses named no model, placed in this cell because its other runs' named ones: not evidence of
-    #: another model, so pooled, and named here.
-    served_model_assumed: list[str] = []
-    #: Runs stored before runs froze their template's measured digest, placed in this cell because its other runs
-    #: froze one: not evidence of an edit, so pooled, and named here.
-    template_digest_assumed: list[str] = []
     #: This cell's own pass^k at the point's depth, over its own cases; ``None`` when no case reached it.
     pass_hat_k: float | None = None
     #: The cases this cell's pass^k averages.
@@ -384,7 +378,9 @@ PASS_HAT_K_CELL_READING = (
 #: Each reason a pass^k cell stands apart, as a reader is told it.
 _REASON_WORDS: dict[str, str] = {
     "changed_context": "another measurement context",
+    "no_recorded_template": "no recorded template revision",
     "other_template": "another template or template revision",
+    "no_recorded_served_model": "no recorded served model",
     "other_served_model": "another served model",
     "no_recorded_context": "no recorded measurement context",
 }
@@ -394,8 +390,7 @@ def pass_hat_k_cell_lines(reading: PassHatKCellReading) -> list[str]:
     """What a reader is told about one pass^k cell of a frontier point: every surface that renders a point says these.
 
     A cell other than the headline gets one sentence naming its runs, its reason, what differs and its own pass^k,
-    and the fact that the point's pass^k does not count it. Any cell gets one more per kind of silence its runs were
-    placed by (no served model named, no template digest frozen). The headline with neither gets nothing.
+    and the fact that the point's pass^k does not count it. The headline gets nothing.
 
     Each sentence is one line, its whitespace collapsed (a detail can carry a stored error's own line breaks), so a
     surface may indent it or lead it with the arm and nothing of it reads as the next item's.
@@ -416,15 +411,6 @@ def pass_hat_k_cell_lines(reading: PassHatKCellReading) -> list[str]:
         lines.append(
             f"run(s) {runs} kept out of this pass^k, as a cell of their own ({_REASON_WORDS[reading.reason]}): "
             f"{reading.detail}; {own}"
-        )
-    if reading.served_model_assumed:
-        lines.append(
-            f"run(s) {', '.join(reading.served_model_assumed)} named no served model and pooled with run(s) {runs}"
-        )
-    if reading.template_digest_assumed:
-        lines.append(
-            f"run(s) {', '.join(reading.template_digest_assumed)} froze no template digest and pooled with run(s) "
-            f"{runs}"
         )
     return [" ".join(line.split()) for line in lines]
 
@@ -1105,9 +1091,8 @@ def _pass_hat_k_cells(
     """Group one contestant's runs into pass^k cells, choose the headline, and say why each other cell stands apart.
 
     Each run's cell is :func:`~threetears.evals.kernel.scoring.pass_hat_k_cell` over the models that answered it for
-    this contestant, with a silent template digest or served model joined by
-    :func:`~threetears.evals.kernel.scoring.join_unrecorded`. The headline is chosen in the order
-    :class:`PassHatKCellReading` states. Each other
+    this contestant; a run that froze no template digest, or whose responses named no model, is a cell of its own.
+    The headline is chosen in the order :class:`PassHatKCellReading` states. Each other
     cell's reason is the first field in which it differs from the headline, so the grouping and the reason are one
     reading.
 
@@ -1124,8 +1109,7 @@ def _pass_hat_k_cells(
     weight: dict[str, int] = {}
     for result in results:
         weight[result.eval_run_id] = weight.get(result.eval_run_id, 0) + 1
-    raw = {run_id: pass_hat_k_cell(runs[run_id], profile, served=served[run_id]) for run_id in weight}
-    of_run, assumed = join_unrecorded(raw, weight)
+    of_run = {run_id: pass_hat_k_cell(runs[run_id], profile, served=served[run_id]) for run_id in weight}
     members: dict[PassHatKCell, list[str]] = {}
     for run_id in sorted(of_run):
         members.setdefault(of_run[run_id], []).append(run_id)
@@ -1134,6 +1118,8 @@ def _pass_hat_k_cells(
         key=lambda cell: (
             not cell.recorded,
             cell.unresolved is not None,
+            cell.template_digest is None,
+            not cell.served,
             -len(members[cell]),
             -sum(weight[run_id] for run_id in members[cell]),
             members[cell][0],
@@ -1154,8 +1140,6 @@ def _pass_hat_k_cells(
                 if why is None
                 else _cell_detail(why[1], cell, headline, runs[run_ids[0]], reference, profile),
                 served_models=list(cell.served),
-                served_model_assumed=[r for r in assumed.get("served", []) if r in run_ids],
-                template_digest_assumed=[r for r in assumed.get("template_digest", []) if r in run_ids],
             )
         )
     return _PointCells(of_run=of_run, readings=readings)
@@ -1186,7 +1170,7 @@ def _cell_detail(
     :return: The sentence.
     :rtype: str
     """
-    if field in ("recorded", "run_id"):
+    if field == "recorded":
         if not cell.recorded:
             return "it recorded no measurement context, so nothing says what it held fixed"
         return "the headline's run recorded no measurement context, so nothing says what it held fixed"
@@ -1201,9 +1185,11 @@ def _cell_detail(
         )
     if field == "template_digest":
         if cell.template_digest is None or headline.template_digest is None:
+            silent = cell if cell.template_digest is None else headline
+            side = "it" if silent is cell else "the headline's run"
             return (
-                f"its template {cell.template_id or '(ad hoc)'} matches the headline's, and one side froze no digest of "
-                "what it measures, so whether it was edited between them cannot be told"
+                f"{side} froze no digest of what template {silent.template_id or '(ad hoc)'} measures, so nothing says "
+                "which revision it ran" + ("" if silent.served else ", and its responses named no served model")
             )
         return (
             f"its template {cell.template_id or '(ad hoc)'} was edited in what it measures between it and the "
@@ -1221,9 +1207,12 @@ def _cell_detail(
         )
     if field == "apparatus_provenance":
         return f"its apparatus was {cell.apparatus_provenance} and the headline's {headline.apparatus_provenance}"
+    if not cell.served or not headline.served:
+        side = "its" if not cell.served else "the headline's run's"
+        return f"{side} responses named no served model, so nothing says which model answered its candidate calls"
     return (
-        f"its candidate calls were answered by {', '.join(cell.served) or 'no named model'} and the headline's by "
-        f"{', '.join(headline.served) or 'no named model'}, as the provider's responses named them"
+        f"its candidate calls were answered by {', '.join(cell.served)} and the headline's by "
+        f"{', '.join(headline.served)}, as the provider's responses named them"
     )
 
 

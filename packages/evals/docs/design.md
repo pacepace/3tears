@@ -235,7 +235,7 @@ Rules that came with it (`kernel/identity.py`):
   version, its template revision, its apparatus and the model that answered. Labels, and how long ago it ran,
   never count. A run kept out of a pool is not counted in the pool's reading: it stands beside it as a cell of
   its own, named with its reason, never dropped. A record's silence (no template digest frozen, no served model
-  named) is not a difference, so that run pools and is named as joining by assumption.
+  named) is never evidence of a match, so that run is a cell of its own, named with what it did not record.
 - **A predicate change is a version bump.** `IDENTITY_VERSION` is stored beside every key, golden-vector
   tests pin the digests, and each key is stored with its pre-image, so a bump costs comparability and
   never the record of what was measured.
