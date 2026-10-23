@@ -191,9 +191,17 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
     #: rather than passing a different ttl into the shared one.
     build_lock_bucket: ClassVar[str] = "derived-build-locks"
 
-    #: how often the loser re-reads the durable tier while waiting. short, so
-    #: a fast peer releases the waiter promptly.
+    #: how soon the loser first re-reads the durable tier while waiting. short, so
+    #: a fast peer releases the waiter promptly; each later re-read waits twice
+    #: as long as the last, up to :data:`peer_poll_max_interval`.
     peer_poll_interval: ClassVar[float] = 0.1
+
+    #: the longest the loser waits between re-reads of the durable tier, so a
+    #: long derivation costs the store a read every few seconds, not ten a second
+    peer_poll_max_interval: ClassVar[float] = 2.0
+
+    #: how often a wait still under way is logged, after the line that says it began
+    peer_wait_log_seconds: ClassVar[float] = 30.0
 
     #: how often the loser tries to take the build lock while waiting: taking it means the peer has
     #: let go -- finished, or died and lost its lease -- so the loser derives under it
@@ -360,7 +368,7 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 # a peer POD may have derived it while we queued.
                 return await self._derive_and_save(key)
         except BuildLockHeld:
-            return await self._await_peer_derivation(key)
+            return await self._await_peer_derivation(key, self._build_lock)
 
     async def _derive_and_save(self, key: tuple[Any, ...]) -> dict[str, Any] | None:
         """derive the value unless it has landed meanwhile, and persist it."""
@@ -372,34 +380,60 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
             await self.save_to_store(derived)
         return derived
 
-    async def _await_peer_derivation(self, key: tuple[Any, ...]) -> dict[str, Any] | None:
-        """wait for a peer pod's in-progress derivation for as long as the peer is alive, then take it over.
+    async def _await_peer_derivation(self, key: tuple[Any, ...], build_lock: BuildLock) -> dict[str, Any] | None:
+        """wait for a peer pod's derivation for as long as the peer holds the build lock, then take it over.
 
         the peer holds the build lock for the whole derivation, renewed while it runs, so a held lock
-        means a live derivation: the loser re-reads the durable tier every :data:`peer_poll_interval`
-        and returns the value the moment it lands, however long the derivation takes. every
+        means a live derivation. the loser re-reads the durable tier, first after
+        :data:`peer_poll_interval` and then twice as long each time up to :data:`peer_poll_max_interval`,
+        and returns the value as soon as a re-read finds it, however long the derivation takes. every
         :data:`peer_retake_seconds` it tries the lock; taking it means the peer let go without the value
         landing -- it finished and the value is about to land, or it died and its lease ran out -- so the
-        loser derives under the lock (:meth:`_derive_and_save` re-reads first). no fixed budget: an
-        earlier revision gave up after a fixed wait and derived anyway, which on a derivation longer than
-        the budget made every loser duplicate the winner's work -- the stampede the lock exists to stop
-        (a 78 s report page computed twice, on cobalt dev, 2026-10-23).
+        loser derives under the lock (:meth:`_derive_and_save` re-reads first). the wait has no budget of
+        its own: it ends when the value lands or the lock is taken. it is logged when it begins and every
+        :data:`peer_wait_log_seconds` while it lasts.
+
+        :param key: the normalized key being derived
+        :ptype key: tuple[Any, ...]
+        :param build_lock: the cross-pod build lock the peer holds
+        :ptype build_lock: BuildLock
+        :return: the derived value, or ``None`` when the derivation found none
+        :rtype: dict[str, Any] | None
         """
-        if self._build_lock is None:
-            return await self._derive_and_save(key)
         lock_key = self.build_lock_key(key)
         loop = asyncio.get_running_loop()
-        next_try = loop.time() + self.peer_retake_seconds
+        began = loop.time()
+        next_try = began + self.peer_retake_seconds
+        next_log = began + self.peer_wait_log_seconds
+        interval = self.peer_poll_interval
+        log.info(
+            "waiting for a peer's derivation",
+            extra={"extra_data": {"table": self.table_name, "key": str(key)}},
+        )
         while True:
-            await asyncio.sleep(self.peer_poll_interval)
+            await asyncio.sleep(interval)
+            interval = min(interval * 2, self.peer_poll_max_interval)
             existing = await self.load_derived(key)
             if existing is not None:
                 return existing
-            if loop.time() < next_try:
+            now = loop.time()
+            if now >= next_log:
+                next_log = now + self.peer_wait_log_seconds
+                log.info(
+                    "still waiting for a peer's derivation",
+                    extra={
+                        "extra_data": {
+                            "table": self.table_name,
+                            "key": str(key),
+                            "waited_seconds": round(now - began, 1),
+                        }
+                    },
+                )
+            if now < next_try:
                 continue
-            next_try = loop.time() + self.peer_retake_seconds
+            next_try = now + self.peer_retake_seconds
             try:
-                async with self._build_lock.holding(lock_key):
+                async with build_lock.holding(lock_key):
                     log.info(
                         "took over a derivation its peer let go of without the value landing: table=%s key=%s",
                         self.table_name,

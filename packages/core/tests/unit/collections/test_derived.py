@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import sys
 import types
 from collections.abc import AsyncIterator
@@ -287,8 +288,6 @@ class TestTheBuildLockIsInjected:
         collection = _with_lock(lock)
         collection.peer_poll_interval = 0.01
         collection.peer_retake_seconds = 0.02
-        # what an earlier revision gave up after; it no longer bounds the wait
-        collection.peer_wait_seconds = 0.03  # type: ignore[attr-defined]
 
         async def slow_peer_lands() -> dict[str, Any] | None:
             fetched = asyncio.create_task(collection.fetch_from_store((6,)))
@@ -315,6 +314,37 @@ class TestTheBuildLockIsInjected:
         assert asyncio.run(peer_dies()) == {"bucket": 7, "value": "derived-7"}
         assert collection.compute_calls == [(7,)]
         assert lock.held_by_us == ["buckets/7"]
+
+    def test_a_long_wait_backs_off_its_reads_and_says_it_is_waiting(self, caplog: pytest.LogCaptureFixture) -> None:
+        lock = _HeldUntil()
+        collection = _with_lock(lock)
+        collection.peer_poll_interval = 0.01
+        collection.peer_poll_max_interval = 0.04
+        collection.peer_retake_seconds = 0.02
+        collection.peer_wait_log_seconds = 0.1
+        reads: list[tuple[Any, ...]] = []
+        load_derived = collection.load_derived
+
+        async def counted(key: tuple[Any, ...]) -> dict[str, Any] | None:
+            reads.append(key)
+            return await load_derived(key)
+
+        collection.load_derived = counted  # type: ignore[method-assign,assignment]
+
+        async def slow_peer_lands() -> dict[str, Any] | None:
+            fetched = asyncio.create_task(collection.fetch_from_store((8,)))
+            await asyncio.sleep(0.4)
+            collection.store[(8,)] = {"bucket": 8, "value": "from-peer"}
+            lock.free.set()
+            return await fetched
+
+        with caplog.at_level(logging.INFO, logger="threetears.core.collections.derived"):
+            assert asyncio.run(slow_peer_lands()) == {"bucket": 8, "value": "from-peer"}
+        # a fixed 0.01 s poll reads about forty times in 0.4 s; doubling up to 0.04 s reads about a dozen
+        assert len(reads) <= 16, reads
+        messages = [r.getMessage() for r in caplog.records]
+        assert messages.count("waiting for a peer's derivation") == 1
+        assert 2 <= messages.count("still waiting for a peer's derivation") <= 5, messages
 
     def test_no_client_and_no_lock_derives_without_one(self, collection: _BucketCollection) -> None:
         assert asyncio.run(collection.fetch_from_store((5,))) == {"bucket": 5, "value": "derived-5"}
