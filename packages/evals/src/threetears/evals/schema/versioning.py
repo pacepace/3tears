@@ -303,7 +303,10 @@ CORE_SCHEMA_VERSION: int = 15
 #:   from its run, case, model and repetition, so one cell has one row; a holding writes a cell's row only where none
 #:   is stored or the stored one is from a lower epoch, and a holding whose epoch was passed writes nothing more on
 #:   the run. Both fields read 0 where absent, which is what every value stored before them was written under; an
-#:   older build ignores them and does not hold to the epoch.
+#:   older build ignores them and does not hold to the epoch. ``EvalRun.lifetimes`` (default empty: a run never taken
+#:   up again) records each holding of a run taken up again — its holder and epoch, when it began and how it ended,
+#:   the cells stored then, the spend of the rows it replaced, the host's labels at its start and the cost cap it ran
+#:   under — and is in no identity, key or digest.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 CORE_SCHEMA_MINOR: int = 7
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""

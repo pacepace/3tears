@@ -81,6 +81,7 @@ from threetears.evals.schema.job_lease import (
     CancelRequestReasonField,
     CancelRequestedAtField,
     FaultsField,
+    JobLoss,
     LeaseField,
     LostField,
 )
@@ -3383,6 +3384,141 @@ def run_label_problem(label: str) -> str | None:
     return None
 
 
+class RunLifetime(EvalBaseModel, CoreShapeModel):
+    """One holding of a run by one process, from when it took the run up to how that holding ended.
+
+    A run taken up again after its holding ended (lost, cancelled, stopped by its budget or its account) spans
+    several holdings, and each is one entry of ``EvalRun.lifetimes``: who held it, under which lease epoch, what the
+    host said about itself when the holding began (its labels: a deploy shows here, and is not drift), the cost cap
+    it ran under, and how it ended. What the run carried when a holding ended — its ending's reason, its loss, its
+    budget stops and its completeness — moves here when the run is taken up again, so the run itself only ever
+    describes its current holding.
+
+    ``status`` is ``running`` while the holding runs, and the status the run was written with once it ended: a
+    holding that was lost reads ``cancelled``, with ``lost`` set, as the run did.
+
+    :ivar holder: The process that held the run, or ``None`` when its record no longer named it.
+    :ivar epoch: The lease epoch of the holding (``JobLease.epoch``).
+    :ivar started_at: When the holding began: the run's creation for its first, the take-up for each later one.
+    :ivar status: ``running`` while it runs; the status it ended with once it ended.
+    :ivar ended_at: When it ended; ``None`` while it runs.
+    :ivar reason: Why it ended, when something said: the cancellation's reason, the budget stop's, or the error an
+        exhausted or failed holding recorded.
+    :ivar lost: The loss, for a holding that was lost.
+    :ivar budget_stops: The per-run ceilings that stopped it, for a holding they stopped.
+    :ivar completeness: The run's completeness when it ended, over the whole matrix.
+    :ivar cells_stored: The result rows stored for the run when it ended.
+    :ivar replaced_cells: Rows of ``cancelled`` cells this holding re-ran, writing each cell over its row.
+    :ivar replaced_spend_usd: The priced spend of those rows: spent, and no longer on any row.
+    :ivar spend_lower_bound: Whether what this holding spent is known only as a lower bound: a holding that was
+        lost had cells in flight whose spend reached no row.
+    :ivar labels: The subject's labels as the host captured them when the holding began.
+    :ivar run_labels: The run's own labels when the holding began.
+    :ivar max_cost_usd: The cost cap the holding ran under; ``None`` uncapped.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    holder: str | None = Field(
+        default=None, description="The process that held the run; None when its record no longer named it."
+    )
+    epoch: int = Field(default=0, ge=0, description="The lease epoch of the holding (JobLease.epoch).")
+    started_at: str = Field(min_length=1, description="When the holding began (ISO-8601, UTC).")
+    status: EvalRunStatus = Field(
+        default="running", description="running while the holding runs; the status it ended with once it ended."
+    )
+    ended_at: str | None = Field(default=None, description="When the holding ended; None while it runs.")
+    reason: str | None = Field(
+        default=None,
+        description="Why it ended, when something said: a cancellation's, a budget stop's, or the error recorded.",
+    )
+    lost: JobLoss | None = Field(default=None, description="The loss, for a holding that was lost.")
+    budget_stops: list[BudgetStop] | None = Field(
+        default=None, description="The per-run ceilings that stopped the holding, for one they stopped."
+    )
+    completeness: RunCompleteness | None = Field(
+        default=None, description="The run's completeness when the holding ended, over the whole matrix."
+    )
+    cells_stored: int | None = Field(
+        default=None, ge=0, description="The result rows stored for the run when the holding ended."
+    )
+    replaced_cells: int = Field(
+        default=0, ge=0, description="Rows of cancelled cells this holding re-ran, each written over its row."
+    )
+    replaced_spend_usd: float = Field(
+        default=0.0, ge=0, description="The priced spend of the replaced rows: spent, and no longer on any row."
+    )
+    spend_lower_bound: bool = Field(
+        default=False,
+        description=(
+            "Whether what this holding spent is known only as a lower bound: one that was lost had cells in flight "
+            "whose spend reached no row."
+        ),
+    )
+    labels: dict[str, str] = Field(
+        default_factory=dict, description="The subject's labels as the host captured them when the holding began."
+    )
+    run_labels: list[str] = Field(default_factory=list, description="The run's own labels when the holding began.")
+    max_cost_usd: float | None = Field(default=None, description="The cost cap the holding ran under; None uncapped.")
+
+
+def ended_lifetimes(
+    lifetimes: Sequence[RunLifetime],
+    *,
+    status: EvalRunStatus,
+    at: str,
+    reason: str | None = None,
+    lost: JobLoss | None = None,
+    budget_stops: list[BudgetStop] | None = None,
+    completeness: RunCompleteness | None = None,
+    cells_stored: int | None = None,
+) -> list[RunLifetime]:
+    """A run's lifetimes with its open holding closed as the run ended: for each writer of a run's ending.
+
+    A resumed run's last holding is open (``running``) until the run ends; its own terminal status, its loss and its
+    next take-up each close it here, so it reads how it ended. Lifetimes with no open holding — a run never taken up
+    again, whose ending is on the run itself — are returned as they are.
+
+    :param lifetimes: The run's lifetimes.
+    :ptype lifetimes: Sequence[RunLifetime]
+    :param status: The status the run ended with.
+    :ptype status: EvalRunStatus
+    :param at: When it ended.
+    :ptype at: str
+    :param reason: Why, when something said.
+    :ptype reason: str | None
+    :param lost: The loss, when it was lost.
+    :ptype lost: JobLoss | None
+    :param budget_stops: The per-run ceilings that stopped it.
+    :ptype budget_stops: list[BudgetStop] | None
+    :param completeness: Its completeness when it ended.
+    :ptype completeness: RunCompleteness | None
+    :param cells_stored: The result rows stored for the run, when the writer counted them; else the completeness's
+        persisted cells.
+    :ptype cells_stored: int | None
+    :return: The lifetimes, the last one closed when it was open.
+    :rtype: list[RunLifetime]
+    """
+    if not lifetimes or lifetimes[-1].status != "running":
+        return list(lifetimes)
+    closed = lifetimes[-1].model_copy(
+        update={
+            "status": status,
+            "ended_at": at,
+            "reason": reason,
+            "lost": lost,
+            "budget_stops": budget_stops,
+            "completeness": completeness,
+            "cells_stored": cells_stored
+            if cells_stored is not None
+            else (completeness.persisted_cells if completeness is not None else None),
+            # A lost holding's cells in flight left no row, so what it spent reached no record.
+            "spend_lower_bound": lost is not None,
+        }
+    )
+    return [*lifetimes[:-1], closed]
+
+
 class EvalRun(CoreDocumentModel):
     """One execution of a template (or explicit test case set) against one candidate model.
 
@@ -4121,6 +4257,15 @@ class EvalRun(CoreDocumentModel):
     cancel_request_reason: CancelRequestReasonField = None
     lost: LostField = None
     faults: FaultsField = Field(default_factory=list)
+    lifetimes: list[RunLifetime] = Field(
+        default_factory=list,
+        description=(
+            "Each holding of the run by a process, once the run has been taken up again after its holding ended: "
+            "the first holding's entry, closed as it ended, then one per take-up, the last one open while it runs "
+            "and closed as the run ends. Empty on a run never taken up again, whose one holding the run itself "
+            "describes."
+        ),
+    )
 
     @property
     def expected_cells(self) -> int:
@@ -6296,6 +6441,7 @@ __all__ = [
     "SecondJudging",
     "RubricScore",
     "RunCompleteness",
+    "RunLifetime",
     "SchemaVersion",
     "WorldSeed",
     "VariationAxis",
