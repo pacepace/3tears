@@ -124,10 +124,13 @@ through one hub process, and the warehouse had already written those rows to S3 
 switched-on table, kept as a write's are; a failure raises as every L3 reply's does, a key already held as
 `asyncpg.UniqueViolationError`; a reply counting other rows than the files declare is raised. The pod waits
 `timeout_ms` for each transaction the files need (each file's rows over `rows_per_transaction`, rounded up;
-one for an empty file) plus two seconds, never past `LOAD_FILES_MAX_WAIT_SECONDS` (3600,
-`threetears.core.backends.protocol`): NATS request/reply is at most once, so a reply lost to a broker restart
-would otherwise hold the caller for the load's worst case (a day for 15.5 million rows at the defaults). A
-caller with more to load sends several requests, one per partition. The request's start is logged at INFO
+one for an empty file) plus two seconds. A load whose wait would pass `LOAD_FILES_MAX_WAIT_SECONDS` (3600,
+`threetears.core.backends.protocol`) is refused with `ValueError` before anything is sent, never sent with a
+shorter wait (the pod would give up while the broker kept committing): NATS request/reply is at most once, so
+a reply lost to a broker restart would otherwise hold the caller for the load's worst case (a day for 15.5
+million rows at the defaults). The caller splits such a load into several, one per partition or state, or
+passes a tighter `timeout_ms`. At the defaults one request carries at most 11 transactions -- 11 files of up
+to 50 000 rows each, since every file is at least one. The request's start is logged at INFO
 with its wait, and a reply that never comes at ERROR, as a load the broker may have lost or may still be
 running. `NatsProxyL3Backend.nats_request` takes the wait as `timeout_s`. `Subjects.l3_load_files()`; agent
 and tool pods are granted it and the hub subscribes to it; the registry, which only reads, is not.
@@ -149,16 +152,10 @@ process already holds the database's credentials), each file fetched with no red
 pyarrow off the loop, held to its declared rows, ordered by key and copied in transactions of
 `rows_per_transaction`.
 
-**Added, presigning an export:** `threetears.datasources.export_read.presigned_export_files(store, result, *,
-bucket, expires_in=DEFAULT_PRESIGN_SECONDS) -> list[LoadFile]` and
-`threetears.datasources.partitioned_export.presigned_partition_files(store, result, *, bucket, partition_by,
-expires_in=DEFAULT_PRESIGN_SECONDS) -> dict[str | None, list[LoadFile]]`: the export's
-files, checked as a read checks them, presigned through the store's `presigned_get_url`, each with the rows
-its manifest counts for it (a file the manifest does not count, or counts that differ from the warehouse's,
-are refused). A partitioned export's part value lives in its directory name, not its files: pass it back as
-a constant. The fingerprints and the delete after load stay the caller's. `DEFAULT_PRESIGN_SECONDS` is
-`LOAD_FILES_MAX_WAIT_SECONDS` plus fifteen minutes, so a URL presigned just before its load outlives the
-pod's wait for it; presign each load's files just before it is sent.
+**Added, presigning an export's files:** `threetears.datasources.export_read.DEFAULT_PRESIGN_SECONDS`, how long
+`presigned_counted_partition` presigns a file by default: `LOAD_FILES_MAX_WAIT_SECONDS` plus fifteen minutes, so
+a URL presigned just before its load outlives the pod's wait for it; presign each load's files just before it
+is sent.
 
 ### core, nats: a table is emptied with TRUNCATE and loaded again with COPY, through the L3 broker
 
