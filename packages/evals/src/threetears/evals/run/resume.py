@@ -41,6 +41,7 @@ and launches a take-up would accept, which a host reads at boot, after settling 
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -50,12 +51,7 @@ from pydantic import Field
 from threetears.evals.kernel.campaign import EvalSweep
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.profile import HostProfile
-from threetears.evals.kernel.identity import (
-    LeverCoordinateError,
-    case_set_fingerprint,
-    resolve_context_identity,
-    resolve_variant_identity,
-)
+from threetears.evals.kernel.identity import LeverCoordinateError, resolve_context_identity, resolve_variant_identity
 from threetears.evals.kernel.job_leases import RUN_JOB, JobLeases, LeasedJobKind, settle_job_record
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.remedies import FIND_JOB, FIND_RUN
@@ -250,24 +246,10 @@ def resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profil
         if before != after:
             differences.append(f"{name} ({_shown(before)} -> {_shown(after)})")
     # The case set reaches no key, so it is held here: a take-up runs the cases the run froze, never others. Compared
-    # as every surface compares a case set (`case_set_fingerprint`), so the same cases in another order are no change.
-    if case_set_fingerprint(stored) != case_set_fingerprint(fresh):
-        dropped, added = (
-            sorted(set(stored.test_case_ids) - set(fresh.test_case_ids)),
-            sorted(set(fresh.test_case_ids) - set(stored.test_case_ids)),
-        )
-        differences.append(
-            "test_case_ids ("
-            + "; ".join(
-                part
-                for part in (
-                    f"left out: {', '.join(dropped)}" if dropped else "",
-                    f"added: {', '.join(added)}" if added else "",
-                )
-                if part
-            )
-            + (")" if dropped or added else "the same cases, a case listed another number of times)")
-        )
+    # over the sorted ids, as `case_set_fingerprint` compares them, so the same cases in another order are no change;
+    # the template that fingerprint also digests is named by the context component that holds it.
+    if sorted(stored.test_case_ids) != sorted(fresh.test_case_ids):
+        differences.append(f"test_case_ids ({_case_set_drift(stored.test_case_ids, fresh.test_case_ids)})")
     if stored.template_digest is not None and stored.template_digest != fresh.template_digest:
         differences.append(
             f"template {template.id!r}: its measured content changed since the run started (its intent, rubric, "
@@ -281,6 +263,31 @@ def resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profil
             "the edit changed the measurement cannot be told"
         )
     return differences
+
+
+def _case_set_drift(was: Sequence[str], now: Sequence[str]) -> str:
+    """How a launch's case ids differ from the ones a run froze: the cases left out, added, and listed a different
+    number of times, each sorted.
+
+    :param was: The run's frozen case ids.
+    :ptype was: Sequence[str]
+    :param now: The ones a launch of it assembled.
+    :ptype now: Sequence[str]
+    :return: The parts that differ, joined with ``; ``.
+    :rtype: str
+    """
+    before, after = Counter(was), Counter(now)
+    left_out = sorted(case for case in before if case not in after)
+    added = sorted(case for case in after if case not in before)
+    repeated = sorted(case for case in before if case in after and before[case] != after[case])
+    parts = [
+        f"left out: {', '.join(left_out)}" if left_out else "",
+        f"added: {', '.join(added)}" if added else "",
+        "duplicated: " + ", ".join(f"{case} listed {after[case]} times, was {before[case]}" for case in repeated)
+        if repeated
+        else "",
+    ]
+    return "; ".join(part for part in parts if part)
 
 
 def _edited_since(template: EvalTemplate, run: EvalRun) -> bool:

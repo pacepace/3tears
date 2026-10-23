@@ -688,6 +688,12 @@ _CELL_FIELD_REASONS: tuple[tuple[str, UnpooledReason], ...] = (
 )
 
 
+#: The fields of :class:`PassHatKCell` a run's record can leave silent, and the value that silence reads as. A silence is
+#: no difference: it joins its cell (:func:`join_unrecorded`) and is passed over when a reason is read
+#: (:func:`pass_hat_k_cell_reason`).
+_SILENCES: tuple[tuple[str, Any], ...] = (("template_digest", None), ("served", ()))
+
+
 def pass_hat_k_cell(run: EvalRun, profile: HostProfile | None, *, served: Collection[str] = ()) -> PassHatKCell:
     """The cell a run's attempts pool in, for one contestant.
 
@@ -738,10 +744,11 @@ def join_unrecorded(
     """Place each run that froze no template digest, or whose responses named no model, in the cell it would join.
 
     Neither silence is evidence of a difference: a run stored before runs froze their template's digest, and a call
-    whose response named no model, say nothing about what changed. So such a run takes the value most runs of its
-    otherwise equal cell carry (then the one most results rest on, then the first in order), and pools with them,
-    and the run is named as having joined by assumption. Where no run of its cell carries one, the silent runs pool
-    with each other.
+    whose response named no model, say nothing about what changed. So such a run takes, for each field it left
+    silent, the value most of its peers carry (then the one most results rest on, then the first in order), and
+    pools with them, and the run is named as having joined by assumption. Its peers are the runs equal to it on
+    every other field, with both silences masked, that agree with it wherever it did record a value, so a run silent
+    on both joins too. Where no peer carries a value, the silent runs pool with each other.
 
     :param cells: Run id → its cell, from :func:`pass_hat_k_cell`.
     :ptype cells: Mapping[str, PassHatKCell]
@@ -751,27 +758,50 @@ def join_unrecorded(
         whose value was filled by assumption.
     :rtype: tuple[dict[str, PassHatKCell], dict[str, list[str]]]
     """
+    masked = {name: silent for name, silent in _SILENCES}
+    groups: dict[PassHatKCell, list[str]] = {}
+    for run_id, cell in cells.items():
+        if cell.recorded and cell.unresolved is None:
+            groups.setdefault(replace(cell, **masked), []).append(run_id)
     joined = dict(cells)
     assumed: dict[str, list[str]] = {}
-    silences: tuple[tuple[str, Any], ...] = (("template_digest", None), ("served", ()))
-    for name, silent in silences:
-        by_rest: dict[PassHatKCell, dict[Any, list[str]]] = {}
-        for run_id, cell in joined.items():
-            if not cell.recorded or cell.unresolved is not None:
+    for run_ids in groups.values():
+        for run_id in run_ids:
+            cell = cells[run_id]
+            quiet = [name for name, silent in _SILENCES if getattr(cell, name) == silent]
+            if not quiet:
                 continue
-            rest = replace(cell, **{name: silent})
-            by_rest.setdefault(rest, {}).setdefault(getattr(cell, name), []).append(run_id)
-        for rest, by_value in by_rest.items():
-            quiet = by_value.pop(silent, [])
-            if not quiet or not by_value:
-                continue
-            chosen = min(
-                by_value,
-                key=lambda value: (-len(by_value[value]), -sum(weight.get(r, 0) for r in by_value[value]), str(value)),
-            )
-            for run_id in quiet:
-                joined[run_id] = replace(rest, **{name: chosen})
-                assumed.setdefault(name, []).append(run_id)
+            # The runs this one could be: every other run of its group that agrees on what this one did record.
+            peers = [
+                other
+                for other in run_ids
+                if other != run_id
+                and all(
+                    getattr(cells[other], name) in (getattr(cell, name), silent)
+                    for name, silent in _SILENCES
+                    if name not in quiet
+                )
+            ]
+            filled: dict[str, Any] = {}
+            for name in quiet:
+                silent = masked[name]
+                by_value: dict[Any, list[str]] = {}
+                for other in peers:
+                    if (value := getattr(cells[other], name)) != silent:
+                        by_value.setdefault(value, []).append(other)
+                if by_value:
+                    filled[name] = min(
+                        by_value,
+                        key=lambda value: (
+                            -len(by_value[value]),
+                            -sum(weight.get(r, 0) for r in by_value[value]),
+                            str(value),
+                        ),
+                    )
+            if filled:
+                joined[run_id] = replace(cell, **filled)
+                for name in filled:
+                    assumed.setdefault(name, []).append(run_id)
     return joined, {name: sorted(run_ids) for name, run_ids in assumed.items()}
 
 
@@ -785,13 +815,21 @@ def pass_hat_k_cell_reason(cell: PassHatKCell, other: PassHatKCell) -> tuple[Unp
     :return: ``(reason, field)``, or ``None`` when the two are one cell.
     :rtype: tuple[UnpooledReason, str] | None
     """
+    silences = dict(_SILENCES)
+    unread: tuple[UnpooledReason, str] | None = None
     for name, reason in _CELL_FIELD_REASONS:
         if getattr(cell, name) != getattr(other, name):
+            # A value missing on either side is no difference (a run stored before runs froze their template's digest,
+            # a response that named no model), so the reason is read on past it.
+            if name in silences and silences[name] in (getattr(cell, name), getattr(other, name)):
+                unread = unread or (reason, name)
+                continue
             # A run whose context could not be re-derived is a cell of its own for that reason, not for a missing record.
             if name == "run_id" and cell.recorded:
                 return "changed_context", "unresolved"
             return reason, name
-    return None
+    # Two cells that differ only where one side recorded nothing: a silence nothing could fill, so it is the reason.
+    return unread
 
 
 def pool_pass_hat_k_attempts(

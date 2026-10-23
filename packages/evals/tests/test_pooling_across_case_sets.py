@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+import pytest
+
 from threetears.evals.analysis import FrontierPoint, PassHatKCellReading, assemble_context_bundle
 from threetears.evals.analysis.campaign_bundle import writer_view
 from threetears.evals.analysis.lens_text import frontier_text
@@ -48,6 +50,7 @@ def _results(
     *,
     identity_version: int,
     served: str | None | Literal["no call"] = "no call",
+    cost: float = 0.01,
 ) -> list[EvalResult]:
     """One result per attempt, each case's attempts in order, stamped with the run's variant key.
 
@@ -58,7 +61,7 @@ def _results(
     usage = (
         []
         if served == "no call"
-        else [RoleUsage(role="candidate", model=run.candidate_model, cost_usd=0.01, call_count=1, served_model=served)]
+        else [RoleUsage(role="candidate", model=run.candidate_model, cost_usd=cost, call_count=1, served_model=served)]
     )
     return [
         make_scored_result(test_case_id=case, run_id=run.id, k=k, goal_passes=(passed,)).model_copy(
@@ -301,3 +304,71 @@ def test_a_run_whose_context_cannot_be_rederived_is_a_cell_of_its_own_and_the_re
     assert (beside.run_ids, beside.reason) == (["run-stale"], "changed_context")
     assert "retired_input" in (beside.detail or "")
     assert point.pass_hat_k == 1.0
+
+
+def _silences_corpus(*others: EvalRun, served: dict[str, str | None]):
+    """Two runs that froze a template digest and named their served model, beside the runs under test."""
+    headline = [_launched(run_id, test_case_ids=["tc1"], template_digest="digest-1") for run_id in ("run-a", "run-b")]
+    runs = [*headline, *others]
+    results = {
+        run.id: _results(run, {"tc1": (True,)}, identity_version=IDENTITY_VERSION, served=served.get(run.id, "model-1"))
+        for run in runs
+    }
+    return runs, results
+
+
+def test_a_run_that_froze_no_digest_on_another_rig_reads_the_rig_not_a_template_edit():
+    rig = _launched("run-rig", test_case_ids=["tc1"], apparatus_settings={"reviewer_pool": "pool-b"})
+    runs, results = _silences_corpus(rig, served={})
+
+    [point] = _bundle(runs, results).frontier.subjects[0].points
+
+    headline, beside = _cells(point)
+    assert headline.run_ids == ["run-a", "run-b"]
+    assert (beside.run_ids, beside.reason) == (["run-rig"], "changed_context")
+    assert "apparatus_settings" in (beside.detail or "")
+
+
+def test_a_run_that_froze_no_digest_answered_by_another_model_reads_the_served_model():
+    other = _launched("run-other", test_case_ids=["tc1"])
+    runs, results = _silences_corpus(other, served={"run-other": "model-2"})
+
+    [point] = _bundle(runs, results).frontier.subjects[0].points
+
+    headline, beside = _cells(point)
+    assert (beside.run_ids, beside.reason) == (["run-other"], "other_served_model")
+
+
+def test_a_run_silent_on_both_its_digest_and_its_served_model_joins_its_cell():
+    silent = _launched("run-silent", test_case_ids=["tc2"])
+    runs, results = _silences_corpus(silent, served={"run-silent": None})
+
+    [point] = _bundle(runs, results).frontier.subjects[0].points
+
+    [headline] = _cells(point)
+    assert headline.run_ids == ["run-a", "run-b", "run-silent"]
+    assert headline.template_digest_assumed == ["run-silent"]
+    assert headline.served_model_assumed == ["run-silent"]
+
+
+def test_the_cost_per_acceptable_outcome_reads_the_headline_cells_runs_on_both_sides():
+    """pass^1 is the headline cell's, so the cost it divides is too; the point's cost still pools every run."""
+    pooled = [_launched(run_id, test_case_ids=["tc1", "tc2"]) for run_id in ("run-a", "run-b")]
+    rig = _launched("run-rig", test_case_ids=["tc1", "tc2"], apparatus_settings={"reviewer_pool": "pool-b"})
+    results = {
+        **{
+            run.id: _results(
+                run, {"tc1": (True,), "tc2": (False,)}, identity_version=IDENTITY_VERSION, served="m", cost=0.01
+            )
+            for run in pooled
+        },
+        rig.id: _results(
+            rig, {"tc1": (True,), "tc2": (True,)}, identity_version=IDENTITY_VERSION, served="m", cost=1.0
+        ),
+    }
+
+    [point] = _bundle([*pooled, rig], results).frontier.subjects[0].points
+
+    assert point.pass_hat_k_curve[0]["pass_hat_k"] == 0.5
+    assert point.cost_per_acceptable_outcome == pytest.approx(0.01 / 0.5)
+    assert point.production_replicating_cost == pytest.approx((4 * 0.01 + 2 * 1.0) / 6)

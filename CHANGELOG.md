@@ -25,8 +25,9 @@ headline first, each other one with its own pass^k and its reason (`UnpooledReas
 `other_template`, `other_served_model` or `no_recorded_context`), read off the first field of the kernel's typed cell
 record (`PassHatKCell`) in which it differs from the headline. The frontier text and the campaign bundle's writer view
 (`pass_k_unpooled`) name each one. A run whose stored context can no longer be re-derived is a cell of its own,
-named, instead of failing the read. One case-set comparison, `case_set_fingerprint` (sorted ids), serves comparisons,
-history and resume: a take-up whose launch would run other cases is refused naming them, and a reordered set is not.
+named, instead of failing the read. One case-set comparison over sorted ids, `case_set_fingerprint`, serves comparisons
+and history, and a take-up compares the same sorted ids: one whose launch would run other cases is refused naming
+them, and a reordered set is not.
 A comparison set's case-set fingerprint is never None, and `case_set_unresolved` is gone. See
 `packages/evals/MIGRATIONS.toml`.
 

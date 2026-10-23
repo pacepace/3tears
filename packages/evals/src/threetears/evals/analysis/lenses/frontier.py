@@ -506,7 +506,8 @@ class FrontierPoint(EvalBaseModel):
     # chance ONE attempt passes, because the cost is the mean of one attempt: dividing it by
     # pass^k would price a k-attempt streak at one attempt's cost. ``None`` when
     # cost is unknown or pass^1 is zero (dividing by a zero pass rate is undefined,
-    # not "infinitely expensive").
+    # not "infinitely expensive"). Both sides read the headline pass^k cell's runs, so its cost can
+    # differ from ``production_replicating_cost``, which pools every run of the variant.
     cost_per_acceptable_outcome: float | None = None
     #: What the runs behind ``production_replicating_cost`` set away from the subject's production configuration
     #: (#571), each run's own footing read off the host's sweepable declarations: the cost is what production would
@@ -921,8 +922,8 @@ def _frontier_point(
     # spend, and averaged in they rank a refusing contestant cheap. A cell an apparatus fault cut short spent
     # less than a whole one, so averaged in it lets the rig make a contestant look cheaper. Both dollars stay
     # in program spend (`cost_usd`), which is accounting rather than a comparison.
-    priced = [
-        (r.test_case_id, c)
+    priced_by_run = [
+        (r.eval_run_id, r.test_case_id, c)
         for r, c in (
             (
                 r,
@@ -937,6 +938,7 @@ def _frontier_point(
         )
         if c is not None
     ]
+    priced = [(case, c) for _, case, c in priced_by_run]
     observed_costs = [c for _, c in priced]
     n_cost = len(observed_costs)
     prod_cost = math.fsum(observed_costs) / n_cost if n_cost else None
@@ -969,8 +971,11 @@ def _frontier_point(
     mean_total_ms = round(sum(totals) / n_latency, 3) if n_latency else None
 
     # cost / pass-probability — undefined when cost is unknown or nothing passed.
-    # One attempt's mean cost over one attempt's pass probability, pass^1 — see the field.
-    cost_per_acceptable_outcome = (prod_cost / pass_hat_1) if (prod_cost is not None and pass_hat_1) else None
+    # One attempt's mean cost over one attempt's pass probability, pass^1 — see the field. Both sides read the
+    # headline cell's runs: pass^1 is that cell's, so a cost over every run would divide one set by another.
+    headline_costs = [c for run_id, _, c in priced_by_run if run_id in headline_ids]
+    headline_cost = math.fsum(headline_costs) / len(headline_costs) if headline_costs else None
+    cost_per_acceptable_outcome = (headline_cost / pass_hat_1) if (headline_cost is not None and pass_hat_1) else None
 
     # Does this contestant's pool span cassette modes? Narrowed from the caller's whole
     # map to the runs these results actually came from, so a point can never be qualified
@@ -1177,6 +1182,11 @@ def _cell_detail(
             f"{headline.template_id or '(ad hoc)'}"
         )
     if field == "template_digest":
+        if cell.template_digest is None or headline.template_digest is None:
+            return (
+                f"its template {cell.template_id or '(ad hoc)'} matches the headline's, and one side froze no digest of "
+                "what it measures, so whether it was edited between them cannot be told"
+            )
         return (
             f"its template {cell.template_id or '(ad hoc)'} was edited in what it measures between it and the "
             "headline's runs (another template_digest)"
