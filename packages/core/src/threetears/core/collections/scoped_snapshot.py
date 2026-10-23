@@ -13,10 +13,12 @@ epoch and its chunk for each table. Design and decisions: ``docs/design-scoped-s
 refused, and a rebuild that finds rows with no scope in L3 fails, naming the table, rather than
 leave them out of a copy that claims to be whole.
 
-**Loading.** A starting replica watches the pointers (``watch_prefix``), fetches every current chunk
-in parallel and loads them into its DuckDB L1 through :class:`~threetears.core.cache.duckdb.DuckDBBackend`:
-seconds, with no L3 read. Each chunk's digest (the Object Store's) and row count (the pointer's) are
-checked; the index names every scope, so a missing one is seen, not skipped.
+**Loading.** A starting replica watches the pointers (``watch_prefix``), fetches the current chunks,
+several scopes at once, and loads each scope into its DuckDB L1 through
+:class:`~threetears.core.cache.duckdb.DuckDBBackend` as soon as it and the scopes before it are in, in
+scope order: seconds, with no L3 read, holding a few scopes' chunks at a time, never every scope's.
+Each chunk's digest (the Object Store's) and row count (the pointer's) are checked; the index names
+every scope, so a missing one is seen, not skipped.
 
 **Changes.** A writer that commits a scope's change calls :meth:`ScopedSnapshot.publish` with the
 scope's complete new rows: they replace the scope in its own L1, the chunks are written under the
@@ -48,7 +50,9 @@ what it computed from it.
 replica that finds the pointers gone asks for the buckets again (``ensure_buckets``), takes a claim
 -- renewed while it works, released only if still its own -- so one replica does the work, and
 rebuilds every scope from L3, the slow and correct path, while its own L1 keeps answering from what
-it last held; its status says so. :meth:`ScopedSnapshot.catch_up_from_l3` republishes any scope
+it last held; its status says so. A rebuild reads each scope a page at a time, types each page as
+the L1 keeps it, and publishes the scope before it reads past a few more: it holds a few scopes' rows,
+never every scope's. :meth:`ScopedSnapshot.catch_up_from_l3` republishes any scope
 whose L3 epoch is ahead of its pointer (a writer that died between its commit and its publish) and
 drops scopes L3 no longer holds. A rebuild reads L3 only while no write is in progress and keeps what
 it read only when no write committed meanwhile (``settled``, the writer's seqlock).
@@ -86,11 +90,13 @@ import math
 import threading
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
+from collections import deque
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, aclosing, asynccontextmanager, contextmanager, nullcontext, suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from itertools import islice
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final
 
@@ -99,7 +105,7 @@ from threetears.observe import contain, get_logger
 
 from threetears.core.sql_fragments import quote_identifier
 from threetears.core.cache.duckdb import DuckDBBackend, PartitionReplacement
-from threetears.core.collections.complete_copy import Unsettled, read_l3_rows
+from threetears.core.collections.complete_copy import Unsettled, l3_row_pages
 from threetears.core.coordination.lease import HeldLease, KVLease, LeaseUnavailable
 
 if TYPE_CHECKING:
@@ -135,10 +141,14 @@ _DEFAULT_CLAIM_TTL: Final = timedelta(minutes=2)
 #: how often a replica waiting on another's rebuild, or on a write in progress, looks again
 _DEFAULT_RECHECK: Final = timedelta(seconds=2)
 
-#: how many scope reads a rebuild runs on L3 at once
+#: how many scopes a rebuild holds at once: read from L3 beside each other and the one being published.
+#: What a rebuild holds is these scopes' rows (typed, as the L1 keeps them) and a page of L3's each,
+#: never every scope's. Measured on 3 million rows in 50 scopes (Linux): 4 rebuilt in 24 to 31 s at a
+#: 1.6 GB peak, 1 in 28 to 37 s at 1.2 GB; reading every scope before publishing any took 22 s at 4.2 GB
 _DEFAULT_L3_CONCURRENCY: Final = 4
 
-#: how many chunk reads a load runs on L2 at once
+#: how many scopes a load holds at once: fetched from L2 beside each other and the one being committed.
+#: What a load holds is these scopes' decoded chunks, never every scope's
 _DEFAULT_L2_CONCURRENCY: Final = 16
 
 #: how many times a rebuild reads again after a write committed while it read
@@ -572,6 +582,85 @@ def _concatenated(parts: Sequence[Any]) -> Any:
     import pyarrow as pa  # noqa: PLC0415 -- the snapshot extra
 
     return parts[0] if len(parts) == 1 else pa.concat_tables(parts)
+
+
+async def _in_order[T, R](
+    items: Iterable[T],
+    produce: Callable[[T], Coroutine[Any, Any, R]],
+    consume: Callable[[T, R], Awaitable[bool]],
+    *,
+    ahead: int,
+) -> bool:
+    """produce each item's result, ``ahead`` at once, and consume the results in the items' order, one at a time.
+
+    At most ``ahead`` results are alive at once -- the one being consumed among them, the next ones
+    produced meanwhile -- never every item's: the bound a load from L2 and a rebuild from L3 hold their
+    memory to. A result is let go once consumed, before the next item is started.
+    In the items' order, so every replica commits the same scopes in the same order (DuckDB scans rows
+    in the order they were written).
+
+    :param items: the items, in the order their results are consumed
+    :ptype items: Iterable[T]
+    :param produce: one item's result (a read)
+    :ptype produce: Callable[[T], Coroutine[Any, Any, R]]
+    :param consume: takes one item's result (a commit); answers whether to go on
+    :ptype consume: Callable[[T, R], Awaitable[bool]]
+    :param ahead: how many results are produced at once; at least one
+    :ptype ahead: int
+    :return: whether every item was consumed; ``False`` once ``consume`` said stop, the rest not produced
+    :rtype: bool
+    :raises BaseException: what a ``produce`` or ``consume`` raised, or the caller's cancellation;
+        whatever was still being produced is cancelled and waited for first
+    """
+    upcoming = iter(items)
+    pending: deque[tuple[T, asyncio.Task[R]]] = deque()
+    whole = True
+
+    def top_up() -> None:
+        for item in islice(upcoming, max(1, ahead) - len(pending)):
+            pending.append((item, asyncio.create_task(produce(item))))
+
+    try:
+        top_up()
+        while pending and whole:
+            item, task = pending.popleft()
+            result = await task
+            whole = await consume(item, result)
+            del result
+            top_up()
+    except BaseException:
+        # what ends the run (a failure, the caller's cancellation) is what is raised: an abandoned
+        # read's own failure is said, never raised in its place, which would turn a cancellation
+        # into an error the caller handles and carries on from
+        await _abandon([task for _, task in pending], unwinding=True)
+        raise
+    await _abandon([task for _, task in pending], unwinding=False)
+    return whole
+
+
+async def _abandon(tasks: Sequence[asyncio.Task[Any]], *, unwinding: bool) -> None:
+    """cancel ``tasks`` and wait for every one to end.
+
+    :param tasks: tasks whose results are no longer wanted
+    :ptype tasks: Sequence[asyncio.Task[Any]]
+    :param unwinding: whether another exception is ending the caller: each task's own failure is then
+        logged, not raised in its place
+    :ptype unwinding: bool
+    :return: nothing
+    :rtype: None
+    :raises BaseException: the first task's own failure (anything but its cancellation), when not
+        unwinding; the caller's cancellation while it waits
+    """
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        # asyncio.wait never raises a task's outcome: a CancelledError here is the caller's own
+        await asyncio.wait(tasks)
+    failures = [error for task in tasks if not task.cancelled() and (error := task.exception()) is not None]
+    if failures and not unwinding:
+        raise failures[0]
+    for error in failures:
+        log.warning("a read abandoned while its run ended had failed: %s: %s", type(error).__name__, error)
 
 
 class _Lost(Exception):
@@ -1203,9 +1292,9 @@ class ScopedSnapshot:
     :ptype retire: Callable[[list[str]], Awaitable[Any]] | None
     :param retire_batch: the most names one retire asks for
     :ptype retire_batch: int
-    :param l2_concurrency: chunk reads at once
+    :param l2_concurrency: scopes a load holds at once: fetched from L2 beside the one it commits
     :ptype l2_concurrency: int
-    :param l3_concurrency: scope reads on L3 at once during a rebuild
+    :param l3_concurrency: scopes a rebuild holds at once: read from L3 beside the one it publishes
     :ptype l3_concurrency: int
     :param claim_ttl: how long a rebuild's claim, or a write claim, lasts once its holder stops renewing
         it (it died); renewed while held
@@ -2009,7 +2098,7 @@ class ScopedSnapshot:
             raise _Lost(f"the L1 refused the rows of {sorted(current)}: {exc}") from exc
 
     async def _load(self, pointers: Mapping[str, _Pointer], *, cold: bool) -> None:
-        """fetch the scopes' chunks in parallel and replace those scopes in one transaction.
+        """fetch the scopes' chunks, several at once, and replace each scope in its own transaction, in scope order.
 
         :param pointers: the scopes to load and their pointers
         :ptype pointers: Mapping[str, _Pointer]
@@ -2029,41 +2118,46 @@ class ScopedSnapshot:
     async def _load_inner(self, pointers: Mapping[str, _Pointer], *, cold: bool) -> None:
         """the body of :meth:`_load`.
 
+        A scope is committed as soon as it and every scope before it are fetched, and let go once
+        committed: what a load holds at once is the decoded chunks of ``l2_concurrency`` scopes, the
+        one committing among them, never every scope's. In scope order, not arrival order: DuckDB scans rows
+        in the order they were written, and a floating-point sum over them depends on that order, so
+        every replica loading the same chunks holds them in the same order and sums them to the same
+        last digit. A load that fails part way keeps the scopes it committed, each whole at its
+        pointer's epoch; the copy is not ready until every scope is in.
+
         :return: nothing
         :rtype: None
         :raises _Lost: when a chunk is gone or wrong
         """
         started = time.perf_counter()
-        semaphore = asyncio.Semaphore(self._l2_concurrency)
-        fetched: list[tuple[_Pointer, list[PartitionReplacement]]] = []
+        spent = {"fetch": 0.0, "load": 0.0}
+        loaded = 0
 
-        async def one(scope: str, pointer: _Pointer) -> None:
-            async with semaphore:
-                fetched.append(await self._fetch_current(scope, pointer))
+        async def fetch(scope: str) -> tuple[_Pointer, list[PartitionReplacement]]:
+            began = time.perf_counter()
+            fetched = await self._fetch_current(scope, pointers[scope])
+            spent["fetch"] += time.perf_counter() - began
+            return fetched
+
+        async def commit(scope: str, fetched: tuple[_Pointer, list[PartitionReplacement]]) -> bool:
+            nonlocal loaded
+            began = time.perf_counter()
+            current, replacements = fetched
+            async with self._local:
+                fresh = current.supersedes(self._applied.get(scope))
+                if fresh:
+                    await self._commit_fetched(replacements, [scope], epochs={scope: current.epoch})
+                    self._applied = _updated(self._applied, {scope: current})
+            if fresh:
+                self._notify()
+            loaded += sum(r.arrow.num_rows for r in replacements if r.arrow is not None)
+            spent["load"] += time.perf_counter() - began
             if cold:
                 self._progress = replace(self._progress, scopes_done=self._progress.scopes_done + 1)
+            return True
 
-        try:
-            async with asyncio.TaskGroup() as group:
-                for scope, pointer in pointers.items():
-                    group.create_task(one(scope, pointer))
-        except* _Lost as lost:
-            raise lost.exceptions[0] from None
-        fetched_at = time.perf_counter()
-        # in scope order, not arrival order: DuckDB scans rows in the order they were written, and a
-        # floating-point sum over them depends on that order, so every replica loading the same chunks
-        # holds them in the same order and sums them to the same last digit
-        fetched.sort(key=lambda item: item[0].scope)
-        replacements = [replacement for _, scope_replacements in fetched for replacement in scope_replacements]
-        async with self._local:
-            fresh = [(p, r) for p, r in fetched if p.supersedes(self._applied.get(p.scope))]
-            await self._commit_fetched(
-                [x for _, rs in fresh for x in rs],
-                [p.scope for p, _ in fresh],
-                epochs={p.scope: p.epoch for p, _ in fresh},
-            )
-            self._applied = _updated(self._applied, {pointer.scope: pointer for pointer, _ in fresh})
-        self._notify()
+        await _in_order(sorted(pointers), fetch, commit, ahead=self._l2_concurrency)
         done = time.perf_counter()
         if cold:
             self._progress = replace(
@@ -2071,8 +2165,10 @@ class ScopedSnapshot:
                 timings=_updated(
                     self._progress.timings,
                     {
-                        "fetch": round(fetched_at - started, 3),
-                        "load": round(done - fetched_at, 3),
+                        # the seconds the scopes' fetches took, and their commits, summed over the scopes;
+                        # the fetches run beside each other and beside the commits, so these overlap
+                        "fetch": round(spent["fetch"], 3),
+                        "load": round(spent["load"], 3),
                         "total": round(done - started, 3),
                     },
                 ),
@@ -2084,9 +2180,10 @@ class ScopedSnapshot:
             extra={
                 "extra_data": {
                     "scopes": len(pointers),
-                    "rows": sum(r.arrow.num_rows for r in replacements if r.arrow is not None),
-                    "fetch_seconds": round(fetched_at - started, 3),
-                    "load_seconds": round(done - fetched_at, 3),
+                    "rows": loaded,
+                    "fetch_seconds": round(spent["fetch"], 3),
+                    "load_seconds": round(spent["load"], 3),
+                    "total_seconds": round(done - started, 3),
                 }
             },
         )
@@ -2338,7 +2435,7 @@ class ScopedSnapshot:
             if added:
                 pointer, landed = await self._publish_added_locked(scope, epoch, rows, added, int(after or 0))
             else:
-                pointer, landed = await self._publish_locked(scope, epoch, rows)
+                pointer, landed = await self._publish_locked(scope, epoch, self._whole(scope, rows))
         if pointer is not None:
             self._record_change(scope, pointer, started)
             await self._update_index(add={scope})
@@ -2505,12 +2602,30 @@ class ScopedSnapshot:
         self._notify()
         return pointer, True
 
+    def _whole(self, scope: str, rows: Mapping[str, Sequence[Mapping[str, Any]]]) -> list[PartitionReplacement]:
+        """the replacements making ``scope`` hold ``rows`` in every table.
+
+        :param scope: the scope
+        :ptype scope: str
+        :param rows: table name -> every row of the scope in that table
+        :ptype rows: Mapping[str, Sequence[Mapping[str, Any]]]
+        :return: one replacement per table
+        :rtype: list[PartitionReplacement]
+        """
+        return [
+            PartitionReplacement(table=t.name, column=t.scope_column, value=scope, rows=rows[t.name], primary_key=t.key)
+            for t in self._tables
+        ]
+
     async def _publish_locked(
-        self, scope: str, epoch: int, rows: Mapping[str, Sequence[Mapping[str, Any]]]
+        self, scope: str, epoch: int, local: Sequence[PartitionReplacement]
     ) -> tuple[_Pointer | None, bool]:
         """the body of a whole :meth:`publish` (and of a rebuild's), under the L1 lock: refuse a stale
         epoch, replace locally, write the chunks, move the pointer by compare-and-set.
 
+        :param local: the scope's whole content, one replacement per table: rows a writer gave, or a
+            rebuild's Arrow tables read from L3
+        :ptype local: Sequence[PartitionReplacement]
         :return: the pointer written (``None`` when the scope is already at a later epoch), and whether
             the scope's pointer took it
         :rtype: tuple[_Pointer | None, bool]
@@ -2531,10 +2646,6 @@ class ScopedSnapshot:
                 # the watch may not have delivered it yet
                 self._note_seen(current)
             return None, False
-        local = [
-            PartitionReplacement(table=t.name, column=t.scope_column, value=scope, rows=rows[t.name], primary_key=t.key)
-            for t in self._tables
-        ]
         await self._commit(local, [scope], epochs={scope: epoch})
 
         def written(pointer: _Pointer) -> None:
@@ -3254,17 +3365,37 @@ class ScopedSnapshot:
             scopes.update(str(scope) for scope in found)
         return scopes
 
-    async def _read_scope(self, scope: str) -> dict[str, list[dict[str, Any]]]:
-        """every row of one scope in each table, from L3.
+    async def _read_scope(self, scope: str) -> list[PartitionReplacement]:
+        """every row of one scope in each table, from L3, as the replacements that make this L1 hold them.
 
-        :return: table name -> rows
-        :rtype: dict[str, list[dict[str, Any]]]
+        Read a page at a time, and each page typed by this L1 as it arrives (the backend's
+        ``export_rows``, through which a backend that keeps less than L3 holds -- a retention -- lets go
+        of what it would not keep), so what is held is the scope's rows as the L1 keeps them and one
+        page of L3's, never the scope's raw rows. The pages are in key order, so their Arrow tables,
+        concatenated, are the scope's.
+
+        :param scope: the scope
+        :ptype scope: str
+        :return: one replacement per table, its rows an Arrow table (``None`` for none)
+        :rtype: list[PartitionReplacement]
         """
-        result: dict[str, list[dict[str, Any]]] = {}
+        result: list[PartitionReplacement] = []
         for table in self._tables:
             columns = tuple(self._backend.column_types(table.name))
-            result[table.name] = await read_l3_rows(
-                self._l3, table.name, columns, table.key, where={table.scope_column: scope}
+            parts: list[Any] = []
+            pages = l3_row_pages(self._l3, table.name, columns, table.key, where={table.scope_column: scope})
+            async with aclosing(pages):
+                async for page in pages:
+                    if page:
+                        parts.append(await self._export(table, scope, page))
+            result.append(
+                PartitionReplacement(
+                    table=table.name,
+                    column=table.scope_column,
+                    value=scope,
+                    arrow=_concatenated(parts) if parts else None,
+                    primary_key=table.key,
+                )
             )
         return result
 
@@ -3306,6 +3437,10 @@ class ScopedSnapshot:
     async def _rebuild_scopes(self, only: set[str] | None, *, reason: str, flow: str) -> list[str] | None:
         """read scopes from L3 while no write moves them, publish them, then update the index.
 
+        An attempt that a committed write stopped is tried again, up to :data:`_REBUILD_ATTEMPTS`
+        times; a scope an earlier attempt already published at the epoch L3 still records is not
+        read again.
+
         :param only: the scopes to rebuild; every scope L3 holds when ``None``
         :ptype only: set[str] | None
         :param reason: why, for the status
@@ -3316,6 +3451,7 @@ class ScopedSnapshot:
         :rtype: list[str] | None
         """
         result: list[str] | None = None
+        done: dict[str, int] = {}
         attempts = 0
         while result is None and attempts < _REBUILD_ATTEMPTS:
             attempts += 1
@@ -3323,21 +3459,25 @@ class ScopedSnapshot:
             if isinstance(before, Unsettled):
                 self._wait(flow, f"{reason}; waiting for a write in progress ({before.reason})")
                 break
-            result = await self._read_and_publish(only, reason=reason, before=before)
+            result = await self._read_and_publish(only, reason=reason, before=before, done=done)
         if result is None and attempts >= _REBUILD_ATTEMPTS:
             self._wait(flow, f"{reason}; writes kept committing while it read; trying again")
         return result
 
-    async def _read_and_publish(self, only: set[str] | None, *, reason: str, before: Any) -> list[str] | None:
-        """one rebuild attempt: read the scopes from L3, and publish them if no write committed meanwhile.
+    async def _read_and_publish(
+        self, only: set[str] | None, *, reason: str, before: Any, done: dict[str, int]
+    ) -> list[str] | None:
+        """one rebuild attempt: read the scopes from L3, publishing each while no write has committed since ``before``.
 
         :param only: the scopes to rebuild; every scope L3 holds when ``None``
         :ptype only: set[str] | None
         :param reason: why, for the status
         :ptype reason: str
-        :param before: the writer's stamp before the read
+        :param before: the writer's stamp before the attempt, taken before the epochs are read
         :ptype before: Any
-        :return: the scopes published, or ``None`` when a write committed during the read
+        :param done: scope -> the epoch an earlier attempt published it at; this attempt adds to it
+        :ptype done: dict[str, int]
+        :return: the scopes published, or ``None`` when a write committed during the attempt
         :rtype: list[str] | None
         :raises ValueError: when a table holds rows with no scope
         """
@@ -3346,7 +3486,9 @@ class ScopedSnapshot:
         scopes = sorted(l3_scopes if only is None else (only & l3_scopes))
         epochs = await self._epochs()
         with self._doing(SnapshotPhase.REBUILDING_FROM_L3, f"rebuilding from L3: {reason}", total=len(scopes)):
-            return await self._read_and_publish_scopes(only, scopes, l3_scopes, epochs, before=before, started=started)
+            return await self._read_and_publish_scopes(
+                only, scopes, l3_scopes, epochs, before=before, started=started, done=done
+            )
 
     async def _read_and_publish_scopes(
         self,
@@ -3357,52 +3499,76 @@ class ScopedSnapshot:
         *,
         before: Any,
         started: float,
+        done: dict[str, int],
     ) -> list[str] | None:
         """the body of :meth:`_read_and_publish`, inside its step.
 
-        :return: the scopes published, or ``None`` when a write committed during the read
+        Scope by scope, in scope order: each is read from L3 (:meth:`_read_scope`), ``l3_concurrency``
+        ahead of the one being published, and published -- this L1, its chunks, its pointer -- then let
+        go. So what a rebuild holds at once is a few scopes' rows as the L1 keeps them, never every
+        scope's: the rows of every scope at once were more than a pod's memory.
+
+        A scope is published only when the writer's stamp, read after the scope's rows, is still
+        ``before``: no write committed since the epochs were read, so the rows are exactly the scope's
+        at its epoch, every table at the same one. Once a write has committed nothing more is published
+        and the attempt answers ``None``; the scopes it published stay published (each whole, at its
+        epoch, as any publish), and the next attempt reads only the scopes not already published at the
+        epoch L3 then records. The index is written whole, and the copy declared ready, only once every
+        scope is published: a rebuild that dies part way leaves no index naming it complete.
+
+        :return: the scopes published, or ``None`` when a write committed during the attempt
         :rtype: list[str] | None
         """
-        semaphore = asyncio.Semaphore(self._l3_concurrency)
-        read: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        spent = {"read_l3": 0.0, "publish": 0.0}
+        pending = [scope for scope in scopes if done.get(scope) != int(epochs.get(scope, 0))]
+        self._progress = replace(self._progress, scopes_done=len(scopes) - len(pending))
 
-        async def one(scope: str) -> None:
-            async with semaphore:
-                read[scope] = await self._read_scope(scope)
+        async def read(scope: str) -> list[PartitionReplacement]:
+            began = time.perf_counter()
+            rows = await self._read_scope(scope)
+            spent["read_l3"] += time.perf_counter() - began
+            return rows
+
+        async def publish(scope: str, rows: list[PartitionReplacement]) -> bool:
+            after = await self._settled() if self._settled is not None else None
+            if after != before:
+                log.info(
+                    "scoped snapshot %s: a write committed during the rebuild, before scope %r; reading again",
+                    self._name,
+                    scope,
+                )
+                return False
+            began = time.perf_counter()
+            epoch = int(epochs.get(scope, 0))
+            async with self._local:
+                moved, _ = await self._publish_locked(scope, epoch, rows)
+            if moved is not None:
+                # at once, scope by scope: a rebuild that fails at a later scope (a full store)
+                # still leaves nothing superseded behind for the scopes it did move
+                await self._sweeper.retire_older(scope, epoch)
+            done[scope] = epoch
+            spent["publish"] += time.perf_counter() - began
             self._progress = replace(self._progress, scopes_done=self._progress.scopes_done + 1)
+            return True
 
-        # a TaskGroup: one failed read cancels the rest rather than leave them reading for nothing
-        async with asyncio.TaskGroup() as group:
-            for scope in scopes:
-                group.create_task(one(scope))
-        read_at = time.perf_counter()
-        after = await self._settled() if self._settled is not None else None
         published: list[str] | None = None
-        if after != before:
-            log.info("scoped snapshot %s: a write committed during the rebuild; reading again", self._name)
-        else:
-            for scope in scopes:
-                epoch = int(epochs.get(scope, 0))
-                async with self._local:
-                    moved, _ = await self._publish_locked(scope, epoch, read[scope])
-                if moved is not None:
-                    # at once, scope by scope: a rebuild that fails at a later scope (a full store)
-                    # still leaves nothing superseded behind for the scopes it did move
-                    await self._sweeper.retire_older(scope, epoch)
+        if await _in_order(pending, read, publish, ahead=self._l3_concurrency):
             await self._update_index(add=scopes, whole=only is None)
             gone = set() if only is not None else set(self._index or ()) - l3_scopes
             if gone:
                 await self._remove_scopes(gone)
             await self._apply_published()
-            done = time.perf_counter()
+            done_at = time.perf_counter()
             self._progress = replace(
                 self._progress,
                 timings=_updated(
                     self._progress.timings,
                     {
-                        "read_l3": round(read_at - started, 3),
-                        "publish": round(done - read_at, 3),
-                        "total": round(done - started, 3),
+                        # the seconds the scopes' reads took, and their publishes, summed over the scopes;
+                        # the reads run beside each other and beside the publishes, so these overlap
+                        "read_l3": round(spent["read_l3"], 3),
+                        "publish": round(spent["publish"], 3),
+                        "total": round(done_at - started, 3),
                     },
                 ),
             )

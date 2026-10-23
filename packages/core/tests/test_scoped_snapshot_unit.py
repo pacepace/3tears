@@ -2648,3 +2648,222 @@ async def test_a_whole_publish_in_a_snapshot_with_an_append_only_table_keeps_the
     await _until(lambda: _tx_counties(replica) == [("c1", 1), ("c3", 3)], what="the whole publish applied")
     await writer.stop()
     await replica.stop()
+
+
+# ----------------------------------------------------------------------
+# bounded memory: a rebuild and a load hold a few scopes at a time
+# ----------------------------------------------------------------------
+
+#: rows a keyset page keeps (the read's default: one under the L3 rail's cap)
+_PAGE = 999
+
+
+class _PagedL3(_L3):
+    """L3 holding ``sizes[state]`` rows per state, answering each keyset page as the rail would, and
+    counting the rows it has handed over."""
+
+    def __init__(self, sizes: dict[str, int]) -> None:
+        super().__init__([])
+        self.sizes = dict(sizes)
+        self.served = 0
+        # how many statements began each state's read (a read's first page, no cursor)
+        self.reads: dict[str, int] = dict.fromkeys(sizes, 0)
+        self.failing: str | None = None
+        self.on_read: Callable[[str], None] | None = None
+        self.alive: Callable[[], int] | None = None
+        self.peak_alive = 0
+        self.events: list[str] = []
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        await asyncio.sleep(0)
+        self.statements += 1
+        if "DISTINCT" in sql:
+            return [{"scope": s} for s in sorted(self.sizes)]
+        state = args[0]
+        limit = int(sql.rsplit("LIMIT", 1)[1])
+        start = 0 if len(args) == 1 else int(args[1].rsplit("-", 1)[1]) + 1
+        if start == 0:
+            self.reads[state] += 1
+            self.events.append(f"read {state}")
+            if self.on_read is not None:
+                self.on_read(state)
+            if state == self.failing:
+                raise ConnectionError(f"L3 is unreachable reading {state}")
+        page = [
+            {"county": f"{state}-{i:06d}", "state": state, "votes": i}
+            for i in range(start, min(self.sizes[state], start + limit))
+        ]
+        self.served += len(page)
+        if self.alive is not None:
+            self.peak_alive = max(self.peak_alive, self.alive())
+        return page
+
+
+class _CountingBackend(DuckDBBackend):
+    """a DuckDB L1 that counts the rows committed into it and records each scope's commit."""
+
+    def __init__(self, events: list[str]) -> None:
+        super().__init__()
+        self.committed = 0
+        self.events = events
+
+    def replace_partitions(self, replacements: Any) -> int:
+        written = super().replace_partitions(replacements)
+        self.committed += written
+        self.events.extend(f"commit {r.value}" for r in replacements)
+        return written
+
+
+def _paged(
+    sizes: dict[str, int], **options: Any
+) -> tuple[ScopedSnapshot, _Pointers, _Store, _PagedL3, _CountingBackend]:
+    l3 = _PagedL3(sizes)
+    metadata = MetaData()
+    _RESULTS.to_sqlalchemy_table(metadata)
+    backend = _CountingBackend(l3.events)
+    backend.initialize(metadata)
+    snapshot, pointers, store, _ = _snapshot(l3=l3, backend=backend, **options)
+    l3.epochs = dict.fromkeys(sizes, 1)
+    # every row L3 handed over that this L1 has not taken yet: what the rebuild holds
+    l3.alive = lambda: l3.served - backend.committed
+    return snapshot, pointers, store, l3, backend
+
+
+_SIZES = {"DE": 2500, "NV": 2500, "TX": 2500}
+
+
+async def test_a_rebuild_holds_one_scope_and_a_page_at_a_time_not_every_scope() -> None:
+    snapshot, _, _, l3, backend = _paged(_SIZES, l3_concurrency=1)
+
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=10)
+
+    assert backend.committed == sum(_SIZES.values())
+    assert l3.peak_alive <= max(_SIZES.values()) + _PAGE + 1, (
+        f"the rebuild held {l3.peak_alive} rows at once; one scope is {max(_SIZES.values())}"
+    )
+    with snapshot.read() as cursor:
+        assert cursor.execute("SELECT state, count(*) FROM results GROUP BY state ORDER BY state").fetchall() == [
+            (state, rows) for state, rows in sorted(_SIZES.items())
+        ]
+    await snapshot.stop()
+
+
+async def test_a_rebuild_publishes_each_scope_before_it_reads_past_the_scopes_it_holds() -> None:
+    snapshot, pointers, _, l3, _ = _paged(_SIZES, l3_concurrency=2)
+    published_when_read: dict[str, set[str]] = {}
+    l3.on_read = lambda state: published_when_read.setdefault(
+        state, {key for key in pointers.entries if key.startswith("enr.s.")}
+    )
+
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=10)
+
+    # two at once: DE and NV are read together, and TX only once DE is published
+    assert published_when_read["TX"] >= {"enr.s.DE"}, published_when_read
+    assert "enr.s.NV" not in published_when_read["NV"]
+    await snapshot.stop()
+
+
+async def test_a_rebuild_that_dies_part_way_names_no_snapshot_complete_and_serves_none() -> None:
+    snapshot, pointers, store, l3, _ = _paged(_SIZES, l3_concurrency=1)
+    l3.failing = "NV"
+
+    await snapshot.start()
+    await _until(lambda: "failed" in snapshot.status().detail, what="the rebuild failed at NV")
+
+    assert "enr.s.DE" in pointers.entries, "a scope read before the failure was not published"
+    assert "enr.s.TX" not in pointers.entries
+    assert "enr.index" not in pointers.entries, "a rebuild that died part way wrote an index"
+    assert not snapshot.is_ready
+    # a replica starting meanwhile finds no snapshot to load: what DE's pointer names is not the whole
+    other, _, _, _ = _snapshot(l3=l3, pointers=pointers, store=store)
+    l3.epochs = dict.fromkeys(_SIZES, 1)
+    await other.start()
+    await asyncio.sleep(0.3)
+    assert not other.is_ready and other.status().source is None, "a partial rebuild was loaded as the snapshot"
+    await other.stop()
+
+    l3.failing = None
+    await snapshot.wait_ready(timeout=10)
+    assert _indexed(pointers) == set(_SIZES)
+    await snapshot.stop()
+
+
+async def test_a_write_committed_during_a_rebuild_rereads_only_the_scopes_not_yet_published_at_their_epoch() -> None:
+    snapshot, pointers, _, l3, _ = _paged(_SIZES, l3_concurrency=1)
+
+    def a_write_to_tx_commits(state: str) -> None:
+        if state == "NV" and l3.reads["NV"] == 1:
+            l3.epochs["TX"] = 2
+
+    l3.on_read = a_write_to_tx_commits
+
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=10)
+
+    assert l3.reads == {"DE": 1, "NV": 2, "TX": 1}, "a scope published at its epoch was read again, or one was not"
+    assert json.loads(pointers.entries["enr.s.TX"][0])["epoch"] == 2
+    assert _indexed(pointers) == set(_SIZES)
+    await snapshot.stop()
+
+
+async def test_a_cold_load_commits_each_scope_before_it_fetches_past_the_scopes_it_holds() -> None:
+    builder, pointers, store, l3, _ = _paged(_SIZES)
+    await builder.start()
+    await builder.wait_ready(timeout=10)
+    await builder.stop()
+    statements = l3.statements
+    events: list[str] = []
+
+    class _Recording(_Store):
+        async def get(self, name: str) -> bytes:
+            events.append(f"fetch {name.split('/')[1]}")
+            return await super().get(name)
+
+    recording = _Recording()
+    recording.objects = store.objects
+    metadata = MetaData()
+    _RESULTS.to_sqlalchemy_table(metadata)
+    backend = _CountingBackend(events)
+    backend.initialize(metadata)
+    cold, _, _, _ = _snapshot(l3=l3, pointers=pointers, store=recording, backend=backend, l2_concurrency=1)
+    l3.epochs = dict.fromkeys(_SIZES, 1)
+
+    await cold.start()
+    await cold.wait_ready(timeout=10)
+
+    assert cold.status().source is SnapshotSource.L2
+    assert l3.statements == statements, "a cold load read L3"
+    assert events == [f"{step} {state}" for state in sorted(_SIZES) for step in ("fetch", "commit")], events
+    assert backend.committed == sum(_SIZES.values())
+    await cold.stop()
+
+
+class _StuckL3(_PagedL3):
+    """L3 whose read of ``stuck`` never answers."""
+
+    def __init__(self, sizes: dict[str, int], stuck: str) -> None:
+        super().__init__(sizes)
+        self.stuck = stuck
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if args and args[0] == self.stuck:
+            self.reads[self.stuck] += 1
+            await asyncio.Event().wait()
+        return await super().fetch(sql, *args)
+
+
+async def test_stopping_a_rebuild_whose_abandoned_read_failed_stops_it() -> None:
+    l3 = _StuckL3(_SIZES, stuck="DE")
+    l3.failing = "NV"
+    snapshot, _, _, _ = _snapshot(l3=l3, l3_concurrency=2)
+    l3.epochs = dict.fromkeys(_SIZES, 1)
+
+    await snapshot.start()
+    # DE is the scope published first, and never read; NV, read beside it, failed meanwhile
+    await _until(lambda: l3.reads["DE"] == 1 and l3.reads["NV"] == 1, what="DE and NV read")
+    await asyncio.sleep(0.05)
+
+    # the failed read must not stand in for the cancellation: a worker told it failed carries on
+    await asyncio.wait_for(snapshot.stop(), timeout=5)

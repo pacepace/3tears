@@ -488,6 +488,48 @@ class TestPartitions:
         assert staged.equals(backend.export_partition("results", "state", "TX", order_by=key))
         assert backend.export_rows("results", "state", "TX", [], primary_key=key, order_by=key).num_rows == 0
 
+    def test_an_export_holds_only_the_rows_given_for_the_scope_whatever_it_holds(self) -> None:
+        pytest.importorskip("pyarrow")
+
+        backend = _partitioned_backend()
+        key = ("race", "county")
+        backend.upsert_many("results", [_result("r1", f"c{i:04d}", "TX", i) for i in range(2_000)], key)
+        page = [_result("r9", "c1", "TX", 1), _result("r9", "c2", "TX", 2), _result("r9", "c3", "NV", 3)]
+
+        exported = backend.export_rows("results", "state", "TX", page, primary_key=key, order_by=key)
+
+        # a row of another scope is not the scope's, as a replacement would not hold it there
+        assert exported.column("county").to_pylist() == ["c1", "c2"]
+        assert exported.column("race").to_pylist() == ["r9", "r9"], "the scope's held rows leaked into the export"
+        assert backend.execute_query("SELECT count(*) AS n FROM results WHERE race = 'r1'") == [{"n": 2_000}]
+
+    def test_an_export_types_values_arrow_cannot_hold_as_one_column_as_a_replacement_would(self) -> None:
+        pytest.importorskip("pyarrow")
+        from threetears.core.cache.duckdb import PartitionReplacement
+
+        backend = _partitioned_backend()
+        key = ("race", "county")
+        # a race given as text in one row and a number in another: no one Arrow column holds both
+        mixed: list[dict[str, Any]] = [_result("r1", "c1", "TX", 1), {**_result("r2", "c2", "TX", 2), "race": 7}]
+
+        staged = backend.export_rows("results", "state", "TX", mixed, primary_key=key, order_by=key)
+        backend.replace_partitions(
+            [PartitionReplacement(table="results", column="state", value="TX", rows=mixed, primary_key=key)]
+        )
+
+        assert staged.equals(backend.export_partition("results", "state", "TX", order_by=key))
+        assert staged.column("race").to_pylist() == ["7", "r1"]
+
+    def test_an_export_refuses_a_null_key_as_the_table_does(self) -> None:
+        pytest.importorskip("pyarrow")
+
+        backend = _partitioned_backend()
+        key = ("race", "county")
+        nameless = {**_result("r1", "c1", "TX", 1), "county": None}
+
+        with pytest.raises(duckdb.ConstraintException, match="NOT NULL"):
+            backend.export_rows("results", "state", "TX", [nameless], primary_key=key, order_by=key)
+
     def test_replacing_partitions_swaps_each_scope_whole_and_leaves_the_rest(self) -> None:
         pytest.importorskip("pyarrow")
         from threetears.core.cache.duckdb import PartitionReplacement

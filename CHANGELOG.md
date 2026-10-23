@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a scoped snapshot rebuilds from L3 and loads from L2 a few scopes at a time
+
+**Fixed:** `ScopedSnapshot`'s rebuild from L3 read every scope's rows as Python dicts before it
+published any, about 1 to 2 KB a row: a tool pod whose copy is 360 MB was OOMKilled at 8 GiB minutes
+into the rebuild. Now each scope is read a keyset page at a time, and each page goes through the L1's
+`export_rows` as it arrives, so it is held typed and cut by the backend's retention. The scope is
+published (this L1, its chunks, its pointer) and let go before the rebuild reads past `l3_concurrency`
+scopes (default 4), in scope order. A scope is published only while the writer's stamp is still the one
+taken before the epochs were read. Once a write commits, the attempt stops and the next one rereads
+only the scopes not already published at their epoch. The index is written whole, and the copy
+declared ready, only once every scope is in: a rebuild that dies part way names no snapshot complete.
+A cold load from L2 likewise commits each scope in its own transaction, in scope order, holding
+`l2_concurrency` scopes' chunks at a time rather than every scope's. Status timings `read_l3`/`publish`
+and `fetch`/`load` are now seconds summed over the scopes, which overlap. Measured on 3 million
+synthetic rows in 50 scopes (Linux): the rebuild's peak went from 4.2 GB to 1.6 GB, and the load's
+from 2.4 GB to 1.7 to 1.9 GB (`docs/design-scoped-snapshot.md`, "Bounded memory").
+
+**Fixed:** `DuckDBBackend.export_rows` types the rows beside the table, cast to its columns, and never in
+it. It used to delete the scope's held rows in a rolled-back transaction, so one page of a large held
+scope cost the whole scope (0.9 s against 15.7 s for 200 pages of a 200,000-row scope). A null key is
+refused as the table refuses it (`duckdb.ConstraintException`).
+
+**Added:** `threetears.core.keyset.keyset_pages(...)` and
+`threetears.core.collections.complete_copy.l3_row_pages(l3, table, columns, key, *, where=None,
+page_size=DEFAULT_PAGE_SIZE)`, async generators that hand over each page as it is read.
+`read_keyset_pages` and `read_l3_rows` gather them, issuing the same statements as before.
+
 ### nats: a declared KV bucket on more than one server, and an Object Store's in-place reshape logged
 
 **Added** `replicas: int | None = None` to `NatsClient.ensure_kv_bucket` (and the `KvDeclaring` protocol and

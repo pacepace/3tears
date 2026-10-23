@@ -157,6 +157,41 @@ and 0.72 would see the scope's pointer missing and rebuild it under the old key,
 fighting) and a format number 0.72 does not read (it would load the base alone and serve a scope
 missing every piece: the misread this rules out).
 
+## Bounded memory: a rebuild and a load hold a few scopes at a time
+
+**Decided 2026-10-22, for the reports tool pod.** Its DuckDB copy is about 360 MB and its snapshot in
+NATS about 300 MB, but a rebuild from L3 read every scope's rows as Python dicts before it published
+any: 0.9 to 2 KB a row, at least 18 GB for 16.3 million L3 rows. Pods were OOMKilled at 8 GiB minutes
+into the rebuild, and most of what they held the copy's retention dropped afterwards.
+
+- **Scope by scope, a page at a time.** A rebuild reads each scope from L3 a keyset page at a time
+  (`complete_copy.l3_row_pages`). Each page goes through the backend's `export_rows` as it arrives,
+  so it is held as the L1 keeps it: typed in Arrow, and cut by a backend's retention. The scope is
+  then published like any whole publish (this L1, its chunks, its pointer) and let go. At most
+  `l3_concurrency` scopes (default 4) are held at once, read beside the one being published, and
+  published in scope order.
+- **The writer's stamp, per scope.** Each scope is published only if the writer's stamp, read after
+  its rows, is still the one taken before the epochs were read. Once a write has committed, nothing
+  more is published and the attempt reads again. A scope already published at the epoch L3 still
+  records is not read again.
+- **Partial is never complete.** Scopes publish one at a time, as the publish loop always did. The
+  index is written whole, and the copy declared ready, only after every scope is in. A rebuild that
+  dies part way leaves each scope it published whole at its epoch, and no index naming the snapshot
+  complete.
+- **A load from L2 the same way.** A load fetches up to `l2_concurrency` scopes' chunks at once and
+  commits each scope in its own transaction, in scope order, as soon as it and the scopes before it
+  are in. The copy is ready only once every scope is in.
+- **`export_rows` costs what its rows cost.** `DuckDBBackend.export_rows` types the rows beside the
+  table, cast to its columns, and never in it. It used to delete the scope's held rows in a
+  rolled-back transaction, which made a page cost the whole scope.
+
+Measured on a synthetic 3 million rows in 50 scopes (12 columns, Linux, an L3 that answers at once):
+the rebuild's peak went from 4.2 GB to 1.6 GB (1.2 GB with `l3_concurrency=1`), and the load's from
+2.4 GB to 1.7 to 1.9 GB. What remains is the copy itself and a few scopes. With 400 scopes the rebuild's
+went from 3.7 GB to 1.1 GB: what a rebuild holds beyond the copy tracks its largest scope, not the total.
+The price is time where L3 and NATS cost nothing: the rebuild took 24 to 31 s against 22 s (each page
+typed on its own), the load 3 to 5 s against 2 s (a transaction per scope).
+
 ## Chunk lifecycle
 
 One rule (`_Sweeper.deletable`, beside the snapshot in its module) decides whether a chunk may be

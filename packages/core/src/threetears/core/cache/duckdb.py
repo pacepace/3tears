@@ -80,8 +80,19 @@ class PartitionReplacement:
 _ARROW_MISSING_SAID = False
 
 
-def _insert_through_arrow(connection: Any, target: str, columns: Sequence[str], lists: Sequence[list[Any]]) -> bool:
-    """insert or replace rows given as one list per column, through one Arrow table; False when it cannot.
+def _ddl_type(code: str) -> str:
+    """the SQL type of a column's type code: ``VARCHAR_UUID`` is a VARCHAR column, for one.
+
+    :param code: the type code (:meth:`DuckDBBackend.column_types`)
+    :ptype code: str
+    :return: the SQL type
+    :rtype: str
+    """
+    return code.split("_")[0] if "_" in code else code
+
+
+def _as_arrow(target: str, lists: Sequence[list[Any]]) -> Any:
+    """columns of values as one Arrow table, its columns ``c0``, ``c1``, ...; None when it cannot be one.
 
     Binding Python lists as parameters converts every value through DuckDB's Python layer, which for
     each one tries to import ``pandas`` (to recognise its types); where pandas is not installed that
@@ -89,19 +100,15 @@ def _insert_through_arrow(connection: Any, target: str, columns: Sequence[str], 
     on a starved host. One Arrow table is one conversion. Without pyarrow, or for a column whose values
     Arrow cannot type as one (mixed kinds), the caller binds the lists instead.
 
-    :param connection: the connection to write on, its lock held by the caller
-    :ptype connection: Any
-    :param target: the quoted table and column list
+    :param target: what the values are for, named in the log line when they cannot be one table
     :ptype target: str
-    :param columns: the columns, in order
-    :ptype columns: Sequence[str]
     :param lists: each column's values, serialized to its storage form
     :ptype lists: Sequence[list[Any]]
-    :return: whether the rows were inserted
-    :rtype: bool
+    :return: the table, or None
+    :rtype: pyarrow.Table | None
     """
     global _ARROW_MISSING_SAID  # noqa: PLW0603 -- said once per process, not per write
-    inserted = False
+    arrow: Any = None
     try:
         import pyarrow as pa  # noqa: PLC0415 -- optional: the snapshot extra
     except ImportError:
@@ -120,15 +127,33 @@ def _insert_through_arrow(connection: Any, target: str, columns: Sequence[str], 
                 "a bulk write's values do not type as one Arrow column; binding them one by one (slow)",
                 extra={"extra_data": {"target": target, "error": f"{type(exc).__name__}: {exc}"}},
             )
-        else:
-            names = ", ".join(f"c{i}" for i in range(len(columns)))
-            connection.register("_bulk_rows", arrow)
-            try:
-                connection.execute(f"INSERT OR REPLACE INTO {target} SELECT {names} FROM _bulk_rows")  # noqa: S608
-            finally:
-                connection.unregister("_bulk_rows")
-            inserted = True
-    return inserted
+    return arrow
+
+
+def _insert_through_arrow(connection: Any, target: str, columns: Sequence[str], lists: Sequence[list[Any]]) -> bool:
+    """insert or replace rows given as one list per column, through one Arrow table (:func:`_as_arrow`); False
+    when it cannot.
+
+    :param connection: the connection to write on, its lock held by the caller
+    :ptype connection: Any
+    :param target: the quoted table and column list
+    :ptype target: str
+    :param columns: the columns, in order
+    :ptype columns: Sequence[str]
+    :param lists: each column's values, serialized to its storage form
+    :ptype lists: Sequence[list[Any]]
+    :return: whether the rows were inserted
+    :rtype: bool
+    """
+    arrow = _as_arrow(target, lists)
+    if arrow is not None:
+        names = ", ".join(f"c{i}" for i in range(len(columns)))
+        connection.register("_bulk_rows", arrow)
+        try:
+            connection.execute(f"INSERT OR REPLACE INTO {target} SELECT {names} FROM _bulk_rows")  # noqa: S608
+        finally:
+            connection.unregister("_bulk_rows")
+    return arrow is not None
 
 
 class DuckDBBackend:
@@ -259,6 +284,37 @@ class DuckDBBackend:
             self._insert_rows(self._db, table, rows, primary_key)
         return len(rows)
 
+    def _serialized(
+        self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...]
+    ) -> tuple[list[str], list[list[Any]]]:
+        """the columns ``rows`` name, and each one's values in its storage form, the last row of each key kept.
+
+        :param table: the table
+        :ptype table: str
+        :param rows: the rows, each keyed by column name, every pk column present
+        :ptype rows: Sequence[Mapping[str, Any]]
+        :param primary_key: pk column name or tuple of pk column names
+        :ptype primary_key: str | tuple[str, ...]
+        :return: the columns, and one list of values per column (empty lists for no rows)
+        :rtype: tuple[list[str], list[list[Any]]]
+        :raises ValueError: when the rows do not all name the same columns
+        """
+        pk_cols = self._pk_columns(primary_key)
+        schema = self._schema_info.get(table, {})
+        # Only the table's own columns are written: the collection's pull-through
+        # may inject keys (``date_created`` and the like) this backend declares no
+        # column for. An unregistered table (no schema) writes every key named.
+        columns = bulk_columns(rows, schema)
+        # DuckDB refuses to touch one key twice in a statement; one by one, the last
+        # write of a key is the one that stays, so the batch keeps only that. keys are
+        # compared as stored, so a UUID and its text are the same key, as they are in L1.
+        latest = list(
+            {
+                tuple(self.serialize_value(row[c], schema.get(c, "VARCHAR")) for c in pk_cols): row for row in rows
+            }.values()
+        )
+        return columns, [[self.serialize_value(row[c], schema.get(c, "VARCHAR")) for row in latest] for c in columns]
+
     def _insert_rows(
         self, connection: Any, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...]
     ) -> None:
@@ -276,22 +332,8 @@ class DuckDBBackend:
         :rtype: None
         :raises ValueError: when the rows do not all name the same columns
         """
-        pk_cols = self._pk_columns(primary_key)
-        schema = self._schema_info.get(table, {})
-        # Only the table's own columns are written: the collection's pull-through
-        # may inject keys (``date_created`` and the like) this backend declares no
-        # column for. An unregistered table (no schema) writes every key named.
-        columns = bulk_columns(rows, schema)
-        # DuckDB refuses to touch one key twice in a statement; one by one, the last
-        # write of a key is the one that stays, so the batch keeps only that. keys are
-        # compared as stored, so a UUID and its text are the same key, as they are in L1.
-        latest = list(
-            {
-                tuple(self.serialize_value(row[c], schema.get(c, "VARCHAR")) for c in pk_cols): row for row in rows
-            }.values()
-        )
-        if latest:
-            lists = [[self.serialize_value(row[c], schema.get(c, "VARCHAR")) for row in latest] for c in columns]
+        columns, lists = self._serialized(table, rows, primary_key)
+        if lists and lists[0]:
             # values are already serialized to each column's storage form, so the insert's own
             # conversion types them; the registry's names are logical (VARCHAR_UUID), not SQL
             target = f"{quote_identifier(table)} ({', '.join(quote_identifier(c) for c in columns)})"
@@ -453,10 +495,11 @@ class DuckDBBackend:
         """the Arrow table one scope WOULD hold with ``rows``, as :meth:`export_partition` would
         write it after a replacement, changing nothing.
 
-        For a writer that encodes a scope's next content before it may show it: the rows are typed
-        and ordered by this backend's own columns, so the export equals the one taken after
-        :meth:`replace_partitions` with the same rows. It runs in a transaction that is rolled back,
-        so no reader, on :meth:`read_snapshot` or otherwise, ever sees the rows. Needs ``pyarrow``.
+        For a writer that encodes a scope's next content before it may show it, and for a rebuild that
+        types a scope's rows a page at a time: the rows are typed and ordered by this backend's own
+        columns, so the export equals the one taken after :meth:`replace_partitions` with the same rows.
+        They are typed beside the table, never in it, so no reader ever sees them, and an export costs
+        what its rows do whatever the scope holds. Needs ``pyarrow``.
 
         :param table: a table this backend created
         :ptype table: str
@@ -473,22 +516,47 @@ class DuckDBBackend:
         :return: the rows
         :rtype: pyarrow.Table
         :raises ValueError: when the table or column is unknown
+        :raises duckdb.ConstraintException: when a row's key column is null, as the table refuses it
         """
         condition, params = self._partition_filter(table, column, value)
-        quoted = quote_identifier(table)
+        schema = self._schema_info[table]
+        columns, lists = self._serialized(table, rows, primary_key)
+        for key in self._pk_columns(primary_key):
+            if key in columns and None in lists[columns.index(key)]:
+                raise duckdb.ConstraintException(f"NOT NULL constraint failed: {table}.{key}")
         order = ", ".join(quote_identifier(c) for c in order_by)
-        sql = f"SELECT * FROM {quoted} WHERE {condition}" + (f" ORDER BY {order}" if order else "")  # noqa: S608
+        given = {name: f"c{index}" for index, name in enumerate(columns)}
+        # every column of the table, in its order, cast to its type as an insert would; one the rows
+        # do not name is null, as the table would hold it
+        typed = ", ".join(
+            f"CAST({given.get(name, 'NULL')} AS {_ddl_type(code)}) AS {quote_identifier(name)}"
+            for name, code in schema.items()
+        )
+        arrow = _as_arrow(f"an export of {table}", lists) if rows else None
+        source = "_export_rows"
+        bound: list[Any] = []
+        if not rows:
+            # the table's own columns and types, and no row
+            source = f"(SELECT * FROM {quote_identifier(table)} LIMIT 0)"  # noqa: S608
+            typed = "*"
+        elif arrow is None:
+            # values Arrow cannot type as one column: each list bound and unnested
+            source = "(SELECT " + ", ".join(f"unnest(?) AS c{index}" for index in range(len(lists))) + ")"
+            bound = list(lists)
+        sql = (
+            f"SELECT * FROM (SELECT {typed} FROM {source}) WHERE {condition}"  # noqa: S608
+            + (f" ORDER BY {order}" if order else "")
+        )
         with self._db_lock:
-            self._db.execute("BEGIN TRANSACTION")
+            if arrow is not None:
+                self._db.register(source, arrow)
             try:
-                self._db.execute(f"DELETE FROM {quoted} WHERE {condition}", params)  # noqa: S608
-                if rows:
-                    self._insert_rows(self._db, table, rows, primary_key)
-                result = self._db.execute(sql, params)
+                result = self._db.execute(sql, [*bound, *params])
                 fetch = getattr(result, "to_arrow_table", None) or result.fetch_arrow_table
                 exported = fetch()
             finally:
-                self._db.execute("ROLLBACK")
+                if arrow is not None:
+                    self._db.unregister(source)
         return exported
 
     def held_keys(self, table: str, column: str, value: Any, arrow: Any, *, key: Sequence[str]) -> int:
@@ -857,7 +925,7 @@ class DuckDBBackend:
         for column in table.columns:
             col_type = self._map_sqlalchemy_type(column.type)
             # Strip serialization hint suffix for DDL (VARCHAR_UUID -> VARCHAR, etc.)
-            ddl_type = col_type.split("_")[0] if "_" in col_type else col_type
+            ddl_type = _ddl_type(col_type)
             nullable = ""
             primary = ""
             if column.primary_key:
