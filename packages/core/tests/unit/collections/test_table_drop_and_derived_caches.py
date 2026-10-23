@@ -13,6 +13,7 @@ Two registries on one in-process bus stand in for two pods. The contract this pi
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import datetime
@@ -633,6 +634,17 @@ class TestReadsAreCountedByTier:
         assert await pod.members.ensure("r1") is not None
         assert log_tier_reads() == {_TABLE: {"l3": 1}}
         assert await pod.members.ensure("r1") is not None
+        assert log_tier_reads() == {_TABLE: {"l1": 1}}
+
+    @pytest.mark.asyncio
+    async def test_a_subscript_read_counts_its_tier_l1_included(self, bus: _Lossy, source: _Source) -> None:
+        rows: dict[str, dict[str, Any]] = {"r1": {"id": "r1", "member_id": "m1"}}
+        pod = _Pod(bus, rows, source, scope="one")
+        log_tier_reads()
+
+        await asyncio.to_thread(lambda: pod.members["r1"])
+        assert log_tier_reads() == {_TABLE: {"l3": 1}}
+        await asyncio.to_thread(lambda: pod.members["r1"])
         assert log_tier_reads() == {_TABLE: {"l1": 1}}
 
     @pytest.mark.asyncio

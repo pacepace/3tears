@@ -2485,6 +2485,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         row = self._select_from_l1(entity_id, expiring=True)
         if row is not None:
+            record_tier_read(self.table_name, ReadTier.L1)
             return row
         return sync_await(self._pull_through(entity_id))
 
@@ -2802,12 +2803,13 @@ class BaseCollection(ABC, Generic[EntityT]):
         and return it forever -- ``collection[id]`` never reaches the pull-through
         below, whatever max age the collection configured, while ``get()`` beside
         it refreshes. The re-read after the pull-through does NOT expire: it was
-        just written.
+        just written. The read is counted against the tier that answered it, L1 included.
         """
         row = self._select_from_l1(entity_id, expiring=True)
         if row is not None:
+            record_tier_read(self.table_name, ReadTier.L1)
             return row
-        data = self._ensure_in_l1(entity_id)
+        data = sync_await(self._pull_through(entity_id))
         if data is None:
             raise KeyError(f"{self.table_name}[{entity_id!r}]: entity not found")
         # If L1 exists, re-read from it (ensure_in_l1 populated it)
