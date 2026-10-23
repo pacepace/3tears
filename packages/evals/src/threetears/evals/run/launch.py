@@ -2112,8 +2112,9 @@ async def admit_resumed_run(
     apparatus settings, margins, latency declaration and arm schedule, each as the run recorded it, and every role
     pin it recorded replayed as chosen — its judge, the judge configs it was judged by (by id, so a config the scope
     has since replaced is still the one replayed), and its simulator — so the launch makes every refusal a launch
-    makes, prices the arm, and the kind's launcher wires it as it would now. A ceiling or a deadline the run's launch
-    named is replayed; one it inherited is inherited again. It generates nothing: the run's cases are its own
+    makes, prices the arm, and the kind's launcher wires it as it would now. Its cost cap is the caller's; a
+    metered-call ceiling or a deadline the run's launch named is replayed, and one it inherited is inherited again.
+    It generates nothing: the run's cases are its own
     (:attr:`LaunchRequest.resuming`). What the launcher assembles is compared with the stored run at the launch tail
     (:func:`launch_run`).
 
@@ -2121,7 +2122,7 @@ async def admit_resumed_run(
     :ptype host: LaunchHost
     :param resuming: The run taken up again, and what it already holds.
     :ptype resuming: RunResumption
-    :param max_cost_usd: The cost cap the run is taken up under: a new one, or the one its launch named; ``None``
+    :param max_cost_usd: The cost cap the run is taken up under: a raised one, or the one it recorded; ``None``
         inherits the host's.
     :ptype max_cost_usd: float | None
     :param attach: Records the run before its group starts: the take-up's own write of it.

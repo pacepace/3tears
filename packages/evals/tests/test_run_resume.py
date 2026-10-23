@@ -31,11 +31,13 @@ from threetears.evals.kernel import ConflictError, ValidationFailedError
 from threetears.evals.kernel.scoring import compute_pass_hat_k
 from threetears.evals.ops import OpsHost, job_poll, run_job_id
 from threetears.evals.run import ArmPrice, ArmQuote
-from threetears.evals.run.resume import resume_drift, resume_run
-from threetears.evals.schema import EvalResult, EvalRun
+from threetears.evals.run.resume import counted_spend, resume_drift, resume_run
+from threetears.evals.schema import EvalResult, EvalRun, JobLease
 from threetears.evals.schema.models import cell_result_id, eval_trace_doc_id
 from packages.evals.tests.factories import make_eval_run, make_template
 from packages.evals.tests.fixtures.toyhost.contract import ExtractorSpec
+from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_COST_CEILING_USD, TOYHOST_SUBJECT
+from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, TOYHOST_SUBJECTS
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.lease_support import T0, ClockedStore, held_extraction, launched_run, other_process, until
@@ -82,21 +84,34 @@ async def _interrupted(monkeypatch: pytest.MonkeyPatch, how: str) -> tuple[OpsHo
     store = ClockedStore()
     holder = off_loop(ops_fixture, store=store).host
     run_id = await launched_run(holder, K)
-    await until(lambda: len(_rows(holder, run_id)) == DONE_BEFORE)
-    await asyncio.sleep(0.1)  # the next cells start, and wait on the gate
+    await until(lambda: len(_rows(holder, run_id)) == DONE_BEFORE and gate.held >= 1)
     launched = off_loop(_run, holder, run_id)
     if how == "lost":
         store.at = T0 + timedelta(seconds=61)
         assert (await job_poll(other_process(holder), run_job_id(run_id), TOYHOST_SCOPE)).state == "lost"
+        in_flight = gate.held
+        assert in_flight >= 1, "cells were in flight when the lease lapsed"
         gate.set()
-        await until(lambda: not holder.launch.job_manager.is_active(run_id))
-        assert len(_rows(holder, run_id)) == DONE_BEFORE, "the dead holder's cells in flight wrote nothing"
+        await until(lambda: gate.released >= in_flight and not holder.launch.job_manager.is_active(run_id))
+        assert len(_rows(holder, run_id)) == DONE_BEFORE, "the dead holder's cells in flight finished and wrote nothing"
     else:
         assert holder.launch.job_manager.cancel_job(run_id, reason="shipping a fix")
         await until(lambda: not holder.launch.job_manager.is_active(run_id))
         assert "cancelled" in {row.termination for row in _rows(holder, run_id)}, "the cancel cut cells short"
         gate.set()
     return holder, run_id, launched, store
+
+
+#: What each cell a cancel cut short had spent, set on its row: the toy's cells are cut short waiting on their one
+#: call, which spends nothing, while a real cell cut short has usually paid for some of its calls.
+CUT_SHORT_USD = 0.05
+
+
+def _cut_short_after_spending(store: ClockedStore, run_id: str) -> None:
+    """Give every cut-short row of the run what it had spent (:data:`CUT_SHORT_USD`)."""
+    for document in list(store.documents.values()):
+        if document.get("eval_run_id") == run_id and document.get("termination") == "cancelled":
+            store.upsert(document | {"cost_usd": CUT_SHORT_USD})
 
 
 async def _control() -> tuple[OpsHost, str]:
@@ -136,7 +151,8 @@ async def _assert_ends_as_the_control(holder: OpsHost, run_id: str, launched: Ev
 async def test_a_run_taken_up_again_from_a_fresh_process_ends_as_an_uninterrupted_run_does(
     monkeypatch: pytest.MonkeyPatch, how: str
 ) -> None:
-    holder, run_id, launched, _ = await _interrupted(monkeypatch, how)
+    holder, run_id, launched, store = await _interrupted(monkeypatch, how)
+    _cut_short_after_spending(store, run_id)
     before = _rows(holder, run_id)
     cut_short = [row for row in before if row.termination == "cancelled"]
     resumer = other_process(holder)
@@ -155,11 +171,14 @@ async def test_a_run_taken_up_again_from_a_fresh_process_ends_as_an_uninterrupte
     assert first.spend_lower_bound is (how == "lost")
     assert first.cells_stored == len(before)
     assert (second.holder, second.epoch, second.status) == (_holder_id(resumer), 1, "completed")
-    assert (second.replaced_cells, second.replaced_spend_usd) == (
-        len(cut_short),
-        pytest.approx(sum(row.cost_usd or 0.0 for row in cut_short)),
-    )
     assert second.completeness == run.completeness
+    after = {row.id: row for row in _rows(holder, run_id)}
+    for row in cut_short:
+        assert after[row.id].superseded_spend_usd == pytest.approx(CUT_SHORT_USD), "its cut-short attempt's spend moved"
+    assert sum(amount or 0.0 for amount in counted_spend(list(after.values()))) == pytest.approx(
+        sum(row.cost_usd or 0.0 for row in before)
+        + sum(row.cost_usd or 0.0 for row in after.values() if row.lease_epoch)
+    ), "every attempt's spend, once"
 
 
 async def test_an_operator_cancelled_run_is_taken_up_again_by_the_process_that_held_it(
@@ -378,3 +397,165 @@ async def test_of_two_take_ups_racing_exactly_one_wins(monkeypatch: pytest.Monke
     run = off_loop(_run, holder, run_id)
     assert [lifetime.holder for lifetime in run.lifetimes] == [_holder_id(holder), _holder_id(winner)]
     assert len(_rows(holder, run_id)) == 3 * K
+
+
+# =============================================================================
+# The spend a cut-short cell held
+# =============================================================================
+
+
+async def test_a_cut_short_cell_s_spend_counts_once_before_and_after_its_cell_is_run_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelled, taken up and stopped by its cap part-way, then taken up again: at each take-up the cap counts every
+    attempt the run paid for once — a cut-short row's own spend while it is still stored, and the same spend on the
+    row written over it once its cell has run again."""
+    holder, run_id, _, store = await _interrupted(monkeypatch, "cancelled")
+    _cut_short_after_spending(store, run_id)
+    first = _rows(holder, run_id)
+    first_total = sum(row.cost_usd or 0.0 for row in first)
+    cut_short = {row.id: row for row in first if row.termination == "cancelled"}
+    assert sum(amount or 0.0 for amount in counted_spend(first)) == pytest.approx(first_total)
+    resumer = _cheaply_priced(other_process(holder))
+
+    # Just above what it spent, so the take-up stops once its first cell lands: some cells run again, the rest wait.
+    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE, max_cost_usd=first_total + 0.0000001)
+    assert (await settled(resumer, run_job_id(run_id))).status == "budget_stopped"
+    second = {row.id: row for row in _rows(holder, run_id)}
+    run_again = [row_id for row_id in cut_short if second[row_id].lease_epoch == 1]
+    assert run_again, "a cut-short cell was run again before the cap stopped the run"
+    for row_id, row in cut_short.items():
+        if row_id in run_again:
+            assert second[row_id].superseded_spend_usd == pytest.approx(CUT_SHORT_USD)
+        else:
+            assert second[row_id] == row, "a cut-short cell not reached keeps its row and its spend"
+    second_total = first_total + sum(row.cost_usd or 0.0 for row in second.values() if row.lease_epoch == 1)
+    assert sum(amount or 0.0 for amount in counted_spend(list(second.values()))) == pytest.approx(second_total)
+    with pytest.raises(ValidationFailedError, match=f"spent \\${second_total:.4f}"):
+        await resume_run(resumer.launch, run_id, TOYHOST_SCOPE, max_cost_usd=second_total - 0.000000001)
+
+    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE, max_cost_usd=2.0)
+    assert (await settled(resumer, run_job_id(run_id))).state == "completed"
+    last = _rows(holder, run_id)
+    assert len(last) == 3 * K
+    assert sum(amount or 0.0 for amount in counted_spend(last)) == pytest.approx(
+        second_total + sum(row.cost_usd or 0.0 for row in last if row.lease_epoch == 2)
+    )
+
+
+# =============================================================================
+# What is not taken up
+# =============================================================================
+
+
+def _seeded(storage: Any, **fields: Any) -> EvalRun:
+    run = make_eval_run(
+        **{"scope_id": TOYHOST_SCOPE, "template_id": toyhost_template().id, "test_case_ids": ["gone-case"], **fields}
+    )
+    off_loop(storage.save_job_record, run.to_dict(), if_match=None, create_only=True)
+    return run
+
+
+@pytest.mark.parametrize(
+    ("fields", "refusal"),
+    [
+        ({"status": "completed"}, "completed; there is nothing left"),
+        ({"status": "failed", "failed_because": "nothing_measured"}, "failed"),
+        (
+            {
+                "status": "running",
+                "lease": JobLease(holder="another-process", expires_at=(T0 + timedelta(hours=1)).isoformat()),
+            },
+            "still running by process another-process",
+        ),
+        ({"status": "cancelled", "template_id": None}, "ad hoc"),
+        ({"status": "cancelled"}, "gone-case, which scope"),
+    ],
+    ids=["completed", "failed", "live", "ad-hoc", "cases-gone"],
+)
+async def test_a_run_that_cannot_be_taken_up_is_refused_with_a_remedy_and_left_as_it_was(
+    fields: dict[str, Any], refusal: str
+) -> None:
+    host = off_loop(ops_fixture, store=ClockedStore()).host
+    run = _seeded(host.eval_host.storage, **fields)
+    stored = off_loop(_run, host, run.id)
+
+    with pytest.raises(ValidationFailedError, match=refusal) as refused:
+        await resume_run(host.launch, run.id, TOYHOST_SCOPE)
+
+    assert refused.value.remedy
+    assert off_loop(_run, host, run.id) == stored
+
+
+async def test_a_run_whose_job_is_still_unwinding_in_this_process_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    gate = held_extraction(monkeypatch)
+    store = ClockedStore()
+    holder = off_loop(ops_fixture, store=store).host
+    run_id = await launched_run(holder, K)
+    await until(lambda: gate.held >= 1)
+    store.at = T0 + timedelta(seconds=61)
+    assert (await job_poll(other_process(holder), run_job_id(run_id), TOYHOST_SCOPE)).state == "lost"
+    lost = off_loop(_run, holder, run_id)
+
+    with pytest.raises(ValidationFailedError, match="still unwinding"):
+        await resume_run(holder.launch, run_id, TOYHOST_SCOPE)
+
+    assert off_loop(_run, holder, run_id) == lost
+    gate.set()
+    await until(lambda: not holder.launch.job_manager.is_active(run_id))
+
+
+# =============================================================================
+# What a take-up records and runs under
+# =============================================================================
+
+
+async def test_a_take_up_across_a_deploy_goes_ahead_and_its_holding_records_the_new_labels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holder, run_id, launched, _ = await _interrupted(monkeypatch, "cancelled")
+    deployed = TOYHOST_SUBJECT.model_copy(update={"labels": {**TOYHOST_SUBJECT.labels, "app_version": "2.0.1"}})
+    monkeypatch.setitem(TOYHOST_SUBJECTS, TOYHOST_SUBJECT.subject_id, deployed)
+    resumer = other_process(holder)
+
+    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    assert (await settled(resumer, run_job_id(run_id))).state == "completed"
+
+    run = off_loop(_run, holder, run_id)
+    first, second = run.lifetimes
+    assert (first.labels, second.labels) == (dict(TOYHOST_SUBJECT.labels), dict(deployed.labels))
+    assert run.subject_snapshot == launched.subject_snapshot, "the run keeps the subject it was launched on"
+    assert run.context_key == launched.context_key
+
+
+async def test_a_run_its_provider_account_stopped_is_taken_up_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    holder, run_id, _, store = await _interrupted(monkeypatch, "cancelled")
+    refusal = "the provider account refused a candidate call: out of credit"
+    document = store.get(run_id, TOYHOST_SCOPE)
+    assert document is not None
+    store.upsert(document | {"status": "exhausted", "cancellation_reason": None, "error_details": [refusal]})
+    resumer = other_process(holder)
+
+    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    assert (await settled(resumer, run_job_id(run_id))).state == "completed"
+
+    first, second = off_loop(_run, holder, run_id).lifetimes
+    assert (first.status, first.reason, second.status) == ("exhausted", refusal, "completed")
+    assert len(_rows(holder, run_id)) == 3 * K
+
+
+async def test_a_take_up_runs_under_the_cap_the_run_recorded_not_the_hosts_current_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holder, run_id, launched, _ = await _interrupted(monkeypatch, "cancelled")
+    assert (launched.max_cost_usd, launched.max_cost_usd_origin) == (TOYHOST_COST_CEILING_USD, "inherited")
+    raised = TOYHOST_LAUNCH_SETTINGS.model_copy(update={"max_cost_usd": TOYHOST_COST_CEILING_USD + 2.0})
+    resumer = other_process(holder)
+    resumer = dataclasses.replace(resumer, launch=dataclasses.replace(resumer.launch, settings=lambda: raised))
+
+    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    assert (await settled(resumer, run_job_id(run_id))).state == "completed"
+
+    run = off_loop(_run, holder, run_id)
+    assert (run.max_cost_usd, run.max_cost_usd_origin) == (TOYHOST_COST_CEILING_USD, "inherited")
+    assert [lifetime.max_cost_usd for lifetime in run.lifetimes] == [TOYHOST_COST_CEILING_USD] * 2

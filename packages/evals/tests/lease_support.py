@@ -20,7 +20,7 @@ from packages.evals.tests.fixtures.toyhost.kind import ScriptedExtractionClient
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, TOYHOST_SUBJECT
 
-__all__ = ["T0", "ClockedStore", "held_extraction", "launched_run", "other_process", "until"]
+__all__ = ["T0", "ClockedStore", "HeldGate", "held_extraction", "launched_run", "other_process", "until"]
 
 #: When the clocked store's clock starts.
 T0 = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
@@ -51,7 +51,17 @@ async def until(condition: Any, *, timeout: float = 10.0) -> None:
             await asyncio.sleep(0.01)
 
 
-def held_extraction(monkeypatch: pytest.MonkeyPatch, *, passing: int = 0) -> asyncio.Event:
+class HeldGate(asyncio.Event):
+    """The gate held extractions wait on, counting them: how many it held, and how many of those have since ended."""
+
+    def __init__(self) -> None:
+        """Nothing held yet."""
+        super().__init__()
+        self.held = 0
+        self.released = 0
+
+
+def held_extraction(monkeypatch: pytest.MonkeyPatch, *, passing: int = 0) -> HeldGate:
     """Hold every extraction after the first ``passing`` until the returned event is set, so a run stays running.
 
     :param monkeypatch: Patches the toy extractor's client.
@@ -59,18 +69,22 @@ def held_extraction(monkeypatch: pytest.MonkeyPatch, *, passing: int = 0) -> asy
     :param passing: How many extractions go through at once before the rest wait.
     :ptype passing: int
     :return: The gate; setting it lets every held extraction, and every later one, through.
-    :rtype: asyncio.Event
+    :rtype: HeldGate
     """
-    gate = asyncio.Event()
+    gate = HeldGate()
     extract = ScriptedExtractionClient.extract
     let_through = [passing]
 
     async def held(self: ScriptedExtractionClient, request: Any) -> Any:
         if let_through[0] > 0:
             let_through[0] -= 1
-        else:
+            return await extract(self, request)
+        gate.held += 1
+        try:
             await gate.wait()
-        return await extract(self, request)
+            return await extract(self, request)
+        finally:
+            gate.released += 1
 
     monkeypatch.setattr(ScriptedExtractionClient, "extract", held)
     return gate

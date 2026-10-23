@@ -89,8 +89,26 @@ def planned_cells(rows: Sequence[EvalResult]) -> StoredCells:
     """
     return StoredCells(
         done=tuple(row for row in rows if row.termination != "cancelled"),
-        replaced={(row.test_case_id, row.k_iteration): row.id for row in rows if row.termination == "cancelled"},
+        replaced={(row.test_case_id, row.k_iteration): row for row in rows if row.termination == "cancelled"},
     )
+
+
+def counted_spend(rows: Sequence[EvalResult]) -> list[float | None]:
+    """What a run's stored rows spent, as its cost cap counts it: each row's attempt, and the attempts it was written
+    over (``EvalResult.superseded_spend_usd``), so a cell cut short and run again counts every attempt once. ``None``
+    is spend nobody priced.
+
+    :param rows: Every row stored for the run.
+    :ptype rows: Sequence[EvalResult]
+    :return: One amount per attempt the rows record.
+    :rtype: list[float | None]
+    """
+    spend: list[float | None] = []
+    for row in rows:
+        spend.append(row.cost_usd)
+        if row.superseded_spend_usd != 0.0:
+            spend.append(row.superseded_spend_usd)
+    return spend
 
 
 def _shown(value: Any) -> str:
@@ -170,9 +188,7 @@ class RunResumption:
     :ivar run: The run as stored, settled.
     :ivar cases: Its frozen cases, in its own order: the launcher freezes these.
     :ivar stored: What it holds of its matrix (:func:`planned_cells`).
-    :ivar spend: The spend of every row stored for it, done or run again, which its cost cap counts.
-    :ivar replaced_spend_usd: The priced spend of the rows it runs again, which no row will carry once they are
-        written over.
+    :ivar rows: Every row stored for it, done or run again: what its cost cap counts (:func:`counted_spend`).
     :ivar holder: The process taking it up.
     :ivar epoch: The lease epoch it is taken up under.
     :ivar cell_order_seed: What its cells were ordered by when that was its launch's group, shared with its sibling
@@ -182,8 +198,7 @@ class RunResumption:
     run: EvalRun
     cases: tuple[EvalTestCase, ...]
     stored: StoredCells
-    spend: tuple[float | None, ...]
-    replaced_spend_usd: float
+    rows: tuple[EvalResult, ...]
     holder: str | None
     epoch: int
     cell_order_seed: str | None
@@ -235,8 +250,7 @@ class RunResumption:
             lost=stored.lost,
             budget_stops=stored.budget_stops,
             completeness=stored.completeness,
-            # One spend per stored row: the rows the run held when its holding ended.
-            cells_stored=len(self.spend),
+            cells_stored=len(self.rows),
         )
         holding = RunLifetime(
             holder=self.holder,
@@ -245,8 +259,6 @@ class RunResumption:
             labels=dict(fresh.subject_snapshot.labels),
             run_labels=list(stored.labels),
             max_cost_usd=fresh.max_cost_usd,
-            replaced_cells=len(self.stored.replaced),
-            replaced_spend_usd=self.replaced_spend_usd,
         )
         reopened = stored.model_copy(
             update={
@@ -260,8 +272,12 @@ class RunResumption:
                 "budget_stops": None,
                 "failed_because": None,
                 "completeness": None,
+                # The cap it was stopped under is replayed as named, so a cap it inherited keeps saying so unless the
+                # take-up raised it.
                 "max_cost_usd": fresh.max_cost_usd,
-                "max_cost_usd_origin": fresh.max_cost_usd_origin,
+                "max_cost_usd_origin": stored.max_cost_usd_origin
+                if fresh.max_cost_usd == stored.max_cost_usd
+                else fresh.max_cost_usd_origin,
                 "lifetimes": [*ended, holding],
             }
         )
@@ -273,7 +289,7 @@ class RunResumption:
         :param cap: The cap the launch built for this holding.
         :ptype cap: EvalRunCostCap
         """
-        for spend in self.spend:
+        for spend in counted_spend(self.rows):
             cap.record(spend)
 
 
@@ -342,13 +358,18 @@ def _refuse_what_cannot_be_taken_up(read: _Read, *, cap: float | None, live_here
             "what failed it again",
             remedy="fix what failed it, which its error_details name, and launch its template again",
         )
-    spent = sum(row.cost_usd for row in read.rows if row.cost_usd is not None)
+    spent = sum(amount for amount in counted_spend(read.rows) if amount is not None)
     if run.status == "budget_stopped" and cap is not None and spent >= cap:
         raise ValidationFailedError(
             f"run '{run.id}' was stopped by its budget ({run.budget_stop_reason}), and its stored rows have spent "
             f"${spent:.4f} — at least that, since a cell in flight when it stopped may have spent more — against a "
             f"cap of ${cap:.4f}",
             remedy=f"take it up with max_cost_usd above ${spent:.4f}",
+        )
+    if run.template_id is None:
+        raise ValidationFailedError(
+            f"run '{run.id}' is ad hoc, so there is no template to launch it from again",
+            remedy="take up a run launched from a template",
         )
     if read.missing_cases:
         raise ValidationFailedError(
@@ -379,8 +400,10 @@ async def resume_run(host: LaunchHost, run_id: str, scope_id: str, *, max_cost_u
     :ptype run_id: str
     :param scope_id: Its scope.
     :ptype scope_id: str
-    :param max_cost_usd: The cost cap to take it up under; ``None`` keeps the one its launch named, or inherits the
-        host's. Not part of the measurement: the holding records the cap it ran under.
+    :param max_cost_usd: The cost cap to take it up under, above what its stored rows spent; ``None`` keeps the cap
+        it recorded, whatever the host's own reads now (a run recorded uncapped inherits the host's). Not part of the
+        measurement: each holding records the cap it ran under. A cap above the host's ceiling is refused, as a
+        launch's is.
     :ptype max_cost_usd: float | None
     :return: The run, reopened and started.
     :rtype: EvalRun
@@ -400,13 +423,11 @@ async def resume_run(host: LaunchHost, run_id: str, scope_id: str, *, max_cost_u
     _refuse_what_cannot_be_taken_up(read, cap=cap, live_here=host.job_manager.is_active(run_id))
     previous = run.lease.epoch if run.lease is not None else (run.lifetimes[-1].epoch if run.lifetimes else 0)
     stored = planned_cells(read.rows)
-    replaced = set(stored.replaced.values())
     resuming = RunResumption(
         run=run,
         cases=read.cases,
         stored=stored,
-        spend=tuple(row.cost_usd for row in read.rows),
-        replaced_spend_usd=sum(row.cost_usd for row in read.rows if row.id in replaced and row.cost_usd is not None),
+        rows=tuple(read.rows),
         holder=leases.holder_id if leases is not None else None,
         epoch=previous + 1,
         # One arm of an interleaved launch played its cases in the order its group's id gave every arm; a group of one
@@ -423,9 +444,8 @@ async def resume_run(host: LaunchHost, run_id: str, scope_id: str, *, max_cost_u
     admitted = await admit_resumed_run(
         host,
         resuming,
-        max_cost_usd=max_cost_usd
-        if max_cost_usd is not None
-        else (run.max_cost_usd if run.max_cost_usd_origin == "chosen" else None),
+        # The cap the run was checked against above, whatever the host's own reads now.
+        max_cost_usd=cap,
         attach=reopen,
     )
     (started,) = await admitted.start()
@@ -459,6 +479,7 @@ def _write_reopened(storage: EvalStorage, leases: JobLeases | None, run: EvalRun
 __all__ = [
     "PINNED_FIELDS",
     "RunResumption",
+    "counted_spend",
     "planned_cells",
     "resume_drift",
     "resume_run",

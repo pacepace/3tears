@@ -3412,13 +3412,14 @@ class StoredCells:
 
     :ivar done: The stored rows that count as done. Their cells are not run again, and the run's progress, its
         completeness and its every-cell checks count them beside the cells this holding runs.
-    :ivar replaced: ``(case id, k)`` → the id of a stored row whose cell this holding runs again. The cell is written
-        under that id, over the row (a later epoch replaces an earlier one's row), so the cell keeps one row whatever
-        id an older build gave it.
+    :ivar replaced: ``(case id, k)`` → the stored row of a cell this holding runs again. The cell is written under
+        that row's id, over the row (a later epoch replaces an earlier one's row), so the cell keeps one row whatever
+        id an older build gave it; and what the row's attempts spent moves onto the row written over it
+        (``EvalResult.superseded_spend_usd``), so the run's cost cap still counts it.
     """
 
     done: tuple[EvalResult, ...] = ()
-    replaced: Mapping[tuple[str, int], str] = field(default_factory=dict)
+    replaced: Mapping[tuple[str, int], EvalResult] = field(default_factory=dict)
 
 
 def cell_execution_order(
@@ -3946,11 +3947,17 @@ async def execute_run(
         # interrupted once a worker has it, so abandoning the wait would record this cell as lost
         # while its row lands anyway. The cancel is delivered once the cell is accounted for below.
         result = result.model_copy(update={"lease_epoch": lease_epoch})
-        if (over := stored.replaced.get((tc.id, k))) is not None and over != result.id:
-            # The cell's stored row carries an id an older build minted: written over under that id, so the cell
-            # keeps its one row.
-            result = result.model_copy(update={"id": over})
-            cell_trace = cell_trace.model_copy(update={"id": eval_trace_doc_id(over), "result_id": over})
+        if (over := stored.replaced.get((tc.id, k))) is not None:
+            # Written over the cell's stored row, under its id (an older build minted ids, so it may not be the
+            # derived one), carrying what the attempts it replaces spent: the row was their only record.
+            superseded = (
+                None
+                if over.cost_usd is None or over.superseded_spend_usd is None
+                else over.cost_usd + over.superseded_spend_usd
+            )
+            result = result.model_copy(update={"id": over.id, "superseded_spend_usd": superseded})
+            if cell_trace.result_id != over.id:
+                cell_trace = cell_trace.model_copy(update={"id": eval_trace_doc_id(over.id), "result_id": over.id})
         saving = asyncio.ensure_future(
             run_blocking(host.blocking_executor, host.storage.save_eval_result, result, cell_trace, run_cell=True)
         )

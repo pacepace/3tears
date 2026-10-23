@@ -3408,8 +3408,6 @@ class RunLifetime(EvalBaseModel, CoreShapeModel):
     :ivar budget_stops: The per-run ceilings that stopped it, for a holding they stopped.
     :ivar completeness: The run's completeness when it ended, over the whole matrix.
     :ivar cells_stored: The result rows stored for the run when it ended.
-    :ivar replaced_cells: Rows of ``cancelled`` cells this holding re-ran, writing each cell over its row.
-    :ivar replaced_spend_usd: The priced spend of those rows: spent, and no longer on any row.
     :ivar spend_lower_bound: Whether what this holding spent is known only as a lower bound: a holding that was
         lost had cells in flight whose spend reached no row.
     :ivar labels: The subject's labels as the host captured them when the holding began.
@@ -3441,12 +3439,6 @@ class RunLifetime(EvalBaseModel, CoreShapeModel):
     )
     cells_stored: int | None = Field(
         default=None, ge=0, description="The result rows stored for the run when the holding ended."
-    )
-    replaced_cells: int = Field(
-        default=0, ge=0, description="Rows of cancelled cells this holding re-ran, each written over its row."
-    )
-    replaced_spend_usd: float = Field(
-        default=0.0, ge=0, description="The priced spend of the replaced rows: spent, and no longer on any row."
     )
     spend_lower_bound: bool = Field(
         default=False,
@@ -5713,6 +5705,18 @@ class EvalResult(CoreDocumentModel):
             "recorded the cell. A cell's row is replaced only by a writer holding the run at a higher epoch, so a "
             "holding the run has passed from never writes over a newer one's cell. 0 on a row written outside a "
             "leased run, and on one stored before the field existed."
+        ),
+    )
+    superseded_spend_usd: float | None = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "What the attempts this row was written over spent: a cell cut short by a cancel is run again when its "
+            "run is taken up, and its row is written over, so the spend of the attempt it held (its cost_usd, and "
+            "its own superseded_spend_usd, for a cell cut short more than once) moves here. The run's cost cap counts "
+            "it beside cost_usd, which stays the spend of the attempt this row records; no cost total reads it. None "
+            "when some of that spend was never priced. 0 on a row written over nothing, and on one stored before the "
+            "field existed."
         ),
     )
 
