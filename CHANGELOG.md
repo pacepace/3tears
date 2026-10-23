@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.76.0 -- 2026-10-23
+
 ### core: a DuckDB export is sized for its rows, and DuckDB gives freed memory back
 
 **Fixed:** a reports tool pod peaked at 7.5 GiB rebuilding a 360 MB copy, and stayed there once ready.
