@@ -34,7 +34,6 @@ from threetears.search.contracts.capabilities import (
     ProviderCapabilities,
     get_capabilities,
     list_capabilities,
-    qualify_unit,
     register_capabilities,
 )
 from threetears.search.contracts.budget import BudgetDecision, BudgetPort
@@ -194,6 +193,5 @@ __all__ = [
     "canonicalize",
     "get_capabilities",
     "list_capabilities",
-    "qualify_unit",
     "register_capabilities",
 ]

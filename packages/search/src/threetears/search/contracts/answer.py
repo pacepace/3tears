@@ -36,8 +36,8 @@ from pydantic import Field, model_validator
 
 from threetears.search.contracts._base import ContractModel
 from threetears.search.contracts._canonical import canonical_digest, canonicalize
+from threetears.search.contracts._declarations import disposition_from, qualify_unit, refuse_contradictions
 from threetears.search.contracts.candidate import Candidate
-from threetears.search.contracts.capabilities import qualify_unit
 from threetears.search.contracts.criteria import Criterion, CriterionDisposition, Disposition
 from threetears.search.contracts.provenance import Provenance
 from threetears.search.contracts.spend import Spend
@@ -254,12 +254,7 @@ class AnswerCapabilities(ContractModel):
         :raises ValueError: when a key is both pushed down and unsatisfiable,
             or a citing mode is not one of :attr:`modes`
         """
-        clashes = sorted(set(self.pushdown_criteria) & set(self.unsatisfiable_criteria))
-        if clashes:
-            raise ValueError(
-                f"provider {self.provider!r} declares {clashes} under more than one disposition; "
-                f"a criterion has exactly one"
-            )
+        refuse_contradictions(self.provider, (self.pushdown_criteria, self.unsatisfiable_criteria))
         undeclared = sorted(set(self.citations_in_modes) - set(self.modes))
         if undeclared:
             raise ValueError(f"provider {self.provider!r} cites in modes {undeclared} it does not declare")
@@ -274,11 +269,13 @@ class AnswerCapabilities(ContractModel):
             undeclared
         :rtype: Disposition
         """
-        if criterion_key in self.pushdown_criteria or criterion_key in self.namespaced_parameters:
-            return "pushdown"
-        if criterion_key in self.unsatisfiable_criteria:
-            return "unsatisfied"
-        return "ignored-unknown"
+        return disposition_from(
+            criterion_key,
+            pushdown=self.pushdown_criteria,
+            namespaced=self.namespaced_parameters,
+            local=(),
+            unsatisfiable=self.unsatisfiable_criteria,
+        )
 
 
 @runtime_checkable

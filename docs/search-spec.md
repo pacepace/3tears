@@ -427,7 +427,8 @@ The bare-httpx `SearchTransport` implementation for hosts without core
 core transport gives for free: configurable timeout, bounded retry with
 backoff, per-attempt accounting visible to spend, SSRF guards
 (private-address and redirect policy per D21, with a direct connection held to
-the address the guard checked), streamed reads with caps. This
+the address the guard checked), streamed reads with caps, a circuit breaker per
+upstream, and a per-call span. This
 module's path is the one added to `_SANCTIONED_HTTPX_SITES` (D19). MUST NOT
 be imported by anything else in the package at module level -- it is an
 implementation a host chooses. When Extract lands (Phase 2) this module
@@ -438,9 +439,13 @@ many-fetch path). It implements `StreamingTransport` as well (AD11, AR-F3),
 through the same retry loop, deadline, guard and connect pinning: an attempt
 ends at the response head, nothing is retried once a body byte exists, and the
 whole-stream cap and the caller's deadline bind the body as it is read.
-Circuit-breaking and a per-call span, which the protocols list and
-`TracedHttpClient` brings, are not among this module's obligations for any of
-the three protocols.
+For all three protocols it also carries the two obligations `TracedHttpClient`
+brings to a host with core: a **circuit breaker per upstream** (`host[:port]`;
+configurable failure threshold and cooldown, open refusing before any socket as
+`TransportFailed`, then one half-open probe -- SR-D3), and **a per-call span**
+through `threetears.observe.traced` (upstream, egress, status, attempts;
+zero-cost without OpenTelemetry -- SR-I1). The breaker mirrors the shape of
+core's `CircuitBreakerLike` without importing core (SR-L7).
 
 ### 3.9 `limiter.py`
 

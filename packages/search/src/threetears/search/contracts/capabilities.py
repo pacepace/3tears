@@ -38,18 +38,14 @@ declaration, which is every caller written before answers existed.
 from __future__ import annotations
 
 import threading
-from typing import TYPE_CHECKING, Final, Literal, overload
+from typing import Final, Literal, overload
 
 from pydantic import model_validator
 
 from threetears.search.contracts._base import ContractModel
+from threetears.search.contracts._declarations import disposition_from, qualify_unit, refuse_contradictions
+from threetears.search.contracts.answer import AnswerCapabilities
 from threetears.search.contracts.criteria import Disposition
-
-if TYPE_CHECKING:
-    # a cycle at type-check time only: answer.py imports this module for the
-    # pricing vocabulary and qualify_unit, and this module names its type in
-    # the registry's signatures.
-    from threetears.search.contracts.answer import AnswerCapabilities
 
 __all__ = [
     "PRICING_FREE_SELF_HOSTED",
@@ -58,7 +54,6 @@ __all__ = [
     "ProviderCapabilities",
     "get_capabilities",
     "list_capabilities",
-    "qualify_unit",
     "register_capabilities",
 ]
 
@@ -72,26 +67,6 @@ PRICING_PER_REQUEST: Final[str] = "per-request"
 #: pricing model: charged in provider-defined units whose weight varies by
 #: request shape (Tavily's ``advanced`` = 2 credits -- SR-E4).
 PRICING_PER_WEIGHTED_UNIT: Final[str] = "per-weighted-unit"
-
-
-def qualify_unit(provider: str, metered_unit: str | None) -> str | None:
-    """Qualify a provider's bare metered unit for :attr:`Spend.provider_unit`.
-
-    The one place ``"<provider>:<unit>"`` is composed, so a second spelling
-    cannot appear beside the first and compare unequal -- which would make two
-    spends from the same provider refuse to sum. Every capability declaration's
-    ``qualified_unit`` answers through it.
-
-    :param provider: the product name
-    :ptype provider: str
-    :param metered_unit: the provider's own bare name for its unit, or None
-    :ptype metered_unit: str | None
-    :return: ``"<provider>:<metered_unit>"``, or ``None`` when no unit is metered
-    :rtype: str | None
-    """
-    if metered_unit is None:
-        return None
-    return f"{provider}:{metered_unit}"
 
 
 class ProviderCapabilities(ContractModel):
@@ -171,8 +146,8 @@ class ProviderCapabilities(ContractModel):
     def qualified_unit(self) -> str | None:
         """This provider's metered unit, qualified for :attr:`Spend.provider_unit`.
 
-        Composed by :func:`qualify_unit`, the one place the qualified form is
-        spelled.
+        Composed by the contracts' one qualification rule, shared with
+        :class:`~threetears.search.contracts.answer.AnswerCapabilities`.
 
         :return: ``"<provider>:<metered_unit>"``, or ``None`` when this
             provider meters no weighted unit
@@ -193,19 +168,7 @@ class ProviderCapabilities(ContractModel):
         :raises ValueError: when a key appears in more than one of the
             three well-known criterion tuples
         """
-        buckets = (self.pushdown_criteria, self.local_criteria, self.unsatisfiable_criteria)
-        seen: dict[str, int] = {}
-        clashes: list[str] = []
-        for index, bucket in enumerate(buckets):
-            for key in bucket:
-                if key in seen and seen[key] != index:
-                    clashes.append(key)
-                seen[key] = index
-        if clashes:
-            raise ValueError(
-                f"provider {self.provider!r} declares {sorted(set(clashes))} under more than one "
-                f"disposition; a criterion has exactly one"
-            )
+        refuse_contradictions(self.provider, (self.pushdown_criteria, self.local_criteria, self.unsatisfiable_criteria))
         return self
 
     def disposition_for(self, criterion_key: str) -> Disposition:
@@ -221,13 +184,13 @@ class ProviderCapabilities(ContractModel):
             ``ignored-unknown`` for anything it has not declared
         :rtype: Disposition
         """
-        if criterion_key in self.pushdown_criteria or criterion_key in self.namespaced_parameters:
-            return "pushdown"
-        if criterion_key in self.local_criteria:
-            return "local"
-        if criterion_key in self.unsatisfiable_criteria:
-            return "unsatisfied"
-        return "ignored-unknown"
+        return disposition_from(
+            criterion_key,
+            pushdown=self.pushdown_criteria,
+            namespaced=self.namespaced_parameters,
+            local=self.local_criteria,
+            unsatisfiable=self.unsatisfiable_criteria,
+        )
 
 
 _REGISTRY_LOCK = threading.Lock()

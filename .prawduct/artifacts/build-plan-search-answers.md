@@ -63,8 +63,11 @@ Out of scope for slice 1: the Brave adapter, the SSE and tag parsers, `answer.py
   answer with no sources and nothing saying so cannot be constructed | user can veto]
 - [DECISION: `AnswerCapabilities` declares no `local_criteria` | a synthesised paragraph cannot be
   filtered after the fact, so a criterion is pushed down or unsatisfied | user can veto]
-- [DECISION: the `<provider>:<unit>` composition moves to one public function, `qualify_unit`,
-  that both capability types call | keeps the one-composition-site rule with two declarations]
+- [DECISION: what both capability declarations share -- the `<provider>:<unit>` composition, the
+  disposition ladder and the one-bucket-per-key refusal -- lives once in the private
+  `contracts/_declarations.py`, which both declaration modules import | one owner per rule, no
+  import cycle between `capabilities.py` and `answer.py`, and no public name that exists only to
+  be shared | user can veto]
 - [DECISION: the streaming transport pins live in `packages/search/tests/test_conformance_streaming.py`,
   not as a shipped suite in `threetears.search.testing` | the provider suite ships because
   consumers write providers; no consumer implements a streaming transport, so a shipped suite
@@ -73,15 +76,46 @@ Out of scope for slice 1: the Brave adapter, the SSE and tag parsers, `answer.py
 - [DECISION: `Anchor`, `AnswerRequest`, `GroundedAnswer`, `AnswerProvider` and `StreamingTransport`
   have no `src` caller until Chunk 02 (the adapter takes a `StreamingTransport` and returns a
   `GroundedAnswer`), so `test_public_api_has_a_caller` is red for them on this branch; no ledger entry
-  is filed, because the ledger names callers outside the repo and these have none | Chunk 01
-  should land in `develop` with Chunk 02, or its PR wait on Chunk 02's | user decides]
-
-**Flagged, not built:** the `StreamingTransport` protocol lists circuit-breaking and a per-call
-span among its obligations, as `SearchTransport` does. The standalone transport discharges
-neither for `request` or `fetch` today (search-spec §3.8 lists its obligations without them), so
-there is no breaker or span machinery for the stream path to reuse; it inherits the same gap.
-Building a breaker is a design question of its own (per upstream host, in a transport that
-fetches arbitrary hosts) and is not slice 1's.
+  is filed, because the ledger names callers outside the repo and these have none]
+- [RULING (owner, 2026-10-23): slice 1 stacks with slice 2. Chunk 01 merges onto PR #930's area
+  branch now; #930 is not mergeable to `develop` until Chunk 02 (Brave adapter, `answer.py`,
+  `bind_answer.py`) is on it too, so the `test_public_api_has_a_caller` red is held on the area
+  branch and never reaches `develop`. Design §12 says so]
+- [RULING (owner, 2026-10-23): the standalone transport carries a per-upstream circuit breaker and
+  a per-call span for `request`, `fetch` and `stream`, so every obligation the three protocols
+  list is met by their one implementer. Breaker keyed by `host[:port]`, threshold and cooldown
+  configurable on the transport; span through `threetears.observe.traced`, zero-cost without
+  OpenTelemetry; an open breaker refuses before connecting as `TransportFailed`]
+- [DECISION: an open breaker raises the existing `TransportFailed`, not a new class | its
+  documented meaning is "the request could not complete at the transport -- give up rather than
+  retry", which is what an open breaker says; a new class would break the seven-class taxonomy
+  (SR-J1) and every consumer's one mapping of it (AD9) | user can veto]
+- [DECISION: two release-failure paths in `packages/search/src/threetears/search/standalone.py` stay
+  unpinned by a test, as an explicit descope: `_StandaloneStream._failed` containing a release that
+  raises, and `StandaloneTransport._release_quietly` logging a 5xx head whose close raises before a
+  retry | no release the transport performs can be made to raise from outside without a test-only
+  seam. Tried against a real socket: the server resetting the connection mid-body (SO_LINGER 0,
+  then abort) before the client's close, and the same over TLS, each with and without a connection
+  scope -- every close completed cleanly, because anyio's socket close swallows OSError, httpcore
+  wraps TLS with `standard_compatible=False` (so a close sends no close_notify that could fail),
+  and httpcore shields its pool bookkeeping. Both handlers stay as defence: they cost nothing, and
+  a future httpx/httpcore whose close can raise would otherwise put an untyped exception where a
+  typed failure belongs. The cancellation half of the same finding is pinned
+  (`test_a_close_cancelled_part_way_is_finished_by_the_next_close`) | user can veto]
+- [DECISION: a stream's release runs as its own task, awaited shielded, so a cancelled `aclose`
+  leaves it running and the next `aclose` waits on the same one | found while pinning the
+  cancellation path: a cancellation landing inside httpcore's response close marked the response
+  closed before its pool slot was handed back, leaving the slot taken for good, so "finish it on
+  the next close" cannot be done after the fact -- only by never cutting the release off | user
+  can veto]
+- [DECISION: the breaker holds an entry only for an upstream with failures counted, open, or
+  half-open; a call that returns an upstream to clean closed drops its entry | a long-lived fetch
+  transport reaches whatever host each candidate names, and a map keeping every one would grow
+  without bound | user can veto]
+- [DECISION: the breaker judges a call, not an attempt: a call is a failure when it ends on a 5xx
+  or on connect/timeout attempts that never got an answer, a success when it ends below 500, and
+  nothing when it ends on a refusal of the transport's own (guard, cap) or a cancellation | a
+  call that recovered on retry is the upstream working | user can veto]
 
 ## Status
 
@@ -125,8 +159,9 @@ socket. The live Brave stream is slice 0's, and Chunk 02 does not merge without 
 packages/search/src/threetears/search/
   contracts/answer.py      # new: AnswerRequest, Anchor, GroundedAnswer, AnswerCapabilities, AnswerProvider
   contracts/transport.py   # + StreamingTransport, StreamedResponse
-  contracts/capabilities.py# + kind-keyed registry, qualify_unit
-  standalone.py            # + stream()
+  contracts/capabilities.py# + kind-keyed registry
+  contracts/_declarations.py # new: the rules both capability declarations share
+  standalone.py            # + stream(), the per-upstream breaker, the per-call span
   testing/http_server.py   # + chunked, gated replies
 packages/search/tests/
   test_conformance_streaming.py  # new: the streaming seam's pins
@@ -149,12 +184,14 @@ transport's (AR-F2). The answer contracts import nothing beyond the existing con
 - **Artifacts consumed:** design §8 (AD5-AD7, AD9, AD11, AD12), §9 A, B, D, E, F, H, K, §10,
   §10.1, §10.6, §12, §13
 - **Deliverables:**
-  - `StreamingTransport` and `StreamedResponse` in `contracts/transport.py`, with the module
+  - `StreamingTransport` and `StreamedResponse` in `packages/search/src/threetears/search/contracts/transport.py`, with the module
     docstring's protocols account extended to three;
-  - `StandaloneTransport.stream`, sharing the retry loop, deadline, guard, connect pinning and
-    byte cap with `request` and `fetch`;
-  - new `contracts/answer.py`; the kind-keyed capabilities registry; exports;
-  - the streaming transport pins and a parity-declared fake streaming transport;
+  - `StandaloneTransport.stream` in `packages/search/src/threetears/search/standalone.py`, sharing the retry loop, deadline,
+    guard, connect pinning, byte cap, breaker and span with `request` and `fetch`;
+  - new `packages/search/src/threetears/search/contracts/answer.py`; the kind-keyed registry in
+    `packages/search/src/threetears/search/contracts/capabilities.py`; exports;
+  - the streaming transport pins (new `packages/search/tests/test_conformance_streaming.py`) and a
+    parity-declared fake streaming transport;
   - the httpx-only-in-standalone pin covering the stream path;
   - design §13's rider on `docs/search-spec.md` §5, and the spec's protocol list and §3.8.
 - **Tests:** behavioural, against a real socket: chunks arrive incrementally; status and headers

@@ -51,6 +51,23 @@ What it owes, and where each obligation is discharged:
 - **streamed reads with byte caps** (SR-G5) -- the body is consumed in
   chunks against a cap and never through an unbounded ``response.text``,
   which is a memory incident on a ``MemoryMax``-capped host.
+- **circuit-breaking per upstream** (SR-D3) -- one breaker per ``host[:port]``
+  a call reaches, in the three-call shape the family's breakers share (admit,
+  then record success or failure) and with the model breaker's states:
+  ``breaker_failure_threshold`` consecutive failed calls open it, it refuses
+  for ``breaker_cooldown_seconds`` -- before any socket opens, as
+  :class:`TransportFailed` -- and then admits one probe. Keyed by upstream
+  rather than held per client because this transport reaches whatever host a
+  call names, so the upstream is the one thing an outage is a property of. A
+  call is judged as a whole, retries inside it included; a refusal of this
+  transport's own (guard, cap) is not the upstream's failure.
+- **a per-call span** (SR-I1) -- ``threetears.observe.traced`` around each of
+  :meth:`StandaloneTransport.request`, :meth:`StandaloneTransport.fetch` and
+  :meth:`StandaloneTransport.stream`, carrying the upstream, the egress, the
+  answering status and the attempt count, and whether a breaker refused.
+  Zero-cost where OpenTelemetry is absent, which is ``traced``'s own contract.
+  A stream's span covers opening it, to the head; the body read after belongs
+  to its caller's span.
 
 **Who actually injects this, as of Phase 2 item 5.** The paragraph above is
 still right about *search*: a host with core hands the SearXNG or Tavily
@@ -79,15 +96,6 @@ body. So all three share one retry loop, one deadline, one set of guards and
 one connect pinning, and only what an attempt *is* varies. Duplicating the
 loop for each would have left three SSRF guards to keep in step, which is the
 arrangement D21 exists to avoid.
-
-**Two obligations this module does not discharge.** The transport protocols
-list circuit-breaking (SR-D3) and a per-call span (SR-I1), which
-``TracedHttpClient`` brings. This module carries neither, for any of its three
-protocols: a breaker per upstream presumes a fixed set of upstreams, and a
-transport that fetches whatever host a candidate names has none, so what a
-breaker here should guard is a design question still open rather than a
-detail; and a span needs telemetry this module does not set up. A host that
-needs either wraps this transport or injects its own.
 
 **No client is held between calls, and one is held inside a scope.** A search
 is one request, and SR-L5 requires a single call to work from a one-shot
@@ -122,7 +130,9 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
+import threading
 import time
+import warnings
 import urllib.request
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
@@ -130,14 +140,14 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import TracebackType
-from typing import Final, Self
+from typing import Final, Protocol, Self
 from urllib.parse import urljoin, urlparse
 
 import httpcore
 import httpx
 from pydantic import JsonValue
 
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger, set_span_attribute, traced
 from threetears.search.contracts import (
     EGRESS_DIRECT,
     LocalCapExceeded,
@@ -221,6 +231,14 @@ CONTENT_TYPE_SCOPE: Final[str] = "content-type"
 #: it. The mapping is replaced rather than mutated on entry so a nested or
 #: concurrent scope inherits a snapshot instead of sharing a dict.
 _SCOPED_CLIENTS: ContextVar[Mapping[int, httpx.AsyncClient]] = ContextVar("_SCOPED_CLIENTS", default={})
+
+#: consecutive failed calls to one upstream that open its breaker, when the
+#: deployment states no other. A default, overridable per transport.
+_DEFAULT_BREAKER_FAILURE_THRESHOLD: Final[int] = 5
+
+#: how long an open breaker refuses before admitting a probe, in seconds, when
+#: the deployment states no other. Matches the family's model breaker.
+_DEFAULT_BREAKER_COOLDOWN_SECONDS: Final[float] = 30.0
 
 #: the least time worth starting another attempt with, in seconds. A retry
 #: given less than this cannot resolve a name, connect and read inside it on
@@ -822,6 +840,35 @@ class _OpenStream:
     opened: _Opened
 
 
+class _CapRefusal(Protocol):
+    """The shape of :meth:`StandaloneTransport._over_cap`, which a stream refuses with."""
+
+    def __call__(self, url: str, size: int, *, cap: int, elapsed: float, bytes_seen: int) -> LocalCapExceeded:
+        """Build the refusal for a body past its cap.
+
+        :param url: the URL that answered too much
+        :ptype url: str
+        :param size: bytes the body reached
+        :ptype size: int
+        :param cap: the cap that bound
+        :ptype cap: int
+        :param elapsed: wall-clock spent, in seconds
+        :ptype elapsed: float
+        :param bytes_seen: bytes read across the whole request
+        :ptype bytes_seen: int
+        :return: the typed refusal
+        :rtype: LocalCapExceeded
+        """
+        ...
+
+
+#: a stream's body was read to its end.
+_EXHAUSTED: Final[str] = "exhausted"
+
+#: a stream was closed by its caller before its body ended.
+_CLOSED_EARLY: Final[str] = "closed-early"
+
+
 class _StandaloneStream:
     """:class:`StreamedResponse` over one open httpx response.
 
@@ -830,62 +877,57 @@ class _StandaloneStream:
     time a body byte exists, the transport's retry loop has already returned.
     Every way out -- exhaustion, a failure, an early close -- releases the
     connection, through the one stack that holds it.
+
+    **Only an exhausted body ends iteration.** The stream remembers how it
+    ended. A read after a failure raises that failure again, and a read after
+    the caller closed the stream early -- including a close from another task
+    while a read was waiting -- raises :class:`TransportFailed`. So a
+    truncated body can never read as a complete one, whoever truncated it.
     """
 
     def __init__(
         self,
-        stream: _OpenStream,
+        outcome: _Attempted[_OpenStream],
         *,
-        status_code: int,
         egress: str,
-        attempts: int,
-        started: float,
-        deadline: float,
         max_bytes: int,
         clock: Callable[[], float],
         stamp: Callable[[SearchFailure], SearchFailure],
-        over_cap: Callable[[str, int, int, float, int], LocalCapExceeded],
+        over_cap: _CapRefusal,
     ) -> None:
         """Hold an opened stream and what bounds its body.
 
-        :param stream: the open response and the stack that releases it
-        :ptype stream: _OpenStream
-        :param status_code: the answering status
-        :ptype status_code: int
+        :param outcome: the retry loop's answer: the open stream, its status,
+            the attempts it took, and the call's start and deadline
+        :ptype outcome: _Attempted[_OpenStream]
         :param egress: the egress the request left by
         :ptype egress: str
-        :param attempts: attempts the transport made to open it
-        :ptype attempts: int
-        :param started: the monotonic reading the call started at
-        :ptype started: float
-        :param deadline: the monotonic reading the whole call must end by
-        :ptype deadline: float
         :param max_bytes: the effective cap on the whole body
         :ptype max_bytes: int
         :param clock: the transport's monotonic clock
         :ptype clock: Callable[[], float]
         :param stamp: the transport's stamping of a failure with egress and time
         :ptype stamp: Callable[[SearchFailure], SearchFailure]
-        :param over_cap: the transport's cap refusal, as ``(url, size, cap,
-            elapsed, bytes_seen)``
-        :ptype over_cap: Callable[[str, int, int, float, int], LocalCapExceeded]
+        :param over_cap: the transport's cap refusal
+        :ptype over_cap: _CapRefusal
         """
-        self._stack = stream.stack
-        self._response = stream.opened.response
-        self._final_url = stream.opened.final_url
-        self._headers = stream.opened.headers
-        self._redirect_bytes = stream.opened.bytes_read
-        self._status_code = status_code
+        self._outcome = outcome
+        self._opened = outcome.value.opened
+        self._stack = outcome.value.stack
         self._egress = egress
-        self._attempts = attempts
-        self._started = started
-        self._deadline = deadline
         self._max_bytes = max_bytes
         self._clock = clock
         self._stamp = stamp
         self._over_cap = over_cap
-        self._source = self._response.aiter_bytes()
+        self._source = self._opened.response.aiter_bytes()
         self._received = 0
+        #: how the body ended: None while open, else exhausted, closed early, or the failure.
+        self._ending: str | SearchFailure | None = None
+        self._reading = False
+        #: the release, once begun; it runs to its end whoever stops waiting on it.
+        self._release: asyncio.Future[None] | None = None
+        #: whether a finished release's outcome has reached an ``aclose`` caller.
+        self._release_reported = False
         self._closed_at: float | None = None
 
     @property
@@ -895,7 +937,7 @@ class _StandaloneStream:
         :return: the status code
         :rtype: int
         """
-        return self._status_code
+        return self._outcome.status_code
 
     @property
     def headers(self) -> Mapping[str, str]:
@@ -904,7 +946,7 @@ class _StandaloneStream:
         :return: the headers
         :rtype: Mapping[str, str]
         """
-        return self._headers
+        return self._opened.headers
 
     @property
     def final_url(self) -> str:
@@ -913,7 +955,7 @@ class _StandaloneStream:
         :return: the answering URL
         :rtype: str
         """
-        return self._final_url
+        return self._opened.final_url
 
     @property
     def egress(self) -> str:
@@ -931,17 +973,17 @@ class _StandaloneStream:
         :return: the attempt count
         :rtype: int
         """
-        return self._attempts
+        return self._outcome.attempts
 
     @property
     def elapsed_seconds(self) -> float:
-        """Wall-clock since the call began: final once closed, so far while open.
+        """Wall-clock since the call began: final once released, so far while open.
 
         :return: elapsed seconds
         :rtype: float
         """
         end = self._closed_at if self._closed_at is not None else self._clock()
-        return end - self._started
+        return end - self._outcome.started
 
     def __aiter__(self) -> Self:
         """Iterate the body; the stream is its own iterator, so it is read once.
@@ -956,59 +998,115 @@ class _StandaloneStream:
 
         :return: a non-empty chunk
         :rtype: bytes
-        :raises StopAsyncIteration: at the end of the body, or once closed
+        :raises StopAsyncIteration: at the end of the body, and only there
         :raises threetears.search.contracts.errors.LocalCapExceeded: when the
             chunk would take the stream past its cap; the chunk is not yielded
         :raises threetears.search.contracts.errors.TimedOut: when the call's
             deadline passes before the next chunk arrives
         :raises threetears.search.contracts.errors.TransportFailed: when the
-            connection breaks mid-body
+            connection breaks mid-body, or the stream was closed before its
+            body ended
         """
         while True:
-            if self._closed_at is not None:
-                raise StopAsyncIteration
-            remaining = self._deadline - self._clock()
-            try:
-                if remaining <= 0:
-                    raise TimeoutError
-                async with asyncio.timeout(remaining):
-                    chunk = await anext(self._source)
-            except StopAsyncIteration:
-                await self.aclose()
-                raise
-            except (TimeoutError, httpx.TimeoutException) as exc:
-                raise await self._failed(
-                    TimedOut(
-                        f"stream from {self._final_url} passed its deadline after {self._received} body byte(s) "
-                        f"and {self._attempts} attempt(s); a stream is never retried once its body has begun",
-                        spend=self._spend(),
-                        remediation="raise this call's timeout -- it bounds the whole stream, body included",
-                    )
-                ) from exc
-            except httpx.HTTPError as exc:
-                raise await self._failed(
-                    TransportFailed(
-                        f"stream from {self._final_url} broke after {self._received} body byte(s) and "
-                        f"{self._attempts} attempt(s): {type(exc).__name__}: {exc}; a stream is never retried "
-                        f"once its body has begun",
-                        spend=self._spend(),
-                    )
-                ) from exc
+            self._refuse_if_ended()
+            chunk = await self._read()
             if not chunk:
                 continue
-            if self._received + len(chunk) > self._max_bytes:
-                total = self._received + len(chunk)
+            total = self._received + len(chunk)
+            if total > self._max_bytes:
                 raise await self._failed(
                     self._over_cap(
-                        self._final_url,
+                        self._opened.final_url,
                         total,
-                        self._max_bytes,
-                        self._clock() - self._started,
-                        self._redirect_bytes + total,
+                        cap=self._max_bytes,
+                        elapsed=self._clock() - self._outcome.started,
+                        bytes_seen=self._opened.bytes_read + total,
                     )
                 )
-            self._received += len(chunk)
+            self._received = total
             return chunk
+
+    def _refuse_if_ended(self) -> None:
+        """Answer a read on a stream that has already ended, by how it ended.
+
+        :raises StopAsyncIteration: when the body was read to its end
+        :raises threetears.search.contracts.errors.SearchFailure: the failure
+            that ended it, again; or :class:`TransportFailed` when it was
+            closed early
+        """
+        if self._ending is None and self._release is None:
+            return
+        if self._ending == _EXHAUSTED:
+            raise StopAsyncIteration
+        if isinstance(self._ending, SearchFailure):
+            raise self._ending
+        raise self._closed_early()
+
+    async def _read(self) -> bytes:
+        """Read one chunk under what remains of the deadline, typing every failure.
+
+        :return: the chunk, possibly empty
+        :rtype: bytes
+        :raises StopAsyncIteration: at the end of the body
+        :raises threetears.search.contracts.errors.SearchFailure: as
+            :meth:`__anext__` documents
+        """
+        remaining = self._outcome.deadline - self._clock()
+        self._reading = True
+        try:
+            if remaining <= 0:
+                raise TimeoutError
+            async with asyncio.timeout(remaining):
+                return await anext(self._source)
+        except StopAsyncIteration:
+            self._ending = _EXHAUSTED
+            await self.aclose()
+            raise
+        except (TimeoutError, httpx.TimeoutException) as exc:
+            if self._release is not None:
+                raise self._closed_early() from exc
+            raise await self._failed(
+                TimedOut(
+                    f"stream from {self._opened.final_url} passed its deadline after {self._received} body byte(s) "
+                    f"and {self.attempts} attempt(s); a stream is never retried once its body has begun",
+                    spend=self._spend(),
+                    remediation="raise this call's timeout -- it bounds the whole stream, body included",
+                )
+            ) from exc
+        except httpx.HTTPError as exc:
+            if self._release is not None:
+                raise self._closed_early() from exc
+            raise await self._failed(
+                TransportFailed(
+                    f"stream from {self._opened.final_url} broke after {self._received} body byte(s) and "
+                    f"{self.attempts} attempt(s): {type(exc).__name__}: {exc}; a stream is never retried "
+                    f"once its body has begun",
+                    spend=self._spend(),
+                )
+            ) from exc
+        except Exception as exc:
+            # A close from another task pulls the connection out from under this
+            # read, and what that raises is the network library's business; it
+            # is answered as the early close it is. Anything else is re-raised.
+            if self._release is not None:
+                raise self._closed_early() from exc
+            raise
+        finally:
+            self._reading = False
+
+    def _closed_early(self) -> SearchFailure:
+        """The failure a read meets on a stream its caller closed before the body ended.
+
+        :return: the typed, stamped failure
+        :rtype: SearchFailure
+        """
+        return self._stamp(
+            TransportFailed(
+                f"stream from {self._opened.final_url} was closed after {self._received} body byte(s), before its "
+                f"body ended; what was read is not the whole answer",
+                spend=self._spend(),
+            )
+        )
 
     def _spend(self) -> Spend:
         """What the stream consumed so far, for a failure leaving it.
@@ -1017,34 +1115,83 @@ class _StandaloneStream:
         :rtype: Spend
         """
         return Spend(
-            wall_clock_seconds=self._clock() - self._started,
+            wall_clock_seconds=self._clock() - self._outcome.started,
             calls=0,
-            bytes_transferred=self._redirect_bytes + self._received,
+            bytes_transferred=self._opened.bytes_read + self._received,
         )
 
     async def _failed(self, failure: SearchFailure) -> SearchFailure:
-        """Release the connection, and stamp the failure that ends the stream.
+        """Stamp the failure that ends the stream, remember it, and release the connection.
+
+        The typed failure is what leaves, whatever the release does: a release
+        that itself fails is contained -- logged and counted where an operator
+        sees it -- and never replaces the failure the caller is owed.
 
         :param failure: the failure about to leave
         :ptype failure: SearchFailure
         :return: the failure, stamped with egress and occurrence time
         :rtype: SearchFailure
         """
-        await self.aclose()
-        return self._stamp(failure)
+        stamped = self._stamp(failure)
+        self._ending = stamped
+        try:
+            await self.aclose()
+        except Exception as exc:
+            contain(exc, log=_logger, what=f"releasing a failed stream from {self._opened.final_url} failed")
+        return stamped
 
     async def aclose(self) -> None:
-        """Release the connection, and the client it came from outside a scope. Idempotent."""
-        if self._closed_at is not None:
+        """Release the connection, and the client it came from outside a scope. Idempotent.
+
+        **A release, once begun, runs to its end.** It runs as its own task
+        and this call waits on it shielded, so a caller cancelled while waiting
+        is cancelled alone: the release goes on, and the next ``aclose`` waits
+        on the same release rather than starting a second. A release cut off
+        part-way would leave the connection's slot in its pool taken for good
+        -- the network library marks a response closed before it hands the
+        connection back -- and no later close could hand it back.
+
+        A release that fails raises from the ``aclose`` that first sees it, and
+        from no later one, so leaving an ``async with`` after a failure never
+        swaps the failure being raised for the release's.
+        """
+        if self._ending is None:
+            self._ending = _CLOSED_EARLY
+        release = self._release
+        if release is None:
+            release = self._release = asyncio.ensure_future(self._release_connection())
+        elif release.done() and self._release_reported:
             return
-        self._closed_at = self._clock()
         try:
-            # httpx's body iterator is an async generator; closing it before the
-            # response it reads leaves nothing suspended for the finalizer.
-            if isinstance(self._source, AsyncGenerator):
+            await asyncio.shield(release)
+        finally:
+            if release.done():
+                self._release_reported = True
+
+    async def _release_connection(self) -> None:
+        """Close the body iterator and the response, and the client outside a scope."""
+        try:
+            # httpx's body iterator is an async generator. Closing it before the
+            # response leaves nothing suspended for the finalizer -- unless a read
+            # is suspended inside it, which closing the response below ends.
+            if not self._reading and isinstance(self._source, AsyncGenerator):
                 await self._source.aclose()
         finally:
-            await self._stack.aclose()
+            try:
+                await self._stack.aclose()
+            finally:
+                self._closed_at = self._clock()
+
+    def __del__(self) -> None:
+        """Warn about a stream dropped without being released, as httpx and asyncio do."""
+        if getattr(self, "_release", True) is None:
+            warnings.warn(
+                f"unclosed stream from {self._opened.final_url}: release it with `async with` or aclose(), "
+                f"or its connection stays open until the process exits",
+                ResourceWarning,
+                stacklevel=1,
+                source=self,
+            )
 
     async def __aenter__(self) -> Self:
         """Enter the block that owns this stream.
@@ -1070,6 +1217,151 @@ class _StandaloneStream:
         :ptype traceback: TracebackType | None
         """
         await self.aclose()
+
+
+@dataclass(slots=True)
+class _Circuit:
+    """One upstream's breaker state."""
+
+    #: consecutive failed calls since the last success.
+    failures: int = 0
+    #: when the breaker opened, on the transport's clock; None while closed.
+    opened_at: float | None = None
+    #: whether a half-open probe call is out.
+    probing: bool = False
+
+
+class _Breakers:
+    """A circuit breaker per upstream, in the three-call shape the family's breakers share.
+
+    The shape ``threetears.core.http_client.CircuitBreakerLike`` declares --
+    admit before contact, then record success or failure -- with the states of
+    ``threetears.models``' breaker: CLOSED admits everything; ``failure_threshold``
+    consecutive failed calls OPEN it, and it refuses every call for
+    ``cooldown_seconds``; then it is HALF-OPEN and admits exactly one probe
+    call, whose success closes it and whose failure opens it again. Written
+    here rather than imported because this leaf imports neither (SR-L7, D24).
+
+    The unit is a **call**, not an attempt: the transport's retries inside one
+    call are one outcome, so a breaker trips on an upstream that keeps failing
+    whole calls, and a call that recovered on its second attempt counts as a
+    success.
+    """
+
+    def __init__(self, *, failure_threshold: int, cooldown_seconds: float, clock: Callable[[], float]) -> None:
+        """Configure every upstream's breaker.
+
+        :param failure_threshold: consecutive failed calls that open a breaker
+        :ptype failure_threshold: int
+        :param cooldown_seconds: how long an open breaker refuses before probing
+        :ptype cooldown_seconds: float
+        :param clock: the transport's monotonic clock
+        :ptype clock: Callable[[], float]
+        """
+        self._failure_threshold = failure_threshold
+        self._cooldown_seconds = cooldown_seconds
+        self._clock = clock
+        self._circuits: dict[str, _Circuit] = {}
+        self._lock = threading.Lock()
+
+    def admit(self, upstream: str) -> tuple[bool, float]:
+        """Decide whether a call to ``upstream`` may be made.
+
+        :param upstream: the upstream's ``host[:port]``
+        :ptype upstream: str
+        :return: ``(admitted, seconds until a probe is admitted)``; the second is
+            0 when admitted. An admitted call to a half-open breaker is its probe
+        :rtype: tuple[bool, float]
+        """
+        with self._lock:
+            circuit = self._circuits.get(upstream)
+            if circuit is None or circuit.opened_at is None:
+                return True, 0.0
+            waited = self._clock() - circuit.opened_at
+            if waited < self._cooldown_seconds:
+                return False, self._cooldown_seconds - waited
+            if circuit.probing:
+                return False, 0.0
+            circuit.probing = True
+            return True, 0.0
+
+    def settle(self, upstream: str, verdict: bool | None) -> None:
+        """Record how an admitted call to ``upstream`` ended.
+
+        **Only a breaker with something to remember is held.** An upstream
+        that is closed with no failures behind it has the same state as one
+        never called, so its entry is dropped: a long-lived fetch transport
+        reaches whatever host each candidate names, and a map that kept every
+        one of them would grow with every page ever read. What stays is an
+        upstream counting failures, open, or half-open.
+
+        :param upstream: the upstream's ``host[:port]``
+        :ptype upstream: str
+        :param verdict: True for an answer below 500; False for a 5xx or a
+            connect/timeout failure that outlasted the attempts; None for an
+            outcome that says nothing about the upstream (a guard or cap
+            refusal, a cancellation), which only hands a probe back
+        :ptype verdict: bool | None
+        """
+        with self._lock:
+            circuit = self._circuits.get(upstream)
+            if circuit is None:
+                if verdict is not False:
+                    return
+                circuit = self._circuits[upstream] = _Circuit()
+            was_probe = circuit.probing
+            circuit.probing = False
+            if verdict is True:
+                del self._circuits[upstream]
+                return
+            if verdict is False:
+                circuit.failures += 1
+                if was_probe or circuit.failures >= self._failure_threshold:
+                    if circuit.opened_at is None or was_probe:
+                        _logger.warning(
+                            "standalone transport opened the circuit to %s after %d failed call(s)",
+                            upstream,
+                            circuit.failures,
+                        )
+                    circuit.opened_at = self._clock()
+            if circuit.failures == 0 and circuit.opened_at is None:
+                del self._circuits[upstream]
+
+
+def _upstream(url: str) -> str:
+    """The upstream a URL reaches, as its breaker keys it: lower-cased ``host[:port]``.
+
+    :param url: an absolute URL
+    :ptype url: str
+    :return: the upstream key; the URL itself when it has no host, which the
+        address guard then refuses
+    :rtype: str
+    """
+    parsed = urlparse(url)
+    if not parsed.hostname:
+        return url
+    host = parsed.hostname.lower().rstrip(".")
+    return f"{host}:{parsed.port}" if parsed.port is not None else host
+
+
+class _Exhausted(Exception):
+    """Carries an exhausted call's failure from the attempt loop to the breaker that judges it."""
+
+    def __init__(self, failure: SearchFailure, *, attempts: int, upstream_fault: bool) -> None:
+        """Hold the failure and whether it is the upstream's.
+
+        :param failure: the typed, stamped failure the caller receives
+        :ptype failure: SearchFailure
+        :param attempts: attempts made
+        :ptype attempts: int
+        :param upstream_fault: whether the attempts failed on the upstream's side
+            (connects, timeouts), which a breaker counts
+        :ptype upstream_fault: bool
+        """
+        super().__init__(failure.message)
+        self.failure = failure
+        self.attempts = attempts
+        self.upstream_fault = upstream_fault
 
 
 class StandaloneTransport:
@@ -1099,6 +1391,8 @@ class StandaloneTransport:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         resolve: Callable[[str], Awaitable[tuple[str, ...]]] = _resolve,
+        breaker_failure_threshold: int = _DEFAULT_BREAKER_FAILURE_THRESHOLD,
+        breaker_cooldown_seconds: float = _DEFAULT_BREAKER_COOLDOWN_SECONDS,
     ) -> None:
         """Configure the transport from deployment facts.
 
@@ -1157,13 +1451,28 @@ class StandaloneTransport:
             default; injected so a test can present a name that resolves
             somewhere it should not without owning a resolver
         :ptype resolve: Callable[[str], Awaitable[tuple[str, ...]]]
-        :raises ValueError: when ``max_attempts`` is below 1 or
-            ``max_response_bytes`` is not positive
+        :param breaker_failure_threshold: consecutive failed calls to one
+            upstream (``host[:port]``) that open its circuit breaker (SR-D3).
+            A failed call is a 5xx answer or attempts that never got one; a
+            refusal of this transport's own (guard, cap) is not the upstream's
+            failure and counts for nothing
+        :ptype breaker_failure_threshold: int
+        :param breaker_cooldown_seconds: how long an open breaker refuses calls
+            to its upstream before admitting one probe call, whose outcome
+            closes or reopens it
+        :ptype breaker_cooldown_seconds: float
+        :raises ValueError: when ``max_attempts`` or ``breaker_failure_threshold``
+            is below 1, or ``max_response_bytes`` or ``breaker_cooldown_seconds``
+            is not positive
         """
         if max_attempts < 1:
             raise ValueError(f"max_attempts must be at least 1, got {max_attempts}")
         if max_response_bytes < 1:
             raise ValueError(f"max_response_bytes must be positive, got {max_response_bytes}")
+        if breaker_failure_threshold < 1:
+            raise ValueError(f"breaker_failure_threshold must be at least 1, got {breaker_failure_threshold}")
+        if breaker_cooldown_seconds <= 0:
+            raise ValueError(f"breaker_cooldown_seconds must be positive, got {breaker_cooldown_seconds}")
         self._timeout_seconds = timeout_seconds
         self._max_attempts = max_attempts
         self._initial_backoff = initial_backoff
@@ -1179,6 +1488,9 @@ class StandaloneTransport:
         self._clock = clock
         self._sleep = sleep
         self._resolve = resolve
+        self._breakers = _Breakers(
+            failure_threshold=breaker_failure_threshold, cooldown_seconds=breaker_cooldown_seconds, clock=clock
+        )
 
     @property
     def egress_name(self) -> str:
@@ -1279,6 +1591,7 @@ class StandaloneTransport:
         async with self._new_client(keepalive=0) as client:
             yield client
 
+    @traced(name="threetears.search.transport.request")
     async def request(
         self,
         method: str,
@@ -1329,6 +1642,7 @@ class StandaloneTransport:
             timeout_seconds=timeout_seconds,
         )
 
+    @traced(name="threetears.search.transport.fetch")
     async def fetch(
         self,
         method: str,
@@ -1400,6 +1714,7 @@ class StandaloneTransport:
             timeout_seconds=timeout_seconds,
         )
 
+    @traced(name="threetears.search.transport.stream")
     async def stream(
         self,
         method: str,
@@ -1500,35 +1815,13 @@ class StandaloneTransport:
 
         outcome = await self._retrying(url, timeout_seconds=timeout_seconds, attempt_once=attempt_once, release=release)
         return _StandaloneStream(
-            outcome.value,
-            status_code=outcome.status_code,
+            outcome,
             egress=self._egress_name,
-            attempts=outcome.attempts,
-            started=outcome.started,
-            deadline=outcome.deadline,
             max_bytes=cap,
             clock=self._clock,
             stamp=self._stamped,
-            over_cap=self._stream_over_cap,
+            over_cap=self._over_cap,
         )
-
-    def _stream_over_cap(self, url: str, size: int, cap: int, elapsed: float, bytes_seen: int) -> LocalCapExceeded:
-        """The cap refusal, in the positional shape a stream calls it with.
-
-        :param url: the URL that answered too much
-        :ptype url: str
-        :param size: bytes the stream would have reached
-        :ptype size: int
-        :param cap: the cap that bound
-        :ptype cap: int
-        :param elapsed: wall-clock spent, in seconds
-        :ptype elapsed: float
-        :param bytes_seen: bytes read across the whole request
-        :ptype bytes_seen: int
-        :return: the typed refusal
-        :rtype: LocalCapExceeded
-        """
-        return self._over_cap(url, size, cap=cap, elapsed=elapsed, bytes_seen=bytes_seen)
 
     async def _perform(
         self,
@@ -1648,6 +1941,60 @@ class StandaloneTransport:
             typed refusal, stamped, or the typed failure of exhausted attempts
         """
         effective_timeout = timeout_seconds if timeout_seconds is not None else self._timeout_seconds
+        upstream = _upstream(url)
+        set_span_attribute("server.address", upstream)
+        set_span_attribute("transport.egress", self._egress_name)
+        admitted, wait = self._breakers.admit(upstream)
+        if not admitted:
+            set_span_attribute("transport.circuit_open", True)
+            raise self._stamped(self._circuit_open(url, upstream, wait))
+        # what this call says about the upstream, for its breaker: None until an
+        # outcome that is the upstream's own -- an answer, or attempts that never
+        # got one -- and None still for a refusal of ours (guard, cap) or a
+        # cancellation, which only hand a probe back.
+        verdict: bool | None = None
+        try:
+            outcome = await self._attempts(
+                url,
+                effective_timeout=effective_timeout,
+                attempt_once=attempt_once,
+                release=release,
+            )
+            verdict = outcome.status_code < 500
+            set_span_attribute("http.response.status_code", outcome.status_code)
+            set_span_attribute("transport.attempts", outcome.attempts)
+            return outcome
+        except _Exhausted as exhausted:
+            verdict = False if exhausted.upstream_fault else None
+            set_span_attribute("transport.attempts", exhausted.attempts)
+            raise exhausted.failure from exhausted.__cause__
+        finally:
+            self._breakers.settle(upstream, verdict)
+
+    async def _attempts[T](
+        self,
+        url: str,
+        *,
+        effective_timeout: float,
+        attempt_once: Callable[[httpx.Timeout, float, int], Awaitable[tuple[int, T, int]]],
+        release: Callable[[T], Awaitable[None]] | None,
+    ) -> _Attempted[T]:
+        """Make the attempts of one admitted call, backing off between them under its one deadline.
+
+        :param url: the URL being reached
+        :ptype url: str
+        :param effective_timeout: the whole call's bound, in seconds
+        :ptype effective_timeout: float
+        :param attempt_once: one attempt, as :meth:`_retrying` documents
+        :ptype attempt_once: Callable[[httpx.Timeout, float, int], Awaitable[tuple[int, T, int]]]
+        :param release: what to do with a 5xx answer's value before retrying past it
+        :ptype release: Callable[[T], Awaitable[None]] | None
+        :return: the answering attempt
+        :rtype: _Attempted[T]
+        :raises threetears.search.contracts.errors.SearchFailure: an attempt's
+            typed refusal, stamped
+        :raises _Exhausted: when the attempts ran out without an answer
+        """
         started = self._clock()
         deadline = started + effective_timeout
         attempt = 0
@@ -1664,29 +2011,6 @@ class StandaloneTransport:
             timeout = httpx.Timeout(max(0.0, min(effective_timeout, deadline - self._clock())))
             try:
                 status, value, read = await attempt_once(timeout, self._clock() - started, bytes_seen)
-                bytes_seen += read
-                if status >= 500 and attempt < self._max_attempts:
-                    _logger.warning(
-                        "standalone transport got HTTP %d from %s, retrying (attempt %d of %d)",
-                        status,
-                        url,
-                        attempt,
-                        self._max_attempts,
-                    )
-                    if await self._wait_to_retry(
-                        attempt, deadline, before_sleep=(lambda: release(value)) if release is not None else None
-                    ):
-                        continue
-                    # The bound will not fund another attempt -- and we are
-                    # holding a real answer. A 5xx the caller can see beats a
-                    # TimedOut that hides it, so the retry stops here and the
-                    # response goes back with the attempts it took.
-                    _logger.warning(
-                        "standalone transport stopped retrying %s after %d attempt(s): the caller's bound is spent",
-                        url,
-                        attempt,
-                    )
-                return _Attempted(status_code=status, value=value, attempts=attempt, started=started, deadline=deadline)
             except SearchFailure as failure:
                 # already typed and already terminal: a refused address, a
                 # refused redirect, or a body past the cap. Retrying a
@@ -1710,9 +2034,34 @@ class StandaloneTransport:
                 if not await self._wait_to_retry(attempt, deadline):
                     bound_spent = True
                     break
+                continue
             except httpx.HTTPError as exc:
                 last = exc
                 break
+            bytes_seen += read
+            if status >= 500 and attempt < self._max_attempts:
+                _logger.warning(
+                    "standalone transport got HTTP %d from %s, retrying (attempt %d of %d)",
+                    status,
+                    url,
+                    attempt,
+                    self._max_attempts,
+                )
+                # released outside the attempt's handlers: closing the 5xx is
+                # cleanup, and a failure in it is not this attempt's failure.
+                before_sleep = (lambda: self._release_quietly(release, value, url)) if release is not None else None
+                if await self._wait_to_retry(attempt, deadline, before_sleep=before_sleep):
+                    continue
+                # The bound will not fund another attempt -- and we are
+                # holding a real answer. A 5xx the caller can see beats a
+                # TimedOut that hides it, so the retry stops here and the
+                # response goes back with the attempts it took.
+                _logger.warning(
+                    "standalone transport stopped retrying %s after %d attempt(s): the caller's bound is spent",
+                    url,
+                    attempt,
+                )
+            return _Attempted(status_code=status, value=value, attempts=attempt, started=started, deadline=deadline)
         exhausted = self._exhausted(
             url,
             attempt,
@@ -1722,7 +2071,57 @@ class StandaloneTransport:
             bound=effective_timeout,
             bound_spent=bound_spent,
         )
-        raise self._stamped(exhausted)
+        raise _Exhausted(
+            self._stamped(exhausted),
+            attempts=attempt,
+            upstream_fault=isinstance(last, (httpx.TimeoutException, httpx.TransportError)) or bound_spent,
+        ) from last
+
+    async def _release_quietly[T](self, release: Callable[[T], Awaitable[None]], value: T, url: str) -> None:
+        """Release a 5xx answer before retrying past it; a failure to release is logged, not raised.
+
+        The answer is being thrown away and its connection with it, so a close
+        that fails leaves nothing to clean up and nothing the caller can act
+        on. It is logged where an operator sees it, and the retry proceeds.
+
+        :param release: how the value is released
+        :ptype release: Callable[[T], Awaitable[None]]
+        :param value: the 5xx answer's value
+        :ptype value: T
+        :param url: the URL it came from, for the log line
+        :ptype url: str
+        """
+        try:
+            await release(value)
+        except (httpx.HTTPError, OSError) as exc:
+            _logger.warning("standalone transport could not release a 5xx answer from %s before retrying: %s", url, exc)
+
+    def _circuit_open(self, url: str, upstream: str, wait: float) -> TransportFailed:
+        """The refusal for a call to an upstream whose breaker is open (SR-D3).
+
+        :class:`TransportFailed`, because that is the class whose meaning this
+        is: the transport cannot complete requests to this upstream, and the
+        caller should give up now rather than retry. No socket was opened, so
+        the spend is zero.
+
+        :param url: the URL refused
+        :ptype url: str
+        :param upstream: the upstream whose breaker is open
+        :ptype upstream: str
+        :param wait: seconds until a probe is admitted; 0 while one is already out
+        :ptype wait: float
+        :return: the typed refusal
+        :rtype: TransportFailed
+        """
+        when = f"a probe is admitted in {wait:.1f}s" if wait > 0 else "a probe call is already out"
+        return TransportFailed(
+            f"refusing {url}: the circuit to {upstream} is open after repeated failed calls; {when}",
+            spend=Spend(),
+            remediation=(
+                f"the upstream {upstream} has been failing; wait for the breaker's probe, or tune "
+                f"breaker_failure_threshold / breaker_cooldown_seconds on the transport"
+            ),
+        )
 
     async def _wait_to_retry(
         self, attempt: int, deadline: float, *, before_sleep: Callable[[], Awaitable[None]] | None = None
