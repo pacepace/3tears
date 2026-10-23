@@ -33,9 +33,9 @@ headline first, each other one with its own pass^k and its reason (`UnpooledReas
 `no_recorded_template`, `other_template`, `no_recorded_served_model`, `other_served_model` or `no_recorded_context`),
 read off the first field of the kernel's typed cell record (`PassHatKCell`) in which it differs from the headline, or,
 for a run that left part of its cell unrecorded, off what it did not record. A headline that is itself such a run says
-so. The frontier text and the report page's run disclosures name each cell, and the campaign bundle's writer view
-(`pass_k_unpooled`, keyed by arm) names them in at most one line per reason, after one sentence saying what kept out
-covers. A run whose stored context can no longer be re-derived is a cell of its own,
+so where other cells are kept out beside it. The frontier text and the report page's run disclosures name each cell,
+and the campaign bundle's writer view (`pass_k_unpooled`, keyed by arm) names them in at most one line per reason,
+after one sentence saying what kept out covers. A run whose stored context can no longer be re-derived is a cell of its own,
 named, instead of failing the read. One case-set comparison over sorted ids, `case_set_fingerprint`, serves comparisons
 and history, and a take-up compares the same sorted ids: one whose launch would run other cases is refused naming
 them, and a reordered set is not.

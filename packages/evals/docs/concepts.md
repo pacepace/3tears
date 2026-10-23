@@ -260,7 +260,7 @@ the memo writer's view. A run kept out of the headline is kept out of the fronti
 only: the arm's tables, its cells (see [Apparatus class](#apparatus-class)), composite, cost and latency still
 count it. A run that froze no template digest, and a run with a candidate call whose response named no model, is
 a cell of its own: a silence is never evidence of a match, so it pools with nothing and is named with what it did
-not record, the headline included when every run is silent. A run whose candidate made no model call recorded
+not record, the headline too when every run is silent and others are kept out beside it. A run whose candidate made no model call recorded
 that, and pools on everything else.
 
 ### Running

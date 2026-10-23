@@ -347,9 +347,10 @@ class PassHatKCellReading(EvalBaseModel):
     beside it, with its own pass^k at the point's depth and the reason it is not the headline
     (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_reason`): for a cell of one run, what that run did not
     record; otherwise the first field of the cell record in which the two differ. Its runs are kept out of the
-    headline, never dropped. A headline that is itself a cell of one run carries the reason it pools with nothing
-    (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_alone`), so the point says its pass^k rests on one run
-    whose record is incomplete. The point's composite, cost and latency still pool every run of the variant under one
+    headline, never dropped. A headline that is itself a cell of one run, beside other cells kept out, carries the
+    reason it pools with nothing (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_alone`), so the point says
+    its pass^k rests on one run whose record is incomplete; a point of one cell keeps nothing out and says nothing of
+    its cells. The point's composite, cost and latency still pool every run of the variant under one
     rig (:data:`PASS_HAT_K_CELL_READING`).
     """
 
@@ -396,8 +397,9 @@ def pass_hat_k_cell_lines(reading: PassHatKCellReading) -> list[str]:
     """What a reader is told about one pass^k cell of a frontier point: every surface that renders a point says these.
 
     A cell other than the headline gets one sentence naming its runs, its reason, what differs and its own pass^k,
-    and the fact that the point's pass^k does not count it. A headline that is a cell of one run gets one sentence
-    saying the point's pass^k rests on that run and what it did not record. A headline that pools gets nothing.
+    and the fact that the point's pass^k does not count it. A headline that is a cell of one run, beside other cells
+    kept out, gets one sentence saying the point's pass^k rests on that run and what it did not record. Any other
+    headline, the only cell of a point included, gets nothing.
 
     Each sentence is one line, its whitespace collapsed (a detail can carry a stored error's own line breaks), so a
     surface may indent it or lead it with the arm and nothing of it reads as the next item's.
@@ -1201,7 +1203,12 @@ def _pass_hat_k_cells(
     readings: list[PassHatKCellReading] = []
     for cell in ordered:
         run_ids = members[cell]
-        why = pass_hat_k_cell_alone(cell) if cell is headline else pass_hat_k_cell_reason(cell, headline)
+        # A headline beside nothing kept out pools nothing away, so its own silence is no cell line: a run that named
+        # no served model is said by the model identity disclosure, and one that froze no template digest is not said.
+        if cell is headline:
+            why = pass_hat_k_cell_alone(cell) if len(ordered) > 1 else None
+        else:
+            why = pass_hat_k_cell_reason(cell, headline)
         readings.append(
             PassHatKCellReading(
                 run_ids=run_ids,

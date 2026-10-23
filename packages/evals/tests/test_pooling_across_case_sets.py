@@ -471,6 +471,23 @@ def test_a_headline_that_is_one_silent_run_says_so():
     assert lines[0].startswith("this pass^k rests on run(s) run-x1 alone")
 
 
+def test_a_point_of_one_silent_run_says_nothing_of_its_cells():
+    """With one cell nothing is kept out, so no cell line and no preamble, on any surface."""
+    run = _launched("run-x1", test_case_ids=["tc1"], template_digest=None)
+    results = {run.id: _results(run, {"tc1": (True,)}, identity_version=IDENTITY_VERSION, served=None)}
+
+    bundle = _bundle([run], results)
+    [point] = bundle.frontier.subjects[0].points
+
+    [headline] = _cells(point)
+    assert (headline.run_ids, headline.reason, headline.detail) == (["run-x1"], None, None)
+    assert "pass^k rests on" not in frontier_text(bundle.frontier)
+    assert PASS_HAT_K_CELL_READING not in frontier_text(bundle.frontier)
+    [aspect] = writer_view(campaign_bundle(bundle))["aspects"]
+    assert "pass_k_unpooled" not in aspect["disclosures"]
+    assert not any("pass^k" in line for line in _page_run_lines([run], results))
+
+
 def test_the_writer_view_names_many_silent_runs_in_one_line_per_reason():
     """Forty runs that froze no digest cost the writer one line, not forty; the page still names each."""
     silent = [_launched(f"run-s{i:02d}", test_case_ids=["tc1"], template_digest=None) for i in range(40)]
