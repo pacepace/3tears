@@ -45,6 +45,7 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.kernel.result_condition import ResultOutcome
 from threetears.evals.kernel.scoring import (
+    PassHatKCell,
     NO_PASS_CRITERION_REASON,
     CellSummary,
     compute_async_delivery_summary,
@@ -1783,3 +1784,12 @@ class TestWhatAJudgedDimCountsAs:
         faulted = make_scored_result(infra_error="delivery never landed", rubric_scores=(("reply.tone", 5),))
         healthy = make_scored_result(test_case_id="tc2", rubric_scores=(("reply.tone", 3),))
         assert self._dims(faulted, healthy) == {"reply.tone": 3.0}
+
+
+def test_every_field_of_a_pass_hat_k_cell_has_a_reason_in_reading_order() -> None:
+    """A field a later build adds to the cell splits runs into cells; the reason it gives must be named with it."""
+    from threetears.evals.kernel import scoring
+
+    fields = [field.name for field in dataclasses.fields(PassHatKCell)]
+    assert [name for name, _ in scoring._CELL_FIELD_REASONS] == fields
+    assert {name for name, _ in scoring._SILENCES} <= set(fields)

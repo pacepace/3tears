@@ -104,6 +104,91 @@ _PINNED_FIELDS: tuple[str, ...] = (
     "goal_check_proofs",
     "goal_check_proof_rules",
     "refused_goal_checks",
+    # The candidate kind the run launched: which apparatus its cells had. Read off the template, which is editable.
+    "candidate_kind",
+    # The deadlines its cells and its candidate's turns ran under: a cell past one is excluded and a turn past the
+    # other ends as a candidate failure, and the run records one value of each for every holding.
+    "cell_timeout_s",
+    "turn_budget_s",
+)
+
+#: Every other field of a run, each for its reason: what a take-up need not hold equal field by field. Named so that a
+#: field a later build adds to the run is neither pinned nor passed over by accident: a test holds this and
+#: :data:`_PINNED_FIELDS` together to every field of :class:`~threetears.evals.schema.models.EvalRun`.
+_UNPINNED_FIELDS: frozenset[str] = frozenset(
+    {
+        # The record's own: which document it is, in which scope, written when.
+        "id",
+        "doc_type",
+        "schema_version",
+        "schema_minor",
+        "scope_id",
+        "created_at",
+        # Held by :func:`_resume_drift` in its own way: the context identity read at the current identity version, the
+        # variant levers, the case set as a set, and the template's measured content.
+        "context_key",
+        "context_components",
+        "identity_version",
+        "variant_levers",
+        "test_case_ids",
+        "template_digest",
+        # Replayed as the run recorded them by the take-up's launch (``admit_resumed_run``), so equal by construction:
+        # its template, its candidate, its repeats, its margins, its latency declaration and its arm order. The case
+        # set's name is a label on the case ids, which are held.
+        "template_id",
+        "candidate_model",
+        "k_runs",
+        "declared_margins",
+        "measure_latency",
+        "arm_schedule",
+        "case_set",
+        # Who was measured: its id is replayed, its component levels reach the variant levers and the context's
+        # subject state, and its labels identify and determine nothing.
+        "subject_snapshot",
+        # The host's own payload, which the engine never reads.
+        "host_payload",
+        # How the pinned roles, apparatus and cell deadline were arrived at, not what they are: those are pinned.
+        "apparatus_provenance",
+        "model_role_provenance",
+        "effective_judges_source",
+        "judge_config_provenance",
+        "cell_timeout_s_origin",
+        # What generation asked for and kept: a take-up generates nothing.
+        "variation_counts",
+        # How a reader reads the host's measures, never what a cell measured.
+        "declared_measures",
+        # Derived from the seed the run froze and its subject's carriers, which the seed, the subject state and the
+        # seeded world component hold.
+        "world_placements",
+        # How many cells ran at once: each result stamps the execution mode it ran under.
+        "cell_concurrency",
+        # The ceilings a holding runs under, which a take-up may raise and each holding records.
+        "max_cost_usd",
+        "max_cost_usd_origin",
+        "max_metered_calls",
+        "max_metered_calls_origin",
+        "metered_calls_refused",
+        # When it ran beside its sibling arms: scheduling, not measurement.
+        "launch_group_id",
+        # How the run stands and ended, which a take-up reopens, and its curation.
+        "status",
+        "completeness",
+        "progress",
+        "cancellation_reason",
+        "budget_stop_reason",
+        "budget_stops",
+        "failed_because",
+        "error_details",
+        "completed_at",
+        "archived",
+        "labels",
+        "lease",
+        "cancel_requested_at",
+        "cancel_request_reason",
+        "lost",
+        "faults",
+        "lifetimes",
+    }
 )
 
 

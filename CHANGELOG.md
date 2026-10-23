@@ -116,7 +116,8 @@ sequential arms in order, and a sweep's never-launched arms launch from the argu
 cap stopped resumes with a `max_cost_usd` above what it has spent, which counts every attempt once; a run the wall
 clock stopped resumes as it is. Its metered-call ceiling counts the calls its stored cells landed, and a run that
 has reached it is refused until the ceiling is raised. An `exhausted` run's account-refused cells run again. A resume
-is refused, naming every difference, when a launch of the run now would measure otherwise. It is never refused for
+is refused, naming every difference, when a launch of the run now would measure otherwise, its candidate kind and its
+cells' and turns' deadlines (`cell_timeout_s`, `turn_budget_s`) included. It is never refused for
 host labels or for a template edit that changes nothing measured; both are recorded on the run's new `lifetimes`
 (`RunLifetime`), one entry per process lifetime. `completed` and `failed` runs are never resumed. `jobs_resumable`
 lists what `job_resume` would take up, with spend and cap, for a host to offer at boot. Nothing resumes on its own.

@@ -1185,6 +1185,7 @@ def _cell_detail(
     :ptype profile: HostProfile | None
     :return: The sentence.
     :rtype: str
+    :raises ValueError: ``field`` is not a field of :class:`PassHatKCell` this words.
     """
     if field in ("recorded", "run_id"):
         if not cell.recorded:
@@ -1221,10 +1222,13 @@ def _cell_detail(
         )
     if field == "apparatus_provenance":
         return f"its apparatus was {cell.apparatus_provenance} and the headline's {headline.apparatus_provenance}"
-    return (
-        f"its candidate calls were answered by {', '.join(cell.served) or 'no named model'} and the headline's by "
-        f"{', '.join(headline.served) or 'no named model'}, as the provider's responses named them"
-    )
+    if field == "served":
+        return (
+            f"its candidate calls were answered by {', '.join(cell.served) or 'no named model'} and the headline's by "
+            f"{', '.join(headline.served) or 'no named model'}, as the provider's responses named them"
+        )
+    # A field PassHatKCell gains is worded here before a reason read from it can reach a reader.
+    raise ValueError(f"no wording for the pass^k cell field {field!r}")
 
 
 def _cell_pass_hat_k(
