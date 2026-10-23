@@ -555,11 +555,14 @@ async def test_a_run_its_budget_stopped_is_taken_up_only_under_a_cap_above_its_s
     spent = sum(row.cost_usd or 0.0 for row in _rows(holder, run_id))
     resumer = other_process(holder)
 
-    with pytest.raises(ValidationFailedError, match="max_cost_usd above"):
+    with pytest.raises(ValidationFailedError, match="max_cost_usd above") as refused:
         await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
     with pytest.raises(ValidationFailedError, match="max_cost_usd above"):
         await resume_run(resumer.launch, run_id, TOYHOST_SCOPE, max_cost_usd=spent)
     assert off_loop(_run, holder, run_id) == stopped, "a refused take-up writes nothing"
+    # The listing a host offers at boot notes the very refusal the take-up makes, by the same rule.
+    (offered,) = off_loop(resumable_jobs, holder.eval_host.storage, [TOYHOST_SCOPE]).jobs
+    assert offered.note == f"{refused.value.message}: {refused.value.remedy}"
 
     # Just above what it spent: what it spent counts toward the cap, so the first cell it lands stops it again —
     # counted from nothing, it would have run every cell left.
@@ -1109,6 +1112,9 @@ async def test_a_run_its_metered_ceiling_stopped_is_taken_up_only_under_a_ceilin
         await resume_run(launching, launched.id, TOYHOST_SCOPE)
     assert "max_metered_calls" in refused.value.remedy
     assert off_loop(storage.load_eval_run, launched.id, TOYHOST_SCOPE) == stopped, "a refused take-up writes nothing"
+    # The listing a host offers at boot notes the very refusal the take-up makes, by the same rule.
+    (offered,) = off_loop(resumable_jobs, storage, [TOYHOST_SCOPE]).jobs
+    assert offered.note == f"{refused.value.message}: {refused.value.remedy}"
 
     # Just above what it landed: its landed calls count, so the first cells it lands stop it again — counted from
     # nothing, it would have run every cell left.

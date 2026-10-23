@@ -496,23 +496,29 @@ class RunResumption:
             calls=sum(row.metered_calls or 0 for row in self.rows),
             refused=sum(row.metered_calls_refused or 0 for row in self.rows),
         )
-        if metered.ceiling_reached:
-            run = self.run
-            # A take-up names a cost cap and never a metered-call ceiling: one the run inherited moves with the host's
-            # setting, and one its launch chose moves only with a new launch.
-            remedy = (
-                "launch its template again (run_launch) with a higher max_metered_calls: a resume keeps the ceiling "
-                "the run's launch chose, and cannot raise it"
-                if run.max_metered_calls_origin == "chosen"
-                else f"raise the host's max_metered_calls above {metered.landed_calls} and call job_resume again; a "
-                "resume cannot raise a metered-call ceiling itself"
-            )
-            raise ValidationFailedError(
-                f"run '{run.id}' has landed {metered.landed_calls} metered call(s) against its metered-call ceiling of "
-                f"{metered.ceiling}, so taking it up would run nothing — at least that many, since a row stored "
-                "before rows counted their metered calls counts none",
-                remedy=remedy,
-            )
+        if metered.ceiling_reached and metered.ceiling is not None:
+            raise _metered_ceiling_reached(self.run, landed=metered.landed_calls, ceiling=metered.ceiling)
+
+
+def _metered_ceiling_reached(run: EvalRun, *, landed: int, ceiling: int) -> ValidationFailedError:
+    """The refusal of a run whose stored cells have landed the metered calls its ceiling allows.
+
+    A take-up names a cost cap and never a metered-call ceiling: one the run inherited moves with the host's setting,
+    and one its launch chose moves only with a new launch.
+    """
+    remedy = (
+        "launch its template again (run_launch) with a higher max_metered_calls: a resume keeps the ceiling the run's "
+        "launch chose, and cannot raise it"
+        if run.max_metered_calls_origin == "chosen"
+        else f"raise the host's max_metered_calls above {landed} and call job_resume again; a resume cannot raise a "
+        "metered-call ceiling itself"
+    )
+    return ValidationFailedError(
+        f"run '{run.id}' has landed {landed} metered call(s) against its metered-call ceiling of {ceiling}, so taking "
+        "it up would run nothing — at least that many, since a row stored before rows counted their metered calls "
+        "counts none",
+        remedy=remedy,
+    )
 
 
 @dataclass(frozen=True)
@@ -551,62 +557,111 @@ def _read(storage: EvalStorage, run_id: str, scope_id: str) -> _Read:
     )
 
 
-def _refuse_a_status_not_resumable(run: EvalRun) -> None:
-    """Refuse a run whose status is not one :data:`_RESUMABLE_RUN_STATUSES` names, saying why its status is not.
-
-    :raises ValidationFailedError: Always.
-    """
+def _status_not_resumable(run: EvalRun) -> ValidationFailedError:
+    """The refusal of a run whose status is not one :data:`_RESUMABLE_RUN_STATUSES` names, saying why its status is
+    not."""
     if run.status not in TERMINAL_RUN_STATUSES:
         holder = f" by process {run.lease.holder} until {run.lease.expires_at}" if run.lease is not None else ""
-        raise ValidationFailedError(
+        return ValidationFailedError(
             f"run '{run.id}' is still {run.status}{holder}; a live run is never taken up",
             remedy="cancel it (job_cancel) or wait for it to end, then call job_resume",
         )
     if run.status == "failed":
-        raise ValidationFailedError(
+        return ValidationFailedError(
             f"run '{run.id}' failed ({run.failed_because or 'see its error_details'}); taking it up again would run "
             "what failed it again",
             remedy="fix what failed it, which run_get names, and launch its template again (run_launch)",
         )
-    raise ValidationFailedError(
+    return ValidationFailedError(
         f"run '{run.id}' {run.status}; there is nothing left of it to run",
         remedy="launch its template again (run_launch) to measure again",
     )
 
 
-def _refuse_what_cannot_be_taken_up(read: _Read, *, cap: float | None, live_here: bool) -> None:
-    """Refuse a run that cannot be taken up, with how to proceed.
+def _why_not_taken_up(
+    run: EvalRun,
+    rows: Sequence[EvalResult],
+    *,
+    cap: float | None,
+    metered_ceiling: int | None,
+    live_here: bool = False,
+    missing_cases: Sequence[str] = (),
+) -> list[ValidationFailedError]:
+    """Why a run cannot be taken up as it stands, each with how to proceed: the one rule a take-up refuses by and a
+    listing of resumable runs notes.
 
-    :raises ValidationFailedError: The run is live, completed, failed, stopped by its budget under a cap its spend has
-        reached, or its cases are gone.
+    :param run: The run, settled.
+    :ptype run: EvalRun
+    :param rows: Every row stored for it.
+    :ptype rows: Sequence[EvalResult]
+    :param cap: The cost cap it would be taken up under.
+    :ptype cap: float | None
+    :param metered_ceiling: The metered-call ceiling it would be taken up under; ``None`` when none bounds it.
+    :ptype metered_ceiling: int | None
+    :param live_here: Whether its job in this process is still unwinding.
+    :ptype live_here: bool
+    :param missing_cases: The cases it froze that its scope no longer holds.
+    :ptype missing_cases: Sequence[str]
+    :return: Every reason, in the order a take-up meets them; empty when it can be taken up. A run whose status is not
+        resumable has that reason alone.
+    :rtype: list[ValidationFailedError]
     """
-    run = read.run
     if run.status not in _RESUMABLE_RUN_STATUSES:
-        _refuse_a_status_not_resumable(run)
+        return [_status_not_resumable(run)]
+    reasons: list[ValidationFailedError] = []
     if live_here:
-        raise ValidationFailedError(
-            f"run '{run.id}' ended, and its job in this process is still unwinding",
-            remedy="call job_resume again once its job has stopped (job_poll reads it done)",
+        reasons.append(
+            ValidationFailedError(
+                f"run '{run.id}' ended, and its job in this process is still unwinding",
+                remedy="call job_resume again once its job has stopped (job_poll reads it done)",
+            )
         )
-    spent = sum(amount for amount in _counted_spend(read.rows) if amount is not None)
+    spent = sum(amount for amount in _counted_spend(rows) if amount is not None)
     if run.status == "budget_stopped" and cap is not None and spent >= cap:
-        raise ValidationFailedError(
-            f"run '{run.id}' was stopped by its budget ({run.budget_stop_reason}), and its stored rows have spent "
-            f"${spent:.4f} — at least that, since a cell in flight when it stopped may have spent more — against a "
-            f"cap of ${cap:.4f}",
-            remedy=f"call job_resume with max_cost_usd above ${spent:.4f}",
+        reasons.append(
+            ValidationFailedError(
+                f"run '{run.id}' was stopped by its budget ({run.budget_stop_reason}), and its stored rows have spent "
+                f"${spent:.4f} — at least that, since a cell in flight when it stopped may have spent more — against "
+                f"a cap of ${cap:.4f}",
+                remedy=f"call job_resume with max_cost_usd above ${spent:.4f}",
+            )
         )
     if run.template_id is None:
-        raise ValidationFailedError(
-            f"run '{run.id}' is ad hoc, so there is no template to launch it from again",
-            remedy="only a run launched from a template is resumed (job_resume); run this eval again to measure again",
+        reasons.append(
+            ValidationFailedError(
+                f"run '{run.id}' is ad hoc, so there is no template to launch it from again",
+                remedy="only a run launched from a template is resumed (job_resume); run this eval again to measure "
+                "again",
+            )
         )
-    if read.missing_cases:
-        raise ValidationFailedError(
-            f"run '{run.id}' froze case(s) {', '.join(read.missing_cases)}, which scope {run.scope_id!r} no longer "
-            "holds, so its cells cannot run",
-            remedy="launch its template again (run_launch) over the cases the scope holds",
+    if missing_cases:
+        reasons.append(
+            ValidationFailedError(
+                f"run '{run.id}' froze case(s) {', '.join(missing_cases)}, which scope {run.scope_id!r} no longer "
+                "holds, so its cells cannot run",
+                remedy="launch its template again (run_launch) over the cases the scope holds",
+            )
         )
+    landed = sum(row.metered_calls or 0 for row in rows)
+    if metered_ceiling is not None and landed >= metered_ceiling:
+        reasons.append(_metered_ceiling_reached(run, landed=landed, ceiling=metered_ceiling))
+    return reasons
+
+
+def _refuse_what_cannot_be_taken_up(read: _Read, *, cap: float | None, live_here: bool) -> None:
+    """Refuse a run that cannot be taken up, with how to proceed (:func:`_why_not_taken_up`).
+
+    Its metered-call ceiling is the launch's to resolve, so it is refused when the launch seeds the ceiling's ledger
+    (:meth:`RunResumption.seed`), by the same rule.
+
+    :raises ValidationFailedError: The run is live, completed, failed, stopped by its budget under a cap its spend has
+        reached, ad hoc, or its cases are gone: the first reason a take-up meets.
+    """
+    reasons = _why_not_taken_up(
+        read.run, read.rows, cap=cap, metered_ceiling=None, live_here=live_here, missing_cases=read.missing_cases
+    )
+    if reasons:
+        raise reasons[0]
 
 
 async def _run_resumption(
@@ -1130,27 +1185,11 @@ def _offered(run: EvalRun, template_id: str, rows: Sequence[EvalResult]) -> Resu
     spend = _counted_spend(rows)
     spent = sum(amount for amount in spend if amount is not None)
     cap = run.max_cost_usd
-    note = None
-    # The same rule the take-up refuses by: a cap its stored rows have reached.
-    if run.status == "budget_stopped" and cap is not None and spent >= cap:
-        note = (
-            f"stopped at its cost cap of ${cap:.4f} with ${spent:.4f} spent: resume it with max_cost_usd above "
-            f"${spent:.4f}"
-        )
-    # And a metered-call ceiling its stored cells have reached, against the ceiling the run recorded: one it inherited
-    # moves with the host's setting, which a take-up reads afresh.
-    landed = sum(row.metered_calls or 0 for row in rows)
-    if run.max_metered_calls_origin != "none_declared" and run.max_metered_calls and landed >= run.max_metered_calls:
-        metered = (
-            f"its stored cells have landed {landed} metered call(s) against its metered-call ceiling of "
-            f"{run.max_metered_calls}: "
-            + (
-                "launch its template again (run_launch) with a higher max_metered_calls"
-                if run.max_metered_calls_origin == "chosen"
-                else f"raise the host's max_metered_calls above {landed}, then resume it"
-            )
-        )
-        note = f"{note}; {metered}" if note is not None else metered
+    # The take-up's own rules, against the cap and the metered-call ceiling the run recorded: one it inherited moves
+    # with the host's setting, which a take-up reads afresh. Its cases and its job's state are not read here.
+    ceiling = run.max_metered_calls if run.max_metered_calls_origin != "none_declared" else None
+    reasons = _why_not_taken_up(run, rows, cap=cap, metered_ceiling=ceiling or None)
+    note = "; ".join(f"{reason.message}: {reason.remedy}" for reason in reasons) or None
     return ResumableJob(
         # The run job's id, in the shape job_poll and job_resume read.
         job_id=f"run:{run.id}",
