@@ -65,6 +65,16 @@ Out of scope for slice 1: the Brave adapter, the SSE and tag parsers, `answer.py
   filtered after the fact, so a criterion is pushed down or unsatisfied | user can veto]
 - [DECISION: the `<provider>:<unit>` composition moves to one public function, `qualify_unit`,
   that both capability types call | keeps the one-composition-site rule with two declarations]
+- [DECISION: the streaming transport pins live in `packages/search/tests/test_conformance_streaming.py`,
+  not as a shipped suite in `threetears.search.testing` | the provider suite ships because
+  consumers write providers; no consumer implements a streaming transport, so a shipped suite
+  would be public API with no caller (`test_public_api_has_a_caller`, CLAUDE.md). It moves to
+  `testing/` when a host writes a second implementation | user can veto]
+- [DECISION: `Anchor`, `AnswerRequest`, `GroundedAnswer`, `AnswerProvider` and `StreamingTransport`
+  have no `src` caller until Chunk 02 (the adapter takes a `StreamingTransport` and returns a
+  `GroundedAnswer`), so `test_public_api_has_a_caller` is red for them on this branch; no ledger entry
+  is filed, because the ledger names callers outside the repo and these have none | Chunk 01
+  should land in `develop` with Chunk 02, or its PR wait on Chunk 02's | user decides]
 
 **Flagged, not built:** the `StreamingTransport` protocol lists circuit-breaking and a per-call
 span among its obligations, as `SearchTransport` does. The standalone transport discharges
@@ -117,8 +127,10 @@ packages/search/src/threetears/search/
   contracts/transport.py   # + StreamingTransport, StreamedResponse
   contracts/capabilities.py# + kind-keyed registry, qualify_unit
   standalone.py            # + stream()
-  testing/conformance.py   # + StreamingTransportConformanceSuite
   testing/http_server.py   # + chunked, gated replies
+packages/search/tests/
+  test_conformance_streaming.py  # new: the streaming seam's pins
+  test_answer_contracts.py       # new: the answer contract pins
 ```
 
 ### Module Boundaries
@@ -142,7 +154,7 @@ transport's (AR-F2). The answer contracts import nothing beyond the existing con
   - `StandaloneTransport.stream`, sharing the retry loop, deadline, guard, connect pinning and
     byte cap with `request` and `fetch`;
   - new `contracts/answer.py`; the kind-keyed capabilities registry; exports;
-  - the streaming transport conformance pins and a parity-declared fake streaming transport;
+  - the streaming transport pins and a parity-declared fake streaming transport;
   - the httpx-only-in-standalone pin covering the stream path;
   - design §13's rider on `docs/search-spec.md` §5, and the spec's protocol list and §3.8.
 - **Tests:** behavioural, against a real socket: chunks arrive incrementally; status and headers

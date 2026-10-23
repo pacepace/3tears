@@ -192,7 +192,15 @@ them):
   constructed per upstream and buffers whole bodies, while a fetch is an
   arbitrary candidate URL read under a per-call cap. A host injects the
   traced adapter for search and the standalone transport for fetch; the
-  ruling is in §7 Phase 2), `SearchProvider` (the provider seam Call consumes and the
+  ruling is in §7 Phase 2), `StreamingTransport` (an open-ended response read
+  chunk by chunk with its head first -- declared as a *third* protocol on
+  2026-10-23 for a provider's cited answer, `answers-requirements-design.md`
+  AD11, for the Gate A reason the second was: its obligations differ (retry
+  before the first byte only, a byte cap on the whole stream, the deadline
+  bounding the body), and folding it into either earlier protocol would
+  invalidate their implementers. Implemented by the standalone transport alone;
+  `TracedHttpClient` buffers and cannot. Framing inside the bytes is the
+  adapter's), `SearchProvider` (the provider seam Call consumes and the
   conformance suite parametrizes over -- named here at Gate A; it is the
   one seam-vocabulary addition §3.1's original field list did not carry),
   `BudgetPort` (`check(estimate)` / `record(spend)` with plural scopes --
@@ -426,7 +434,13 @@ implementation a host chooses. When Extract lands (Phase 2) this module
 implements `FetchTransport` alongside `SearchTransport` -- the union is the
 declared shape (Gate A, 2026-08-10), and its per-request-client lifecycle is
 revisited in the same change (right for one search, wrong for Extract's
-many-fetch path).
+many-fetch path). It implements `StreamingTransport` as well (AD11, AR-F3),
+through the same retry loop, deadline, guard and connect pinning: an attempt
+ends at the response head, nothing is retried once a body byte exists, and the
+whole-stream cap and the caller's deadline bind the body as it is read.
+Circuit-breaking and a per-call span, which the protocols list and
+`TracedHttpClient` brings, are not among this module's obligations for any of
+the three protocols.
 
 ### 3.9 `limiter.py`
 
@@ -608,7 +622,12 @@ load-bearing for a success check.
 
 MUST NOT, restated from §2 of the requirements doc as build guardrails: crawl
 or index; own a ranking implementation; own a telemetry sink; own a replay
-store backend; summarise, judge, or conclude; cache responses in v1 (D14);
+store backend; summarise, judge, or conclude (*rider, 2026-10-22, owner ruling;
+`answers-requirements-design.md` AD2 and §13:* the leaf still produces no
+synthesis, but it **may carry a provider's**, when the provider delivers it
+with citations -- the text as given, the citations as candidates, the spend as
+spend, and the rendering saying whose synthesis it is; carrying is not
+concluding); cache responses in v1 (D14);
 accept caller-supplied base URLs (D21); import `threetears.core`,
 `agent-tools`, langchain, or NATS from the leaf; grow a second result shape
 for any face (check 14); let an exception cross the wire (D10).

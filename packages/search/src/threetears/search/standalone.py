@@ -68,13 +68,26 @@ client, which is what D19 forbids; it is a host reaching for the family's one
 transport that can read an arbitrary URL under a cap, which is what this
 module is.
 
-**Both transport protocols, one machine.** :meth:`StandaloneTransport.request`
-serves search calls and :meth:`StandaloneTransport.fetch` serves Extract's
-content reads (the union Gate A predicted this module would satisfy). They
-differ in exactly two things -- who states the byte cap, and whether a media
-type is refused before the body -- so they share one retry loop, one deadline,
-one set of guards. Duplicating the loop to add a cap parameter would have left
-two SSRF guards to keep in step, which is the arrangement D21 exists to avoid.
+**Three transport protocols, one machine.** :meth:`StandaloneTransport.request`
+serves search calls, :meth:`StandaloneTransport.fetch` serves Extract's
+content reads (the union Gate A predicted this module would satisfy), and
+:meth:`StandaloneTransport.stream` serves a provider whose answer arrives as an
+open-ended stream (AD11). Request and fetch differ in exactly two things -- who
+states the byte cap, and whether a media type is refused before the body; a
+stream differs in where an attempt ends, at the head rather than after the
+body. So all three share one retry loop, one deadline, one set of guards and
+one connect pinning, and only what an attempt *is* varies. Duplicating the
+loop for each would have left three SSRF guards to keep in step, which is the
+arrangement D21 exists to avoid.
+
+**Two obligations this module does not discharge.** The transport protocols
+list circuit-breaking (SR-D3) and a per-call span (SR-I1), which
+``TracedHttpClient`` brings. This module carries neither, for any of its three
+protocols: a breaker per upstream presumes a fixed set of upstreams, and a
+transport that fetches whatever host a candidate names has none, so what a
+breaker here should guard is a design question still open rather than a
+detail; and a span needs telemetry this module does not set up. A host that
+needs either wraps this transport or injects its own.
 
 **No client is held between calls, and one is held inside a scope.** A search
 is one request, and SR-L5 requires a single call to work from a one-shot
@@ -111,12 +124,13 @@ import ipaddress
 import socket
 import time
 import urllib.request
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import asynccontextmanager, contextmanager
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Final
+from types import TracebackType
+from typing import Final, Self
 from urllib.parse import urljoin, urlparse
 
 import httpcore
@@ -129,6 +143,7 @@ from threetears.search.contracts import (
     LocalCapExceeded,
     SearchFailure,
     Spend,
+    StreamedResponse,
     TimedOut,
     TransportFailed,
     TransportResponse,
@@ -767,6 +782,296 @@ class _GuardedRoutes(httpx.AsyncBaseTransport):
                 await proxy.aclose()
 
 
+@dataclass(frozen=True, slots=True)
+class _Opened:
+    """A response opened through the guarded redirects, its head read and its body not."""
+
+    #: the answering response, still open.
+    response: httpx.Response
+    #: the URL that answered, after any redirects followed.
+    final_url: str
+    #: body bytes read on the redirect hops before this one answered.
+    bytes_read: int
+    #: the response headers, lower-cased keys.
+    headers: dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class _Attempted[T]:
+    """What the retry loop ended with: the answering attempt and the call's clock."""
+
+    #: the answering status.
+    status_code: int
+    #: what the answering attempt produced.
+    value: T
+    #: attempts made, including the answering one.
+    attempts: int
+    #: the monotonic reading the call started at.
+    started: float
+    #: the monotonic reading the whole call must end by.
+    deadline: float
+
+
+@dataclass(frozen=True, slots=True)
+class _OpenStream:
+    """A stream opened as far as its head, and everything that releases it."""
+
+    #: releases the response and, outside a connection scope, its client.
+    stack: AsyncExitStack
+    #: the response, its head read and its body not.
+    opened: _Opened
+
+
+class _StandaloneStream:
+    """:class:`StreamedResponse` over one open httpx response.
+
+    Reads the body chunk by chunk as the socket delivers it, under the
+    whole-stream cap and the whole-call deadline, and is never retried: by the
+    time a body byte exists, the transport's retry loop has already returned.
+    Every way out -- exhaustion, a failure, an early close -- releases the
+    connection, through the one stack that holds it.
+    """
+
+    def __init__(
+        self,
+        stream: _OpenStream,
+        *,
+        status_code: int,
+        egress: str,
+        attempts: int,
+        started: float,
+        deadline: float,
+        max_bytes: int,
+        clock: Callable[[], float],
+        stamp: Callable[[SearchFailure], SearchFailure],
+        over_cap: Callable[[str, int, int, float, int], LocalCapExceeded],
+    ) -> None:
+        """Hold an opened stream and what bounds its body.
+
+        :param stream: the open response and the stack that releases it
+        :ptype stream: _OpenStream
+        :param status_code: the answering status
+        :ptype status_code: int
+        :param egress: the egress the request left by
+        :ptype egress: str
+        :param attempts: attempts the transport made to open it
+        :ptype attempts: int
+        :param started: the monotonic reading the call started at
+        :ptype started: float
+        :param deadline: the monotonic reading the whole call must end by
+        :ptype deadline: float
+        :param max_bytes: the effective cap on the whole body
+        :ptype max_bytes: int
+        :param clock: the transport's monotonic clock
+        :ptype clock: Callable[[], float]
+        :param stamp: the transport's stamping of a failure with egress and time
+        :ptype stamp: Callable[[SearchFailure], SearchFailure]
+        :param over_cap: the transport's cap refusal, as ``(url, size, cap,
+            elapsed, bytes_seen)``
+        :ptype over_cap: Callable[[str, int, int, float, int], LocalCapExceeded]
+        """
+        self._stack = stream.stack
+        self._response = stream.opened.response
+        self._final_url = stream.opened.final_url
+        self._headers = stream.opened.headers
+        self._redirect_bytes = stream.opened.bytes_read
+        self._status_code = status_code
+        self._egress = egress
+        self._attempts = attempts
+        self._started = started
+        self._deadline = deadline
+        self._max_bytes = max_bytes
+        self._clock = clock
+        self._stamp = stamp
+        self._over_cap = over_cap
+        self._source = self._response.aiter_bytes()
+        self._received = 0
+        self._closed_at: float | None = None
+
+    @property
+    def status_code(self) -> int:
+        """The answering status, read before the body.
+
+        :return: the status code
+        :rtype: int
+        """
+        return self._status_code
+
+    @property
+    def headers(self) -> Mapping[str, str]:
+        """The answering headers, lower-cased keys, read before the body.
+
+        :return: the headers
+        :rtype: Mapping[str, str]
+        """
+        return self._headers
+
+    @property
+    def final_url(self) -> str:
+        """The URL that answered.
+
+        :return: the answering URL
+        :rtype: str
+        """
+        return self._final_url
+
+    @property
+    def egress(self) -> str:
+        """The egress the request left by (D20).
+
+        :return: the egress name
+        :rtype: str
+        """
+        return self._egress
+
+    @property
+    def attempts(self) -> int:
+        """Attempts made to open the stream; final, since none follows a body byte.
+
+        :return: the attempt count
+        :rtype: int
+        """
+        return self._attempts
+
+    @property
+    def elapsed_seconds(self) -> float:
+        """Wall-clock since the call began: final once closed, so far while open.
+
+        :return: elapsed seconds
+        :rtype: float
+        """
+        end = self._closed_at if self._closed_at is not None else self._clock()
+        return end - self._started
+
+    def __aiter__(self) -> Self:
+        """Iterate the body; the stream is its own iterator, so it is read once.
+
+        :return: this stream
+        :rtype: Self
+        """
+        return self
+
+    async def __anext__(self) -> bytes:
+        """The next chunk of the body, as the socket delivered it.
+
+        :return: a non-empty chunk
+        :rtype: bytes
+        :raises StopAsyncIteration: at the end of the body, or once closed
+        :raises threetears.search.contracts.errors.LocalCapExceeded: when the
+            chunk would take the stream past its cap; the chunk is not yielded
+        :raises threetears.search.contracts.errors.TimedOut: when the call's
+            deadline passes before the next chunk arrives
+        :raises threetears.search.contracts.errors.TransportFailed: when the
+            connection breaks mid-body
+        """
+        while True:
+            if self._closed_at is not None:
+                raise StopAsyncIteration
+            remaining = self._deadline - self._clock()
+            try:
+                if remaining <= 0:
+                    raise TimeoutError
+                async with asyncio.timeout(remaining):
+                    chunk = await anext(self._source)
+            except StopAsyncIteration:
+                await self.aclose()
+                raise
+            except (TimeoutError, httpx.TimeoutException) as exc:
+                raise await self._failed(
+                    TimedOut(
+                        f"stream from {self._final_url} passed its deadline after {self._received} body byte(s) "
+                        f"and {self._attempts} attempt(s); a stream is never retried once its body has begun",
+                        spend=self._spend(),
+                        remediation="raise this call's timeout -- it bounds the whole stream, body included",
+                    )
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise await self._failed(
+                    TransportFailed(
+                        f"stream from {self._final_url} broke after {self._received} body byte(s) and "
+                        f"{self._attempts} attempt(s): {type(exc).__name__}: {exc}; a stream is never retried "
+                        f"once its body has begun",
+                        spend=self._spend(),
+                    )
+                ) from exc
+            if not chunk:
+                continue
+            if self._received + len(chunk) > self._max_bytes:
+                total = self._received + len(chunk)
+                raise await self._failed(
+                    self._over_cap(
+                        self._final_url,
+                        total,
+                        self._max_bytes,
+                        self._clock() - self._started,
+                        self._redirect_bytes + total,
+                    )
+                )
+            self._received += len(chunk)
+            return chunk
+
+    def _spend(self) -> Spend:
+        """What the stream consumed so far, for a failure leaving it.
+
+        :return: the wall-clock and bytes so far; no calls, which the adapter owns (D4)
+        :rtype: Spend
+        """
+        return Spend(
+            wall_clock_seconds=self._clock() - self._started,
+            calls=0,
+            bytes_transferred=self._redirect_bytes + self._received,
+        )
+
+    async def _failed(self, failure: SearchFailure) -> SearchFailure:
+        """Release the connection, and stamp the failure that ends the stream.
+
+        :param failure: the failure about to leave
+        :ptype failure: SearchFailure
+        :return: the failure, stamped with egress and occurrence time
+        :rtype: SearchFailure
+        """
+        await self.aclose()
+        return self._stamp(failure)
+
+    async def aclose(self) -> None:
+        """Release the connection, and the client it came from outside a scope. Idempotent."""
+        if self._closed_at is not None:
+            return
+        self._closed_at = self._clock()
+        try:
+            # httpx's body iterator is an async generator; closing it before the
+            # response it reads leaves nothing suspended for the finalizer.
+            if isinstance(self._source, AsyncGenerator):
+                await self._source.aclose()
+        finally:
+            await self._stack.aclose()
+
+    async def __aenter__(self) -> Self:
+        """Enter the block that owns this stream.
+
+        :return: this stream
+        :rtype: Self
+        """
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Release the connection on leaving the block.
+
+        :param exc_type: exception type, if the block raised
+        :ptype exc_type: type[BaseException] | None
+        :param exc: the exception, if the block raised
+        :ptype exc: BaseException | None
+        :param traceback: the traceback, if the block raised
+        :ptype traceback: TracebackType | None
+        """
+        await self.aclose()
+
+
 class StandaloneTransport:
     """A bounded, guarded HTTP transport over bare httpx.
 
@@ -1095,6 +1400,136 @@ class StandaloneTransport:
             timeout_seconds=timeout_seconds,
         )
 
+    async def stream(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        json_body: Mapping[str, JsonValue] | None = None,
+        timeout_seconds: float | None = None,
+        max_bytes: int,
+    ) -> StreamedResponse:
+        """Open one bounded, guarded stream, and return it with its head read.
+
+        Satisfies
+        :class:`~threetears.search.contracts.transport.StreamingTransport`
+        through the same machinery as :meth:`request` and :meth:`fetch`: the
+        one retry loop and whole-call deadline, the address guard with its
+        connect pinning, the redirect policy, and the byte cap. What differs is
+        where an attempt ends. Here it ends at the head: each attempt opens the
+        response as far as its status and headers, a connect failure, timeout
+        or 5xx is retried from there, and the first answer that is not retried
+        comes back open. No attempt is made once this returns, so no body byte
+        is ever followed by a retry.
+
+        **The deadline bounds the body too.** ``timeout_seconds`` is the bound
+        on the whole call; every chunk read is given what remains of it, and a
+        stream still open when it passes fails as :class:`TimedOut`.
+
+        **The cap counts the whole stream**, as :meth:`fetch` counts a body: a
+        declared length past it is refused before this returns, and a chunk
+        that would take the stream past it is refused rather than yielded.
+
+        :param method: HTTP method
+        :ptype method: str
+        :param url: absolute URL, built by the caller from a
+            deployment-configured base (D21)
+        :ptype url: str
+        :param headers: request headers, if any
+        :ptype headers: Mapping[str, str] | None
+        :param json_body: JSON request body, if any
+        :ptype json_body: Mapping[str, JsonValue] | None
+        :param timeout_seconds: per-call override of the configured timeout,
+            bounding the whole stream, body included (SR-G2)
+        :ptype timeout_seconds: float | None
+        :param max_bytes: this call's cap on the whole body (SR-G5),
+            tightening the configured ``max_response_bytes`` where it is lower
+            and never loosening it
+        :ptype max_bytes: int
+        :return: the open stream; the caller releases it with ``async with``
+            or ``aclose()``
+        :rtype: StreamedResponse
+        :raises ValueError: when ``max_bytes`` is not positive
+        :raises threetears.search.contracts.errors.TimedOut: when the attempts
+            timed out, or the whole-call bound ran out before another fit
+        :raises threetears.search.contracts.errors.TransportFailed: on a
+            refused address, a refused redirect, or a connect/protocol failure
+            that outlasted the attempts
+        :raises threetears.search.contracts.errors.LocalCapExceeded: when the
+            declared length exceeds the effective cap
+        """
+        if max_bytes < 1:
+            raise ValueError(f"max_bytes must be positive, got {max_bytes}")
+        cap = min(max_bytes, self._max_response_bytes)
+        request_headers = self._request_headers(headers)
+
+        async def attempt_once(
+            timeout: httpx.Timeout, elapsed: float, bytes_so_far: int
+        ) -> tuple[int, _OpenStream, int]:
+            # Everything this attempt opens is released if it fails; on
+            # success its release moves out with the stream it returns.
+            async with AsyncExitStack() as attempt_stack:
+                client = await attempt_stack.enter_async_context(self._client())
+                opened = await self._open(
+                    attempt_stack,
+                    client,
+                    method,
+                    url,
+                    headers=request_headers,
+                    params=None,
+                    json_body=json_body,
+                    max_bytes=cap,
+                    allowed_content_types=None,
+                    timeout=timeout,
+                    elapsed_so_far=elapsed,
+                    bytes_so_far=bytes_so_far,
+                )
+                self._refuse_declared_overrun(
+                    opened.response,
+                    opened.final_url,
+                    max_bytes=cap,
+                    elapsed=elapsed,
+                    bytes_seen=bytes_so_far + opened.bytes_read,
+                )
+                kept = attempt_stack.pop_all()
+            return opened.response.status_code, _OpenStream(stack=kept, opened=opened), opened.bytes_read
+
+        async def release(stream: _OpenStream) -> None:
+            await stream.stack.aclose()
+
+        outcome = await self._retrying(url, timeout_seconds=timeout_seconds, attempt_once=attempt_once, release=release)
+        return _StandaloneStream(
+            outcome.value,
+            status_code=outcome.status_code,
+            egress=self._egress_name,
+            attempts=outcome.attempts,
+            started=outcome.started,
+            deadline=outcome.deadline,
+            max_bytes=cap,
+            clock=self._clock,
+            stamp=self._stamped,
+            over_cap=self._stream_over_cap,
+        )
+
+    def _stream_over_cap(self, url: str, size: int, cap: int, elapsed: float, bytes_seen: int) -> LocalCapExceeded:
+        """The cap refusal, in the positional shape a stream calls it with.
+
+        :param url: the URL that answered too much
+        :ptype url: str
+        :param size: bytes the stream would have reached
+        :ptype size: int
+        :param cap: the cap that bound
+        :ptype cap: int
+        :param elapsed: wall-clock spent, in seconds
+        :ptype elapsed: float
+        :param bytes_seen: bytes read across the whole request
+        :ptype bytes_seen: int
+        :return: the typed refusal
+        :rtype: LocalCapExceeded
+        """
+        return self._over_cap(url, size, cap=cap, elapsed=elapsed, bytes_seen=bytes_seen)
+
     async def _perform(
         self,
         method: str,
@@ -1107,7 +1542,7 @@ class StandaloneTransport:
         allowed_content_types: tuple[str, ...] | None,
         timeout_seconds: float | None,
     ) -> TransportResponse:
-        """Run the bounded, guarded, retrying exchange both protocols share.
+        """Run the bounded, guarded, retrying, buffered exchange ``request`` and ``fetch`` share.
 
         :param method: HTTP method
         :ptype method: str
@@ -1131,10 +1566,90 @@ class StandaloneTransport:
         :raises threetears.search.contracts.errors.SearchFailure: the typed
             failures both public methods document
         """
+        request_headers = self._request_headers(headers)
+
+        async def attempt_once(
+            timeout: httpx.Timeout, elapsed: float, bytes_so_far: int
+        ) -> tuple[int, tuple[bytes, str, dict[str, str]], int]:
+            async with self._client() as client:
+                status, body, final_url, read, response_headers = await self._exchange(
+                    client,
+                    method,
+                    url,
+                    headers=request_headers,
+                    params=params,
+                    json_body=json_body,
+                    max_bytes=max_bytes,
+                    allowed_content_types=allowed_content_types,
+                    timeout=timeout,
+                    elapsed_so_far=elapsed,
+                    bytes_so_far=bytes_so_far,
+                )
+            return status, (body, final_url, response_headers), read
+
+        outcome = await self._retrying(url, timeout_seconds=timeout_seconds, attempt_once=attempt_once)
+        body, final_url, response_headers = outcome.value
+        return TransportResponse(
+            status_code=outcome.status_code,
+            body=body,
+            final_url=final_url,
+            egress=self._egress_name,
+            elapsed_seconds=self._clock() - outcome.started,
+            attempts=outcome.attempts,
+            headers=response_headers,
+        )
+
+    def _request_headers(self, headers: Mapping[str, str] | None) -> dict[str, str]:
+        """The headers every request sends: this transport's ``User-Agent``, then the caller's.
+
+        :param headers: the caller's headers, if any
+        :ptype headers: Mapping[str, str] | None
+        :return: the headers to send
+        :rtype: dict[str, str]
+        """
+        return {"User-Agent": self._user_agent, **dict(headers or {})}
+
+    async def _retrying[T](
+        self,
+        url: str,
+        *,
+        timeout_seconds: float | None,
+        attempt_once: Callable[[httpx.Timeout, float, int], Awaitable[tuple[int, T, int]]],
+        release: Callable[[T], Awaitable[None]] | None = None,
+    ) -> _Attempted[T]:
+        """The one retry loop: bounded attempts, backoff, and one deadline for all of them.
+
+        Every protocol this module implements runs through here, so the retry
+        policy, the whole-call deadline and the typed failure an exhausted call
+        raises are written once. What one attempt *is* differs -- a buffered
+        exchange, or a stream opened as far as its headers -- and arrives as
+        ``attempt_once``, which returns the answering status, its value, and
+        the body bytes it read.
+
+        A 5xx is retried while attempts and the bound remain; the value it
+        came with is handed to ``release`` first (a stream's open connection),
+        and a 5xx the bound cannot fund a retry for comes back as itself.
+
+        :param url: the URL being reached, for messages and failures
+        :ptype url: str
+        :param timeout_seconds: per-call override of the configured timeout,
+            bounding the whole call (SR-G2)
+        :ptype timeout_seconds: float | None
+        :param attempt_once: one attempt, given what remains of the bound, the
+            wall-clock already spent and the bytes already read
+        :ptype attempt_once: Callable[[httpx.Timeout, float, int], Awaitable[tuple[int, T, int]]]
+        :param release: what to do with a 5xx answer's value before retrying
+            past it; nothing when None
+        :ptype release: Callable[[T], Awaitable[None]] | None
+        :return: the answering attempt's status and value, with the attempt
+            count and the call's start and deadline
+        :rtype: _Attempted[T]
+        :raises threetears.search.contracts.errors.SearchFailure: an attempt's
+            typed refusal, stamped, or the typed failure of exhausted attempts
+        """
         effective_timeout = timeout_seconds if timeout_seconds is not None else self._timeout_seconds
         started = self._clock()
         deadline = started + effective_timeout
-        request_headers = {"User-Agent": self._user_agent, **dict(headers or {})}
         attempt = 0
         bytes_seen = 0
         last: BaseException | None = None
@@ -1148,20 +1663,7 @@ class StandaloneTransport:
             # client, because a scoped client outlives any one call's bound.
             timeout = httpx.Timeout(max(0.0, min(effective_timeout, deadline - self._clock())))
             try:
-                async with self._client() as client:
-                    status, body, final_url, read, response_headers = await self._exchange(
-                        client,
-                        method,
-                        url,
-                        headers=request_headers,
-                        params=params,
-                        json_body=json_body,
-                        max_bytes=max_bytes,
-                        allowed_content_types=allowed_content_types,
-                        timeout=timeout,
-                        elapsed_so_far=self._clock() - started,
-                        bytes_so_far=bytes_seen,
-                    )
+                status, value, read = await attempt_once(timeout, self._clock() - started, bytes_seen)
                 bytes_seen += read
                 if status >= 500 and attempt < self._max_attempts:
                     _logger.warning(
@@ -1171,7 +1673,9 @@ class StandaloneTransport:
                         attempt,
                         self._max_attempts,
                     )
-                    if await self._wait_to_retry(attempt, deadline):
+                    if await self._wait_to_retry(
+                        attempt, deadline, before_sleep=(lambda: release(value)) if release is not None else None
+                    ):
                         continue
                     # The bound will not fund another attempt -- and we are
                     # holding a real answer. A 5xx the caller can see beats a
@@ -1182,15 +1686,7 @@ class StandaloneTransport:
                         url,
                         attempt,
                     )
-                return TransportResponse(
-                    status_code=status,
-                    body=body,
-                    final_url=final_url,
-                    egress=self._egress_name,
-                    elapsed_seconds=self._clock() - started,
-                    attempts=attempt,
-                    headers=response_headers,
-                )
+                return _Attempted(status_code=status, value=value, attempts=attempt, started=started, deadline=deadline)
             except SearchFailure as failure:
                 # already typed and already terminal: a refused address, a
                 # refused redirect, or a body past the cap. Retrying a
@@ -1228,7 +1724,9 @@ class StandaloneTransport:
         )
         raise self._stamped(exhausted)
 
-    async def _wait_to_retry(self, attempt: int, deadline: float) -> bool:
+    async def _wait_to_retry(
+        self, attempt: int, deadline: float, *, before_sleep: Callable[[], Awaitable[None]] | None = None
+    ) -> bool:
         """Back off before the next attempt, where the bound still allows one.
 
         The backoff is part of the caller's bound rather than an addition to
@@ -1240,12 +1738,19 @@ class StandaloneTransport:
         :ptype attempt: int
         :param deadline: the monotonic reading the whole call must end by
         :ptype deadline: float
+        :param before_sleep: run once the retry is decided and before the
+            backoff -- a stream's 5xx connection is released here rather than
+            held through the wait. Not run when no retry fits, because then
+            the answer it belongs to is the one that goes back
+        :ptype before_sleep: Callable[[], Awaitable[None]] | None
         :return: whether the backoff was taken and another attempt fits
         :rtype: bool
         """
         pause = self._backoff(attempt)
         if deadline - self._clock() - pause < MINIMUM_RETRY_SECONDS:
             return False
+        if before_sleep is not None:
+            await before_sleep()
         await self._sleep(pause)
         return True
 
@@ -1361,7 +1866,7 @@ class StandaloneTransport:
         elapsed_so_far: float,
         bytes_so_far: int,
     ) -> tuple[int, bytes, str, int, dict[str, str]]:
-        """Send one request, following guarded redirects, reading under a cap.
+        """Send one request, following guarded redirects, reading the body under a cap.
 
         :param client: the per-request client
         :ptype client: httpx.AsyncClient
@@ -1395,6 +1900,87 @@ class StandaloneTransport:
         :raises threetears.search.contracts.errors.LocalCapExceeded: when
             the body exceeds the cap, or the content-type gate refuses
         """
+        async with AsyncExitStack() as stack:
+            opened = await self._open(
+                stack,
+                client,
+                method,
+                url,
+                headers=headers,
+                params=params,
+                json_body=json_body,
+                max_bytes=max_bytes,
+                allowed_content_types=allowed_content_types,
+                timeout=timeout,
+                elapsed_so_far=elapsed_so_far,
+                bytes_so_far=bytes_so_far,
+            )
+            body, read = await self._read_capped(
+                opened.response,
+                opened.final_url,
+                max_bytes=max_bytes,
+                elapsed=elapsed_so_far,
+                bytes_seen=bytes_so_far + opened.bytes_read,
+            )
+        return opened.response.status_code, body, opened.final_url, opened.bytes_read + read, opened.headers
+
+    async def _open(
+        self,
+        stack: AsyncExitStack,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        params: Mapping[str, str] | None,
+        json_body: Mapping[str, JsonValue] | None,
+        max_bytes: int,
+        allowed_content_types: tuple[str, ...] | None,
+        timeout: httpx.Timeout,
+        elapsed_so_far: float,
+        bytes_so_far: int,
+    ) -> _Opened:
+        """Send one request through guarded redirects, and leave the answer open, body unread.
+
+        The half of an exchange every protocol shares: guard and route each
+        hop, read and discard a redirect's body under the cap, gate the
+        answering response's media type. The answering response stays open on
+        ``stack``, so the caller decides whether its body is read whole
+        (``request``, ``fetch``) or handed on as a stream (``stream``).
+
+        :param stack: where the answering response's release is registered
+        :ptype stack: AsyncExitStack
+        :param client: the client to send through
+        :ptype client: httpx.AsyncClient
+        :param method: HTTP method
+        :ptype method: str
+        :param url: absolute URL to reach
+        :ptype url: str
+        :param headers: request headers
+        :ptype headers: Mapping[str, str]
+        :param params: query parameters, if any
+        :ptype params: Mapping[str, str] | None
+        :param json_body: JSON request body, if any
+        :ptype json_body: Mapping[str, JsonValue] | None
+        :param max_bytes: effective cap, applied to each redirect's body
+        :ptype max_bytes: int
+        :param allowed_content_types: media-type prefixes a successful
+            response must match, or None to accept any
+        :ptype allowed_content_types: tuple[str, ...] | None
+        :param timeout: what remains of this call's bound
+        :ptype timeout: httpx.Timeout
+        :param elapsed_so_far: wall-clock already spent, for failure spend
+        :ptype elapsed_so_far: float
+        :param bytes_so_far: bytes already read, for failure spend
+        :ptype bytes_so_far: int
+        :return: the open answering response, the URL that answered, the
+            redirect body bytes read on the way, and its lower-cased headers
+        :rtype: _Opened
+        :raises threetears.search.contracts.errors.TransportFailed: on a
+            refused address or a refused redirect
+        :raises threetears.search.contracts.errors.LocalCapExceeded: when a
+            redirect's body exceeds the cap, or the content-type gate refuses
+        """
         target = url
         read_total = 0
         for hop in range(self._max_redirects + 1):
@@ -1402,15 +1988,18 @@ class StandaloneTransport:
             # host, and the addresses checked for the last one say nothing
             # about it.
             route = await self._guard(target, elapsed=elapsed_so_far, bytes_seen=bytes_so_far + read_total)
-            async with client.stream(
-                method,
-                target,
-                headers=dict(headers),
-                params=dict(params) if params else None,
-                json=dict(json_body) if json_body else None,
-                timeout=timeout,
-                extensions={_ROUTE_EXTENSION: route},
-            ) as response:
+            async with AsyncExitStack() as hop_stack:
+                response = await hop_stack.enter_async_context(
+                    client.stream(
+                        method,
+                        target,
+                        headers=dict(headers),
+                        params=dict(params) if params else None,
+                        json=dict(json_body) if json_body else None,
+                        timeout=timeout,
+                        extensions={_ROUTE_EXTENSION: route},
+                    )
+                )
                 # header keys are normalised here so every consumer of the
                 # seam reads one casing -- the protocol promises lower-case,
                 # and httpx answers case-insensitively rather than
@@ -1427,7 +2016,11 @@ class StandaloneTransport:
                         elapsed=elapsed_so_far,
                         bytes_seen=bytes_so_far + read_total,
                     )
-                body, read = await self._read_capped(
+                    # the answer outlives this hop: its release moves to the
+                    # caller's stack, and leaving this block releases nothing.
+                    stack.push_async_exit(hop_stack.pop_all())
+                    return _Opened(response=response, final_url=target, bytes_read=read_total, headers=response_headers)
+                _, read = await self._read_capped(
                     response,
                     target,
                     max_bytes=max_bytes,
@@ -1435,8 +2028,6 @@ class StandaloneTransport:
                     bytes_seen=bytes_so_far + read_total,
                 )
             read_total += read
-            if not following:
-                return response.status_code, body, target, read_total, response_headers
             target = self._guarded_redirect(target, location or "")
         # unreachable: the loop returns or raises on its last iteration, and
         # ``range`` is non-empty because max_redirects is never negative.
@@ -1475,9 +2066,7 @@ class StandaloneTransport:
         :raises threetears.search.contracts.errors.LocalCapExceeded: when
             the body exceeds the cap
         """
-        declared = response.headers.get("content-length")
-        if declared is not None and declared.isdigit() and int(declared) > max_bytes:
-            raise self._over_cap(url, int(declared), cap=max_bytes, elapsed=elapsed, bytes_seen=bytes_seen)
+        self._refuse_declared_overrun(response, url, max_bytes=max_bytes, elapsed=elapsed, bytes_seen=bytes_seen)
         chunks: list[bytes] = []
         total = 0
         async for chunk in response.aiter_bytes():
@@ -1486,6 +2075,32 @@ class StandaloneTransport:
                 raise self._over_cap(url, total, cap=max_bytes, elapsed=elapsed, bytes_seen=bytes_seen + total)
             chunks.append(chunk)
         return b"".join(chunks), total
+
+    def _refuse_declared_overrun(
+        self, response: httpx.Response, url: str, *, max_bytes: int, elapsed: float, bytes_seen: int
+    ) -> None:
+        """Refuse a response whose declared ``Content-Length`` is already past the cap.
+
+        Before a byte of the body is read, which is the point: a declared
+        overrun costs nothing to refuse. An undeclared or lying length is the
+        incremental count's to catch.
+
+        :param response: the open response, body unread
+        :ptype response: httpx.Response
+        :param url: the URL that answered, for the failure message
+        :ptype url: str
+        :param max_bytes: the cap
+        :ptype max_bytes: int
+        :param elapsed: wall-clock already spent, for failure spend
+        :ptype elapsed: float
+        :param bytes_seen: bytes already read, for failure spend
+        :ptype bytes_seen: int
+        :raises threetears.search.contracts.errors.LocalCapExceeded: when the
+            declared length exceeds the cap
+        """
+        declared = response.headers.get("content-length")
+        if declared is not None and declared.isdigit() and int(declared) > max_bytes:
+            raise self._over_cap(url, int(declared), cap=max_bytes, elapsed=elapsed, bytes_seen=bytes_seen)
 
     def _gate_content_type(
         self,
