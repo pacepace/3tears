@@ -231,8 +231,8 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
         },
     ),
     # 61/13: the pass^k cell drops the case set, reads the context at the current identity version and splits on the
-    # served model; each frontier point names its pooled and unpooled runs. A shape-only bump: the apparatus set and
-    # the cell model hold.
+    # served model and template revision; each frontier point lists its pass^k cells. A shape-only bump: the
+    # apparatus set and the cell model hold.
     (
         (61, 13),
         _CORE_V24

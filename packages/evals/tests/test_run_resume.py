@@ -276,6 +276,24 @@ def test_a_take_up_that_would_measure_otherwise_names_every_difference_and_no_la
     assert resume_drift(stored, unlabelled, template, toyhost_profile()) == []
 
 
+def test_a_take_up_whose_launch_would_run_other_cases_is_refused_naming_them_and_a_reordered_set_is_not() -> None:
+    """The case set reaches no key, so the take-up holds it equal itself: as a set, in any order."""
+    stored = make_eval_run(
+        test_case_ids=["tc-1", "tc-2", "tc-3"],
+        variant_levers={},
+        identity_version=1,
+        created_at="2026-06-01T00:00:00+00:00",
+    )
+    template = make_template(created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00")
+
+    other = stored.model_copy(update={"test_case_ids": ["tc-1", "tc-2", "tc-4"]})
+    differences = resume_drift(stored, other, template, toyhost_profile())
+
+    assert differences == ["test_case_ids (left out: tc-3; added: tc-4)"], "named, and moving no context component"
+    reordered = stored.model_copy(update={"test_case_ids": ["tc-3", "tc-1", "tc-2"]})
+    assert resume_drift(stored, reordered, template, toyhost_profile()) == []
+
+
 def _edited(template: EvalTemplate, **fields: Any) -> EvalTemplate:
     return template.model_copy(update={**fields, "updated_at": "2099-01-01T00:00:00+00:00"})
 

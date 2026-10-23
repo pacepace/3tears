@@ -5751,6 +5751,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.PassHatKCellReading": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.person_scores_by_result": {
       "kind": "function",
       "signature": "",
@@ -6318,11 +6323,6 @@
     },
     "threetears.evals.analysis.UnpooledReason": {
       "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.UnpooledRun": {
-      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },

@@ -2,21 +2,25 @@
 
 More cases, or more repeats, of an unchanged variant and context are more samples of one cell, never a condition of
 their own: the case set is no part of the context key, and the cell is read at this build's identity version, so a
-run stamped before the bump pools with one stamped after it. A run whose context, template or record keeps it out
-of the pool stays in its contestant's point, as cases of their own, and the point names it with why, on the analysis
-bundle and in the campaign bundle the memo writer reads. No run leaves the counts unsaid.
+run stamped before the bump pools with one stamped after it. A contestant's pass^k reads its headline cell alone; a
+run of another context, template revision or served model, or one that recorded no context, stands beside it in a
+cell of its own, with its own reading and its reason, on the analysis bundle, in the campaign bundle the memo writer
+reads and in the frontier's text. No run leaves the counts unsaid.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal
 
-from threetears.evals.analysis import assemble_context_bundle
+from threetears.evals.analysis import FrontierPoint, PassHatKCellReading, assemble_context_bundle
 from threetears.evals.analysis.campaign_bundle import writer_view
+from threetears.evals.analysis.lens_text import frontier_text
+from threetears.evals.analysis.lenses.frontier import compute_frontier
 from threetears.evals.kernel.identity import IDENTITY_VERSION, derive_context_identity, derive_variant_identity
 from threetears.evals.schema.models import EvalResult, EvalRun, RoleUsage
+from threetears.evals.schema.values import NominalScale, SweepableValue
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
-from packages.evals.tests.factories import make_campaign, make_eval_run, make_scored_result
+from packages.evals.tests.factories import DEFAULT_SUBJECT, make_campaign, make_eval_run, make_scored_result
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
@@ -78,6 +82,12 @@ def _bundle(runs: list[EvalRun], results: dict[str, list[EvalResult]]):
     return assemble_context_bundle(campaign, storage=ToyhostStorage(runs, results), profile=PROFILE)
 
 
+def _cells(point: FrontierPoint) -> list[PassHatKCellReading]:
+    """The point's cells, the headline first, which every point carries at least one of."""
+    assert point.pass_hat_k_cells and point.pass_hat_k_cells[0].headline
+    return point.pass_hat_k_cells
+
+
 def test_two_runs_over_different_case_sets_pool_into_one_cell_covering_the_union_of_cases():
     first = _launched("run-a", test_case_ids=["tc1", "tc2"])
     top_up = _launched("run-b", test_case_ids=["tc2", "tc3"])
@@ -88,8 +98,8 @@ def test_two_runs_over_different_case_sets_pool_into_one_cell_covering_the_union
 
     [point] = _bundle([first, top_up], results).frontier.subjects[0].points
 
-    assert point.pooled_run_ids == ["run-a", "run-b"]
-    assert point.unpooled_runs == []
+    [headline] = _cells(point)
+    assert headline.run_ids == ["run-a", "run-b"]
     # Three cases, not four: tc2's two attempts are one case's, so pass^1 averages tc1, tc2 (one of two) and tc3.
     assert point.pass_hat_k_curve[0] == {"k": 1, "pass_hat_k": 5 / 6, "n_cases": 3}
 
@@ -108,7 +118,8 @@ def test_a_run_stamped_before_the_bump_pools_with_one_stamped_after_it():
     frontier = _bundle([before, after], results).frontier
     [point] = frontier.subjects[0].points
 
-    assert point.pooled_run_ids == ["run-after", "run-before"]
+    [headline] = _cells(point)
+    assert headline.run_ids == ["run-after", "run-before"]
     assert point.variant_identity_version == IDENTITY_VERSION
     assert point.identity_version_disclosure is None
     assert frontier.identity_version_span == [IDENTITY_VERSION]
@@ -119,45 +130,101 @@ def test_a_run_stamped_before_the_bump_pools_with_one_stamped_after_it():
     ]
 
 
-def test_a_campaign_names_every_run_kept_out_of_a_pool_with_its_reason_and_loses_none():
+def _mixed_campaign():
+    """Three runs that pool, two that pool with each other on another rig, and one each of another template and none.
+
+    Every pooled run passes and every other run fails, so a headline counting any run kept out would read below 1.
+    """
     pooled = [
         _launched("run-a", test_case_ids=["tc1", "tc2"]),
         _launched("run-b", test_case_ids=["tc3"]),
         _launched("run-c", test_case_ids=["tc1"]),
     ]
-    changed = _launched("run-rig", test_case_ids=["tc1"], apparatus_settings={"reviewer_pool": "pool-b"})
+    rig = [
+        _launched(run_id, test_case_ids=["tc1"], apparatus_settings={"reviewer_pool": "pool-b"})
+        for run_id in ("run-rig-1", "run-rig-2")
+    ]
     other_template = _launched("run-tpl", test_case_ids=["tc1"], template_id="tpl-2")
     unstamped = make_eval_run(id="run-bare", status="completed", test_case_ids=["tc1"])
-    runs = [*pooled, changed, other_template, unstamped]
+    runs = [*pooled, *rig, other_template, unstamped]
+    results = {
+        run.id: _results(run, dict.fromkeys(run.test_case_ids, (run in pooled,)), identity_version=IDENTITY_VERSION)
+        for run in runs
+    }
+    return runs, results
+
+
+def test_a_campaign_names_every_cell_kept_out_of_a_pool_with_its_reason_and_loses_no_run():
+    runs, results = _mixed_campaign()
+
+    bundle = _bundle(runs, results)
+    [point] = bundle.frontier.subjects[0].points
+
+    headline, *beside = _cells(point)
+    assert headline.run_ids == ["run-a", "run-b", "run-c"]
+    by_runs = {tuple(cell.run_ids): cell for cell in beside}
+    # The two runs on the other rig pooled with each other: one cell of two, never two runs called unpooled.
+    assert {runs: cell.reason for runs, cell in by_runs.items()} == {
+        ("run-rig-1", "run-rig-2"): "changed_context",
+        ("run-tpl",): "other_template",
+        ("run-bare",): "no_recorded_context",
+    }
+    assert "apparatus_settings" in (by_runs[("run-rig-1", "run-rig-2")].detail or "")
+    assert "tpl-2" in (by_runs[("run-tpl",)].detail or "")
+    # No run vanishes: every run behind the point is in exactly one cell.
+    assert sorted(run_id for cell in _cells(point) for run_id in cell.run_ids) == sorted(run.id for run in runs)
+
+    view = writer_view(campaign_bundle(bundle))
+    [aspect] = view["aspects"]
+    unpooled = aspect["disclosures"]["pass_k_unpooled"]
+    assert "headline" in unpooled["reading"]
+    lines = [line for model_lines in unpooled["by_model"].values() for line in model_lines]
+    for cell in beside:
+        assert any(", ".join(cell.run_ids) in line and (cell.detail or "") in line for line in lines)
+
+
+def test_the_headline_pass_hat_k_reads_the_pooled_runs_alone():
+    """A run kept out of the pool counts in neither the headline, its interval nor its verdict."""
+    runs, results = _mixed_campaign()
+
+    [point] = _bundle(runs, results).frontier.subjects[0].points
+
+    assert point.pass_hat_k == 1.0
+    assert point.n_pass_cases == 3
+    assert point.pass_hat_k_ci_high == 1.0
+    for cell in _cells(point)[1:]:
+        assert cell.pass_hat_k == 0.0, "each cell kept out keeps its own reading, beside the headline"
+
+
+def test_the_frontier_text_names_each_cell_kept_out_and_why():
+    runs, results = _mixed_campaign()
+
+    text = frontier_text(_bundle(runs, results).frontier)
+
+    assert "run(s) run-rig-1, run-rig-2 kept out of this pass^k, as a cell of their own (another measurement" in text
+    assert "run(s) run-tpl kept out of this pass^k, as a cell of their own (another template" in text
+    assert "run(s) run-bare kept out of this pass^k, as a cell of their own (no recorded measurement context)" in text
+
+
+def test_a_template_edited_in_what_it_measures_splits_the_cell_and_a_run_that_froze_no_digest_joins_it():
+    """An edit in place keeps the template's id; the digest each run froze says what it measured."""
+    first = _launched("run-a", test_case_ids=["tc1"], template_digest="digest-before")
+    second = _launched("run-b", test_case_ids=["tc2"], template_digest="digest-before")
+    older = _launched("run-old", test_case_ids=["tc3"], template_digest=None)
+    edited = _launched("run-edited", test_case_ids=["tc1"], template_digest="digest-after")
+    runs = [first, second, older, edited]
     results = {
         run.id: _results(run, dict.fromkeys(run.test_case_ids, (True,)), identity_version=IDENTITY_VERSION)
         for run in runs
     }
 
-    bundle = _bundle(runs, results)
-    [point] = bundle.frontier.subjects[0].points
+    [point] = _bundle(runs, results).frontier.subjects[0].points
 
-    assert point.pooled_run_ids == ["run-a", "run-b", "run-c"]
-    reasons = {entry.run_id: entry.reason for entry in point.unpooled_runs}
-    assert reasons == {
-        "run-rig": "changed_context",
-        "run-tpl": "other_template",
-        "run-bare": "no_recorded_context",
-    }
-    details = {entry.run_id: entry.detail for entry in point.unpooled_runs}
-    assert "apparatus_settings" in details["run-rig"]
-    assert "tpl-2" in details["run-tpl"]
-    # No run vanishes: every run behind the point is pooled or named.
-    assert sorted([*point.pooled_run_ids, *reasons]) == sorted(run.id for run in runs)
-
-    view = writer_view(campaign_bundle(bundle))
-    named = {
-        entry["run_id"]: entry["reason"]
-        for aspect in view["aspects"]
-        for entries in aspect["disclosures"]["pass_k_unpooled"].values()
-        for entry in entries
-    }
-    assert named == reasons
+    headline, beside = _cells(point)
+    assert headline.run_ids == ["run-a", "run-b", "run-old"]
+    assert headline.template_digest_assumed == ["run-old"]
+    assert (beside.run_ids, beside.reason) == (["run-edited"], "other_template")
+    assert "edited in what it measures" in (beside.detail or "")
 
 
 def test_two_runs_of_one_context_answered_by_different_served_models_are_two_cells_and_the_reason_is_named():
@@ -173,15 +240,18 @@ def test_two_runs_of_one_context_answered_by_different_served_models_are_two_cel
 
     [point] = _bundle([first, second, repointed], results).frontier.subjects[0].points
 
-    assert point.pooled_run_ids == ["run-a", "run-b"]
-    [kept_out] = point.unpooled_runs
-    assert (kept_out.run_id, kept_out.reason) == ("run-c", "other_served_model")
-    assert "model-2026-10" in kept_out.detail and "model-2026-09" in kept_out.detail
-    # tc1 under the other model is a case of its own beside the cell's, never more depth of it.
-    assert point.pass_hat_k_curve[0]["n_cases"] == 2
+    headline, beside = _cells(point)
+    assert headline.run_ids == ["run-a", "run-b"]
+    assert (beside.run_ids, beside.reason) == (["run-c"], "other_served_model")
+    assert "model-2026-10" in (beside.detail or "") and "model-2026-09" in (beside.detail or "")
+    # The other model's attempt at tc1 is not more depth of the headline's, and not part of its reading.
+    assert point.pass_hat_k_curve == [
+        {"k": 1, "pass_hat_k": 1.0, "n_cases": 1},
+        {"k": 2, "pass_hat_k": 1.0, "n_cases": 1},
+    ]
 
 
-def test_a_run_whose_responses_named_no_model_pools_and_its_identity_is_disclosed_once():
+def test_a_run_whose_responses_named_no_model_pools_and_is_named_as_joining_by_assumption():
     """Not evidence of another model, so it pools; the record's silence is said where model identity always is."""
     named = _launched("run-a", test_case_ids=["tc1"])
     silent = _launched("run-b", test_case_ids=["tc1"])
@@ -193,12 +263,41 @@ def test_a_run_whose_responses_named_no_model_pools_and_its_identity_is_disclose
     bundle = _bundle([named, silent], results)
     [point] = bundle.frontier.subjects[0].points
 
-    assert point.pooled_run_ids == ["run-a", "run-b"]
-    assert point.unpooled_runs == []
+    [headline] = _cells(point)
+    assert headline.run_ids == ["run-a", "run-b"]
+    assert headline.served_model_assumed == ["run-b"]
     assert point.pass_hat_k_curve[-1] == {"k": 2, "pass_hat_k": 0.0, "n_cases": 1}
     assert bundle.model_identity_disclosure is not None
     assert bundle.model_identity_disclosure.startswith("Model identity unconfirmed")
     view = writer_view(campaign_bundle(bundle))
     [aspect] = view["aspects"]
     assert aspect["disclosures"]["model_identity_disclosure"] == bundle.model_identity_disclosure
-    assert "pass_k_unpooled" not in aspect["disclosures"]
+    [line] = aspect["disclosures"]["pass_k_unpooled"]["by_model"][point.model]
+    assert line == "run(s) run-b named no served model and pooled with run(s) run-a, run-b"
+
+
+def test_a_run_whose_context_cannot_be_rederived_is_a_cell_of_its_own_and_the_rest_still_read():
+    """A stored run naming subject state its host no longer declares stands apart, named; it fails nothing else."""
+    kept = _launched("run-a", test_case_ids=["tc1", "tc2"])
+    undeclared = SweepableValue(content_hash="0" * 64, display="retired", scale=NominalScale())
+    stale = _launched("run-stale", test_case_ids=["tc1"]).model_copy(
+        update={
+            "subject_snapshot": DEFAULT_SUBJECT.model_copy(update={"state": {"retired_input": undeclared}}),
+            "identity_version": IDENTITY_VERSION - 1,
+        }
+    )
+    results = {
+        kept.id: _results(kept, {"tc1": (True,), "tc2": (True,)}, identity_version=IDENTITY_VERSION),
+        stale.id: _results(stale, {"tc1": (False,)}, identity_version=IDENTITY_VERSION),
+    }
+
+    frontier = compute_frontier(
+        [kept, stale], [*results[kept.id], *results[stale.id]], profile=PROFILE, archived_run_ids=None
+    )
+
+    [point] = frontier.subjects[0].points
+    headline, beside = _cells(point)
+    assert headline.run_ids == ["run-a"]
+    assert (beside.run_ids, beside.reason) == (["run-stale"], "changed_context")
+    assert "retired_input" in (beside.detail or "")
+    assert point.pass_hat_k == 1.0

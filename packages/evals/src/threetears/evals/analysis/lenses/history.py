@@ -19,6 +19,7 @@ from threetears.evals.analysis.stats import ChangeLabel
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.host.profile import HostProfile
+from threetears.evals.kernel.identity import case_set_fingerprint
 from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.kernel.result_condition import (
     counted_score,
@@ -57,10 +58,10 @@ from threetears.evals.analysis.lenses.aggregation import (
     WEIGHTING_EQUAL_PER_SCENARIO,
 )
 from threetears.evals.analysis.lenses.contestants import (
-    _contestant_key,
-    _identity_span_disclosure,
-    _identity_version_disclosure,
-    _identity_version_span,
+    contestant_key,
+    identity_span_disclosure,
+    identity_version_disclosure,
+    identity_version_span,
     ContestantKey,
 )
 
@@ -600,7 +601,7 @@ def _per_case_means(
     return per_case, n_observations
 
 
-def _suite_epoch_key(run: EvalRun) -> tuple[str, tuple[str, ...]]:
+def _suite_epoch_key(run: EvalRun) -> str:
     """The suite-version identity of a run: its template and frozen case set.
 
     Two runs are the same suite version iff they score the same template against
@@ -612,11 +613,11 @@ def _suite_epoch_key(run: EvalRun) -> tuple[str, tuple[str, ...]]:
 
     :param run: The run whose suite identity to key.
     :ptype run: EvalRun
-    :return: ``(template_id, sorted test_case_ids)`` — the empty string stands in for an
-        ad-hoc run's absent template so ad-hoc runs still key stably.
-    :rtype: tuple[str, tuple[str, ...]]
+    :return: The run's :func:`~threetears.evals.kernel.identity.case_set_fingerprint`, the one comparison of case
+        sets every surface makes.
+    :rtype: str
     """
-    return (run.template_id or "", tuple(sorted(run.test_case_ids)))
+    return case_set_fingerprint(run)
 
 
 def _label_epochs_by_case_set(points: list[SeriesPoint], runs: Mapping[str, EvalRun]) -> None:
@@ -793,7 +794,7 @@ def compute_history(
             continue
         n_considered += 1
         considered.append(row.result)
-        contestant = _contestant_key(row.result, row.run)
+        contestant = contestant_key(row.result, row.run)
         considered_keys.append(contestant)
         series_groups.setdefault((row.subject_id, contestant), []).append(row)
         subject_labels[row.subject_id] = row.run.subject_snapshot.subject_label
@@ -811,7 +812,7 @@ def compute_history(
         ordered_run_ids = sorted(runs_in_series, key=lambda run_id: (runs_in_series[run_id].created_at, run_id))
 
         points: list[SeriesPoint] = []
-        prev_epoch_key: tuple[str, tuple[str, ...]] | None = None
+        prev_epoch_key: str | None = None
         prev_per_case: dict[str, float] = {}
         epoch_ordinal = 0
         baseline_value: float | None = None
@@ -923,7 +924,7 @@ def compute_history(
                 subject_label=subject_labels.get(resolved, ""),
                 variant_key=variant_key,
                 variant_identity_version=identity_version,
-                identity_version_disclosure=_identity_version_disclosure(identity_version),
+                identity_version_disclosure=identity_version_disclosure(identity_version),
                 model=first.model,
                 points=points,
                 served_models=pooled_served_models([row.result for row in rows]),
@@ -941,7 +942,7 @@ def compute_history(
         )
     )
 
-    identity_versions = _identity_version_span(considered_keys)
+    identity_versions = identity_version_span(considered_keys)
 
     return HistoryResult(
         metric=metric,
@@ -959,7 +960,7 @@ def compute_history(
         completeness_disclosures=degraded_by_run,
         n_degraded_observations=n_degraded_observations,
         identity_version_span=identity_versions,
-        identity_span_disclosure=_identity_span_disclosure(identity_versions),
+        identity_span_disclosure=identity_span_disclosure(identity_versions),
         attribution_disclosure=_attribution_disclosure(descriptor),
         contended_latency_disclosure=contended_latency_sentence(
             sum(1 for result in considered if result.id in contended), len(considered)

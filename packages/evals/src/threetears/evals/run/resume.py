@@ -50,7 +50,12 @@ from pydantic import Field
 from threetears.evals.kernel.campaign import EvalSweep
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.profile import HostProfile
-from threetears.evals.kernel.identity import LeverCoordinateError, resolve_context_identity, resolve_variant_identity
+from threetears.evals.kernel.identity import (
+    LeverCoordinateError,
+    case_set_fingerprint,
+    resolve_context_identity,
+    resolve_variant_identity,
+)
 from threetears.evals.kernel.job_leases import RUN_JOB, JobLeases, LeasedJobKind, settle_job_record
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.remedies import FIND_JOB, FIND_RUN
@@ -82,9 +87,8 @@ log = get_logger(__name__)
 #: The fields of a run's judge and simulator, of its apparatus, and of what it froze of its template, a take-up holds
 #: equal: what scored its cells, what its cells were set up with, and what they were graded against. Most also reach
 #: the context key; each is named on its own so a refusal says which moved. The frozen case set reaches no key (more
-#: cases are more samples of one condition), so it is held here: a take-up runs the cases the run froze, never others.
+#: cases are more samples of one condition), so :func:`resume_drift` holds it equal on its own, as a set.
 PINNED_FIELDS: tuple[str, ...] = (
-    "test_case_ids",
     "judge_model",
     "judge_config_ids",
     "effective_judges",
@@ -183,7 +187,7 @@ def resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profil
     """Every way the run a launch of ``stored`` assembles now would measure otherwise than ``stored`` did.
 
     Each context component by name, then the context key when no component accounts for its move, each variant
-    lever, each of :data:`PINNED_FIELDS`, and the template's measured
+    lever, each of :data:`PINNED_FIELDS`, the frozen case set (as a set, in any order), and the template's measured
     content: the digest the run froze at launch (``EvalRun.template_digest``) against the one the launch froze now,
     so an edit to the intent, the rubric's descriptions and scoring guides, the conversation or any other field a run
     measures is a difference, and one to the template's name or description is not. A run stored before it froze the
@@ -245,6 +249,25 @@ def resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profil
         before, after = getattr(stored, name), getattr(fresh, name)
         if before != after:
             differences.append(f"{name} ({_shown(before)} -> {_shown(after)})")
+    # The case set reaches no key, so it is held here: a take-up runs the cases the run froze, never others. Compared
+    # as every surface compares a case set (`case_set_fingerprint`), so the same cases in another order are no change.
+    if case_set_fingerprint(stored) != case_set_fingerprint(fresh):
+        dropped, added = (
+            sorted(set(stored.test_case_ids) - set(fresh.test_case_ids)),
+            sorted(set(fresh.test_case_ids) - set(stored.test_case_ids)),
+        )
+        differences.append(
+            "test_case_ids ("
+            + "; ".join(
+                part
+                for part in (
+                    f"left out: {', '.join(dropped)}" if dropped else "",
+                    f"added: {', '.join(added)}" if added else "",
+                )
+                if part
+            )
+            + (")" if dropped or added else "the same cases, a case listed another number of times)")
+        )
     if stored.template_digest is not None and stored.template_digest != fresh.template_digest:
         differences.append(
             f"template {template.id!r}: its measured content changed since the run started (its intent, rubric, "

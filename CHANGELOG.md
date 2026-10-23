@@ -13,16 +13,22 @@ subject and the template, no longer the frozen `test_case_ids`, so two runs of o
 case sets (a run over more cases, or a hand top-up over the cases another missed) are one pass^k cell: a case's
 attempts pool across them, and pass^k averages over the union of their cases. The cell is the context as it resolves
 at this build's identity version, so a run stamped before the bump pools with one after it; a frontier contestant
-whose run recorded its lever map is placed at this build's version when today's predicate reproduces its key. The
-cell also splits on the model the provider's responses named as answering the candidate's calls (`served_model`); a
-run whose responses named none still pools, and its unconfirmed identity is disclosed as before. Bundle shape 61.
+whose run recorded its lever map is placed at this build's version when today's predicate reproduces its key (frontier
+and history alike). The cell also splits on the template revision (the run's frozen `template_digest`, since an edit
+in place keeps the id) and on the model the provider's responses named as answering the candidate's calls
+(`served_model`). A run that froze no digest, or whose responses named no model, joins its cell and is named as
+joining by assumption. A point's pass^k, interval, bar and verdict read its headline cell (the one with the most runs)
+alone; composite, cost and latency still pool every run of the variant under one rig. Bundle shape 61.
 
-**Added:** each frontier point names the runs that pooled into its pass^k cell (`pooled_run_ids`) and every other run
-behind it with its reason (`unpooled_runs`, `UnpooledRun`: `changed_context`, `other_template`, `other_served_model`
-or `no_recorded_context`); the campaign bundle's writer view carries them as `pass_k_unpooled`. A take-up holds the
-run's frozen `test_case_ids` equal (`PINNED_FIELDS`), since no key holds the case set now. A comparison set's case-set
-fingerprint digests the run's frozen case ids, and `case_set_unresolved` is gone: a run always carries its case ids.
-See `packages/evals/MIGRATIONS.toml`.
+**Added:** `FrontierPoint.pass_hat_k_cells` (`PassHatKCellReading`) lists every pass^k cell behind a point, the
+headline first, each other one with its own pass^k and its reason (`UnpooledReason`: `changed_context`,
+`other_template`, `other_served_model` or `no_recorded_context`), read off the first field of the kernel's typed cell
+record (`PassHatKCell`) in which it differs from the headline. The frontier text and the campaign bundle's writer view
+(`pass_k_unpooled`) name each one. A run whose stored context can no longer be re-derived is a cell of its own,
+named, instead of failing the read. One case-set comparison, `case_set_fingerprint` (sorted ids), serves comparisons,
+history and resume: a take-up whose launch would run other cases is refused naming them, and a reordered set is not.
+A comparison set's case-set fingerprint is never None, and `case_set_unresolved` is gone. See
+`packages/evals/MIGRATIONS.toml`.
 
 ### evals: resume an interrupted run, sweep or launch (#918)
 

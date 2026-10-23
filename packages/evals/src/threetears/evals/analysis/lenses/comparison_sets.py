@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.kernel.host.profile import HostProfile
-from threetears.evals.kernel.identity import resolve_context_identity
+from threetears.evals.kernel.identity import case_set_fingerprint, resolve_context_identity
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.analysis.reporting import _subject_id_of
 from threetears.evals.analysis.measurement_windows import measurement_window, measurement_window_disclosure
@@ -202,11 +202,6 @@ class ComparisonSetsResult(EvalBaseModel):
     out_of_scope_run_ids: list[str] = []
 
 
-def _case_set_fingerprint(run: EvalRun) -> str:
-    """A run's frozen case set as one digest: its template and its sorted case ids."""
-    return canonical_digest({"template_id": run.template_id, "test_case_ids": sorted(run.test_case_ids)})
-
-
 def compute_comparison_sets(
     runs: list[EvalRun],
     *,
@@ -353,7 +348,7 @@ def compute_comparison_sets(
         # digest does.
         by_fingerprint: dict[str, list[EvalRun]] = {}
         for run in grouped:
-            by_fingerprint.setdefault(_case_set_fingerprint(run), []).append(run)
+            by_fingerprint.setdefault(case_set_fingerprint(run), []).append(run)
 
         badges: list[str] = []
         if len(by_fingerprint) > 1:

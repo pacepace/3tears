@@ -2429,9 +2429,10 @@ class AnalysisContextBundle(EvalDocumentModel):
     # readings over unchanged runs; `reading_scope.question_post_hoc` is replaced by `reading_scope.question_after_runs`
     # (both times), which every page and listing says.
     # 61: the case set leaves the pass^k cell, which is read at this build's identity version and splits on the
-    # model that answered (`IDENTITY_VERSION` 25), so pass^k and its curve move over unchanged runs; each frontier
-    # point names the runs that pooled into its cell (`pooled_run_ids`) and every other one with why
-    # (`unpooled_runs`); a comparison set's case-set fingerprint digests the run's frozen case ids and is never None.
+    # model that answered and the template revision (`IDENTITY_VERSION` 25); a frontier point's pass^k reads its
+    # headline cell alone and lists every cell with its own reading and reason (`pass_hat_k_cells`), so pass^k and
+    # its curve move over unchanged runs; a comparison set's case-set fingerprint digests the run's frozen case ids
+    # and is never None.
     schema_version: int = Field(
         default=61, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )

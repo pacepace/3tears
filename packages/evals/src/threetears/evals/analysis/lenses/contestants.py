@@ -1,7 +1,8 @@
 """The contestant key the frontier and the history share, and the identity-version disclosures that go with it.
 
-A contestant is one (variant, identity version): :func:`_contestant_key` keys a placed result on it, and
-:func:`_identity_version_span` / :func:`_identity_span_disclosure` say when a lens pooled several identity versions.
+A contestant is one (variant, identity version): :func:`contestant_key` keys a placed result on it, and
+:func:`identity_version_span` / :func:`identity_span_disclosure` say when a lens spans several identity versions. The
+frontier and the history both import these, so they are this module's API.
 """
 
 from __future__ import annotations
@@ -25,8 +26,8 @@ if TYPE_CHECKING:
 ContestantKey = tuple[str, int]
 
 
-def _contestant_key(result: EvalResult, run: EvalRun) -> ContestantKey:
-    """Key a result to its contestant, and to the identity version stamped beside that key.
+def contestant_key(result: EvalResult, run: EvalRun) -> ContestantKey:
+    """Key a result to its contestant, and to the identity version the contestant is placed at.
 
     One key, both lenses. ``frontier`` and ``history`` rank and trend the same
     contestants, so a grouping policy that lived in each of them separately would be
@@ -73,14 +74,14 @@ def _contestant_key(result: EvalResult, run: EvalRun) -> ContestantKey:
     return (result.variant_key, result.identity_version)
 
 
-def _identity_version_disclosure(version: int) -> str | None:
-    """Say so when a contestant's key was minted by a predicate this build does not use.
+def identity_version_disclosure(version: int) -> str | None:
+    """Say so when a contestant is placed at an identity version other than this build's.
 
-    Derived from the same equality :func:`_contestant_key` groups on, never from a
+    Derived from the same equality :func:`contestant_key` groups on, never from a
     correlate: a sentence that agreed with the grouping on the observations we happen
     to have and disagreed on the one it exists for would be worse than none.
 
-    :param version: The predicate version stamped on the contestant's key.
+    :param version: The identity version the contestant is placed at (:func:`contestant_key`).
     :ptype version: int
     :return: The sentence, or ``None`` when the key is this build's.
     :rtype: str | None
@@ -94,11 +95,11 @@ def _identity_version_disclosure(version: int) -> str | None:
     )
 
 
-def _identity_version_span(keys: Iterable[ContestantKey]) -> list[int]:
+def identity_version_span(keys: Iterable[ContestantKey]) -> list[int]:
     """The distinct identity versions the KEYED observations in an answer were placed at.
 
     :param keys: The contestant key of every observation the answer is built over
-        (:func:`_contestant_key`). Pass the placed rows' keys rather than the assembled
+        (:func:`contestant_key`). Pass the placed rows' keys rather than the assembled
         points: an answer whose subjects were all filtered out still spanned what it
         spanned, and a span derived downstream goes missing exactly when the reader
         most needs it.
@@ -109,7 +110,7 @@ def _identity_version_span(keys: Iterable[ContestantKey]) -> list[int]:
     return sorted({version for _, version in keys})
 
 
-def _identity_span_disclosure(versions: Sequence[int]) -> str | None:
+def identity_span_disclosure(versions: Sequence[int]) -> str | None:
     """Explain a corpus that spans identity versions, so a doubled row is not a mystery.
 
     Partitioning stops two stampings of one stack being ranked as rival
@@ -117,7 +118,7 @@ def _identity_span_disclosure(versions: Sequence[int]) -> str | None:
     reader meets one model twice, under two digests, with nothing saying why — which is
     the second half of the same defect and the one a per-row flag cannot answer.
 
-    :param versions: The span from :func:`_identity_version_span`.
+    :param versions: The span from :func:`identity_version_span`.
     :ptype versions: Sequence[int]
     :return: The sentence, or ``None`` when the answer rests on a single predicate — where
         there is no split to explain.
@@ -136,4 +137,8 @@ def _identity_span_disclosure(versions: Sequence[int]) -> str | None:
 
 __all__ = [
     "ContestantKey",
+    "contestant_key",
+    "identity_span_disclosure",
+    "identity_version_disclosure",
+    "identity_version_span",
 ]

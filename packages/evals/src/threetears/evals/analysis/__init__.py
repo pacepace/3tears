@@ -382,7 +382,7 @@ from threetears.evals.analysis.lenses.frontier import (
     SubjectFrontier,
     FrontierBoundaryCheck,
     UnpooledReason,
-    UnpooledRun,
+    PassHatKCellReading,
 )
 from threetears.evals.analysis.lenses.history import HistoryResult, MeasureSeries, RegressionFlag, SeriesPoint
 from threetears.evals.analysis.lenses.export import ExportFormat, ScoreExport
@@ -606,7 +606,7 @@ __all__ = [
     "FrontierResult",
     "FrontierVerdict",
     "UnpooledReason",
-    "UnpooledRun",
+    "PassHatKCellReading",
     "FrozenReporterCase",
     "GenerationError",
     "GenerationTally",

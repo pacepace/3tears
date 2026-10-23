@@ -256,10 +256,12 @@ def compute_context_components(
         of, and a named parameter for each would make the predicate grow a signature entry
         per host tool.
     :ptype seeded_world: Mapping[str, Any]
-    :param template_id: The run's template, or ``None`` for an ad-hoc run. A template's revision is a template of
-        its own id, so a run of another revision is another condition. The case SET the run froze from it is not
-        an input at all: more cases, or a top-up over cases another run missed, are more samples of one
-        condition, so the runs pool per case instead of each standing apart.
+    :param template_id: The run's template, or ``None`` for an ad-hoc run. A reset writes a template's new content
+        under a new id, so a run of that revision is another condition here; an edit in place keeps the id, and
+        the pass^k cell splits on the digest of what the template measures that the run froze
+        (``EvalRun.template_digest``), not this key. The case SET the run froze is not an input at all: more cases,
+        or a top-up over cases another run missed, are more samples of one condition, so the runs pool per case
+        instead of each standing apart.
     :ptype template_id: str | None
     :param judge_model: The RESOLVED run-level judge — the model any dimension
         without its own ``JudgeConfig`` is scored by. Resolved for the same
@@ -509,6 +511,22 @@ _ROLE_INPUT_DEPENDENCIES: Mapping[str, str] = {
 #: run could not say", never "this run's value was empty". Every other component is either always
 #: computable or carries its own emptiness as a real value.
 _ALL_OR_NONE_COMPONENTS: tuple[str, ...] = ("subject_state", "roles", "world")
+
+
+def case_set_fingerprint(run: EvalRun) -> str:
+    """A run's frozen case set as one digest: its template and its sorted ``test_case_ids``.
+
+    The one comparison of case sets every surface makes. The context key does not hold the case set (more cases are
+    more samples of one condition), so a surface that asks whether two runs scored the same cases (a comparison's
+    case-set badge, a history's suite boundary, a take-up holding the run's cases equal) reads this. Sorted, so the
+    order the cases were resolved in cannot split one set.
+
+    :param run: The run.
+    :ptype run: EvalRun
+    :return: A 64-character hex digest.
+    :rtype: str
+    """
+    return canonical_digest({"template_id": run.template_id, "test_case_ids": sorted(run.test_case_ids)})
 
 
 def missing_context_components(components: ContextComponents) -> list[str]:
@@ -944,7 +962,9 @@ def resolve_variant_identity(*, run: EvalRun, profile: HostProfile) -> DerivedVa
     its keys stayed authoritative for pooling.
 
     The version reported is therefore the one that RECORDED the map, not this build's: the map
-    was resolved by that predicate and saying otherwise would date it wrongly.
+    was resolved by that predicate and saying otherwise would date it wrongly. It dates the map
+    and decides no pooling: a lens places a contestant at this build's version where today's
+    predicate over the map reproduces its key.
 
     :param run: The run whose observations the identity describes.
     :ptype run: EvalRun
@@ -998,6 +1018,7 @@ def variant_levers_of_run(run: EvalRun, profile: HostProfile) -> dict[str, Sweep
 __all__ = [
     "IDENTITY_VERSION",
     "UNBOUNDED_TOOL_PERMISSIONS",
+    "case_set_fingerprint",
     "DerivedContextIdentity",
     "DerivedVariantIdentity",
     "LeverCoordinateError",
