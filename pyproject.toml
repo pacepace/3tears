@@ -58,7 +58,7 @@ dev-dependencies = [
     "opentelemetry-exporter-otlp-proto-http>=1.40,<2",
     "opentelemetry-instrumentation-logging>=0.61b0,<1",
     "opentelemetry-instrumentation>=0.61b0,<1",
-    "duckdb>=1.0",
+    "duckdb>=1.1",
     # the scoped snapshot's chunk codec (3tears[snapshot]); installed in dev so its tests run.
     "pyarrow>=17",
     # the NATS client is an optional extra of 3tears-nats (`[client]`) so that
@@ -556,9 +556,10 @@ ignore_missing_imports = true
 module = [
     "threetears.core.cache.sqlite",
     "threetears.core.cache.duckdb",
-    # pyarrow ships no py.typed marker; the scoped snapshot's chunk codec and the export reader
-    # (a warehouse export's parquet files) import it.
+    # pyarrow ships no py.typed marker; the scoped snapshot's chunk codec, the export reader
+    # (a warehouse export's parquet files) and the SQL store's direct load from files import it.
     "threetears.core.collections.scoped_snapshot",
+    "threetears.core.backends.sql",
     "threetears.datasources.export_read",
     "threetears.agent.tools.document",
     "threetears.agent.tools.builtin.calculator",

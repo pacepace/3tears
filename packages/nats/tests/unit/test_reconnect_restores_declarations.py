@@ -942,3 +942,97 @@ async def test_an_owner_whose_restoration_recreated_the_bucket_owes_the_refill()
 
     assert server.deleted == [_RATELIMITS]
     await client.shutdown()
+
+
+_POINTERS = f"KV_{_NS}-pointers"
+
+
+@pytest.mark.asyncio
+async def test_an_owner_declaring_replicas_moves_its_live_bucket_onto_them_in_place() -> None:
+    """a bucket created on one server is moved onto three by an update, never by a delete.
+
+    The hub's tool-pod pointer buckets were created on one server, and a server restart then lost a
+    pod's pointers while its Object Store, replicated, kept the chunks they named. JetStream updates
+    a live stream's replicas with its entries kept, so the owner's declaration does exactly that.
+    """
+    server = _ScriptedServer()
+    client, _reconnected = await _connected(server)
+    server.streams[_POINTERS] = build_kv_stream_config(
+        bucket=f"{_NS}-pointers", ttl_seconds=0, history=1, storage_type=StorageType.MEMORY, direct=True
+    )
+
+    await client.ensure_kv_bucket(name="pointers", ttl=None, history=1, direct=True, owns_bucket=True, replicas=3)
+
+    assert server.streams[_POINTERS].num_replicas == 3
+    assert len(server.updated) == 1
+    assert server.deleted == [], "replicas are reconciled in place, never by a recreate"
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_replicated_declaration_is_put_back_replicated_after_a_restart() -> None:
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    await client.ensure_kv_bucket(name="pointers", ttl=None, history=1, direct=True, owns_bucket=True, replicas=3)
+
+    server.restart()
+    await reconnected()
+    await _until(lambda: _POINTERS in server.streams)
+
+    assert server.streams[_POINTERS].num_replicas == 3
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_declaration_asking_no_replicas_leaves_a_live_buckets_placement_alone() -> None:
+    """``replicas=None`` is no request: every existing declarer keeps exactly today's behaviour."""
+    server = _ScriptedServer()
+    client, _reconnected = await _connected(server)
+    server.streams[_POINTERS] = dataclasses.replace(
+        build_kv_stream_config(
+            bucket=f"{_NS}-pointers", ttl_seconds=0, history=1, storage_type=StorageType.MEMORY, direct=True
+        ),
+        num_replicas=3,
+    )
+
+    await client.ensure_kv_bucket(name="pointers", ttl=None, history=1, direct=True, owns_bucket=True)
+
+    assert server.updated == []
+    assert server.streams[_POINTERS].num_replicas == 3
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_kv_bucket_needs_at_least_one_replica() -> None:
+    server = _ScriptedServer()
+    client, _reconnected = await _connected(server)
+    with pytest.raises(ValueError, match="at least one replica"):
+        await client.ensure_kv_bucket(name="pointers", owns_bucket=True, replicas=0)
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_an_object_store_live_with_another_bound_and_replicas_is_updated_in_place_and_says_so(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """a deployment that raises a pod store's bound and replicas reaches the live bucket at its next declare."""
+    server = _ScriptedServer()
+    client, _reconnected = await _connected(server)
+    await client.ensure_object_store(name="objects", max_bytes=128 * 1024 * 1024, replicas=1)
+    stream = f"OBJ_{_NS}-objects"
+    assert server.streams[stream].num_replicas == 1
+
+    with caplog.at_level(logging.INFO, logger="threetears.nats.client"):
+        await client.ensure_object_store(name="objects", max_bytes=1024 * 1024 * 1024, replicas=3)
+
+    assert server.streams[stream].max_bytes == 1024 * 1024 * 1024
+    assert server.streams[stream].num_replicas == 3
+    assert server.deleted == [], "an object store's bound and replicas change in place, its objects kept"
+    reconciled = [
+        r for r in caplog.records if r.getMessage() == "object store reconciled in place to its declared shape"
+    ]
+    assert reconciled, "the in-place reconcile went unlogged"
+    logged = reconciled[0].extra_data  # type: ignore[attr-defined]
+    assert logged["max_bytes"] == {"was": 128 * 1024 * 1024, "now": 1024 * 1024 * 1024}
+    assert logged["replicas"] == {"was": 1, "now": 3}
+    await client.shutdown()
