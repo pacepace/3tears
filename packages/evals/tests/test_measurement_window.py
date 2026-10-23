@@ -485,8 +485,8 @@ def test_a_partly_overlapping_group_does_not_claim_every_run_was_measured_apart(
     assert not disclosure.startswith("These runs were"), "the existential is still printed as a universal"
     assert "3 of the 6 pairs among the 4 runs named here" in disclosure
     assert "the other 3 overlap" in disclosure
-    # The attribution warning is scoped to the pairs that earned it, not to the group.
-    assert "a difference between the two runs of a non-overlapping pair is not attributable" in disclosure
+    # A fact, never a verdict: runs measured apart are one experiment (owner, 2026-10-23).
+    assert "attributable" not in disclosure
 
 
 def test_a_wholly_disjoint_group_still_states_the_universal_because_it_is_true():
@@ -509,7 +509,7 @@ def test_a_wholly_disjoint_group_still_states_the_universal_because_it_is_true()
     # The counting form, and only it, says some pairs overlapped.
     assert "pairs among the" not in disclosure
     assert "overlap (" not in disclosure
-    assert "a difference between them is not attributable" in disclosure
+    assert "attributable" not in disclosure
 
 
 def test_every_non_overlapping_pair_is_named_with_its_gap_widest_first():

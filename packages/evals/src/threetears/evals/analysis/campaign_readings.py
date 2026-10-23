@@ -772,8 +772,8 @@ def campaign_readings(
     (:func:`~threetears.evals.analysis.report.decision.project_rate`, at the nominal level, as a floor's are).
     Per floor and candidate, :func:`~threetears.evals.analysis.report.decision.evaluate_floor`, at the nominal level
     with no correction. A row is confirmatory where the campaign asks that aspect a question (the bundle's
-    ``question_declared``), whenever it was asked: one asked after the aspect's first run reads as one asked before
-    it, and the bundle discloses it (``reading_scope.question_after_runs``).
+    ``question_declared``), whenever it was asked: a criterion set after the aspect's readings were visible reads as
+    one set before them, and the bundle discloses it (``reading_scope.late_criteria``).
 
     A candidate that did not run on an aspect, or an aspect its control did not run on, has no row there. Each row's
     change and intervals are read on one rig's per-case shares, named where both arms ran under several.

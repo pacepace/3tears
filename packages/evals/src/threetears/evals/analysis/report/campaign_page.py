@@ -6,8 +6,9 @@ holds depends on the campaign's kind (:func:`~threetears.evals.analysis.campaign
 kind it opens, above the title, with **every bar an arm misses**, then **every broken floor**, then **every guardrail
 an arm is not shown safe on**, one loud line each, a bar or a floor followed by the writer's why where the memo
 recommends that arm over it: each only warns, and this is where it warns. Then **the question**, quoted whole as the
-campaign asks it, and, where it was set after an aspect's runs began, one line saying when each happened: disclosed,
-never a demotion, since its readings read as any asked question's. Then **the writer's summary**, its read across
+campaign asks it, and one line for each criterion (an aspect, the control, a margin, a bar or a floor) set after the
+readings it judges were visible, saying when, or that its time is not recorded: disclosed, never a demotion, since its
+readings read as any others. When the runs ran is never said. Then **the writer's summary**, its read across
 every aspect, for every kind that has a memo; a code-only page has none. Then **the writer's recommendation** for a change or a choice: the arm and how sure, then
 each reason; where the memo recommends nothing, one line by the campaign's kind (no clear winner); with no memo, one
 line saying no recommendation was written. A measurement recommends nothing, so it has no such line. Then, for
@@ -16,8 +17,7 @@ line saying no recommendation was written. A measurement recommends nothing, so 
 1. **Code's table**, one row per aspect × candidate: the cases, each arm's pass count, the change in points with the
    interval it was read on, the aspect's margin, and what the row shows (shown better, shown worse, no worse than the
    margin, or unclear). Under it, the lines that change how a row reads: the level each interval was read at, an
-   aspect with no margin (never shown worse), a margin or a floor declared after the runs, the test setup a row was
-   read under where the arms ran under several.
+   aspect with no margin (never shown worse), the test setup a row was read under where the arms ran under several.
 2. **What would settle each unclear row** on an aspect with a margin: the cases that would show the arm within it,
    if the arms do not differ and if they differ as observed.
 
@@ -31,19 +31,19 @@ recorded yet; a call adopting an arm past a broken floor says which floor it ove
 Then the memo's findings and next steps, and one closed fold per aspect: the writer's summary of the aspect (what
 changed, how sure, what it means) when there is one, then the aspect's own page as
 :func:`~threetears.evals.analysis.report.build.build_code_only_report` built it, which the serializers lay out in the
-fold without its title, its question, when that was set, its broken floors or its verdict line.
+fold without its title, its question, its late criteria, its broken floors or its verdict line.
 
 Every arm is named by its label, never by its role; every line is held to :mod:`~threetears.evals.analysis.style`.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from threetears.evals.analysis.arms import arm_names, short_digest
 from threetears.evals.analysis.cells import variant_of_cell_ref
-from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, CriterionKind, LateCriterion
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.campaign_readings import (
     AspectReading,
@@ -182,15 +182,13 @@ def build_campaign_report(
             DisclosureBlock(section="header", source="basis", text=f'"{" ".join(campaign.question.split())}"')
         )
     bundles = [reports[aspect.label].bundle for aspect in campaign.aspects]
-    blocks += [
-        DisclosureBlock(section="header", source="timing", text=line) for line in question_after_runs_lines(bundles)
-    ]
+    blocks += [DisclosureBlock(section="header", source="timing", text=line) for line in late_criteria_lines(bundles)]
     # The writer's read across every aspect, then what it recommends, then the aspects code read them on.
     blocks += _memo_summary_blocks(memo, style)
     if kind != "measurement":
         blocks += _recommendation_blocks(memo, style, kind)
     if kind == "change":
-        blocks += _table_blocks(campaign, readings, reports)
+        blocks += _table_blocks(campaign, readings)
         blocks += _settle_blocks(readings)
     elif kind == "choice":
         blocks += _pair_blocks(campaign, readings, reports)
@@ -392,42 +390,84 @@ def campaign_warnings(floors: Sequence[Floor], readings: CampaignReadings) -> li
     return [text for _, text in _bar_lines(readings)] + [text for _, text in _floor_lines(floors, readings)]
 
 
-def question_after_runs_lines(bundles: Sequence[AnalysisContextBundle]) -> list[str]:
-    """The lines a page and a listing say where the question was set after an aspect's runs began, or its control
-    named after its first result, with both dates: disclosed, never a demotion (owner, 2026-10-21), so a reader can
-    judge what the readings rest on.
+def late_criteria_lines(bundles: Sequence[AnalysisContextBundle]) -> list[str]:
+    """The lines a page and a listing say for each criterion set after the readings it judges were visible, or whose
+    time is not recorded (each aspect's ``reading_scope.late_criteria``): disclosed, never a demotion, so a reader
+    can judge what the readings rest on. When the runs ran, or when the campaign was declared, is never said.
 
-    One line per distinct pair of dates and thing set late, each worded as what was late (the question set, the
-    control named). A line names its aspects only where some of ``bundles`` do not share it; a time that carries no
-    date says it may have come after the runs. Two dates on one day carry their times of day
-    (:meth:`~threetears.evals.analysis.bundle.schema.QuestionAfterRuns.page_dates`).
+    One line per kind of criterion, criterion and date, naming the aspects it holds on (``every aspect`` where it holds
+    on all of several), so each late criterion is named once and a campaign of seven adopted aspects is not told the
+    same thing seven times.
 
     :param bundles: Each aspect's evidence, in the campaign's order; one for an aspect's own page.
     :ptype bundles: Sequence[AnalysisContextBundle]
-    :return: The lines; none where every question came before its aspect's runs, or none is asked.
+    :return: The lines; none where every criterion came before its readings.
     :rtype: list[str]
     """
-    groups: dict[tuple[str, str | None, str], list[str]] = {}
+    groups: dict[tuple[CriterionKind, str, str | None], list[str]] = {}
     for bundle in bundles:
-        late = bundle.reading_scope.question_after_runs
-        if late is not None:
-            groups.setdefault((late.late, *late.page_dates()), []).append(bundle.aspect)
-    lines: list[str] = []
-    for (what, at, began), labels in groups.items():
-        runs = "the runs" if len(labels) == len(bundles) else f"the runs on {_listed(labels)}"
-        lines.append(_after_runs_line(what, at, f"{runs} began on {began}"))
+        for late in bundle.reading_scope.late_criteria:
+            key = (late.criterion, _criterion_words(bundle, late), late.page_date())
+            groups.setdefault(key, []).append(bundle.aspect)
+    every = len(bundles) > 1
+    lines = [
+        _late_line(kind, what, at, labels, every=every and len(labels) == len(bundles))
+        for (kind, what, at), labels in groups.items()
+    ]
+    untimed = [bundle for bundle in bundles if bundle.reading_scope.untimed_results]
+    if untimed:
+        count = sum(bundle.reading_scope.untimed_results for bundle in untimed)
+        on = "" if len(untimed) == len(bundles) else f" on {_listed([bundle.aspect for bundle in untimed])}"
+        plural = count != 1
+        lines.append(
+            f"{count} result{'s' if plural else ''}{on} carr{'y' if plural else 'ies'} no time that can be ordered, so "
+            f"whether a criterion was set after {'they were' if plural else 'it was'} visible is not known."
+        )
     return lines
 
 
-def _after_runs_line(what: str, at: str | None, after: str) -> str:
-    """One line saying what was set after the runs, and when."""
-    if what == "control":
-        if at is None:
-            return f"The control was named at a time that cannot be ordered, so it may have been named after {after}."
-        return f"The control was named on {at}, after {after}."
+def _criterion_words(bundle: AnalysisContextBundle, late: LateCriterion) -> str:
+    """Which criterion of its kind ``late`` is, as a line names it: a bar by its measure, a guardrail by its dimension,
+    a floor by what it says."""
+    if late.criterion == "bar" and late.name is not None:
+        described = bundle.measure_catalog.get(late.name)
+        return measure_name(late.name, described.reader_name if described is not None else None)
+    if late.criterion == "guardrail" and late.name is not None:
+        return humanize("dimension", late.name)
+    if late.criterion == "floor" and bundle.declared is not None:
+        floor = next((floor for floor in bundle.declared.floors if floor.key == late.name), None)
+        if floor is not None:
+            return floor_statement(floor.clause, candidate="the arm")
+    return late.name or ""
+
+
+def _late_line(kind: CriterionKind, what: str, at: str | None, labels: Sequence[str], *, every: bool) -> str:
+    """One line naming a criterion set after its readings were visible and when, or saying its time is not
+    recorded."""
+    on = "every aspect" if every else _listed(labels)
+    several = len(labels) > 1
+    were, its = ("were", "their") if several else ("was", "its")
+    if kind == "control":
+        set_it = "The control was named"
+        after = "after every aspect's readings were visible" if every else f"after the readings on {on} were visible"
+    elif kind == "aspect":
+        subject = "Every aspect was" if every else f"The aspect{'s' if several else ''} {on} {were}"
+        set_it = f"{subject} declared"
+        after = f"after {'its' if every else its} readings were visible"
+    else:
+        noun = {
+            "margin": "margin",
+            "bar": f"{what} bar",
+            "guardrail": f"{what} guardrail's margin",
+            "floor": f"floor that {what}",
+        }[kind]
+        if several and kind in ("margin", "bar"):
+            noun += "s"
+        set_it = f"The {noun} on {on} {were if kind in ('margin', 'bar') else 'was'} set"
+        after = f"after {its} readings were visible"
     if at is None:
-        return f"The question carries no date, so it may have been set after {after}."
-    return f"The question was set on {at}, after {after}."
+        return f"When {set_it[0].lower()}{set_it[1:]} is not recorded."
+    return f"{set_it} on {at}, {after}."
 
 
 def _listed(labels: Sequence[str]) -> str:
@@ -579,9 +619,7 @@ def _reading_words(row: AspectReading) -> str:
     return words if row.confirmatory else f"{words}, a lead"
 
 
-def _table_blocks(
-    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]
-) -> list[ReportBlock]:
+def _table_blocks(campaign: EvalCampaign, readings: CampaignReadings) -> list[ReportBlock]:
     """Code's table, one row per aspect × candidate, and the lines under it that change how a row reads."""
     if readings.control is None:
         return [
@@ -651,7 +689,7 @@ def _table_blocks(
     ]
     notes += _floor_beside_lines(campaign, readings)
     notes += _unread_lines(campaign, readings)
-    notes += _timing_lines(campaign, readings, reports)
+    notes += _no_question_lines(campaign)
     blocks += [DisclosureBlock(section="scoreboard", source="comparisons", text=note) for note in notes if note]
     return blocks
 
@@ -763,103 +801,9 @@ def _unread_lines(campaign: EvalCampaign, readings: CampaignReadings) -> list[st
     return lines
 
 
-def _read_on(readings: CampaignReadings, aspect: str) -> bool:
-    """Whether code read anything on ``aspect``: a row, a pair or a measure."""
-    return (
-        any(row.aspect == aspect for row in readings.readings)
-        or any(pair.aspect == aspect for pair in readings.pairs)
-        or any(measure.aspect == aspect for measure in readings.measures)
-    )
-
-
-def _after(stamp: str | None, first_result: str | None, what: str) -> bool:
-    """Whether ``stamp`` is later than the aspect's first result; False where either is unrecorded."""
-    if stamp is None or first_result is None:
-        return False
-    return aware_instant(stamp, what) > aware_instant(first_result, "the aspect's first result")
-
-
-def _timing_lines(campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]) -> list[str]:
-    """What was declared after the evidence: the question's wording, a margin or a floor added later than the aspect's
-    first result (the bundle's ``first_result_at``) reads as declared after it. An aspect whose question was set after
-    its runs (``reading_scope.question_after_runs``) is said once, under the question
-    (:func:`question_after_runs_lines`), so nothing stamped no later than the question is said again here; whatever
-    was added later still is. A question that carries no date orders nothing, so every late stamp of its aspect is
-    said; a control named late dates only itself, so it holds nothing back either. Nothing is said of an aspect the
-    question does not ask about.
-
-    Each kind of lateness is one line naming the aspects it holds on (``every aspect`` where it holds on all), so a
-    campaign of seven adopted aspects says it once, not seven times; a floor is named with the aspects its clause is
-    late on."""
-    if not campaign.question.strip():
-        return ["No question was declared, so every reading is a lead."]
-    worded: list[str] = []
-    margins: list[str] = []
-    floors: dict[str, list[str]] = {}
-    for aspect in campaign.aspects:
-        bundle = reports[aspect.label].bundle
-        first_result = bundle.first_result_at
-        label = aspect.label
-        if _read_on(readings, label) and not bundle.question_declared:
-            continue
-        # Declared with a question set late, a stamp is said once, of the question, under it; added later, it is not.
-        late = _late_after_the_question(bundle, first_result)
-        declared = bundle.declared
-        if declared is not None and late(declared.question_declared_at, f"the question on {label}"):
-            worded.append(label)
-        if declared is not None and late(declared.margin_declared_at, f"the margin on {label}"):
-            margins.append(label)
-        for floor in campaign.floors:
-            if floor.aspect == label and late(floor.declared_at, f"floor {floor.key}"):
-                floors.setdefault(floor_statement(floor.clause, candidate="the arm"), []).append(label)
-    lines: list[str] = []
-    if worded:
-        its = "its readings keep" if len(worded) == 1 else "their readings keep"
-        lines.append(
-            f"The question was worded after the first result on {_on(worded, campaign)}; {its} the time it was asked."
-        )
-    if margins:
-        lines.append(
-            f"The margin on {margins[0]} was declared after its first result."
-            if len(margins) == 1
-            else f"The margins on {_on(margins, campaign)} were declared after their first results."
-        )
-    for said, labels in floors.items():
-        lines.append(
-            f"The floor that {said} on {labels[0]} was declared after its first result."
-            if len(labels) == 1
-            else f"The floor that {said} on {_on(labels, campaign)} was declared after their first results."
-        )
-    return lines
-
-
-def _late_after_the_question(
-    bundle: AnalysisContextBundle, first_result: str | None
-) -> Callable[[str | None, str], bool]:
-    """Whether a stamp on ``bundle``'s aspect is later than its first result and not said already by the line under
-    the question, which says whatever was declared no later than a question set after the runs. A question with no
-    date orders nothing, and a control named late dates only itself, so neither holds a stamp back."""
-    flag = bundle.reading_scope.question_after_runs
-    question_at = flag.at if flag is not None and flag.late == "question" else None
-
-    def late(stamp: str | None, what: str) -> bool:
-        if not _after(stamp, first_result, what):
-            return False
-        return (
-            question_at is None
-            or stamp is None
-            or aware_instant(stamp, what) > aware_instant(question_at, "the question")
-        )
-
-    return late
-
-
-def _on(labels: Sequence[str], campaign: EvalCampaign) -> str:
-    """Aspects as a sentence lists them: ``billing``, ``billing and tone``, ``billing, tone and refunds``, or ``every
-    aspect`` where they are all of a campaign's several."""
-    if len(labels) > 1 and len(labels) == len(campaign.aspects):
-        return "every aspect"
-    return _listed(labels)
+def _no_question_lines(campaign: EvalCampaign) -> list[str]:
+    """The line under code's table where the campaign asks no question: every reading is a lead."""
+    return [] if campaign.question.strip() else ["No question was declared, so every reading is a lead."]
 
 
 def _settle_blocks(readings: CampaignReadings) -> list[ReportBlock]:
@@ -1258,7 +1202,7 @@ def _pair_blocks(
         for pair in readings.pairs
         if pair.rig is not None
     ]
-    notes += _timing_lines(campaign, readings, reports)
+    notes += _no_question_lines(campaign)
     notes += _unread_without_control_lines(campaign, reports)
     blocks += [DisclosureBlock(section="scoreboard", source="comparisons", text=note) for note in notes if note]
     return blocks
@@ -1354,7 +1298,7 @@ def _measure_blocks(
             text="One arm is measured, so nothing is compared and no arm is recommended; its bars are its standard.",
         ),
     ]
-    notes = _timing_lines(campaign, readings, reports) + _unread_without_control_lines(campaign, reports)
+    notes = _no_question_lines(campaign) + _unread_without_control_lines(campaign, reports)
     notes += _unread_until_candidate_lines(campaign)
     blocks += [DisclosureBlock(section="scoreboard", source="comparisons", text=note) for note in notes]
     return blocks

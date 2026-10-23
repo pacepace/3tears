@@ -8,8 +8,8 @@ extractor driven by a launcher that generates the way an adopter's does (once pe
 
 - **The writer is asked for in the ``variation`` role, once per launch, and recorded** on every arm's
   ``variation_counts`` as the model the client named — never as the run's simulator.
-- **It enters no identity**: the cases it wrote are hashed through ``test_case_ids``, so two runs over
-  one case set share a context key whatever model wrote it.
+- **It enters no identity**: the cases it wrote are cases of their own ids, and no case set is hashed, so two
+  runs share a context key whatever model wrote their cases.
 - **Every refusal fires before any spend**: a generation that needs a writer and names none, a writer
   named for a launch that generates nothing or for a template with no ``llm`` axis, and a launcher
   whose generation recorded another model than the one named.
@@ -341,7 +341,11 @@ async def test_a_generation_no_model_writes_records_no_writer_and_asks_for_no_cl
 
 
 async def test_the_writer_enters_no_identity():
-    """The cases it wrote are what the candidate faced, and they are already hashed through ``test_case_ids``."""
+    """The cases it wrote are what the candidate faced, each a case of its own id, and no case set is a condition.
+
+    A run over other written cases is more samples of the same condition, so its cases pool beside this run's
+    rather than splitting the context key; the writer is recorded on the run (``variation_counts``), never hashed.
+    """
     template = _template(LLM_AXIS)
     host, _storage, _clients, _handed = off_loop(_generating_host, template)
     (run,) = await _launch(host, template, models=[RUN_MODELS[0]], n_variations=2, variation_model=WRITER)
@@ -354,7 +358,7 @@ async def test_the_writer_enters_no_identity():
 
     profile = host.eval_host.profile
     assert derive_context_identity(other_writer, profile).context_key == run.context_key
-    assert derive_context_identity(other_cases, profile).context_key != run.context_key, "the case set IS hashed"
+    assert derive_context_identity(other_cases, profile).context_key == run.context_key, "no case set is hashed"
 
 
 # =============================================================================

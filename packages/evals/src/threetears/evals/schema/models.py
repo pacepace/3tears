@@ -2348,7 +2348,7 @@ class BudgetStop(EvalBaseModel, CoreShapeModel):
 class CaseSetRef(EvalBaseModel, CoreShapeModel):
     """Which named, versioned case set a run was launched against: a label on its frozen case ids.
 
-    Not an identity of its own: the run's case-set identity stays the frozen ids (``case_basis``), so two runs
+    Not an identity of its own: the run's case-set identity stays its frozen ids (``test_case_ids``), so two runs
     over the same ids are one suite version whatever they were launched by. This names it.
     """
 
@@ -2659,10 +2659,13 @@ class ContextComponents(EvalDocumentModel, CoreShapeModel):
     case_basis: str | None = Field(
         default=None,
         description=(
-            "Digest of the subject_id, the template_id, and the frozen, sorted test_case_ids — "
-            "who was measured, and the denominator they scored against. The subject joined the basis because "
+            "Digest of the subject_id and the template_id — who was measured, and the template its cases come from. "
+            "A template edited in place keeps its id: the pass^k cell splits on the run's frozen template_digest "
+            "instead, and a run stored without one pools with its cell. The subject joined the basis because "
             "without it two different subjects carrying nothing produced an identical key and pooled as one "
-            "condition."
+            "condition. The frozen case SET is not in it: more cases, or a top-up over cases another run missed, are "
+            "more samples of one condition, so runs over different case sets pool per case. The case set stays on "
+            "the run (test_case_ids)."
         ),
     )
     roles: str | None = Field(
@@ -2747,14 +2750,15 @@ EvalRunStatus = Literal["pending", "running", "completed", "failed", "cancelled"
 #: How the arms of one comparison shared time and provider capacity, recorded on each arm's run.
 #:
 #: - ``interleaved`` — every arm ran at once, its cells taken in turn with every other arm's case by case under one
-#:   width shared by the whole launch, so a provider's bad minute lands on every arm alike and the arms' same cases
-#:   ran close together in time.
-#: - ``sequential`` — one arm ran after another, so no arm shared another's provider load, and a difference between
-#:   them can also be when each ran.
+#:   width shared by the whole launch, which loads the providers no more than one arm would alone, costs nothing and
+#:   absorbs a provider's bad minute across every arm: the default.
+#: - ``sequential`` — one arm ran after another, so no arm shared another's provider load.
 #: - ``concurrent`` — every arm ran side by side at its own width, so the launch loaded its providers with every arm
 #:   at once, and a provider's rationing could land on one arm more than another.
 #:
-#: A launch of one arm records the schedule it was launched under, which runs that one arm alone either way.
+#: When the arms ran is no part of what they measured: arms run minutes, hours or days apart are one experiment while
+#: nothing that decides their result changed (owner, 2026-10-23). A launch of one arm records the schedule it was
+#: launched under, which runs that one arm alone either way.
 ArmSchedule = Literal["interleaved", "sequential", "concurrent"]
 
 #: Statuses a run can still leave under its own power — it is either queued or
@@ -3043,9 +3047,9 @@ class VariationCounts(EvalDocumentModel, CoreShapeModel):
             "RESOLVED model that wrote the values of the template's llm-generated variation axes, as the client "
             "that made the calls named it; None when no axis is llm-generated, so no model wrote any case. "
             "Provenance of the stimulus, not a measurement condition: the cases it wrote are what the candidate "
-            "faced, and they are already hashed into the run's context key through `test_case_ids`, so it "
-            "enters no identity. Its calls run before the run starts and are outside the run's cost cap and "
-            "metered-call ceiling."
+            "faced, each a case of its own id in `test_case_ids`, and a case set is no condition (runs over other "
+            "cases pool as more cases), so it enters no identity. Its calls run before the run starts and are "
+            "outside the run's cost cap and metered-call ceiling."
         ),
     )
 

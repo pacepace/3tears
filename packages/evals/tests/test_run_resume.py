@@ -321,6 +321,44 @@ def test_a_take_up_that_would_measure_otherwise_names_every_difference_and_no_la
     assert _measured_otherwise(stored, unlabelled, template, toyhost_profile()) is None
 
 
+def test_a_take_up_whose_launch_would_run_other_cases_is_refused_naming_them_and_a_reordered_set_is_not() -> None:
+    """The case set reaches no key, so the take-up holds it equal itself: as a set, in any order."""
+    stored = make_eval_run(
+        test_case_ids=["tc-1", "tc-2", "tc-3"],
+        variant_levers={},
+        identity_version=1,
+        created_at="2026-06-01T00:00:00+00:00",
+    )
+    template = make_template(created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00")
+
+    other = stored.model_copy(update={"test_case_ids": ["tc-1", "tc-2", "tc-4"]})
+    said = _measured_otherwise(stored, other, template, toyhost_profile())
+
+    assert said == "test_case_ids (left out: tc-3; added: tc-4)", "named, and moving no context component"
+    reordered = stored.model_copy(update={"test_case_ids": ["tc-3", "tc-1", "tc-2"]})
+    assert _measured_otherwise(stored, reordered, template, toyhost_profile()) is None
+
+
+def test_a_take_up_under_another_template_id_with_the_same_cases_names_the_template_not_the_cases() -> None:
+    """The case ids are the same, so the case set did not move; the template that did is named where it is held."""
+    stored = make_eval_run(
+        test_case_ids=["tc-1", "tc-2"], variant_levers={}, identity_version=1, created_at="2026-06-01T00:00:00+00:00"
+    )
+    template = make_template(created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00")
+
+    moved = stored.model_copy(update={"template_id": "tpl-other"})
+    said = _measured_otherwise(stored, moved, template, toyhost_profile())
+
+    assert said is not None
+    assert "test_case_ids" not in said
+    assert said.startswith("context component case_basis")
+    repeated = stored.model_copy(update={"test_case_ids": ["tc-1", "tc-2", "tc-2"]})
+    assert (
+        _measured_otherwise(stored, repeated, template, toyhost_profile())
+        == "test_case_ids (duplicated: tc-2 listed 2 times, was 1)"
+    )
+
+
 def _edited(template: EvalTemplate, **fields: Any) -> EvalTemplate:
     return template.model_copy(update={**fields, "updated_at": "2099-01-01T00:00:00+00:00"})
 

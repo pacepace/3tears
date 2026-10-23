@@ -358,7 +358,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`FIND_TEMPLATE`** · *host contract* · constant (str) · How a caller finds a template's id.
   <br>`= "templates_list names this scope's templates"`
 - **`IDENTITY_VERSION`** · *host contract* · constant (int) · One counter covers both predicates, so a bump on either side re-derives the other's keys — conservative in the safe direction, since re-deriving unchanged inputs reproduces the same digest.
-  <br>`= 24`
+  <br>`= 25`
 - **`INCOMPLETE_STOP_REASONS`** · constant (frozenset) · The `CompletionResult.stop_reason` values meaning the completion was CUT SHORT rather than finished.
 - **`JUDGE_KIND`** · constant (str) · The `candidate_kind` a judge template declares.
   <br>`= 'judge'`
@@ -603,7 +603,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`campaign_report`** · function · The campaign's page — THE answer to "what is this campaign's report", for every caller and every campaign.
   <br>`campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignReport`
 - **`create_campaign`** · function · Create and persist a campaign: one question, its arms, its aspects and its floors.
-  <br>`create_campaign(storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile, exploratory: bool = False, aspects_from: Sequence[str | Mapping[str, Any]] = ()) -> EvalCampaign`
+  <br>`create_campaign(storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile, exploratory: bool = False, aspects_from: Sequence[str | Mapping[str, Any]] = (), declared_at: str | None = None) -> EvalCampaign`
 - **`dollars_text`** · function · Spend as a person reads it: dollars and cents from ten cents up, three significant figures below.
   <br>`dollars_text(amount: float | None) -> str`
 - **`first_request`** · function · The exact first request a generation sends: system prompt, user message and the contract.
@@ -1211,7 +1211,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schema_version` | `int` | `60` | Bundle-shape version, for future evolution + fingerprint clarity. |
+| `schema_version` | `int` | `62` | Bundle-shape version, for future evolution + fingerprint clarity. |
 | `campaign_id` | `str` | required | The campaign this bundle summarises. |
 | `subject_id` | `str` | required | The analysed subject's stable id. |
 | `subject_kind` | `str` | `''` | Discriminator; data, never a code branch. |
@@ -1265,18 +1265,17 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `trials` | `list[TrialRow]` | `[]` | One row per trial — one case run once on one arm — with how it ended and why: its failed checks, the judge's scores and reasons, what the case asked, the tail of what the judge was handed and the recorded error, each capped. |
 | `trials_omitted` | `int` | `0` | Trials beyond the cap, left out of `trials`; the scoreboard counts every one. |
 | `case_sets` | `list[CaseSetRef]` | `[]` | The named, versioned case sets the member runs were launched against, distinct and sorted. |
-| `design_frozen_at` | `str \| None` | `None` | When the campaign's design froze (ISO-8601): its first member run's `created_at`, archived runs included, after which a design edit is refused and a question asked is disclosed as set after the runs (`reading_scope.question_after_runs`). |
-| `first_result_at` | `str \| None` | `None` | When the aspect's evidence could first be seen (ISO-8601): the earliest `scored_at` among its member runs' results, the instant a control named later is read against. |
+| `design_frozen_at` | `str \| None` | `None` | When the campaign's design froze (ISO-8601): its first member run's `created_at`, archived runs included, after which a design edit is refused. |
+| `first_result_at` | `str \| None` | `None` | When the aspect's readings could first be seen (ISO-8601): the earliest `scored_at` among the results of the runs it reads. |
 | `package_version` | `str \| None` | `None` | The 3tears-evals version that assembled the bundle; None when the build carries no distribution metadata (a source tree on the path). |
-| `reading_scope` | `ReadingScope` | `ReadingScope(questions_declared=False, question_after_runs=None, exploratory_measures=[], exploratory_dimensions=[], disclosure=None)` | Which readings no declared question asked about: exploratory, reportable as leads and never as confirmed answers. |
+| `reading_scope` | `ReadingScope` | `ReadingScope(questions_declared=False, late_criteria=[], untimed_results=0, exploratory_measures=[], exploratory_dimensions=[], disclosure=None)` | Which readings no declared question asked about: exploratory, reportable as leads and never as confirmed answers. |
 | `exclusions` | `list[ArmExclusions]` | `[]` | Per arm (cell), in coordinate order: how many of its trials were left out of its measures, by cause — `infra` (the harness faulted it), `truncated` (a judge reply cut off at the cap it was sent, named in `truncated_sent_caps`), `judge_cannot_tell` — so a shrunken n says why, arm by arm. |
 | `differential_exclusions` | `list[DifferentialExclusion]` | `[]` | Every (arm, cause) where one cause took more than DIFFERENTIAL_EXCLUSION_SHARE (10%) of the arm's trials, with every other arm's share of the same cause beside it. |
 | `verdict_order` | `VerdictOrder` | `VerdictOrder(merit_priority=[], tiers=[], unranked_bar_measure_ids=[], question=None)` | The order verdicts are read in, as declared: the bars on each axis of `merit_priority`, strongest first, the bars on no ranked axis, and for the aspect's question the bars on the axes it names. |
-| `measurement_windows` | `list[MeasurementWindow]` | `[]` | Each resolved member run's wall-clock measurement span, derived from that run's own scored_at stamps. |
-| `launch_disclosure` | `str \| None` | `None` | Set when the member runs were NOT all started by one campaign launch — some came from different launches, or were started on their own. |
+| `measurement_windows` | `list[MeasurementWindow]` | `[]` | Each resolved member run's wall-clock measurement span, derived from that run's own scored_at stamps: when it was measured, never a reason to read it apart from the others, since arms measured at different times are one experiment while nothing that decides their result changed. |
+| `launch_disclosure` | `str \| None` | `None` | Set when a launch ran its arms side by side, each at its own width, co-loading their providers (the runs' arm_schedule `concurrent`), so a provider rationing one arm more than another could shrink its sample. |
 | `model_identity_disclosure` | `str \| None` | `None` | Set when some of the member runs' candidate calls or judge scores came back from a response that named no model, so the record holds only the model id each asked for — and a provider may answer an id with a model of its choosing (a floating alias). |
 | `request_settings_disclosure` | `str \| None` | `None` | Set when the member runs' judge or simulated-user calls were not shown to be sent as each run asked: sent other settings than asked (a client may send the closest setting a model accepts), sent more than one way (with the counts), sent without enforcement (the provider may have ignored any setting the serving model does not take), or not reported at all (unverified). |
-| `measurement_window_disclosure` | `str \| None` | `None` | Set when AT LEAST ONE PAIR of member runs was measured over spans of wall-clock time that do not overlap — so anything that moved between those spans (a model revision, a provider's load, a rate limit) moved with the runs, and a difference between the two runs of such a pair is not attributable to the runs alone. |
 | `apparatus_confounds` | `list[Confound]` | `[]` | Apparatus dimensions that varied across the WHOLE campaign, scanned independently of any lever. |
 | `aliased_factors` | `list[AliasedFactors]` | `[]` | Factors that moved in lockstep across the campaign: each group's factors split the runs identically, so no comparison separates them. |
 | `unexercised_factors` | `list[UnexercisedFactor]` | `[]` | Levers read off what ran (a role's model) that no arm exercised beside another: no call in the role, or calls in one arm only. |
@@ -1627,7 +1626,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `archive_reason` | `string` or `null` | Why the record is archived (an analysis shown false or superseded, a reporter case that can no longer measure anything); cleared on restore. |
 | `archived` | `boolean` | The state to set: true retires the record, false restores it. |
 | `arm` | `string` | The decided arm, by the label the campaign's page shows it under or by its variant key. |
-| `arm_schedule` | `'interleaved'` \| `'sequential'` \| `'concurrent'` or `null` | How the arms share time and provider capacity. interleaved (the default): every arm at once, their cases taken in turn case by case under one width shared by the launch, so a provider's bad minute lands on every arm alike. sequential: one arm after another. concurrent: every arm side by side at its own width, the fastest, loading the providers with every arm at once, so one arm can take a provider's rationing. Latency under test runs the arms sequential and takes no other. Recorded on every run. |
+| `arm_schedule` | `'interleaved'` \| `'sequential'` \| `'concurrent'` or `null` | How the arms share time and provider capacity. interleaved (the default): every arm at once, their cases taken in turn case by case under one width shared by the launch, which costs nothing and absorbs a provider's bad minute across every arm. sequential: one arm after another. concurrent: every arm side by side at its own width, the fastest, loading the providers with every arm at once, so one arm can take a provider's rationing. Latency under test runs the arms sequential and takes no other. Recorded on every run. |
 | `arms` | array of `object` | The arms, in the order they launch and take their turns: each {model, label?, overlays?, apparatus_settings?, judge_model?, simulator_model?} — its own model and what it sets differently from its siblings. |
 | `aspect` | `string` or `null` | The label of the aspect the runs join or leave. Omitted, each run joins the one aspect gathered on the template it ran (a campaign of one aspect takes every run), and leaves the aspect holding it. |
 | `aspects` (on `campaign_create`) | array of `object` | Where the question is measured, each {label?, template_id?, margin?, design?, run_ids?}. label omitted names the aspect after the campaign's behavior, each / written - (tools/search is tools-search, as aspect_label_for writes it); one aspect at most omits it. design is what the aspect sets out to learn: axes (at least one: {axis_id, values: [{content, display}], rationale?}, each axis_id a lever or open-family member this host declares), held_fixed ({stimulus: controlled\|uncontrolled, stimulus_reason (required when uncontrolled), apparatus: commissioned\|witnessed}), and optionally merit_axes, bars ([{measure_id, threshold, direction}], no looser than the registered ones), guardrail_margins, merit_priority and intended_repetitions. margin, in points of a 0-100 pass rate, is how far a candidate may fall below the control there before it is shown worse, which a declared aspect states when the campaign asks a question and names a control, and a campaign naming no control never states (it holds its arms to bars). template_id omitted is the one template every run of the aspect ran. Labels are unique, and a run belongs to one aspect. |

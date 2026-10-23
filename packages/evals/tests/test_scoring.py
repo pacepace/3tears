@@ -61,7 +61,7 @@ from threetears.evals.kernel.scoring import (
     result_composite,
     summarize_completeness,
 )
-from threetears.evals.kernel.identity import IDENTITY_VERSION
+from threetears.evals.kernel.identity import IDENTITY_VERSION, derive_context_identity
 from packages.evals.tests.factories import make_eval_result, make_eval_run, make_scored_result, make_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -730,35 +730,90 @@ class TestPoolingAcrossRuns:
             pool_pass_hat_k([], cell_of_run={}, k=0)
 
 
+def _stamped(run, profile):
+    """``run`` as the launch stamps it: its context identity, derived now, written onto it."""
+    identity = derive_context_identity(run, profile)
+    return run.model_copy(
+        update={
+            "context_key": identity.context_key,
+            "context_components": identity.context_components,
+            "identity_version": identity.identity_version,
+        }
+    )
+
+
 class TestTheCellARunsAttemptsPoolUnder:
     """Runs pool only when a recorded context says they held the same conditions fixed."""
 
     def test_two_runs_sharing_a_context_key_are_one_cell(self):
         a = make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION)
         b = make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION, k_runs=3)
-        assert pass_hat_k_cell(a) == pass_hat_k_cell(b)
+        assert pass_hat_k_cell(a, None) == pass_hat_k_cell(b, None)
 
     def test_a_different_context_is_a_different_cell(self):
         a = make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION)
         b = make_eval_run(id="r2", context_key="ctx-2", identity_version=IDENTITY_VERSION)
-        assert pass_hat_k_cell(a) != pass_hat_k_cell(b)
+        assert pass_hat_k_cell(a, None) != pass_hat_k_cell(b, None)
 
-    def test_one_key_stamped_under_two_predicates_is_two_cells(self):
+    def test_without_a_host_one_key_stamped_under_two_predicates_is_two_cells(self):
+        """Nothing re-derives the older stamp, so it cannot be shown to be this build's key."""
         a = make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION)
         b = make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION - 1)
-        assert pass_hat_k_cell(a) != pass_hat_k_cell(b)
+        assert pass_hat_k_cell(a, None) != pass_hat_k_cell(b, None)
+
+    def test_a_run_stamped_before_the_bump_pools_with_one_stamped_after_it(self):
+        """The cell is the context as it resolves at this build's version, never the stamp."""
+        profile = toyhost_profile()
+        after = _stamped(make_eval_run(id="r1"), profile)
+        before = make_eval_run(id="r2").model_copy(
+            update={"context_key": "an-older-predicates-key", "identity_version": IDENTITY_VERSION - 1}
+        )
+        assert pass_hat_k_cell(before, profile) == pass_hat_k_cell(after, profile)
+
+    def test_two_runs_over_different_case_sets_are_one_cell(self):
+        """More cases are more samples of one condition, never a condition of their own."""
+        profile = toyhost_profile()
+        a = _stamped(make_eval_run(id="r1", test_case_ids=["tc1", "tc2"]), profile)
+        b = _stamped(make_eval_run(id="r2", test_case_ids=["tc2", "tc3", "tc4"]), profile)
+        assert a.context_key == b.context_key
+        assert pass_hat_k_cell(a, profile) == pass_hat_k_cell(b, profile)
+
+    def test_a_run_of_another_template_is_another_cell(self):
+        profile = toyhost_profile()
+        a = _stamped(make_eval_run(id="r1"), profile)
+        b = _stamped(make_eval_run(id="r2", template_id="tpl-2"), profile)
+        assert pass_hat_k_cell(a, profile) != pass_hat_k_cell(b, profile)
 
     def test_a_commissioned_and_a_witnessed_run_are_two_cells(self):
         a = make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION)
         b = make_eval_run(
             id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION, apparatus_provenance="witnessed"
         )
-        assert pass_hat_k_cell(a) != pass_hat_k_cell(b)
+        assert pass_hat_k_cell(a, None) != pass_hat_k_cell(b, None)
 
     def test_a_run_with_no_recorded_context_pools_with_nothing(self):
         a, b = make_eval_run(id="r1"), make_eval_run(id="r2")
         assert a.context_key is None
-        assert pass_hat_k_cell(a) != pass_hat_k_cell(b)
+        assert pass_hat_k_cell(a, toyhost_profile()) != pass_hat_k_cell(b, toyhost_profile())
+
+    def test_runs_of_one_cell_over_different_case_sets_cover_the_union_of_their_cases(self):
+        """A top-up over the cases a run missed adds those cases; a case both ran gains depth."""
+        profile = toyhost_profile()
+        a = _stamped(make_eval_run(id="r1", test_case_ids=["tc1", "tc2"]), profile)
+        b = _stamped(make_eval_run(id="r2", test_case_ids=["tc2", "tc3"]), profile)
+        results = [
+            _pooled_result("r1", 1, True, test_case_id="tc1"),
+            _pooled_result("r1", 1, True, test_case_id="tc2"),
+            _pooled_result("r2", 1, False, test_case_id="tc2"),
+            _pooled_result("r2", 1, True, test_case_id="tc3"),
+        ]
+        cells = {run.id: pass_hat_k_cell(run, profile) for run in (a, b)}
+
+        entry = pool_pass_hat_k(results, cell_of_run=cells, k=2)
+
+        assert entry["n_test_cases"] == 3
+        # tc2 alone reached two attempts, one from each run: pass^2 over it is 0.
+        assert _curve(entry) == [(1, pytest.approx(5 / 6), 3), (2, 0.0, 1)]
 
 
 # =============================================================================

@@ -1718,7 +1718,7 @@ async def run_arms(
 
     The arms share the template, the case set, the host and the launch: one launch group, every arm's run prepared
     (every refusal made) before any starts, and all of them started together
-    (:func:`~threetears.evals.run.launch_as_group`) — so a comparison's arms are measured side by side, and a refusal
+    (:func:`~threetears.evals.run.launch_as_group`) — so a comparison's arms share one launch, and a refusal
     on the last arm leaves none run. Each arm is its own :func:`~threetears.evals.run.start_run` call into that group,
     because ``start_run`` launches every run it starts at one set of overlays and the arms of a factorial differ in
     theirs.

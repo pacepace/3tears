@@ -50,13 +50,14 @@ from threetears.evals.analysis.bundle.schema import (
     TrialRow,
     UnexercisedFactor,
     asks_a_question,
-    refuse_a_bundle_before_aspects,
+    refuse_a_bundle_of_another_shape,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, campaign_trial_ids
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.kinds import campaign_kind
+from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.references import cell_index, resolve_reading
 from threetears.evals.analysis.report.figures import (
@@ -113,7 +114,7 @@ from threetears.evals.analysis.report.decision import (
 from threetears.evals.analysis.report.campaign_page import (
     campaign_verdict,
     campaign_warnings,
-    question_after_runs_lines,
+    late_criteria_lines,
 )
 from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures, row_words
 from threetears.evals.analysis.report.verdict import (
@@ -400,11 +401,11 @@ def analysis_bundle(analysis: EvalAnalysis) -> AnalysisContextBundle:
     :ptype analysis: EvalAnalysis
     :return: The bundle, as frozen at generation.
     :rtype: AnalysisContextBundle
-    :raises RefusedInput: The analysis covers several aspects, or was written over a bundle from before a bundle read
-        one aspect (shape 59).
+    :raises RefusedInput: The analysis covers several aspects, or was written over a bundle of another shape than this
+        build's, which is regenerated, never read.
     """
     held = _only_aspect(analysis)
-    refuse_a_bundle_before_aspects(
+    refuse_a_bundle_of_another_shape(
         held.bundle,
         what=f"analysis {analysis.id}",
         remedy="generate the analysis again (analysis_generate), which assembles the campaign's evidence as it stands",
@@ -443,7 +444,7 @@ def analysis_campaign_bundle(analysis: EvalAnalysis) -> CampaignBundle:
     remedy = "generate the analysis again (analysis_generate), which assembles the campaign's evidence as it stands"
     bundles = []
     for held in analysis.aspects:
-        refuse_a_bundle_before_aspects(held.bundle, what=what, remedy=remedy)
+        refuse_a_bundle_of_another_shape(held.bundle, what=what, remedy=remedy)
         bundles.append(AnalysisContextBundle.from_dict(dict(held.bundle)))
     return CampaignBundle.from_frame(analysis.campaign_bundle, bundles, what=what)
 
@@ -454,13 +455,13 @@ def analysis_verdict(analysis: EvalAnalysis) -> str:
 
     It opens as the analysis's page opens: every bar an arm misses, then every floor a candidate breaks, each in the
     page's own words (:func:`~threetears.evals.analysis.report.campaign_page.campaign_warnings`) over the readings and
-    floors frozen with it, without the writer's why beside them; then, where the question was set after an aspect's
-    runs began, the line saying when each happened
-    (:func:`~threetears.evals.analysis.report.campaign_page.question_after_runs_lines`). Then the verdict. An analysis
+    floors frozen with it, without the writer's why beside them; then the line for each criterion set after the
+    readings it judges were visible (:func:`~threetears.evals.analysis.report.campaign_page.late_criteria_lines`).
+    Then the verdict. An analysis
     of one aspect is listed by the verdict line that aspect's page opens with, over its frozen bundle. An analysis of several aspects is listed
     by its campaign's verdict, as the campaign's page reads it: what code read on each aspect, in the campaign's order
     (:func:`~threetears.evals.analysis.report.campaign_page.campaign_verdict`). With no bar missed and no floor
-    broken and no question set after the runs, the line is the verdict alone.
+    broken and no criterion set after its readings, the line is the verdict alone.
 
     :param analysis: The analysis.
     :ptype analysis: EvalAnalysis
@@ -471,7 +472,7 @@ def analysis_verdict(analysis: EvalAnalysis) -> str:
     campaign = analysis_campaign_bundle(analysis)
     readings = campaign.readings
     warnings = campaign_warnings(analysis.design_snapshot.floors, readings)
-    warnings += question_after_runs_lines(campaign.aspects)
+    warnings += late_criteria_lines(campaign.aspects)
     if len(analysis.aspects) > 1:
         verdict = campaign_verdict(readings, [aspect.label for aspect in analysis.aspects])
     else:
@@ -742,18 +743,15 @@ def _heading_blocks(
 ) -> list[ReportBlock]:
     """The first screen's lines between the title and the verdict.
 
-    With no question declared, the arms line alone (line 2). With one, the question quoted on its own line, and where
-    it was set after the runs began the line saying when each happened, then the subhead carrying what the question
-    need not: the arms line, each arm with its version.
+    With a question declared, the question quoted on its own line. Then the line for each criterion set after the
+    readings it judges were visible, then the subhead carrying what the question need not: the arms line, each arm
+    with its version.
     """
     arms = DisclosureBlock(section="header", source="arms", text=_arms_line(bundle, names, source))
     asked = _question_line(bundle)
-    if asked is None:
-        return [arms]
-    timing = [
-        DisclosureBlock(section="header", source="timing", text=line) for line in question_after_runs_lines([bundle])
-    ]
-    return [DisclosureBlock(section="header", source="basis", text=asked), *timing, arms]
+    timing = [DisclosureBlock(section="header", source="timing", text=line) for line in late_criteria_lines([bundle])]
+    basis = [] if asked is None else [DisclosureBlock(section="header", source="basis", text=asked)]
+    return [*basis, *timing, arms]
 
 
 def _floor_warning_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
@@ -2008,20 +2006,9 @@ def _question_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
 
 
 def _question_words(bundle: AnalysisContextBundle) -> str:
-    """What the methods call the aspect's design, as the line under the question words it: a question declared before
-    the runs; after them, or undated so possibly after them; its control named after them; or none."""
-    if not bundle.question_declared:
-        return "exploratory"
-    late = bundle.reading_scope.question_after_runs
-    if late is None:
-        return "question declared before the runs"
-    if late.late == "control":
-        if late.at is None:
-            return "question declared before the runs, control named at a time that cannot be ordered"
-        return "question declared before the runs, control named after they began"
-    if late.at is None:
-        return "question undated, so possibly declared after the runs began"
-    return "question declared after the runs began"
+    """What the methods call the aspect's design: a question declared, or exploratory. When a criterion was set is
+    said once, on the first screen."""
+    return "question declared" if bundle.question_declared else "exploratory"
 
 
 def _readings_table(name: str, title: str, rows: list[dict[str, CellValue]]) -> TableBlock:
@@ -3834,14 +3821,13 @@ def _method_blocks(
                 f"{_listed(reading.served_models)}, so its numbers mix those models.",
             )
     say("measurement", bundle.launch_disclosure)
-    say("measurement", bundle.measurement_window_disclosure)
     say("cost", _unpriced_cost_line(bundle, arm))
     if bundle.latency_contended:
         contended = _some_arms(bundle, bundle.latency_contended_cells, "Read under concurrency", arm)
         say("measurement", bundle.latency_contended + contended)
     for _, sentence in sorted(bundle.short_runs.items()):
         say("runs", sentence)
-    _run_disclosures(bundle, say)
+    _run_disclosures(bundle, say, arm)
     if (footing := _production_footing_sentence(bundle, arm)) is not None:
         say("measurement", footing)
     _design_disclosures(bundle, say, arm)
@@ -3943,8 +3929,12 @@ def _uncarried(bundle: AnalysisContextBundle) -> list[str]:
     )
 
 
-def _run_disclosures(bundle: AnalysisContextBundle, say: Callable[[DisclosureSource, str | None], None]) -> None:
-    """The member runs left out, unfinished, short, or of unknown completeness."""
+def _run_disclosures(
+    bundle: AnalysisContextBundle, say: Callable[[DisclosureSource, str | None], None], arm: Callable[[str], str]
+) -> None:
+    """The member runs left out, unfinished, short, or of unknown completeness, and every run an arm's pass^k kept out
+    of its headline cell or pooled by assumption (:func:`~threetears.evals.analysis.lenses.frontier.pass_hat_k_cell_lines`),
+    each line led by the arm, as the frontier's text leads it."""
     if not bundle.run_ids:
         say("runs", "The campaign resolved no runs in this scope, so no table or chart here holds anything.")
     if bundle.unresolved_run_ids:
@@ -3974,6 +3964,18 @@ def _run_disclosures(bundle: AnalysisContextBundle, say: Callable[[DisclosureSou
         )
     for cell in bundle.short_cells:
         say("runs", cell.sentence)
+    cell_lines = [
+        f"{arm(point.variant_key)}: {line}."
+        for subject in bundle.frontier.subjects
+        for point in subject.points
+        for reading in point.pass_hat_k_cells
+        for line in pass_hat_k_cell_lines(reading)
+    ]
+    if cell_lines:
+        # What "kept out" covers, once, before the first: the arm's tables above still count those runs.
+        say("runs", PASS_HAT_K_CELL_READING)
+    for line in cell_lines:
+        say("runs", line)
 
 
 def _design_disclosures(

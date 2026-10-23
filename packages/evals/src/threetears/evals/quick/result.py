@@ -9,7 +9,7 @@ the control. Everything here is the engine's own path, composed:
   shared candidate model, so the report calls the arm ``candidate=<name>``. Named as ``k=v`` pairs
   (``"prompt=v2, effort=low"``), each pair is one factor of a factorial design: ``model`` is the run's candidate model
   and every other factor is a lever the engine names ``callable.<factor>`` and keys into the variant.
-- **Every arm is started in one launch**, so they are measured side by side rather than one after another, and a
+- **Every arm is started in one launch**, so they share one launch's schedule and capacity, and a
   refusal on the last arm leaves none run.
 - **The campaign declares its design** — one axis per factor, a controlled stimulus, a commissioned apparatus and the
   repeats each arm ran — through :func:`~threetears.evals.analysis.create_campaign`, which gates the declaration
@@ -943,8 +943,14 @@ def declare(
     created_by: str,
     guardrail_margins: Sequence[GuardrailMargin] = (),
     measure_latency: bool = False,
+    declared_at: str | None = None,
 ) -> Result:
     """File the arms' runs as one campaign, one axis per factor, designate ``control``, and read its report.
+
+    ``declared_at`` is when the caller fixed the design and the control, where that was before its arms ran: an eval
+    fixes both in the call that launches them, so the campaign filed once they have run is written once, dated then
+    (:func:`~threetears.evals.analysis.create_campaign`'s ``declared_at``), never as chosen once its readings were
+    visible. None dates them now, as reading the same runs against another control (:meth:`Result.against`) does.
 
     The page is the campaign's code-only page, as :func:`~threetears.evals.analysis.campaign_report` reads a
     campaign no analysis has been generated for — which a campaign filed a moment ago is — and the report its one
@@ -994,6 +1000,7 @@ def declare(
         scope_id=scope_id,
         created_by=created_by,
         profile=host.profile,
+        declared_at=declared_at,
     )
     page = campaign_report(host, campaign.id, scope_id)
     (fold,) = page.aspects

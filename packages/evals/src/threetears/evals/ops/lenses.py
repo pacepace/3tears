@@ -437,8 +437,8 @@ class RunsBisected(EvalBaseModel):
         )
     )
     measurement_window_disclosure: str | None = Field(
-        description="When the two runs were measured over spans that do not overlap, the sentence saying so: time is "
-        "no input, so a provider's drift between the spans is a difference this split cannot name. None when they "
+        description="When the two runs were measured over spans that do not overlap, the sentence saying so, as a "
+        "fact: runs measured apart are one experiment while nothing that decides their result changed. None when they "
         "overlap or either produced no result to date a span from."
     )
 

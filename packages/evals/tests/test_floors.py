@@ -330,9 +330,9 @@ async def test_an_aspect_with_no_margin_compares_no_pass_rate_yet_its_floors_and
     assert rate is not None and rate.samples is not None and rate.interval is not None
 
 
-async def test_a_question_asked_after_the_first_run_compares_its_pass_rate_as_one_asked_in_time() -> None:
+async def test_a_question_asked_after_the_first_result_compares_its_pass_rate_as_one_asked_in_time() -> None:
     """Disclosed, never enforced (owner, 2026-10-21): the pass rate is a hypothesis of the question whenever it was
-    asked, so a question asked after the runs reads the same family, the pass rate in it once, and says when."""
+    asked, so an aspect asked after its readings reads the same family, the pass rate in it once, and says when."""
     late, _, _ = await _shape(5, asked_at="2099-01-01T00:00:00+00:00")
     early, _, _ = await _shape(5)
     (after,) = late.multiple_comparisons.families
@@ -342,9 +342,9 @@ async def test_a_question_asked_after_the_first_run_compares_its_pass_rate_as_on
     assert [comparison.reading for comparison in asked.comparisons].count("trial") == 1
     assert after.family_size == asked.family_size
     assert late.floor_contrasts == early.floor_contrasts, "the floors read the same values either way"
-    flag = late.reading_scope.question_after_runs
-    assert flag is not None and (flag.late, flag.at) == ("question", "2099-01-01T00:00:00+00:00")
-    assert early.reading_scope.question_after_runs is None
+    said = {late.criterion: late.set_at for late in late.reading_scope.late_criteria}
+    assert said["aspect"] == said["margin"] == "2099-01-01T00:00:00+00:00"
+    assert early.reading_scope.late_criteria == []
 
 
 async def test_the_aspect_pass_rate_is_read_at_the_level_it_is_asked_for() -> None:

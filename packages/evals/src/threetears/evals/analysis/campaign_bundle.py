@@ -50,15 +50,15 @@ from threetears.evals.analysis.arms import arm_names, multi_rig_variants, short_
 from threetears.evals.analysis.bundle.caps import capped_text
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
-    QuestionAfterRuns,
     evidence_digest,
     fingerprint_digest,
-    refuse_a_bundle_before_aspects,
+    refuse_a_bundle_of_another_shape,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
 from threetears.evals.analysis.cells import cell_ref
+from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import CellAddress, campaign_cell_aliases
 from threetears.evals.kernel.campaign import CampaignDeclaration, EvalCampaign
@@ -124,7 +124,6 @@ _DISCLOSURES: tuple[str, ...] = (
     "launch_disclosure",
     "model_identity_disclosure",
     "request_settings_disclosure",
-    "measurement_window_disclosure",
     "apparatus_confounds",
     "aliased_factors",
     "unexercised_factors",
@@ -268,7 +267,7 @@ class CampaignBundle(EvalDocumentModel):
         cls.refuse_another_shape(data, what=what, remedy=fix)
         bundles = []
         for aspect in data.get("aspects") or []:
-            refuse_a_bundle_before_aspects(aspect, what=what, remedy=fix)
+            refuse_a_bundle_of_another_shape(aspect, what=what, remedy=fix)
             bundles.append(AnalysisContextBundle.from_dict(dict(aspect)))
         return cls.model_validate(
             {**{key: value for key, value in data.items() if key != "aspects"}, "aspects": bundles}
@@ -781,13 +780,10 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
         "aspect": label,
         "question": {
             "asked": aspect.question_declared,
-            # Said once in the memo, never a demotion: the readings read as an asked question's do. Dated as the page
-            # dates them, so the memo and the page say one date.
-            "after_runs": _after_runs(aspect.reading_scope.question_after_runs),
             "margin": declared.margin if declared is not None else None,
             "merit_axes": design.merit_axes if design is not None else None,
             "merit_priority": design.merit_priority if design is not None else [],
-            "reading_scope": namer.walk(_without(payload["reading_scope"], "question_after_runs"), label),
+            "reading_scope": namer.walk(_without(payload["reading_scope"], "late_criteria"), label),
         },
         "readings": [
             {
@@ -853,14 +849,26 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
             key: namer.walk(payload[key], label) for key in _DISCLOSURES if payload.get(key) not in (None, "", [], {})
         },
     }
+    # Keyed by the arm, as the view names every arm, never by the model id: two arms on one model are two entries.
     unmeasured = {
-        point.model: point.pass_hat_k_unmeasured_reason
+        namer.arm(point.variant_key): point.pass_hat_k_unmeasured_reason
         for subject in aspect.frontier.subjects
         for point in subject.points
         if point.pass_hat_k_unmeasured_reason
     }
     if unmeasured:
         view["disclosures"]["pass_k_unmeasured"] = unmeasured
+    # Every pass^k cell beside an arm's headline, and every run placed in a cell by a silence, after the one sentence
+    # saying what "kept out" covers (the frontier's pass^k, bar and verdict; every other figure still counts the run).
+    unpooled: dict[str, list[str]] = {}
+    for subject in aspect.frontier.subjects:
+        for point in subject.points:
+            unpooled.setdefault(namer.arm(point.variant_key), []).extend(
+                line for cell in point.pass_hat_k_cells for line in pass_hat_k_cell_lines(cell)
+            )
+    unpooled = {arm: lines for arm, lines in unpooled.items() if lines}
+    if unpooled:
+        view["disclosures"]["pass_k_unpooled"] = {"reading": PASS_HAT_K_CELL_READING, "by_arm": unpooled}
     if aspect.telemetry.measures.absent_scopes:
         view["disclosures"]["absent_scopes"] = list(aspect.telemetry.measures.absent_scopes)
     if aspect.telemetry.measures.unreported_observations:
@@ -874,15 +882,15 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
     }
     if confounds:
         view["confound_catalog"] = confounds
+    # Said once in the memo, never a demotion: each criterion set after the readings it judges were visible, dated as
+    # the page dates it, so the memo and the page say one date. Absent where none was, so a campaign adopting runs
+    # that are still valid hands the writer what one declared before them does.
+    if late := aspect.reading_scope.late_criteria:
+        view["late_criteria"] = [
+            {"criterion": criterion.criterion, "name": criterion.name, "set_at": criterion.page_date()}
+            for criterion in late
+        ]
     return view
-
-
-def _after_runs(late: QuestionAfterRuns | None) -> dict[str, str | None] | None:
-    """What of an aspect's question was set after its runs, and when, as the page words the dates; None for nothing."""
-    if late is None:
-        return None
-    at, began = late.page_dates()
-    return {"late": late.late, "at": at, "runs_began": began}
 
 
 def _cells(aspect: AnalysisContextBundle, namer: _Namer) -> list[dict[str, Any]]:

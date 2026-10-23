@@ -15,7 +15,8 @@ lease first, so every process answers the job alike.
 running every arm at once is not neutral: shared provider capacity rations one arm's calls and not another's, and
 inflates the latency each arm measures (:mod:`threetears.evals.run.arm_schedule`). By default the arms are
 interleaved: every arm is prepared, then all start together as one launch whose cells are taken in turn, case by
-case, under one width, so a provider's bad minute lands on every arm alike. ``sequential`` launches the arms one
+case, under one width, which costs nothing and absorbs a provider's bad minute across every arm. Arms launched apart
+are one experiment all the same while nothing that decides their result changed. ``sequential`` launches the arms one
 after another, each its own launch, so no arm shares another's provider load; ``concurrent`` launches them all at
 once, each side by side at its own width. Latency under test (``measure_latency``, passed to every arm's launch as
 ``run_launch`` takes it) runs them sequential, the only schedule it takes. Each arm's run joins the campaign as it
@@ -33,8 +34,9 @@ judge: it is left to the launch's own pin resolution, so no model grades its own
 **Its campaign is exploratory.** A sweep takes no design, so the campaign it creates declares none, and says so
 (``exploratory``) rather than leaving the caller to. A campaign's declaration is frozen once it holds a run, so
 ``campaign_update`` refuses to add one; what the arms were swept to learn is declared with ``campaign_create``: an
-aspect over the sweep's ``run_ids`` (its job result names them), its arms named with ``from_run_ids``. A question
-asked after the runs reads as asked, with ``question_after_runs`` disclosing when.
+aspect over the sweep's ``run_ids`` (its job result names them), its arms named with ``from_run_ids``. Its readings
+read as any others do, and each criterion it sets after the runs' results were stored is named with its time
+(``late_criteria``).
 
 **Taken up again.** The sweep's record keeps what each arm launches with, and its job launches every arm from
 that record alone. A sweep lost (its process gone), cancelled, or stopped by its own time budget is taken up again

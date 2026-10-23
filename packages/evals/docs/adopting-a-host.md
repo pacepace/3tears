@@ -852,9 +852,9 @@ when the cassette itself changes, because re-capturing a corpus calls your third
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
-**Each version space moves on its own.** Core documents (v15.5), durable documents (v16.0), regenerable documents
-(v13), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 59), the cell model
-(`CELL_MODEL_VERSION`, 13) and the identity keys (`IDENTITY_VERSION`, 24) carry separate versions. The report has none: it is a page rendered from the bundle, which is the versioned machine
+**Each version space moves on its own.** Core documents (v15.7), durable documents (v16.1), regenerable documents
+(v13), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 61), the cell model
+(`CELL_MODEL_VERSION`, 13) and the identity keys (`IDENTITY_VERSION`, 25) carry separate versions. The report has none: it is a page rendered from the bundle, which is the versioned machine
 form.
 **A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked
 each dim (`EvalResult.judge_config_ids`): `builtin:<sha12>`, a fingerprint of the engine's own judge prompt, or
@@ -1377,7 +1377,8 @@ generated once for every arm:
   `variation` role (never the simulator's), plans and admits its calls there, and hands them to the launcher
   as `request.generation`. The launcher builds no writer of its own.
 - The run records the model the client resolved to on `variation_counts.variation_model`; it enters no
-  identity, because the cases it wrote are already hashed through `test_case_ids`.
+  identity. The cases it wrote are cases of their own ids in `test_case_ids`, and a case set is no condition:
+  runs over other written cases pool with this one as more cases.
 - The launcher hands `generate_variations` the request's `generation=request.generation`, which makes exactly
   the calls the launch admitted. A rubric proposal is planned (`plan_draft`), admitted in your call and made in
   your job (`propose_draft(client, admitted, ...)`) the same way.
@@ -1424,8 +1425,8 @@ definition = {
   at creation, over runs its aspects already hold; or `set_campaign_control` once the control's run has joined), and
   the server reads its variant key and lever map from the first; runs of one arm carrying two keys are refused,
   naming each. The control comes first. A candidate nobody names is read off the runs, one per other variant. A
-  control named after an aspect's first result dates that aspect's question at the naming, which its pages
-  disclose as set after the runs.
+  control named after an aspect's first result is named on that aspect's pages as set after its readings were
+  visible.
 - **Each aspect holds its own runs.** A run joins one aspect of a campaign, by its template, or by the aspect
   `add_runs_to_campaign` (`campaign_runs_add`) names; a run another template ran, or one two aspects could take,
   is refused naming them.
@@ -1443,9 +1444,10 @@ definition = {
   only warns**: it never blocks, never writes the verdict, and never rewrites what the writer recommends.
 - **The declaration is frozen once any aspect holds a run.** To ask again, create a campaign that adopts the aspects
   it keeps (`aspects_from`, each a campaign id, or `{campaign_id, label}` to relabel a campaign's one aspect): each
-  keeps its template, runs, design and the time its question was asked, so nothing re-dates its question. A
-  `margins` entry (`{label: points}`) gives an adopted aspect its margin, an upgraded one that never declared one
-  included. Whatever the new campaign adds is dated now and marked as declared after the runs.
+  keeps its template, runs, design and times, so a campaign adopting runs that are still valid reads as the one
+  declared before them. A `margins` entry (`{label: points}`) gives an adopted aspect its margin, an upgraded one
+  that never declared one included. Whatever the new campaign adds is dated now and named on the page where that is
+  later than its aspect's first result.
 ### Recording the call
 
 **Code reports, the writer recommends, a person decides, and the decision is recorded.** `campaign_record` (the

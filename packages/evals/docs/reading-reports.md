@@ -473,25 +473,36 @@ writer may adopt nothing. A campaign that declared no design at all is an explor
 says so: its readings confirm nothing, and the design its comparisons read was inferred from the runs, not declared
 ([when to declare one](measuring-soundly.md#start-from-the-question)). A guardrail is never exploratory.
 
-**A question asked after the runs is said, never demoted.** A question asked after an aspect's first member run was
-created may have been asked with its results in view, so the page says so; its readings read exactly as they would
-had it been asked first, because the operator is trusted to have set it in good faith, and the line lets a reader
-judge. Each aspect carries its own time (`Aspect.asked_at`), read against its earliest member run's `created_at`; a
-control named after the aspect's first result (the earliest result the aspect reads) is disclosed the same way.
-Where either came after, the bundle says what was late and when (`reading_scope.question_after_runs`: `late`,
-`question` or `control`; `at`, null when no time was recorded; `first_run_at`), the page JSON carries it beside each
-aspect, and the campaign's page, each aspect's page and the analysis listing say it in one sentence under the
-question: "The question was set on 20 Oct 2026, after the runs began on 14 Oct 2026.", or "The control was named on
-…". Each date is in its stamp's own offset, as every other date on the page is; where the later does not fall on
-a later day than the earlier, both carry their times of day and offsets. The writer says it once in its summary, with the page's dates.
-A margin or a floor declared no later than a late question is said by that line; one added later is still said as
-declared after its first result. A question with no date, and a control named late, hold nothing back. `question_declared` is true wherever a
-question is asked, whenever. An aspect adopted from another campaign (`aspects_from`) keeps its source's time, so
-adopting it never re-dates its question; a margin, floor or arm added at adoption carries its own time, and reads as
-declared after the runs where that is later than the aspect's first run. To keep a question from coming late, a
-campaign's declaration is frozen once any aspect holds a run: `campaign_update` refuses `question`, `aspects` and `floors` in any form, and
-refuses re-pointing or clearing the control (which may be named once, from a run, while none is); the name and
-description stay editable, and an amended question is a new campaign that adopts the aspects it keeps.
+**A criterion set after its readings is said, never demoted; data age is never said.** What pre-registration
+guards against is a criterion chosen once the readings it judges could be seen: the aspect itself and its control
+(where a question asks it), its margin, a bar, a judged guardrail's margin or a floor. Where no question is asked,
+every reading is a lead and the control is kept, so when the aspect and its control were chosen decides nothing and is
+not said; a margin, a bar, a guardrail's margin and a floor read or warn either way, so each is timed always. Under a
+question a guardrail's margin carries the aspect's own time, which the aspect's line names. Each is read on its own time, where it is stored: the aspect's
+`asked_at` (which also dates its bars, its guardrails' margins, and a margin or floor declared with it), `margin_declared_at`,
+`Floor.declared_at` and the control's `named_at`, against the first stored result of the aspect's runs
+(`first_result_at`). One set later reads exactly as it would had it been set first, because the operator is trusted
+to have set it in good faith, and the line lets a reader judge. The bundle lists each (`reading_scope.late_criteria`:
+`criterion`, `name`, `set_at`, null where no time is recorded), the page JSON carries them beside each aspect, and the
+campaign's page, each aspect's page and the analysis listing say each once under the question, grouped across
+aspects: "The margin on billing was set on 20 Oct 2026, after its readings were visible.", "Every aspect was declared
+on …", "The control was named on 20 Oct 2026, after the readings on tone were visible.", or, for one stored by an
+older build, "When the control was named is not recorded.". Each date is in its stamp's own offset, as every other
+date on the page is. The writer names each once in its summary, with the page's dates. No line names the question or
+when the runs began: a run whose measurement context is unchanged reads exactly like a fresh one, however old, and
+arms measured minutes, hours or days apart are one experiment while nothing that decides their result changed.
+`question_declared` is true wherever a question is asked, whenever. An aspect adopted from another campaign
+(`aspects_from`) keeps its source's times, so a campaign adopting runs that are still valid reads as the one declared
+before them; a margin, floor or arm added at adoption carries its own time, and is named where that is later than the
+aspect's first result. Runs added to an aspect (`campaign_runs_add`) change no criterion's time, so runs whose
+results were stored before the aspect's criteria were set name those criteria as set after their readings. A result
+whose stored time cannot be ordered is left out of the comparison, and the page says whether a criterion came after it
+is not known. One gap is known and not closed: an aspect adopted from a campaign that asked no question keeps its
+source's time when the adopting campaign asks one, so its being put to the question after its readings were visible is
+not named. A campaign's declaration is frozen once any aspect holds a run: `campaign_update` refuses
+`question`, `aspects` and `floors` in any form, and refuses re-pointing or clearing the control (which may be named
+once, from a run, while none is); the name and description stay editable, and an amended question is a new campaign
+that adopts the aspects it keeps.
 
 ## Excluded trials by cause
 
