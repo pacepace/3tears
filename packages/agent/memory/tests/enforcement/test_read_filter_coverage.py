@@ -107,6 +107,8 @@ INHERITED_UNFILTERED: dict[str, str] = {
     "delete": "a delete by key must reach the row whether or not this task may read it",
     "delete_from_store": "the L3 leg of delete; must reach the row whatever the filter says",
     "delete_rows": "a bulk delete by key; must reach every named row whatever the filter says",
+    "truncate": "empties the whole table, as an operator's clear; reads and returns no row",
+    "load_files": "a bulk load of files the caller supplies into the table; it returns a count, no stored row",
     "delete_l2_entry": "drops one L2 cache entry by key; touches no stored row",
     "invalidate_cache": "evicts one key from the cache tiers; returns nothing",
     "invalidate_cache_many": "evicts many keys from the cache tiers; returns nothing",
