@@ -59,9 +59,12 @@ def test_malformed_codes_fail_closed_without_raising(code: str) -> None:
 
 _SECRET_MARKER = "QQQQSECRETQQ!!"
 
-#: a log record's own clock and process numbers: never the secret, but their digits can spell a numeric one by
-#: chance ("0189" inside a ``created`` timestamp failed CI), so they are left out of what is searched
-_RECORD_NUMBERS = frozenset({"created", "msecs", "relativeCreated", "thread", "process", "lineno", "levelno"})
+#: a log record's own clock and process numbers, and its exception object, whose repr carries memory addresses:
+#: never the secret, but their digits can spell a numeric one by chance ("0189" inside a ``created`` timestamp
+#: failed CI), so they are left out of what is searched; the exception's text is searched as ``exc_text``
+_RECORD_NUMBERS = frozenset(
+    {"created", "msecs", "relativeCreated", "thread", "process", "lineno", "levelno", "exc_info"}
+)
 
 
 @pytest.mark.parametrize("secret", ["not base32!!", "A", "0189", "", _SECRET_MARKER])
