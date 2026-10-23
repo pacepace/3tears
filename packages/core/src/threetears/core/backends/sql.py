@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Any
 from threetears.observe import get_logger
 
 import threetears.core.backends.schema_sql as schema_sql
-from threetears.core.backends.protocol import L3_RAIL_ROW_CAP, parse_rowcount
+from threetears.core.backends.protocol import L3_RAIL_ROW_CAP, TruncatingStore, parse_rowcount
 from threetears.core.keyset import read_keyset_pages
 from threetears.core.sql_fragments import as_written
 
@@ -166,6 +166,23 @@ def _quote_ident(name: str) -> str:
     if '"' in name:
         raise ValueError(f"illegal SQL identifier {name!r}")
     return f'"{name}"'
+
+
+def _plain_identifier(name: str) -> str:
+    """``name`` when it is a plain, optionally schema-qualified SQL identifier; refused otherwise.
+
+    For a statement that interpolates a table name it cannot bind, as the generated SQL elsewhere
+    does (unquoted, so it folds case as they do).
+
+    :param name: a table name, ``table`` or ``schema.table``
+    :ptype name: str
+    :return: the name unchanged
+    :rtype: str
+    :raises ValueError: when any part is not a plain identifier
+    """
+    if not all(part.isidentifier() and part.isascii() for part in name.split(".")) or name.count(".") > 1:
+        raise ValueError(f"illegal table name {name!r}")
+    return name
 
 
 def _request_measure(transport: Any) -> Callable[[str, list[Any]], int | None] | None:
@@ -623,6 +640,121 @@ class SqlL3Backend:
                 await self._execute(sql, *(value for row in batch for value in row), conn=conn)
                 written += len(batch)
         return written
+
+    async def copy_many(
+        self,
+        table: str,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        max_rows: int,
+        max_bytes: int,
+        conn: Any,
+    ) -> int:
+        """Insert many new rows of a schema-registered table with ``COPY``, on the caller's transaction.
+
+        The bulk load's other form beside :meth:`upsert_many`: no conflict clause, so a key already
+        held fails the copy and with it the caller's transaction. The rows are ordered by primary
+        key first, the order a bulk load into YugabyteDB wants, and each copy goes to the
+        connection's ``copy_records_to_table`` -- asyncpg's own on a direct connection, the
+        ``l3.tx.copy`` request on the rail's. Columns and values are the ones :meth:`upsert_many`
+        would bind (:func:`schema_sql.insert_columns_for_data`, :func:`schema_sql.build_insert_params`),
+        so the two forms write the same row. Batches split by ``max_rows`` and, where the connection
+        measures its request (``copy_request_bytes``), by ``max_bytes`` of the whole request; with no
+        measure, by the rows' values alone.
+
+        :param table: the table; its schema must be registered (:meth:`register_schema`)
+        :ptype table: str
+        :param rows: the rows, each keyed by column
+        :ptype rows: Sequence[Mapping[str, Any]]
+        :param max_rows: the most rows one copy carries; at least one
+        :ptype max_rows: int
+        :param max_bytes: the most bytes one copy's request comes to on the L3 rail
+        :ptype max_bytes: int
+        :param conn: the caller's connection, its transaction open
+        :ptype conn: Any
+        :return: rows written
+        :rtype: int
+        :raises ValueError: when no schema is registered for ``table``, ``max_rows`` is under one,
+            the rows disagree on which columns they supply, or a column is one a copy cannot write
+            (:func:`schema_sql.copy_writes`: a jsonb or a vector)
+        """
+        schema = self._schemas.get(table)
+        if schema is None:
+            raise ValueError(f"copy_many needs the schema of {table!r} registered")
+        if max_rows < 1:
+            raise ValueError(f"{table}: max_rows must be at least 1, got {max_rows}")
+        if not rows:
+            return 0
+        columns = schema_sql.insert_columns_for_data(schema, dict(rows[0]))
+        names = [c.name for c in columns]
+        unwritable = [c for c in columns if not schema_sql.copy_writes(c)]
+        if unwritable:
+            raise ValueError(
+                f"{table}: a copy cannot write the {unwritable[0].column_type} column {unwritable[0].name!r}; "
+                f"save the rows with an upsert"
+            )
+        params: list[list[Any]] = []
+        for row in rows:
+            data = dict(row)
+            if [c.name for c in schema_sql.insert_columns_for_data(schema, data)] != names:
+                raise ValueError(
+                    f"{table}: rows of one bulk copy must supply the same columns; "
+                    f"a server-default column is supplied by some rows and not others"
+                )
+            params.append(schema_sql.build_insert_params(schema, data))
+        key_positions = [names.index(name) for name in schema.pk_columns]
+        params.sort(key=lambda values: tuple(values[position] for position in key_positions))
+        measure = getattr(conn, "copy_request_bytes", None)
+        measured = measure(table, names, []) if callable(measure) else None
+        base = measured if isinstance(measured, int) and not isinstance(measured, bool) else 0
+        written = 0
+        for batch in schema_sql.bulk_batches(
+            params,
+            max_rows=max_rows,
+            max_bytes=max_bytes,
+            # a copy binds no parameters, so only the row and byte bounds cut it
+            max_params=max_rows * len(names),
+            base_bytes=base,
+            # each row after the first follows a ", " in the request's list of rows
+            position_bytes=lambda position: 2 if position else 0,
+        ):
+            await conn.copy_records_to_table(table, records=[tuple(values) for values in batch], columns=names)
+            written += len(batch)
+        _logger.debug("bulk copy", extra={"extra_data": {"table": table, "rows": written}})
+        return written
+
+    async def truncate(self, table: str) -> None:
+        """Empty ``table`` with ``TRUNCATE``, alone and outside any transaction.
+
+        On the rail the broker runs it (``NatsProxyL3Backend.truncate``, the ``l3.truncate``
+        request), under the database's DDL lock and only for a table of the caller's own data
+        space. On a direct pool it runs here, on one connection holding that same lock
+        (:func:`~threetears.core.data.migrations.ddl_lock.database_ddl_lock`), so it never meets a
+        migration's DDL halfway. ``TRUNCATE`` is not transactional, so it is refused inside a
+        request's bound transaction (:func:`bound_request_connection`) rather than run beside it.
+
+        :param table: the table, named as the store's other statements name it
+        :ptype table: str
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when a request-scoped connection is bound, or the name is not a plain
+            identifier
+        """
+        if _request_l3_conn.get() is not None:
+            raise ValueError(
+                f"TRUNCATE of {table!r} runs alone, outside any transaction; a request's bound connection is open"
+            )
+        if isinstance(self._pool, TruncatingStore):
+            await self._pool.truncate(table)
+            return
+        from threetears.core.data.migrations.ddl_lock import database_ddl_lock
+        from threetears.core.data.migrations.session import ConnectionSession
+
+        statement = f"TRUNCATE TABLE {as_written(_plain_identifier(table))}"
+        with _unmask_asyncpg_release_race():
+            async with self._pool.acquire() as conn, database_ddl_lock(ConnectionSession(conn)):
+                await conn.execute(statement)
+        _logger.info("table truncated", extra={"extra_data": {"table": table}})
 
     @property
     def rows_per_statement(self) -> int | None:

@@ -6,6 +6,35 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core, nats: a table is emptied with TRUNCATE and loaded again with COPY, through the L3 broker
+
+**Added:** `SchemaBackedCollection.truncate()` empties the table in L3 with `TRUNCATE`, outside any
+transaction, then drops the table from this process's caches (`CollectionRegistry.drop_table`: L1 rows,
+cached scans, derived caches; L2 entries are read past until each is read through again) and advances
+the table's write generation once, with no row broadcast, so a pod following the table drops it at its
+next catch-up. `TRUNCATE` fires no write-mark trigger, so the advance is the only signal. Safe to call
+twice. Refused for a collection with no durable store, a store that cannot truncate, or one that defers
+its L3 writes. For a table reloaded whole: deleting every row left a tombstone per row, and on
+YugabyteDB one such transaction ran 60-90 s and blocked every other writer.
+
+**Added:** `save_rows(..., copy=True)` inserts with `COPY` instead of upserting, insert-only: a key
+already held fails the write and the caller's transaction. The rows are ordered by key. L1 eviction and
+settling are as for an upsert. `copy=False`, the default, is unchanged. A jsonb or vector column is
+refused (asyncpg copies in the binary format only; a 3tears pool binds jsonb through a text codec, and a
+vector needs an insert's cast).
+
+**Added, the wire (the hub's broker answers both):** `l3.truncate`, body `{correlation_id,
+identity_token, namespace, table, timeout_ms}`, replying as `l3.query` does (a write's `generations`
+are kept); and `l3.tx.copy`, body `{correlation_id, identity_token, tx_id, table, columns, rows}`, each
+row's values encoded as a statement's parameters are (`transport_param`). `Subjects.l3_truncate()`;
+`Subjects.l3_tx("copy")`. Agent and tool pods are granted `l3.truncate` and the hub subscribes to it;
+the registry, which only reads, is not. `l3.tx.copy` rides the `l3.tx.*` grant pods already hold.
+
+**Added, the seams:** `TruncatingStore` and `CopyingStore` protocols; `SqlL3Backend.truncate` (through
+the broker on the rail; on a direct pool, on one connection holding the database's DDL lock) and
+`SqlL3Backend.copy_many` (the connection's `copy_records_to_table`, sized to the bus by the request it
+measures); `NatsProxyL3Backend.truncate`; the proxy connection's `copy_records_to_table`.
+
 ### release: the live Claude CLI batch runs in the release workflow
 
 **Changed:** `release.yml` gains a `live-claude-cli` job: `./scripts/test-live-claude-cli.sh` on the

@@ -833,6 +833,49 @@ class NatsProxyL3Backend:
         response = await self._send_query(query, list(params), operation, namespace)
         return _format_execute_tag(operation, response.get("row_count"))
 
+    async def truncate(self, table: str, *, namespace: str | None = None) -> None:
+        """empty one of this principal's tables: the ``l3.truncate`` request, outside any transaction.
+
+        the broker runs ``TRUNCATE TABLE`` alone, under the database's DDL lock, and only for a
+        declared table of the caller's own data space; ``table`` is named as a statement names it,
+        and ``namespace`` is bound as it is for ``l3.query``. ``TRUNCATE`` fires no row trigger, so
+        a reply naming the generation the broker advanced for the table is kept as a write's is
+        (:func:`~threetears.core.backends.broker_generation.record_reply_generations`). an empty
+        table is not an error.
+
+        :param table: the table to empty
+        :ptype table: str
+        :param namespace: target namespace (default: this principal's own)
+        :ptype namespace: str | None
+        :return: nothing
+        :rtype: None
+        :raises DataLayerUnavailableError: if the broker refuses or does not answer
+        """
+        payload = self._truncate_payload(table, namespace)
+        subject = Subjects.l3_truncate(namespace=self.ns).path
+        response = await self.nats_request(subject, payload)
+        if not response.get("success", False):
+            self.raise_for_failed_reply(response, "L3 truncate")
+        record_reply_generations(response, ends_write=True)
+
+    def _truncate_payload(self, table: str, namespace: str | None) -> dict[str, Any]:
+        """the ``l3.truncate`` request for ``table``.
+
+        :param table: the table to empty
+        :ptype table: str
+        :param namespace: target namespace
+        :ptype namespace: str | None
+        :return: the request payload
+        :rtype: dict[str, Any]
+        """
+        return {
+            "correlation_id": str(uuid7()),
+            "identity_token": self.forwarded_identity_token(),
+            "namespace": namespace or self.default_namespace,
+            "table": table,
+            "timeout_ms": self.timeout_ms,
+        }
+
     def forwarded_identity_token(self) -> str:
         """the CURRENT hub-minted identity token to forward on an L3 request.
 
@@ -1576,6 +1619,103 @@ class _ProxyConnection:
             self._backend.raise_for_failed_reply(response, "tx.fetch")
         raw_rows: list[dict[str, Any]] = response.get("rows", [])
         return [_deserialize_row(r) for r in raw_rows]
+
+    def _copy_payload(self, table: str, columns: Sequence[str], records: Sequence[Sequence[Any]]) -> dict[str, Any]:
+        """the ``l3.tx.copy`` request for rows of ``table`` in the open transaction.
+
+        each row's values cross the rail as a statement's parameters do
+        (:func:`~threetears.core.backends.schema_sql.transport_param`), in the order of ``columns``.
+
+        :param table: the table copied into
+        :ptype table: str
+        :param columns: the columns each row supplies, in order
+        :ptype columns: Sequence[str]
+        :param records: the rows' values, each in the order of ``columns``
+        :ptype records: Sequence[Sequence[Any]]
+        :return: the request payload
+        :rtype: dict[str, Any]
+        """
+        return {
+            "correlation_id": str(uuid7()),
+            "identity_token": self._backend.forwarded_identity_token(),
+            "tx_id": str(self.tx_id),
+            "table": table,
+            "columns": list(columns),
+            "rows": [[transport_param(value) for value in record] for record in records],
+        }
+
+    def copy_request_bytes(self, table: str, columns: Sequence[str], records: Sequence[Sequence[Any]]) -> int:
+        """the bytes of the ``l3.tx.copy`` message :meth:`copy_records_to_table` sends for ``records``.
+
+        built and encoded exactly as it is sent, so a caller sizing a copy for the bus measures what
+        goes on it.
+
+        :param table: the table copied into
+        :ptype table: str
+        :param columns: the columns each row supplies, in order
+        :ptype columns: Sequence[str]
+        :param records: the rows' values
+        :ptype records: Sequence[Sequence[Any]]
+        :return: the size of the request, in bytes
+        :rtype: int
+        :raises DataLayerUnavailableError: when no identity token is available, as sending would
+        """
+        return len(
+            self._backend.encode_request(
+                Subjects.l3_tx("copy", namespace=self._backend.ns).path, self._copy_payload(table, columns, records)
+            )
+        )
+
+    async def copy_records_to_table(
+        self,
+        table_name: str,
+        *,
+        records: Sequence[Sequence[Any]],
+        columns: Sequence[str],
+        schema_name: str | None = None,
+        timeout: float | None = None,
+    ) -> str:
+        """bulk-insert ``records`` into ``table_name`` with ``COPY``, in the open transaction.
+
+        mirrors :meth:`asyncpg.Connection.copy_records_to_table`: the broker runs it on the
+        transaction's pinned connection (the ``l3.tx.copy`` request). insert-only: a key already
+        held fails the copy, and so the transaction. only inside a transaction, where the broker
+        holds a connection to copy on; the table is resolved in the namespace bound at ``tx.begin``.
+
+        :param table_name: the table copied into
+        :ptype table_name: str
+        :param records: the rows' values, each in the order of ``columns``
+        :ptype records: Sequence[Sequence[Any]]
+        :param columns: the columns each row supplies
+        :ptype columns: Sequence[str]
+        :param schema_name: refused when given: the session's namespace names the schema
+        :ptype schema_name: str | None
+        :param timeout: unused; the backend's timeout bounds the request
+        :ptype timeout: float | None
+        :return: the asyncpg-shape status tag, ``"COPY <rows>"``
+        :rtype: str
+        :raises ValueError: when no transaction is open, or ``schema_name`` is given
+        :raises DataLayerUnavailableError: on broker error
+        """
+        del timeout
+        if self.tx_id is None:
+            raise ValueError(
+                "copy_records_to_table runs only inside an open transaction: the broker copies on the "
+                "transaction's pinned connection (l3.tx.copy)"
+            )
+        if schema_name is not None:
+            raise ValueError(
+                "schema_name= is not allowed on the L3 rail; the namespace is declared at "
+                "conn.transaction(namespace=...) and bound on the broker for the session"
+            )
+        payload = self._copy_payload(table_name, columns, records)
+        subject = Subjects.l3_tx("copy", namespace=self._backend.ns).path
+        response = await self._backend.nats_request(subject, payload)
+        if not response.get("success", False):
+            self._backend.raise_for_failed_reply(response, "tx.copy")
+        row_count = response.get("row_count")
+        copied = row_count if isinstance(row_count, int) and not isinstance(row_count, bool) else len(records)
+        return f"COPY {copied}"
 
     async def abort_tx(self) -> None:
         """send ``tx.rollback`` and clear the local tx_id.

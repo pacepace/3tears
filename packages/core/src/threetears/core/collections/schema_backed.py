@@ -43,9 +43,11 @@ from typing import Any, ClassVar, Generic, Literal, TypeVar, overload
 from threetears.core.backends.protocol import (
     BulkDeletingStore,
     BulkDurableStore,
+    CopyingStore,
     DurableStore,
     KeyLedReadingStore,
     OrderedDurableStore,
+    TruncatingStore,
 )
 from threetears.core.backends.schema_sql import (
     coerce_row as _coerce_row_fn,
@@ -1924,6 +1926,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         conn: Any,
         max_rows: int | None = None,
         max_bytes: int | None = None,
+        copy: bool = False,
     ) -> int:
         """upsert many rows on a caller's transaction, through the collection's durable store.
 
@@ -1947,6 +1950,14 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         the write's time; an upsert of a row already held keeps its ``date_created``, an immutable
         column the conflict clause does not set. No CAS fence applies: a bulk write replaces.
 
+        **With** ``copy=True`` **the write inserts and never updates**, for a load into a table just
+        emptied (:meth:`truncate`): the rows go to the store's
+        :meth:`~threetears.core.backends.protocol.CopyingStore.copy_many` -- ``COPY``, the rows ordered
+        by key, through ``l3.tx.copy`` on the L3 rail -- and a row at a time through ``upsert`` with
+        ``on_conflict="raise"`` to a store without it. A key already held fails the write, and so the
+        caller's transaction. Everything else -- the checks, the stamps, the keys leaving L1 and
+        settling with the transaction -- is as for an upsert.
+
         :param rows: the rows, each keyed by column; a nullable column may be absent
         :ptype rows: list[dict[str, Any]]
         :param conn: the caller's connection, its transaction opened by :class:`CallerTransaction`
@@ -1956,6 +1967,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :param max_bytes: the most bytes one statement's whole request comes to on the L3 rail;
             :attr:`BULK_MAX_BYTES` when None
         :ptype max_bytes: int | None
+        :param copy: insert with ``COPY`` rather than upsert; a key already held fails the write
+        :ptype copy: bool
         :return: how many rows were submitted: every row given, whether the conflict clause updated
             a row already held, left it as it was (``on_conflict="ignore"``) or raised
         :rtype: int
@@ -1994,7 +2007,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             transaction.enroll(self, key, row=data)
             self._evict_l1(key)
         written = 0
-        if stamped and isinstance(store, BulkDurableStore):
+        if copy:
+            written = await self._copy_rows(store, stamped, conn=conn, max_rows=max_rows, max_bytes=max_bytes)
+        elif stamped and isinstance(store, BulkDurableStore):
             written = await store.upsert_many(
                 self.table_name,
                 stamped,
@@ -2010,10 +2025,100 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 )
                 written += 1
         log.debug(
-            "bulk upsert written on the caller's transaction",
+            "bulk copy written on the caller's transaction"
+            if copy
+            else "bulk upsert written on the caller's transaction",
             extra={"extra_data": {"table": self.table_name, "rows": written}},
         )
         return written
+
+    async def _copy_rows(
+        self,
+        store: DurableStore,
+        rows: list[dict[str, Any]],
+        *,
+        conn: Any,
+        max_rows: int | None,
+        max_bytes: int | None,
+    ) -> int:
+        """insert ``rows``, already stamped and checked, on the caller's transaction: :meth:`save_rows` with ``copy``.
+
+        :param store: the collection's durable store
+        :ptype store: DurableStore
+        :param rows: the rows
+        :ptype rows: list[dict[str, Any]]
+        :param conn: the caller's connection
+        :ptype conn: Any
+        :param max_rows: the most rows one copy carries; :attr:`BULK_MAX_ROWS` when None
+        :ptype max_rows: int | None
+        :param max_bytes: the most bytes one copy's request comes to; :attr:`BULK_MAX_BYTES` when None
+        :ptype max_bytes: int | None
+        :return: rows written
+        :rtype: int
+        """
+        if not rows:
+            return 0
+        if isinstance(store, CopyingStore):
+            return await store.copy_many(
+                self.table_name,
+                rows,
+                max_rows=max_rows or self.BULK_MAX_ROWS,
+                max_bytes=max_bytes or self.BULK_MAX_BYTES,
+                conn=conn,
+            )
+        # a store that cannot copy: still insert-only, a write per row
+        for data in rows:
+            await store.upsert(self.table_name, data, pk=self.schema.pk_columns, on_conflict="raise", conn=conn)
+        return len(rows)
+
+    async def truncate(self) -> None:
+        """empty the table in L3 with ``TRUNCATE``, then drop what every cache holds of it.
+
+        For a table reloaded whole from a source that changed: deleting every row leaves a
+        tombstone per row behind, and on YugabyteDB one transaction deleting millions of them runs
+        for minutes and blocks every other writer. ``TRUNCATE`` leaves none. It is not
+        transactional and runs alone, so it takes no connection: the store runs it outside any
+        transaction (:meth:`~threetears.core.backends.protocol.TruncatingStore.truncate`; on the L3
+        rail the ``l3.truncate`` request, which the broker runs under the database's DDL lock). Load
+        the table again after with :meth:`save_rows` and ``copy=True``.
+
+        Then this process drops the table from its caches (:meth:`CollectionRegistry.drop_table
+        <threetears.core.collections.registry.CollectionRegistry.drop_table>`): every row leaves L1,
+        cached scans and derived caches are dropped, and its L2 entries are read past until each is
+        read through from L3 again (:meth:`drop_cached_table`), since a pod cannot list L2 to delete
+        them. Other processes learn of it from the table's write generation: ``TRUNCATE`` fires no
+        statement trigger and leaves no write mark (:mod:`~threetears.core.collections.write_marks`),
+        so this advances the generation itself, as a commit does, with no row broadcast to cover
+        the advance; a follower's catch-up pass finds an advance it heard no row of and drops the
+        table too. Safe to call again: an empty table truncates, and the caches drop, alike.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the collection has no durable store, its store cannot truncate, or
+            it defers its L3 writes (a buffered row would land after the table was emptied)
+        :raises GenerationUnavailableError: when the table's write generation had to advance and
+            could not; the table is emptied and this process's caches dropped
+        """
+        store = self._durable_store()
+        if store is None:
+            raise ValueError(f"{type(self).__name__}.truncate: {self.table_name} has no durable store to empty")
+        if not isinstance(store, TruncatingStore):
+            raise ValueError(f"{type(self).__name__}.truncate: the store of {self.table_name} cannot truncate")
+        if self._defers_l3_writes:
+            raise ValueError(
+                f"{type(self).__name__}.truncate: {self.table_name} defers its L3 writes, and a buffered row "
+                f"would land after the table was emptied"
+            )
+        await store.truncate(self.table_name)
+        registry = self.registry
+        if registry is not None:
+            registry.drop_table(self.table_name, reason="truncated")
+        if registry is None or registry.get_collection(self.table_name) is not self:
+            self.drop_cached_table()
+        bump = await self._bump_after_commit()
+        log.info("table truncated", extra={"extra_data": {"table": self.table_name, "generation": bump.token}})
+        if bump.failure is not None:
+            raise bump.failure
 
     async def delete_rows(
         self,

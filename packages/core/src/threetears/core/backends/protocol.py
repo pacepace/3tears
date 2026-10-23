@@ -32,12 +32,14 @@ __all__ = [
     "L3_RAIL_ROW_CAP",
     "BulkDeletingStore",
     "BulkDurableStore",
+    "CopyingStore",
     "DurableStore",
     "KeyLedReadingStore",
     "L3Backend",
     "L3Reader",
     "OrderedDurableStore",
     "RowcountUnreadableError",
+    "TruncatingStore",
     "parse_rowcount",
 ]
 
@@ -229,6 +231,62 @@ class BulkDurableStore(Protocol):
         :ptype conn: Any
         :return: rows written
         :rtype: int
+        """
+        ...
+
+
+@runtime_checkable
+class CopyingStore(Protocol):
+    """A durable store that bulk-loads new rows of one table with ``COPY``, insert-only.
+
+    The seam :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.save_rows`
+    writes through when asked to copy. A store without it is written a row at a time through
+    :meth:`DurableStore.upsert` with ``on_conflict="raise"``. No method takes SQL.
+    """
+
+    async def copy_many(
+        self,
+        table: str,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        max_rows: int,
+        max_bytes: int,
+        conn: Any,
+    ) -> int:
+        """Insert every row of ``rows`` into ``table``; a key already held fails the write.
+
+        :param rows: the rows, each keyed by column, every row supplying the same columns
+        :ptype rows: Sequence[Mapping[str, Any]]
+        :param max_rows: the most rows one copy may carry
+        :ptype max_rows: int
+        :param max_bytes: the most bytes one copy's whole request may come to (a message's share of
+            a bus)
+        :ptype max_bytes: int
+        :param conn: the caller's transaction handle the copies bind to. A failing copy fails that
+            transaction whole
+        :ptype conn: Any
+        :return: rows written
+        :rtype: int
+        """
+        ...
+
+
+@runtime_checkable
+class TruncatingStore(Protocol):
+    """A durable store that empties one table at once, outside any transaction.
+
+    The seam :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.truncate`
+    empties through. ``TRUNCATE`` leaves no row behind to tombstone, where deleting every row
+    leaves one per row; it is not transactional and runs alone. No method takes SQL.
+    """
+
+    async def truncate(self, table: str) -> None:
+        """Remove every row of ``table``; an empty table is not an error.
+
+        :param table: the table
+        :ptype table: str
+        :return: nothing
+        :rtype: None
         """
         ...
 
