@@ -57,7 +57,6 @@ from threetears.datasources.export_read import (
     _check_export_location,
     _counted_total,
     _delete_after_load,
-    _load_rows,
     _manifest_entries,
     _ManifestFile,
     _parquet_rows,
@@ -79,7 +78,6 @@ __all__ = [
     "export_counted_partitions",
     "export_partitions",
     "presigned_counted_partition",
-    "presigned_partition_files",
     "read_counted_partition",
 ]
 
@@ -336,58 +334,6 @@ async def _proven(
                 f"{before[value].row_count}"
             )
     return files
-
-
-async def presigned_partition_files(
-    store: PresigningExportStore,
-    result: DatasourceExportResult,
-    *,
-    bucket: str,
-    partition_by: str,
-    expires_in: int = DEFAULT_PRESIGN_SECONDS,
-) -> dict[str | None, list[LoadFile]]:
-    """a partitioned export's files, presigned and grouped by part, each with its manifest count.
-
-    The partitioned counterpart of :func:`~threetears.datasources.export_read.presigned_export_files`,
-    for a load of each part through
-    :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.load_files`. The
-    warehouse writes a part's value into its directory name, not into its files, so a part's load
-    passes it back as a constant (``constants={partition_by: value}``). Checked as
-    :func:`export_partitions` checks the manifest -- in the caller's bucket, the manifest the
-    prefix's own, every file in one part's directory -- and the manifest must count every file, the
-    counts adding up to the rows the warehouse wrote. The fingerprints that prove the parts held
-    still, and the delete after the load, are the caller's.
-
-    :param store: an object store over the export bucket that presigns
-    :ptype store: PresigningExportStore
-    :param result: the export
-    :ptype result: DatasourceExportResult
-    :param bucket: the bucket the caller reads; an export in any other is refused
-    :ptype bucket: str
-    :param partition_by: the column the export is divided by
-    :ptype partition_by: str
-    :param expires_in: how long each URL is valid, in seconds
-    :ptype expires_in: int
-    :return: part value (``None`` for NULL) -> its files, in the manifest's order; an export of no
-        rows has no parts
-    :rtype: dict[str | None, list[LoadFile]]
-    :raises IncompleteExportError: when the export is elsewhere, its manifest names a file outside a
-        part's directory or counts no rows for one, or its counts differ from the warehouse's
-    """
-    _check_export_location(result, bucket=bucket)
-    if result.row_count == 0:
-        return {}
-    manifest = json.loads(await _read_object(store, result.manifest_path))
-    keyed = {
-        value: [(file.key, _load_rows(file)) for file in files]
-        for value, files in _partition_files(manifest, result, partition_by).items()
-    }
-    counted = sum(rows for files in keyed.values() for _, rows in files)
-    if counted != result.row_count:
-        raise IncompleteExportError(
-            f"the export's manifest counts {counted} rows, the warehouse says it wrote {result.row_count}"
-        )
-    return {value: await _presign_load_files(store, files, expires_in=expires_in) for value, files in keyed.items()}
 
 
 @dataclass(frozen=True)

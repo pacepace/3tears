@@ -18,8 +18,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from threetears.core.backends.protocol import LoadFile
-from threetears.datasources.export_read import ExportNotDeletedError, IncompleteExportError
+from threetears.core.backends.protocol import LOAD_FILES_MAX_WAIT_SECONDS, LoadFile
+from threetears.datasources.export_read import DEFAULT_PRESIGN_SECONDS, ExportNotDeletedError, IncompleteExportError
 from threetears.datasources.partitioned_export import (
     CountedFile,
     CountedPartitionedExport,
@@ -249,3 +249,8 @@ async def test_the_caller_deletes_a_proven_export_and_a_failed_delete_is_raised_
         unwinding=RuntimeError("the load failed"),
     )
     assert unwound is None
+
+
+def test_a_presigned_file_outlives_the_longest_wait_for_its_load() -> None:
+    # the broker reaches a file anywhere inside the pod's wait; a URL that expired first fails the load
+    assert DEFAULT_PRESIGN_SECONDS > LOAD_FILES_MAX_WAIT_SECONDS

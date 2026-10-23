@@ -1,0 +1,10 @@
+# Public names whose callers live outside this repo, for tests/enforcement/test_public_api_has_a_caller.py.
+# One `<module path>:<name>  # <who calls it, and where>` per line. A name nothing calls belongs nowhere:
+# make it private and test it through the front door instead.
+packages/core/src/threetears/core/cache/duckdb.py:fetch_arrow  # bluelabsio/14-eng-ai-bot-agent-reports: RetainingDuckDB.export_rows (src/aibots_reports/pod/retention.py) sizes its own export through it
+packages/datasources/src/threetears/datasources/partitioned_export.py:CountedFile  # bluelabsio/14-eng-ai-bot-agent-reports: the element type of CountedPartitionedExport.files, which src/aibots_reports/pod/loader.py and lsf_export.py read
+packages/datasources/src/threetears/datasources/partitioned_export.py:CountedPartitionedExport  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/loader.py and lsf_export.py hold one per LSF export
+packages/datasources/src/threetears/datasources/partitioned_export.py:delete_counted_export  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/loader.py and lsf_export.py delete each export after its load
+packages/datasources/src/threetears/datasources/partitioned_export.py:export_counted_partitions  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/loader.py and lsf_export.py export a model run's LSF rows
+packages/datasources/src/threetears/datasources/partitioned_export.py:presigned_counted_partition  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/loader.py and lsf_export.py hand a state's files to load_files
+packages/datasources/src/threetears/datasources/partitioned_export.py:read_counted_partition  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/loader.py and lsf_export.py read a state's rows

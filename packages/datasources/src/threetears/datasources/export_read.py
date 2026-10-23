@@ -37,11 +37,11 @@ the relation held still, and the counts prove nothing was lost on the way.
 :class:`~datetime.datetime`), where the read rail carries JSON values; a caller coercing rows to its
 columns takes both.
 
-**Or handed to L3 as files** (:func:`presigned_export_files`): the export's files presigned, each
-with its own row count, for the L3 broker to stream and ``COPY`` itself
+**Or handed to L3 as files**, for a counted partitioned export
+(:func:`~threetears.datasources.partitioned_export.presigned_counted_partition`): the files
+presigned, each with its own row count, for the L3 broker to stream and ``COPY`` itself
 (:meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.load_files`), so the rows
-never pass through the pod. The caller then owns what :func:`export_part` does around the read: the
-fingerprints that prove the part held still, and the delete after the load.
+never pass through the pod.
 
 Needs ``pyarrow`` (the ``export`` extra), imported only when a file is read.
 """
@@ -72,7 +72,6 @@ __all__ = [
     "PresigningExportStore",
     "export_part",
     "export_select",
-    "presigned_export_files",
     "read_export",
 ]
 
@@ -264,22 +263,6 @@ def _counted_total(files: Sequence[_ManifestFile]) -> int | None:
     return None if any(rows is None for rows in counts) else sum(rows for rows in counts if rows is not None)
 
 
-def _load_rows(file: _ManifestFile) -> int:
-    """the rows a manifest counts for a file handed to L3, which needs its count.
-
-    :param file: the file
-    :ptype file: _ManifestFile
-    :return: its count
-    :rtype: int
-    :raises IncompleteExportError: when the manifest counts none
-    """
-    if file.rows is None:
-        raise IncompleteExportError(
-            f"the export's manifest counts no rows for {file.url!r}; a file handed to L3 needs its count"
-        )
-    return file.rows
-
-
 def _parquet_rows(data: bytes) -> list[dict[str, Any]]:
     """the rows of one parquet file.
 
@@ -365,47 +348,6 @@ async def _presign_load_files(
     :rtype: list[LoadFile]
     """
     return [LoadFile(url=await store.presigned_get_url(key, expires_in=expires_in), rows=rows) for key, rows in keyed]
-
-
-async def presigned_export_files(
-    store: PresigningExportStore,
-    result: DatasourceExportResult,
-    *,
-    bucket: str,
-    expires_in: int = DEFAULT_PRESIGN_SECONDS,
-) -> list[LoadFile]:
-    """an export's files, presigned, each with the rows the manifest counts for it: a load's files.
-
-    For :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.load_files`: the
-    broker fetches each URL and holds each file to its count. Checked as :func:`read_export` checks
-    an export before reading it -- in the caller's bucket, its manifest its prefix's own, every file
-    under its prefix -- and the manifest must count every file, the counts adding up to the rows the
-    warehouse wrote. An export of no rows has no files.
-
-    :param store: an object store over the export bucket that presigns
-    :ptype store: PresigningExportStore
-    :param result: the export
-    :ptype result: DatasourceExportResult
-    :param bucket: the bucket the caller reads; an export in any other is refused
-    :ptype bucket: str
-    :param expires_in: how long each URL is valid, in seconds
-    :ptype expires_in: int
-    :return: the files, in the manifest's order
-    :rtype: list[LoadFile]
-    :raises IncompleteExportError: when the export is elsewhere, its manifest names a file outside it
-        or counts no rows for one, or its counts differ from the warehouse's
-    """
-    _check_export_location(result, bucket=bucket)
-    if result.row_count == 0:
-        return []
-    manifest = json.loads(await _read_object(store, result.manifest_path))
-    keyed = [(file.key, _load_rows(file)) for file in _manifest_files(manifest, result)]
-    counted = sum(rows for _, rows in keyed)
-    if counted != result.row_count:
-        raise IncompleteExportError(
-            f"the export's manifest counts {counted} rows, the warehouse says it wrote {result.row_count}"
-        )
-    return await _presign_load_files(store, keyed, expires_in=expires_in)
 
 
 async def export_part(
