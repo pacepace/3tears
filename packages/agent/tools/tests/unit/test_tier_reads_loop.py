@@ -7,7 +7,6 @@ last to stop logs the reads since its last line.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -15,21 +14,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from threetears.agent.tools.server import ToolServer
-from threetears.core.collections.tier_reads import ReadTier, log_tier_reads, log_tier_reads_every, record_tier_read
-
-
-@pytest.mark.asyncio
-async def test_the_timer_logs_the_reads_each_period(caplog: pytest.LogCaptureFixture) -> None:
-    log_tier_reads()
-    record_tier_read("namespaces", ReadTier.L3)
-    with caplog.at_level(logging.INFO, logger="threetears.core.collections.tier_reads"):
-        task = asyncio.create_task(log_tier_reads_every(every=0.01))
-        await asyncio.sleep(0.05)
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-    assert "collection reads by tier" in [r.getMessage() for r in caplog.records]
-    assert log_tier_reads() == {}
+from threetears.core.collections.tier_reads import (
+    ReadTier,
+    hold_tier_reads_timer,
+    record_tier_read,
+    release_tier_reads_timer,
+)
 
 
 def _mock_nc() -> AsyncMock:
@@ -77,34 +67,36 @@ def _lines(caplog: pytest.LogCaptureFixture) -> list[object]:
     ]
 
 
+async def _drained() -> dict[str, dict[str, int]]:
+    """the reads since the last line, as the last holder of the process's timer logs them."""
+    hold_tier_reads_timer()
+    return await release_tier_reads_timer()
+
+
 @pytest.mark.asyncio
-async def test_the_tool_server_runs_the_timer_and_its_stop_logs_the_last_reads(
+async def test_the_tool_server_holds_the_timer_while_it_runs_and_its_stop_logs_the_last_reads(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    log_tier_reads()
+    await _drained()
     with (
         patch("threetears.agent.tools.server.nats_connect", return_value=_mock_nc()),
-        patch("threetears.core.collections.tier_reads.TIER_READS_LOG_SECONDS", 0.01),
         caplog.at_level(logging.INFO, logger="threetears.core.collections.tier_reads"),
     ):
         server, serve_task = await _serving("tier-pod")
         record_tier_read("namespaces", ReadTier.L3)
-        for _ in range(100):
-            if _lines(caplog):
-                break
-            await asyncio.sleep(0.01)
-        assert _lines(caplog) == [{"namespaces": {"l3": 1}}], "the running server's timer logs each period"
+        # the server holds the timer: a holder that lets go beside it logs nothing
+        assert await _drained() == {}, "the running server holds the process's timer"
+        assert _lines(caplog) == []
 
-        record_tier_read("namespaces", ReadTier.L1)
         await server.shutdown()
         await asyncio.wait_for(serve_task, timeout=1.0)
-    assert _lines(caplog)[-1] == {"namespaces": {"l1": 1}}, "stopping logs the reads since the last line"
-    assert log_tier_reads() == {}
+    assert _lines(caplog) == [{"namespaces": {"l3": 1}}], "stopping logs the reads since the last line"
+    assert await _drained() == {}
 
 
 @pytest.mark.asyncio
 async def test_two_tool_servers_in_one_process_share_one_timer(caplog: pytest.LogCaptureFixture) -> None:
-    log_tier_reads()
+    await _drained()
     with (
         patch("threetears.agent.tools.server.nats_connect", side_effect=[_mock_nc(), _mock_nc()]),
         caplog.at_level(logging.INFO, logger="threetears.core.collections.tier_reads"),

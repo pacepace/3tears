@@ -31,7 +31,7 @@ from threetears.core.collections import (
     GenerationVerdict,
     WriteBuffer,
 )
-from threetears.core.collections.tier_reads import log_tier_reads
+from threetears.core.collections.tier_reads import hold_tier_reads_timer, release_tier_reads_timer
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.kv import FakeNatsClient
@@ -622,6 +622,12 @@ class TestADerivedCacheThatFails:
         assert reader.registry.settle_generation(_TABLE, await source.current(_TABLE)) is GenerationVerdict.MISSED
 
 
+async def _drained() -> dict[str, dict[str, int]]:
+    """the reads since the last line, as the last holder of the process's tier-read timer logs them."""
+    hold_tier_reads_timer()
+    return await release_tier_reads_timer()
+
+
 class TestReadsAreCountedByTier:
     """each key read counts the tier that answered it: L1 (this process), L2 (the shared cache), L3 (the store)."""
 
@@ -629,30 +635,30 @@ class TestReadsAreCountedByTier:
     async def test_a_row_only_the_store_holds_is_read_from_l3_then_from_l1(self, bus: _Lossy, source: _Source) -> None:
         rows: dict[str, dict[str, Any]] = {"r1": {"id": "r1", "member_id": "m1"}}
         pod = _Pod(bus, rows, source, scope="one")
-        log_tier_reads()
+        await _drained()
 
         assert await pod.members.ensure("r1") is not None
-        assert log_tier_reads() == {_TABLE: {"l3": 1}}
+        assert await _drained() == {_TABLE: {"l3": 1}}
         assert await pod.members.ensure("r1") is not None
-        assert log_tier_reads() == {_TABLE: {"l1": 1}}
+        assert await _drained() == {_TABLE: {"l1": 1}}
 
     @pytest.mark.asyncio
     async def test_a_subscript_read_counts_its_tier_l1_included(self, bus: _Lossy, source: _Source) -> None:
         rows: dict[str, dict[str, Any]] = {"r1": {"id": "r1", "member_id": "m1"}}
         pod = _Pod(bus, rows, source, scope="one")
-        log_tier_reads()
+        await _drained()
 
         await asyncio.to_thread(lambda: pod.members["r1"])
-        assert log_tier_reads() == {_TABLE: {"l3": 1}}
+        assert await _drained() == {_TABLE: {"l3": 1}}
         await asyncio.to_thread(lambda: pod.members["r1"])
-        assert log_tier_reads() == {_TABLE: {"l1": 1}}
+        assert await _drained() == {_TABLE: {"l1": 1}}
 
     @pytest.mark.asyncio
     async def test_a_row_another_pod_saved_is_read_from_l2(self, bus: _Lossy, source: _Source) -> None:
         rows: dict[str, dict[str, Any]] = {}
         writer, reader = _Pod(bus, rows, source, scope="one"), _Pod(bus, rows, source, scope="one")
         await _save(writer, "r1", "m1")
-        log_tier_reads()
+        await _drained()
 
         assert await reader.members.ensure("r1") is not None
-        assert log_tier_reads() == {_TABLE: {"l2": 1}}
+        assert await _drained() == {_TABLE: {"l2": 1}}
