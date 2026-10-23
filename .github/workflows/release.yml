@@ -145,10 +145,50 @@ jobs:
       # integration is excluded because it is its own suite (./scripts/test-integration.sh), not because
       # the runner lacks docker: ubuntu-latest has a daemon, so a docker-gated unit test here runs.
       - name: Test (unit + enforcement; the integration suite runs separately)
-        run: uv run pytest packages/ tests/ -m "not integration" -v
+        # the same sessions CI runs (see the script's header): one session over the whole suite
+        # outgrew the runner's memory under xdist
+        run: ./scripts/ci-unit-tests.sh -v
+
+  # docs/releasing.md, step 4: real structured calls through the real Claude CLI and the session
+  # pool's live proofs, on the exact commit being released. Every other test of the subscription
+  # route fakes the CLI's messages, which is how 0.55.0 shipped with a third of one consumer's
+  # structured calls failing. It gates `build`, so a failing batch publishes nothing. The Agent SDK
+  # bundles its own CLI, so the runner needs only the dev install and the subscription token
+  # (repository secret CLAUDE_CODE_OAUTH_TOKEN, from `claude setup-token`). A missing token fails
+  # the job: the script turns the test on itself rather than skipping.
+  live-claude-cli:
+    needs: tag-on-main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Live Claude CLI batch
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: ./scripts/test-live-claude-cli.sh -v
+
+      - name: Evidence
+        if: always()
+        run: |
+          {
+            echo "### Live Claude CLI batch"
+            echo '```'
+            cat build/release-evidence/live-claude-cli.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   build:
-    needs: check
+    needs: [check, live-claude-cli]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

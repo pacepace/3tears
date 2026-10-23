@@ -317,7 +317,8 @@ the arms are prepared and started. That campaign is created exploratory, since a
 question of what it found, `campaign_create` an aspect over the sweep's runs (`run_ids` from `job_poll`) with its arms
 named by `from_run_ids`; the question reads as asked after the runs, and the page discloses when. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
 the arms in flight and launches none after them. An arm refused at its launch, or whose run ends `failed`, ends
-the sweep `failed`. The judge and simulator are the sweep's. Where it names none, the role's default is resolved
+the sweep `failed`, except an arm whose run failed because it measured nothing (every cell excluded, as for a model
+no allowed provider serves): that arm fails alone and the sweep goes on to the others. The judge and simulator are the sweep's. Where it names none, the role's default is resolved
 once for every arm (by the one interleaved launch, or from the first arm's run when they launch one by one), so a
 role default that moves mid-sweep cannot split the arms.
 
@@ -393,10 +394,10 @@ is dated now and reads as declared after the runs.
 |---|---|
 | `kind`, `shape` | `"campaign"` and the shape's version (`CAMPAIGN_JSON_SHAPE`, 2) |
 | `campaign_id`, `basis`, `analysis_id` | the campaign; `analysis` or `code_only`; the memo's analysis, or null |
-| `readings` | code's readings (`CampaignReadings`): the `kind`, `alpha`, the control, and `readings` (a change's rows), `pairs` (a choice's), `measures` (a measurement's), `floors` and `bars`, each row with its interval and reason |
+| `readings` | code's readings (`CampaignReadings`): the `kind`, `alpha`, the control, and `readings` (a change's rows), `pairs` (a choice's), `measures` (a measurement's), `floors` and `bars`, each row with its interval and reason. Every float is to twelve significant figures (a declared one, like `alpha`, a bar or a margin, has fewer and is unchanged), so one campaign serves the same JSON across Python builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary |
 | `recommendation` | the writer's `arm` (its label, for display), its `variant_key` (the key the analysis recorded for that arm, which a call's `variant_key` is compared to) and `confidence`, or null |
 | `call` | the recorded call (`CampaignCall`), or null |
-| `aspects` | each aspect's `aspect`, `bundle_fingerprint`, `bundle_schema_version` and `question_after_runs`: what was set after its runs (`late`: `question` or `control`), when (`at`, null with no orderable time) and when the runs began (`first_run_at`), or null. Its readings read as asked either way; this says when, for a reader to judge |
+| `aspects` | each aspect's `aspect`, `bundle_fingerprint` (`v2:` and a digest; one with no prefix was recorded before fingerprints rounded floats), `bundle_schema_version` and `question_after_runs`: what was set after its runs (`late`: `question` or `control`), when (`at`, null with no orderable time) and when the runs began (`first_run_at`), or null. Its readings read as asked either way; this says when, for a reader to judge |
 
 Each aspect's bundle is not inlined: it is written beside the page as `bundle-<aspect>.json` (the label in lower case, hyphenated),
 and the fingerprint names it. Branch on the typed fields, never on a row's `reason`, which is words.
@@ -614,7 +615,9 @@ frozen case, never a generated one.
 
 - `reporter_case_freeze` (write) freezes a campaign's analysis bundle into a case of a reporter template —
   with `recorded_analysis_id`, the memo the campaign got too, and any reader `labels` on it — and answers
-  with the case id, its bundle fingerprint and the `limits` the freeze recorded.
+  with the case id, its bundle fingerprint and the `limits` the freeze recorded. Each label is a reader's verdict:
+  it names its `reader` (omitted, the caller), and the host's `attests_person` must vouch that the caller relays
+  that reader's verdict, or the freeze is refused (403) and nothing is written; a freeze with no labels asks nothing.
 - `reporter_cases_list` reads the template's bank: which case each campaign and memo launches, and what
   superseded or retired the rest.
 - `reporter_case_archive` retires a case or restores it.

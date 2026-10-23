@@ -32,6 +32,7 @@ CAS.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 from collections.abc import Callable, Mapping, Sequence
@@ -43,9 +44,14 @@ from typing import Any, ClassVar, Generic, Literal, TypeVar, overload
 from threetears.core.backends.protocol import (
     BulkDeletingStore,
     BulkDurableStore,
+    CopyingStore,
     DurableStore,
     KeyLedReadingStore,
+    LoadFile,
+    LoadingStore,
     OrderedDurableStore,
+    TruncatingStore,
+    load_requests,
 )
 from threetears.core.backends.schema_sql import (
     coerce_row as _coerce_row_fn,
@@ -60,7 +66,7 @@ from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.flush import FlushStrategy
 from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUMNS, L2_REVISION_COLUMN
 from threetears.core.entities.base import BaseEntity
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "BIGINT_TYPE",
@@ -1917,6 +1923,16 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     #: (:data:`~threetears.core.backends.protocol.L3_RAIL_ROW_CAP`) and is rarely read again in halves
     LED_READ_MAX_VALUES: ClassVar[int] = 250
 
+    #: the most rows one transaction of a load from files (:meth:`load_files`) commits: a load of
+    #: millions of rows commits as it goes, so no one transaction holds them all
+    LOAD_ROWS_PER_TRANSACTION: ClassVar[int] = 50_000
+
+    #: the most time one transaction of a load from files may take, in milliseconds. A binary
+    #: ``COPY`` of :attr:`LOAD_ROWS_PER_TRANSACTION` rows takes seconds, so a minute is generous
+    #: headroom, and it lets one ``l3.load_files`` request carry 59 transactions inside the pod's
+    #: wait (:data:`~threetears.core.backends.protocol.LOAD_FILES_MAX_WAIT_SECONDS`)
+    LOAD_TIMEOUT_MS: ClassVar[int] = 60_000
+
     async def save_rows(
         self,
         rows: list[dict[str, Any]],
@@ -1924,6 +1940,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         conn: Any,
         max_rows: int | None = None,
         max_bytes: int | None = None,
+        copy: bool = False,
     ) -> int:
         """upsert many rows on a caller's transaction, through the collection's durable store.
 
@@ -1947,6 +1964,14 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         the write's time; an upsert of a row already held keeps its ``date_created``, an immutable
         column the conflict clause does not set. No CAS fence applies: a bulk write replaces.
 
+        **With** ``copy=True`` **the write inserts and never updates**, for a load into a table just
+        emptied (:meth:`truncate`): the rows go to the store's
+        :meth:`~threetears.core.backends.protocol.CopyingStore.copy_many` -- ``COPY``, the rows ordered
+        by key, through ``l3.tx.copy`` on the L3 rail -- and a row at a time through ``upsert`` with
+        ``on_conflict="raise"`` to a store without it. A key already held fails the write, and so the
+        caller's transaction. Everything else -- the checks, the stamps, the keys leaving L1 and
+        settling with the transaction -- is as for an upsert.
+
         :param rows: the rows, each keyed by column; a nullable column may be absent
         :ptype rows: list[dict[str, Any]]
         :param conn: the caller's connection, its transaction opened by :class:`CallerTransaction`
@@ -1956,6 +1981,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :param max_bytes: the most bytes one statement's whole request comes to on the L3 rail;
             :attr:`BULK_MAX_BYTES` when None
         :ptype max_bytes: int | None
+        :param copy: insert with ``COPY`` rather than upsert; a key already held fails the write
+        :ptype copy: bool
         :return: how many rows were submitted: every row given, whether the conflict clause updated
             a row already held, left it as it was (``on_conflict="ignore"``) or raised
         :rtype: int
@@ -1994,7 +2021,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             transaction.enroll(self, key, row=data)
             self._evict_l1(key)
         written = 0
-        if stamped and isinstance(store, BulkDurableStore):
+        if copy:
+            written = await self._copy_rows(store, stamped, conn=conn, max_rows=max_rows, max_bytes=max_bytes)
+        elif stamped and isinstance(store, BulkDurableStore):
             written = await store.upsert_many(
                 self.table_name,
                 stamped,
@@ -2010,10 +2039,246 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 )
                 written += 1
         log.debug(
-            "bulk upsert written on the caller's transaction",
+            "bulk copy written on the caller's transaction"
+            if copy
+            else "bulk upsert written on the caller's transaction",
             extra={"extra_data": {"table": self.table_name, "rows": written}},
         )
         return written
+
+    async def _copy_rows(
+        self,
+        store: DurableStore,
+        rows: list[dict[str, Any]],
+        *,
+        conn: Any,
+        max_rows: int | None,
+        max_bytes: int | None,
+    ) -> int:
+        """insert ``rows``, already stamped and checked, on the caller's transaction: :meth:`save_rows` with ``copy``.
+
+        :param store: the collection's durable store
+        :ptype store: DurableStore
+        :param rows: the rows
+        :ptype rows: list[dict[str, Any]]
+        :param conn: the caller's connection
+        :ptype conn: Any
+        :param max_rows: the most rows one copy carries; :attr:`BULK_MAX_ROWS` when None
+        :ptype max_rows: int | None
+        :param max_bytes: the most bytes one copy's request comes to; :attr:`BULK_MAX_BYTES` when None
+        :ptype max_bytes: int | None
+        :return: rows written
+        :rtype: int
+        """
+        if not rows:
+            return 0
+        if isinstance(store, CopyingStore):
+            return await store.copy_many(
+                self.table_name,
+                rows,
+                max_rows=max_rows or self.BULK_MAX_ROWS,
+                max_bytes=max_bytes or self.BULK_MAX_BYTES,
+                conn=conn,
+            )
+        # a store that cannot copy: still insert-only, a write per row
+        for data in rows:
+            await store.upsert(self.table_name, data, pk=self.schema.pk_columns, on_conflict="raise", conn=conn)
+        return len(rows)
+
+    async def truncate(self) -> None:
+        """empty the table in L3 with ``TRUNCATE``, then drop what every cache holds of it.
+
+        For a table reloaded whole from a source that changed: deleting every row leaves a
+        tombstone per row behind, and on YugabyteDB one transaction deleting millions of them runs
+        for minutes and blocks every other writer. ``TRUNCATE`` leaves none. It is not
+        transactional and runs alone, so it takes no connection: the store runs it outside any
+        transaction (:meth:`~threetears.core.backends.protocol.TruncatingStore.truncate`; on the L3
+        rail the ``l3.truncate`` request, which the broker runs under the database's DDL lock). Load
+        the table again after with :meth:`load_files` from the source's export files, or with
+        :meth:`save_rows` and ``copy=True`` for rows the caller holds.
+
+        Then this process drops the table from its caches (:meth:`CollectionRegistry.drop_table
+        <threetears.core.collections.registry.CollectionRegistry.drop_table>`): every row leaves L1,
+        cached scans and derived caches are dropped, and its L2 entries are read past until each is
+        read through from L3 again (:meth:`drop_cached_table`), since a pod cannot list L2 to delete
+        them. Other processes learn of it from the table's write generation: ``TRUNCATE`` fires no
+        statement trigger and leaves no write mark (:mod:`~threetears.core.collections.write_marks`),
+        so this advances the generation itself, as a commit does, with no row broadcast to cover
+        the advance; a follower's catch-up pass finds an advance it heard no row of and drops the
+        table too. Safe to call again: an empty table truncates, and the caches drop, alike. A
+        ``TRUNCATE`` that fails drops and advances too, since a reply lost after the broker ran it
+        leaves the table emptied; the store's failure still reaches the caller.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the collection has no durable store, its store cannot truncate, or
+            it defers its L3 writes (a buffered row would land after the table was emptied)
+        :raises GenerationUnavailableError: when the table's write generation had to advance and
+            could not; the table is emptied and this process's caches dropped
+        """
+        store = self._durable_store()
+        if store is None:
+            raise ValueError(f"{type(self).__name__}.truncate: {self.table_name} has no durable store to empty")
+        if not isinstance(store, TruncatingStore):
+            raise ValueError(f"{type(self).__name__}.truncate: the store of {self.table_name} cannot truncate")
+        if self._defers_l3_writes:
+            raise ValueError(
+                f"{type(self).__name__}.truncate: {self.table_name} defers its L3 writes, and a buffered row "
+                f"would land after the table was emptied"
+            )
+        try:
+            await store.truncate(self.table_name)
+        except (Exception, asyncio.CancelledError) as exc:
+            # a reply lost or timed out may still have emptied the table: drop as if it had
+            await self._drop_and_advance_after_failure("truncate failed", exc)
+            raise
+        await self._drop_and_advance("truncated")
+
+    async def load_files(
+        self,
+        files: Sequence[LoadFile],
+        *,
+        columns: Sequence[str],
+        constants: Mapping[str, Any] | None = None,
+        rows_per_transaction: int | None = None,
+        timeout_ms: int | None = None,
+    ) -> int:
+        """load the table in L3 from parquet files, then drop what every cache holds of it.
+
+        For a table reloaded whole from a warehouse export, after :meth:`truncate`: the files are
+        the export's own (:func:`~threetears.datasources.partitioned_export.presigned_counted_partition` presigns
+        them), and the store fetches and copies them itself
+        (:meth:`~threetears.core.backends.protocol.LoadingStore.load_files`; on the L3 rail the
+        ``l3.load_files`` request, so the broker streams the files and the rows never cross the
+        bus). It runs outside any transaction of the caller's and commits every
+        ``rows_per_transaction`` rows. Insert-only: a key already held fails the load. A column no
+        file holds -- a part's own key, a load's ``date_created`` -- takes its value from
+        ``constants``; nothing is stamped for the caller.
+
+        Then, exactly as :meth:`truncate`: this process drops the table from its caches and advances
+        the table's write generation once, with no row broadcast. ``COPY`` through the store leaves
+        no row-level write mark either, so the advance is how a following pod learns of the load.
+        A load that fails drops and advances too, before its failure reaches the caller: the
+        transactions before the failure stay committed, and a reply lost or timed out can follow a
+        load the broker finished.
+
+        A load too long for one ``l3.load_files`` reply is sent as several requests, one after
+        another in the files' order, each of whole files and each within the pod's wait
+        (:func:`~threetears.core.backends.protocol.load_requests`); the caller sends one call
+        however many files it has. The drop and the advance happen once, after the last request
+        (or after the one that failed). Only a single file too long for the wait on its own is
+        refused, before anything is sent.
+
+        :param files: the files, in order
+        :ptype files: Sequence[LoadFile]
+        :param columns: the table's columns each file supplies
+        :ptype columns: Sequence[str]
+        :param constants: column -> the value every row takes for it; none when None
+        :ptype constants: Mapping[str, Any] | None
+        :param rows_per_transaction: the most rows one committed transaction writes;
+            :attr:`LOAD_ROWS_PER_TRANSACTION` when None
+        :ptype rows_per_transaction: int | None
+        :param timeout_ms: the most time one transaction may take, in milliseconds;
+            :attr:`LOAD_TIMEOUT_MS` when None
+        :ptype timeout_ms: int | None
+        :return: the rows written
+        :rtype: int
+        :raises ValueError: when the collection has no durable store, its store cannot load files,
+            it defers its L3 writes (a buffered row would land among the loaded ones), a bound is
+            under one, or one file alone needs a longer wait than the cap
+        :raises GenerationUnavailableError: when the table's write generation had to advance and
+            could not; the rows are loaded and this process's caches dropped
+        """
+        store = self._durable_store()
+        if store is None:
+            raise ValueError(f"{type(self).__name__}.load_files: {self.table_name} has no durable store to load")
+        if not isinstance(store, LoadingStore):
+            raise ValueError(f"{type(self).__name__}.load_files: the store of {self.table_name} cannot load files")
+        if self._defers_l3_writes:
+            raise ValueError(
+                f"{type(self).__name__}.load_files: {self.table_name} defers its L3 writes, and a buffered row "
+                f"would land among the loaded ones"
+            )
+        if not files:
+            return 0
+        per_transaction = self.LOAD_ROWS_PER_TRANSACTION if rows_per_transaction is None else rows_per_transaction
+        bound = self.LOAD_TIMEOUT_MS if timeout_ms is None else timeout_ms
+        # refused here, before anything is sent: only a single file too long for one reply
+        requests = load_requests(files, rows_per_transaction=per_transaction, timeout_ms=bound)
+        written = 0
+        try:
+            for request in requests:
+                result = await store.load_files(
+                    self.table_name,
+                    request,
+                    columns=columns,
+                    constants=dict(constants or {}),
+                    rows_per_transaction=per_transaction,
+                    timeout_ms=bound,
+                )
+                written += result.row_count
+        except (Exception, asyncio.CancelledError) as exc:
+            # the load commits as it goes: the requests and transactions before a failure stay
+            # committed, and a reply lost or timed out may follow a load the broker finished
+            await self._drop_and_advance_after_failure("load from files failed", exc)
+            raise
+        await self._drop_and_advance("loaded from files", rows=written, requests=len(requests))
+        return written
+
+    async def _drop_and_advance_after_failure(self, reason: str, failure: BaseException) -> None:
+        """drop and advance as :meth:`_drop_and_advance` does, after a store call that failed.
+
+        A store call that raised may still have changed L3 (a load commits as it goes; a lost reply
+        can follow a change the broker made), and a drop where nothing changed costs only a
+        read-through. The store's failure is the one the caller gets, so a failure here is recorded
+        rather than raised over it.
+
+        :param reason: what was being done to the table, for the drop and the log
+        :ptype reason: str
+        :param failure: the store call's failure, which the caller re-raises
+        :ptype failure: BaseException
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            await self._drop_and_advance(reason, failure=type(failure).__name__)
+        except Exception as exc:
+            contain(
+                exc,
+                log=log,
+                what="caches not dropped or generation not advanced after a failed table change",
+                extra={"table": self.table_name, "change": reason, "failure": type(failure).__name__},
+                level="error",
+            )
+
+    async def _drop_and_advance(self, reason: str, **detail: Any) -> None:
+        """drop the table from this process's caches, then advance its write generation once.
+
+        After a change to the table that left no row-level write mark (:meth:`truncate`,
+        :meth:`load_files`): the registry drops it (L1 rows, cached scans, derived caches; L2
+        entries read past), and the generation advances with no row broadcast, so a following pod
+        drops it at its next catch-up.
+
+        :param reason: what changed the table, for the drop and the log
+        :ptype reason: str
+        :param detail: more to log
+        :ptype detail: Any
+        :return: nothing
+        :rtype: None
+        :raises GenerationUnavailableError: when the generation had to advance and could not
+        """
+        registry = self.registry
+        if registry is not None:
+            registry.drop_table(self.table_name, reason=reason)
+        if registry is None or registry.get_collection(self.table_name) is not self:
+            self.drop_cached_table()
+        bump = await self._bump_after_commit()
+        log.info(
+            "table changed with no row write mark; caches dropped and generation advanced",
+            extra={"extra_data": {"table": self.table_name, "change": reason, "generation": bump.token, **detail}},
+        )
+        if bump.failure is not None:
+            raise bump.failure
 
     async def delete_rows(
         self,

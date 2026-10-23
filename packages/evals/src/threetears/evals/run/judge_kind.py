@@ -203,6 +203,10 @@ class FrozenJudgeCase(EvalBaseModel):
     """Whether this freeze wrote the case; ``False`` when an identical case was already stored."""
     authored_by: str | None = None
     """The author of an authored case, whose one label is its expected verdict; ``None`` for a frozen one."""
+    collected_by: str | None = None
+    """The caller this freeze recorded as relaying an authored case (attested by the host for its author); ``None``
+    when it relayed none (a seeded case, a host's own freeze), or when the case was already stored, whose stored relay
+    stands (``judge_cases_list`` shows it)."""
 
 
 class JudgeCaseSkip(EvalBaseModel):
@@ -348,6 +352,7 @@ def _store_case(
         labels=len(case.labels),
         created=stored is None,
         authored_by=case.source.authored.author if case.source.authored is not None else None,
+        collected_by=case.source.authored.collected_by if case.source.authored is not None and stored is None else None,
     )
 
 
@@ -416,12 +421,18 @@ def author_judge_case(
     expected: AuthoredVerdict,
     note: str,
     author: str,
+    collected_by: str | None = None,
     scenario: str | None = None,
     subject: str | None = None,
     judged_artifact: JudgedArtifact = JudgedArtifact.DOCUMENT,
 ) -> AuthoredJudgeCase:
     """One hand-written judge case, its criterion read from the template that words it: the one door every authored
     case passes, ``judge_case_author`` and the definition seed's ``judge_cases`` alike.
+
+    It checks nothing about ``author``: the caller names them. ``judge_case_author`` names the person the host
+    attests (``EvalHost.attests_person``) and the caller that relayed the case; the definition seed and a host's own
+    code are trusted to name their authors, as a host may record a person's rating with ``rate_result``, and relay
+    nothing (``collected_by`` None).
 
     :param criterion_template: The subject template whose rubric words the criterion.
     :ptype criterion_template: EvalTemplate
@@ -437,6 +448,9 @@ def author_judge_case(
     :ptype note: str
     :param author: Who wrote it: the label's rater.
     :ptype author: str
+    :param collected_by: The calling identity that relayed it, which the host attested for ``author``; ``None`` for a
+        case the host's own code writes. Provenance only: in no digest, so not in the case's id.
+    :ptype collected_by: str | None
     :param scenario: The scenario the judge reads; ``None`` reads the template's intent.
     :ptype scenario: str | None
     :param subject: Who or what produced the output, or ``None``.
@@ -464,6 +478,7 @@ def author_judge_case(
             expected=expected,
             author=author,
             note=note,
+            collected_by=collected_by,
             subject=subject,
             judged_artifact=judged_artifact,
         )
@@ -533,7 +548,10 @@ def freeze_judge_cases(
     fail its criterion, an output that looks wrong and must pass — is frozen as written
     (:meth:`~threetears.evals.kernel.JudgeCase.from_authored`), its expected verdict its one label, reading nothing
     stored. Authoring the same case twice names the stored case; one whose verdict or note changed is a new case.
-    The authored cases come first in the receipt and in the case set.
+    The authored cases come first in the receipt and in the case set. Their authors are taken as named: this is the
+    host's own door, trusted as its seed corpus is, and an action reaches it only through ``judge_case_author``,
+    which writes a case under the name the host attests (``EvalHost.attests_person``). Who relayed a case
+    (``collected_by``) is not part of it, so it never moves the id.
 
     With ``case_set``, the freeze then mints the next version of that case set listing exactly this freeze's cases,
     in order — the set a launch targets, so cases a later freeze superseded are not run by it. A freeze whose cases
@@ -903,8 +921,9 @@ class JudgeKind:
 
         Never raises. A case that cannot be read is the harness's (``infra_errors``, the cell excluded). The judge's
         own call failing is the candidate's (``candidate_errors``) — unless the host's describer says the call was the
-        account's, which excludes the cell and stops the run (``account_refused``), or the provider's (it rationed the
-        call), which excludes the cell and lets the run go on. A reply
+        account's, which excludes the cell and stops the run (``account_refused``), or the provider's (it declined the
+        call: a rate limit, or the provider overloaded or unavailable), which excludes the cell and lets the run go
+        on. A reply
         that came back is a measurement whatever it says: a score, a "can't tell", or a reply that broke the
         protocol, which is what parse validity counts.
 
@@ -1031,9 +1050,9 @@ class JudgeKind:
             if outcome.owner == "provider":
                 # The provider declined to serve the call at that moment, as it would any request: the trial measured
                 # the provider, not the judge under test, so it is excluded and the run goes on.
-                log.warning("Judge kind's call was rationed by the provider for case %s: %s", test_case.id, error)
+                log.warning("Judge kind's call was declined by the provider for case %s: %s", test_case.id, error)
                 return CandidateOutput(
-                    infra_errors=[f"apparatus: judge: the provider rationed the call: {error}"],
+                    infra_errors=[f"apparatus: judge: the provider declined the call: {error}"],
                     telemetry=telemetry,
                     kind_payload=payload,
                 )

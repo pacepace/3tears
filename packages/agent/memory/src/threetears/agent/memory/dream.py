@@ -47,7 +47,7 @@ from threetears.observe.text_block import under
 from threetears.langgraph.fence import mint_nonce, untrusted_fence, with_fence_rules
 
 from threetears.agent.memory.origin import UNATTENDED_TAG, origin_of
-from threetears.agent.memory.revisions import supersede
+from threetears.agent.memory.revisions import host_labels, supersede
 from threetears.agent.memory.collections import (
     MemoriesCollection,
     MemoryConsolidationsCollection,
@@ -433,6 +433,15 @@ class DreamService:
         newest = max(members, key=lambda m: m["date_created"])
         conversation_id = newest["conversation_id"]
         type_memory = _modal_type([m["type_memory"] for m in members])
+
+        if len({host_labels(m.get("tags")) for m in members}) > 1:
+            # memories in different host audiences are never merged: the package does not know
+            # what the labels mean, so it cannot say which audience a gist of both would be in
+            log.info(
+                "Dream consolidation skipped cluster: its memories carry different host labels",
+                extra={"extra_data": {"agent_id": str(agent_id), "source_count": len(source_ids)}},
+            )
+            return None
 
         gist = await self._reflect(members, user_id=user_id, conversation_id=conversation_id)
         if gist is None:

@@ -720,6 +720,24 @@ def result_rate(
     return _rated(rating, prior)
 
 
+#: What ``person`` is, said once for every action that records a person's verdict on a caller's word
+#: (``result_rate_person``, ``judge_case_author``): one parameter name, one meaning, across a tool.
+PERSON_DESCRIPTION = (
+    "Whose verdict it is, as you name them; the host must vouch that you relay it for them, and records it under its "
+    "own name for them."
+)
+
+#: What a caller relaying a person's rating does when the host vouches for no one.
+_PERSON_UNCHECKED_REMEDY = (
+    "rate it as yourself with result_rate; a host that relays people's ratings is built with attests_person=<its check>"
+)
+
+#: What a caller relaying a person's rating does when the host does not attest it for that person.
+_PERSON_REFUSED_REMEDY = (
+    "rate it as yourself with result_rate, or relay it as a caller the host attests for that person"
+)
+
+
 def result_rate_person(
     host: EvalHost,
     result_id: str,
@@ -786,47 +804,16 @@ def result_rate_person(
         ``rated_at`` is not an ISO-8601 time with an offset at or before now.
     :raises StorageError: The write failed.
     """
-    attests = host.attests_person
-    if attests is None:
-        log.warning(
-            "eval.result_rate_person refused caller=%s person=%s scope=%s: the host supplies no attests_person",
-            collected_by,
-            person,
-            scope_id,
-        )
-        raise EvalServiceError(
-            f"host {host.profile.host_id!r} vouches for no person (it supplies no attests_person), so no rating is "
-            "recorded as a person's through an action",
-            status_code=403,
-            details={"person": person, "collected_by": collected_by},
-            remedy=(
-                "rate it as yourself with result_rate; a host that relays people's ratings is built with "
-                "attests_person=<its check>"
-            ),
-        )
-    canonical = attests(scope_id=scope_id, caller=collected_by, person=person)
-    if canonical is not None and (not isinstance(canonical, str) or not canonical.strip()):
-        raise TypeError(
-            f"host {host.profile.host_id!r}'s attests_person returned {canonical!r}; it returns the person's name as "
-            "the host knows them, or None to refuse"
-        )
-    if canonical is None:
-        log.warning(
-            "eval.result_rate_person refused caller=%s person=%s scope=%s: the host does not attest the caller for "
-            "the person",
-            collected_by,
-            person,
-            scope_id,
-        )
-        raise EvalServiceError(
-            f"the host does not attest {collected_by!r} relaying a rating for {person!r}, so it is not recorded as "
-            "that person's",
-            status_code=403,
-            details={"person": person, "collected_by": collected_by},
-            remedy="rate it as yourself with result_rate, or relay it as a caller the host attests for that person",
-        )
-    # one person, one name: the host's answer is checked stripped above, so it is stored stripped too
-    canonical = canonical.strip()
+    canonical = attested_person(
+        host,
+        scope_id=scope_id,
+        collected_by=collected_by,
+        person=person,
+        operation="result_rate_person",
+        what="rating",
+        unchecked_remedy=_PERSON_UNCHECKED_REMEDY,
+        refused_remedy=_PERSON_REFUSED_REMEDY,
+    )
     prior = _prior(host, scope_id, result_id, rubric_dim, canonical, "person")
     rating = rate_result(
         host.storage,
@@ -842,6 +829,92 @@ def result_rate_person(
         rated_at=rated_at,
     )
     return _rated(rating, prior)
+
+
+def attested_person(
+    host: EvalHost,
+    *,
+    scope_id: str,
+    collected_by: str,
+    person: str,
+    operation: str,
+    what: str,
+    unchecked_remedy: str,
+    refused_remedy: str,
+) -> str:
+    """The person's name as the host knows them, when the host attests ``collected_by`` relaying their ``what``.
+
+    The one trust boundary every operation that records something as a person's, on a caller's word, passes: a
+    person's rating (``result_rate_person``), an authored judge case, whose verdict is read as its author's label
+    (``judge_case_author``), and a reporter case's reader verdicts, each asked per reader (``reporter_case_freeze``).
+    The engine never decides it: the host's check (``EvalHost.attests_person``) does. A refusal is logged as a
+    warning, so an operator sees it, and raised to the caller; the operation writes nothing.
+
+    A host check that raises is a defect in the host, not a refusal: it propagates.
+
+    :param host: The host whose check attests the person.
+    :ptype host: EvalHost
+    :param scope_id: The scope the write would land in, as the host resolved it for the call.
+    :ptype scope_id: str
+    :param collected_by: The calling identity that relays it, as the host resolved it.
+    :ptype collected_by: str
+    :param person: Who the caller says it is from, in the caller's spelling.
+    :ptype person: str
+    :param operation: The operation asking, as its log event names it (``eval.<operation> refused ...``).
+    :ptype operation: str
+    :param what: What is relayed, as a refusal words it after "no" and "a" (``rating``, ``judge case``,
+        ``reader verdict``).
+    :ptype what: str
+    :param unchecked_remedy: The refusal's remedy when the host supplies no check.
+    :ptype unchecked_remedy: str
+    :param refused_remedy: The refusal's remedy when the host's check refuses.
+    :ptype refused_remedy: str
+    :return: The host's own name for the person, non-blank.
+    :rtype: str
+    :raises EvalServiceError: Status 403: the host supplies no ``attests_person``, or it does not attest this caller
+        for this person.
+    :raises TypeError: The host's check returned something other than a non-blank name or ``None``: a defect in the
+        host.
+    """
+    attests = host.attests_person
+    if attests is None:
+        log.warning(
+            "eval.%s refused caller=%s person=%s scope=%s: the host supplies no attests_person",
+            operation,
+            collected_by,
+            person,
+            scope_id,
+        )
+        raise EvalServiceError(
+            f"host {host.profile.host_id!r} vouches for no person (it supplies no attests_person), so no {what} is "
+            "recorded as a person's through an action",
+            status_code=403,
+            details={"person": person, "collected_by": collected_by},
+            remedy=unchecked_remedy,
+        )
+    canonical = attests(scope_id=scope_id, caller=collected_by, person=person)
+    if canonical is not None and (not isinstance(canonical, str) or not canonical.strip()):
+        raise TypeError(
+            f"host {host.profile.host_id!r}'s attests_person returned {canonical!r}; it returns the person's name as "
+            "the host knows them, or None to refuse"
+        )
+    if canonical is None:
+        log.warning(
+            "eval.%s refused caller=%s person=%s scope=%s: the host does not attest the caller for the person",
+            operation,
+            collected_by,
+            person,
+            scope_id,
+        )
+        raise EvalServiceError(
+            f"the host does not attest {collected_by!r} relaying a {what} for {person!r}, so it is not recorded as "
+            "that person's",
+            status_code=403,
+            details={"person": person, "collected_by": collected_by},
+            remedy=refused_remedy,
+        )
+    # one person, one name: checked stripped above, so returned (and stored) stripped too
+    return canonical.strip()
 
 
 def _prior(

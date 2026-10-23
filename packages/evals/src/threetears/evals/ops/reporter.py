@@ -60,7 +60,7 @@ from threetears.evals.run.launch import (
     resolve_judge_pin,
 )
 from threetears.evals.schema.models import EvalTemplate, EvalTestCase, JudgedArtifact
-from threetears.evals.ops.runs import LaunchArguments
+from threetears.evals.ops.runs import LaunchArguments, attested_person
 from threetears.evals.run.authoring import get_template
 from threetears.evals.kernel.remedies import FIND_TEMPLATE
 
@@ -83,9 +83,10 @@ class ReporterCaseFreeze(EvalBaseModel):
     )
     labels: list[dict[str, Any]] = Field(
         default_factory=list,
-        description="Reader verdicts on the recorded memo, each {dimension, direction, quote, note?}: a dimension the "
-        f"template scores, a direction of {'|'.join(get_args(LabelDirection))}, and the reader's words verbatim. They "
-        "need recorded_analysis_id; the freeze stamps each with the template's criterion for its dimension.",
+        description="Reader verdicts on the recorded memo, each {dimension, direction, quote, note?, reader?}: a "
+        f"dimension the template scores, a direction of {'|'.join(get_args(LabelDirection))}, the reader's words "
+        "verbatim, and who the reader is (omitted, you). They need recorded_analysis_id; the freeze stamps each with the "
+        "template's criterion for its dimension. The host must vouch that you relay each reader's verdict.",
     )
     supersedes: list[str] = Field(
         default_factory=list,
@@ -144,8 +145,76 @@ def _reporter_template(template: EvalTemplate) -> EvalTemplate:
     return template
 
 
-def reporter_case_freeze(host: EvalHost, freeze: ReporterCaseFreeze, scope_id: str) -> FrozenReporterCase:
+#: What a caller relaying reader verdicts does when the host vouches for no one.
+_READER_UNCHECKED_REMEDY = (
+    "freeze the bundle alone without labels, or ask this host's operator to attest the readers whose verdicts you "
+    "relay (attests_person=<its check>)"
+)
+
+#: What a caller relaying reader verdicts does when the host does not attest it for a reader named.
+_READER_REFUSED_REMEDY = "name in each label's reader whose verdict it is, as a caller the host attests for them"
+
+
+def _attested_labels(
+    host: EvalHost, labels: Sequence[dict[str, Any]], scope_id: str, collected_by: str
+) -> list[dict[str, Any]]:
+    """Each label as the caller sent it, its ``reader`` the host's name for the person and ``collected_by`` the caller.
+
+    Every distinct reader (a label naming none is the caller's own) is asked of the host before anything is read;
+    the first refusal refuses the freeze.
+
+    :raises ValidationFailedError: A label names its own relay, or a reader that is not a non-blank name.
+    :raises EvalServiceError: Status 403: the host supplies no check, or it does not attest the caller for a reader.
+    :raises TypeError: The host's check returned something other than a non-blank name or ``None``.
+    """
+    if relayed := [index for index, label in enumerate(labels) if "collected_by" in label]:
+        raise ValidationFailedError(
+            f"label(s) {relayed} name collected_by, which is the caller that relays them and is recorded by the freeze",
+            remedy="send the labels without collected_by",
+        )
+    spelled: list[str] = []
+    for label in labels:
+        named = label.get("reader")
+        reader = collected_by if named is None else named
+        if not isinstance(reader, str) or not reader.strip():
+            raise ValidationFailedError(
+                f"a label's reader is {reader!r}; it names who gave the verdict, or is omitted for your own",
+                remedy="name each label's reader as the host knows them, or omit it",
+            )
+        spelled.append(reader)
+    canonical: dict[str, str] = {}
+    for reader in dict.fromkeys(spelled):
+        canonical[reader] = attested_person(
+            host,
+            scope_id=scope_id,
+            collected_by=collected_by,
+            person=reader,
+            operation="reporter_case_freeze",
+            what="reader verdict",
+            unchecked_remedy=_READER_UNCHECKED_REMEDY,
+            refused_remedy=_READER_REFUSED_REMEDY,
+        )
+    return [
+        {**label, "reader": canonical[reader], "collected_by": collected_by}
+        for label, reader in zip(labels, spelled, strict=True)
+    ]
+
+
+def reporter_case_freeze(
+    host: EvalHost, freeze: ReporterCaseFreeze, scope_id: str, *, collected_by: str
+) -> FrozenReporterCase:
     """Freeze a campaign's analysis bundle, and optionally the memo it got, into a case of a reporter template.
+
+    **Reader verdicts need the host's word.** Each label is a reader's verdict, read as a person's (the judge's
+    agreement with readers), so the host is asked first (``EvalHost.attests_person``, as ``result_rate_person`` and
+    ``judge_case_author`` ask it) whether it vouches that the caller (``collected_by``) relays the verdict of each
+    reader the labels name (a label naming none is the caller's own), before the template or anything else is read.
+    Any refusal refuses the freeze, and nothing is written. Attested, each label's ``reader`` is the host's own name
+    for that person and its ``collected_by`` the caller. A freeze with no labels carries no verdict and asks nothing.
+    Who gave or relayed a verdict is not part of what makes two freezes the same case, so a re-freeze of the same
+    verdicts returns the stored case, whose record of them stands. A host's own code is trusted to name its readers
+    and freezes through ``freeze_reporter_case``, which asks nothing; this operation asks on every call, a host's own
+    direct call included.
 
     :func:`~threetears.evals.analysis.freeze_reporter_case` does the freezing, with every rule it holds: a
     case is a (campaign, recorded memo) pair, a freeze matching the pair's live case returns it, and one
@@ -159,21 +228,28 @@ def reporter_case_freeze(host: EvalHost, freeze: ReporterCaseFreeze, scope_id: s
     :ptype freeze: ReporterCaseFreeze
     :param scope_id: The scope the template, the campaign and its runs live in, and the case is stored in.
     :ptype scope_id: str
+    :param collected_by: The calling identity that relays the labels, as the host resolved it.
+    :ptype collected_by: str
     :return: The receipt: the case — the pair's existing live case when the freeze matched it — its fingerprint
         and the limits it recorded.
     :rtype: FrozenReporterCase
+    :raises EvalServiceError: Status 403: labels are given, and the host supplies no ``attests_person`` or does not
+        attest this caller for a reader they name. Nothing is written.
+    :raises TypeError: The host's check returned something other than a non-blank name or ``None``: a defect in the
+        host.
     :raises NotFoundError: The template, campaign or analysis is not in the scope.
-    :raises ValidationFailedError: The template is not of the reporter kind, or the freeze refused (see
-        :func:`~threetears.evals.analysis.freeze_reporter_case`).
+    :raises ValidationFailedError: The template is not of the reporter kind, a label names its own relay or a blank
+        reader, or the freeze refused (see :func:`~threetears.evals.analysis.freeze_reporter_case`).
     :raises StorageError: The case could not be persisted.
     """
+    labels = _attested_labels(host, freeze.labels, scope_id, collected_by) if freeze.labels else []
     stored = freeze_reporter_case(
         host,
         template_id=freeze.template_id,
         campaign_id=freeze.campaign_id,
         scope_id=scope_id,
         analysis_id=freeze.recorded_analysis_id,
-        labels=freeze.labels,
+        labels=labels,
         supersedes=freeze.supersedes,
         load_template=lambda template_id: get_template(host, template_id, scope_id),
     )

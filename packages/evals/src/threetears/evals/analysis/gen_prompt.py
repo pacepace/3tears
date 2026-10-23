@@ -33,15 +33,16 @@ and the count of every trial are code's; the writer authors a summary across the
 warnings, findings, at most one recommendation, a summary per aspect and next steps. The generator checks the
 recommendation structurally against the campaign's kind: a measurement recommends nothing, a change always recommends,
 and a choice's pick of an arm shown ahead on no pair is at ``low`` confidence. It refuses a candidate recommended in an
-exploratory campaign or with no separated upside, and a recommendation that leaves a warning on its arm unaddressed — a
-broken floor (``floors_overridden``), another arm shown ahead (``behind_on``) or a missed bar (``bars_missed``), each
-with why. It looks at the words twice — whether a finding's title in a common null phrasing cites no null the bundle
-established (:mod:`threetears.evals.analysis.null_claims`), and whether it names an arm its finding cites no reading of
+exploratory campaign, or with no separated upside and not every floor held on the asked aspects (each declaring
+one), and a recommendation that leaves a warning on its arm unaddressed — a broken floor (``floors_overridden``),
+another arm shown ahead (``behind_on``) or a missed bar (``bars_missed``), each with why. It looks at the words twice
+— whether a finding's title in a common null phrasing cites no null the bundle established
+(:mod:`threetears.evals.analysis.null_claims`), and whether it names an arm its finding cites no reading of
 (:mod:`threetears.evals.analysis.arm_mentions`). Rule 9 states both as rules for the reader and names none of the
 phrases: a prompt coaching toward a check's words teaches the writer to reword the claim, not to drop it.
 
-**It is budgeted:** at most 24,100 characters and 13 rules (:data:`PROMPT_CHAR_BUDGET`,
-:data:`PROMPT_RULE_BUDGET`), and the budget only falls; ``tests/test_gen_prompt_budget.py`` fails the
+**It is budgeted:** at most 24,300 characters and 13 rules (:data:`PROMPT_CHAR_BUDGET`,
+:data:`PROMPT_RULE_BUDGET`), and the budget only falls (unless the owner rules a fix needs the room); ``tests/test_gen_prompt_budget.py`` fails the
 build past either. A new rule names the one it replaces, in the rule ledger
 ``GEN_PROMPT_RULES.md`` beside this module, which records what each rule prevents and why. The same
 test holds the ledger to the prompt: a rule without its row, or a row whose rule is gone, fails it.
@@ -62,8 +63,9 @@ from __future__ import annotations
 
 #: The prompt's character ceiling. It only falls, and sits just above the prompt so any growth fails
 #: ``test_gen_prompt_budget.py``; making the prompt shorter is a measured change (an eval of the writer), not a cut by
-#: eye.
-PROMPT_CHAR_BUDGET = 24_100
+#: eye. It rises only when the owner rules that a fix needs the room: 24,100 -> 24,300 for #910's floor clause in rule
+#: 11 (2026-10-22).
+PROMPT_CHAR_BUDGET = 24_300
 
 #: The most rules the prompt carries, not its numbered headings. It only falls.
 PROMPT_RULE_BUDGET = 13
@@ -131,7 +133,7 @@ RULES — what separates a real analysis from a plausible one.
 10. A CAVEAT QUALIFIES THE FINDING IT HANGS ON, AND ITS ORDER IS A PRIORITY. Put first what someone acting on it must know, then what they should know; drop texture. Supporting evidence and mechanism belong in the body, not a caveat. A qualification that changes the diagnosis is not a caveat: it is the finding, and the first claim is withdrawn. Hang each caveat on the finding whose conclusion it would change.
    Every caveat names its `kind`: `apparatus` = something about the rig changed or is unknown; `sampling` = too few, too clustered, or not drawn the way the claim assumes; `instrument` = the measure itself is in question; `scope` = the claim is true of less than it appears to cover. A qualification that fits none of these is not a caveat. A movement the bundle labels `immaterial` is smaller than the host declared worth acting on: spend no caveat on it and rest no finding on it.
 
-11. THE RECOMMENDATION IS ONE ARM OR NONE, AND THE CAMPAIGN'S KIND SAYS WHICH. `kind` is code's, from the arms. A `measurement` (one arm) recommends nothing: leave `recommendation` empty. A `choice` (arms, no control) picks the arm the evidence favours, or none when no arm stood out: no clear winner, which may still pick at `low` confidence on cost or simplicity. A pick names in `behind_on` every aspect where `pairs` shows another arm `ahead` of it, with why. A `change` recommends a candidate or keeps the control. A candidate needs a separated upside on an aspect `asked`: a `confirmatory` reading `better`, or a contrast `improved` there; a reading with `confirmatory: false` is a lead. A trade-off qualifies — cheaper but not separated on quality, or better on one aspect and worse on another — but a candidate that never separated, only regressed, or could not be tested does not: keep the control, and say in `next` what would settle it. `guardrails` (what an arm must not get worse on) are never traded against a gain: never recommend an arm with a `breached` one; name an `undecided` one in a reason. Where no aspect is `asked`, keep the control and say what declared question would settle the switch. Code warns, never blocks, and you address each warning on the recommended arm: a `broken` floor in `floors_overridden`, a `missed` bar in `bars_missed`, each with why. `rests_on` names the findings it rests on; only keeping the control may rest on none.
+11. THE RECOMMENDATION IS ONE ARM OR NONE, AND THE CAMPAIGN'S KIND SAYS WHICH. `kind` is code's, from the arms. A `measurement` (one arm) recommends nothing: leave `recommendation` empty. A `choice` (arms, no control) picks the arm the evidence favours, or none when no arm stood out: no clear winner, which may still pick at `low` confidence on cost or simplicity. A pick names in `behind_on` every aspect where `pairs` shows another arm `ahead` of it, with why. A `change` recommends a candidate or keeps the control. A candidate needs a separated upside on an aspect `asked` (a `confirmatory` reading `better`, or a contrast `improved` there; a reading with `confirmatory: false` is a lead), or every floor `held` on every aspect `asked`, each carrying one: floors ask "no worse?", so answer that, never "better?" in its place. A trade-off qualifies — cheaper but not separated on quality, or better on one aspect and worse on another — but a candidate that never separated, only regressed, or could not be tested, and holds not every floor, does not: keep the control, and say in `next` what would settle it, naming each floor still `unclear`. `guardrails` (what an arm must not get worse on) are never traded against a gain: never recommend an arm with a `breached` one; name an `undecided` one in a reason. Where no aspect is `asked`, keep the control and say what declared question would settle the switch. Code warns, never blocks, and you address each warning on the recommended arm: a `broken` floor in `floors_overridden`, a `missed` bar in `bars_missed`, each with why. `rests_on` names the findings it rests on; only keeping the control may rest on none.
    Write one `aspect_summaries` entry per aspect: what changed there, how sure code's reading is (in words, never a new number), and what it means for this campaign's question. Then `summary`, whatever the kind: one sentence reading across every aspect, what the campaign found and what it means for its question. Where an aspect's `question.after_runs` is set, `summary` also says once what (`late`) was set after the runs, with its two dates as given, or that it has none (`at` null).
 
 12. NEXT EXPERIMENTS ARE ORDERED BY LEVERAGE, AND LEVERAGE IS ABOUT A DECISION. The most valuable output of a thin campaign is often what to run next. Before ranking an experiment, name the decision it could move and which way. An experiment that could overturn the recommendation says it is less settled than it reads (rule 11); one only refining a number the recommendation does not turn on is not worth ranking. A step's `why` says what it would change and how; code's `cases_to_settle` and the page size and price it, never you.

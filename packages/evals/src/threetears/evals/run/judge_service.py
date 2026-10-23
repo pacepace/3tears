@@ -197,7 +197,8 @@ class JudgeOutcome:
     #: raised (:attr:`~threetears.evals.schema.ProviderFailure.owner`); ``None`` for a call that did
     #: not raise, or that no describer read. Beside ``error`` either way: the dim is unscored. ``account``
     #: (out of credit, the key refused) also stops the run, since every later call is behind the key;
-    #: ``provider`` (the call was rationed) is the provider's, never the judge's own.
+    #: ``provider`` (the provider declined the call: a rate limit, or it was overloaded or unavailable)
+    #: is the provider's, never the judge's own.
     owner: FailureOwner | None = None
     #: The reply the provider cut short, as facts: its stop reason, what the call was sent with and its token
     #: counts. Set only beside ``error`` (the call's reply was cut off and not re-bought), and folded onto the

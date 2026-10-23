@@ -48,6 +48,7 @@ from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.kernel.authored import Recommendation
 from threetears.evals.kernel.declaration import CampaignCall
 from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.schema.hashing import round_floats
 from threetears.evals.schema.prose import ModelProse
 
 #: A table cell's value: a number, words, a boolean, or None where there is none.
@@ -923,7 +924,8 @@ class Report(EvalDocumentModel):
 
         ``report.html`` needs nothing beside it — no script, no stylesheet, no image — and ``bundle.json`` is the
         bundle with its ``schema_version``, so the fingerprint the page names is the one a reader computes from the
-        file (``AnalysisContextBundle.from_json(...).fingerprint()``). ``report.md`` is the same page as Markdown.
+        file (``AnalysisContextBundle.from_json(...).fingerprint(like=named)``, in the named one's version: an
+        unprefixed one was taken before ``v2:``). ``report.md`` is the same page as Markdown.
 
         :param out_dir: The directory; created when missing.
         :ptype out_dir: Path | str
@@ -1161,11 +1163,17 @@ class CampaignReport(EvalDocumentModel):
         and each aspect's bundle by its fingerprint and shape, with what of its question was set after its runs and
         when (``question_after_runs``, null where nothing was), since its readings read as asked either way.
 
+        Every float in it is served to twelve significant figures (:func:`~threetears.evals.schema.hashing.round_floats`):
+        a figure code computed carries bits past that which two Python builds compute differently, so one campaign
+        serves one JSON across builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary; a declared value (a
+        margin, a bar, alpha) has fewer figures and is unchanged.
+        The page's models keep their figures as computed.
+
         :return: A JSON-ready mapping.
         :rtype: dict[str, object]
         """
         recommendation = self.recommendation
-        return {
+        document: dict[str, object] = {
             "kind": "campaign",
             "shape": CAMPAIGN_JSON_SHAPE,
             "campaign_id": self.campaign_id,
@@ -1191,6 +1199,8 @@ class CampaignReport(EvalDocumentModel):
                 for late in [fold.report.bundle.reading_scope.question_after_runs]
             ],
         }
+        served: dict[str, object] = round_floats(document)
+        return served
 
 
 def _cells(blocks: Sequence[ReportBlock]) -> list[TableCell]:

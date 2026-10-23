@@ -59,6 +59,13 @@ def test_malformed_codes_fail_closed_without_raising(code: str) -> None:
 
 _SECRET_MARKER = "QQQQSECRETQQ!!"
 
+#: a log record's own clock and process numbers, and its exception object, whose repr carries memory addresses:
+#: never the secret, but their digits can spell a numeric one by chance ("0189" inside a ``created`` timestamp
+#: failed CI), so they are left out of what is searched; the exception's text is searched as ``exc_text``
+_RECORD_NUMBERS = frozenset(
+    {"created", "msecs", "relativeCreated", "thread", "process", "lineno", "levelno", "exc_info"}
+)
+
 
 @pytest.mark.parametrize("secret", ["not base32!!", "A", "0189", "", _SECRET_MARKER])
 @pytest.mark.parametrize("code", ["123456", ""])
@@ -78,7 +85,8 @@ def test_a_malformed_stored_secret_is_named_not_read_as_a_wrong_code(
     assert errors, "a broken enrolment reached no operator"
     formatter = logging.Formatter("%(message)s %(exc_text)s")
     for record in errors:
-        rendered = formatter.format(record) + repr(record.__dict__)
+        fields = {name: value for name, value in record.__dict__.items() if name not in _RECORD_NUMBERS}
+        rendered = formatter.format(record) + repr(fields)
         if secret:
             assert secret not in rendered, "the log carried the stored secret"
     if secret:

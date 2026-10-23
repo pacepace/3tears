@@ -1006,6 +1006,21 @@ class MemoryExtractor:
                 valid.append({"type": mem["type"], "content": mem["content"].strip()})
         return valid
 
+    async def _readable(self, memory_id: UUID, *, user_id: UUID, agent_id: UUID) -> bool:
+        """whether this task may read ``memory_id``: the model names its target, and ``get`` is not filtered.
+
+        :param memory_id: the memory the resolution step named
+        :ptype memory_id: UUID
+        :param user_id: owning user
+        :ptype user_id: UUID
+        :param agent_id: partition column
+        :ptype agent_id: UUID
+        :return: ``True`` when the host's read filter, if any, lets this task read it
+        :rtype: bool
+        """
+        row = await self._memories.find_for_recall(memory_id=memory_id, user_id=user_id, agent_id=agent_id)
+        return row is not None
+
     async def _get_similar_memories(
         self,
         embedding: list[float],
@@ -1337,7 +1352,11 @@ class MemoryExtractor:
                     updated_type = act.get("type", candidate["type"])
                     memory_uuid = UUID(act["memory_id"])
                     old_entity: MemoryEntity | None = await self._memories.get((agent_id, memory_uuid))
-                    if old_entity is None or old_entity.user_id != user_id:
+                    if (
+                        old_entity is None
+                        or old_entity.user_id != user_id
+                        or not await self._readable(memory_uuid, user_id=user_id, agent_id=agent_id)
+                    ):
                         tally.skipped += 1
                         continue
                     if self._consolidations is None and not is_permanent(old_entity):
@@ -1402,7 +1421,11 @@ class MemoryExtractor:
                     # memory is never retracted.
                     memory_uuid = UUID(act["memory_id"])
                     delete_entity: MemoryEntity | None = await self._memories.get((agent_id, memory_uuid))
-                    if delete_entity is None or delete_entity.user_id != user_id:
+                    if (
+                        delete_entity is None
+                        or delete_entity.user_id != user_id
+                        or not await self._readable(memory_uuid, user_id=user_id, agent_id=agent_id)
+                    ):
                         tally.skipped += 1
                         continue
                     if not await retract(

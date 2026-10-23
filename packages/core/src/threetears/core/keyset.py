@@ -14,13 +14,13 @@ pins the hashed column and the key named here is the range part that follows it.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from threetears.core.sql_fragments import equality_conditions, quote_identifier
 
-__all__ = ["KeysetRead", "read_keyset_pages"]
+__all__ = ["KeysetRead", "keyset_pages", "read_keyset_pages"]
 
 
 @dataclass(frozen=True)
@@ -49,6 +49,8 @@ async def read_keyset_pages(
 ) -> KeysetRead:
     """every row ``select_from`` names (within ``where``), in ``key`` order, ``page_size`` rows a statement.
 
+    :func:`keyset_pages`, its pages gathered into one list.
+
     :param l3: anything with an asyncpg-shaped ``fetch(query, *params)``: an L3 backend, or a
         caller's connection
     :ptype l3: Any
@@ -74,14 +76,54 @@ async def read_keyset_pages(
     :rtype: KeysetRead
     :raises ValueError: when ``page_size`` is under one
     """
+    rows: list[dict[str, Any]] = []
+    statements = 0
+    async for page in keyset_pages(l3, select_from, key, where=where, page_size=page_size, quote=quote, mark=mark):
+        statements += 1
+        rows.extend(page)
+    return KeysetRead(rows=rows, statements=statements)
+
+
+async def keyset_pages(
+    l3: Any,
+    select_from: str,
+    key: Sequence[str],
+    *,
+    where: Mapping[str, Any] | None = None,
+    page_size: int,
+    quote: Callable[[str], str] = quote_identifier,
+    mark: Callable[[str, int], str] | None = None,
+) -> AsyncGenerator[list[dict[str, Any]], None]:
+    """the rows ``select_from`` names (within ``where``), in ``key`` order, one page a statement as each is read.
+
+    For a reader that must not hold every row at once: each page is handed over before the next is
+    asked for, so what it keeps of a page is up to it. One page per statement, in order; the last
+    may be empty (the rows ended on a page boundary), and a read of no rows is one empty page.
+
+    :param l3: anything with an asyncpg-shaped ``fetch(query, *params)``
+    :ptype l3: Any
+    :param select_from: ``SELECT <projection> FROM <table>``, as :func:`read_keyset_pages` takes it
+    :ptype select_from: str
+    :param key: the columns to page on, TRUSTED identifiers, unique within ``where``
+    :ptype key: Sequence[str]
+    :param where: equality filters naming the rows; every row when None
+    :ptype where: Mapping[str, Any] | None
+    :param page_size: rows a page keeps; ``page_size + 1`` must not pass the transport's cap
+    :ptype page_size: int
+    :param quote: how ``key`` and ``where``'s columns are spelled
+    :ptype quote: Callable[[str], str]
+    :param mark: the cursor's placeholder for a key column and its number; a plain ``$n`` when None
+    :ptype mark: Callable[[str, int], str] | None
+    :return: the pages, as they are read
+    :rtype: AsyncGenerator[list[dict[str, Any]], None]
+    :raises ValueError: when ``page_size`` is under one
+    """
     if page_size < 1:
         raise ValueError(f"a keyset page keeps at least one row, got {page_size}")
     order = ", ".join(quote(column) for column in key)
     tail = f" ORDER BY {order} LIMIT {page_size + 1}"
     filters, values = equality_conditions(where, first=1, quote=quote)
-    rows: list[dict[str, Any]] = []
     cursor: Sequence[Any] | None = None
-    statements = 0
     more = True
     while more:
         conditions = [filters] if filters else []
@@ -95,10 +137,9 @@ async def read_keyset_pages(
             params += list(cursor)
         where_sql = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         page = await l3.fetch(f"{select_from}{where_sql}{tail}", *params)
-        statements += 1
         kept = [dict(row) for row in page[:page_size]]
-        rows.extend(kept)
         more = len(page) > page_size and bool(kept)
         if more:
             cursor = tuple(kept[-1][column] for column in key)
-    return KeysetRead(rows=rows, statements=statements)
+        del page
+        yield kept

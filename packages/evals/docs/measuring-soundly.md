@@ -420,8 +420,8 @@ Each defect below produced plausible numbers, some for months. A rig fault is ex
 matters as much: **a swept lever's own failure is the outcome.** Excluding a swept sub-model's
 timeouts as harness failures dropped 10 of 15 cells and left pass^k at 1.0 over 2 cases. The engine charges a
 candidate for a turn truncated at its output cap, and never excludes a trial a failed check already decided. A call
-the provider rationed (a 429 that is not a spent quota) is not the model's failure but the provider declining to
-serve it, as it would any request, so it is excluded, never charged
+the provider declined (a 429 that is not a spent quota, or a 529 overloaded or 503 unavailable) is not the model's
+failure but the provider declining to serve it, as it would any request, so it is excluded, never charged
 ([design](design.md#a-failure-is-charged-to-whoever-caused-it)); its lost trials are bounded in every verdict, and an
 arm that loses more than a tenth of its trials to one cause is flagged.
 

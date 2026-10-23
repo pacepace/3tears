@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 from pydantic import Field, ValidationInfo, computed_field, field_validator, model_validator
 
@@ -56,7 +56,7 @@ from threetears.evals.kernel.campaign import CampaignWindow, EvalInsight, Varian
 from threetears.evals.kernel.covariates import REASONING_RATIO_KEY
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.result_condition import ExclusionCause
-from threetears.evals.schema.hashing import canonical_digest
+from threetears.evals.schema.hashing import canonical_digest, identity_digest
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.values import PooledProductionFooting, ProductionFooting
 from threetears.evals.kernel.metrics import (
@@ -3234,14 +3234,17 @@ class AnalysisContextBundle(EvalDocumentModel):
         """Whether the campaign asks this aspect a question, as the reading scope derived it."""
         return self.reading_scope.questions_declared
 
-    def fingerprint(self) -> str:
-        """Return the sha256 of the bundle's canonical JSON — a stable A/B key.
+    def fingerprint(self, *, like: str | None = None) -> str:
+        """Return the bundle's fingerprint — a stable A/B key: ``v2:`` and the sha256 of its identity JSON.
 
-        Routes through :func:`threetears.evals.schema.hashing.canonical_digest` (sorted
-        keys, tight separators) so two structurally identical bundles produce
-        identical bytes. Because the bundle carries no wall-clock value, identical
-        (runs, results, insights) yield an identical fingerprint — the invariant
-        the prompt-tuning A/B loop depends on.
+        Routes through :func:`fingerprint_digest`: sorted keys, tight separators, and every float rounded to
+        twelve significant figures (:func:`~threetears.evals.schema.hashing.identity_json`), so two structurally
+        identical bundles produce identical bytes. Because the bundle carries no wall-clock value, identical
+        (runs, results, insights) yield an identical fingerprint — the invariant the prompt-tuning A/B loop
+        depends on — **across Python builds**, except, rarely, a value that falls exactly on a 12th-figure rounding boundary: the
+        bundle's intervals and multipliers come from C maths (``math.lgamma``, ``math.exp``, ``NormalDist().inv_cdf``)
+        whose last bits differ between two builds of one Python, and the rounding is what keeps those bits out of the
+        key.
 
         **Under one host profile**, which is a condition rather than a caveat: this assembly reads
         the profile it is handed at several points, ``measure_catalog`` among them (a measure whose
@@ -3252,18 +3255,52 @@ class AnalysisContextBundle(EvalDocumentModel):
         "identical" is quantified over, and because the A/B loop's premise is that nothing but the
         prompt moved.
 
-        :return: A 64-character lowercase hex digest.
+        :param like: A fingerprint stored earlier, to compute this one in that one's version so the two compare:
+            an unprefixed one was taken before floats were rounded, and is matched by the same unrounded digest.
+            None computes the current version.
+        :ptype like: str | None
+        :return: The fingerprint: ``v2:`` and a 64-character lowercase hex digest, or, ``like`` an unprefixed
+            one, the bare digest.
         :rtype: str
         """
-        return evidence_digest(self.to_dict())
+        return evidence_digest(self.to_dict(), like=like)
 
 
 #: The bundle fields :meth:`AnalysisContextBundle.fingerprint` leaves out: what built the bundle, and when its results
 #: were written, not what it read.
 _NOT_EVIDENCE: frozenset[str] = frozenset({"package_version", "first_result_at"})
 
+#: What a fingerprint of the current version starts with. Version 1 had no prefix: the bare sha256 of the canonical
+#: JSON, floats at full precision. Version 2 rounds every float to twelve significant figures first, so one
+#: evidence fingerprints alike across Python builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary. A
+#: stored fingerprint names its version by this prefix, which is how a comparison computes the fresh one in the
+#: stored one's version (:func:`fingerprint_digest`).
+FINGERPRINT_PREFIX: Final[str] = "v2:"
 
-def evidence_digest(document: Mapping[str, Any]) -> str:
+
+def fingerprint_digest(payload: Any, *, like: str | None = None) -> str:
+    """The fingerprint of a bundle's pre-image, in the current version or in a stored fingerprint's.
+
+    The one place a fingerprint's version is decided. Version 2, the current one, is :data:`FINGERPRINT_PREFIX`
+    and the sha256 of :func:`~threetears.evals.schema.hashing.identity_json`, which rounds every float to twelve
+    significant figures. Version 1 is the bare :func:`~threetears.evals.schema.hashing.canonical_digest`, every
+    float in full: computed only to compare with a fingerprint stored in it, so a case or analysis recorded
+    before the rounding still matches the same evidence on the same machine. Across two Python builds a version
+    1 fingerprint can still differ, which is the defect the version exists to retire.
+
+    :param payload: The pre-image: a bundle's document less what built it, or a campaign bundle's frame.
+    :ptype payload: Any
+    :param like: The stored fingerprint to compare with; None for the current version.
+    :ptype like: str | None
+    :return: The fingerprint in ``like``'s version, or the current one.
+    :rtype: str
+    """
+    if like is not None and not like.startswith(FINGERPRINT_PREFIX):
+        return canonical_digest(payload)
+    return FINGERPRINT_PREFIX + identity_digest(payload)
+
+
+def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> str:
     """A bundle document's fingerprint: the digest of every field but what built it (``package_version``).
 
     The one derivation :meth:`AnalysisContextBundle.fingerprint` uses, for a reader that holds the stored document
@@ -3271,10 +3308,13 @@ def evidence_digest(document: Mapping[str, Any]) -> str:
 
     :param document: A bundle as its stored dict.
     :ptype document: Mapping[str, Any]
-    :return: A 64-character lowercase hex digest.
+    :param like: A stored fingerprint to compute this one in the version of (:func:`fingerprint_digest`); None for
+        the current version.
+    :ptype like: str | None
+    :return: The fingerprint.
     :rtype: str
     """
-    return canonical_digest({key: value for key, value in document.items() if key not in _NOT_EVIDENCE})
+    return fingerprint_digest({key: value for key, value in document.items() if key not in _NOT_EVIDENCE}, like=like)
 
 
 class BundleInspection(EvalDocumentModel):
@@ -3331,7 +3371,9 @@ class BundleInspection(EvalDocumentModel):
 
     campaign_id: str = Field(description="The campaign the bundle was assembled for.")
     scope_id: str = Field(description="The storage scope its member runs were loaded from.")
-    fingerprint: str = Field(description="sha256 of the bundle AS ASSEMBLED NOW — recomputed, never read from a store.")
+    fingerprint: str = Field(
+        description="The fingerprint of the bundle AS ASSEMBLED NOW — recomputed, never read from a store."
+    )
     analysis_id: str | None = Field(
         default=None,
         description="The analysis this inspection was addressed by, or None when addressed by campaign.",
@@ -3347,8 +3389,8 @@ class BundleInspection(EvalDocumentModel):
     reproduces_generation: bool | None = Field(
         default=None,
         description=(
-            "Whether the re-assembled bundle IS the one the addressed analysis was generated over "
-            "(fingerprint == recorded_fingerprint). Prior insights are read as of the instant the "
+            "Whether the re-assembled bundle IS the one the addressed analysis was generated over: its fingerprint, "
+            "computed in `recorded_fingerprint`'s version (an unprefixed one predates `v2:`), equals that one. Prior insights are read as of the instant the "
             "analysis's bundle was assembled, so an insight minted afterwards — its own included — does not move this. "
             "False means the bundle below explains today's inputs and not that generation's; `mismatch_cause` says "
             "why. None when addressed by campaign. Stated rather than "
@@ -3414,7 +3456,11 @@ class BundleInspection(EvalDocumentModel):
         :rtype: BundleInspection
         """
         fingerprint = bundle.fingerprint()
-        reproduces = None if recorded_fingerprint is None else fingerprint == recorded_fingerprint
+        reproduces = (
+            None
+            if recorded_fingerprint is None
+            else bundle.fingerprint(like=recorded_fingerprint) == recorded_fingerprint
+        )
         cause: Literal["package_shape", "host_declarations", "evidence"] | None = None
         if reproduces is False:
             if recorded_schema_version != bundle.schema_version:
@@ -3579,5 +3625,7 @@ __all__ = [
     "UNVERIFIED_FOLD_PREFIX",
     "VerdictOrder",
     "WholeSwing",
+    "FINGERPRINT_PREFIX",
     "evidence_digest",
+    "fingerprint_digest",
 ]

@@ -450,7 +450,12 @@ class GenerationProvenance(EvalDocumentModel):
     prompt_id: str = Field(description="Id of the prompt template used to generate the analysis.")
     prompt_version: str = Field(description="Version of that prompt template.")
     generator_model: str = Field(description="Model that generated the analysis, as the provider reported it.")
-    bundle_fingerprint: str = Field(description="sha256 of the canonical context bundle the generation ran over.")
+    bundle_fingerprint: str = Field(
+        description=(
+            "The fingerprint of the campaign bundle the generation ran over: `v2:` and the sha256 of its canonical "
+            "JSON with every float rounded to twelve significant figures; unprefixed, recorded before the rounding."
+        )
+    )
     generated_at: str = Field(description="When the analysis was generated (ISO-8601).")
     bundle_assembled_at: str = Field(
         description=(
@@ -1161,7 +1166,12 @@ class EvalAnalysisAttempt(CoreDocumentModel):
             "before the prompt was assembled — a precondition refused before any call."
         ),
     )
-    bundle_fingerprint: str = Field(description="sha256 of the canonical context bundle the attempt ran over.")
+    bundle_fingerprint: str = Field(
+        description=(
+            "The fingerprint of the campaign bundle the attempt ran over: `v2:` and the sha256 of its canonical JSON "
+            "with every float rounded to twelve significant figures; unprefixed, recorded before the rounding."
+        )
+    )
     calls: int = Field(
         default=0,
         ge=0,
@@ -1335,7 +1345,13 @@ class EvalSweep(CoreDocumentModel):
         "sweep stored before the field existed.",
     )
     outcome: SweepOutcome = "running"
-    detail: str | None = Field(default=None, description="Why it ended other than completed.")
+    detail: str | None = Field(
+        default=None,
+        description=(
+            "Why it ended other than completed; on a completed sweep, each arm that measured nothing (its run failed "
+            "alone, and the sweep went on), or None."
+        ),
+    )
     created_at: str = Field(default_factory=utc_now_iso)
     ended_at: str | None = None
     lease: LeaseField = None

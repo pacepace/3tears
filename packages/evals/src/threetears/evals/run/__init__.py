@@ -224,7 +224,7 @@ from threetears.evals.run.definition_drift import (
 from threetears.evals.run.jobs import WorkFn
 from threetears.evals.run.judge_service import JudgeClientFactory, JudgeContext, JudgeOutcome
 from threetears.evals.run.rejudge import JudgeInputStore, ReproducibleJudgeInputs, RequestSettingsPolicy
-from threetears.evals.run.runner import EveryCellApparatusFailedError, RunCallbacks
+from threetears.evals.run.runner import EveryCellApparatusFailedError, NothingMeasuredError, RunCallbacks
 
 
 __all__ = [
@@ -262,6 +262,7 @@ __all__ = [
     "ErrorLedger",
     "EvalJobManager",
     "EveryCellApparatusFailedError",
+    "NothingMeasuredError",
     "FidelityContract",
     "GoalCheckUnevaluable",
     "InProcessCellExecutor",

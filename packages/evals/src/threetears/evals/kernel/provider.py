@@ -58,7 +58,7 @@ def withhold_failure_detail(exc: BaseException) -> ProviderFailure:
     :return: The exception's class name and a statement of what was withheld, with
         ``payload_withheld`` set — so the caller drops the traceback too, whose
         last line is the text this declined to repeat — and ``owner`` the
-        ``candidate``, since telling an account's refusal or a provider's rationing
+        ``candidate``, since telling an account's refusal or a provider's decline
         apart needs the host's types.
     :rtype: ProviderFailure
     """

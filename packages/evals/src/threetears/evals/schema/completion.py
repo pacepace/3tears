@@ -37,7 +37,9 @@ JSON_OBJECT_RESPONSE_FORMAT: dict[str, Any] = {"type": "json_object"}
 #: request (``Ceilings().generation_ceiling_s``, ``Ceilings().judge_phase_ceiling_s``
 #: of :class:`~threetears.evals.run.Ceilings`, and :func:`~threetears.evals.analysis.reporter_cell_timeout_s`) is a count of requests times this, so
 #: an answer below the client's real worst case cancels requests that were still going to finish,
-#: after they were billed.
+#: after they were billed. On the package's ``Model``, the resends of a declined call all end within
+#: one request's timeout of the first attempt (:class:`~threetears.evals.providers.DeclinedRetry`), so
+#: one request takes its first attempt's time or one timeout, whichever is longer.
 RequestCeiling = Callable[[int], float]
 
 
@@ -466,8 +468,9 @@ class VariationLLM(SimulatorLLM, Protocol):
 
 #: Whose failure a raised completion call was, as the host's describer reads it
 #: (:attr:`ProviderFailure.owner`): the calling ``account`` (refused for every model behind
-#: the key), the ``provider`` (it declined to serve the call at that moment, a rate limit), or
-#: the ``candidate`` (anything else, charged to whoever made the call).
+#: the key), the ``provider`` (it declined to serve the call at that moment: a rate limit, 429, or
+#: the provider overloaded or unavailable, 529 or 503), or the ``candidate`` (anything else,
+#: charged to whoever made the call).
 FailureOwner = Literal["account", "provider", "candidate"]
 
 
@@ -501,14 +504,14 @@ class ProviderFailure:
     caller charges it by. ``"account"``: the provider refused the calling ACCOUNT — out of
     credit, a quota spent, the key refused — so every model behind the same key gets the same
     answer, and a caller excludes the cell and stops the run (``CandidateOutput.account_refused``).
-    ``"provider"``: the provider declined to serve the call at that moment — a rate limit — which
-    says nothing about the model and would meet any request, so a caller excludes the cell and
-    the run goes on. ``"candidate"``: anything else, charged to whoever made the call. It is a
-    field of the port rather than a type eval matches on because only the host knows its
-    client's error types; a describer that cannot tell says ``"candidate"``, and the failure is
-    then charged as any other. An owner outside :data:`FailureOwner` is refused at construction,
-    so a misspelt one surfaces as a describer that raised rather than as a silent charge to the
-    candidate.
+    ``"provider"``: the provider declined to serve the call at that moment — a rate limit (429), or
+    the provider overloaded or unavailable (529, 503) — which says nothing about the model and would
+    meet any request, so a caller excludes the cell and the run goes on. ``"candidate"``:
+    anything else, charged to whoever made the call. It is a field of the port rather than a
+    type eval matches on because only the host knows its client's error types; a describer that
+    cannot tell says ``"candidate"``, and the failure is then charged as any other. An owner
+    outside :data:`FailureOwner` is refused at construction, so a misspelt one surfaces as a
+    describer that raised rather than as a silent charge to the candidate.
     """
 
     description: str
