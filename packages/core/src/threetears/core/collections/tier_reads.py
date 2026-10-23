@@ -7,8 +7,12 @@ never filled. These counters make that visible per table, cheaply: one dictionar
 under a lock, since reads also run on worker threads.
 
 :func:`log_tier_reads` writes the counts since it was last called as one INFO line, when any read happened,
-and starts them again; :func:`log_tier_reads_every` does that on a timer, as the tool server does once a
-minute.
+and starts them again; :func:`log_tier_reads_every` does that on a timer.
+
+The counters are the process's, so the process has one timer, and one owner of it: :func:`hold_tier_reads_timer`
+starts it for the first holder and :func:`release_tier_reads_timer` stops it, and logs the last counts, when the
+last holder lets go. Two tool servers in one process therefore share one line a minute, rather than each draining
+the other's reads into a line of its own.
 """
 
 from __future__ import annotations
@@ -20,8 +24,17 @@ from enum import StrEnum
 from typing import Final
 
 from threetears.observe import get_logger
+from threetears.observe.background import cancel_and_wait
 
-__all__ = ["TIER_READS_LOG_SECONDS", "ReadTier", "log_tier_reads", "log_tier_reads_every", "record_tier_read"]
+__all__ = [
+    "TIER_READS_LOG_SECONDS",
+    "ReadTier",
+    "hold_tier_reads_timer",
+    "log_tier_reads",
+    "log_tier_reads_every",
+    "record_tier_read",
+    "release_tier_reads_timer",
+]
 
 log = get_logger(__name__)
 
@@ -98,3 +111,45 @@ async def log_tier_reads_every(every: float = TIER_READS_LOG_SECONDS) -> None:
     while True:
         await asyncio.sleep(every)
         log_tier_reads()
+
+
+class _ProcessTimer:
+    """the process's one :func:`log_tier_reads_every` task, and how many holders keep it running."""
+
+    def __init__(self) -> None:
+        self.task: asyncio.Task[None] | None = None
+        self.holders = 0
+
+
+_timer = _ProcessTimer()
+
+
+def hold_tier_reads_timer(every: float | None = None) -> None:
+    """hold the process's timer, starting it on the running loop when this is the first holder.
+
+    :param every: seconds between lines, :data:`TIER_READS_LOG_SECONDS` when None; the first holder's value is the
+        one the timer runs with
+    :ptype every: float | None
+    :return: nothing
+    :rtype: None
+    """
+    _timer.holders += 1
+    if _timer.task is None:
+        _timer.task = asyncio.create_task(log_tier_reads_every(TIER_READS_LOG_SECONDS if every is None else every))
+
+
+async def release_tier_reads_timer() -> None:
+    """let go of the process's timer; the last holder stops it and logs the counts since its last line.
+
+    :return: nothing, once the timer has stopped when this was the last holder
+    :rtype: None
+    :raises RuntimeError: nothing holds the timer
+    """
+    if _timer.holders == 0:
+        raise RuntimeError("the tier-read timer was released more times than it was held")
+    _timer.holders -= 1
+    if _timer.holders > 0 or _timer.task is None:
+        return
+    task, _timer.task = _timer.task, None
+    await cancel_and_wait(task)
+    log_tier_reads()
