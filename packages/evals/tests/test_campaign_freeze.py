@@ -1,4 +1,4 @@
-"""A campaign's declaration is frozen at its first run, and a question declared after it is disclosed, not demoted.
+"""A campaign's declaration is frozen at its first run, and a criterion set after its readings is disclosed, not demoted.
 
 Before this, ``campaign_update`` replaced a design (and added or reworded its questions) whatever runs the campaign
 held, and every reader took the questions with no regard to when they were asked. Now:
@@ -6,10 +6,11 @@ held, and every reader took the questions with no regard to when they were asked
 - **the freeze**: once any aspect holds a run, the declaration (``question``, ``aspects``, ``floors``) is refused in
   any form, and so is re-pointing or clearing the control; ``name`` and ``description`` stay editable, and the
   control may be addressed once, while none is named (the path ``quick.compare`` takes);
-- **the disclosure** that needs no trust in that path: the campaign's ``declared_at`` (when its question was asked in
-  full) is read against the first member run's ``created_at``, so a question declared after the evidence carries
-  both times (``reading_scope.question_after_runs``). It reads as one asked in time (owner, 2026-10-21: operators
-  are trusted to act in good faith, and the flag lets a reader judge).
+- **the disclosure** that needs no trust in that path: each criterion (the aspect, its control, margin, bars and
+  floors) is read against the aspect's first stored result, so one set once its readings were visible carries its
+  time (``reading_scope.late_criteria``). It reads as one set before them (owner, 2026-10-21 and 2026-10-23:
+  operators are trusted to act in good faith, and the disclosure lets a reader judge). When the runs began never
+  counts.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import assemble_context_bundle
-from threetears.evals.analysis.bundle.schema import NO_QUESTION_EXPLORATORY, QuestionAfterRuns
+from threetears.evals.analysis.bundle.schema import NO_QUESTION_EXPLORATORY, LateCriterion
 from threetears.evals.analysis.campaigns import set_campaign_control, update_campaign
 from threetears.evals.kernel.errors import ConflictError
 from packages.evals.tests.fixtures.toyhost.campaign import (
@@ -168,12 +169,17 @@ def test_an_update_declaring_aspects_holding_runs_is_refused() -> None:
         _update(fixture, {"aspects": _aspects(fixture, runs=True)})
 
 
-# --- the disclosure: when a question was asked, read against the first run, and never a demotion --------------------
+# --- the disclosure: when each criterion was set, read against the first result, and never a demotion ----------------
+
+
+#: Between the corpus runs' creation (09:30:00) and their first stored result (09:30:01): after the runs began, before
+#: anything could be seen.
+_BEFORE_ANY_RESULT = "2026-03-14T09:30:00.500000+00:00"
 
 
 def _asked_late(fixture: OpsFixture, at: str | None = _LATER) -> None:
-    """The toy campaign's question re-dated to ``at``, as an older build's write or a campaign created after its runs
-    stores it: no stored field marks it, and its own time says it came after the evidence."""
+    """The toy campaign's aspect re-dated to ``at``, as an older build's write or a campaign declared over runs whose
+    results were already stored keeps it: no stored field marks it, and its own time says it came after the evidence."""
     (aspect,) = fixture.campaign.aspects
     late = fixture.campaign.model_copy(
         update={"declared_at": at, "aspects": [aspect.model_copy(update={"asked_at": at})]}
@@ -181,66 +187,80 @@ def _asked_late(fixture: OpsFixture, at: str | None = _LATER) -> None:
     fixture.host.eval_host.storage.save_campaign(late)
 
 
-def test_a_question_asked_after_the_first_run_reads_as_asked_and_carries_both_times() -> None:
-    """Owner ruling (2026-10-21): disclosed, not enforced. The question confirms its readings as one asked in time
-    does, and the bundle says when it was asked and when the runs began."""
+def _late(at: str | None) -> list[LateCriterion]:
+    """The toy aspect's criteria, each set at ``at``: the aspect itself and its one bar, a ceiling on cost."""
+    return [
+        LateCriterion(criterion="aspect", set_at=at),
+        LateCriterion(criterion="bar", name="cost_usd", set_at=at),
+    ]
+
+
+def test_criteria_set_after_the_first_result_read_as_set_before_it_and_carry_their_time() -> None:
+    """Owner rulings (2026-10-21, 2026-10-23): disclosed, not enforced. The question confirms its readings as one
+    asked in time does, and the bundle names each criterion set after its readings were visible, with its time."""
     fixture = ops_fixture()
     _asked_late(fixture)
 
     bundle = _bundle(fixture)
 
     assert bundle.question_declared is True and bundle.reading_scope.questions_declared is True
-    assert bundle.design_frozen_at is not None
-    assert bundle.reading_scope.question_after_runs == QuestionAfterRuns(
-        late="question", at=_LATER, first_run_at=bundle.design_frozen_at
-    )
+    assert bundle.reading_scope.late_criteria == _late(_LATER)
     assert bundle.reading_scope.disclosure is None, "nothing calls its findings exploratory"
     assert all(family.aspect == bundle.aspect for family in bundle.multiple_comparisons.families), (
         "its question's family, never the exploratory one"
     )
 
 
-def test_a_question_asked_after_the_first_run_reads_every_reading_as_it_would_in_time() -> None:
-    """The same runs, the question asked before them and after them: every reading, family and scope is the same, and
-    the one difference is the flag."""
+def test_criteria_set_after_the_first_result_read_every_reading_as_they_would_in_time() -> None:
+    """The same runs, the criteria set before their results and after them: every reading, family and scope is the
+    same, and the one difference is the disclosure."""
     timely = _bundle(ops_fixture())
     late_fixture = ops_fixture()
     _asked_late(late_fixture)
     late = _bundle(late_fixture)
 
-    assert timely.reading_scope.question_after_runs is None
-    assert late.reading_scope.question_after_runs is not None
+    assert timely.reading_scope.late_criteria == []
+    assert late.reading_scope.late_criteria != []
     assert late.multiple_comparisons == timely.multiple_comparisons
     assert late.verdict_order == timely.verdict_order
     assert late.bar_adjudications == timely.bar_adjudications
-    assert late.reading_scope.model_copy(update={"question_after_runs": None}) == timely.reading_scope
+    assert late.reading_scope.model_copy(update={"late_criteria": []}) == timely.reading_scope
 
 
-def test_a_question_with_no_recorded_time_is_flagged_with_none_for_its_time() -> None:
-    """It cannot be shown to come before the runs, so it is disclosed as possibly after them."""
+def test_criteria_set_after_the_runs_began_and_before_any_result_are_not_late() -> None:
+    """Data age is no signal: an aspect asked once its runs were launched, before a result was stored, was set before
+    anything could be seen."""
+    fixture = ops_fixture()
+    _asked_late(fixture, at=_BEFORE_ANY_RESULT)
+
+    bundle = _bundle(fixture)
+
+    assert bundle.design_frozen_at is not None and bundle.design_frozen_at < _BEFORE_ANY_RESULT
+    assert bundle.reading_scope.late_criteria == []
+
+
+def test_criteria_with_no_recorded_time_are_named_with_none_for_their_time() -> None:
+    """They cannot be shown to come before the readings, and nothing guesses: each says its time is not recorded."""
     fixture = ops_fixture()
     _asked_late(fixture, at=None)
 
     bundle = _bundle(fixture)
 
     assert bundle.question_declared is True
-    assert bundle.design_frozen_at is not None
-    assert bundle.reading_scope.question_after_runs == QuestionAfterRuns(
-        late="question", at=None, first_run_at=bundle.design_frozen_at
-    )
+    assert bundle.reading_scope.late_criteria == _late(None)
 
 
-def test_a_question_declared_before_the_first_run_carries_no_flag() -> None:
+def test_criteria_declared_before_the_first_result_carry_no_disclosure() -> None:
     """The positive control: the corpus question was asked at the instant its runs were created."""
     bundle = _bundle(ops_fixture())
 
-    assert bundle.question_declared is True and bundle.reading_scope.question_after_runs is None
+    assert bundle.question_declared is True and bundle.reading_scope.late_criteria == []
     assert bundle.reading_scope.disclosure is None
 
 
-def test_a_late_question_beside_an_early_one_dates_the_campaign_s_one_question_after_the_runs() -> None:
-    """A campaign asks one question, its live questions' words joined, asked when the last of them was: a question
-    added after the first run dates the whole question after the runs, which is said, and nothing is demoted."""
+def test_a_late_question_beside_an_early_one_dates_the_aspect_and_its_bar_never_the_question() -> None:
+    """A campaign asks one question, its live questions' words joined, asked when the last of them was: an aspect
+    asked after its first result is named with its bar, and no line names the question."""
     fixture = ops_fixture()
     late = "does the wider chunk cut the error rate?"
     (aspect,) = fixture.campaign.aspects
@@ -262,8 +282,7 @@ def test_a_late_question_beside_an_early_one_dates_the_campaign_s_one_question_a
     bundle = _bundle(fixture)
 
     assert bundle.question_declared is True
-    assert bundle.reading_scope.question_after_runs is not None
-    assert bundle.reading_scope.question_after_runs.at == _LATER
+    assert bundle.reading_scope.late_criteria == _late(_LATER)
 
 
 def test_a_design_with_no_question_says_so_as_before() -> None:
@@ -277,4 +296,4 @@ def test_a_design_with_no_question_says_so_as_before() -> None:
     bundle = _bundle(fixture)
 
     assert bundle.reading_scope.disclosure == NO_QUESTION_EXPLORATORY
-    assert bundle.reading_scope.question_after_runs is None, "no question asked, so none was asked late"
+    assert bundle.reading_scope.late_criteria == [], "no question asked, and its bar was set before its readings"

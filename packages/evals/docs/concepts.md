@@ -296,7 +296,8 @@ arm alike and the arms' same cases run close together in time (exactly side by s
 width holds within one launch: separate launches are separate widths, so arms launched apart still load their
 providers side by side. Latency under test runs the arms `sequential`, the
 only schedule it takes. Each run records the schedule it ran under (`arm_schedule`), and a campaign whose arms were
-run one after another or side by side says so beside its readings. It is a disclosure, never part of a run's identity.
+run side by side at their own widths says so beside its readings, since co-loading changes a provider's capacity per
+arm; when the arms ran is never said. It is a disclosure, never part of a run's identity.
 
 #### k (repeats)
 How many times each case is played in a run (`k_runs`, `Eval(k=...)`, CLI `--k`; default 3). LLM
@@ -419,10 +420,11 @@ never stored. One that declares a design but asks no question asks nothing, so i
 One place a campaign's question is measured (`Aspect`): a template, the runs gathered on it, its **margin** (how
 far, in points of the pass rate, a candidate may fall below the control there before it is shown worse) and its
 **design** (the axes it varies, what it held fixed, the merit axes its readings are tested on, its bars). Each
-aspect is read on its own, against the same control, and keeps its own pre-registration time (`asked_at`): a
-question asked after that aspect's first run reads as one asked before it, and every page says when each happened
-(`reading_scope.question_after_runs`). A campaign adopting another's aspect
-(`aspects_from`) keeps that time; whatever it adds is dated when it is added. A campaign stored before aspects
+aspect is read on its own, against the same control, and keeps its own pre-registration time (`asked_at`), which
+also dates its bars and a margin or floor declared with it. A criterion set after the aspect's first stored result
+reads as one set before it, and every page names it once with its time (`reading_scope.late_criteria`); when the
+runs ran never counts. A campaign adopting another's aspect (`aspects_from`) keeps those times, so it reads as the
+campaign declared before the runs did; whatever it adds is dated when it is added. A campaign stored before aspects
 existed reads as one aspect labelled with its behavior.
 
 #### Floor
@@ -460,8 +462,8 @@ so any run of that configuration counts toward it. An `Eval` comparison sets it 
 key; elsewhere it is the campaign's first arm, with role `control` (`CampaignArm`), addressed from a run: an arm's
 `from_run_ids` at creation, or `set_campaign_control` (`control_from_run_id` on the `campaign_update` action)
 afterwards. The server records the run's variant key beside its lever map and identity version, as a run records
-its own; nobody types those. A control named after an aspect's first result dates that aspect's question at the
-naming, which its pages disclose as set after the runs.
+its own; nobody types those. A control named after an aspect's first result is named on that aspect's pages as a
+criterion set after its readings were visible.
 Every read resolves it through `resolve_control_arm` to the
 keys it matches: the stored key, which the cells stamped under its identity version keep, and, under a later
 version, also the key recomputed from that lever map, which new runs of the arm carry. That recomputation follows a

@@ -356,7 +356,7 @@ also declare `measure_latency`, which every arm's launch takes and which runs th
 another or all at once, each run joins the named campaign as it is created; interleaved, every run joins once all
 the arms are prepared and started. That campaign is created exploratory, since a sweep takes no design, and its readings are leads: to ask a
 question of what it found, `campaign_create` an aspect over the sweep's runs (`run_ids` from `job_poll`) with its arms
-named by `from_run_ids`; the question reads as asked after the runs, and the page discloses when. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
+named by `from_run_ids`; its readings read as they would under a campaign declared before the runs, and the page names each criterion set after its readings were visible. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
 the arms in flight and launches none after them. An arm refused at its launch, or whose run ends `failed`, ends
 the sweep `failed`, except an arm whose run failed because it measured nothing (every cell excluded, as for a model
 no allowed provider serves): that arm fails alone and the sweep goes on to the others. The judge and simulator are the sweep's. Where it names none, the role's default is resolved
@@ -429,12 +429,12 @@ exploratory one takes none of them.
 2. `run_launch` the arms, then `campaign_runs_add` each run to its aspect (by its template, or the `aspect` you
    name; `campaign_runs_remove` takes one out, and its results stay);
 3. `campaign_update` with `control_from_run_id`, naming the member run whose variant is the control. Once a run has
-   joined, the control is named once and never re-pointed, and a control named after an aspect's first result dates
-   that aspect's question at the naming, which its pages disclose as set after the runs.
+   joined, the control is named once and never re-pointed, and a control named after an aspect's first result is
+   named on that aspect's pages as set after its readings were visible.
 
-To ask again after the runs, `campaign_create` with `aspects_from` adopts the aspects it keeps, each with the time
-its question was asked; what it adds (`margins` for an adopted aspect, a floor, an arm, the question's new words)
-is dated now and reads as declared after the runs.
+To ask again after the runs, `campaign_create` with `aspects_from` adopts the aspects it keeps, each with its times,
+so it reads as the campaign declared before the runs did; what it adds (`margins` for an adopted aspect, a floor, an
+arm) is dated now and named on the page where that is later than its aspect's first result.
 
 4. `report_read` the campaign's page; `analysis_generate` adds the writer's memo;
 5. `campaign_record` the person's call: the arm, `call_reason`, and each broken floor (`floors_overridden`, by key,
@@ -453,7 +453,7 @@ is dated now and reads as declared after the runs.
 | `readings` | code's readings (`CampaignReadings`): the `kind`, `alpha`, the control, and `readings` (a change's rows), `pairs` (a choice's), `measures` (a measurement's), `floors` and `bars`, each row with its interval and reason. Every float is to twelve significant figures (a declared one, like `alpha`, a bar or a margin, has fewer and is unchanged), so one campaign serves the same JSON across Python builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary |
 | `recommendation` | the writer's `arm` (its label, for display), its `variant_key` (the key the analysis recorded for that arm, which a call's `variant_key` is compared to) and `confidence`, or null |
 | `call` | the recorded call (`CampaignCall`), or null |
-| `aspects` | each aspect's `aspect`, `bundle_fingerprint` (`v2:` and a digest; one with no prefix was recorded before fingerprints rounded floats), `bundle_schema_version` and `question_after_runs`: what was set after its runs (`late`: `question` or `control`), when (`at`, null with no orderable time) and when the runs began (`first_run_at`), or null. Its readings read as asked either way; this says when, for a reader to judge |
+| `aspects` | each aspect's `aspect`, `bundle_fingerprint` (`v2:` and a digest; one with no prefix was recorded before fingerprints rounded floats), `bundle_schema_version` and `late_criteria`: each criterion set after the aspect's readings were visible (`criterion`: `aspect`, `control`, `margin`, `bar` or `floor`; `name`; `set_at`, null with no orderable time), empty where none. Its readings read the same either way; this says when, for a reader to judge |
 
 Each aspect's bundle is not inlined: it is written beside the page as `bundle-<aspect>.json` (the label in lower case, hyphenated),
 and the fingerprint names it. Branch on the typed fields, never on a row's `reason`, which is words.

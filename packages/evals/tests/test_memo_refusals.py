@@ -180,12 +180,12 @@ class TestACandidateNeedsASeparatedUpside:
         analysis = await _generate(bundle, _recommending(bundle, TOYHOST_WIDE))
         assert analysis.document.recommendation[0].arm == arm_at(bundle, TOYHOST_WIDE)
 
-    async def test_a_candidate_on_a_question_asked_after_the_runs_is_kept_as_one_asked_before_them(self) -> None:
-        """Owner ruling (2026-10-21): disclosed, not enforced. The question set after the runs counts as asked, so the
-        upside that keeps a candidate in time keeps it here too; the bundle says when the question was set."""
+    async def test_a_candidate_on_an_aspect_asked_after_its_readings_is_kept_as_one_asked_before_them(self) -> None:
+        """Owner ruling (2026-10-21): disclosed, not enforced. An aspect asked after its readings counts as asked, so
+        the upside that keeps a candidate in time keeps it here too; the bundle says when each criterion was set."""
         bundle = campaign_bundle(_aspect(asked_at=_AFTER_THE_RUNS))
         (aspect,) = bundle.aspects
-        assert aspect.question_declared and aspect.reading_scope.question_after_runs is not None
+        assert aspect.question_declared and aspect.reading_scope.late_criteria != []
         analysis = await _generate(bundle, _recommending(bundle, TOYHOST_WIDE))
         assert analysis.document.recommendation[0].arm == arm_at(bundle, TOYHOST_WIDE)
 

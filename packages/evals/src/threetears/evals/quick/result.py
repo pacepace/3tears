@@ -9,7 +9,7 @@ the control. Everything here is the engine's own path, composed:
   shared candidate model, so the report calls the arm ``candidate=<name>``. Named as ``k=v`` pairs
   (``"prompt=v2, effort=low"``), each pair is one factor of a factorial design: ``model`` is the run's candidate model
   and every other factor is a lever the engine names ``callable.<factor>`` and keys into the variant.
-- **Every arm is started in one launch**, so they are measured side by side rather than one after another, and a
+- **Every arm is started in one launch**, so they share one launch's schedule and capacity, and a
   refusal on the last arm leaves none run.
 - **The campaign declares its design** — one axis per factor, a controlled stimulus, a commissioned apparatus and the
   repeats each arm ran — through :func:`~threetears.evals.analysis.create_campaign`, which gates the declaration
@@ -62,6 +62,7 @@ from threetears.evals.kernel import (
     CONFUSION_CELL_MEASURE,
     MATCH_MEASURE,
     ArmGuardrails,
+    EvalCampaign,
     GuardrailMargin,
     GuardrailReadings,
     TierCriterion,
@@ -71,6 +72,8 @@ from threetears.evals.kernel import (
     separation_criterion,
     tier_of,
 )
+from threetears.evals.kernel.authoring_fields import edited_core_document
+from threetears.evals.kernel.campaign_writes import serialized_campaign_write
 from threetears.evals.schema import CalibrationRating, EvalResult, RubricScale
 from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
@@ -928,6 +931,16 @@ def judged_rows(
     return rows
 
 
+@serialized_campaign_write
+def _control_named_at(host: EvalHost, campaign_id: str, scope_id: str, at: str) -> EvalCampaign:
+    """The eval's campaign with its control recorded as named ``at``, when the eval's call chose it, saved."""
+    campaign = get_campaign(host.storage, campaign_id, scope_id)
+    named = [arm.model_copy(update={"named_at": at}) if arm.role == "control" else arm for arm in campaign.arms]
+    updated = edited_core_document(EvalCampaign, campaign, {"arms": named})
+    host.storage.save_campaign(updated)
+    return updated
+
+
 def declare(
     host: EvalHost,
     arms: Mapping[str, EvalSummary],
@@ -943,8 +956,14 @@ def declare(
     created_by: str,
     guardrail_margins: Sequence[GuardrailMargin] = (),
     measure_latency: bool = False,
+    control_named_at: str | None = None,
 ) -> Result:
     """File the arms' runs as one campaign, one axis per factor, designate ``control``, and read its report.
+
+    ``control_named_at`` is when the caller chose the control, where that was before its arms ran: an eval names its
+    control in the call that launches them, so the campaign filed once they have run records the control as named
+    then, never as chosen once its readings were visible. None names it now, as reading the same runs against another
+    control (:meth:`Result.against`) does.
 
     The page is the campaign's code-only page, as :func:`~threetears.evals.analysis.campaign_report` reads a
     campaign no analysis has been generated for — which a campaign filed a moment ago is — and the report its one
@@ -995,6 +1014,8 @@ def declare(
         created_by=created_by,
         profile=host.profile,
     )
+    if control_named_at is not None:
+        campaign = _control_named_at(host, campaign.id, scope_id, control_named_at)
     page = campaign_report(host, campaign.id, scope_id)
     (fold,) = page.aspects
     bundle = fold.report.bundle

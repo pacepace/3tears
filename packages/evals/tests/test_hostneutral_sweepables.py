@@ -218,9 +218,23 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
         },
     ),
     # 60/13: a question asked after an aspect's first run reads as one asked before it and is disclosed
-    # (`reading_scope.question_after_runs`). A shape-only bump: the apparatus set and the cell model hold.
+    # (then `reading_scope.question_after_runs`). A shape-only bump: the apparatus set and the cell model hold.
     (
         (60, 13),
+        _CORE_V24
+        | {
+            "judge_request_settings",
+            "simulator_request_settings",
+            "judge_temperature",
+            "judge_sent_settings",
+            "simulator_sent_settings",
+        },
+    ),
+    # 61/13: each criterion set after its aspect's first stored result is disclosed on its own
+    # (`reading_scope.late_criteria`), never when the runs began. A shape-only bump: the apparatus set and the cell
+    # model hold.
+    (
+        (61, 13),
         _CORE_V24
         | {
             "judge_request_settings",

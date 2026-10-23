@@ -2747,14 +2747,14 @@ EvalRunStatus = Literal["pending", "running", "completed", "failed", "cancelled"
 #: How the arms of one comparison shared time and provider capacity, recorded on each arm's run.
 #:
 #: - ``interleaved`` — every arm ran at once, its cells taken in turn with every other arm's case by case under one
-#:   width shared by the whole launch, so a provider's bad minute lands on every arm alike and the arms' same cases
-#:   ran close together in time.
-#: - ``sequential`` — one arm ran after another, so no arm shared another's provider load, and a difference between
-#:   them can also be when each ran.
+#:   width shared by the whole launch, which loads the providers no more than one arm would alone.
+#: - ``sequential`` — one arm ran after another, so no arm shared another's provider load.
 #: - ``concurrent`` — every arm ran side by side at its own width, so the launch loaded its providers with every arm
 #:   at once, and a provider's rationing could land on one arm more than another.
 #:
-#: A launch of one arm records the schedule it was launched under, which runs that one arm alone either way.
+#: When the arms ran is no part of what they measured: arms run minutes, hours or days apart are one experiment while
+#: nothing that decides their result changed (owner, 2026-10-23). A launch of one arm records the schedule it was
+#: launched under, which runs that one arm alone either way.
 ArmSchedule = Literal["interleaved", "sequential", "concurrent"]
 
 #: Statuses a run can still leave under its own power — it is either queued or

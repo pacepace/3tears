@@ -91,6 +91,32 @@ def test_the_declared_question_repeated_in_the_body_is_flagged_and_dropped() -> 
     assert fixed == "The answer is no." and remaining == []
 
 
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "The question was set after the runs began, so these readings are weaker.",
+        "Because the runs predate the campaign, treat the gain as provisional.",
+        "These readings rest on older runs and should be confirmed by fresh ones.",
+        "Read post hoc, the tone gain is only a lead.",
+        "The arms ran on different days, so they are not one experiment.",
+        "Control and candidate were measured hours apart.",
+    ],
+)
+def test_a_sentence_discounting_a_reading_by_data_age_or_time_apart_is_dropped(sentence: str) -> None:
+    """Owner rulings (2026-10-23): a run whose measurement context is unchanged reads exactly like a fresh one, and arms
+    measured apart are one experiment, so the writer never discounts a reading for when it ran."""
+    kept = "Tone improved on the candidate."
+    fixed, remaining = fix_prose(f"{kept} {sentence}")
+    assert fixed == kept and remaining == []
+
+
+def test_code_s_own_line_for_a_criterion_set_after_its_readings_is_kept() -> None:
+    """The one timing a page says is a criterion set after its readings were visible, and the guard leaves it."""
+    said = "The margin on billing was set on 20 Oct 2026, after its readings were visible."
+    assert "banned" not in _rules(said)
+    assert fix_prose(said) == (said, [])
+
+
 def test_a_page_lints_its_prose_and_headers_not_its_data() -> None:
     page = "\n".join(
         [

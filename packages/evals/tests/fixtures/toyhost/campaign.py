@@ -161,7 +161,13 @@ def toyhost_campaign_of_one_aspect(
             "arms": []
             if control_key is None
             else [
-                CampaignArm(label="control", role="control", variant_key=control_key, identity_version=IDENTITY_VERSION)
+                CampaignArm(
+                    label="control",
+                    role="control",
+                    variant_key=control_key,
+                    identity_version=IDENTITY_VERSION,
+                    named_at=asked_at,
+                )
             ],
             "aspects": [
                 Aspect(

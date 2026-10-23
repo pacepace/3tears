@@ -18,7 +18,6 @@ import re
 import uuid
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
 from itertools import groupby
 from pathlib import Path
 from typing import Any
@@ -344,9 +343,14 @@ async def test_a_stored_v15_campaign_reads_as_one_aspect_whose_fold_is_the_aspec
     page = off_loop(campaign_report, held.host, source, SCOPE)
     (fold,) = page.aspects
     assert fold.report.section_titles == {**V0701_SECTION_TITLES, **FLOORS_HEADING_SINCE_0_71}
+    # v0.70.1's layout, and one line it did not say: a v15 control carries no time it was named, which is said.
+    timing = [block for block in fold.report.blocks if isinstance(block, DisclosureBlock) and block.source == "timing"]
+    assert [block.text for block in timing] == ["When the control was named is not recorded."]
     laid_out = [
         (section, kind, len(list(run)))
-        for (section, kind), run in groupby((block.section, block.kind) for block in fold.report.blocks)
+        for (section, kind), run in groupby(
+            (block.section, block.kind) for block in fold.report.blocks if block not in timing
+        )
     ]
     assert laid_out == V0701_BLOCKS
 
@@ -517,18 +521,12 @@ async def test_an_analysis_of_two_aspects_is_listed_archived_and_restored_by_its
     assert (restored.verdict, restored.archived) == (expected, False)
 
 
-#: A question asked long after every run, as a campaign created over runs that already exist is.
+#: An aspect asked long after every result, as one declared over runs whose results are already stored is.
 ASKED_AFTER_RUNS = "2099-01-01T00:00:00+00:00"
 
 
-def _paged(stamp: str) -> str:
-    """An ISO-8601 instant as the page dates it: ``1 Jan 2099``."""
-    moment = datetime.fromisoformat(stamp)
-    return f"{moment.day} {moment:%b %Y}"
-
-
 def _timing(page: CampaignReport) -> list[str]:
-    """The first screen's lines saying the question was set after the runs."""
+    """The first screen's lines naming each criterion set after its readings were visible."""
     return [
         block.text
         for block in page.blocks
@@ -536,10 +534,20 @@ def _timing(page: CampaignReport) -> list[str]:
     ]
 
 
-async def test_a_campaign_asked_after_its_runs_reads_as_asked_and_says_so_on_its_page_listing_and_memo_input() -> None:
-    """Owner ruling (2026-10-21): a campaign created after its runs is trusted, not demoted. Its rows read exactly as
-    the same campaign asked before its runs reads them, every one confirmatory, and every surface a reader meets the
-    readings on says once, in one plain sentence, when the question was set and when the runs began."""
+#: What :func:`_build_two` says when its aspects are asked after their readings, its margins and control set before:
+#: each aspect, billing's floor and tone's bar, all declared with the aspect.
+_SET_LATE = [
+    "Every aspect was declared on 1 Jan 2099, after its readings were visible.",
+    "The floor that no pass rate drops by more than 10 points on billing was set on 1 Jan 2099, after its readings "
+    "were visible.",
+]
+
+
+async def test_a_campaign_asked_after_its_readings_reads_as_asked_and_names_each_late_criterion_once() -> None:
+    """Owner rulings (2026-10-21, 2026-10-23): criteria set once their readings were visible are trusted, not demoted.
+    Its rows read exactly as the same campaign set before its readings reads them, every one confirmatory, and every
+    surface a reader meets the readings on names each late criterion once, with its time, and never the question or
+    when the runs began."""
     timely_store, timely = await _build_two()
     held, two = await _build_two(asked_at=ASKED_AFTER_RUNS)
 
@@ -556,42 +564,108 @@ async def test_a_campaign_asked_after_its_runs_reads_as_asked_and_says_so_on_its
     prepared = await prepare_analysis_generation(
         held.host, two.id, SCOPE, model=None, resolve_prompt=prompt, out_of_run_cap_usd=None
     )
-    first_runs = {aspect.aspect: aspect.design_frozen_at for aspect in prepared.bundle.aspects}
-    assert all(first_runs.values())
-    (began,) = {_paged(stamp) for stamp in first_runs.values() if stamp is not None}
-    for part in writer_view(prepared.bundle)["aspects"]:
-        assert part["question"]["asked"] is True
-        # Dated as the page dates them, so the memo and the page say one date.
-        assert part["question"]["after_runs"] == {"late": "question", "at": "1 Jan 2099", "runs_began": began}
+    late = {part["aspect"]: part["late_criteria"] for part in writer_view(prepared.bundle)["aspects"]}
+    # Dated as the page dates them, so the memo and the page say one date; the margins came first, so are not named.
+    assert late == {
+        "billing": [
+            {"criterion": "aspect", "name": None, "set_at": "1 Jan 2099"},
+            {"criterion": "floor", "name": "billing/rate_drop/*", "set_at": "1 Jan 2099"},
+        ],
+        "tone": [
+            {"criterion": "aspect", "name": None, "set_at": "1 Jan 2099"},
+            {"criterion": "bar", "name": COST_BAR.measure_id, "set_at": "1 Jan 2099"},
+        ],
+    }
     analysis_id = await _generated(held, two)
 
     page = off_loop(campaign_report, held.host, two.id, SCOPE)
-    # The page JSON carries the flag beside each aspect's readings, raw, with what was late.
+    # The page JSON carries each aspect's late criteria beside its readings, raw.
     aspects = page.json_document()["aspects"]
     assert isinstance(aspects, list)
-    assert [aspect["question_after_runs"] for aspect in aspects] == [
-        {"late": "question", "at": ASKED_AFTER_RUNS, "first_run_at": first_runs[label]} for label in ("billing", "tone")
+    assert [[said["criterion"] for said in aspect["late_criteria"]] for aspect in aspects] == [
+        ["aspect", "floor"],
+        ["aspect", "bar"],
     ]
-    said = f"The question was set on 1 Jan 2099, after the runs began on {began}."
-    assert _timing(page) == [said], "both aspects share the dates, so it is said once, naming none"
+    said = _timing(page)
+    assert said[:2] == _SET_LATE and len(said) == 3, "each late criterion once; the aspects share theirs"
+    assert said[2].endswith(" bar on tone was set on 1 Jan 2099, after its readings were visible.")
     first = _first_screen(page)
-    assert first.index(QUESTION) < first.index(said), "under the question it dates"
-    assert "a lead" not in first
+    assert all(first.index(QUESTION) < first.index(line) for line in said), "under the question"
+    assert "a lead" not in first and "began" not in first and "The question" not in " ".join(said)
     for fold in page.aspects:
-        assert said in [block.text for block in fold.report.blocks if isinstance(block, DisclosureBlock)]
-        assert said not in [block.text for block in fold.head if isinstance(block, DisclosureBlock)], (
-            "the campaign's first screen carries it once"
-        )
+        own = [block.text for block in fold.report.blocks if isinstance(block, DisclosureBlock)]
+        assert not [
+            line for line in said if line in [block.text for block in fold.head if isinstance(block, DisclosureBlock)]
+        ], "the campaign's first screen carries them once"
+        assert any(f"on {fold.aspect}" in line or "aspect" in line for line in own if line.endswith("visible."))
     bar, floor = _warnings(page)
     verdict = "; ".join(f"{fold.aspect}: {fold.shows}" for fold in page.aspects)
     (line,) = off_loop(analyses_list, held.host, two.id, SCOPE).analyses
-    assert (line.id, line.verdict) == (analysis_id, f"{bar} {floor} {said} {verdict}")
+    assert (line.id, line.verdict) == (analysis_id, " ".join([bar, floor, *said, verdict]))
 
     timely_page = off_loop(campaign_report, timely_store.host, timely.id, SCOPE)
-    assert _timing(timely_page) == [], "asked in time: nothing to say"
+    assert _timing(timely_page) == [], "set in time: nothing to say"
     timely_aspects = timely_page.json_document()["aspects"]
     assert isinstance(timely_aspects, list)
-    assert [aspect["question_after_runs"] for aspect in timely_aspects] == [None, None]
+    assert [aspect["late_criteria"] for aspect in timely_aspects] == [[], []]
+
+
+#: An ISO-8601 instant, or a page's date of one: what two campaigns read over the same runs may differ by.
+_WHEN = re.compile(
+    r"\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2})?|\b\d{1,2} [A-Z][a-z]{2} \d{4}(?: at \d{2}:\d{2} UTC\S*)?"
+)
+
+
+#: A bundle's fingerprint, which digests the campaign it was read for.
+_FINGERPRINT = re.compile(r"v2:[0-9a-f]{64}")
+
+
+def _undated(text: str, *ids: str) -> str:
+    """``text`` with every instant and date, each of ``ids`` and each bundle fingerprint blanked: what is left is what
+    a reader is told."""
+    for blank in ids:
+        text = text.replace(blank, "<id>")
+    return _FINGERPRINT.sub("<fingerprint>", _WHEN.sub("<when>", text))
+
+
+async def test_a_campaign_adopting_still_valid_runs_reads_exactly_as_one_declared_before_them() -> None:
+    """#919: past runs that are still valid count as evidence. A campaign declared before its runs, and one created
+    after them adopting its aspects (``aspects_from``), every criterion set before its readings were visible, read the
+    same runs identically: the writer's input, the page and its confidence wording differ by nothing but ids and
+    dates, and neither names a late criterion, the question's timing or when the runs began."""
+    held, declared = await _build_two()
+    host = held.host
+    adopting = off_loop(
+        create_campaign,
+        host.storage,
+        {"name": declared.name, "subject_id": declared.subject_id, "behavior": declared.behavior},
+        scope_id=SCOPE,
+        created_by="op",
+        profile=host.profile,
+        aspects_from=[declared.id],
+    )
+    stored = off_loop(get_campaign, host.storage, declared.id, SCOPE)
+    run_ids = sorted({run_id for aspect in declared.aspects for run_id in aspect.run_ids})
+    first_result = min(result.scored_at for result in off_loop(host.storage.query_eval_results_by_runs, run_ids, SCOPE))
+    assert adopting.created_at > first_result, "created after the readings were visible"
+    assert stored.declared_at is not None and stored.declared_at < first_result, "declared before the runs"
+
+    async def prompt() -> str:
+        return PROMPT
+
+    async def told(campaign: EvalCampaign) -> tuple[str, str]:
+        prepared = await prepare_analysis_generation(
+            host, campaign.id, SCOPE, model=None, resolve_prompt=prompt, out_of_run_cap_usd=None
+        )
+        view = json.dumps(writer_view(prepared.bundle), sort_keys=True)
+        page = campaign_report_markdown(off_loop(campaign_report, host, campaign.id, SCOPE))
+        return _undated(view, campaign.id), _undated(page, campaign.id)
+
+    (declared_view, declared_page), (adopted_view, adopted_page) = await told(declared), await told(adopting)
+    assert adopted_view == declared_view, "the writer is told the same thing"
+    assert adopted_page == declared_page, "the page says the same thing, its confidence wording included"
+    assert "late_criteria" not in adopted_view and "after its readings" not in adopted_page
+    assert "began" not in adopted_page and "after the runs" not in adopted_page
 
 
 async def test_an_analysis_s_page_json_names_its_recommended_arm_by_the_key_the_analysis_recorded() -> None:

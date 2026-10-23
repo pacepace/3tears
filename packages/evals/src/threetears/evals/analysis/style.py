@@ -234,6 +234,22 @@ BANNED_PHRASES: tuple[str, ...] = (
     "no measurable",
 )
 
+#: A sentence discounting a reading by data age or time apart (owner, 2026-10-23: "Post hoc should not matter"): that
+#: its runs predate the question or the campaign, that the criteria or the question came after the runs, that the data
+#: is old, or that arms measured at different times are not one experiment. A run whose measurement context is
+#: unchanged reads exactly like a fresh one, and the one timing a page says is a criterion set after its readings were
+#: visible, which code says, so a writer's sentence like these is dropped wherever it stands. Narrow on purpose: each
+#: alternative ties a reading's standing to when something ran.
+_AGE_DISCOUNT = re.compile(
+    r"\bpost[- ]hoc\b"
+    r"|\bretrospective(?:ly)?\b"
+    r"|\bafter the (?:runs?|data|results?|evidence) (?:began|started|ran|were (?:run|collected|in))\b"
+    r"|\b(?:runs?|data|results?|readings?|evidence) (?:pre-?dates?|pre-?dated|came before) the (?:question|campaign)\b"
+    r"|\b(?:old|older|stale|outdated|aging|ageing) (?:runs?|data|results?|readings?|evidence|measurements?)\b"
+    r"|\b(?:measured|run|ran|launched|collected) (?:at different times|on different days|(?:minutes|hours|days|weeks) apart)\b",
+    re.I,
+)
+
 #: Comparative words an arm's label may carry, each with what it claims against the control: ``cost`` read on cost per
 #: reply, ``speed`` on latency, and which way, ``lower`` (cheaper, faster) or ``higher``. Narrow on purpose: a label
 #: is a name, and only a word that plainly claims a direction is read against the arm's own row.
@@ -298,6 +314,7 @@ def lint_prose(text: str, *, question: str | None = None, header: bool = False) 
     # A code span is code a reader copies, not prose: it is held to the banned phrases only.
     text = _CODE_SPAN.sub("code", text)
     found += [StyleViolation("banned", text, phrase) for phrase in BANNED_PHRASES if phrase in lowered]
+    found += [StyleViolation("banned", text, match.group(0)) for match in _AGE_DISCOUNT.finditer(text)]
     for line in text.splitlines():
         if line.count(" — ") >= 2:
             found.append(StyleViolation("dash_chain", line, f"{line.count(' — ') + 1} segments joined by dashes"))
@@ -324,7 +341,8 @@ def lint_prose(text: str, *, question: str | None = None, header: bool = False) 
 def fix_prose(text: str, *, question: str | None = None) -> tuple[str, list[StyleViolation]]:
     """Drop every sentence breaking a rule that dropping fixes, and return what is left with what it still breaks.
 
-    A sentence carrying a banned phrase or repeating the declared question is meta-prose or a hedge: it goes.
+    A sentence carrying a banned phrase or repeating the declared question is meta-prose or a hedge, and one
+    discounting a reading by data age or time apart is a demotion code never makes: it goes.
 
     :param text: Prose a model wrote.
     :ptype text: str

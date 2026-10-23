@@ -34,6 +34,20 @@ enforce the fencing.
 run as its in-flight cells unwind. A lost or superseded holder writes nothing more, and a graceful shutdown no longer
 writes lost over a run whose lease has passed to another holding. See `packages/evals/MIGRATIONS.toml`.
 
+### evals: past runs that are still valid count as evidence; a criterion set after its readings is named, data age never (#919)
+
+**Changed:** A campaign that adopts runs which are still valid (`aspects_from`, `campaign_runs_add`) reads exactly as
+one declared before them: the writer's input, the page and its confidence wording differ only in ids and dates.
+Criterion-selection risk is disclosed per criterion and only where it is true: the aspect, its control, margin, bars
+and floors are each read on their own time against the first stored result of the aspect's runs, and one set later
+gets one line, "The margin on billing was set on 20 Oct 2026, after its readings were visible.", grouped across
+aspects; one stored by an older build says its time is not recorded. No line names the question or when the runs
+began. Time apart is no confound either: runs started in separate launches, or arms run one after another, are no
+longer flagged on the page or in the writer's input. An eval records its control as named when it launched its arms.
+`ReadingScope.question_after_runs` (`QuestionAfterRuns`) is replaced by `ReadingScope.late_criteria`
+(`LateCriterion`); `measurement_window_disclosure` leaves the bundle; bundle shape 61, page JSON shape 3. The seeded
+writer prompt changed, so hosts push the new seed. See `packages/evals/MIGRATIONS.toml`.
+
 ### release: the live Claude CLI batch runs in the release workflow
 
 **Changed:** `release.yml` gains a `live-claude-cli` job: `./scripts/test-live-claude-cli.sh` on the

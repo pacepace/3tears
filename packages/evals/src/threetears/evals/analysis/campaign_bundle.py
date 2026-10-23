@@ -50,7 +50,6 @@ from threetears.evals.analysis.arms import arm_names, multi_rig_variants, short_
 from threetears.evals.analysis.bundle.caps import capped_text
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
-    QuestionAfterRuns,
     evidence_digest,
     fingerprint_digest,
     refuse_a_bundle_before_aspects,
@@ -124,7 +123,6 @@ _DISCLOSURES: tuple[str, ...] = (
     "launch_disclosure",
     "model_identity_disclosure",
     "request_settings_disclosure",
-    "measurement_window_disclosure",
     "apparatus_confounds",
     "aliased_factors",
     "unexercised_factors",
@@ -781,13 +779,10 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
         "aspect": label,
         "question": {
             "asked": aspect.question_declared,
-            # Said once in the memo, never a demotion: the readings read as an asked question's do. Dated as the page
-            # dates them, so the memo and the page say one date.
-            "after_runs": _after_runs(aspect.reading_scope.question_after_runs),
             "margin": declared.margin if declared is not None else None,
             "merit_axes": design.merit_axes if design is not None else None,
             "merit_priority": design.merit_priority if design is not None else [],
-            "reading_scope": namer.walk(_without(payload["reading_scope"], "question_after_runs"), label),
+            "reading_scope": namer.walk(_without(payload["reading_scope"], "late_criteria"), label),
         },
         "readings": [
             {
@@ -873,15 +868,15 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
     }
     if confounds:
         view["confound_catalog"] = confounds
+    # Said once in the memo, never a demotion: each criterion set after the readings it judges were visible, dated as
+    # the page dates it, so the memo and the page say one date. Absent where none was, so a campaign adopting runs
+    # that are still valid hands the writer what one declared before them does.
+    if late := aspect.reading_scope.late_criteria:
+        view["late_criteria"] = [
+            {"criterion": criterion.criterion, "name": criterion.name, "set_at": criterion.page_date()}
+            for criterion in late
+        ]
     return view
-
-
-def _after_runs(late: QuestionAfterRuns | None) -> dict[str, str | None] | None:
-    """What of an aspect's question was set after its runs, and when, as the page words the dates; None for nothing."""
-    if late is None:
-        return None
-    at, began = late.page_dates()
-    return {"late": late.late, "at": at, "runs_began": began}
 
 
 def _cells(aspect: AnalysisContextBundle, namer: _Namer) -> list[dict[str, Any]]:

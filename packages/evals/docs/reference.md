@@ -1211,7 +1211,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schema_version` | `int` | `60` | Bundle-shape version, for future evolution + fingerprint clarity. |
+| `schema_version` | `int` | `61` | Bundle-shape version, for future evolution + fingerprint clarity. |
 | `campaign_id` | `str` | required | The campaign this bundle summarises. |
 | `subject_id` | `str` | required | The analysed subject's stable id. |
 | `subject_kind` | `str` | `''` | Discriminator; data, never a code branch. |
@@ -1265,18 +1265,17 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `trials` | `list[TrialRow]` | `[]` | One row per trial — one case run once on one arm — with how it ended and why: its failed checks, the judge's scores and reasons, what the case asked, the tail of what the judge was handed and the recorded error, each capped. |
 | `trials_omitted` | `int` | `0` | Trials beyond the cap, left out of `trials`; the scoreboard counts every one. |
 | `case_sets` | `list[CaseSetRef]` | `[]` | The named, versioned case sets the member runs were launched against, distinct and sorted. |
-| `design_frozen_at` | `str \| None` | `None` | When the campaign's design froze (ISO-8601): its first member run's `created_at`, archived runs included, after which a design edit is refused and a question asked is disclosed as set after the runs (`reading_scope.question_after_runs`). |
-| `first_result_at` | `str \| None` | `None` | When the aspect's evidence could first be seen (ISO-8601): the earliest `scored_at` among its member runs' results, the instant a control named later is read against. |
+| `design_frozen_at` | `str \| None` | `None` | When the campaign's design froze (ISO-8601): its first member run's `created_at`, archived runs included, after which a design edit is refused. |
+| `first_result_at` | `str \| None` | `None` | When the aspect's readings could first be seen (ISO-8601): the earliest `scored_at` among the results of the runs it reads. |
 | `package_version` | `str \| None` | `None` | The 3tears-evals version that assembled the bundle; None when the build carries no distribution metadata (a source tree on the path). |
-| `reading_scope` | `ReadingScope` | `ReadingScope(questions_declared=False, question_after_runs=None, exploratory_measures=[], exploratory_dimensions=[], disclosure=None)` | Which readings no declared question asked about: exploratory, reportable as leads and never as confirmed answers. |
+| `reading_scope` | `ReadingScope` | `ReadingScope(questions_declared=False, late_criteria=[], exploratory_measures=[], exploratory_dimensions=[], disclosure=None)` | Which readings no declared question asked about: exploratory, reportable as leads and never as confirmed answers. |
 | `exclusions` | `list[ArmExclusions]` | `[]` | Per arm (cell), in coordinate order: how many of its trials were left out of its measures, by cause — `infra` (the harness faulted it), `truncated` (a judge reply cut off at the cap it was sent, named in `truncated_sent_caps`), `judge_cannot_tell` — so a shrunken n says why, arm by arm. |
 | `differential_exclusions` | `list[DifferentialExclusion]` | `[]` | Every (arm, cause) where one cause took more than DIFFERENTIAL_EXCLUSION_SHARE (10%) of the arm's trials, with every other arm's share of the same cause beside it. |
 | `verdict_order` | `VerdictOrder` | `VerdictOrder(merit_priority=[], tiers=[], unranked_bar_measure_ids=[], question=None)` | The order verdicts are read in, as declared: the bars on each axis of `merit_priority`, strongest first, the bars on no ranked axis, and for the aspect's question the bars on the axes it names. |
-| `measurement_windows` | `list[MeasurementWindow]` | `[]` | Each resolved member run's wall-clock measurement span, derived from that run's own scored_at stamps. |
-| `launch_disclosure` | `str \| None` | `None` | Set when the member runs were NOT all started by one campaign launch — some came from different launches, or were started on their own. |
+| `measurement_windows` | `list[MeasurementWindow]` | `[]` | Each resolved member run's wall-clock measurement span, derived from that run's own scored_at stamps: when it was measured, never a reason to read it apart from the others, since arms measured at different times are one experiment while nothing that decides their result changed. |
+| `launch_disclosure` | `str \| None` | `None` | Set when a launch ran its arms side by side, each at its own width, co-loading their providers (the runs' arm_schedule `concurrent`), so a provider rationing one arm more than another could shrink its sample. |
 | `model_identity_disclosure` | `str \| None` | `None` | Set when some of the member runs' candidate calls or judge scores came back from a response that named no model, so the record holds only the model id each asked for — and a provider may answer an id with a model of its choosing (a floating alias). |
 | `request_settings_disclosure` | `str \| None` | `None` | Set when the member runs' judge or simulated-user calls were not shown to be sent as each run asked: sent other settings than asked (a client may send the closest setting a model accepts), sent more than one way (with the counts), sent without enforcement (the provider may have ignored any setting the serving model does not take), or not reported at all (unverified). |
-| `measurement_window_disclosure` | `str \| None` | `None` | Set when AT LEAST ONE PAIR of member runs was measured over spans of wall-clock time that do not overlap — so anything that moved between those spans (a model revision, a provider's load, a rate limit) moved with the runs, and a difference between the two runs of such a pair is not attributable to the runs alone. |
 | `apparatus_confounds` | `list[Confound]` | `[]` | Apparatus dimensions that varied across the WHOLE campaign, scanned independently of any lever. |
 | `aliased_factors` | `list[AliasedFactors]` | `[]` | Factors that moved in lockstep across the campaign: each group's factors split the runs identically, so no comparison separates them. |
 | `unexercised_factors` | `list[UnexercisedFactor]` | `[]` | Levers read off what ran (a role's model) that no arm exercised beside another: no call in the role, or calls in one arm only. |

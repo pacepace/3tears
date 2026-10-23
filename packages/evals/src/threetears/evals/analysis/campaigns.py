@@ -292,7 +292,10 @@ def create_campaign(
     re-dates it. What is added is dated now, by itself: a margin (``Aspect.margin_declared_at``), a floor
     (``Floor.declared_at``), a control or candidate arm not already the source's (``CampaignArm.named_at``), and a
     question (the campaign's ``declared_at``). With no question given, the sources' questions are joined, each once.
-    Two adopted aspects under one label, or a run two sources hold, are refused naming them.
+    Two adopted aspects under one label, or a run two sources hold, are refused naming them. Each criterion's time is
+    read against the first stored result of its aspect, never against when the runs ran or this campaign was
+    declared, so adopting runs that are still valid reads as declaring before them; a criterion set here over runs
+    whose results are stored already is disclosed as set after its readings were visible.
 
     **Arms are addressed from runs** (:class:`ArmDefinition`): the variant key and lever map are the server's, read
     from the arm's first run, and every other run named for it must carry the same key, or the create is refused,
@@ -1642,9 +1645,8 @@ def _with_control(
     """``arms`` with the control addressed from a member run first, named now, or with no control.
 
     When it is named is recorded on the arm (``named_at``): a control named after an aspect's first result was
-    chosen once the evidence existed, so its bundle dates the aspect's question no earlier than the naming, which
-    the aspect's pages disclose as set after the runs; one named after the arms launched and before a result landed
-    was not.
+    chosen once the evidence existed, which the aspect's pages disclose as a criterion set after its readings were
+    visible; one named after the arms launched and before a result landed was not.
 
     :raises ValidationFailedError: The run is not a member of the campaign.
     """

@@ -504,14 +504,14 @@ DURABLE_BASELINE_VERSION: Final[int] = 15
 #:   left the core with its stored bytes, and its shape is now ``question``, ``arms`` (``CampaignArm``, the control
 #:   first), ``aspects`` (``Aspect``: label, template, margin, design, runs, when its design was declared),
 #:   ``floors`` (``Floor``), ``declared_at`` and ``declared_by`` (when, and by whom, the question was worded as it
-#:   reads) and ``call`` (``CampaignCall``); ``template_id``, ``run_ids`` and ``declared_design`` are gone. What
-#:   decides pre-registration is each aspect's own ``asked_at``, kept from its source when a campaign adopts it; what
-#:   is added later carries its own time (``Aspect.margin_declared_at``, ``Floor.declared_at``,
-#:   ``CampaignArm.named_at``). The campaign's own rules are closed (the closed list above). The step
+#:   reads) and ``call`` (``CampaignCall``); ``template_id``, ``run_ids`` and ``declared_design`` are gone. Each
+#:   criterion's time is read against its aspect's first result: the aspect's own ``asked_at``, kept from its source
+#:   when a campaign adopts it, and the time of its bars and of a margin or floor declared with it; what is added
+#:   later carries its own time (``Aspect.margin_declared_at``, ``Floor.declared_at``, ``CampaignArm.named_at``). The campaign's own rules are closed (the closed list above). The step
 #:   (``upgrade_campaign_v15``) reads a v15 campaign, core or durable, as one aspect labelled with its behavior; a
 #:   question's id, lineage and retirement are dropped with it, since the campaign asks one question. The step is
-#:   total: a run named twice is held once, and a question time it cannot order leaves the question undated, read
-#:   as asked after the evidence, rather than refusing the document. Every other
+#:   total: a run named twice is held once, and a question time it cannot order leaves the aspect undated, its
+#:   criteria disclosed as carrying no recorded time, rather than refusing the document. Every other
 #:   durable type passes through unchanged but for its number. Costs, recorded rather than avoided: a build before
 #:   this one refuses every durable document this one writes (a durable major is never read back by an older
 #:   build, so a fleet does not roll back past it once it has written); a core baseline reset no longer deletes

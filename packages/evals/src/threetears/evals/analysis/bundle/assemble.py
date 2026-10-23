@@ -30,11 +30,9 @@ of the engine is placed in a package, so no edge escapes it.
 its fingerprint — is byte-identical: inputs are sorted before every lens call, every
 time value derives from the runs and results rather than from the wall clock, and the
 canonical encoding sorts keys. Those time values are ``window`` (from run
-``created_at``) and ``measurement_windows`` / ``measurement_window_disclosure``, which
-derive from result ``scored_at`` — a DIFFERENT field, and the reason a fixture fix once
-took four passes: this line said "only ``window``/``created_at``", so pinning
-``created_at`` alone looked complete while five leaves still moved (both measurement windows'
-``start`` and ``end``, plus the disclosure rendered from them). The generation timestamp and token cost are
+``created_at``), ``measurement_windows`` and ``first_result_at``, which derive from result ``scored_at`` — a
+DIFFERENT field, and the reason a fixture fix once took four passes: this line said "only ``window``/``created_at``",
+so pinning ``created_at`` alone looked complete while the measurement windows' ``start`` and ``end`` still moved. The generation timestamp and token cost are
 *not* in the bundle — they live on ``GenerationProvenance``, set at generate time.
 """
 
@@ -46,7 +44,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as distribution_version
 from typing import TYPE_CHECKING, Protocol
 
-from threetears.evals.analysis.aspects import AspectDeclaration, aspect_view
+from threetears.evals.analysis.aspects import aspect_view
 from threetears.evals.analysis.agreement import (
     judge_agreement,
     judge_self_agreement,
@@ -73,7 +71,7 @@ from threetears.evals.analysis.reporting import (
     request_settings_readings,
     unconfirmed_model_identities,
 )
-from threetears.evals.analysis.measurement_windows import measurement_window, measurement_window_disclosure
+from threetears.evals.analysis.measurement_windows import measurement_window
 from threetears.evals.analysis.lenses.comparison_sets import compute_comparison_sets
 from threetears.evals.analysis.lenses.frontier import compute_frontier
 from threetears.evals.analysis.lenses.program_budget import compute_program_budget
@@ -269,77 +267,34 @@ class CampaignReadStore(Protocol):
 
 
 def _launch_disclosure(runs: Collection[EvalRun]) -> str | None:
-    """Say how the campaign's runs were started, when they were not all started as one launch taking turns.
+    """Say that one launch's arms ran side by side each at its own width, co-loading their providers.
+
+    When the runs ran is never said: arms measured minutes, hours or days apart are one experiment while nothing that
+    decides their result changed (owner, 2026-10-23), so neither runs started apart nor arms run one after another
+    carry a sentence. What co-loading changes is not time but capacity: a provider rationing one arm's calls more than
+    another's shrinks that arm's sample.
 
     :param runs: The resolved member runs.
     :ptype runs: Collection[EvalRun]
-    :return: The sentence, or None when every run shares one launch group whose arms were interleaved (or record no
-        schedule, stored before runs recorded one), or there are fewer than two.
+    :return: The sentence, or None where no launch of two or more of them ran its arms concurrently.
     :rtype: str | None
     """
-    if len(runs) < 2:
+    grouped: dict[str, list[EvalRun]] = {}
+    for run in runs:
+        if run.launch_group_id is not None:
+            grouped.setdefault(run.launch_group_id, []).append(run)
+    concurrent = [
+        group for group in grouped.values() if len(group) > 1 and any(r.arm_schedule == "concurrent" for r in group)
+    ]
+    if not concurrent:
         return None
-    groups = {run.launch_group_id for run in runs if run.launch_group_id is not None}
-    alone = sum(1 for run in runs if run.launch_group_id is None)
-    if alone == 0 and len(groups) == 1:
-        return _schedule_disclosure(runs)
-    parts = []
-    if groups:
-        parts.append(f"{len(groups)} separate launch{'es' if len(groups) != 1 else ''}")
-    if alone:
-        parts.append(f"{alone} run{'s' if alone != 1 else ''} started on {'their' if alone != 1 else 'its'} own")
+    count = sum(len(group) for group in concurrent)
     return (
-        f"These {len(runs)} runs were not started as one launch ({' and '.join(parts)}), so arms from different "
-        "starts were measured side by side only where their windows happen to overlap: a difference between "
-        "them can come from when they ran as well as from their settings."
+        f"These {count} runs were launched together with their arms side by side, each at its own width, so "
+        "they loaded their providers at once: a provider rationing one arm's calls more than another's shrinks "
+        "that arm's sample, and a difference between them in failures, exclusions or latency can come from the "
+        "host's capacity as well as from their settings."
     )
-
-
-def _schedule_disclosure(runs: Collection[EvalRun]) -> str | None:
-    """Say how one launch's arms shared time, when they did not take their turns case by case.
-
-    :param runs: The member runs, every one of one launch.
-    :ptype runs: Collection[EvalRun]
-    :return: The sentence for arms run one after another or side by side, or None.
-    :rtype: str | None
-    """
-    schedules = {run.arm_schedule for run in runs}
-    if "concurrent" in schedules:
-        return (
-            f"These {len(runs)} runs were launched together with their arms side by side, each at its own width, so "
-            "they loaded their providers at once: a provider rationing one arm's calls more than another's shrinks "
-            "that arm's sample, and a difference between them in failures, exclusions or latency can come from the "
-            "host's capacity as well as from their settings."
-        )
-    if "sequential" in schedules:
-        return (
-            f"These {len(runs)} runs were launched together but ran one arm after another, so each arm met its "
-            "providers at another time: a difference between them can come from when they ran as well as from their "
-            "settings."
-        )
-    return None
-
-
-def _dated_by_its_control(declared: AspectDeclaration | None, scored_at: Sequence[str]) -> AspectDeclaration | None:
-    """``declared`` with its question dated when its control was named, where that was after the first result.
-
-    :param declared: What the aspect declared, as its view reads it.
-    :ptype declared: AspectDeclaration | None
-    :param scored_at: When each of the aspect's results was written.
-    :ptype scored_at: Sequence[str]
-    :return: ``declared`` unchanged, unless its control was named after the earliest of ``scored_at``; then with
-        ``asked_at`` the control's ``named_at``. A time that cannot be ordered leaves the question undated (None),
-        disclosed as possibly set after the runs.
-    :rtype: AspectDeclaration | None
-    """
-    if declared is None or declared.control is None or declared.control.named_at is None or not scored_at:
-        return declared
-    try:
-        first = min(aware_instant(stamp, "a result") for stamp in scored_at)
-        named_late = aware_instant(declared.control.named_at, "the control") > first
-    except ValueError:
-        return declared.model_copy(update={"asked_at": None})
-    return declared.model_copy(update={"asked_at": declared.control.named_at}) if named_late else declared
 
 
 def _first_result_at(scored_at: Sequence[str]) -> str | None:
@@ -439,8 +394,7 @@ def assemble_context_bundle(
     # Before anything pools them: runs of two revisions of one template are two datasets (`revisions`), and the cell
     # algebra below has no coordinate that would keep them apart.
     refuse_pooled_revisions((run.template_id for run in runs), templates.get, what=f"campaign {view.name!r}")
-    # When the campaign's evidence began: its earliest member run, archived ones included (an archived run's results
-    # existed all the same). A question asked after it is disclosed as such (`question_after_runs`).
+    # When the campaign's design froze: its earliest member run, archived ones included.
     first_run_at = min((run.created_at for run in loaded.values()), default=None)
     # Before any lens reads a descriptor: each host measure is read as its runs were launched to read it, not as
     # whoever reads the campaign now declares it, so every lens below reads one set of declarations.
@@ -458,14 +412,11 @@ def assemble_context_bundle(
     for result in storage.query_eval_results_by_runs(list(every_result), scope_id):
         if result.eval_run_id in every_result:
             every_result[result.eval_run_id].append(result)
-    # A control chosen once the aspect's evidence existed was chosen with it in view: the aspect's question is then
-    # dated no earlier than the control was named, so `question_after_runs` discloses it as set after the runs. The
-    # evidence is the aspect's first result (`EvalResult.scored_at`), never a run's creation: a control named after
-    # its arms were launched and before any result landed was named before anything could be seen.
-    scored_at = [result.scored_at for run_results in every_result.values() for result in run_results]
-    # As declared, the question keeps its own time, which says whether it, or only its control, came late.
-    as_declared = declared
-    declared = _dated_by_its_control(declared, scored_at)
+    # When the aspect's readings could first be seen: the first stored result of the runs it reads, never a run's
+    # creation, nor when the campaign holding them was declared. A criterion set after it (the aspect, its control,
+    # margin, bars or floors) is named in `reading_scope.late_criteria`; one set before it reads as pre-registered,
+    # however old the runs are.
+    first_result_at = _first_result_at([result.scored_at for run_id in run_ids for result in every_result[run_id]])
     results_by_run: dict[str, list[EvalResult]] = {
         run_id: sorted(every_result[run_id], key=lambda r: r.id) for run_id in run_ids
     }
@@ -694,7 +645,6 @@ def assemble_context_bundle(
         # The structured half, for surfaces that render windows from data. The sentence below is
         # what the model is handed to quote.
         measurement_windows=windows,
-        measurement_window_disclosure=measurement_window_disclosure(windows, full=True),
         launch_disclosure=_launch_disclosure(runs),
         model_identity_disclosure=model_identity_disclosure(unconfirmed_model_identities(runs, results)),
         request_settings_disclosure=request_settings_disclosure(request_settings_readings(runs, results)),
@@ -853,14 +803,11 @@ def assemble_context_bundle(
         rubric_threshold=profile.bars.pass_threshold(view.behavior),
     )
     bundle.reading_scope = _reading_scope(
-        declared, bundle.measure_catalog, bundle.judged_measures, as_declared=as_declared, first_run_at=first_run_at
+        declared, bundle.measure_catalog, bundle.judged_measures, first_result_at=first_result_at
     )
-    # The design froze when the campaign's first run joined it (`update_campaign` refuses a design edit from then
-    # on), and a question asked after that instant is disclosed as set after the runs: the same instant.
+    # The design froze when the campaign's first run joined it (`update_campaign` refuses a design edit from then on).
     bundle.design_frozen_at = first_run_at
-    # When the aspect's evidence could first be seen: what a margin, a floor or the question's wording added later is
-    # read against on the campaign's page, by the rule its control is read by (`_dated_by_its_control`).
-    bundle.first_result_at = _first_result_at(scored_at)
+    bundle.first_result_at = first_result_at
     # Over the same grouping every per-arm read uses, so an arm's exclusions describe the trials its readings lost.
     bundle.exclusions = _arm_exclusions(results_by_cell)
     bundle.differential_exclusions = _differential_exclusions(bundle.exclusions)

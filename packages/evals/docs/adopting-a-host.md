@@ -1424,8 +1424,8 @@ definition = {
   at creation, over runs its aspects already hold; or `set_campaign_control` once the control's run has joined), and
   the server reads its variant key and lever map from the first; runs of one arm carrying two keys are refused,
   naming each. The control comes first. A candidate nobody names is read off the runs, one per other variant. A
-  control named after an aspect's first result dates that aspect's question at the naming, which its pages
-  disclose as set after the runs.
+  control named after an aspect's first result is named on that aspect's pages as set after its readings were
+  visible.
 - **Each aspect holds its own runs.** A run joins one aspect of a campaign, by its template, or by the aspect
   `add_runs_to_campaign` (`campaign_runs_add`) names; a run another template ran, or one two aspects could take,
   is refused naming them.
@@ -1443,9 +1443,10 @@ definition = {
   only warns**: it never blocks, never writes the verdict, and never rewrites what the writer recommends.
 - **The declaration is frozen once any aspect holds a run.** To ask again, create a campaign that adopts the aspects
   it keeps (`aspects_from`, each a campaign id, or `{campaign_id, label}` to relabel a campaign's one aspect): each
-  keeps its template, runs, design and the time its question was asked, so nothing re-dates its question. A
-  `margins` entry (`{label: points}`) gives an adopted aspect its margin, an upgraded one that never declared one
-  included. Whatever the new campaign adds is dated now and marked as declared after the runs.
+  keeps its template, runs, design and times, so a campaign adopting runs that are still valid reads as the one
+  declared before them. A `margins` entry (`{label: points}`) gives an adopted aspect its margin, an upgraded one
+  that never declared one included. Whatever the new campaign adds is dated now and named on the page where that is
+  later than its aspect's first result.
 ### Recording the call
 
 **Code reports, the writer recommends, a person decides, and the decision is recorded.** `campaign_record` (the
