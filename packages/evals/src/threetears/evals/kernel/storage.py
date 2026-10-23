@@ -1870,6 +1870,23 @@ class EvalStorage:
         items = self._store.get_many("eval_run", list(run_ids), scope_id, exclude=exclude)
         return self._hydrate_runs(items, elide_payload, scope_id)
 
+    def launch_group_run_ids(self, launch_group_id: str, scope_id: str, /) -> list[str]:
+        """The ids of the runs one launch started together (``EvalRun.launch_group_id``), in no order.
+
+        Read off the stored rows without reading them as runs: a caller asking how many arms shared a launch needs
+        their ids alone.
+
+        :param launch_group_id: The launch's group.
+        :ptype launch_group_id: str
+        :param scope_id: The scope its runs live in.
+        :ptype scope_id: str
+        :return: The runs' ids.
+        :rtype: list[str]
+        """
+        return [
+            str(item["id"]) for item in self._store.by_doc_type("eval_run", scope_id, launch_group_id=launch_group_id)
+        ]
+
     def load_eval_run_stamps(self, run_ids: Sequence[str], scope_id: str, /) -> list[EvalRunStamp]:
         """Load the id, archived flag and start time of the named runs, in one batch read.
 

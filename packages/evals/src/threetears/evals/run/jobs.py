@@ -35,10 +35,17 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Itera
 from concurrent.futures import Executor
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
-from typing import Any, Literal, Protocol, TypeVar
+from typing import Any, Literal, Protocol, TypeVar, cast
 
 from threetears.evals.kernel.errors import AdmissionRefusedError, ConflictError, JobFenced, StorageError
-from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, BudgetStop, EvalRun, KnownFailedBecause
+from threetears.evals.schema.models import (
+    TERMINAL_RUN_STATUSES,
+    BudgetStop,
+    EvalRun,
+    EvalRunStatus,
+    KnownFailedBecause,
+    ended_lifetimes,
+)
 from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import JobStore
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
@@ -1065,7 +1072,9 @@ class EvalJobManager:
         try:
             for run in runs:
                 if self._leases is not None:
-                    run.lease = self._leases.grant()
+                    # A run taken up again was reopened under its next epoch, and is held at that epoch; any other
+                    # run is new, at the first.
+                    run.lease = self._leases.grant(run.lease.epoch if run.lease is not None else 0)
                 self._storage.save_eval_run(run)
                 saved.append(run)
         # prawduct:allow prawduct/broad-except -- cleanup-then-reraise: whatever stopped a sibling's save, the runs already saved must not be left pending
@@ -1373,6 +1382,18 @@ class EvalJobManager:
             # that no longer held it. A declined write is neither broadcast nor handed to the hook.
             if run.lost is not None:
                 return None
+            ended_at = datetime.now(UTC).isoformat()
+            if status in TERMINAL_RUN_STATUSES and run.lifetimes:
+                # A run taken up again ends its current holding with it, so the holding reads how it ended.
+                closed = ended_lifetimes(
+                    run.lifetimes,
+                    status=cast(EvalRunStatus, status),
+                    at=ended_at,
+                    reason=cancellation_reason or budget_stop_reason or error,
+                    budget_stops=budget_stops,
+                    completeness=run.completeness,
+                )
+                run = run.model_copy(update={"lifetimes": closed})
             data = run.to_dict()
             data["status"] = status
             if error is not None:
@@ -1390,7 +1411,7 @@ class EvalJobManager:
             if record_empty_matrix and run.completeness is None:
                 data["completeness"] = summarize_completeness(run, []).to_dict()
             if status in TERMINAL_RUN_STATUSES:
-                data["completed_at"] = datetime.now(UTC).isoformat()
+                data["completed_at"] = ended_at
             return data
 
         # Off the event loop: this is a conditional read-modify-write retried up to

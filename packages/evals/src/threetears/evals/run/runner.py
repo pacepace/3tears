@@ -3405,6 +3405,22 @@ class RunCallbacks:
     on_result: Callable[[EvalResult], Awaitable[None]] | None = None
 
 
+@dataclass(frozen=True)
+class StoredCells:
+    """What a run taken up again already holds of its matrix: the cells it does not run again, and the rows it
+    writes over.
+
+    :ivar done: The stored rows that count as done. Their cells are not run again, and the run's progress, its
+        completeness and its every-cell checks count them beside the cells this holding runs.
+    :ivar replaced: ``(case id, k)`` → the id of a stored row whose cell this holding runs again. The cell is written
+        under that id, over the row (a later epoch replaces an earlier one's row), so the cell keeps one row whatever
+        id an older build gave it.
+    """
+
+    done: tuple[EvalResult, ...] = ()
+    replaced: Mapping[tuple[str, int], str] = field(default_factory=dict)
+
+
 def cell_execution_order(
     run: EvalRun,
     test_cases: list[EvalTestCase],
@@ -3490,6 +3506,7 @@ async def execute_run(
     budget_gate: Callable[[float | None], CapBreach | None] | None = None,
     on_cost: Callable[[float | None], None] | None = None,
     cell_sink: list[CellSummary] | None = None,
+    stored: StoredCells | None = None,
 ) -> list[CellSummary]:
     """Execute an entire :class:`EvalRun` end-to-end.
 
@@ -3572,6 +3589,12 @@ async def execute_run(
     declined every call, say), it raises :class:`NothingMeasuredError` the same way. A cell lost to a judge call's
     error alone does not count toward it: a re-judge recovers that cell.
 
+    **A run taken up again** (``stored``) runs only the cells it does not already hold: the run's whole order, with
+    its done cells left out, never an order of the rest, which would be another order (a shuffle's permutation
+    depends on the list it shuffles). Its done cells count as they would have, had the run never stopped: its
+    progress starts from them over the whole matrix, they are in what this returns (so in its completeness), and
+    the every-cell checks below count them. A cell it runs again over a stored row is written under that row's id.
+
     Cancellation: a cancel that lands while a cell runs is delivered once that cell is recorded —
     excluded under the ``cancelled`` termination, with the spend its sink holds — and saved, so
     the money a cancelled run spent on its last cell is on the record with the rest.
@@ -3618,15 +3641,21 @@ async def execute_run(
     # does not turn every cell into a rig fault; the run names the check and why (`EvalRun.refused_goal_checks`).
     template = template_as_graded(template, run.refused_goal_checks)
     callbacks = callbacks or RunCallbacks()
+    stored = stored if stored is not None else StoredCells()
     total = len(test_cases) * run.k_runs
-    done = 0
+    done = len(stored.done)
     # Each cell an apparatus fault excluded, by its fault — see the check after the loop.
-    apparatus_failures: list[str] = []
+    apparatus_failures: list[str] = [
+        row.infra_error or "an apparatus fault" for row in stored.done if row.termination == "apparatus_failed"
+    ]
     # Each cell excluded for an ``infra`` cause, by its error — see the check after the loop.
-    infra_exclusions: list[str] = []
+    infra_exclusions: list[str] = [
+        row.infra_error for row in stored.done if trial_exclusion(row) == "infra" and row.infra_error
+    ]
     # The caller's list when it supplied one, so what it can read mid-flight is
     # the identical object this returns — never a copy that could disagree.
     summaries: list[CellSummary] = cell_sink if cell_sink is not None else []
+    summaries.extend(CellSummary.from_result(row, persisted=True) for row in stored.done)
 
     # One lane for the whole run, so every cell records into — or replays — the one corpus the run
     # names: its own id for a capture, the capture it names for a replay. ``None`` with cassettes off.
@@ -3662,6 +3691,11 @@ async def execute_run(
     # :func:`cell_execution_order` for the order's derivation and why its seed is
     # not a measurement condition. Cells START in this order however many run at once.
     order = cell_execution_order(run, test_cases, rng=options.cell_order_rng, seed=options.cell_order_seed)
+    if stored.done:
+        # Filtered after it is ordered, never ordered after it is filtered: the run's own order with its done cells
+        # left out is the order an uninterrupted run would have run the rest in.
+        held = {(row.test_case_id, row.k_iteration) for row in stored.done}
+        order = [(k, tc) for k, tc in order if (tc.id, k) not in held]
     # The run's width, narrowed to its own matrix: a run of one cell is serial whatever was asked, and
     # its cells say so (``execution_mode`` reads the width off these options).
     width = min(options.max_concurrent_cells, max(len(order), 1))
@@ -3912,6 +3946,11 @@ async def execute_run(
         # interrupted once a worker has it, so abandoning the wait would record this cell as lost
         # while its row lands anyway. The cancel is delivered once the cell is accounted for below.
         result = result.model_copy(update={"lease_epoch": lease_epoch})
+        if (over := stored.replaced.get((tc.id, k))) is not None and over != result.id:
+            # The cell's stored row carries an id an older build minted: written over under that id, so the cell
+            # keeps its one row.
+            result = result.model_copy(update={"id": over})
+            cell_trace = cell_trace.model_copy(update={"id": eval_trace_doc_id(over), "result_id": over})
         saving = asyncio.ensure_future(
             run_blocking(host.blocking_executor, host.storage.save_eval_result, result, cell_trace, run_cell=True)
         )

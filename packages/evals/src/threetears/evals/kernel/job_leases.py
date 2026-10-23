@@ -74,7 +74,7 @@ from threetears.evals.schema.job_lease import (
     LeasedRecord,
     with_fault,
 )
-from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, EvalRun
+from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, EvalRun, ended_lifetimes
 from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
@@ -178,6 +178,15 @@ def _run_lost(run: EvalRun, loss: JobLoss, store: LeaseStore) -> EvalRun:
             "completeness": completeness,
             "error_details": [*run.error_details, *unreadable],
             "lost": loss,
+            # A run taken up again loses its current holding with it.
+            "lifetimes": ended_lifetimes(
+                run.lifetimes,
+                status=RUN_LOST_STATUS,
+                at=loss.at,
+                reason=loss.cause,
+                lost=loss,
+                completeness=completeness,
+            ),
         }
     )
 
