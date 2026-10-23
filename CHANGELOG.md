@@ -10,7 +10,7 @@ packages (bumped in lock-step).
 
 ### core: every collection key read is counted by the tier that answered it
 
-**Added:** `threetears.core.collections.tier_reads` (`ReadTier`, `record_tier_read`, `take_tier_reads`,
+**Added:** `threetears.core.collections.tier_reads` (`ReadTier`, `record_tier_read`, `log_tier_reads_every`,
 `log_tier_reads`, `TIER_READS_LOG_SECONDS`). `BaseCollection.ensure` (and every key read built on it) counts
 each read as L1 (this process, an absence marker included), L2 (the shared cache) or L3 (the store), by table.
 The tool server logs the counts once a minute at INFO, as one line naming each table's reads, only when a read

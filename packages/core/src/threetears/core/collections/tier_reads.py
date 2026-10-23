@@ -6,13 +6,14 @@ L1, and a table whose reads keep reaching L2 or L3 is one whose cache is being l
 never filled. These counters make that visible per table, cheaply: one dictionary increment per read,
 under a lock, since reads also run on worker threads.
 
-:func:`take_tier_reads` returns the counts since it was last called and starts them again;
-:func:`log_tier_reads` writes them as one INFO line when any read happened. A long-lived process calls it on
-a timer (the tool server does, once a minute).
+:func:`log_tier_reads` writes the counts since it was last called as one INFO line, when any read happened,
+and starts them again; :func:`log_tier_reads_every` does that on a timer, as the tool server does once a
+minute.
 """
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from collections import Counter
 from enum import StrEnum
@@ -20,7 +21,7 @@ from typing import Final
 
 from threetears.observe import get_logger
 
-__all__ = ["TIER_READS_LOG_SECONDS", "ReadTier", "log_tier_reads", "record_tier_read", "take_tier_reads"]
+__all__ = ["TIER_READS_LOG_SECONDS", "ReadTier", "log_tier_reads", "log_tier_reads_every", "record_tier_read"]
 
 log = get_logger(__name__)
 
@@ -59,7 +60,7 @@ def record_tier_read(table: str, tier: ReadTier) -> None:
         _counts[(table, tier.value)] += 1
 
 
-def take_tier_reads() -> dict[str, dict[str, int]]:
+def _take_tier_reads() -> dict[str, dict[str, int]]:
     """the counts since the last take, by table then tier, and start them again.
 
     :return: table -> tier -> reads; empty when no read happened
@@ -80,7 +81,20 @@ def log_tier_reads() -> dict[str, dict[str, int]]:
     :return: what was logged: table -> tier -> reads; empty when nothing was
     :rtype: dict[str, dict[str, int]]
     """
-    taken = take_tier_reads()
+    taken = _take_tier_reads()
     if taken:
         log.info("collection reads by tier", extra={"extra_data": {"reads": taken}})
     return taken
+
+
+async def log_tier_reads_every(every: float = TIER_READS_LOG_SECONDS) -> None:
+    """log the counts every ``every`` seconds (:func:`log_tier_reads`), until cancelled.
+
+    :param every: seconds between lines
+    :ptype every: float
+    :return: nothing; runs until cancelled
+    :rtype: None
+    """
+    while True:
+        await asyncio.sleep(every)
+        log_tier_reads()

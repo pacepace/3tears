@@ -17,7 +17,7 @@ from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
 from datetime import timedelta
 
 from pydantic import BaseModel, SerializerFunctionWrapHandler, ValidationError, model_serializer, model_validator
-from threetears.core.collections.tier_reads import TIER_READS_LOG_SECONDS, log_tier_reads
+from threetears.core.collections.tier_reads import TIER_READS_LOG_SECONDS, log_tier_reads, log_tier_reads_every
 from threetears.core.wire import TolerantWireModel
 
 from threetears.agent.audit import AuditEvent, publish_audit
@@ -2058,7 +2058,7 @@ class ToolServer:
         self._ready_event.set()
 
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-        self._tier_reads_task = asyncio.create_task(self._tier_reads_loop())
+        self._tier_reads_task = asyncio.create_task(log_tier_reads_every(TIER_READS_LOG_SECONDS))
 
         # credential renewal: ONLY on the self-owned connection the auth-callout minted a user JWT
         # for. an injected (agent-owned) connection is renewed by its owner, so the pod must not
@@ -3965,21 +3965,6 @@ class ToolServer:
             door_key=self._door_key() if self._door_key is not None else None,
         )
 
-    async def _tier_reads_loop(self, every: float = TIER_READS_LOG_SECONDS) -> None:
-        """log how this pod's collection reads were answered, by table and tier, every ``every`` seconds.
-
-        One INFO line a period, only when a read happened: the measure of whether reads stay at L1 or keep
-        reaching L2 and L3 (:mod:`threetears.core.collections.tier_reads`).
-
-        :param every: seconds between lines
-        :ptype every: float
-        :return: nothing; runs until cancelled
-        :rtype: None
-        """
-        while True:
-            await asyncio.sleep(every)
-            log_tier_reads()
-
     async def _heartbeat_loop(self) -> None:
         """publish periodic heartbeat and re-registration until shutdown.
 
@@ -4087,6 +4072,8 @@ class ToolServer:
             if self._tier_reads_task is not None:
                 await cancel_and_wait(self._tier_reads_task)
                 self._tier_reads_task = None
+                # the reads since the last line, so a stopping pod's last minute is not lost
+                log_tier_reads()
 
             if self._owned_jwks_provider is not None:
                 await self._owned_jwks_provider.stop()
