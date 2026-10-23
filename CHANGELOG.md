@@ -134,7 +134,7 @@ enforce the fencing.
 run as its in-flight cells unwind. A lost or superseded holder writes nothing more, and a graceful shutdown no longer
 writes lost over a run whose lease has passed to another holding. See `packages/evals/MIGRATIONS.toml`.
 
-### core: a derived value's peer waits for as long as the peer is alive, and never derives it twice
+### core: a derived value's peer waits while the peer holds the build lock, and takes over only when the peer lets go
 
 **Fixed:** a pod that lost a derivation's build lock waited a fixed budget (`peer_wait_seconds`: 5 s,
 `VersionedAnswers` 15 s, geo tiles 30 s) and then derived the value itself, whether or not the peer was still
@@ -152,12 +152,22 @@ past `max_hold_seconds` (new, default 600 s), the lease's rule for a wedged hold
 ### core: every collection key read is counted by the tier that answered it
 
 **Added:** `threetears.core.collections.tier_reads` (`ReadTier`, `record_tier_read`, `log_tier_reads_every`,
-`log_tier_reads`, `TIER_READS_LOG_SECONDS`). `BaseCollection.ensure` (and every key read built on it) counts
-each read as L1 (this process, an absence marker included), L2 (the shared cache) or L3 (the store), by table.
-The tool server logs the counts once a minute at INFO, as one line naming each table's reads, only when a read
-happened: the measure of whether a pod's reads stay at L1 or keep reaching L2 and L3. A reports tool pod on cobalt
-dev was found reading `namespaces` from L3 on every read, its L1 dropped about every 40 s, with nothing to show
-it but the drops.
+`log_tier_reads`, `hold_tier_reads_timer`, `release_tier_reads_timer`, `TIER_READS_LOG_SECONDS`).
+`BaseCollection.ensure`, a subscript read (`collection[key]`) and every key read built on them count each read as
+L1 (this process, an absence marker included), L2 (the shared cache) or L3 (the store), by table. The counters are
+the process's, and so is the one timer that logs them once a minute at INFO, as one line naming each table's
+reads, only when a read happened: every tool server in the process holds the timer, and the last to stop logs
+the reads since its last line. This is the measure of whether a pod's reads stay at L1 or keep reaching L2 and
+L3. A reports tool pod on cobalt dev was found reading `namespaces` from L3 on every read, its L1 dropped about
+every 40 s, with nothing to show it but the drops.
+
+### core: a table dropped for a missed or replaced write generation names what the judgement saw
+
+**Added:** when `CollectionRegistry.settle_generation` drops a table, it logs "write generation judged: the table
+is dropped" at INFO with the table, the verdict, the generation read, the registry's recorded mark and the
+advances heard past a gap that are still waiting (`GenerationMarks.pending(table)`, each as
+`incarnation:count (rows/of)`). A drop now says whether an advance was never heard, heard out of order, or was
+this registry's own write left unaccounted.
 
 ## v0.76.0 -- 2026-10-23
 
@@ -168,14 +178,6 @@ pointer buckets replicated), all merged to the hub's `develop` on 2026-10-23. A 
 `truncate()`, `load_files()` or `save_rows(copy=True)` on the rail needs a hub at or after those merges;
 against an older hub the request has no responder (or `l3.tx.copy` is refused) and raises
 `DataLayerUnavailableError`. Roll the hub before any pod on 0.76.0 uses them.
-
-### core: a table dropped for a missed or replaced write generation names what the judgement saw
-
-**Added:** when `CollectionRegistry.settle_generation` drops a table, it logs "write generation judged: the table
-is dropped" at INFO with the table, the verdict, the generation read, the registry's recorded mark and the
-advances heard past a gap that are still waiting (`GenerationMarks.pending(table)`, each as
-`incarnation:count (rows/of)`). A drop now says whether an advance was never heard, heard out of order, or was
-this registry's own write left unaccounted.
 
 ### core: a DuckDB export is sized for its rows, and DuckDB gives freed memory back
 
