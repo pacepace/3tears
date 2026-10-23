@@ -57,6 +57,7 @@ from threetears.evals.analysis.campaign_bundle import CampaignBundle, campaign_t
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.kinds import campaign_kind
+from threetears.evals.analysis.lenses.frontier import pass_hat_k_cell_lines
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.references import cell_index, resolve_reading
 from threetears.evals.analysis.report.figures import (
@@ -3826,7 +3827,7 @@ def _method_blocks(
         say("measurement", bundle.latency_contended + contended)
     for _, sentence in sorted(bundle.short_runs.items()):
         say("runs", sentence)
-    _run_disclosures(bundle, say)
+    _run_disclosures(bundle, say, arm)
     if (footing := _production_footing_sentence(bundle, arm)) is not None:
         say("measurement", footing)
     _design_disclosures(bundle, say, arm)
@@ -3928,8 +3929,12 @@ def _uncarried(bundle: AnalysisContextBundle) -> list[str]:
     )
 
 
-def _run_disclosures(bundle: AnalysisContextBundle, say: Callable[[DisclosureSource, str | None], None]) -> None:
-    """The member runs left out, unfinished, short, or of unknown completeness."""
+def _run_disclosures(
+    bundle: AnalysisContextBundle, say: Callable[[DisclosureSource, str | None], None], arm: Callable[[str], str]
+) -> None:
+    """The member runs left out, unfinished, short, or of unknown completeness, and every run an arm's pass^k kept out
+    of its headline cell or pooled by assumption (:func:`~threetears.evals.analysis.lenses.frontier.pass_hat_k_cell_lines`),
+    each line led by the arm, as the frontier's text leads it."""
     if not bundle.run_ids:
         say("runs", "The campaign resolved no runs in this scope, so no table or chart here holds anything.")
     if bundle.unresolved_run_ids:
@@ -3959,6 +3964,11 @@ def _run_disclosures(bundle: AnalysisContextBundle, say: Callable[[DisclosureSou
         )
     for cell in bundle.short_cells:
         say("runs", cell.sentence)
+    for subject in bundle.frontier.subjects:
+        for point in subject.points:
+            for reading in point.pass_hat_k_cells:
+                for line in pass_hat_k_cell_lines(reading):
+                    say("runs", f"{arm(point.variant_key)}: {line}.")
 
 
 def _design_disclosures(

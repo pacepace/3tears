@@ -17,6 +17,8 @@ import pytest
 from threetears.evals.analysis import FrontierPoint, PassHatKCellReading, assemble_context_bundle
 from threetears.evals.analysis.campaign_bundle import writer_view
 from threetears.evals.analysis.lens_text import frontier_text
+from threetears.evals.analysis.report.build import build_code_only_report
+from threetears.evals.analysis.report.model import DisclosureBlock
 from threetears.evals.analysis.lenses.frontier import compute_frontier
 from threetears.evals.kernel.identity import IDENTITY_VERSION, derive_context_identity, derive_variant_identity
 from threetears.evals.schema.models import EvalResult, EvalRun, RoleUsage
@@ -397,3 +399,36 @@ def test_a_run_silent_on_both_takes_one_peers_whole_pair_never_two_majorities():
     assert headline.run_ids == ["run-a", "run-b", "run-x"]
     assert headline.template_digest_assumed == ["run-x"]
     assert headline.served_model_assumed == ["run-x"]
+
+
+def _page_run_lines(runs: list[EvalRun], results: dict[str, list[EvalResult]]) -> list[str]:
+    """Every run disclosure the campaign's page prints, over the bundle its runs assemble."""
+    report = build_code_only_report(_bundle(runs, results), assembled_at="2026-10-23T00:00:00+00:00")
+    return [block.text for block in report.blocks if isinstance(block, DisclosureBlock) and block.source == "runs"]
+
+
+def test_the_page_names_each_cell_kept_out_of_a_pass_hat_k_led_by_its_arm():
+    runs, results = _mixed_campaign()
+
+    lines = _page_run_lines(runs, results)
+
+    kept_out = [line for line in lines if "kept out of this pass^k" in line]
+    assert len(kept_out) == 3
+    assert any("run-rig-1, run-rig-2 kept out" in line and "another measurement context" in line for line in kept_out)
+    assert any("run-tpl kept out" in line and "another template or template revision" in line for line in kept_out)
+    assert any("run-bare kept out" in line and "no recorded measurement context" in line for line in kept_out)
+    # Led by the arm, as the frontier's text leads it, so a reader knows whose pass^k left the run out.
+    assert all(line.split(": ", 1)[0] and not line.startswith("run(s)") for line in kept_out)
+
+
+def test_a_page_whose_points_have_only_a_headline_cell_says_nothing_of_pass_hat_k_cells():
+    first = _launched("run-a", test_case_ids=["tc1", "tc2"])
+    top_up = _launched("run-b", test_case_ids=["tc2", "tc3"])
+    results = {
+        first.id: _results(first, {"tc1": (True,), "tc2": (True,)}, identity_version=IDENTITY_VERSION),
+        top_up.id: _results(top_up, {"tc2": (False,), "tc3": (True,)}, identity_version=IDENTITY_VERSION),
+    }
+
+    lines = _page_run_lines([first, top_up], results)
+
+    assert not any("pass^k" in line or "pooled with run(s)" in line for line in lines)
