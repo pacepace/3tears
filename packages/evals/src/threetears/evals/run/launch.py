@@ -1966,7 +1966,7 @@ async def start_run(
     :ptype measure_latency: bool
     :param arm_schedule: How the launch's arms share time (:mod:`threetears.evals.run.arm_schedule`):
         ``interleaved`` runs every arm at once and takes their cells in turn, case by case, under one width shared
-        by the launch, so a provider's bad minute lands on every arm alike; ``sequential`` runs one arm after
+        by the launch, which absorbs a provider's bad minute across every arm; ``sequential`` runs one arm after
         another; ``concurrent`` runs every arm side by side at its own width, co-loading their providers. ``None``
         (the default) is ``interleaved``, or ``sequential`` when latency is under test, which takes no other. Every
         run records it (``EvalRun.arm_schedule``). Ignored with ``launch_group``, whose caller built the group with

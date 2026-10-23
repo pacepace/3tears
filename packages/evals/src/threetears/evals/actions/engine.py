@@ -1761,8 +1761,8 @@ def engine_actions() -> tuple[Action, ...]:
                 "out-of-run cap and are outside every run's cost cap. job_poll on the launch's job names its runs "
                 "once they start (run_ids) and counts them finished; the job ends when every run has, and one "
                 "job_cancel stops them all. Several models are interleaved by default (arm_schedule): every arm runs "
-                "at once, their cases taken in turn under one width, so a provider's bad minute lands on every arm "
-                "alike; each run records the schedule it ran under."
+                "at once, their cases taken in turn under one width, which costs nothing and absorbs a provider's bad "
+                "minute across every arm; each run records the schedule it ran under."
             ),
         ),
         Action(

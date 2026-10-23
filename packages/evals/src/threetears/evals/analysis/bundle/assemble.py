@@ -39,6 +39,7 @@ so pinning ``created_at`` alone looked complete while the measurement windows' `
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
+from datetime import datetime
 from dataclasses import replace
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as distribution_version
@@ -279,6 +280,10 @@ def _launch_disclosure(runs: Collection[EvalRun]) -> str | None:
     :return: The sentence, or None where no launch of two or more of them ran its arms concurrently.
     :rtype: str | None
     """
+    # Decided on the members alone: an arm adopted from a concurrent launch whose sibling arms sit in another campaign
+    # is not flagged, since the read store reads a campaign's own runs and not its launches. What co-loading costs such
+    # an arm still shows where it lands: its exclusions (`differential_exclusions`) and its latency, withheld where read
+    # under concurrency (`latency_contended`).
     grouped: dict[str, list[EvalRun]] = {}
     for run in runs:
         if run.launch_group_id is not None:
@@ -297,13 +302,18 @@ def _launch_disclosure(runs: Collection[EvalRun]) -> str | None:
     )
 
 
-def _first_result_at(scored_at: Sequence[str]) -> str | None:
-    """The earliest of ``scored_at``, as stored; None with none, or where a time cannot be ordered against another."""
-    try:
-        return min(scored_at, key=lambda stamp: aware_instant(stamp, "a result"), default=None)
-    except ValueError:
-        # NOSILENT: an unorderable stamp leaves the evidence undated, which reads nothing as declared after it
-        return None
+def _first_result_at(scored_at: Sequence[str]) -> tuple[str | None, int]:
+    """The earliest of ``scored_at`` that can be ordered, as stored, and how many cannot be: one stamp with no offset
+    never hides when the others became visible. None with no orderable stamp."""
+    ordered: list[tuple[datetime, str]] = []
+    untimed = 0
+    for stamp in scored_at:
+        try:
+            ordered.append((aware_instant(stamp, "a result"), stamp))
+        except ValueError:
+            # NOSILENT: counted, and the page says whether a criterion came after such a result is not known
+            untimed += 1
+    return (min(ordered)[1] if ordered else None), untimed
 
 
 def assemble_context_bundle(
@@ -416,7 +426,9 @@ def assemble_context_bundle(
     # creation, nor when the campaign holding them was declared. A criterion set after it (the aspect, its control,
     # margin, bars or floors) is named in `reading_scope.late_criteria`; one set before it reads as pre-registered,
     # however old the runs are.
-    first_result_at = _first_result_at([result.scored_at for run_id in run_ids for result in every_result[run_id]])
+    first_result_at, untimed_results = _first_result_at(
+        [result.scored_at for run_id in run_ids for result in every_result[run_id]]
+    )
     results_by_run: dict[str, list[EvalResult]] = {
         run_id: sorted(every_result[run_id], key=lambda r: r.id) for run_id in run_ids
     }
@@ -638,12 +650,7 @@ def assemble_context_bundle(
         completeness_unknown_run_ids=[run.id for run in runs if run.completeness is None],
         short_cells=_short_cells(cells, declared_design),
         held_fixed_reading=_held_fixed_reading(runs, declared_design),
-        # ``full`` because this bundle's reader is a model that cannot go and look:
-        # above the inline cap the collapsed form names two spans and says where to
-        # get the rest, which is an instruction only a human at a terminal can follow.
-        # Campaigns routinely carry more runs than that cap.
-        # The structured half, for surfaces that render windows from data. The sentence below is
-        # what the model is handed to quote.
+        # When each run was measured, as data: a fact, never a reason to read runs apart.
         measurement_windows=windows,
         launch_disclosure=_launch_disclosure(runs),
         model_identity_disclosure=model_identity_disclosure(unconfirmed_model_identities(runs, results)),
@@ -804,7 +811,7 @@ def assemble_context_bundle(
     )
     bundle.reading_scope = _reading_scope(
         declared, bundle.measure_catalog, bundle.judged_measures, first_result_at=first_result_at
-    )
+    ).model_copy(update={"untimed_results": untimed_results})
     # The design froze when the campaign's first run joined it (`update_campaign` refuses a design edit from then on).
     bundle.design_frozen_at = first_run_at
     bundle.first_result_at = first_result_at

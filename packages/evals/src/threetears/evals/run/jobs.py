@@ -213,8 +213,8 @@ async def _finish_even_if_cancelled(write: Coroutine[Any, Any, _T]) -> _T:
 class _GroupSlot:
     """One concurrency slot a launch group holds from its first member's start to its last member's end.
 
-    The arms of one campaign launch are one experiment: measured apart in time, a difference between
-    them can be the provider's afternoon rather than the setting. Admitting them one semaphore slot
+    The arms of one campaign launch are interleaved by default, which absorbs a provider's bad minute
+    across every arm and needs them to run together. Admitting them one semaphore slot
     each would park all but ``max_concurrent`` of them, so the group takes ONE slot and every member
     runs inside it. The slot is released when every member has ended, including a member cancelled
     before it started — which is why release is counted on :meth:`leave`, called when each member's

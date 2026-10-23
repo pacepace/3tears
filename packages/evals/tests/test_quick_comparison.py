@@ -18,6 +18,7 @@ import pytest
 from threetears.evals.analysis import (
     DisclosureBlock,
     TableBlock,
+    assemble_context_bundle,
     build_code_only_report,
     campaign_report_markdown,
     report_markdown,
@@ -222,3 +223,44 @@ async def test_a_mapping_of_one_is_one_arm_named_not_a_comparison() -> None:
     result = await _compare({"only": careful})
     assert list(result.arms) == ["only"] and result.control == "only"
     assert result.summary.candidate_model == "only"
+
+
+async def test_an_eval_s_campaign_is_dated_when_its_call_launched_the_arms_in_its_one_write() -> None:
+    """The design and the control are fixed in the call, before any arm runs: the campaign filed once they have is
+    written once, dated then, so nothing it declares reads as chosen after its readings."""
+    comparison = await _compare()
+    storage = comparison.host.storage
+    campaign = off_loop(storage.load_campaign, comparison.campaign_id, SCOPE)
+    assert campaign is not None and campaign.control is not None
+    run_ids = [summary.run_id for summary in comparison.arms.values()]
+    first = min(result.scored_at for result in off_loop(storage.query_eval_results_by_runs, run_ids, SCOPE))
+    (aspect,) = campaign.aspects
+    assert campaign.control.named_at is not None and campaign.control.named_at < first
+    assert aspect.asked_at is not None and aspect.asked_at < first
+    assert campaign.created_at > first, "filed once the arms had run"
+    assert comparison.page.aspects[0].report.bundle.reading_scope.late_criteria == []
+
+
+async def test_an_eval_s_campaign_filed_the_old_way_after_its_runs_reads_with_no_late_line() -> None:
+    """An eval filed before #919 stamped its control and its aspect when it filed them, after every result. An eval
+    asks no question, so its control and guardrails are never timed: its page reads as it did, never newly calling
+    the control late for how evals used to file themselves."""
+    comparison = await _compare()
+    storage = comparison.host.storage
+    stored = off_loop(storage.load_campaign, comparison.campaign_id, SCOPE)
+    assert stored is not None
+    filed = stored.created_at
+    (aspect,) = stored.aspects
+    old = stored.model_copy(
+        update={
+            "arms": [arm.model_copy(update={"named_at": filed}) for arm in stored.arms],
+            "aspects": [aspect.model_copy(update={"asked_at": filed, "declared_at": filed})],
+        }
+    )
+    off_loop(storage.save_campaign, old)
+
+    bundle = off_loop(assemble_context_bundle, old, storage=storage, profile=comparison.host.profile)
+
+    assert bundle.first_result_at is not None and bundle.first_result_at < filed
+    assert bundle.reading_scope.late_criteria == []
+    assert "after its readings" not in report_markdown(build_code_only_report(bundle, assembled_at=filed))

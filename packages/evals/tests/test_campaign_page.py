@@ -365,9 +365,38 @@ async def test_a_memo_sentence_discounting_readings_by_age_or_time_apart_never_r
         }
     )
     page = await _page("billing", "tone", memo=memo.model_copy(update={"findings": [aged]}))
-    said = campaign_report_markdown(page)
-    assert "It passes far more tone requests and far fewer billing ones." in said
-    assert "predate" not in said and "different days" not in said
+    (body,) = [block.body for block in page.blocks if isinstance(block, TextBlock) and block.role == "finding_body"]
+    assert body == "It passes far more tone requests and far fewer billing ones."
+    methods = [block.text for block in page.blocks if isinstance(block, DisclosureBlock) and block.section == "methods"]
+    assert (
+        sum(
+            "which discounts a reading for when its runs ran, so the page does not print it" in line for line in methods
+        )
+        == 2
+    )
+
+
+async def test_a_summary_or_title_discounting_readings_by_age_is_dropped_never_printed_as_written() -> None:
+    """A summary or a finding's title the style pass leaves nothing of is otherwise kept as written; one discounting a
+    reading for when its runs ran falls back as a sentence proposing an uncomputed sample does: not printed, and listed
+    in the methods."""
+    memo = _memo()
+    (finding,) = memo.findings
+    aged_title = "The tone gain rests on older runs, so it is only a lead."
+    aged_summary = "v2 wins on tone, though its readings predate the campaign and are provisional."
+    page = await _page(
+        "billing",
+        "tone",
+        memo=memo.model_copy(
+            update={"summary": aged_summary, "findings": [finding.model_copy(update={"title": aged_title})]}
+        ),
+    )
+    assert "predate" not in _first_screen_markdown(page)
+    assert not [block for block in page.blocks if isinstance(block, TextBlock) and block.role == "summary"]
+    titles = [block.body for block in page.blocks if isinstance(block, TextBlock) and block.role == "finding_title"]
+    assert not any("older runs" in title for title in titles)
+    methods = [block.text for block in page.blocks if isinstance(block, DisclosureBlock) and block.section == "methods"]
+    assert sum("discounts a reading for when its runs ran" in line for line in methods) == 2
 
 
 async def test_an_unclear_row_with_a_margin_is_still_to_settle_beside_one_without() -> None:

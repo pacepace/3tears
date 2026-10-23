@@ -172,7 +172,10 @@ is frozen once any aspect holds a run: `update_campaign` (the `campaign_update` 
 `aspects` and `floors` in any form from then on, and names a control only while none is. To amend a question after
 the runs, create a new campaign that adopts the aspects it keeps (`aspects_from`): each adopted aspect keeps its
 times, so it reads as the campaign declared before the runs did, and whatever the new campaign adds (a margin, a
-floor, an arm) is dated now and named on the page where it came after its readings.
+floor, an arm) is dated now and named on the page where it came after its readings. An aspect adopted from a
+campaign that asked no question is the known exception: it keeps its source's time when the new campaign first puts
+it to a question, so that is not named. Runs added to an aspect (`campaign_runs_add`) date nothing: where their results
+predate the aspect's criteria, those criteria are named as set after their readings.
 
 **Declare a design when you know the question; explore when you do not.** Either is a choice you state when the
 campaign is created: a `design` on an aspect, or `exploratory=True`. Declare
@@ -362,11 +365,12 @@ A choice's pairs have no direction, so every pair on every aspect is one family.
 
 ## Order and time
 
-**Launch compared arms together, and never let running order follow the lever.** Throughput and load
-drift over hours. The engine shuffles cell order within a run. A campaign's page does not flag runs measured
-apart: arms measured minutes, hours or days apart are one experiment while nothing that decides their result changed
-(owner, 2026-10-23). The lens tools (`runs_compare`, comparison sets) still say when two runs' spans did not
-overlap.
+**Never let running order follow the lever; interleaving absorbs drift for free.** A provider's throughput and
+load drift over hours, so a sweep run in lever order can credit the drift to the lever. The engine shuffles cell order
+within a run, and interleaves a launch's arms by default, taking their cases in turn, which costs nothing and absorbs
+that drift across every arm. Arms run apart are not a weaker experiment: measured minutes, hours or days apart, they
+are one experiment while nothing that decides their result changed (owner, 2026-10-23), so no page discounts them. The
+lens tools (`runs_compare`, comparison sets) state when two runs' spans did not overlap, as a fact.
 *Evidence:* agent with tools, a 5-hour sweep run in lever order, 2026-08, Spearman ρ = 0.87 between running position and latency; retrieval sub-agent, 2026-09, throughput drifting 9–25 tok/s across an afternoon explained a ~205 s tail credited to a lever; replicated.
 
 ## Metrics that mislead

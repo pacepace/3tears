@@ -1918,8 +1918,9 @@ class MultipleComparisons(EvalDocumentModel):
 
 
 #: What a criterion is: ``aspect``, the aspect put to the campaign's question; ``control``, the arm every other arm is
-#: read against; ``margin``; ``bar``, one of the aspect's absolute bars; ``floor``, one of its floors.
-CriterionKind = Literal["aspect", "control", "margin", "bar", "floor"]
+#: read against; ``margin``; ``bar``, one of the aspect's absolute bars; ``guardrail``, the margin of one of its judged
+#: guardrails; ``floor``, one of its floors.
+CriterionKind = Literal["aspect", "control", "margin", "bar", "guardrail", "floor"]
 
 
 class LateCriterion(EvalDocumentModel):
@@ -1934,15 +1935,18 @@ class LateCriterion(EvalDocumentModel):
     """
 
     # Spelled out rather than through `CriterionKind`, which is this module's shorthand and no public name.
-    criterion: Literal["aspect", "control", "margin", "bar", "floor"] = Field(
+    criterion: Literal["aspect", "control", "margin", "bar", "guardrail", "floor"] = Field(
         description=(
             "Which kind of criterion: `aspect` (the aspect put to the campaign's question), `control`, `margin`, "
-            "`bar` or `floor`."
+            "`bar`, `guardrail` (a judged guardrail's margin) or `floor`."
         )
     )
     name: str | None = Field(
         default=None,
-        description="Which one: a bar's measure, a floor's key (`Floor.key`). None for the aspect, the control and the margin.",
+        description=(
+            "Which one: a bar's measure, a guardrail's dimension, a floor's key (`Floor.key`). None for the aspect, the "
+            "control and the margin."
+        ),
     )
     set_at: str | None = Field(
         description=(
@@ -1992,9 +1996,19 @@ class ReadingScope(EvalDocumentModel):
         default_factory=list,
         description=(
             "Each criterion this aspect's readings are judged by that was set after its first result was stored "
-            "(`first_result_at`), or carries no time: the aspect itself where a question asks it, then its control, "
-            "margin, bars and floors. Every page, listing and page JSON reading this aspect names each once. It "
-            "changes no reading. Empty when every criterion came first, or no result is stored yet."
+            "(`first_result_at`), or carries no time: the aspect itself and its control where a question asks it, "
+            "then its margin and bars, its guardrails' margins where a question asks it, and its floors. Every page, listing and page JSON reading this "
+            "aspect names each once. It changes no reading. Empty when every criterion came first, or no result with "
+            "an orderable time is stored yet."
+        ),
+    )
+    untimed_results: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "How many of the aspect's results carry a `scored_at` that cannot be ordered: left out of "
+            "`first_result_at`, so a criterion is read against the results that can be, and the page says that "
+            "whether one came after these is not known. 0 when every result's time can be ordered."
         ),
     )
     exploratory_measures: list[str] = Field(
@@ -2085,12 +2099,13 @@ def asks_a_question(declared: AspectDeclaration | None) -> bool:
 
 def late_criteria(declared: AspectDeclaration | None, first_result_at: str | None) -> list[LateCriterion]:
     """Each criterion ``declared`` judges the aspect's readings by that was set after the first of them was stored,
-    or carries no time, in the order a page names them: the aspect, its control, its margin, its bars, its floors.
+    or carries no time, in the order a page names them: the aspect and its control (where a question asks it), its
+    margin, its bars, its guardrails' margins (where a question asks it), its floors.
 
     **Disclosed, never enforced** (owner, 2026-10-21 and 2026-10-23): a criterion set once its readings were visible
     reads as one set before them, and this is what lets a reader judge. Each is read on its own time: the aspect's
-    (its ``asked_at``, kept from its source when a campaign adopts it, and the time of its bars and of a margin or
-    floor declared with it), the control's ``named_at``, and a margin's or floor's own where it was added later. It is
+    (its ``asked_at``, kept from its source when a campaign adopts it, and the time of its bars, its guardrails'
+    margins and a margin or floor declared with it), the control's ``named_at``, and a margin's or floor's own where it was added later. It is
     compared with the first stored result of the cells it judges, the aspect's: when the runs ran, or when the
     campaign holding them was declared, never counts, so a campaign adopting runs that are still valid reads as one
     declared before them. A time that cannot be ordered is no recorded time.
@@ -2109,13 +2124,20 @@ def late_criteria(declared: AspectDeclaration | None, first_result_at: str | Non
     visible = _instant(first_result_at, "the aspect's first result")
     asked = declared.asked_at
     timed: list[tuple[CriterionKind, str | None, str | None]] = []
+    # The aspect, its control and its guardrails' margins bear only on what a question confirms and on recommending a
+    # candidate, which needs an asked aspect: where none is asked every reading is a lead and the control is kept
+    # whenever they were chosen, so they are timed only under a question. An eval's campaign asks none, so one filed
+    # once its arms had run (as every eval before #919 was) never reads late for how it was filed. A bar, a margin and
+    # a floor each warn or read on the page whatever is asked, so each is timed always.
     if asks_a_question(declared):
         timed.append(("aspect", None, asked))
-    if declared.control is not None:
-        timed.append(("control", None, declared.control.named_at))
+        if declared.control is not None:
+            timed.append(("control", None, declared.control.named_at))
     if declared.margin is not None:
         timed.append(("margin", None, declared.margin_declared_at))
     timed += [("bar", bar.measure_id, asked) for bar in declared.design.bars]
+    if asks_a_question(declared):
+        timed += [("guardrail", guard.dimension, asked) for guard in declared.design.guardrail_margins]
     timed += [("floor", floor.key, floor.declared_at or asked) for floor in declared.floors]
     late: list[LateCriterion] = []
     for kind, name, stamp in timed:
@@ -2912,7 +2934,7 @@ class AnalysisContextBundle(EvalDocumentModel):
             "run that produced no result "
             "has no span and is simply absent: an honest gap, never a zero-length point at some "
             "arbitrary instant, which would compare against the others as though the run had been "
-            "measured. Ordered by start, then end — the order the disclosure lists them in."
+            "measured. Ordered by start, then end."
         ),
     )
     launch_disclosure: str | None = Field(

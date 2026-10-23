@@ -11,6 +11,7 @@ from threetears.evals.analysis.style import (
     BANNED_PHRASES,
     GLOSSARY,
     arm_name,
+    discounts_by_age,
     fix_prose,
     humanize,
     lint_page,
@@ -99,22 +100,30 @@ def test_the_declared_question_repeated_in_the_body_is_flagged_and_dropped() -> 
         "These readings rest on older runs and should be confirmed by fresh ones.",
         "Read post hoc, the tone gain is only a lead.",
         "The arms ran on different days, so they are not one experiment.",
-        "Control and candidate were measured hours apart.",
+        "Control and candidate were measured hours apart, which confounds the comparison.",
     ],
 )
-def test_a_sentence_discounting_a_reading_by_data_age_or_time_apart_is_dropped(sentence: str) -> None:
+def test_a_sentence_discounting_a_reading_by_data_age_or_time_apart_is_named(sentence: str) -> None:
     """Owner rulings (2026-10-23): a run whose measurement context is unchanged reads exactly like a fresh one, and arms
     measured apart are one experiment, so the writer never discounts a reading for when it ran."""
-    kept = "Tone improved on the candidate."
-    fixed, remaining = fix_prose(f"{kept} {sentence}")
-    assert fixed == kept and remaining == []
+    assert discounts_by_age(sentence)
 
 
-def test_code_s_own_line_for_a_criterion_set_after_its_readings_is_kept() -> None:
-    """The one timing a page says is a criterion set after its readings were visible, and the guard leaves it."""
-    said = "The margin on billing was set on 20 Oct 2026, after its readings were visible."
-    assert "banned" not in _rules(said)
-    assert fix_prose(said) == (said, [])
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        # A real config change between the arms, which is what the owner ruled still matters.
+        "The judge was re-pinned after the runs started, so the arms were graded by different judges.",
+        "The older runs were scored by a judge since replaced.",
+        "Older runs used the v1 prompt.",
+        # The late-criterion disclosure the writer is asked for, in its own words and in code's.
+        "The margin was set after the results were in.",
+        "The margin on billing was set on 20 Oct 2026, after its readings were visible.",
+    ],
+)
+def test_a_sentence_naming_a_change_or_a_late_criterion_is_never_read_as_a_discount(sentence: str) -> None:
+    assert not discounts_by_age(sentence)
+    assert fix_prose(sentence) == (sentence, [])
 
 
 def test_a_page_lints_its_prose_and_headers_not_its_data() -> None:

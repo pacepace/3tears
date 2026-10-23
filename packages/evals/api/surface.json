@@ -4978,7 +4978,7 @@
     },
     "threetears.evals.analysis.create_campaign": {
       "kind": "function",
-      "signature": "create_campaign(storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile, exploratory: bool = False, aspects_from: Sequence[str | Mapping[str, Any]] = ()) -> EvalCampaign",
+      "signature": "create_campaign(storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile, exploratory: bool = False, aspects_from: Sequence[str | Mapping[str, Any]] = (), declared_at: str | None = None) -> EvalCampaign",
       "tier": "stable"
     },
     "threetears.evals.analysis.CriterionDrift": {

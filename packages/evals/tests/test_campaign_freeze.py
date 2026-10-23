@@ -20,8 +20,10 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import assemble_context_bundle
-from threetears.evals.analysis.bundle.schema import NO_QUESTION_EXPLORATORY, LateCriterion
+from threetears.evals.analysis.bundle.schema import NO_QUESTION_EXPLORATORY, LateCriterion, late_criteria
+from threetears.evals.kernel.declaration import GuardrailMargin
 from threetears.evals.analysis.campaigns import set_campaign_control, update_campaign
+from threetears.evals.analysis.report.campaign_page import late_criteria_lines
 from threetears.evals.kernel.errors import ConflictError
 from packages.evals.tests.fixtures.toyhost.campaign import (
     TOYHOST_QUESTION,
@@ -297,3 +299,50 @@ def test_a_design_with_no_question_says_so_as_before() -> None:
 
     assert bundle.reading_scope.disclosure == NO_QUESTION_EXPLORATORY
     assert bundle.reading_scope.late_criteria == [], "no question asked, and its bar was set before its readings"
+
+
+def test_one_result_whose_time_cannot_be_ordered_hides_no_late_criterion_and_is_counted() -> None:
+    """The readable results order the readings' first visibility; the one stamped with no offset is counted, and the
+    page says whether a criterion came after it is not known."""
+    fixture = ops_fixture()
+    _asked_late(fixture)
+    storage = fixture.host.eval_host.storage
+    (aspect,) = fixture.campaign.aspects
+    first, *_ = storage.query_eval_results_by_runs(list(aspect.run_ids), TOYHOST_SCOPE)
+    storage.save_eval_result(first.model_copy(update={"scored_at": "2026-03-14T09:30:05"}))
+
+    bundle = _bundle(fixture)
+
+    assert bundle.reading_scope.late_criteria == _late(_LATER)
+    assert bundle.reading_scope.untimed_results == 1
+    assert bundle.first_result_at is not None and bundle.first_result_at.endswith("+00:00")
+    assert late_criteria_lines([bundle])[-1] == (
+        "1 result carries no time that can be ordered, so whether a criterion was set after it was visible is not known."
+    )
+
+
+def test_a_guardrail_s_margin_is_timed_where_a_question_asks_the_aspect_and_never_where_none_does() -> None:
+    """A guardrail bears on recommending a candidate, which needs an asked aspect: under a question its margin is timed
+    like the aspect's other criteria; with none asked it is not, as the aspect and its control are not."""
+    fixture = ops_fixture()
+    _asked_late(fixture)
+    bundle = _bundle(fixture)
+    declared = bundle.declared
+    assert declared is not None and bundle.first_result_at is not None
+    guarded = declared.model_copy(
+        update={
+            "design": declared.design.model_copy(
+                update={"guardrail_margins": [GuardrailMargin(dimension="tone", margin=0.5)]}
+            )
+        }
+    )
+    unasked = guarded.model_copy(update={"design": guarded.design.model_copy(update={"merit_axes": None})})
+
+    assert [(late.criterion, late.name) for late in late_criteria(guarded, bundle.first_result_at)] == [
+        ("aspect", None),
+        ("bar", "cost_usd"),
+        ("guardrail", "tone"),
+    ]
+    assert [(late.criterion, late.name) for late in late_criteria(unasked, bundle.first_result_at)] == [
+        ("bar", "cost_usd"),
+    ]

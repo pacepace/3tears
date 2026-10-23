@@ -260,11 +260,7 @@ def test_an_arm_named_by_its_model_is_named_once_by_the_version_that_answered_it
     )
     lines = report_markdown(build_code_only_report(bundle, assembled_at="2026-10-14T00:00Z")).splitlines()
 
-    # A v15 design's control carries no time it was named, which is said first.
-    assert lines[1] == "When the control was named is not recorded."
-    assert lines[2] == "" and lines[3].startswith(
-        "extractor-pinned-2026-05 (extractor-pinned, control) vs vendor/extractor-2026-06 · "
-    )
+    assert lines[1].startswith("extractor-pinned-2026-05 (extractor-pinned, control) vs vendor/extractor-2026-06 · ")
     rows = [line for line in lines if line.startswith("| ")]
     assert "| ▸ extractor-pinned | 36 |" in "\n".join(rows)
     assert not any("2026-05" in row for row in rows), "a table names the arm by its label alone"

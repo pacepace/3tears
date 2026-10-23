@@ -343,14 +343,14 @@ async def test_a_stored_v15_campaign_reads_as_one_aspect_whose_fold_is_the_aspec
     page = off_loop(campaign_report, held.host, source, SCOPE)
     (fold,) = page.aspects
     assert fold.report.section_titles == {**V0701_SECTION_TITLES, **FLOORS_HEADING_SINCE_0_71}
-    # v0.70.1's layout, and one line it did not say: a v15 control carries no time it was named, which is said.
-    timing = [block for block in fold.report.blocks if isinstance(block, DisclosureBlock) and block.source == "timing"]
-    assert [block.text for block in timing] == ["When the control was named is not recorded."]
+    # v0.70.1's layout: a v15 control carries no time it was named, and its aspect is asked no question, so when it
+    # was named decides nothing and nothing is said of it.
+    assert not [
+        block for block in fold.report.blocks if isinstance(block, DisclosureBlock) and block.source == "timing"
+    ]
     laid_out = [
         (section, kind, len(list(run)))
-        for (section, kind), run in groupby(
-            (block.section, block.kind) for block in fold.report.blocks if block not in timing
-        )
+        for (section, kind), run in groupby((block.section, block.kind) for block in fold.report.blocks)
     ]
     assert laid_out == V0701_BLOCKS
 

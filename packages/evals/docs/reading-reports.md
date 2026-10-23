@@ -468,9 +468,11 @@ says so: its readings confirm nothing, and the design its comparisons read was i
 ([when to declare one](measuring-soundly.md#start-from-the-question)). A guardrail is never exploratory.
 
 **A criterion set after its readings is said, never demoted; data age is never said.** What pre-registration
-guards against is a criterion chosen once the readings it judges could be seen: the aspect itself (where a question
-asks it), its control, its margin, a bar or a floor. Each is read on its own time, where it is stored: the aspect's
-`asked_at` (which also dates its bars, and a margin or floor declared with it), `margin_declared_at`,
+guards against is a criterion chosen once the readings it judges could be seen: the aspect itself and its control
+(where a question asks it), its margin, a bar, a judged guardrail's margin (where a question asks it) or a floor.
+Where no question is asked, every reading is a lead and the control is kept, so when the aspect, its control and its
+guardrails were chosen decides nothing and is not said. Each is read on its own time, where it is stored: the aspect's
+`asked_at` (which also dates its bars, its guardrails' margins, and a margin or floor declared with it), `margin_declared_at`,
 `Floor.declared_at` and the control's `named_at`, against the first stored result of the aspect's runs
 (`first_result_at`). One set later reads exactly as it would had it been set first, because the operator is trusted
 to have set it in good faith, and the line lets a reader judge. The bundle lists each (`reading_scope.late_criteria`:
@@ -485,7 +487,12 @@ arms measured minutes, hours or days apart are one experiment while nothing that
 `question_declared` is true wherever a question is asked, whenever. An aspect adopted from another campaign
 (`aspects_from`) keeps its source's times, so a campaign adopting runs that are still valid reads as the one declared
 before them; a margin, floor or arm added at adoption carries its own time, and is named where that is later than the
-aspect's first result. A campaign's declaration is frozen once any aspect holds a run: `campaign_update` refuses
+aspect's first result. Runs added to an aspect (`campaign_runs_add`) change no criterion's time, so runs whose
+results were stored before the aspect's criteria were set name those criteria as set after their readings. A result
+whose stored time cannot be ordered is left out of the comparison, and the page says whether a criterion came after it
+is not known. One gap is known and not closed: an aspect adopted from a campaign that asked no question keeps its
+source's time when the adopting campaign asks one, so its being put to the question after its readings were visible is
+not named. A campaign's declaration is frozen once any aspect holds a run: `campaign_update` refuses
 `question`, `aspects` and `floors` in any form, and refuses re-pointing or clearing the control (which may be named
 once, from a run, while none is); the name and description stay editable, and an amended question is a new campaign
 that adopts the aspects it keeps.

@@ -289,12 +289,12 @@ bar, a question or a ranking on it) without declaring it is refused. Each run re
 How the arms of one launch share time and provider capacity, on `run_launch`, `sweep_launch` and `start_run`.
 Running every arm side by side at its own width (`concurrent`) loads one provider with every arm at once, and a
 provider rationing one arm's calls shrinks that arm's sample and not the other's: the comparison reads host capacity
-as a difference between arms. Running them one after another (`sequential`) puts a provider's bad minute on whichever
-arm was running. So by default the arms are `interleaved`: every arm runs at once, their cells taken in turn, case by
-case, under one width shared by the launch, and every arm plays its cases in one order, so a bad minute lands on every
-arm alike and the arms' same cases run close together in time (exactly side by side at a width of 1). The shared
-width holds within one launch: separate launches are separate widths, so arms launched apart still load their
-providers side by side. Latency under test runs the arms `sequential`, the
+as a difference between arms. Running them one after another (`sequential`) shares no load. By default the arms are
+`interleaved`: every arm runs at once, their cells taken in turn, case by case, under one width shared by the launch,
+and every arm plays its cases in one order. It is the default because it costs nothing and absorbs a provider's bad
+minute across every arm. It does not make a comparison more of one: arms measured minutes, hours or days apart are one
+experiment while nothing that decides their result changed. The shared width holds within one launch: separate
+launches are separate widths, so arms launched apart still load their providers side by side. Latency under test runs the arms `sequential`, the
 only schedule it takes. Each run records the schedule it ran under (`arm_schedule`), and a campaign whose arms were
 run side by side at their own widths says so beside its readings, since co-loading changes a provider's capacity per
 arm; when the arms ran is never said. It is a disclosure, never part of a run's identity.
@@ -424,7 +424,9 @@ aspect is read on its own, against the same control, and keeps its own pre-regis
 also dates its bars and a margin or floor declared with it. A criterion set after the aspect's first stored result
 reads as one set before it, and every page names it once with its time (`reading_scope.late_criteria`); when the
 runs ran never counts. A campaign adopting another's aspect (`aspects_from`) keeps those times, so it reads as the
-campaign declared before the runs did; whatever it adds is dated when it is added. A campaign stored before aspects
+campaign declared before the runs did; whatever it adds is dated when it is added. (Known gap: an aspect adopted from
+a campaign that asked no question keeps that time when the adopting campaign first asks it one, so being put to the
+question after its readings is not named.) A campaign stored before aspects
 existed reads as one aspect labelled with its behavior.
 
 #### Floor

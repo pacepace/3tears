@@ -36,17 +36,22 @@ writes lost over a run whose lease has passed to another holding. See `packages/
 
 ### evals: past runs that are still valid count as evidence; a criterion set after its readings is named, data age never (#919)
 
-**Changed:** A campaign that adopts runs which are still valid (`aspects_from`, `campaign_runs_add`) reads exactly as
-one declared before them: the writer's input, the page and its confidence wording differ only in ids and dates.
-Criterion-selection risk is disclosed per criterion and only where it is true: the aspect, its control, margin, bars
-and floors are each read on their own time against the first stored result of the aspect's runs, and one set later
-gets one line, "The margin on billing was set on 20 Oct 2026, after its readings were visible.", grouped across
-aspects; one stored by an older build says its time is not recorded. No line names the question or when the runs
-began. Time apart is no confound either: runs started in separate launches, or arms run one after another, are no
-longer flagged on the page or in the writer's input. An eval records its control as named when it launched its arms.
-`ReadingScope.question_after_runs` (`QuestionAfterRuns`) is replaced by `ReadingScope.late_criteria`
-(`LateCriterion`); `measurement_window_disclosure` leaves the bundle; bundle shape 61, page JSON shape 3. The seeded
-writer prompt changed, so hosts push the new seed. See `packages/evals/MIGRATIONS.toml`.
+**Changed:** A campaign that adopts another's aspects over runs which are still valid (`aspects_from`) reads exactly
+as the one that declared them: the writer's input, the page and its confidence wording differ only in ids and dates.
+Criterion-selection risk is disclosed per criterion and only where it is true: the aspect and its control (where a
+question asks it), its margin, bars, guardrails' margins (where a question asks it) and floors are each read on their
+own time against the first stored result of the aspect's runs, and one set later gets one line, "The margin on billing
+was set on 20 Oct 2026, after its readings were visible.", grouped across aspects; one stored by an older build says
+its time is not recorded. Runs added to an aspect with `campaign_runs_add` whose results predate its criteria name
+those criteria, truly, as set after their readings. No line names the question or when the runs began, and a memo
+sentence discounting a reading for when its runs ran is dropped and listed. Time apart is no confound either: runs
+started in separate launches, or arms run one after another, are no longer flagged, and the lens tools state
+non-overlapping spans as a plain fact. An eval's campaign is dated when its call launched its arms, and one filed
+before this release reads as it did. `ReadingScope.question_after_runs` (`QuestionAfterRuns`) is replaced by
+`ReadingScope.late_criteria` (`LateCriterion`); `measurement_window_disclosure` leaves the bundle; bundle shape 61,
+page JSON shape 3. The seeded writer prompt changed, so hosts push the new seed. Known gap: an aspect adopted from a
+campaign that asked no question is not named when the adopting campaign first puts it to a question. See
+`packages/evals/MIGRATIONS.toml`.
 
 ### release: the live Claude CLI batch runs in the release workflow
 

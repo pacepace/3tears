@@ -181,7 +181,7 @@ def build_campaign_report(
     if kind != "measurement":
         blocks += _recommendation_blocks(memo, style, kind)
     if kind == "change":
-        blocks += _table_blocks(campaign, readings, reports)
+        blocks += _table_blocks(campaign, readings)
         blocks += _settle_blocks(readings)
     elif kind == "choice":
         blocks += _pair_blocks(campaign, readings, reports)
@@ -403,17 +403,30 @@ def late_criteria_lines(bundles: Sequence[AnalysisContextBundle]) -> list[str]:
             key = (late.criterion, _criterion_words(bundle, late), late.page_date())
             groups.setdefault(key, []).append(bundle.aspect)
     every = len(bundles) > 1
-    return [
+    lines = [
         _late_line(kind, what, at, labels, every=every and len(labels) == len(bundles))
         for (kind, what, at), labels in groups.items()
     ]
+    untimed = [bundle for bundle in bundles if bundle.reading_scope.untimed_results]
+    if untimed:
+        count = sum(bundle.reading_scope.untimed_results for bundle in untimed)
+        on = "" if len(untimed) == len(bundles) else f" on {_listed([bundle.aspect for bundle in untimed])}"
+        plural = count != 1
+        lines.append(
+            f"{count} result{'s' if plural else ''}{on} carr{'y' if plural else 'ies'} no time that can be ordered, so "
+            f"whether a criterion was set after {'they were' if plural else 'it was'} visible is not known."
+        )
+    return lines
 
 
 def _criterion_words(bundle: AnalysisContextBundle, late: LateCriterion) -> str:
-    """Which criterion of its kind ``late`` is, as a line names it: a bar by its measure, a floor by what it says."""
+    """Which criterion of its kind ``late`` is, as a line names it: a bar by its measure, a guardrail by its dimension,
+    a floor by what it says."""
     if late.criterion == "bar" and late.name is not None:
         described = bundle.measure_catalog.get(late.name)
         return measure_name(late.name, described.reader_name if described is not None else None)
+    if late.criterion == "guardrail" and late.name is not None:
+        return humanize("dimension", late.name)
     if late.criterion == "floor" and bundle.declared is not None:
         floor = next((floor for floor in bundle.declared.floors if floor.key == late.name), None)
         if floor is not None:
@@ -435,10 +448,15 @@ def _late_line(kind: CriterionKind, what: str, at: str | None, labels: Sequence[
         set_it = f"{subject} declared"
         after = f"after {'its' if every else its} readings were visible"
     else:
-        noun = {"margin": "margin", "bar": f"{what} bar", "floor": f"floor that {what}"}[kind]
-        if several and kind != "floor":
+        noun = {
+            "margin": "margin",
+            "bar": f"{what} bar",
+            "guardrail": f"{what} guardrail's margin",
+            "floor": f"floor that {what}",
+        }[kind]
+        if several and kind in ("margin", "bar"):
             noun += "s"
-        set_it = f"The {noun} on {on} {were if kind != 'floor' else 'was'} set"
+        set_it = f"The {noun} on {on} {were if kind in ('margin', 'bar') else 'was'} set"
         after = f"after {its} readings were visible"
     if at is None:
         return f"When {set_it[0].lower()}{set_it[1:]} is not recorded."
@@ -591,9 +609,7 @@ def _reading_words(row: AspectReading) -> str:
     return words if row.confirmatory else f"{words}, a lead"
 
 
-def _table_blocks(
-    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]
-) -> list[ReportBlock]:
+def _table_blocks(campaign: EvalCampaign, readings: CampaignReadings) -> list[ReportBlock]:
     """Code's table, one row per aspect × candidate, and the lines under it that change how a row reads."""
     if readings.control is None:
         return [

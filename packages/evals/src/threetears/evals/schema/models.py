@@ -2747,7 +2747,8 @@ EvalRunStatus = Literal["pending", "running", "completed", "failed", "cancelled"
 #: How the arms of one comparison shared time and provider capacity, recorded on each arm's run.
 #:
 #: - ``interleaved`` — every arm ran at once, its cells taken in turn with every other arm's case by case under one
-#:   width shared by the whole launch, which loads the providers no more than one arm would alone.
+#:   width shared by the whole launch, which loads the providers no more than one arm would alone, costs nothing and
+#:   absorbs a provider's bad minute across every arm: the default.
 #: - ``sequential`` — one arm ran after another, so no arm shared another's provider load.
 #: - ``concurrent`` — every arm ran side by side at its own width, so the launch loaded its providers with every arm
 #:   at once, and a provider's rationing could land on one arm more than another.

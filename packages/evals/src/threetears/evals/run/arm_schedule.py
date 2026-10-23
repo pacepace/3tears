@@ -3,15 +3,15 @@
 The arms of a comparison run on shared provider capacity, and how they share it is not neutral. Side by side, each at
 its own width (``concurrent``), a launch loads its providers with every arm at once, and a provider rationing one
 model's calls rations whichever arm runs on it: one arm's sample shrinks and the other's does not, and the comparison
-reads host capacity as a difference between arms. One after another (``sequential``), no arm shares another's load,
-but each arm meets the provider at another time, so a bad minute lands on whichever arm was running.
+reads host capacity as a difference between arms. One after another (``sequential``), no arm shares another's load.
+Arms run minutes, hours or days apart are one experiment while nothing that decides their result changed (owner,
+2026-10-23); no schedule makes a comparison more or less of one.
 
 **Interleaved** (``interleaved``, the default) runs every arm at once and takes their cells in turn, case by case
 (case 1 on every arm, then case 2), under ONE width shared by the whole launch: the widest any of its runs executes
-at alone. A provider's bad minute then lands on every arm alike, the launch loads its providers no more than one of
-its runs would alone, and the arms' same cases run close together in time (exactly side by side at a width of 1,
-within a few cells of each other wider). The width is one launch's: separate launches still load their providers
-side by side. Every arm plays its cases in one order,
+at alone. It is the default because it costs nothing: it absorbs a provider's bad minute across every arm alike, and
+the launch loads its providers no more than one of its runs would alone. The width is one launch's: separate launches
+still load their providers side by side. Every arm plays its cases in one order,
 derived from the launch's id (:func:`~threetears.evals.run.runner.cell_execution_order`).
 
 A launch declaring latency under test runs its arms one after another, the only schedule that reads latency with

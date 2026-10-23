@@ -267,6 +267,7 @@ def create_campaign(
     profile: HostProfile,
     exploratory: bool = False,
     aspects_from: Sequence[str | Mapping[str, Any]] = (),
+    declared_at: str | None = None,
 ) -> EvalCampaign:
     """Create and persist a campaign: one question, its arms, its aspects and its floors.
 
@@ -321,6 +322,11 @@ def create_campaign(
     :param aspects_from: The campaigns whose aspects this one adopts, in order: each an id, or an
         :class:`AspectSource` (or its fields) relabelling a campaign's one aspect.
     :ptype aspects_from: Sequence[str | Mapping[str, Any]]
+    :param declared_at: When the caller fixed what this create declares (its own aspects, the arms it names, its
+        question, a margin or floor it adds), where that was before now: an eval fixes its design and its control in
+        the call that launches its arms, then files them once they have run. ISO-8601 with an offset. None dates them
+        now. A server-side keyword, never a field of the ``campaign_create`` action.
+    :ptype declared_at: str | None
     :return: The persisted :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
     :rtype: EvalCampaign
     :raises NotFoundError: A source campaign, or a template an aspect names, is not in the scope.
@@ -346,7 +352,7 @@ def create_campaign(
         ]
     except ValidationError as e:
         raise ValidationFailedError(f"invalid campaign definition: {e}", remedy=SCHEMA_REMEDY) from e
-    now = utc_now_iso()
+    now = utc_now_iso() if declared_at is None else _caller_s_time(declared_at)
     sources = _sources(storage, named_sources, scope_id)
     question = authored.question or QUESTION_SEPARATOR.join(
         dict.fromkeys(source.question for source in sources if source.question)
@@ -434,6 +440,20 @@ def create_campaign(
         created_by,
     )
     return campaign
+
+
+def _caller_s_time(stamp: str) -> str:
+    """``stamp``, a time a create's caller fixed its declaration at, once it is shown to be one that can be ordered.
+
+    :raises ValidationFailedError: It is not an ISO-8601 time with an offset, so no criterion could be read against it.
+    """
+    try:
+        aware_instant(stamp, "the create's declared_at")
+    except ValueError as unordered:
+        raise ValidationFailedError(
+            str(unordered), remedy="pass declared_at as an ISO-8601 time with an offset, or leave it out to date it now"
+        ) from unordered
+    return stamp
 
 
 #: What a campaign is when it is not declared, said once for every refusal that asks the caller to choose.

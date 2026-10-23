@@ -234,21 +234,62 @@ BANNED_PHRASES: tuple[str, ...] = (
     "no measurable",
 )
 
-#: A sentence discounting a reading by data age or time apart (owner, 2026-10-23: "Post hoc should not matter"): that
-#: its runs predate the question or the campaign, that the criteria or the question came after the runs, that the data
-#: is old, or that arms measured at different times are not one experiment. A run whose measurement context is
-#: unchanged reads exactly like a fresh one, and the one timing a page says is a criterion set after its readings were
-#: visible, which code says, so a writer's sentence like these is dropped wherever it stands. Narrow on purpose: each
-#: alternative ties a reading's standing to when something ran.
-_AGE_DISCOUNT = re.compile(
+#: The timing half of a sentence that discounts a reading by data age or time apart: data called old, earlier or
+#: pre-existing, runs that predate the question or the campaign, readings taken "post hoc", or arms measured at
+#: different times. Alone it is no fault: "older runs used the v1 prompt" or "the judge was re-pinned after the runs
+#: started" names a real change, and "the margin was set after the results were in" is the late-criterion line the
+#: writer is asked for.
+_AGED = re.compile(
     r"\bpost[- ]hoc\b"
     r"|\bretrospective(?:ly)?\b"
-    r"|\bafter the (?:runs?|data|results?|evidence) (?:began|started|ran|were (?:run|collected|in))\b"
-    r"|\b(?:runs?|data|results?|readings?|evidence) (?:pre-?dates?|pre-?dated|came before) the (?:question|campaign)\b"
-    r"|\b(?:old|older|stale|outdated|aging|ageing) (?:runs?|data|results?|readings?|evidence|measurements?)\b"
-    r"|\b(?:measured|run|ran|launched|collected) (?:at different times|on different days|(?:minutes|hours|days|weeks) apart)\b",
+    r"|\bafter the (?:runs?|data|results?|evidence)\b"
+    r"|\b(?:runs?|data|results?|readings?|evidence|measurements?) (?:pre-?dat(?:e|es|ed|ing)|came before|were taken before)\b"
+    r"|\b(?:old|older|earlier|stale|outdated|pre-?existing|aging|ageing|past) (?:runs?|data|results?|readings?|evidence|measurements?)\b",
     re.I,
 )
+
+#: Arms or runs measured apart in time, which read as one experiment while nothing that decides their result changed.
+_APART = re.compile(
+    r"\b(?:measured|run|ran|launched|collected|taken|scored) (?:at different times|on different days|at another time|"
+    r"(?:\w+ )?(?:minutes|hours|days|weeks) apart|apart)\b",
+    re.I,
+)
+
+#: The discounting half: a reading's standing lowered for it, as weaker, provisional, a lead only, owed a rerun, or
+#: not one experiment. A sentence carrying both halves discounts data for when it ran, which code never does (owner,
+#: 2026-10-23: "Post hoc should not matter"): a run whose measurement context is unchanged reads exactly like a fresh
+#: one, and arms measured apart are one experiment while nothing that decides their result changed.
+_DISCOUNTED = re.compile(
+    r"\b(?:weaker|less (?:reliable|trustworthy|certain|conclusive|authoritative|valid|attributable|comparable)|"
+    r"provisional|tentative|preliminary|(?:only|just|merely) (?:a )?leads?|exploratory|"
+    r"(?:not|never) (?:one|a single|the same) experiment|not (?:directly )?comparable|cannot be compared|"
+    r"discount\w*|counts? for less|less weight|with caution|cautiously|"
+    r"(?:should|must|needs? to) be (?:re-?run|repeated|re-?measured|confirmed|re-?validated)|"
+    r"(?:confirm|re-?confirm|validate)\w* (?:with|by|on|in) (?:fresh|new|newer|a new)|re-?run\w* to (?:confirm|validate))",
+    re.I,
+)
+
+
+#: Time apart read as a confound: only beside :data:`_APART`, since a config change that moved between the arms is a
+#: confound a writer is right to name.
+_CONFOUNDED = re.compile(r"\b(?:confound\w*|not attributable|cannot be attributed)\b", re.I)
+
+
+def discounts_by_age(sentence: str) -> bool:
+    """Whether ``sentence`` lowers a reading's standing for when its data was measured: a timing framing (:data:`_AGED`)
+    beside a discount (:data:`_DISCOUNTED`), or arms measured apart (:data:`_APART`) beside a discount or a confound
+    (:data:`_CONFOUNDED`). The memo's style pass drops such a sentence, wherever it stands, and lists it in the
+    methods.
+
+    :param sentence: One sentence of the memo.
+    :ptype sentence: str
+    :return: True when it discounts data by age or time apart.
+    :rtype: bool
+    """
+    if _APART.search(sentence):
+        return bool(_DISCOUNTED.search(sentence) or _CONFOUNDED.search(sentence))
+    return bool(_AGED.search(sentence)) and bool(_DISCOUNTED.search(sentence))
+
 
 #: Comparative words an arm's label may carry, each with what it claims against the control: ``cost`` read on cost per
 #: reply, ``speed`` on latency, and which way, ``lower`` (cheaper, faster) or ``higher``. Narrow on purpose: a label
@@ -314,7 +355,6 @@ def lint_prose(text: str, *, question: str | None = None, header: bool = False) 
     # A code span is code a reader copies, not prose: it is held to the banned phrases only.
     text = _CODE_SPAN.sub("code", text)
     found += [StyleViolation("banned", text, phrase) for phrase in BANNED_PHRASES if phrase in lowered]
-    found += [StyleViolation("banned", text, match.group(0)) for match in _AGE_DISCOUNT.finditer(text)]
     for line in text.splitlines():
         if line.count(" — ") >= 2:
             found.append(StyleViolation("dash_chain", line, f"{line.count(' — ') + 1} segments joined by dashes"))
@@ -341,8 +381,7 @@ def lint_prose(text: str, *, question: str | None = None, header: bool = False) 
 def fix_prose(text: str, *, question: str | None = None) -> tuple[str, list[StyleViolation]]:
     """Drop every sentence breaking a rule that dropping fixes, and return what is left with what it still breaks.
 
-    A sentence carrying a banned phrase or repeating the declared question is meta-prose or a hedge, and one
-    discounting a reading by data age or time apart is a demotion code never makes: it goes.
+    A sentence carrying a banned phrase or repeating the declared question is meta-prose or a hedge: it goes.
 
     :param text: Prose a model wrote.
     :ptype text: str

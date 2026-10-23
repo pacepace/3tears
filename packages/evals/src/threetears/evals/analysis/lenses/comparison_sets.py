@@ -122,8 +122,7 @@ class ComparisonSet(EvalBaseModel):
     badges: list[str]
     #: The ``measurement_windows_disjoint`` badge's substance: the sentence naming
     #: when each run was measured. The badge says the group did not share a clock;
-    #: only this says whether that means four minutes or four hours, which is the
-    #: whole of the judgement being handed to the reader. ``None`` whenever the
+    #: only this says whether that means four minutes or four hours, as a fact. ``None`` whenever the
     #: badge is absent — the two are derived from one predicate and cannot disagree.
     measurement_window_disclosure: str | None = None
     #: The ``cassette_mode_differs`` badge's substance: the sentence naming what each run
@@ -177,12 +176,11 @@ BADGE_CASE_SET_UNRESOLVED = "case_set_unresolved"
 # in three tool caps at once can read as one.
 BADGE_TOOL_CONFIG_DIFFERS = "tool_config_differs"
 # At least one pair of the group's runs was measured over spans that do not
-# overlap, so anything that moved on the box, the providers or the account between
-# those spans varies with the runs. It is the one badge here whose evidence is not
-# in the run documents at all — it is derived from the results' ``scored_at``, so a
-# group whose results were not supplied cannot be asked and is silent rather than
-# clean. Descriptive only: how much a gap costs depends on what else changed in it,
-# which this surface cannot see and the operator can.
+# overlap: a plain fact, never a confound, since runs measured apart are one
+# experiment while nothing that decides their result changed (owner, 2026-10-23).
+# It is the one badge here whose evidence is not in the run documents at all — it
+# is derived from the results' ``scored_at``, so a group whose results were not
+# supplied cannot be asked and is silent rather than clean.
 BADGE_MEASUREMENT_WINDOWS_DISJOINT = "measurement_windows_disjoint"
 # The group's runs did not all record the same cassette mode. It sits with
 # ``roles_differ`` and ``tool_config_differs`` as a per-component badge over a condition
@@ -246,10 +244,9 @@ def compute_comparison_sets(
     an unrecorded pin makes every value-equality here come out clean.
 
     ``measurement_windows_disjoint`` is the one badge whose evidence is not in the
-    run documents. When two runs occupied non-overlapping spans of wall-clock
-    time, whatever moved on the box or at the providers between them varies with
-    the runs — a real confound that every field on an :class:`EvalRun` compares
-    equal on. The spans come from the results' ``scored_at``, which is why
+    run documents: it says, as a fact, that two runs occupied non-overlapping spans
+    of wall-clock time, never that they are less of one experiment. The spans come
+    from the results' ``scored_at``, which is why
     ``results`` exists as a parameter at all.
 
     Runs with no captured subject identity are excluded, for the reason given in
