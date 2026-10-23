@@ -16,13 +16,17 @@ enforcement test forbids ``required_permission=None`` in production
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
+import jsonschema
+
 __all__ = [
     "McpTool",
+    "McpToolAnnotations",
     "ToolHandler",
+    "ToolProvider",
     "ToolRegistry",
     "register_tool",
 ]
@@ -35,6 +39,43 @@ invoked with the validated input kwargs; returns whatever the tool
 produces. the framework formats the return value into the MCP
 response envelope (typically ``TextContent`` for v1).
 """
+
+
+@dataclass(frozen=True, slots=True)
+class McpToolAnnotations:
+    """behaviour hints a client reads from ``tools/list`` (the spec's ``ToolAnnotations``).
+
+    every hint is optional and ``None`` leaves it out of the listing, so the client applies the
+    spec's default for it. hints are advice to the client, not a guarantee the server enforces.
+    a 3tears type rather than the SDK's, so it is one shape on mcp 1.x and 2.x.
+
+    :ivar read_only_hint: the tool does not modify its environment (spec default ``False``)
+    :ivar destructive_hint: a modifying tool may destroy or overwrite something, rather than only
+        add to it (spec default ``True``; meaningful only when ``read_only_hint`` is not ``True``)
+    :ivar idempotent_hint: repeating a call with the same arguments has no further effect (spec
+        default ``False``; meaningful only when ``read_only_hint`` is not ``True``)
+    :ivar open_world_hint: the tool reaches entities outside the server's own closed domain, such
+        as the web (spec default ``True``)
+    """
+
+    read_only_hint: bool | None = None
+    destructive_hint: bool | None = None
+    idempotent_hint: bool | None = None
+    open_world_hint: bool | None = None
+
+    def to_wire(self) -> dict[str, bool]:
+        """the hints as the protocol names them, the unset ones left out.
+
+        :return: e.g. ``{"readOnlyHint": True}``
+        :rtype: dict[str, bool]
+        """
+        hints = {
+            "readOnlyHint": self.read_only_hint,
+            "destructiveHint": self.destructive_hint,
+            "idempotentHint": self.idempotent_hint,
+            "openWorldHint": self.open_world_hint,
+        }
+        return {name: value for name, value in hints.items() if value is not None}
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +99,15 @@ class McpTool:
         :class:`Authorizer` impl decides
     :ivar handler: async callable invoked with validated input
         kwargs; return value is wrapped into MCP response envelope
+    :ivar output_schema: JSON Schema the tool's structured result
+        conforms to, listed as ``outputSchema``. its ``type`` is
+        ``"object"`` (the spec's rule for ``structuredContent``). when
+        set, a successful call must carry structured content that
+        validates against it, or the server answers
+        ``OUTPUT_VALIDATION_ERROR`` in place of the result
+    :ivar title: human-readable display name, listed as ``title``;
+        ``name`` stays the identifier the client calls
+    :ivar annotations: behaviour hints, listed as ``annotations``
     """
 
     name: str
@@ -65,14 +115,20 @@ class McpTool:
     input_schema: dict[str, Any]
     required_permission: str
     handler: ToolHandler
+    output_schema: dict[str, Any] | None = None
+    title: str | None = None
+    annotations: McpToolAnnotations | None = None
 
     def __post_init__(self) -> None:
-        """validate non-empty fields at construction.
+        """validate non-empty fields and the output schema at construction.
 
-        :raises ValueError: ``name`` or ``required_permission`` is
-            an empty string. silent empty-permission default-deny
-            is the kind of bug that doesn't surface until a real
-            user is denied for an unexplained reason.
+        :raises ValueError: ``name``, ``required_permission`` or
+            ``title`` is an empty string, or ``output_schema`` is not
+            a valid JSON Schema whose ``type`` is ``"object"``. silent
+            empty-permission default-deny is the kind of bug that
+            doesn't surface until a real user is denied for an
+            unexplained reason; a bad output schema would otherwise
+            fail every call at dispatch instead of once at startup.
         """
         if not self.name:
             raise ValueError("McpTool.name must be non-empty")
@@ -82,6 +138,31 @@ class McpTool:
                 "use a sentinel like 'public' if the tool truly has "
                 "no permission gate (the Authorizer impl decides)",
             )
+        if self.title == "":
+            raise ValueError(f"McpTool {self.name!r}: title must be non-empty when given; leave it None to omit it")
+        if self.output_schema is not None:
+            if self.output_schema.get("type") != "object":
+                raise ValueError(
+                    f"McpTool {self.name!r}: output_schema's type must be 'object', since structuredContent "
+                    f"is a JSON object; got {self.output_schema.get('type')!r}",
+                )
+            try:
+                jsonschema.validators.validator_for(self.output_schema).check_schema(self.output_schema)
+            except jsonschema.SchemaError as exc:
+                raise ValueError(
+                    f"McpTool {self.name!r}: output_schema is not a valid JSON Schema: {exc.message}"
+                ) from exc
+
+
+ToolProvider = Callable[[], Iterable[McpTool]]
+"""a callable answering the tools a server exposes right now.
+
+:class:`~threetears.mcp.server.McpServer` calls it on every
+``tools/list`` and every ``tools/call``, so a tool set that follows a
+live registry (one that grows, shrinks or changes a schema at runtime)
+is served as it stands at each request. tool names must be unique in
+each answer. :meth:`ToolRegistry.all` is one.
+"""
 
 
 class ToolRegistry:
@@ -148,6 +229,9 @@ def register_tool(
     input_schema: dict[str, Any],
     required_permission: str,
     registry: ToolRegistry,
+    output_schema: dict[str, Any] | None = None,
+    title: str | None = None,
+    annotations: McpToolAnnotations | None = None,
 ) -> Callable[[ToolHandler], ToolHandler]:
     """decorator that registers ``handler`` as an MCP tool against ``registry``.
 
@@ -186,6 +270,12 @@ def register_tool(
     :ptype required_permission: str
     :param registry: target registry; required (no module-level default)
     :ptype registry: ToolRegistry
+    :param output_schema: JSON Schema of the structured result (see :class:`McpTool`)
+    :ptype output_schema: dict[str, Any] | None
+    :param title: human-readable display name
+    :ptype title: str | None
+    :param annotations: behaviour hints
+    :ptype annotations: McpToolAnnotations | None
     :return: decorator returning the handler unchanged
     :rtype: Callable[[ToolHandler], ToolHandler]
     """
@@ -199,6 +289,9 @@ def register_tool(
                 input_schema=input_schema,
                 required_permission=required_permission,
                 handler=handler,
+                output_schema=output_schema,
+                title=title,
+                annotations=annotations,
             ),
         )
         return handler
