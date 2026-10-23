@@ -16,7 +16,7 @@ memo on it cannot drift into two styles.
 from __future__ import annotations
 
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -276,25 +276,33 @@ _DISCOUNTED = re.compile(
 #: confound a writer is right to name.
 _CONFOUNDED = re.compile(r"\b(?:confound\w*|not attributable|cannot be attributed)\b", re.I)
 
-#: What decides a result, named as changed: a prompt, a judge, a model, a template or a setting beside a word saying it
-#: changed (changed, replaced, re-pinned, swapped, differs, moved, another or a different one, since, a version such
-#: as v1). Such a sentence says what changed between the readings, a config statement a writer is right to make, never
-#: an age discount. The noun alone is not enough: in an eval memo it is what the arms are named by.
-_DECIDER = (
-    r"(?:prompts?|judge[sd]?|judging|models?|templates?|settings?|rubrics?|graders?|simulators?|temperatures?|"
-    r"configs?|configurations?|tools?|cassettes?)"
-)
-_CHANGE_WORD = (
-    r"(?:chang(?:e|ed|es|ing)|replac(?:e|ed|es|ing)|re-?pinn?(?:ed|ing)?|swapp?(?:ed|ing)?|differ(?:s|ed)?|"
-    r"mov(?:e|ed|es)|another|a different|since|upgraded|updated|switched|edited|revised|v\d+(?:\.\d+)*)"
-)
+#: What decides a result, named as changed: a prompt, a judge, a model, a template or a setting within 40 characters of
+#: a word saying it changed. Such a sentence says what changed between the readings, a config statement a writer is
+#: right to make, never an age discount. Neither the noun nor a word that can name an arm is enough on its own, since
+#: in an eval memo those are what the arms are called: "since" counts only before a change ("a judge since replaced",
+#: never the causal "since it rests on older runs"), "another" and "a different" only after a word that says what used
+#: it ("judged by a different model", never "the candidate, a different model"), and a version only after one too
+#: ("used the v1 prompt", "moved to v2", never "the prompt v2 arm"). The arms' own names are taken out of the sentence
+#: before it is read (:func:`discounts_by_age`), so a label holding a change word keeps nothing. Compiled inline, as
+#: one literal per order, because a pattern held in a module-level string reads to the GIN-operator guard as SQL.
 _CHANGED = re.compile(
-    rf"\b{_DECIDER}\b[^.;]{{0,40}}?\b{_CHANGE_WORD}\b|\b{_CHANGE_WORD}\b[^.;]{{0,40}}?\b{_DECIDER}\b",
+    r"\b(?:prompts?|judge[sd]?|judging|models?|templates?|settings?|rubrics?|graders?|simulators?|temperatures?|"
+    r"configs?|configurations?|tools?|cassettes?)\b[^.;]{0,40}?"
+    r"(?:\b(?:since )?(?:chang(?:e|ed|es|ing)|replac(?:e|ed|es|ing)|re-?pinned|re-?pinning|re-?pin|swapped|swapping|"
+    r"swap|differs|differed|differ|mov(?:e|ed|es)|upgraded|updated|switched|edited|revised)\b"
+    r"|\b(?:by|with|on|under|to|from|using|used|uses|ran|run) (?:another|a different)\b"
+    r"|\b(?:used|uses|using|ran|run|on|to|from|with|under) (?:the )?v\d+(?:\.\d+)*\b)"
+    r"|(?:\b(?:since )?(?:chang(?:e|ed|es|ing)|replac(?:e|ed|es|ing)|re-?pinned|re-?pinning|re-?pin|swapped|swapping|"
+    r"swap|differs|differed|differ|mov(?:e|ed|es)|upgraded|updated|switched|edited|revised)\b"
+    r"|\b(?:by|with|on|under|to|from|using|used|uses|ran|run) (?:another|a different)\b"
+    r"|\b(?:used|uses|using|ran|run|on|to|from|with|under) (?:the )?v\d+(?:\.\d+)*\b)"
+    r"[^.;]{0,40}?\b(?:prompts?|judge[sd]?|judging|models?|templates?|settings?|rubrics?|graders?|simulators?|"
+    r"temperatures?|configs?|configurations?|tools?|cassettes?)\b",
     re.I,
 )
 
 
-def discounts_by_age(sentence: str) -> bool:
+def discounts_by_age(sentence: str, *, names: Iterable[str] = ()) -> bool:
     """Whether ``sentence`` lowers a reading's standing for when its data was measured: a timing framing (:data:`_AGED`)
     beside a discount (:data:`_DISCOUNTED`), or arms measured apart (:data:`_APART`) beside a discount or a confound
     (:data:`_CONFOUNDED`), in a sentence naming nothing that decides a result (:data:`_CHANGED`): one that names what
@@ -303,14 +311,20 @@ def discounts_by_age(sentence: str) -> bool:
 
     :param sentence: One sentence of the memo.
     :ptype sentence: str
+    :param names: The arms' labels and model ids, taken out of the sentence before it is read, so a name that holds a
+        change word or a version ("prompt v2", "judge swap") is never read as a change.
+    :ptype names: Iterable[str]
     :return: True when it discounts data by age or time apart.
     :rtype: bool
     """
-    if _CHANGED.search(sentence):
+    read = sentence
+    for name in sorted({name for name in names if name}, key=len, reverse=True):
+        read = re.sub(rf"(?<![\w-]){re.escape(name)}(?![\w-])", "the arm", read, flags=re.I)
+    if _CHANGED.search(read):
         return False
-    if _APART.search(sentence):
-        return bool(_DISCOUNTED.search(sentence) or _CONFOUNDED.search(sentence))
-    return bool(_AGED.search(sentence)) and bool(_DISCOUNTED.search(sentence))
+    if _APART.search(read):
+        return bool(_DISCOUNTED.search(read) or _CONFOUNDED.search(read))
+    return bool(_AGED.search(read)) and bool(_DISCOUNTED.search(read))
 
 
 #: Comparative words an arm's label may carry, each with what it claims against the control: ``cost`` read on cost per

@@ -327,8 +327,10 @@ class MemoStyle:
 
     def _aged(self, sentence: str) -> bool:
         """Whether ``sentence`` discounts a reading for when its runs ran or how far apart its arms were measured;
-        recorded, so the methods list it, where it does."""
-        if not discounts_by_age(sentence):
+        recorded, so the methods list it, where it does. The arms' labels and model ids are taken out first, so a name that
+        carries a change word or a version is never read as a change."""
+        names = [name for arm in self.names.values() for name in (arm.label, arm.model) if name]
+        if not discounts_by_age(sentence, names=names):
             return False
         if sentence not in self.aged:
             self.aged.append(sentence)

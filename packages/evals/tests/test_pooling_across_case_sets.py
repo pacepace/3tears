@@ -19,7 +19,7 @@ from threetears.evals.analysis.campaign_bundle import writer_view
 from threetears.evals.analysis.lens_text import frontier_text
 from threetears.evals.analysis.report.build import build_code_only_report
 from threetears.evals.analysis.report.model import DisclosureBlock
-from threetears.evals.analysis.lenses.frontier import compute_frontier
+from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, compute_frontier
 from threetears.evals.kernel.identity import IDENTITY_VERSION, derive_context_identity, derive_variant_identity
 from threetears.evals.schema.models import EvalResult, EvalRun, RoleUsage
 from threetears.evals.schema.values import NominalScale, SweepableValue
@@ -53,13 +53,14 @@ def _results(
     identity_version: int,
     served: str | None | Literal["no call"] = "no call",
     cost: float = 0.01,
+    variant_key: str | None = None,
 ) -> list[EvalResult]:
     """One result per attempt, each case's attempts in order, stamped with the run's variant key.
 
     ``served`` is the model the provider's response named for each candidate call: a name, ``None`` for a response
     that named none, or ``"no call"`` for results that carry no candidate usage row at all.
     """
-    key = derive_variant_identity(run=run, profile=PROFILE).variant_key
+    key = variant_key or derive_variant_identity(run=run, profile=PROFILE).variant_key
     usage = (
         []
         if served == "no call"
@@ -183,7 +184,7 @@ def test_a_campaign_names_every_cell_kept_out_of_a_pool_with_its_reason_and_lose
     [aspect] = view["aspects"]
     unpooled = aspect["disclosures"]["pass_k_unpooled"]
     assert "headline" in unpooled["reading"]
-    lines = [line for model_lines in unpooled["by_model"].values() for line in model_lines]
+    lines = [line for arm_lines in unpooled["by_arm"].values() for line in arm_lines]
     for cell in beside:
         assert any(", ".join(cell.run_ids) in line and (cell.detail or "") in line for line in lines)
 
@@ -277,7 +278,7 @@ def test_a_run_whose_responses_named_no_model_pools_and_is_named_as_joining_by_a
     view = writer_view(campaign_bundle(bundle))
     [aspect] = view["aspects"]
     assert aspect["disclosures"]["model_identity_disclosure"] == bundle.model_identity_disclosure
-    [line] = aspect["disclosures"]["pass_k_unpooled"]["by_model"][point.model]
+    [[line]] = aspect["disclosures"]["pass_k_unpooled"]["by_arm"].values()
     assert line == "run(s) run-b named no served model and pooled with run(s) run-a, run-b"
 
 
@@ -401,6 +402,10 @@ def test_a_run_silent_on_both_takes_one_peers_whole_pair_never_two_majorities():
     assert headline.served_model_assumed == ["run-x"]
 
 
+#: The name the page gives the one arm these corpora run: its model, which is the arm's only level here.
+ARM = "sonnet"
+
+
 def _page_run_lines(runs: list[EvalRun], results: dict[str, list[EvalResult]]) -> list[str]:
     """Every run disclosure the campaign's page prints, over the bundle its runs assemble."""
     report = build_code_only_report(_bundle(runs, results), assembled_at="2026-10-23T00:00:00+00:00")
@@ -417,8 +422,11 @@ def test_the_page_names_each_cell_kept_out_of_a_pass_hat_k_led_by_its_arm():
     assert any("run-rig-1, run-rig-2 kept out" in line and "another measurement context" in line for line in kept_out)
     assert any("run-tpl kept out" in line and "another template or template revision" in line for line in kept_out)
     assert any("run-bare kept out" in line and "no recorded measurement context" in line for line in kept_out)
-    # Led by the arm, as the frontier's text leads it, so a reader knows whose pass^k left the run out.
-    assert all(line.split(": ", 1)[0] and not line.startswith("run(s)") for line in kept_out)
+    # Led by the arm's name as the page names it (one arm, named by its model), so a reader knows whose pass^k it is.
+    assert all(line.startswith(f"{ARM}: run(s) ") for line in kept_out)
+    # What "kept out" covers is said once, before the first cell line.
+    assert lines.count(PASS_HAT_K_CELL_READING) == 1
+    assert lines.index(PASS_HAT_K_CELL_READING) < lines.index(kept_out[0])
 
 
 def test_a_page_whose_points_have_only_a_headline_cell_says_nothing_of_pass_hat_k_cells():
@@ -432,3 +440,46 @@ def test_a_page_whose_points_have_only_a_headline_cell_says_nothing_of_pass_hat_
     lines = _page_run_lines([first, top_up], results)
 
     assert not any("pass^k" in line or "pooled with run(s)" in line for line in lines)
+
+
+def test_the_page_names_a_run_pooled_with_no_served_model_under_its_arm():
+    named = _launched("run-a", test_case_ids=["tc1"])
+    silent = _launched("run-b", test_case_ids=["tc1"])
+    results = {
+        named.id: _results(named, {"tc1": (True,)}, identity_version=IDENTITY_VERSION, served="model-2026-09"),
+        silent.id: _results(silent, {"tc1": (False,)}, identity_version=IDENTITY_VERSION, served=None),
+    }
+
+    lines = _page_run_lines([named, silent], results)
+
+    assert f"{ARM}: run(s) run-b named no served model and pooled with run(s) run-a, run-b." in lines
+    assert lines.count(PASS_HAT_K_CELL_READING) == 1
+
+
+def test_the_writer_view_keys_each_arms_cells_by_the_arm_so_two_arms_on_one_model_stay_apart():
+    """Two arms run one model: each one's kept-out cell is named under its own arm, never merged under the model."""
+    runs: list[EvalRun] = []
+    results: dict[str, list[EvalResult]] = {}
+    for arm in ("a", "b"):
+        for run_id, fields in (
+            (f"run-{arm}1", {}),
+            (f"run-{arm}2", {}),
+            (f"run-{arm}-rig", {"apparatus_settings": {"reviewer_pool": "pool-b"}}),
+        ):
+            run = _launched(run_id, test_case_ids=["tc1"], **fields)
+            runs.append(run)
+            results[run.id] = _results(run, {"tc1": (True,)}, identity_version=IDENTITY_VERSION, variant_key=arm * 64)
+
+    bundle = _bundle(runs, results)
+    points = bundle.frontier.subjects[0].points
+    assert len(points) == 2 and len({point.model for point in points}) == 1, "one model, two arms"
+    view = writer_view(campaign_bundle(bundle))
+
+    [aspect] = view["aspects"]
+    by_arm = aspect["disclosures"]["pass_k_unpooled"]["by_arm"]
+    assert len(by_arm) == 2
+    assert sorted(line.split(" kept out")[0] for lines in by_arm.values() for line in lines) == [
+        "run(s) run-a-rig",
+        "run(s) run-b-rig",
+    ]
+    assert aspect["disclosures"]["pass_k_unpooled"]["reading"] == PASS_HAT_K_CELL_READING

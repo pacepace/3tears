@@ -52,13 +52,13 @@ from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     evidence_digest,
     fingerprint_digest,
-    refuse_a_bundle_before_aspects,
+    refuse_a_bundle_of_another_shape,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
 from threetears.evals.analysis.cells import cell_ref
-from threetears.evals.analysis.lenses.frontier import pass_hat_k_cell_lines
+from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import CellAddress, campaign_cell_aliases
 from threetears.evals.kernel.campaign import CampaignDeclaration, EvalCampaign
@@ -109,16 +109,6 @@ _KIND_MEANS: dict[str, str] = {
     ),
     "change": "A control and candidates: the memo recommends a candidate the evidence separated, or keeps the control.",
 }
-
-#: What the writer is told about how pass^k pools, beside the runs a contestant's pass^k kept out: the two pooling rules
-#: one bundle carries.
-_PASS_K_CELL_READING = (
-    "pass^k and its interval, bar and verdict read each contestant's headline pass^k cell alone: one measurement "
-    "context, template revision, apparatus provenance and served model, whatever cases each run covered and whenever "
-    "it ran. A run of another such cell is listed here with why and its own pass^k, never counted in the headline. "
-    "The cells, composite, cost and latency pool every run of a variant under one rig, served model and template "
-    "revision included."
-)
 
 #: The bundle fields the writer's view carries as code's disclosures on the aspect's soundness, each only when set.
 _DISCLOSURES: tuple[str, ...] = (
@@ -277,7 +267,7 @@ class CampaignBundle(EvalDocumentModel):
         cls.refuse_another_shape(data, what=what, remedy=fix)
         bundles = []
         for aspect in data.get("aspects") or []:
-            refuse_a_bundle_before_aspects(aspect, what=what, remedy=fix)
+            refuse_a_bundle_of_another_shape(aspect, what=what, remedy=fix)
             bundles.append(AnalysisContextBundle.from_dict(dict(aspect)))
         return cls.model_validate(
             {**{key: value for key, value in data.items() if key != "aspects"}, "aspects": bundles}
@@ -859,25 +849,26 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
             key: namer.walk(payload[key], label) for key in _DISCLOSURES if payload.get(key) not in (None, "", [], {})
         },
     }
+    # Keyed by the arm, as the view names every arm, never by the model id: two arms on one model are two entries.
     unmeasured = {
-        point.model: point.pass_hat_k_unmeasured_reason
+        namer.arm(point.variant_key): point.pass_hat_k_unmeasured_reason
         for subject in aspect.frontier.subjects
         for point in subject.points
         if point.pass_hat_k_unmeasured_reason
     }
     if unmeasured:
         view["disclosures"]["pass_k_unmeasured"] = unmeasured
-    # Every pass^k cell beside a contestant's headline, and every run placed in a cell by a silence: the pass^k figures
-    # read the headline cell alone, while the cells above and every composite, cost and latency pool on variant x rig.
+    # Every pass^k cell beside an arm's headline, and every run placed in a cell by a silence, after the one sentence
+    # saying what "kept out" covers (the frontier's pass^k, bar and verdict; every other figure still counts the run).
     unpooled: dict[str, list[str]] = {}
     for subject in aspect.frontier.subjects:
         for point in subject.points:
-            unpooled.setdefault(point.model, []).extend(
+            unpooled.setdefault(namer.arm(point.variant_key), []).extend(
                 line for cell in point.pass_hat_k_cells for line in pass_hat_k_cell_lines(cell)
             )
-    unpooled = {model: lines for model, lines in unpooled.items() if lines}
+    unpooled = {arm: lines for arm, lines in unpooled.items() if lines}
     if unpooled:
-        view["disclosures"]["pass_k_unpooled"] = {"reading": _PASS_K_CELL_READING, "by_model": unpooled}
+        view["disclosures"]["pass_k_unpooled"] = {"reading": PASS_HAT_K_CELL_READING, "by_arm": unpooled}
     if aspect.telemetry.measures.absent_scopes:
         view["disclosures"]["absent_scopes"] = list(aspect.telemetry.measures.absent_scopes)
     if aspect.telemetry.measures.unreported_observations:

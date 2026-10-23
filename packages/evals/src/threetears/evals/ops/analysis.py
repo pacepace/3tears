@@ -56,6 +56,7 @@ from threetears.evals.kernel.errors import (
     EvalServiceError,
     JobFenced,
     NotFoundError,
+    RefusedInput,
     StorageError,
     ValidationFailedError,
 )
@@ -246,6 +247,14 @@ class AnalysisLine(EvalBaseModel):
     generator_model: str
     generated_at: str
     archived: bool
+    needs_regeneration: str | None = Field(
+        default=None,
+        description=(
+            "Why this build cannot read the evidence the analysis was frozen over, and what to do: set when it was "
+            "written over a bundle of another shape, so its verdict, report and page are refused until it is generated "
+            "again (analysis_generate). None when it reads."
+        ),
+    )
 
 
 class AnalysisListing(EvalBaseModel):
@@ -593,10 +602,19 @@ def campaign_archive(host: EvalHost, campaign_id: str, scope_id: str, *, archive
 
 
 def _analysis_line(analysis: EvalAnalysis) -> AnalysisLine:
+    # One analysis frozen over a bundle this build cannot read is listed as needing regeneration, never allowed to
+    # refuse the listing of every other one.
+    needs_regeneration: str | None = None
+    try:
+        verdict = analysis_verdict(analysis)
+    except RefusedInput as unreadable:
+        needs_regeneration = f"{unreadable.fault}; {unreadable.remedy}" if unreadable.remedy else unreadable.fault
+        verdict = f"Needs regeneration: {needs_regeneration}"
     return AnalysisLine(
         id=analysis.id,
         campaign_id=analysis.campaign_id,
-        verdict=analysis_verdict(analysis),
+        verdict=verdict,
+        needs_regeneration=needs_regeneration,
         findings=len(analysis.document.findings),
         recommendations=0 if analysis.document.recommended() is None else 1,
         generator_model=analysis.generation.generator_model,

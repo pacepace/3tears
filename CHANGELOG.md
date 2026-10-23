@@ -17,14 +17,18 @@ whose run recorded its lever map is placed at this build's version when today's 
 and history alike). The cell also splits on the template revision (the run's frozen `template_digest`, since an edit
 in place keeps the id) and on the model the provider's responses named as answering the candidate's calls
 (`served_model`). A run that froze no digest, or whose responses named no model, joins its cell and is named as
-joining by assumption. A point's pass^k, interval, bar and verdict read its headline cell (the one with the most runs)
-alone; composite, cost and latency still pool every run of the variant under one rig. Bundle shape 62.
+joining by assumption. A point's pass^k, interval, bar and verdict read its headline cell alone, chosen in the order
+`PassHatKCellReading` states; the arm's tables, composite, cost and latency still pool every run of the variant under
+one rig. Across both #919 entries the bundle shape moves from 60, which v0.76.0 shipped, to 62: a stored analysis
+frozen over a shape-60 bundle is listed as needing regeneration (`AnalysisLine.needs_regeneration`), and its report
+is refused until it is generated again; nothing else is dropped.
 
 **Added:** `FrontierPoint.pass_hat_k_cells` (`PassHatKCellReading`) lists every pass^k cell behind a point, the
 headline first, each other one with its own pass^k and its reason (`UnpooledReason`: `changed_context`,
 `other_template`, `other_served_model` or `no_recorded_context`), read off the first field of the kernel's typed cell
-record (`PassHatKCell`) in which it differs from the headline. The frontier text and the campaign bundle's writer view
-(`pass_k_unpooled`) name each one. A run whose stored context can no longer be re-derived is a cell of its own,
+record (`PassHatKCell`) in which it differs from the headline. The frontier text, the report page's run disclosures and
+the campaign bundle's writer view (`pass_k_unpooled`, keyed by arm) name each one, after one sentence saying what
+kept out covers. A run whose stored context can no longer be re-derived is a cell of its own,
 named, instead of failing the read. One case-set comparison over sorted ids, `case_set_fingerprint`, serves comparisons
 and history, and a take-up compares the same sorted ids: one whose launch would run other cases is refused naming
 them, and a reordered set is not.
@@ -45,7 +49,7 @@ sentence discounting a reading for when its runs ran is dropped and listed. Time
 started in separate launches, or arms run one after another, are no longer flagged, and the lens tools state
 non-overlapping spans as a plain fact. An eval's campaign is dated when its call launched its arms; one filed
 before this release reads as it did unless it declared judged guardrail margins, which it dated at filing. `ReadingScope.question_after_runs` (`QuestionAfterRuns`) is replaced by
-`ReadingScope.late_criteria` (`LateCriterion`); `measurement_window_disclosure` leaves the bundle; bundle shape 61,
+`ReadingScope.late_criteria` (`LateCriterion`); `measurement_window_disclosure` leaves the bundle (the bundle shape is in the entry above);
 page JSON shape 3. The seeded writer prompt changed, so hosts push the new seed. Known gap: an aspect adopted from a
 campaign that asked no question is not named when the adopting campaign first puts it to a question. See
 `packages/evals/MIGRATIONS.toml`.

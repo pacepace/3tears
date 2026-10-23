@@ -16,7 +16,7 @@ from threetears.evals.analysis.report.verdict import MIN_CASES
 
 
 from threetears.evals.analysis.reporting import ProjectionExclusions
-from threetears.evals.analysis.lenses.frontier import FrontierResult, pass_hat_k_cell_lines
+from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, FrontierResult, pass_hat_k_cell_lines
 
 
 def exclusion_lines(exclusions: ProjectionExclusions) -> list[str]:
@@ -55,6 +55,8 @@ def frontier_text(result: FrontierResult) -> str:
         f"{result.n_filtered_out} filtered out",
     ]
     lines += [text for text in (result.identity_span_disclosure, result.contended_latency_disclosure) if text]
+    # What "kept out" covers, said once before the first cell line of any arm.
+    said_reading = False
     for subject in result.subjects:
         lines.append(f"## subject {subject.subject_label or subject.subject_id}, pass^k at k={subject.k}")
         if subject.boundary_pillar:
@@ -95,7 +97,11 @@ def frontier_text(result: FrontierResult) -> str:
                 f"- {_contestant(point.model, point.variant_key)}: {quality}{cleared}; {cost}; {latency}"
                 + (f"; {standing}" if standing else "")
             )
-            lines += [f"  - {line}" for cell in point.pass_hat_k_cells for line in pass_hat_k_cell_lines(cell)]
+            cell_lines = [line for cell in point.pass_hat_k_cells for line in pass_hat_k_cell_lines(cell)]
+            if cell_lines and not said_reading:
+                lines.append(f"  {PASS_HAT_K_CELL_READING}")
+                said_reading = True
+            lines += [f"  - {line}" for line in cell_lines]  # one line: pass_hat_k_cell_lines collapses each line
         verdict = subject.verdict
         if verdict is not None:
             tied = (

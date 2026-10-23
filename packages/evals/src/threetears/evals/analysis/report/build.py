@@ -50,14 +50,14 @@ from threetears.evals.analysis.bundle.schema import (
     TrialRow,
     UnexercisedFactor,
     asks_a_question,
-    refuse_a_bundle_before_aspects,
+    refuse_a_bundle_of_another_shape,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, campaign_trial_ids
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.kinds import campaign_kind
-from threetears.evals.analysis.lenses.frontier import pass_hat_k_cell_lines
+from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.references import cell_index, resolve_reading
 from threetears.evals.analysis.report.figures import (
@@ -401,11 +401,11 @@ def analysis_bundle(analysis: EvalAnalysis) -> AnalysisContextBundle:
     :ptype analysis: EvalAnalysis
     :return: The bundle, as frozen at generation.
     :rtype: AnalysisContextBundle
-    :raises RefusedInput: The analysis covers several aspects, or was written over a bundle from before a bundle read
-        one aspect (shape 59).
+    :raises RefusedInput: The analysis covers several aspects, or was written over a bundle of another shape than this
+        build's, which is regenerated, never read.
     """
     held = _only_aspect(analysis)
-    refuse_a_bundle_before_aspects(
+    refuse_a_bundle_of_another_shape(
         held.bundle,
         what=f"analysis {analysis.id}",
         remedy="generate the analysis again (analysis_generate), which assembles the campaign's evidence as it stands",
@@ -444,7 +444,7 @@ def analysis_campaign_bundle(analysis: EvalAnalysis) -> CampaignBundle:
     remedy = "generate the analysis again (analysis_generate), which assembles the campaign's evidence as it stands"
     bundles = []
     for held in analysis.aspects:
-        refuse_a_bundle_before_aspects(held.bundle, what=what, remedy=remedy)
+        refuse_a_bundle_of_another_shape(held.bundle, what=what, remedy=remedy)
         bundles.append(AnalysisContextBundle.from_dict(dict(held.bundle)))
     return CampaignBundle.from_frame(analysis.campaign_bundle, bundles, what=what)
 
@@ -3964,11 +3964,18 @@ def _run_disclosures(
         )
     for cell in bundle.short_cells:
         say("runs", cell.sentence)
-    for subject in bundle.frontier.subjects:
-        for point in subject.points:
-            for reading in point.pass_hat_k_cells:
-                for line in pass_hat_k_cell_lines(reading):
-                    say("runs", f"{arm(point.variant_key)}: {line}.")
+    cell_lines = [
+        f"{arm(point.variant_key)}: {line}."
+        for subject in bundle.frontier.subjects
+        for point in subject.points
+        for reading in point.pass_hat_k_cells
+        for line in pass_hat_k_cell_lines(reading)
+    ]
+    if cell_lines:
+        # What "kept out" covers, once, before the first: the arm's tables above still count those runs.
+        say("runs", PASS_HAT_K_CELL_READING)
+    for line in cell_lines:
+        say("runs", line)
 
 
 def _design_disclosures(

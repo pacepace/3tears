@@ -105,6 +105,10 @@ def test_the_declared_question_repeated_in_the_body_is_flagged_and_dropped() -> 
         "The control runs were collected before the question, so read them with lower confidence.",
         # An arm named by its model is no change: the noun alone never keeps an age discount.
         "The candidate model's gain rests on older runs, so it is provisional.",
+        # A causal "since" is no change; "a different" naming the arm is none; nor is a version in an arm's name.
+        "The candidate model's gain is provisional, since it rests on older runs.",
+        "The candidate, a different model, rests on older runs, so its gain is provisional.",
+        "The prompt v2 arm's gain rests on older runs, so it is provisional.",
     ],
 )
 def test_a_sentence_discounting_a_reading_by_data_age_or_time_apart_is_named(sentence: str) -> None:
@@ -172,3 +176,10 @@ def test_every_glossary_entry_is_one_short_plain_sentence() -> None:
     for term, sentence in GLOSSARY.items():
         assert lint_prose(sentence) == [], term
         assert sentence.endswith(".") and sentence.count(". ") == 0, term
+
+
+def test_an_arm_named_by_a_change_word_keeps_no_age_discount() -> None:
+    """The arms' names are taken out before the sentence is read: a label holding a change word is still a name."""
+    sentence = "The judge swap arm's gain rests on older runs, so it is provisional."
+    assert not discounts_by_age(sentence), "read without the names, 'judge swap' reads as a change"
+    assert discounts_by_age(sentence, names=["judge swap"])

@@ -339,11 +339,15 @@ class FrontierCostTie(EvalBaseModel):
 class PassHatKCellReading(EvalBaseModel):
     """One pass^k cell behind a frontier point: the runs whose attempts at a case pooled in it, and its own reading.
 
-    The point's pass^k, its interval, its bar decision and every verdict read its headline cell alone: the cell holding
-    the most runs (then the most results). Every other cell stands beside it, with its own pass^k at the point's depth
-    and the reason it is not the headline, read off the first field of the cell record in which the two differ
+    The point's pass^k, its interval, its bar decision and every verdict read its headline cell alone. **The headline
+    is chosen in one order, stated here and nowhere else:** a cell whose runs recorded a measurement context comes
+    before one that recorded none, and one whose context resolved at this build's identity version before one that
+    did not; then the cell with the most runs, then the most results, then the alphabetically first run id. Every other
+    cell stands beside it, with its own pass^k at the point's depth and the reason it is not the headline, read off the
+    first field of the cell record in which the two differ
     (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_reason`). Its runs are kept out of the headline, never
-    dropped. The point's composite, cost and latency still pool every run of the variant under one rig.
+    dropped. The point's composite, cost and latency still pool every run of the variant under one rig
+    (:data:`PASS_HAT_K_CELL_READING`).
     """
 
     run_ids: list[str]
@@ -366,6 +370,17 @@ class PassHatKCellReading(EvalBaseModel):
     n_cases_at_k: int = 0
 
 
+#: What "kept out" covers, said once before a contestant's cell lines wherever they are shown (the frontier's text,
+#: the report page's run disclosures, the memo writer's view): only the frontier's pass^k, its interval, its bar and its
+#: verdict leave a kept-out run out; every other figure of the arm still counts it.
+PASS_HAT_K_CELL_READING = (
+    "An arm's frontier pass^k, with its interval, bar and verdict, reads its headline pass^k cell alone: one "
+    "measurement context, template revision, apparatus provenance and served model, whatever cases each run covered "
+    "and whenever it ran. A run of another such cell is named below with why and its own pass^k, and is kept out of "
+    "that headline only: the arm's tables, cells, composite, cost and latency still count it, pooling every run of the "
+    "variant under one rig."
+)
+
 #: Each reason a pass^k cell stands apart, as a reader is told it.
 _REASON_WORDS: dict[str, str] = {
     "changed_context": "another measurement context",
@@ -382,9 +397,12 @@ def pass_hat_k_cell_lines(reading: PassHatKCellReading) -> list[str]:
     and the fact that the point's pass^k does not count it. Any cell gets one more per kind of silence its runs were
     placed by (no served model named, no template digest frozen). The headline with neither gets nothing.
 
+    Each sentence is one line, its whitespace collapsed (a detail can carry a stored error's own line breaks), so a
+    surface may indent it or lead it with the arm and nothing of it reads as the next item's.
+
     :param reading: The cell.
     :ptype reading: PassHatKCellReading
-    :return: The sentences, possibly none.
+    :return: The sentences, possibly none, each one line.
     :rtype: list[str]
     """
     lines: list[str] = []
@@ -408,7 +426,7 @@ def pass_hat_k_cell_lines(reading: PassHatKCellReading) -> list[str]:
             f"run(s) {', '.join(reading.template_digest_assumed)} froze no template digest and pooled with run(s) "
             f"{runs}"
         )
-    return lines
+    return [" ".join(line.split()) for line in lines]
 
 
 class FrontierPoint(EvalBaseModel):
@@ -1088,8 +1106,8 @@ def _pass_hat_k_cells(
 
     Each run's cell is :func:`~threetears.evals.kernel.scoring.pass_hat_k_cell` over the models that answered it for
     this contestant, with a silent template digest or served model joined by
-    :func:`~threetears.evals.kernel.scoring.join_unrecorded`. The headline is a cell that recorded and resolved its
-    context, then the one with the most runs, then the most results, then the alphabetically first run. Each other
+    :func:`~threetears.evals.kernel.scoring.join_unrecorded`. The headline is chosen in the order
+    :class:`PassHatKCellReading` states. Each other
     cell's reason is the first field in which it differs from the headline, so the grouping and the reason are one
     reading.
 
@@ -2035,6 +2053,7 @@ __all__ = [
     "FrontierDominator",
     "FrontierError",
     "FrontierPoint",
+    "PASS_HAT_K_CELL_READING",
     "PassHatKCellReading",
     "pass_hat_k_cell_lines",
     "FrontierResult",

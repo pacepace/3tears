@@ -2064,11 +2064,13 @@ NO_AXIS_EXPLORATORY = (
 ASPECT_BUNDLE_SHAPE = 59
 
 
-def refuse_a_bundle_before_aspects(data: Mapping[str, Any], *, what: str, remedy: str) -> None:
-    """Refuse a stored bundle of a shape from before a bundle read one aspect, naming what holds it and the remedy.
+def refuse_a_bundle_of_another_shape(data: Mapping[str, Any], *, what: str, remedy: str) -> None:
+    """Refuse a stored bundle of any shape but this build's, naming what holds it and the remedy.
 
-    A stored read is strict, so such a bundle would otherwise fail on the first field it lacks, in pydantic's words; it
-    is refused here, before it is read, in the reader's.
+    A stored read is strict, so a bundle of another shape would otherwise fail on the first field it lacks or the
+    first it carries that this shape dropped, in pydantic's words, and fail every read that holds it — a listing of
+    analyses among them. It is refused here, before it is read, in the reader's words, so a caller can refuse the one
+    document that holds it and read the rest. A bundle is regenerated across a shape change, never migrated.
 
     :param data: The stored bundle, as a mapping.
     :ptype data: Mapping[str, Any]
@@ -2076,13 +2078,21 @@ def refuse_a_bundle_before_aspects(data: Mapping[str, Any], *, what: str, remedy
     :ptype what: str
     :param remedy: What to do instead: regenerate what holds it, or freeze it again.
     :ptype remedy: str
-    :raises RefusedInput: The bundle's ``schema_version`` is missing or earlier than :data:`ASPECT_BUNDLE_SHAPE`.
+    :raises RefusedInput: The bundle's ``schema_version`` is missing or is not this build's
+        (``AnalysisContextBundle.schema_version``'s default).
     """
     shape = data.get("schema_version")
+    current = AnalysisContextBundle.model_fields["schema_version"].default
     if not isinstance(shape, int) or shape < ASPECT_BUNDLE_SHAPE:
         raise RefusedInput(
             f"{what} holds an evidence bundle of shape {shape}, from before a bundle read one aspect of its campaign "
             f"(shape {ASPECT_BUNDLE_SHAPE}), so this build cannot read it",
+            remedy=remedy,
+        )
+    if shape != current:
+        raise RefusedInput(
+            f"{what} holds an evidence bundle of shape {shape}, and this build reads shape {current} only, so it "
+            "cannot read it: a bundle is regenerated across a shape change, never migrated",
             remedy=remedy,
         )
 
@@ -3596,7 +3606,7 @@ __all__ = [
     "DesignArm",
     "exploratory_disclosure",
     "ASPECT_BUNDLE_SHAPE",
-    "refuse_a_bundle_before_aspects",
+    "refuse_a_bundle_of_another_shape",
     "asks_a_question",
     "CriterionKind",
     "late_criteria",
