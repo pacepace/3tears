@@ -46,6 +46,8 @@ from threetears.core.backends.protocol import (
     CopyingStore,
     DurableStore,
     KeyLedReadingStore,
+    LoadFile,
+    LoadingStore,
     OrderedDurableStore,
     TruncatingStore,
 )
@@ -1919,6 +1921,13 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     #: (:data:`~threetears.core.backends.protocol.L3_RAIL_ROW_CAP`) and is rarely read again in halves
     LED_READ_MAX_VALUES: ClassVar[int] = 250
 
+    #: the most rows one transaction of a load from files (:meth:`load_files`) commits: a load of
+    #: millions of rows commits as it goes, so no one transaction holds them all
+    LOAD_ROWS_PER_TRANSACTION: ClassVar[int] = 50_000
+
+    #: the most time one transaction of a load from files may take, in milliseconds
+    LOAD_TIMEOUT_MS: ClassVar[int] = 300_000
+
     async def save_rows(
         self,
         rows: list[dict[str, Any]],
@@ -2110,13 +2119,103 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"would land after the table was emptied"
             )
         await store.truncate(self.table_name)
+        await self._drop_and_advance("truncated")
+
+    async def load_files(
+        self,
+        files: Sequence[LoadFile],
+        *,
+        columns: Sequence[str],
+        constants: Mapping[str, Any] | None = None,
+        rows_per_transaction: int | None = None,
+        timeout_ms: int | None = None,
+    ) -> int:
+        """load the table in L3 from parquet files, then drop what every cache holds of it.
+
+        For a table reloaded whole from a warehouse export, after :meth:`truncate`: the files are
+        the export's own (:func:`~threetears.datasources.export_read.presigned_export_files` presigns
+        them), and the store fetches and copies them itself
+        (:meth:`~threetears.core.backends.protocol.LoadingStore.load_files`; on the L3 rail the
+        ``l3.load_files`` request, so the broker streams the files and the rows never cross the
+        bus). It runs outside any transaction of the caller's and commits every
+        ``rows_per_transaction`` rows. Insert-only: a key already held fails the load. A column no
+        file holds -- a part's own key, a load's ``date_created`` -- takes its value from
+        ``constants``; nothing is stamped for the caller.
+
+        Then, exactly as :meth:`truncate`: this process drops the table from its caches and advances
+        the table's write generation once, with no row broadcast. ``COPY`` through the store leaves
+        no row-level write mark either, so the advance is how a following pod learns of the load.
+
+        :param files: the files, in order
+        :ptype files: Sequence[LoadFile]
+        :param columns: the table's columns each file supplies
+        :ptype columns: Sequence[str]
+        :param constants: column -> the value every row takes for it; none when None
+        :ptype constants: Mapping[str, Any] | None
+        :param rows_per_transaction: the most rows one committed transaction writes;
+            :attr:`LOAD_ROWS_PER_TRANSACTION` when None
+        :ptype rows_per_transaction: int | None
+        :param timeout_ms: the most time one transaction may take, in milliseconds;
+            :attr:`LOAD_TIMEOUT_MS` when None
+        :ptype timeout_ms: int | None
+        :return: the rows written
+        :rtype: int
+        :raises ValueError: when the collection has no durable store, its store cannot load files, or
+            it defers its L3 writes (a buffered row would land among the loaded ones)
+        :raises GenerationUnavailableError: when the table's write generation had to advance and
+            could not; the rows are loaded and this process's caches dropped
+        """
+        store = self._durable_store()
+        if store is None:
+            raise ValueError(f"{type(self).__name__}.load_files: {self.table_name} has no durable store to load")
+        if not isinstance(store, LoadingStore):
+            raise ValueError(f"{type(self).__name__}.load_files: the store of {self.table_name} cannot load files")
+        if self._defers_l3_writes:
+            raise ValueError(
+                f"{type(self).__name__}.load_files: {self.table_name} defers its L3 writes, and a buffered row "
+                f"would land among the loaded ones"
+            )
+        if not files:
+            return 0
+        result = await store.load_files(
+            self.table_name,
+            files,
+            columns=columns,
+            constants=dict(constants or {}),
+            rows_per_transaction=self.LOAD_ROWS_PER_TRANSACTION
+            if rows_per_transaction is None
+            else rows_per_transaction,
+            timeout_ms=self.LOAD_TIMEOUT_MS if timeout_ms is None else timeout_ms,
+        )
+        await self._drop_and_advance("loaded from files", rows=result.row_count)
+        return result.row_count
+
+    async def _drop_and_advance(self, reason: str, **detail: Any) -> None:
+        """drop the table from this process's caches, then advance its write generation once.
+
+        After a change to the table that left no row-level write mark (:meth:`truncate`,
+        :meth:`load_files`): the registry drops it (L1 rows, cached scans, derived caches; L2
+        entries read past), and the generation advances with no row broadcast, so a following pod
+        drops it at its next catch-up.
+
+        :param reason: what changed the table, for the drop and the log
+        :ptype reason: str
+        :param detail: more to log
+        :ptype detail: Any
+        :return: nothing
+        :rtype: None
+        :raises GenerationUnavailableError: when the generation had to advance and could not
+        """
         registry = self.registry
         if registry is not None:
-            registry.drop_table(self.table_name, reason="truncated")
+            registry.drop_table(self.table_name, reason=reason)
         if registry is None or registry.get_collection(self.table_name) is not self:
             self.drop_cached_table()
         bump = await self._bump_after_commit()
-        log.info("table truncated", extra={"extra_data": {"table": self.table_name, "generation": bump.token}})
+        log.info(
+            "table changed with no row write mark; caches dropped and generation advanced",
+            extra={"extra_data": {"table": self.table_name, "change": reason, "generation": bump.token, **detail}},
+        )
         if bump.failure is not None:
             raise bump.failure
 

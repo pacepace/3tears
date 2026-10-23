@@ -6,6 +6,44 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core, nats, datasources: a table is loaded from its own export's files, which the L3 broker streams
+
+**Added:** `SchemaBackedCollection.load_files(files, *, columns, constants=None, rows_per_transaction=None,
+timeout_ms=None) -> int` loads the table in L3 from parquet files -- a warehouse export's, presigned -- through
+the store's new `LoadingStore` seam, outside any transaction of the caller's: the store fetches each file and
+copies its rows, committing every `rows_per_transaction` rows (default `LOAD_ROWS_PER_TRANSACTION`, 50 000;
+each transaction bounded by `timeout_ms`, default `LOAD_TIMEOUT_MS`, 300 000). Insert-only. A column no file
+holds (a part's value, a load's `date_created`) comes from `constants`. Then, exactly as `truncate()`: the
+table is dropped from this process's caches and its write generation advanced once, with no row broadcast.
+Refused for a collection with no durable store, a store that cannot load files, or one that defers its L3
+writes. For a full reload: sending ~15.5 million rows over `l3.tx.copy` as JSON ran at ~6 000 rows a second
+through one hub process, and the warehouse had already written those rows to S3 in the table's shape.
+
+**Added, the wire (the hub's broker answers it):** `l3.load_files`, outside any transaction, body
+`{correlation_id, identity_token, namespace, table, columns, constants, files: [{url, rows}], format:
+"parquet", rows_per_transaction, timeout_ms}`, each constant encoded as a statement's parameters are
+(`transport_param`). Reply `{success, row_count, files: [{index, rows_loaded}]}`, plus `generations` for a
+switched-on table, kept as a write's are; a failure raises as every L3 reply's does, a key already held as
+`asyncpg.UniqueViolationError`; a reply counting other rows than the files declare is raised. The pod waits
+`timeout_ms` for each transaction the files need (each file's rows over `rows_per_transaction`, rounded up;
+one for an empty file) plus two seconds (`load_files_wait_seconds`); `NatsProxyL3Backend.nats_request`
+takes the wait as `timeout_s`. `Subjects.l3_load_files()`; agent and tool pods are granted it and the hub
+subscribes to it; the registry, which only reads, is not.
+
+**Added, the seams:** `LoadFile(url, rows)`, `LoadResult(row_count, files)`, `FileLoad(index, rows_loaded)`
+and the `LoadingStore` protocol (`threetears.core.backends.protocol`); `NatsProxyL3Backend.load_files`;
+`SqlL3Backend.load_files` -- through the broker on the rail, and on a direct pool (local runs, tests) the
+broker's load done here: each file fetched (`https` or `file://`), read with pyarrow off the loop, held to
+its declared rows, ordered by key and copied in transactions of `rows_per_transaction`.
+
+**Added, presigning an export:** `threetears.datasources.export_read.presigned_export_files(store, result, *,
+bucket, expires_in=3600) -> list[LoadFile]` and `threetears.datasources.partitioned_export.presigned_partition_files(
+store, result, *, bucket, partition_by, expires_in=3600) -> dict[str | None, list[LoadFile]]`: the export's
+files, checked as a read checks them, presigned through the store's `presigned_get_url`, each with the rows
+its manifest counts for it (a file the manifest does not count, or counts that differ from the warehouse's,
+are refused). A partitioned export's part value lives in its directory name, not its files: pass it back as
+a constant. The fingerprints and the delete after load stay the caller's.
+
 ### core, nats: a table is emptied with TRUNCATE and loaded again with COPY, through the L3 broker
 
 **Added:** `SchemaBackedCollection.truncate()` empties the table in L3 with `TRUNCATE`, outside any

@@ -24,6 +24,7 @@ layer; code that needs raw SQL drops to :class:`L3Backend` explicitly.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Final, Protocol, runtime_checkable
 from uuid import UUID
@@ -34,9 +35,13 @@ __all__ = [
     "BulkDurableStore",
     "CopyingStore",
     "DurableStore",
+    "FileLoad",
     "KeyLedReadingStore",
     "L3Backend",
     "L3Reader",
+    "LoadFile",
+    "LoadResult",
+    "LoadingStore",
     "OrderedDurableStore",
     "RowcountUnreadableError",
     "TruncatingStore",
@@ -287,6 +292,100 @@ class TruncatingStore(Protocol):
         :ptype table: str
         :return: nothing
         :rtype: None
+        """
+        ...
+
+
+@dataclass(frozen=True)
+class LoadFile:
+    """One file a table is loaded from: where to fetch it, and how many rows it holds.
+
+    The url is one the loader fetches as it is, with no credential of its own: a presigned GET of a
+    warehouse export's parquet file
+    (:func:`~threetears.datasources.export_read.presigned_export_files`). The row count is the
+    export's own count of the file, which the loader holds the file to.
+
+    :ivar url: the file's URL
+    :ivar rows: the rows the file holds
+    """
+
+    url: str
+    rows: int
+
+    def __post_init__(self) -> None:
+        """refuse a file with no URL or a row count that is not a count.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when ``url`` is empty or ``rows`` is not a non-negative int
+        """
+        if not self.url:
+            raise ValueError("a LoadFile needs a url")
+        if isinstance(self.rows, bool) or not isinstance(self.rows, int) or self.rows < 0:
+            raise ValueError(f"a LoadFile's rows must be a non-negative int, got {self.rows!r}")
+
+
+@dataclass(frozen=True)
+class FileLoad:
+    """How many rows one file of a load wrote.
+
+    :ivar index: the file's position in the files the load was given
+    :ivar rows_loaded: the rows written from it
+    """
+
+    index: int
+    rows_loaded: int
+
+
+@dataclass(frozen=True)
+class LoadResult:
+    """What a load from files wrote: every row, and each file's share.
+
+    :ivar row_count: the rows written, every file's together
+    :ivar files: each file's rows, in the order the files were given
+    """
+
+    row_count: int
+    files: tuple[FileLoad, ...]
+
+
+@runtime_checkable
+class LoadingStore(Protocol):
+    """A durable store that loads one table from files, outside any transaction of the caller's.
+
+    The seam :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.load_files`
+    loads through. The store fetches each file itself and copies its rows in, committing every
+    ``rows_per_transaction`` rows: on the L3 rail the broker does both (the ``l3.load_files``
+    request), so the rows never cross the bus. No method takes SQL.
+    """
+
+    async def load_files(
+        self,
+        table: str,
+        files: Sequence[LoadFile],
+        *,
+        columns: Sequence[str],
+        constants: Mapping[str, Any],
+        rows_per_transaction: int,
+        timeout_ms: int,
+    ) -> LoadResult:
+        """Insert every row of ``files`` into ``table``, insert-only; a key already held fails the load.
+
+        :param table: the table
+        :ptype table: str
+        :param files: the parquet files, each holding the columns ``columns`` names
+        :ptype files: Sequence[LoadFile]
+        :param columns: the table's columns each file supplies
+        :ptype columns: Sequence[str]
+        :param constants: column -> the value every row takes for it, for a column no file holds
+            (a part's own key, a load's stamp)
+        :ptype constants: Mapping[str, Any]
+        :param rows_per_transaction: the most rows one committed transaction writes; at least one
+        :ptype rows_per_transaction: int
+        :param timeout_ms: the most time one transaction may take, in milliseconds
+        :ptype timeout_ms: int
+        :return: the rows written, every file's and each file's
+        :rtype: LoadResult
         """
         ...
 

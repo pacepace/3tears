@@ -37,6 +37,12 @@ the relation held still, and the counts prove nothing was lost on the way.
 :class:`~datetime.datetime`), where the read rail carries JSON values; a caller coercing rows to its
 columns takes both.
 
+**Or handed to L3 as files** (:func:`presigned_export_files`): the export's files presigned, each
+with its own row count, for the L3 broker to stream and ``COPY`` itself
+(:meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.load_files`), so the rows
+never pass through the pod. The caller then owns what :func:`export_part` does around the read: the
+fingerprints that prove the part held still, and the delete after the load.
+
 Needs ``pyarrow`` (the ``export`` extra), imported only when a file is read.
 """
 
@@ -47,6 +53,7 @@ import json
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any, Protocol
 
+from threetears.core.backends.protocol import LoadFile
 from threetears.observe import get_logger
 
 from threetears.datasources.export import sql_string_literal
@@ -57,13 +64,20 @@ from threetears.datasources.query_client import (
 )
 
 __all__ = [
+    "DEFAULT_PRESIGN_SECONDS",
     "ExportNotDeletedError",
     "ExportStore",
     "IncompleteExportError",
+    "PresigningExportStore",
     "export_part",
     "export_select",
+    "presigned_export_files",
     "read_export",
 ]
+
+#: how long a presigned export file stays fetchable by default, in seconds: a load of millions of
+#: rows reaches its last file well inside it
+DEFAULT_PRESIGN_SECONDS = 3600
 
 log = get_logger(__name__)
 
@@ -95,6 +109,26 @@ class ExportStore(Protocol):
         :ptype key: str
         :return: its bytes, in chunks
         :rtype: AsyncIterator[bytes]
+        """
+        ...
+
+
+class PresigningExportStore(ExportStore, Protocol):
+    """an export store that also presigns: what handing an export to L3 as files needs.
+
+    :class:`threetears.object_store.S3ObjectStore` is one; a
+    :class:`~threetears.object_store.FilesystemObjectStore` presigns as a ``file://`` URL.
+    """
+
+    async def presigned_get_url(self, key: str, *, expires_in: int = 300) -> str:
+        """a GET URL for the object at ``key`` that needs no credential, valid ``expires_in`` seconds.
+
+        :param key: the object's key
+        :ptype key: str
+        :param expires_in: how long the URL is valid, in seconds
+        :ptype expires_in: int
+        :return: the URL
+        :rtype: str
         """
         ...
 
@@ -210,12 +244,7 @@ async def read_export(store: ExportStore, result: DatasourceExportResult, *, buc
     :raises IncompleteExportError: when the export is elsewhere, its manifest names a file outside it,
         or its files hold a different number of rows than the warehouse wrote
     """
-    if result.bucket != bucket:
-        raise IncompleteExportError(f"the export is in bucket {result.bucket!r}, not the {bucket!r} this reader reads")
-    if result.manifest_path != f"{result.object_prefix}manifest":
-        raise IncompleteExportError(
-            f"the export's manifest {result.manifest_path!r} is not its prefix {result.object_prefix!r}'s own"
-        )
+    _check_export_location(result, bucket=bucket)
     rows: list[dict[str, Any]] = []
     if result.row_count > 0:
         manifest = json.loads(await _read_object(store, result.manifest_path))
@@ -231,6 +260,120 @@ async def read_export(store: ExportStore, result: DatasourceExportResult, *, buc
             f"the export's files hold {len(rows)} rows, the warehouse says it wrote {result.row_count}"
         )
     return rows
+
+
+def _entry_rows(entry: Mapping[str, Any]) -> int:
+    """the rows a manifest entry counts for its one file.
+
+    :param entry: the entry
+    :ptype entry: Mapping[str, Any]
+    :return: its ``meta.record_count``
+    :rtype: int
+    :raises IncompleteExportError: when the entry counts no rows
+    """
+    meta = entry.get("meta") or {}
+    rows = meta.get("record_count")
+    if isinstance(rows, bool) or not isinstance(rows, int) or rows < 0:
+        raise IncompleteExportError(
+            f"the export's manifest counts no rows for {entry.get('url')!r}; a file handed to L3 needs its count"
+        )
+    return rows
+
+
+def _check_export_location(result: DatasourceExportResult, *, bucket: str) -> None:
+    """refuse an export outside the reader's bucket, or whose manifest is not its prefix's own.
+
+    :param result: the export
+    :ptype result: DatasourceExportResult
+    :param bucket: the bucket the caller reads
+    :ptype bucket: str
+    :return: nothing
+    :rtype: None
+    :raises IncompleteExportError: when either is so
+    """
+    if result.bucket != bucket:
+        raise IncompleteExportError(f"the export is in bucket {result.bucket!r}, not the {bucket!r} this reader reads")
+    if result.manifest_path != f"{result.object_prefix}manifest":
+        raise IncompleteExportError(
+            f"the export's manifest {result.manifest_path!r} is not its prefix {result.object_prefix!r}'s own"
+        )
+
+
+async def _presign_load_files(
+    store: PresigningExportStore,
+    keyed: Sequence[tuple[str, int]],
+    *,
+    expires_in: int,
+) -> list[LoadFile]:
+    """each ``(key, rows)`` as a :class:`LoadFile`, its key presigned.
+
+    :param store: the store over the export bucket
+    :ptype store: PresigningExportStore
+    :param keyed: each file's key and rows, in order
+    :ptype keyed: Sequence[tuple[str, int]]
+    :param expires_in: how long each URL is valid, in seconds
+    :ptype expires_in: int
+    :return: the files, in order
+    :rtype: list[LoadFile]
+    """
+    return [LoadFile(url=await store.presigned_get_url(key, expires_in=expires_in), rows=rows) for key, rows in keyed]
+
+
+def _manifest_file_rows(manifest: Mapping[str, Any], result: DatasourceExportResult) -> dict[str, int]:
+    """every file a manifest lists, by key, with the rows it counts for each.
+
+    :param manifest: the parsed manifest
+    :ptype manifest: Mapping[str, Any]
+    :param result: the export
+    :ptype result: DatasourceExportResult
+    :return: key -> rows, in the manifest's order
+    :rtype: dict[str, int]
+    :raises IncompleteExportError: when an entry counts no rows
+    """
+    where = f"s3://{result.bucket}/"
+    return {str(entry.get("url", "")).removeprefix(where): _entry_rows(entry) for entry in manifest.get("entries", [])}
+
+
+async def presigned_export_files(
+    store: PresigningExportStore,
+    result: DatasourceExportResult,
+    *,
+    bucket: str,
+    expires_in: int = DEFAULT_PRESIGN_SECONDS,
+) -> list[LoadFile]:
+    """an export's files, presigned, each with the rows the manifest counts for it: a load's files.
+
+    For :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.load_files`: the
+    broker fetches each URL and holds each file to its count. Checked as :func:`read_export` checks
+    an export before reading it -- in the caller's bucket, its manifest its prefix's own, every file
+    under its prefix -- and the manifest must count every file, the counts adding up to the rows the
+    warehouse wrote. An export of no rows has no files.
+
+    :param store: an object store over the export bucket that presigns
+    :ptype store: PresigningExportStore
+    :param result: the export
+    :ptype result: DatasourceExportResult
+    :param bucket: the bucket the caller reads; an export in any other is refused
+    :ptype bucket: str
+    :param expires_in: how long each URL is valid, in seconds
+    :ptype expires_in: int
+    :return: the files, in the manifest's order
+    :rtype: list[LoadFile]
+    :raises IncompleteExportError: when the export is elsewhere, its manifest names a file outside it
+        or counts no rows for one, or its counts differ from the warehouse's
+    """
+    _check_export_location(result, bucket=bucket)
+    if result.row_count == 0:
+        return []
+    manifest = json.loads(await _read_object(store, result.manifest_path))
+    keys, _ = _manifest_files(manifest, result)
+    rows = _manifest_file_rows(manifest, result)
+    counted = sum(rows[key] for key in keys)
+    if counted != result.row_count:
+        raise IncompleteExportError(
+            f"the export's manifest counts {counted} rows, the warehouse says it wrote {result.row_count}"
+        )
+    return await _presign_load_files(store, [(key, rows[key]) for key in keys], expires_in=expires_in)
 
 
 async def export_part(

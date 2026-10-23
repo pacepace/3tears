@@ -22,6 +22,7 @@ none changes nothing.
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import UTC, datetime, timedelta
 from collections.abc import Callable, Mapping, Sequence
@@ -37,7 +38,13 @@ from threetears.core.backends.broker_generation import (
     forget_reply_generations,
     record_reply_generations,
 )
-from threetears.core.backends.protocol import L3_RAIL_ROW_CAP, RowcountUnreadableError
+from threetears.core.backends.protocol import (
+    L3_RAIL_ROW_CAP,
+    FileLoad,
+    LoadFile,
+    LoadResult,
+    RowcountUnreadableError,
+)
 from threetears.core.backends.schema_sql import json_default, transport_param
 from threetears.core.exceptions import (
     DataLayerUnavailableError,
@@ -71,6 +78,7 @@ __all__ = [
     "GENERATION_UNAVAILABLE_ERROR_CODE",
     "LOCK_NOT_AVAILABLE_ERROR_CODE",
     "NatsProxyL3Backend",
+    "load_files_wait_seconds",
 ]
 
 _logger = get_logger(__name__)
@@ -540,6 +548,58 @@ def _detect_operation(query: str) -> str:
     return result
 
 
+def load_files_wait_seconds(files: Sequence[LoadFile], *, rows_per_transaction: int, timeout_ms: int) -> float:
+    """how long an ``l3.load_files`` request waits for its reply, in seconds.
+
+    the broker bounds each transaction of the load by ``timeout_ms`` and commits one every
+    ``rows_per_transaction`` rows of a file, so the load can take ``timeout_ms`` for each
+    transaction the files need: each file's rows over ``rows_per_transaction``, rounded up, and one
+    for a file with no rows, which is still fetched. two seconds' grace on top, as every other L3
+    request has.
+
+    :param files: the files
+    :ptype files: Sequence[LoadFile]
+    :param rows_per_transaction: rows per committed transaction; at least one
+    :ptype rows_per_transaction: int
+    :param timeout_ms: the bound on each transaction, in milliseconds
+    :ptype timeout_ms: int
+    :return: the wait
+    :rtype: float
+    """
+    transactions = sum(max(1, math.ceil(file.rows / rows_per_transaction)) for file in files)
+    return max(1, transactions) * timeout_ms / 1000 + 2
+
+
+def _load_result(response: Mapping[str, Any]) -> LoadResult:
+    """the :class:`LoadResult` an ``l3.load_files`` reply carries.
+
+    :param response: the successful reply
+    :ptype response: Mapping[str, Any]
+    :return: the rows written, every file's and each file's
+    :rtype: LoadResult
+    :raises DataLayerUnavailableError: when the reply's counts are not counts
+    """
+
+    def count(value: Any, what: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise DataLayerUnavailableError(f"L3 load_files answered {what} {value!r}, which is not a count")
+        return value
+
+    files = response.get("files", [])
+    if not isinstance(files, list) or not all(isinstance(entry, Mapping) for entry in files):
+        raise DataLayerUnavailableError(f"L3 load_files answered files {files!r}, which is not a list of files")
+    return LoadResult(
+        row_count=count(response.get("row_count"), "row_count"),
+        files=tuple(
+            FileLoad(
+                index=count(entry.get("index"), "a file index"),
+                rows_loaded=count(entry.get("rows_loaded"), "rows_loaded"),
+            )
+            for entry in files
+        ),
+    )
+
+
 class NatsProxyL3Backend:
     """L3 backend that routes queries through NATS-based broker.
 
@@ -876,6 +936,132 @@ class NatsProxyL3Backend:
             "timeout_ms": self.timeout_ms,
         }
 
+    async def load_files(
+        self,
+        table: str,
+        files: Sequence[LoadFile],
+        *,
+        columns: Sequence[str],
+        constants: Mapping[str, Any],
+        rows_per_transaction: int,
+        timeout_ms: int,
+        namespace: str | None = None,
+    ) -> LoadResult:
+        """load one of this principal's tables from files: the ``l3.load_files`` request.
+
+        outside any transaction. the broker fetches each file's URL itself (a presigned GET of the
+        pod's own warehouse export), reads its parquet, and copies the rows with ``COPY`` into ``table`` --
+        a declared table of the caller's own data space -- committing every
+        ``rows_per_transaction`` rows, so the rows never cross the bus. ``constants`` supply a
+        column no file holds; their values cross as a statement's parameters do
+        (:func:`~threetears.core.backends.schema_sql.transport_param`). insert-only: a key already
+        held fails the load, raised as the ``asyncpg.UniqueViolationError`` a direct pool raises.
+
+        the load runs for as long as its transactions take, far past one statement's bound, so the
+        request waits :func:`load_files_wait_seconds`: ``timeout_ms`` for each transaction the
+        files need (each file's rows over ``rows_per_transaction``, rounded up; a file with no
+        rows still one, for its fetch), plus two seconds' grace.
+
+        a reply naming the generation the broker advanced for the table is kept as a write's is
+        (:func:`~threetears.core.backends.broker_generation.record_reply_generations`). the reply's
+        count is held to the files' own: a load that wrote any other number of rows is raised.
+
+        :param table: the table
+        :ptype table: str
+        :param files: the files, in order
+        :ptype files: Sequence[LoadFile]
+        :param columns: the table's columns each file supplies
+        :ptype columns: Sequence[str]
+        :param constants: column -> the value every row takes for it
+        :ptype constants: Mapping[str, Any]
+        :param rows_per_transaction: the most rows one committed transaction writes
+        :ptype rows_per_transaction: int
+        :param timeout_ms: the broker's bound on each transaction, in milliseconds
+        :ptype timeout_ms: int
+        :param namespace: target namespace (default: this principal's own)
+        :ptype namespace: str | None
+        :return: the rows written, every file's and each file's
+        :rtype: LoadResult
+        :raises ValueError: when no column is named, or ``rows_per_transaction`` or ``timeout_ms`` is
+            under one
+        :raises asyncpg.UniqueViolationError: when a row names a key the table already holds
+        :raises DataLayerUnavailableError: if the broker refuses or does not answer, or answers a
+            count other than the files'
+        """
+        payload = self._load_files_payload(
+            table,
+            files,
+            columns=columns,
+            constants=constants,
+            rows_per_transaction=rows_per_transaction,
+            timeout_ms=timeout_ms,
+            namespace=namespace,
+        )
+        subject = Subjects.l3_load_files(namespace=self.ns).path
+        wait = load_files_wait_seconds(files, rows_per_transaction=rows_per_transaction, timeout_ms=timeout_ms)
+        response = await self.nats_request(subject, payload, timeout_s=wait)
+        if not response.get("success", False):
+            self.raise_for_failed_reply(response, "L3 load_files")
+        record_reply_generations(response, ends_write=True)
+        result = _load_result(response)
+        expected = sum(file.rows for file in files)
+        if result.row_count != expected:
+            raise DataLayerUnavailableError(
+                f"L3 load_files of {table!r} answered {result.row_count} rows; its files hold {expected}"
+            )
+        return result
+
+    def _load_files_payload(
+        self,
+        table: str,
+        files: Sequence[LoadFile],
+        *,
+        columns: Sequence[str],
+        constants: Mapping[str, Any],
+        rows_per_transaction: int,
+        timeout_ms: int,
+        namespace: str | None,
+    ) -> dict[str, Any]:
+        """the ``l3.load_files`` request.
+
+        :param table: the table
+        :ptype table: str
+        :param files: the files
+        :ptype files: Sequence[LoadFile]
+        :param columns: the columns each file supplies
+        :ptype columns: Sequence[str]
+        :param constants: column -> the value every row takes
+        :ptype constants: Mapping[str, Any]
+        :param rows_per_transaction: rows per committed transaction
+        :ptype rows_per_transaction: int
+        :param timeout_ms: the bound on each transaction
+        :ptype timeout_ms: int
+        :param namespace: target namespace
+        :ptype namespace: str | None
+        :return: the request payload
+        :rtype: dict[str, Any]
+        :raises ValueError: when no column is named, or ``rows_per_transaction`` or ``timeout_ms`` is
+            under one
+        """
+        if not columns:
+            raise ValueError(f"{table}: a load names the columns its files supply; none were named")
+        if rows_per_transaction < 1:
+            raise ValueError(f"{table}: rows_per_transaction must be at least 1, got {rows_per_transaction}")
+        if timeout_ms < 1:
+            raise ValueError(f"{table}: timeout_ms must be at least 1, got {timeout_ms}")
+        return {
+            "correlation_id": str(uuid7()),
+            "identity_token": self.forwarded_identity_token(),
+            "namespace": namespace or self.default_namespace,
+            "table": table,
+            "columns": list(columns),
+            "constants": {column: transport_param(value) for column, value in constants.items()},
+            "files": [{"url": file.url, "rows": file.rows} for file in files],
+            "format": "parquet",
+            "rows_per_transaction": rows_per_transaction,
+            "timeout_ms": timeout_ms,
+        }
+
     def forwarded_identity_token(self) -> str:
         """the CURRENT hub-minted identity token to forward on an L3 request.
 
@@ -1101,6 +1287,8 @@ class NatsProxyL3Backend:
         self,
         subject: str,
         payload: dict[str, Any],
+        *,
+        timeout_s: float | None = None,
     ) -> dict[str, Any]:
         """send raw NATS request and parse JSON response.
 
@@ -1118,13 +1306,17 @@ class NatsProxyL3Backend:
             as it arrives -- so a nested datetime is written in
             :func:`~threetears.core.serialization.json_datetime`'s one form, as every tier writes it
         :ptype payload: dict[str, Any]
+        :param timeout_s: how long to wait for the reply, in seconds, for a request whose work runs
+            past one statement's bound (:meth:`load_files`); the backend's ``timeout_ms`` and two
+            seconds' grace when None
+        :ptype timeout_s: float | None
         :return: parsed JSON response dict from broker
         :rtype: dict[str, Any]
         :raises DataLayerUnavailableError: if NATS request times out,
             the broker returns malformed JSON, or the client is closed
         """
         payload_bytes = self.encode_request(subject, payload)
-        nats_timeout = (self.timeout_ms / 1000) + 2
+        nats_timeout = timeout_s if timeout_s is not None else (self.timeout_ms / 1000) + 2
 
         try:
             reply = await self._nc.request_raw(

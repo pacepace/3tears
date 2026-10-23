@@ -556,9 +556,10 @@ ignore_missing_imports = true
 module = [
     "threetears.core.cache.sqlite",
     "threetears.core.cache.duckdb",
-    # pyarrow ships no py.typed marker; the scoped snapshot's chunk codec and the export reader
-    # (a warehouse export's parquet files) import it.
+    # pyarrow ships no py.typed marker; the scoped snapshot's chunk codec, the export reader
+    # (a warehouse export's parquet files) and the SQL store's direct load from files import it.
     "threetears.core.collections.scoped_snapshot",
+    "threetears.core.backends.sql",
     "threetears.datasources.export_read",
     "threetears.agent.tools.document",
     "threetears.agent.tools.builtin.calculator",
