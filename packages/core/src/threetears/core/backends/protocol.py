@@ -31,6 +31,7 @@ from uuid import UUID
 
 __all__ = [
     "L3_RAIL_ROW_CAP",
+    "LOAD_FILES_MAX_WAIT_SECONDS",
     "BulkDeletingStore",
     "BulkDurableStore",
     "CopyingStore",
@@ -73,6 +74,15 @@ class L3Reader(Protocol):
 #: asyncpg pool, which cuts nothing but does not say so -- is taken to be the rail, which costs a
 #: needless split at worst and never a row.
 L3_RAIL_ROW_CAP: Final = 1000
+
+#: the longest a pod waits for one ``l3.load_files`` reply, in seconds, however many rows its files
+#: hold. NATS request/reply is at most once: a broker that restarts mid-load loses the reply, and a
+#: wait that grew with the load (each transaction's bound times the transactions) held the caller
+#: for a day at the defaults. A load longer than this is sent as several requests, one per
+#: partition of the export. A load's URLs are presigned to outlive it
+#: (:data:`~threetears.datasources.export_read.DEFAULT_PRESIGN_SECONDS` is longer), so the broker
+#: never meets an expired file inside a wait the pod still keeps.
+LOAD_FILES_MAX_WAIT_SECONDS: Final = 3600
 
 
 @runtime_checkable
@@ -305,6 +315,10 @@ class LoadFile:
     (:func:`~threetears.datasources.export_read.presigned_export_files`). The row count is the
     export's own count of the file, which the loader holds the file to.
 
+    Which URLs a loader fetches is :class:`LoadingStore`'s contract: on the L3 rail only an
+    ``https`` URL of a file of the caller's own recorded export, and it must stay valid for the
+    load's whole wait (:data:`LOAD_FILES_MAX_WAIT_SECONDS`).
+
     :ivar url: the file's URL
     :ivar rows: the rows the file holds
     """
@@ -357,6 +371,22 @@ class LoadingStore(Protocol):
     loads through. The store fetches each file itself and copies its rows in, committing every
     ``rows_per_transaction`` rows: on the L3 rail the broker does both (the ``l3.load_files``
     request), so the rows never cross the bus. No method takes SQL.
+
+    **Which URLs are fetched.** The broker fetches with the hub's network position on a pod's word,
+    so a URL a pod chose freely would make the hub a proxy for any request (SSRF: an internal
+    service, the cloud metadata endpoint, another pod's export). The broker therefore fetches only
+    a presigned ``https`` URL (no user info, no port but 443, no fragment) on an S3 host of the
+    caller's datasource's export bucket, whose key lies under the prefix of an export the hub
+    recorded running for that caller; it follows no redirect, and refuses the whole request,
+    before fetching anything, when any URL is not one. The hub enforces it
+    (``aibots.hub.broker.export_files`` in bluelabsio/14-eng-ai-bot). A direct pool's load
+    (:meth:`~threetears.core.backends.sql.SqlL3Backend.load_files`) runs in a process that already
+    holds the database's credentials and admits more: ``https``, ``http`` on this machine (a local
+    MinIO) and ``file://`` (a :class:`~threetears.object_store.FilesystemObjectStore`'s presign).
+
+    **How long.** A pod waits for one load at most :data:`LOAD_FILES_MAX_WAIT_SECONDS`; a caller
+    loading more than that holds splits the load into several calls (one per partition), and
+    presigns each call's URLs just before it, valid for longer than the wait.
     """
 
     async def load_files(

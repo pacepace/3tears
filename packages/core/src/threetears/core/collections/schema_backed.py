@@ -32,6 +32,7 @@ CAS.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 from collections.abc import Callable, Mapping, Sequence
@@ -64,7 +65,7 @@ from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.flush import FlushStrategy
 from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUMNS, L2_REVISION_COLUMN
 from threetears.core.entities.base import BaseEntity
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 __all__ = [
     "BIGINT_TYPE",
@@ -2089,7 +2090,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         transactional and runs alone, so it takes no connection: the store runs it outside any
         transaction (:meth:`~threetears.core.backends.protocol.TruncatingStore.truncate`; on the L3
         rail the ``l3.truncate`` request, which the broker runs under the database's DDL lock). Load
-        the table again after with :meth:`save_rows` and ``copy=True``.
+        the table again after with :meth:`load_files` from the source's export files, or with
+        :meth:`save_rows` and ``copy=True`` for rows the caller holds.
 
         Then this process drops the table from its caches (:meth:`CollectionRegistry.drop_table
         <threetears.core.collections.registry.CollectionRegistry.drop_table>`): every row leaves L1,
@@ -2099,7 +2101,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         statement trigger and leaves no write mark (:mod:`~threetears.core.collections.write_marks`),
         so this advances the generation itself, as a commit does, with no row broadcast to cover
         the advance; a follower's catch-up pass finds an advance it heard no row of and drops the
-        table too. Safe to call again: an empty table truncates, and the caches drop, alike.
+        table too. Safe to call again: an empty table truncates, and the caches drop, alike. A
+        ``TRUNCATE`` that fails drops and advances too, since a reply lost after the broker ran it
+        leaves the table emptied; the store's failure still reaches the caller.
 
         :return: nothing
         :rtype: None
@@ -2118,7 +2122,12 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"{type(self).__name__}.truncate: {self.table_name} defers its L3 writes, and a buffered row "
                 f"would land after the table was emptied"
             )
-        await store.truncate(self.table_name)
+        try:
+            await store.truncate(self.table_name)
+        except (Exception, asyncio.CancelledError) as exc:
+            # a reply lost or timed out may still have emptied the table: drop as if it had
+            await self._drop_and_advance_after_failure("truncate failed", exc)
+            raise
         await self._drop_and_advance("truncated")
 
     async def load_files(
@@ -2145,6 +2154,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         Then, exactly as :meth:`truncate`: this process drops the table from its caches and advances
         the table's write generation once, with no row broadcast. ``COPY`` through the store leaves
         no row-level write mark either, so the advance is how a following pod learns of the load.
+        A load that fails drops and advances too, before its failure reaches the caller: the
+        transactions before the failure stay committed, and a reply lost or timed out can follow a
+        load the broker finished.
 
         :param files: the files, in order
         :ptype files: Sequence[LoadFile]
@@ -2177,18 +2189,50 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             )
         if not files:
             return 0
-        result = await store.load_files(
-            self.table_name,
-            files,
-            columns=columns,
-            constants=dict(constants or {}),
-            rows_per_transaction=self.LOAD_ROWS_PER_TRANSACTION
-            if rows_per_transaction is None
-            else rows_per_transaction,
-            timeout_ms=self.LOAD_TIMEOUT_MS if timeout_ms is None else timeout_ms,
-        )
+        try:
+            result = await store.load_files(
+                self.table_name,
+                files,
+                columns=columns,
+                constants=dict(constants or {}),
+                rows_per_transaction=self.LOAD_ROWS_PER_TRANSACTION
+                if rows_per_transaction is None
+                else rows_per_transaction,
+                timeout_ms=self.LOAD_TIMEOUT_MS if timeout_ms is None else timeout_ms,
+            )
+        except (Exception, asyncio.CancelledError) as exc:
+            # the load commits as it goes: the transactions before a failure stay committed, and a
+            # reply lost or timed out may follow a load the broker finished
+            await self._drop_and_advance_after_failure("load from files failed", exc)
+            raise
         await self._drop_and_advance("loaded from files", rows=result.row_count)
         return result.row_count
+
+    async def _drop_and_advance_after_failure(self, reason: str, failure: BaseException) -> None:
+        """drop and advance as :meth:`_drop_and_advance` does, after a store call that failed.
+
+        A store call that raised may still have changed L3 (a load commits as it goes; a lost reply
+        can follow a change the broker made), and a drop where nothing changed costs only a
+        read-through. The store's failure is the one the caller gets, so a failure here is recorded
+        rather than raised over it.
+
+        :param reason: what was being done to the table, for the drop and the log
+        :ptype reason: str
+        :param failure: the store call's failure, which the caller re-raises
+        :ptype failure: BaseException
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            await self._drop_and_advance(reason, failure=type(failure).__name__)
+        except Exception as exc:
+            contain(
+                exc,
+                log=log,
+                what="caches not dropped or generation not advanced after a failed table change",
+                extra={"table": self.table_name, "change": reason, "failure": type(failure).__name__},
+                level="error",
+            )
 
     async def _drop_and_advance(self, reason: str, **detail: Any) -> None:
         """drop the table from this process's caches, then advance its write generation once.

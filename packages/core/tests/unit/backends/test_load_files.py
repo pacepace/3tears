@@ -24,14 +24,20 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from threetears.nats import Subject
+from threetears.nats.errors import RequestError
 
 from threetears.core.backends.broker_generation import BrokerGenerationSource
 from threetears.core.backends.nats_proxy import (
     CONSTRAINT_VIOLATION_ERROR_CODE,
     NatsProxyL3Backend,
-    load_files_wait_seconds,
 )
-from threetears.core.backends.protocol import FileLoad, LoadFile, LoadingStore, LoadResult
+from threetears.core.backends.protocol import (
+    LOAD_FILES_MAX_WAIT_SECONDS,
+    FileLoad,
+    LoadFile,
+    LoadingStore,
+    LoadResult,
+)
 from threetears.core.backends.sql import SqlL3Backend, bound_request_connection
 from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
@@ -181,11 +187,53 @@ async def test_the_pod_waits_out_every_transaction_the_files_need() -> None:
         ([], 10, 1000, 3.0),
     ],
 )
-def test_the_wait_is_the_bound_on_a_transaction_times_the_transactions(
+async def test_the_wait_is_the_bound_on_a_transaction_times_the_transactions(
     rows: list[int], per_transaction: int, timeout_ms: int, wait: float
 ) -> None:
     files = [LoadFile(url=f"https://x/{index}", rows=count) for index, count in enumerate(rows)]
-    assert load_files_wait_seconds(files, rows_per_transaction=per_transaction, timeout_ms=timeout_ms) == wait
+    broker = _Broker(
+        _ok(row_count=sum(rows), files=[{"index": index, "rows_loaded": count} for index, count in enumerate(rows)])
+    )
+    await broker.proxy().load_files(
+        "lsf_rows",
+        files,
+        columns=["geo"],
+        constants={},
+        rows_per_transaction=per_transaction,
+        timeout_ms=timeout_ms,
+    )
+    assert broker.timeouts == [timedelta(seconds=wait)]
+
+
+async def test_the_wait_never_passes_the_cap_however_many_rows_the_files_hold() -> None:
+    # 15.5 million rows at the defaults is 310 transactions of 300 s: a day's wait for one reply
+    files = [LoadFile(url="https://x/0", rows=15_500_000)]
+    broker = _Broker(_ok(row_count=15_500_000, files=[{"index": 0, "rows_loaded": 15_500_000}]))
+    await broker.proxy().load_files(
+        "lsf_rows", files, columns=["geo"], constants={}, rows_per_transaction=50_000, timeout_ms=300_000
+    )
+    assert broker.timeouts == [timedelta(seconds=LOAD_FILES_MAX_WAIT_SECONDS)]
+
+
+async def test_a_load_logs_its_start_and_wait_and_a_reply_that_never_came(caplog: pytest.LogCaptureFixture) -> None:
+    nats = MagicMock()
+    nats.request_raw = AsyncMock(side_effect=RequestError("timed out"))
+    proxy = NatsProxyL3Backend(
+        nats_client=nats, namespace_prefix="test", agent_id="agent-123", identity_token=lambda: "token"
+    )
+    with caplog.at_level("INFO"), pytest.raises(DataLayerUnavailableError, match="NATS request failed"):
+        await _load(proxy)
+    [sent] = [record for record in caplog.records if record.getMessage().startswith("l3.load_files sent")]
+    assert sent.extra_data == {  # type: ignore[attr-defined]
+        "table": "lsf_rows",
+        "namespace": "agents.agent-123",
+        "files": 2,
+        "rows": 120_000,
+        "wait_s": 4 * 60 + 2,
+    }
+    [lost] = [record for record in caplog.records if "got no reply" in record.getMessage()]
+    assert lost.levelname == "ERROR"
+    assert "may still be loading" in lost.getMessage()
 
 
 async def test_any_other_request_still_waits_the_backend_s_own_bound() -> None:
@@ -253,7 +301,9 @@ async def test_a_load_that_cannot_run_is_refused_before_anything_is_sent(kwargs:
 
 async def test_a_sql_store_over_the_rail_loads_through_the_broker() -> None:
     broker = _Broker()
-    result = await SqlL3Backend(broker.proxy()).load_files(
+    store = SqlL3Backend(broker.proxy())
+    store.register_schema("lsf_rows", SCHEMA)
+    result = await store.load_files(
         "lsf_rows",
         _FILES,
         columns=["geo", "votes"],
@@ -263,6 +313,44 @@ async def test_a_sql_store_over_the_rail_loads_through_the_broker() -> None:
     )
     assert result.row_count == 120_000
     assert [subject for subject, _ in broker.requests] == ["test.l3.load_files"]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"columns": ["geo", "nowhere"]}, "has no column 'nowhere'"),
+        ({"columns": ["geo", "race"]}, "named twice"),
+        ({"columns": ["votes"]}, "every key column; 'geo'"),
+        ({"columns": []}, "none were named"),
+        ({"rows_per_transaction": 0}, "rows_per_transaction must be at least 1"),
+        ({"timeout_ms": 0}, "timeout_ms must be at least 1"),
+    ],
+)
+async def test_a_sql_store_over_the_rail_refuses_what_a_direct_pool_refuses_before_anything_is_sent(
+    kwargs: dict[str, Any], match: str
+) -> None:
+    broker = _Broker()
+    store = SqlL3Backend(broker.proxy())
+    store.register_schema("lsf_rows", SCHEMA)
+    arguments: dict[str, Any] = {
+        "columns": ["geo", "votes"],
+        "constants": {"race": "r1"},
+        "rows_per_transaction": 50_000,
+        "timeout_ms": 60_000,
+        **kwargs,
+    }
+    with pytest.raises(ValueError, match=match):
+        await store.load_files("lsf_rows", _FILES, **arguments)
+    assert broker.requests == []
+
+
+async def test_a_sql_store_over_the_rail_needs_the_table_s_schema() -> None:
+    broker = _Broker()
+    with pytest.raises(ValueError, match="schema of 'lsf_rows' registered"):
+        await SqlL3Backend(broker.proxy()).load_files(
+            "lsf_rows", _FILES, columns=["geo"], constants={"race": "r1"}, rows_per_transaction=1, timeout_ms=1
+        )
+    assert broker.requests == []
 
 
 def test_every_sql_backend_and_the_proxy_can_load_files() -> None:
@@ -425,3 +513,25 @@ async def test_a_load_is_refused_inside_a_request_s_bound_transaction() -> None:
 async def test_a_url_of_another_scheme_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="not 'ftp'"):
         await _direct(_store(_Pool()), [LoadFile(url="ftp://host/a.parquet", rows=1)])
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://169.254.169.254/latest/meta-data/a.parquet",
+        "http://internal.service.cluster.local/a.parquet",
+        "http://bucket.s3.amazonaws.com/a.parquet",
+    ],
+)
+async def test_plain_http_off_this_machine_is_refused_before_any_file_is_fetched(tmp_path: Path, url: str) -> None:
+    pool = _Pool()
+    good = _parquet_file(tmp_path / "a.parquet", _geo_rows("g1"))
+    with pytest.raises(ValueError, match="plain http only from this machine"):
+        await _direct(_store(pool), [good, LoadFile(url=url, rows=1)])
+    assert pool.committed == []
+
+
+async def test_a_file_url_a_filesystem_store_presigns_is_loaded(tmp_path: Path) -> None:
+    pool = _Pool()
+    result = await _direct(_store(pool), [_parquet_file(tmp_path / "a.parquet", _geo_rows("g1"))])
+    assert result.row_count == 1

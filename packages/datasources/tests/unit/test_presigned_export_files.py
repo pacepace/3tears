@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from threetears.core.backends.protocol import LoadFile
+from threetears.core.backends.protocol import LOAD_FILES_MAX_WAIT_SECONDS, LoadFile
 from threetears.datasources.export_read import (
     DEFAULT_PRESIGN_SECONDS,
     IncompleteExportError,
@@ -64,6 +64,11 @@ def _result(row_count: int, **fields: Any) -> DatasourceExportResult:
 
 def _url(key: str, expires_in: int = DEFAULT_PRESIGN_SECONDS) -> str:
     return f"https://{_BUCKET}.s3.amazonaws.com/{key}?X-Amz-Expires={expires_in}"
+
+
+def test_a_presigned_file_outlives_the_longest_wait_for_its_load() -> None:
+    # the broker reaches a file anywhere inside the pod's wait; a URL that expired first fails the load
+    assert DEFAULT_PRESIGN_SECONDS > LOAD_FILES_MAX_WAIT_SECONDS
 
 
 class TestPresignedExportFiles:

@@ -33,7 +33,7 @@ from threetears.core.collections.schema_backed import (
     collection_for_schema,
 )
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.exceptions import GenerationUnavailableError
+from threetears.core.exceptions import DataLayerUnavailableError, GenerationUnavailableError
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.nats import set_default_namespace
 
@@ -76,6 +76,8 @@ class _TableStore(DurableStore):
         self.fetches = 0
         #: the rows each file holds, by url, which the load writes
         self.contents: dict[str, list[dict[str, Any]]] = {}
+        #: the index of a file that fails the load, the files before it staying loaded
+        self.failing_file: int | None = None
 
     async def fetch_one(self, table: str, pk: Any, *, conn: Any = None) -> dict[str, Any] | None:
         self.fetches += 1
@@ -114,6 +116,8 @@ class _TableStore(DurableStore):
         )
         loaded = []
         for index, file in enumerate(files):
+            if index == self.failing_file:
+                raise DataLayerUnavailableError(f"file {index} failed; the files before it stay committed")
             for row in self.contents.get(file.url, []):
                 self.rows[str(row["id"])] = {**row, **constants}
             loaded.append(FileLoad(index=index, rows_loaded=file.rows))
@@ -348,3 +352,37 @@ async def test_a_collection_deferring_its_l3_writes_is_refused_before_anything_i
     with pytest.raises(ValueError, match="defers its L3 writes"):
         await _load(pod)
     assert store.loads == []
+
+
+async def test_a_load_failing_part_way_drops_and_advances_then_raises_its_failure(
+    bus: FakeNatsClient, store: _TableStore, source: _CountingSource
+) -> None:
+    writer = _Pod(bus, store, source=source)
+    follower = _Pod(bus, store, source=source)
+    await follower.follow(source)
+    await _save(writer, "a", 1)
+    follower.registry.settle_generation("lsf_results", await source.current("lsf_results"))
+    assert (await follower.results.ensure("a")) is not None
+    store.failing_file = 1
+    with pytest.raises(DataLayerUnavailableError, match="file 1 failed"):
+        await _load(writer)
+    # the first file's rows are committed: neither pod may keep answering the old row
+    assert store.rows["a"]["votes"] == 10
+    assert not writer.results.exists_in_cache_sync("a")
+    assert source.counts["lsf_results"] == 2  # the save's advance, then the failed load's
+    verdict = follower.registry.settle_generation("lsf_results", await source.current("lsf_results"))
+    assert verdict is GenerationVerdict.MISSED
+    row = await follower.results.ensure("a")
+    assert row is not None and row["votes"] == 10
+
+
+async def test_a_failed_load_s_own_failure_wins_over_a_generation_that_cannot_advance(
+    bus: FakeNatsClient, store: _TableStore, source: _CountingSource
+) -> None:
+    pod = _Pod(bus, store, source=source)
+    await _save(pod, "a", 1)
+    store.failing_file = 1
+    source.failing = True
+    with pytest.raises(DataLayerUnavailableError, match="file 1 failed"):
+        await _load(pod)
+    assert not pod.results.exists_in_cache_sync("a")

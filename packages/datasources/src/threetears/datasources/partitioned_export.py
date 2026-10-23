@@ -55,8 +55,11 @@ from threetears.datasources.export_read import (
     IncompleteExportError,
     PresigningExportStore,
     _check_export_location,
+    _counted_total,
     _delete_after_load,
-    _manifest_file_rows,
+    _load_rows,
+    _manifest_entries,
+    _ManifestFile,
     _parquet_rows,
     _presign_load_files,
     _read_object,
@@ -91,8 +94,8 @@ _DEFAULT_FILE_CONCURRENCY: Final = 8
 
 def _partition_files(
     manifest: Mapping[str, Any], result: DatasourceExportResult, partition_by: str
-) -> dict[str | None, tuple[list[str], int | None]]:
-    """each part's files, as the manifest lists them, and the rows it counts for each part.
+) -> dict[str | None, list[_ManifestFile]]:
+    """each part's files, as the manifest lists them.
 
     :param manifest: the parsed manifest
     :ptype manifest: Mapping[str, Any]
@@ -100,38 +103,21 @@ def _partition_files(
     :ptype result: DatasourceExportResult
     :param partition_by: the column the export is divided by
     :ptype partition_by: str
-    :return: part value (``None`` for NULL) -> its keys, and the rows counted (None when the
-        manifest does not count every file)
-    :rtype: dict[str | None, tuple[list[str], int | None]]
+    :return: part value (``None`` for NULL) -> its files, in the manifest's order
+    :rtype: dict[str | None, list[_ManifestFile]]
     :raises IncompleteExportError: when an entry is not a file of one part's directory under the export
     """
     where = f"s3://{result.bucket}/{result.object_prefix}"
-    parts: dict[str | None, tuple[list[str], int | None]] = {}
-    for entry in manifest.get("entries", []):
-        url = str(entry.get("url", ""))
-        relative = url.removeprefix(where)
-        directory, _, file_name = relative.partition("/")
+    parts: dict[str | None, list[_ManifestFile]] = {}
+    for file in _manifest_entries(manifest, result, of="a file of a part of"):
+        directory, _, file_name = file.relative.partition("/")
         column, equals, encoded = directory.partition("=")
-        if (
-            relative == url
-            or not file_name
-            or "/" in file_name
-            or file_name in (".", "..")
-            or column != partition_by
-            or not equals
-        ):
+        if not file_name or "/" in file_name or file_name in (".", "..") or column != partition_by or not equals:
             raise IncompleteExportError(
-                f"the export's manifest names {url!r}, which is not a file of a part of {where}"
+                f"the export's manifest names {file.url!r}, which is not a file of a part of {where}"
             )
         value = None if encoded == HIVE_NULL_PARTITION else unquote(encoded)
-        keys, counted = parts.get(value, ([], 0))
-        keys.append(f"{result.object_prefix}{relative}")
-        meta = entry.get("meta") or {}
-        if counted is not None and isinstance(meta.get("record_count"), int):
-            counted += meta["record_count"]
-        else:
-            counted = None
-        parts[value] = (keys, counted)
+        parts.setdefault(value, []).append(file)
     return parts
 
 
@@ -249,7 +235,7 @@ async def export_partitions(
         asked = sorted(set(before) | set(parts or ()), key=lambda value: (value is not None, value or ""))
 
         def start(value: str | None) -> asyncio.Task[list[dict[str, Any]]]:
-            keys = files.get(value, ([], 0))[0]
+            keys = [file.key for file in files.get(value, [])]
             return asyncio.ensure_future(_read_part(store, keys, file_concurrency))
 
         # the next part is read while the caller works on this one
@@ -313,11 +299,11 @@ async def _proven(
     destination: str,
     relation: str,
     partition_by: str,
-) -> dict[str | None, tuple[list[str], int | None]]:
+) -> dict[str | None, list[_ManifestFile]]:
     """every proof an export must pass before its first part is handed back; its parts' files.
 
-    :return: part -> its files and the rows the manifest counts for it
-    :rtype: dict[str | None, tuple[list[str], int | None]]
+    :return: part -> its files
+    :rtype: dict[str | None, list[_ManifestFile]]
     :raises IncompleteExportError: naming the proof that failed
     """
     if not result.object_prefix.endswith(f"/{destination}/"):
@@ -335,17 +321,15 @@ async def _proven(
         raise IncompleteExportError(
             f"{relation}: the warehouse exported {result.row_count} rows, the parts hold {expected}"
         )
-    if result.bucket != bucket or result.manifest_path != f"{result.object_prefix}manifest":
-        raise IncompleteExportError(
-            f"the export is at s3://{result.bucket}/{result.manifest_path}, not this reader's {bucket!r} under its prefix"
-        )
-    files: dict[str | None, tuple[list[str], int | None]] = {}
+    _check_export_location(result, bucket=bucket)
+    files: dict[str | None, list[_ManifestFile]] = {}
     if result.row_count > 0:
         files = _partition_files(json.loads(await _read_object(store, result.manifest_path)), result, partition_by)
     stray = [value for value in files if value not in before]
     if stray:
         raise IncompleteExportError(f"{relation}: the export holds parts no fingerprint counted: {stray[:10]}")
-    for value, (_, counted) in files.items():
+    for value, part_files in files.items():
+        counted = _counted_total(part_files)
         if counted is not None and counted != before[value].row_count:
             raise IncompleteExportError(
                 f"{relation} {partition_by}={value}: the manifest counts {counted} rows, the part holds "
@@ -394,17 +378,16 @@ async def presigned_partition_files(
     if result.row_count == 0:
         return {}
     manifest = json.loads(await _read_object(store, result.manifest_path))
-    parts = _partition_files(manifest, result, partition_by)
-    rows = _manifest_file_rows(manifest, result)
-    counted = sum(rows.values())
+    keyed = {
+        value: [(file.key, _load_rows(file)) for file in files]
+        for value, files in _partition_files(manifest, result, partition_by).items()
+    }
+    counted = sum(rows for files in keyed.values() for _, rows in files)
     if counted != result.row_count:
         raise IncompleteExportError(
             f"the export's manifest counts {counted} rows, the warehouse says it wrote {result.row_count}"
         )
-    return {
-        value: await _presign_load_files(store, [(key, rows[key]) for key in keys], expires_in=expires_in)
-        for value, (keys, _) in parts.items()
-    }
+    return {value: await _presign_load_files(store, files, expires_in=expires_in) for value, files in keyed.items()}
 
 
 @dataclass(frozen=True)
@@ -437,25 +420,6 @@ class CountedPartitionedExport:
     rows: Mapping[str, int]
 
 
-def _file_counts(manifest: Mapping[str, Any], result: DatasourceExportResult) -> dict[str, int | None]:
-    """every file a manifest lists, by key, with the rows it counts for it (None where it counts none).
-
-    :param manifest: the parsed manifest
-    :ptype manifest: Mapping[str, Any]
-    :param result: the export
-    :ptype result: DatasourceExportResult
-    :return: key -> rows
-    :rtype: dict[str, int | None]
-    """
-    where = f"s3://{result.bucket}/"
-    counts: dict[str, int | None] = {}
-    for entry in manifest.get("entries", []):
-        rows = (entry.get("meta") or {}).get("record_count")
-        counted = rows if isinstance(rows, int) and not isinstance(rows, bool) and rows >= 0 else None
-        counts[str(entry.get("url", "")).removeprefix(where)] = counted
-    return counts
-
-
 async def _counted_files(
     store: ExportStore,
     result: DatasourceExportResult,
@@ -475,18 +439,15 @@ async def _counted_files(
         raise IncompleteExportError(
             f"the hub answered an export at {result.object_prefix!r}, not the destination {destination!r} asked for"
         )
-    if result.bucket != bucket or result.manifest_path != f"{result.object_prefix}manifest":
-        raise IncompleteExportError(
-            f"the export is at s3://{result.bucket}/{result.manifest_path}, not this reader's {bucket!r} under its prefix"
-        )
+    _check_export_location(result, bucket=bucket)
     counted = sum(counts.values())
     if result.row_count != counted:
         raise IncompleteExportError(f"the warehouse exported {result.row_count} rows, the counts add up to {counted}")
     files: dict[str, tuple[CountedFile, ...]] = {}
     if result.row_count > 0:
         manifest = json.loads(await _read_object(store, result.manifest_path))
-        per_file = _file_counts(manifest, result)
-        for value, (keys, rows) in _partition_files(manifest, result, partition_by).items():
+        for value, part_files in _partition_files(manifest, result, partition_by).items():
+            rows = _counted_total(part_files)
             # a warehouse char column's values come back padded; the caller's counts are not
             part = None if value is None else value.strip()
             if part is None or part not in counts:
@@ -495,7 +456,7 @@ async def _counted_files(
                 raise IncompleteExportError(
                     f"{partition_by}={part}: the manifest counts {rows} rows, the caller {counts[part]}"
                 )
-            files[part] = (*files.get(part, ()), *(CountedFile(path=key, rows=per_file.get(key)) for key in keys))
+            files[part] = (*files.get(part, ()), *(CountedFile(path=file.key, rows=file.rows) for file in part_files))
     missing = sorted(part for part in set(counts) - set(files))
     if missing:
         raise IncompleteExportError(f"the export holds no file of {partition_by} {missing[:10]}")

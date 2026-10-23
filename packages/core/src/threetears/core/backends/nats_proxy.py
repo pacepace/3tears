@@ -40,6 +40,7 @@ from threetears.core.backends.broker_generation import (
 )
 from threetears.core.backends.protocol import (
     L3_RAIL_ROW_CAP,
+    LOAD_FILES_MAX_WAIT_SECONDS,
     FileLoad,
     LoadFile,
     LoadResult,
@@ -78,7 +79,6 @@ __all__ = [
     "GENERATION_UNAVAILABLE_ERROR_CODE",
     "LOCK_NOT_AVAILABLE_ERROR_CODE",
     "NatsProxyL3Backend",
-    "load_files_wait_seconds",
 ]
 
 _logger = get_logger(__name__)
@@ -548,14 +548,16 @@ def _detect_operation(query: str) -> str:
     return result
 
 
-def load_files_wait_seconds(files: Sequence[LoadFile], *, rows_per_transaction: int, timeout_ms: int) -> float:
+def _load_files_wait_seconds(files: Sequence[LoadFile], *, rows_per_transaction: int, timeout_ms: int) -> float:
     """how long an ``l3.load_files`` request waits for its reply, in seconds.
 
     the broker bounds each transaction of the load by ``timeout_ms`` and commits one every
     ``rows_per_transaction`` rows of a file, so the load can take ``timeout_ms`` for each
     transaction the files need: each file's rows over ``rows_per_transaction``, rounded up, and one
     for a file with no rows, which is still fetched. two seconds' grace on top, as every other L3
-    request has.
+    request has; and never past :data:`~threetears.core.backends.protocol.LOAD_FILES_MAX_WAIT_SECONDS`,
+    since a reply lost to a broker restart would otherwise hold the caller as long as the load's
+    worst case.
 
     :param files: the files
     :ptype files: Sequence[LoadFile]
@@ -567,7 +569,7 @@ def load_files_wait_seconds(files: Sequence[LoadFile], *, rows_per_transaction: 
     :rtype: float
     """
     transactions = sum(max(1, math.ceil(file.rows / rows_per_transaction)) for file in files)
-    return max(1, transactions) * timeout_ms / 1000 + 2
+    return min(max(1, transactions) * timeout_ms / 1000 + 2, float(LOAD_FILES_MAX_WAIT_SECONDS))
 
 
 def _load_result(response: Mapping[str, Any]) -> LoadResult:
@@ -958,9 +960,16 @@ class NatsProxyL3Backend:
         held fails the load, raised as the ``asyncpg.UniqueViolationError`` a direct pool raises.
 
         the load runs for as long as its transactions take, far past one statement's bound, so the
-        request waits :func:`load_files_wait_seconds`: ``timeout_ms`` for each transaction the
-        files need (each file's rows over ``rows_per_transaction``, rounded up; a file with no
-        rows still one, for its fetch), plus two seconds' grace.
+        request waits ``timeout_ms`` for each transaction the files need (each file's rows over
+        ``rows_per_transaction``, rounded up; a file with no rows still one, for its fetch), plus
+        two seconds' grace, and never past
+        :data:`~threetears.core.backends.protocol.LOAD_FILES_MAX_WAIT_SECONDS`: a caller with more
+        to load sends several requests. the request's start is logged with its wait, and a reply
+        that never comes is logged as a load the broker may have lost or may still be running.
+
+        the broker fetches only a presigned ``https`` URL of a file of the caller's own recorded
+        export, and refuses the request otherwise
+        (:class:`~threetears.core.backends.protocol.LoadingStore` states the rule in full).
 
         a reply naming the generation the broker advanced for the table is kept as a write's is
         (:func:`~threetears.core.backends.broker_generation.record_reply_generations`). the reply's
@@ -998,8 +1007,24 @@ class NatsProxyL3Backend:
             namespace=namespace,
         )
         subject = Subjects.l3_load_files(namespace=self.ns).path
-        wait = load_files_wait_seconds(files, rows_per_transaction=rows_per_transaction, timeout_ms=timeout_ms)
-        response = await self.nats_request(subject, payload, timeout_s=wait)
+        wait = _load_files_wait_seconds(files, rows_per_transaction=rows_per_transaction, timeout_ms=timeout_ms)
+        detail = {
+            "table": table,
+            "namespace": payload["namespace"],
+            "files": len(files),
+            "rows": sum(file.rows for file in files),
+            "wait_s": wait,
+        }
+        _logger.info("l3.load_files sent; waiting for the broker's reply", extra={"extra_data": detail})
+        try:
+            response = await self.nats_request(subject, payload, timeout_s=wait)
+        except DataLayerUnavailableError:
+            _logger.error(
+                "l3.load_files got no reply within its wait: the broker may have lost it (a restart) or may "
+                "still be loading; rows it committed stay committed",
+                extra={"extra_data": detail},
+            )
+            raise
         if not response.get("success", False):
             self.raise_for_failed_reply(response, "L3 load_files")
         record_reply_generations(response, ends_write=True)

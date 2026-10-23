@@ -31,7 +31,7 @@ from threetears.core.collections.schema_backed import (
     collection_for_schema,
 )
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.exceptions import GenerationUnavailableError
+from threetears.core.exceptions import DataLayerUnavailableError, GenerationUnavailableError
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.nats import set_default_namespace
 
@@ -69,6 +69,8 @@ class _TableStore(DurableStore):
         self.rows: dict[str, dict[str, Any]] = {}
         self.truncated: list[str] = []
         self.fetches = 0
+        #: raised after the table is emptied, as a reply lost after the broker ran the TRUNCATE is
+        self.lost_reply: Exception | None = None
 
     async def fetch_one(self, table: str, pk: Any, *, conn: Any = None) -> dict[str, Any] | None:
         self.fetches += 1
@@ -88,6 +90,8 @@ class _TableStore(DurableStore):
     async def truncate(self, table: str) -> None:
         self.truncated.append(table)
         self.rows.clear()
+        if self.lost_reply is not None:
+            raise self.lost_reply
 
 
 class _UntruncatableStore(_TableStore):
@@ -309,3 +313,34 @@ async def test_a_collection_deferring_its_l3_writes_is_refused_before_anything_i
         await pod.results.truncate()
     assert store.truncated == []
     assert store.rows
+
+
+async def test_a_truncate_whose_reply_is_lost_still_drops_and_advances_and_raises_its_failure(
+    bus: FakeNatsClient, store: _TableStore, source: _CountingSource
+) -> None:
+    writer = _Pod(bus, store, source=source)
+    follower = _Pod(bus, store, source=source)
+    await follower.follow(source)
+    await _save(writer, "a", 1)
+    follower.registry.settle_generation("lsf_results", await source.current("lsf_results"))
+    assert (await follower.results.ensure("a")) is not None
+    store.lost_reply = DataLayerUnavailableError("l3.truncate: no reply")
+    with pytest.raises(DataLayerUnavailableError, match="no reply"):
+        await writer.results.truncate()
+    assert not writer.results.exists_in_cache_sync("a")
+    assert source.counts["lsf_results"] == 2  # the save's advance, then the failed truncate's
+    verdict = follower.registry.settle_generation("lsf_results", await source.current("lsf_results"))
+    assert verdict is GenerationVerdict.MISSED
+    assert not follower.results.exists_in_cache_sync("a")
+
+
+async def test_a_failed_truncate_s_own_failure_wins_over_a_generation_that_cannot_advance(
+    bus: FakeNatsClient, store: _TableStore, source: _CountingSource
+) -> None:
+    pod = _Pod(bus, store, source=source)
+    await _save(pod, "a", 1)
+    store.lost_reply = DataLayerUnavailableError("l3.truncate: no reply")
+    source.failing = True
+    with pytest.raises(DataLayerUnavailableError, match="no reply"):
+        await pod.results.truncate()
+    assert not pod.results.exists_in_cache_sync("a")

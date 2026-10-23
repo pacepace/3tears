@@ -195,22 +195,54 @@ def _plain_identifier(name: str) -> str:
     return name
 
 
-async def _fetch_load_file(url: str) -> bytes:
-    """the bytes of one file a load names: a presigned ``https`` GET, or a ``file://`` URL.
+#: the hosts a direct load may fetch plain ``http`` from: a bucket served on this machine (a local
+#: MinIO, a test's server), never one across a network
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
-    A filesystem object store presigns as a ``file://`` URL
-    (:class:`~threetears.object_store.FilesystemObjectStore`), so a local run loads from one as the
-    broker loads from S3.
+
+def _check_load_url(url: str) -> None:
+    """refuse a URL a direct load would not fetch.
+
+    A direct load runs in a process that already holds the database's own credentials, so it gains
+    no reach by fetching; still it fetches only what its callers legitimately hand it: a presigned
+    ``https`` GET (S3), a presigned ``http`` GET of a bucket on this machine (a local MinIO, whose
+    presign is ``http://localhost:9000/...``), or a ``file://`` URL, which is how a
+    :class:`~threetears.object_store.FilesystemObjectStore` presigns. The broker, which fetches with
+    the hub's network position for a pod, admits far less: an ``https`` URL of the caller's own
+    recorded export only (``l3.load_files``, :meth:`NatsProxyL3Backend.load_files
+    <threetears.core.backends.nats_proxy.NatsProxyL3Backend.load_files>`).
+
+    :param url: the file's URL
+    :ptype url: str
+    :return: nothing
+    :rtype: None
+    :raises ValueError: for any other scheme, or plain ``http`` to a host not on this machine
+    """
+    from urllib.parse import urlsplit  # noqa: PLC0415 - only a direct load fetches
+
+    parts = urlsplit(url)
+    if parts.scheme in ("https", "file"):
+        return
+    if parts.scheme == "http":
+        if (parts.hostname or "").lower() not in _LOOPBACK_HOSTS:
+            raise ValueError(f"a load fetches plain http only from this machine, not from {parts.hostname!r}")
+        return
+    raise ValueError(f"a load fetches https, local http and file URLs, not {parts.scheme!r}")
+
+
+async def _fetch_load_file(url: str) -> bytes:
+    """the bytes of one file a load names, once :func:`_check_load_url` admitted its URL.
 
     :param url: the file's URL
     :ptype url: str
     :return: its bytes
     :rtype: bytes
-    :raises ValueError: for any other scheme
+    :raises ValueError: for a URL :func:`_check_load_url` refuses
     """
     from urllib.parse import urlparse  # noqa: PLC0415 - only a direct load fetches
     from urllib.request import url2pathname  # noqa: PLC0415 - only a direct load fetches
 
+    _check_load_url(url)
     parsed = urlparse(url)
     if parsed.scheme == "file":
         path = url2pathname(parsed.path)
@@ -220,8 +252,6 @@ async def _fetch_load_file(url: str) -> bytes:
                 return handle.read()
 
         return await asyncio.to_thread(read)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError(f"a load fetches http(s) and file URLs, not {parsed.scheme!r}")
     import httpx  # noqa: PLC0415 - the http extra, needed only once a file is fetched
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0), follow_redirects=False) as client:
@@ -833,9 +863,13 @@ class SqlL3Backend:
     ) -> LoadResult:
         """Insert every row of parquet ``files`` into ``table`` with ``COPY``, committing as it goes.
 
-        On the rail the broker does it (``NatsProxyL3Backend.load_files``, the ``l3.load_files``
-        request), fetching each file itself. On a direct pool -- a local run, a test -- it runs here
-        the way the broker runs it: each file fetched (:func:`_fetch_load_file`) and read (pyarrow,
+        The load's columns are checked against the table's registered schema first, on either path,
+        so a caller's local run refuses what the rail would. On the rail the broker then does it
+        (``NatsProxyL3Backend.load_files``, the ``l3.load_files`` request), fetching each file itself
+        and admitting only an ``https`` URL of the caller's own export. On a direct pool -- a local
+        run, a test -- it runs here the way the broker runs it: each URL admitted
+        (:func:`_check_load_url`: ``https``, ``http`` on this machine, or ``file``), each file
+        fetched (:func:`_fetch_load_file`) and read (pyarrow,
         off the loop), held to the row count its :class:`LoadFile` declares, its rows given the
         ``constants`` and ordered by primary key, and copied in transactions of
         ``rows_per_transaction`` rows (``copy_records_to_table``), each bounded by ``timeout_ms``.
@@ -866,15 +900,6 @@ class SqlL3Backend:
         """
         if _request_l3_conn.get() is not None:
             raise ValueError(f"a load of {table!r} commits its own transactions; a request's bound connection is open")
-        if isinstance(self._pool, LoadingStore):
-            return await self._pool.load_files(
-                table,
-                files,
-                columns=columns,
-                constants=constants,
-                rows_per_transaction=rows_per_transaction,
-                timeout_ms=timeout_ms,
-            )
         schema = self._schemas.get(table)
         if schema is None:
             raise ValueError(f"load_files needs the schema of {table!r} registered")
@@ -896,11 +921,25 @@ class SqlL3Backend:
             raise ValueError(
                 f"{table}: a load must supply every key column; {unkeyed[0]!r} is in no file and no constant"
             )
+        if isinstance(self._pool, LoadingStore):
+            # the checks above are the schema's, so both paths refuse alike; what follows is this
+            # path's own: the broker copies parquet with its own codecs (so a column a binary copy
+            # of bound values cannot write is for it to judge) and admits a URL by its own rule
+            return await self._pool.load_files(
+                table,
+                files,
+                columns=columns,
+                constants=constants,
+                rows_per_transaction=rows_per_transaction,
+                timeout_ms=timeout_ms,
+            )
         unwritable = [declared[name] for name in names if not schema_sql.copy_writes(declared[name])]
         if unwritable:
             raise ValueError(
                 f"{table}: a copy cannot write the {unwritable[0].column_type} column {unwritable[0].name!r}"
             )
+        for file in files:
+            _check_load_url(file.url)
         fixed = [schema_sql.normalize_write_value(declared[name], value) for name, value in constants.items()]
         key_positions = [names.index(name) for name in schema.pk_columns]
         loaded: list[FileLoad] = []

@@ -51,9 +51,10 @@ from __future__ import annotations
 import io
 import json
 from collections.abc import AsyncIterator, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Protocol
 
-from threetears.core.backends.protocol import LoadFile
+from threetears.core.backends.protocol import LOAD_FILES_MAX_WAIT_SECONDS, LoadFile
 from threetears.observe import get_logger
 
 from threetears.datasources.export import sql_string_literal
@@ -75,9 +76,11 @@ __all__ = [
     "read_export",
 ]
 
-#: how long a presigned export file stays fetchable by default, in seconds: a load of millions of
-#: rows reaches its last file well inside it
-DEFAULT_PRESIGN_SECONDS = 3600
+#: how long a presigned export file stays fetchable by default, in seconds: longer than the most a pod
+#: waits for one load (:data:`~threetears.core.backends.protocol.LOAD_FILES_MAX_WAIT_SECONDS`), with
+#: a quarter of an hour over for the request to be sent, so a file the broker reaches inside the
+#: wait has not expired. Presign each load's files just before it is sent.
+DEFAULT_PRESIGN_SECONDS = LOAD_FILES_MAX_WAIT_SECONDS + 900
 
 log = get_logger(__name__)
 
@@ -188,32 +191,93 @@ async def _read_object(store: ExportStore, key: str) -> bytes:
     return b"".join(chunks)
 
 
-def _manifest_files(manifest: Mapping[str, Any], result: DatasourceExportResult) -> tuple[list[str], int | None]:
-    """the keys a manifest lists, each checked to sit under the export's prefix, and its row total.
+@dataclass(frozen=True)
+class _ManifestFile:
+    """one file a manifest lists, under the export's prefix.
+
+    :ivar url: the entry's ``url``, as the manifest names it
+    :ivar relative: its path under the export's prefix
+    :ivar key: its object key in the export bucket
+    :ivar rows: the rows the manifest counts for it; None when it counts none
+    """
+
+    url: str
+    relative: str
+    key: str
+    rows: int | None
+
+
+def _manifest_entries(manifest: Mapping[str, Any], result: DatasourceExportResult, *, of: str) -> list[_ManifestFile]:
+    """every file a manifest lists, each checked to sit under the export's prefix: the one reading of an entry.
 
     :param manifest: the parsed manifest
     :ptype manifest: Mapping[str, Any]
     :param result: the export
     :ptype result: DatasourceExportResult
-    :return: the keys, and the rows the manifest counts (None when it counts none)
-    :rtype: tuple[list[str], int | None]
+    :param of: what a file must be a file of, for the refusal (``"a file of"``, ``"a file of a part of"``)
+    :ptype of: str
+    :return: the files, in the manifest's order
+    :rtype: list[_ManifestFile]
     :raises IncompleteExportError: when an entry names anything outside the export
     """
     where = f"s3://{result.bucket}/{result.object_prefix}"
-    keys: list[str] = []
-    counted: int | None = 0
+    files: list[_ManifestFile] = []
     for entry in manifest.get("entries", []):
         url = str(entry.get("url", ""))
         relative = url.removeprefix(where)
-        if relative == url or not relative or "/" in relative or relative in (".", ".."):
-            raise IncompleteExportError(f"the export's manifest names {url!r}, which is not a file of {where}")
-        keys.append(f"{result.object_prefix}{relative}")
-        meta = entry.get("meta") or {}
-        if counted is not None and isinstance(meta.get("record_count"), int):
-            counted += meta["record_count"]
-        else:
-            counted = None
-    return keys, counted
+        if relative == url or not relative:
+            raise IncompleteExportError(f"the export's manifest names {url!r}, which is not {of} {where}")
+        rows = (entry.get("meta") or {}).get("record_count")
+        counted = rows if isinstance(rows, int) and not isinstance(rows, bool) and rows >= 0 else None
+        files.append(_ManifestFile(url=url, relative=relative, key=f"{result.object_prefix}{relative}", rows=counted))
+    return files
+
+
+def _manifest_files(manifest: Mapping[str, Any], result: DatasourceExportResult) -> list[_ManifestFile]:
+    """the files of an unpartitioned export's manifest, each directly under the export's prefix.
+
+    :param manifest: the parsed manifest
+    :ptype manifest: Mapping[str, Any]
+    :param result: the export
+    :ptype result: DatasourceExportResult
+    :return: the files, in the manifest's order
+    :rtype: list[_ManifestFile]
+    :raises IncompleteExportError: when an entry names anything outside the export
+    """
+    where = f"s3://{result.bucket}/{result.object_prefix}"
+    files = _manifest_entries(manifest, result, of="a file of")
+    for file in files:
+        if "/" in file.relative or file.relative in (".", ".."):
+            raise IncompleteExportError(f"the export's manifest names {file.url!r}, which is not a file of {where}")
+    return files
+
+
+def _counted_total(files: Sequence[_ManifestFile]) -> int | None:
+    """the rows a manifest counts for ``files``; None when it does not count every one.
+
+    :param files: the files
+    :ptype files: Sequence[_ManifestFile]
+    :return: the total, or None
+    :rtype: int | None
+    """
+    counts = [file.rows for file in files]
+    return None if any(rows is None for rows in counts) else sum(rows for rows in counts if rows is not None)
+
+
+def _load_rows(file: _ManifestFile) -> int:
+    """the rows a manifest counts for a file handed to L3, which needs its count.
+
+    :param file: the file
+    :ptype file: _ManifestFile
+    :return: its count
+    :rtype: int
+    :raises IncompleteExportError: when the manifest counts none
+    """
+    if file.rows is None:
+        raise IncompleteExportError(
+            f"the export's manifest counts no rows for {file.url!r}; a file handed to L3 needs its count"
+        )
+    return file.rows
 
 
 def _parquet_rows(data: bytes) -> list[dict[str, Any]]:
@@ -248,34 +312,17 @@ async def read_export(store: ExportStore, result: DatasourceExportResult, *, buc
     rows: list[dict[str, Any]] = []
     if result.row_count > 0:
         manifest = json.loads(await _read_object(store, result.manifest_path))
-        keys, counted = _manifest_files(manifest, result)
+        files = _manifest_files(manifest, result)
+        counted = _counted_total(files)
         if counted is not None and counted != result.row_count:
             raise IncompleteExportError(
                 f"the export's manifest counts {counted} rows, the warehouse says it wrote {result.row_count}"
             )
-        for key in keys:
-            rows.extend(_parquet_rows(await _read_object(store, key)))
+        for file in files:
+            rows.extend(_parquet_rows(await _read_object(store, file.key)))
     if len(rows) != result.row_count:
         raise IncompleteExportError(
             f"the export's files hold {len(rows)} rows, the warehouse says it wrote {result.row_count}"
-        )
-    return rows
-
-
-def _entry_rows(entry: Mapping[str, Any]) -> int:
-    """the rows a manifest entry counts for its one file.
-
-    :param entry: the entry
-    :ptype entry: Mapping[str, Any]
-    :return: its ``meta.record_count``
-    :rtype: int
-    :raises IncompleteExportError: when the entry counts no rows
-    """
-    meta = entry.get("meta") or {}
-    rows = meta.get("record_count")
-    if isinstance(rows, bool) or not isinstance(rows, int) or rows < 0:
-        raise IncompleteExportError(
-            f"the export's manifest counts no rows for {entry.get('url')!r}; a file handed to L3 needs its count"
         )
     return rows
 
@@ -292,10 +339,11 @@ def _check_export_location(result: DatasourceExportResult, *, bucket: str) -> No
     :raises IncompleteExportError: when either is so
     """
     if result.bucket != bucket:
-        raise IncompleteExportError(f"the export is in bucket {result.bucket!r}, not the {bucket!r} this reader reads")
+        raise IncompleteExportError(f"the export is in bucket {result.bucket!r}, not this reader's {bucket!r}")
     if result.manifest_path != f"{result.object_prefix}manifest":
         raise IncompleteExportError(
-            f"the export's manifest {result.manifest_path!r} is not its prefix {result.object_prefix!r}'s own"
+            f"the export's manifest {result.manifest_path!r} is not this reader's: it is not its prefix "
+            f"{result.object_prefix!r}'s own"
         )
 
 
@@ -317,21 +365,6 @@ async def _presign_load_files(
     :rtype: list[LoadFile]
     """
     return [LoadFile(url=await store.presigned_get_url(key, expires_in=expires_in), rows=rows) for key, rows in keyed]
-
-
-def _manifest_file_rows(manifest: Mapping[str, Any], result: DatasourceExportResult) -> dict[str, int]:
-    """every file a manifest lists, by key, with the rows it counts for each.
-
-    :param manifest: the parsed manifest
-    :ptype manifest: Mapping[str, Any]
-    :param result: the export
-    :ptype result: DatasourceExportResult
-    :return: key -> rows, in the manifest's order
-    :rtype: dict[str, int]
-    :raises IncompleteExportError: when an entry counts no rows
-    """
-    where = f"s3://{result.bucket}/"
-    return {str(entry.get("url", "")).removeprefix(where): _entry_rows(entry) for entry in manifest.get("entries", [])}
 
 
 async def presigned_export_files(
@@ -366,14 +399,13 @@ async def presigned_export_files(
     if result.row_count == 0:
         return []
     manifest = json.loads(await _read_object(store, result.manifest_path))
-    keys, _ = _manifest_files(manifest, result)
-    rows = _manifest_file_rows(manifest, result)
-    counted = sum(rows[key] for key in keys)
+    keyed = [(file.key, _load_rows(file)) for file in _manifest_files(manifest, result)]
+    counted = sum(rows for _, rows in keyed)
     if counted != result.row_count:
         raise IncompleteExportError(
             f"the export's manifest counts {counted} rows, the warehouse says it wrote {result.row_count}"
         )
-    return await _presign_load_files(store, [(key, rows[key]) for key in keys], expires_in=expires_in)
+    return await _presign_load_files(store, keyed, expires_in=expires_in)
 
 
 async def export_part(
