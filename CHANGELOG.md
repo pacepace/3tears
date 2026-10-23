@@ -126,7 +126,9 @@ lists what `job_resume` would take up, with spend and cap, for a host to offer a
 `superseded_spend_usd`, `metered_calls` and `account_refused`, `EvalRun.lifetimes` and `template_digest`, and on
 `EvalSweep` its launch arguments, `launch_group_id` and `lifetimes`. A run's cell result id is derived from (run, case,
 model, k), so each cell has one row however many processes write it, and readers order results by insertion, never by
-id. Each lease carries an epoch, and a holder writes a cell or the run record only under the epoch it holds.
+id. Each lease carries an epoch, and a holder writes a cell or the run record only under the epoch it holds: a run's own
+cell through `EvalStorage.save_run_cell`, which refuses a write from a holding that is over, and every other result
+through `save_eval_result`, an upsert by id as before.
 `job_resume` replays the kind's launcher in its call so that drift is refused before any spend, so a launcher must make
 no model request when it rebuilds a stored run. A pod from before epochs, still alive during a rolling deploy, does not
 enforce the fencing.

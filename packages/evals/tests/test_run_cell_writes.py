@@ -1,7 +1,7 @@
 """A run's cell is one row, written once per holding of the run: the store's rule, not the runner's discipline.
 
 A run's cell result takes an id derived from its coordinates (:func:`cell_result_id`), so the same cell written twice
-is the same row, and :meth:`EvalStorage.save_eval_result` writes a run's cell (``run_cell=True``) by one rule:
+is the same row, and :meth:`EvalStorage.save_run_cell` writes a run's cell by one rule:
 
 - **Created only if absent**: a second create of the cell is refused, and the first row stands with its trace.
 - **Replaced only from a lower epoch**: a row written under a lower lease epoch is replaced by a writer at a higher
@@ -59,11 +59,11 @@ def test_a_cells_result_id_is_the_same_for_the_same_cell_and_differs_for_any_oth
 def test_a_second_create_of_a_cell_is_refused_and_the_first_row_stands() -> None:
     storage = EvalStorage(InMemoryDocumentStore())
     first, first_trace = _cell(lease_epoch=0, cost_usd=0.01, turn="first")
-    storage.save_eval_result(first, first_trace, run_cell=True)
+    storage.save_run_cell(first, first_trace)
 
     second, second_trace = _cell(lease_epoch=0, cost_usd=0.99, turn="second")
     with pytest.raises(JobFenced, match="already stored under lease epoch 0"):
-        storage.save_eval_result(second, second_trace, run_cell=True)
+        storage.save_run_cell(second, second_trace)
 
     row, trace = _stored(storage)
     assert row is not None and row.cost_usd == 0.01 and row.has_trace, "the first row stands"
@@ -74,10 +74,10 @@ def test_a_second_create_of_a_cell_is_refused_and_the_first_row_stands() -> None
 def test_a_lower_epoch_row_is_replaced_by_a_higher_epoch_writer() -> None:
     storage = EvalStorage(InMemoryDocumentStore())
     earlier, earlier_trace = _cell(lease_epoch=0, cost_usd=0.01, turn="cancelled mid-cell")
-    storage.save_eval_result(earlier, earlier_trace, run_cell=True)
+    storage.save_run_cell(earlier, earlier_trace)
 
     later, later_trace = _cell(lease_epoch=1, cost_usd=0.02, turn="ran to its end")
-    storage.save_eval_result(later, later_trace, run_cell=True)
+    storage.save_run_cell(later, later_trace)
 
     row, trace = _stored(storage)
     assert row is not None and (row.lease_epoch, row.cost_usd) == (1, 0.02), "the later holding's row replaced it"
@@ -88,11 +88,11 @@ def test_a_lower_epoch_row_is_replaced_by_a_higher_epoch_writer() -> None:
 def test_a_higher_epoch_row_is_not_replaced_by_a_lower_epoch_writer_and_its_trace_is_untouched() -> None:
     storage = EvalStorage(InMemoryDocumentStore())
     later, later_trace = _cell(lease_epoch=1, cost_usd=0.02, turn="the later holding's")
-    storage.save_eval_result(later, later_trace, run_cell=True)
+    storage.save_run_cell(later, later_trace)
 
     superseded, superseded_trace = _cell(lease_epoch=0, cost_usd=0.01, turn="the superseded holding's")
     with pytest.raises(JobFenced, match="already stored under lease epoch 1; a writer at epoch 0"):
-        storage.save_eval_result(superseded, superseded_trace, run_cell=True)
+        storage.save_run_cell(superseded, superseded_trace)
 
     row, trace = _stored(storage)
     assert row is not None and (row.lease_epoch, row.cost_usd) == (1, 0.02)
@@ -117,7 +117,7 @@ def test_a_cell_is_not_written_into_a_run_that_is_no_longer_the_writers(run_fiel
     result, trace = _cell(lease_epoch=0, cost_usd=0.01, turn="finished after the run moved on")
 
     with pytest.raises(JobFenced, match=f"eval run '{RUN_ID}'"):
-        storage.save_eval_result(result, trace, run_cell=True)
+        storage.save_run_cell(result, trace)
 
     assert _stored(storage) == (None, None), "neither the row nor its trace was written"
 
