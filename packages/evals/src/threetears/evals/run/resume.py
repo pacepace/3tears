@@ -52,7 +52,13 @@ from threetears.evals.kernel.campaign import EvalSweep
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.identity import LeverCoordinateError, resolve_context_identity, resolve_variant_identity
-from threetears.evals.kernel.job_leases import RUN_JOB, JobLeases, LeasedJobKind, settle_job_record
+from threetears.evals.kernel.job_leases import (
+    RUN_JOB,
+    read_to_take_up,
+    reopened_job_fields,
+    taken_up_meanwhile,
+    write_reopened,
+)
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.remedies import FIND_JOB, FIND_RUN
 from threetears.evals.kernel.storage import EvalStorage
@@ -62,7 +68,7 @@ from threetears.evals.run.launch import LaunchGroup, LaunchHost, admit_group, ad
 from threetears.evals.run.launch_job import LAUNCH_JOB, EvalLaunch, resumed_launch_work
 from threetears.evals.run.metering import MeteredCallLedger
 from threetears.evals.run.runner import StoredCells
-from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
+from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.job_lease import JobLease, JobLoss
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import (
@@ -538,8 +544,7 @@ def _read(storage: EvalStorage, run_id: str, scope_id: str) -> _Read:
 
     :raises NotFoundError: There is no such run in the scope.
     """
-    settle_job_record(storage, RUN_JOB, run_id, scope_id)
-    run, etag = storage.load_job_record(EvalRun, run_id, scope_id)
+    run, etag = read_to_take_up(storage, RUN_JOB, run_id, scope_id)
     if run is None:
         raise NotFoundError("run", run_id, remedy=FIND_RUN)
     rows = storage.query_eval_results_by_run(run_id, scope_id)
@@ -867,7 +872,7 @@ async def write_taken_up(host: LaunchHost, resumptions: Sequence[RunResumption],
     def write() -> None:
         for run in runs:
             if (resuming := by_run.get(run.id)) is not None:
-                _write_reopened(eval_host.storage, leases, run, resuming.etag, resuming.epoch)
+                write_reopened(eval_host.storage, RUN_JOB, run, leases=leases, etag=resuming.etag, epoch=resuming.epoch)
 
     await run_blocking(eval_host.blocking_executor, write)
 
@@ -918,30 +923,6 @@ def refuse_a_job_not_taken_up(
         )
 
 
-def _write_reopened(storage: EvalStorage, leases: JobLeases | None, run: EvalRun, etag: str | None, epoch: int) -> None:
-    """Write the reopened run under a lease at its next epoch, conditionally on the record the take-up read.
-
-    :raises ConflictError: The record moved since it was read: another take-up won, or another writer wrote it.
-    """
-    run.lease = leases.grant(epoch) if leases is not None else None
-    try:
-        storage.save_eval_run(run, if_match=etag)
-    except ConflictError as moved:
-        raise ConflictError(
-            f"run '{run.id}' changed while it was being taken up — another take-up of it won, or another writer moved "
-            "it — so this one started nothing",
-            remedy="read it with job_poll; call job_resume again if it is still not running",
-        ) from moved
-
-
-def _settled_with_etag[R: EvalDocumentModel](
-    storage: EvalStorage, kind: LeasedJobKind[R], record_id: str, scope_id: str
-) -> tuple[R | None, str | None]:
-    """A job record as every reader settles it, then read with the token its reopen is written conditionally on."""
-    settle_job_record(storage, kind, record_id, scope_id)
-    return storage.load_job_record(kind.model, record_id, scope_id)
-
-
 async def resume_launch(
     host: LaunchHost, launch_id: str, scope_id: str, *, max_cost_usd: float | None = None
 ) -> EvalLaunch:
@@ -977,7 +958,7 @@ async def resume_launch(
     eval_host, manager = host.eval_host, host.job_manager
     storage = eval_host.storage
     launch, etag = await run_blocking(
-        eval_host.blocking_executor, _settled_with_etag, storage, LAUNCH_JOB, launch_id, scope_id
+        eval_host.blocking_executor, read_to_take_up, storage, LAUNCH_JOB, launch_id, scope_id
     )
     if launch is None:
         raise NotFoundError("launch", launch_id, remedy=FIND_JOB)
@@ -1038,27 +1019,13 @@ async def resume_launch(
         event="eval.resume_launch",
         attach=reopen,
     )
-    reopened = launch.model_copy(
-        update={
-            "outcome": "running",
-            "detail": None,
-            "ended_at": None,
-            "lost": None,
-            "refusal": None,
-            "cancel_requested_at": None,
-            "cancel_request_reason": None,
-        }
-    )
+    reopened = launch.model_copy(update=reopened_job_fields())
     epoch = next_epoch(launch.lease, launch.lost)
     work = resumed_launch_work(host, admitted, reopened, epoch=epoch, etag=etag)
     try:
         started = await start_job_work(manager, work, store=storage, executor=eval_host.blocking_executor)
     except ConflictError as moved:
-        raise ConflictError(
-            f"launch '{launch.id}' changed while it was being taken up — another take-up of it won, or another writer "
-            "moved it — so this one started nothing",
-            remedy="read it with job_poll; call job_resume again if it is still not running",
-        ) from moved
+        raise taken_up_meanwhile(LAUNCH_JOB, launch.id) from moved
     log.info(
         "eval.resume_launch launch=%s scope=%s taken up at epoch %d: %d run(s) taken up",
         launch.id,

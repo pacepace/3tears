@@ -77,7 +77,6 @@ from threetears.evals.kernel.campaign import (
     ended_sweep_lifetimes,
 )
 from threetears.evals.kernel.errors import (
-    ConflictError,
     EvalServiceError,
     JobFenced,
     NotFoundError,
@@ -96,8 +95,14 @@ from threetears.evals.ops.runs import LaunchArguments
 from threetears.evals.run.arm_schedule import resolve_arm_schedule
 from threetears.evals.run.jobs import JOB_TIMEOUT_CAP_S
 from threetears.evals.run.launch import LaunchGroup, admit_resumed_run, launch_as_group, quote_launch, start_run
-from threetears.evals.kernel.job_leases import JobLeases, SWEEP_JOB, require_held, settle_job_record, write_held_record
-from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.kernel.job_leases import (
+    SWEEP_JOB,
+    read_to_take_up,
+    reopened_job_fields,
+    require_held,
+    write_held_record,
+    write_reopened,
+)
 from threetears.evals.run.lifecycle import get_run
 from threetears.evals.run.resume import (
     RunResumption,
@@ -558,7 +563,9 @@ async def sweep_resume(
     """
     eval_host, launch = host.eval_host, host.launch
     storage, manager, leases = eval_host.storage, launch.job_manager, launch.job_leases
-    sweep, etag = await run_blocking(eval_host.blocking_executor, _settled_sweep, storage, sweep_id, scope_id)
+    sweep, etag = await run_blocking(
+        eval_host.blocking_executor, read_to_take_up, storage, SWEEP_JOB, sweep_id, scope_id
+    )
     if sweep is None:
         raise NotFoundError("sweep", sweep_id, remedy=FIND_JOB)
     refuse_a_job_not_taken_up(
@@ -628,7 +635,13 @@ async def sweep_resume(
     reopened = _reopened(
         sweep, epoch=epoch, holder=leases.holder_id, shared=shared, group_id=group_id, cap=max_cost_usd
     )
-    await run_blocking(eval_host.blocking_executor, _write_reopened_sweep, storage, leases, reopened, etag, epoch)
+    await run_blocking(
+        eval_host.blocking_executor,
+        partial(write_reopened, leases=leases, etag=etag, epoch=epoch),
+        storage,
+        SWEEP_JOB,
+        reopened,
+    )
     # Every arm's take-up is set here, once: an arm refused ended the call above, so each is ended, taken up or launched.
     arms: dict[str, _ArmTakeUp] = {}
     launching = {arm.label for arm in never_launched}
@@ -676,12 +689,6 @@ async def sweep_resume(
             )
         ]
     )
-
-
-def _settled_sweep(storage: EvalStorage, sweep_id: str, scope_id: str) -> tuple[EvalSweep | None, str | None]:
-    """A sweep's record as every reader settles it, then read with the token its reopen is written conditionally on."""
-    settle_job_record(storage, SWEEP_JOB, sweep_id, scope_id)
-    return storage.load_job_record(EvalSweep, sweep_id, scope_id)
 
 
 def _reopened(
@@ -732,36 +739,12 @@ def _reopened(
     )
     return sweep.model_copy(
         update={
-            "outcome": "running",
-            "detail": None,
-            "ended_at": None,
-            "lost": None,
-            "refusal": None,
-            "cancel_requested_at": None,
-            "cancel_request_reason": None,
+            **reopened_job_fields(),
             "arguments": shared,
             "launch_group_id": group_id,
             "lifetimes": [*ended, holding],
         }
     )
-
-
-def _write_reopened_sweep(
-    storage: EvalStorage, leases: JobLeases, sweep: EvalSweep, etag: str | None, epoch: int
-) -> None:
-    """Write the reopened sweep under a lease at its next epoch, conditionally on the record the take-up read.
-
-    :raises ConflictError: The record moved since it was read: another take-up won, or another writer wrote it.
-    """
-    sweep.lease = leases.grant(epoch)
-    try:
-        storage.save_sweep(sweep, if_match=etag)
-    except ConflictError as moved:
-        raise ConflictError(
-            f"sweep '{sweep.id}' changed while it was being taken up — another take-up of it won, or another writer "
-            "moved it — so this one started nothing",
-            remedy="read it with job_poll; call job_resume again if it is still not running",
-        ) from moved
 
 
 async def _run_sweep(host: OpsHost, sweep: EvalSweep, *, budget_s: float, taking_up: _TakingUp | None = None) -> None:
