@@ -15,7 +15,8 @@ row said no more cases were needed. A row neither shown better nor shown worse n
 within the margin, since the claim it feeds holds only when every asked aspect holds and needs no correction; the
 cases that would settle an unclear row are counted at that same level, so the row's count is its floor's. A floor and
 a row that still part, on the points they read against or on a check's rate the floor also reads, get a line under the
-table saying which.
+table saying which. The seeded writer prompt names the new reading, so a host pushes the new seed to its store
+(`eval_prompt_reset`).
 
 ### evals: resume an interrupted run, sweep or launch (#918)
 

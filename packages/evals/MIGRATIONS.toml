@@ -61,7 +61,9 @@
 version = "unreleased"
 since = "v0.76.0"
 summary = """
-An interrupted run, sweep or launch resumes as the same job (#918): `job_resume` takes it up under its lease's next
+A change's row reads `within_margin` ("no worse than the margin") where its floor holds, and the seeded writer prompt
+names the new reading, so every host pushes the new seed (`eval_prompt_reset`). An interrupted run, sweep or launch
+resumes as the same job (#918): `job_resume` takes it up under its lease's next
 epoch, runs only the cells it has not measured, in their original order, and it ends as an uninterrupted run would
 have; `jobs_resumable` lists what it would take up, for a host to offer at boot. No public name has moved or been
 removed since 0.76.0, and no judge wording changed. The new names are provisional. The stored shapes (core v15.7,
