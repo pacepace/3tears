@@ -192,7 +192,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`CORE_RESET_DOC_TYPES`** · constant (frozenset) · Every `doc_type` a core baseline reset deletes: the core and every regenerable type, and never a durable one.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
-  <br>`= 6`
+  <br>`= 7`
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump is a baseline reset, appends one line here and moves `CORE_BASELINE_VERSION` with it.
   <br>`= 15`
 - **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
@@ -466,7 +466,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`estimate_judge_repeat`** · async function · Price repeating a run's judge scores against the cap it would be held to, and make no call.
   <br>`estimate_judge_repeat(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, result_ids: Sequence[str] | None = None) -> JudgeRepeatEstimate`
 - **`execute_run`** · *host contract* · async function · Execute an entire `EvalRun` end-to-end.
-  <br>`execute_run(host: EvalHost, *, run: EvalRun, template: EvalTemplate, test_cases: list[EvalTestCase], judge_service: JudgeService | None, options: RunnerOptions, callbacks: RunCallbacks | None = None, budget_gate: Callable[[float | None], CapBreach | None] | None = None, on_cost: Callable[[float | None], None] | None = None, cell_sink: list[CellSummary] | None = None) -> list[CellSummary]`
+  <br>`execute_run(host: EvalHost, *, run: EvalRun, template: EvalTemplate, test_cases: list[EvalTestCase], judge_service: JudgeService | None, options: RunnerOptions, callbacks: RunCallbacks | None = None, budget_gate: Callable[[float | None], CapBreach | None] | None = None, on_cost: Callable[[float | None], None] | None = None, cell_sink: list[CellSummary] | None = None, stored: StoredCells | None = None) -> list[CellSummary]`
 - **`fold_metered_cell`** · *host contract* · function · Fold one cell's action-seam tally into the external role's rows.
   <br>`fold_metered_cell(external_usage: RoleUsageLedger, cell: MeteredCallTally | None) -> None`
 - **`freeze_judge_cases`** · function · Freeze (output, criterion, labels) cases from stored judged results, or written by hand, into a judge template.
@@ -1554,6 +1554,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `launch_estimate` | `read` | `template_id`, `subject_id`, `models?`, `k_runs?`, `n_variations?`, `variation_model?`, `overlays?`, `apparatus_settings?`, `max_cost_usd?`, `judge_model?`, `simulator_model?`, `cell_timeout_s?`, `case_set_name?`, `case_set_version?`, `measure_latency?`, `arm_schedule?`, `n_test_cases?` | Estimate what a run_launch would cost, from what the scope's runs have spent. |
 | `job_poll` | `read` | `job_id` | Read where a job stands — a launch, a run, a sweep, a generation, a judge pass — and its result. |
 | `job_cancel` | `write` | `job_id`, `reason?` | Ask a running job to stop; poll to see it land as cancelled. |
+| `job_resume` | `spend`, job | `job_id`, `max_cost_usd?` | Resume an interrupted run, sweep or launch as itself: lost, cancelled, or stopped by a budget. |
+| `jobs_resumable` | `read` | — | List the interrupted runs, sweeps and launches job_resume would take up, with how each ended. |
 | `run_get` | `read` | `run_id` | Summarise one run: how it ended, how its results came out, each measure's mean. |
 | `results_list` | `read` | `run_id`, `condition_filter?`, `offset?`, `limit?` | List one run's results, a light row each — case, repeat, condition, headline measures — paged. |
 | `result_get` | `read` | `result_id`, `part?` | Read one stored result: its record, usage rows and condition, and one part of its trace. |
