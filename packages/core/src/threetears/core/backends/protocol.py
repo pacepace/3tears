@@ -23,21 +23,32 @@ layer; code that needs raw SQL drops to :class:`L3Backend` explicitly.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Final, Protocol, runtime_checkable
 from uuid import UUID
 
 __all__ = [
     "L3_RAIL_ROW_CAP",
+    "LOAD_FILES_MAX_WAIT_SECONDS",
     "BulkDeletingStore",
     "BulkDurableStore",
+    "CopyingStore",
     "DurableStore",
+    "FileLoad",
     "KeyLedReadingStore",
     "L3Backend",
     "L3Reader",
+    "LoadFile",
+    "LoadResult",
+    "LoadingStore",
     "OrderedDurableStore",
     "RowcountUnreadableError",
+    "TruncatingStore",
+    "load_requests",
+    "load_wait_seconds",
     "parse_rowcount",
 ]
 
@@ -66,6 +77,16 @@ class L3Reader(Protocol):
 #: asyncpg pool, which cuts nothing but does not say so -- is taken to be the rail, which costs a
 #: needless split at worst and never a row.
 L3_RAIL_ROW_CAP: Final = 1000
+
+#: the longest a pod waits for one ``l3.load_files`` reply, in seconds. NATS request/reply is at most
+#: once: a broker that restarts mid-load loses the reply, and a wait that grew with the load (each
+#: transaction's bound times the transactions) held the caller for a day. A load longer than this
+#: goes as several requests of whole files (:func:`load_requests`), and a request whose wait would
+#: pass it is refused, never sent with a shorter wait (the pod would stop waiting while the broker
+#: kept committing). A load's URLs are presigned to outlive it
+#: (:data:`~threetears.datasources.export_read.DEFAULT_PRESIGN_SECONDS` is longer), so the broker
+#: never meets an expired file inside a wait the pod still keeps.
+LOAD_FILES_MAX_WAIT_SECONDS: Final = 3600
 
 
 @runtime_checkable
@@ -229,6 +250,269 @@ class BulkDurableStore(Protocol):
         :ptype conn: Any
         :return: rows written
         :rtype: int
+        """
+        ...
+
+
+@runtime_checkable
+class CopyingStore(Protocol):
+    """A durable store that bulk-loads new rows of one table with ``COPY``, insert-only.
+
+    The seam :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.save_rows`
+    writes through when asked to copy. A store without it is written a row at a time through
+    :meth:`DurableStore.upsert` with ``on_conflict="raise"``. No method takes SQL.
+    """
+
+    async def copy_many(
+        self,
+        table: str,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        max_rows: int,
+        max_bytes: int,
+        conn: Any,
+    ) -> int:
+        """Insert every row of ``rows`` into ``table``; a key already held fails the write.
+
+        :param rows: the rows, each keyed by column, every row supplying the same columns
+        :ptype rows: Sequence[Mapping[str, Any]]
+        :param max_rows: the most rows one copy may carry
+        :ptype max_rows: int
+        :param max_bytes: the most bytes one copy's whole request may come to (a message's share of
+            a bus)
+        :ptype max_bytes: int
+        :param conn: the caller's transaction handle the copies bind to. A failing copy fails that
+            transaction whole
+        :ptype conn: Any
+        :return: rows written
+        :rtype: int
+        """
+        ...
+
+
+@runtime_checkable
+class TruncatingStore(Protocol):
+    """A durable store that empties one table at once, outside any transaction.
+
+    The seam :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.truncate`
+    empties through. ``TRUNCATE`` leaves no row behind to tombstone, where deleting every row
+    leaves one per row; it is not transactional and runs alone. No method takes SQL.
+    """
+
+    async def truncate(self, table: str) -> None:
+        """Remove every row of ``table``; an empty table is not an error.
+
+        :param table: the table
+        :ptype table: str
+        :return: nothing
+        :rtype: None
+        """
+        ...
+
+
+@dataclass(frozen=True)
+class LoadFile:
+    """One file a table is loaded from: where to fetch it, and how many rows it holds.
+
+    The url is one the loader fetches as it is, with no credential of its own: a presigned GET of a
+    warehouse export's parquet file
+    (:func:`~threetears.datasources.partitioned_export.presigned_counted_partition`). The row count is the
+    export's own count of the file, which the loader holds the file to.
+
+    Which URLs a loader fetches is :class:`LoadingStore`'s contract: on the L3 rail only an
+    ``https`` URL of a file of the caller's own recorded export, and it must stay valid for the
+    load's whole wait (:data:`LOAD_FILES_MAX_WAIT_SECONDS`).
+
+    :ivar url: the file's URL
+    :ivar rows: the rows the file holds
+    """
+
+    url: str
+    rows: int
+
+    def __post_init__(self) -> None:
+        """refuse a file with no URL or a row count that is not a count.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when ``url`` is empty or ``rows`` is not a non-negative int
+        """
+        if not self.url:
+            raise ValueError("a LoadFile needs a url")
+        if isinstance(self.rows, bool) or not isinstance(self.rows, int) or self.rows < 0:
+            raise ValueError(f"a LoadFile's rows must be a non-negative int, got {self.rows!r}")
+
+
+def _file_transactions(file: LoadFile, rows_per_transaction: int) -> int:
+    """the transactions one file of a load commits: its rows over ``rows_per_transaction``, rounded
+    up, and one for a file with no rows, which is still fetched.
+
+    :param file: the file
+    :ptype file: LoadFile
+    :param rows_per_transaction: rows per committed transaction; at least one
+    :ptype rows_per_transaction: int
+    :return: the transactions
+    :rtype: int
+    """
+    return max(1, math.ceil(file.rows / rows_per_transaction))
+
+
+def _check_load_bounds(rows_per_transaction: int, timeout_ms: int) -> None:
+    """refuse a load's bounds under one.
+
+    :param rows_per_transaction: rows per committed transaction
+    :ptype rows_per_transaction: int
+    :param timeout_ms: the bound on each transaction, in milliseconds
+    :ptype timeout_ms: int
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when either is under one
+    """
+    if rows_per_transaction < 1:
+        raise ValueError(f"rows_per_transaction must be at least 1, got {rows_per_transaction}")
+    if timeout_ms < 1:
+        raise ValueError(f"timeout_ms must be at least 1, got {timeout_ms}")
+
+
+def load_wait_seconds(files: Sequence[LoadFile], *, rows_per_transaction: int, timeout_ms: int) -> float:
+    """how long one ``l3.load_files`` request of ``files`` waits for its reply, in seconds.
+
+    The broker bounds each transaction by ``timeout_ms``, so the load can take ``timeout_ms`` for
+    each transaction its files commit (:func:`load_requests` counts them), plus the two seconds'
+    grace every L3 request has.
+
+    :param files: the request's files
+    :ptype files: Sequence[LoadFile]
+    :param rows_per_transaction: rows per committed transaction; at least one
+    :ptype rows_per_transaction: int
+    :param timeout_ms: the bound on each transaction, in milliseconds; at least one
+    :ptype timeout_ms: int
+    :return: the wait
+    :rtype: float
+    :raises ValueError: when ``rows_per_transaction`` or ``timeout_ms`` is under one
+    """
+    _check_load_bounds(rows_per_transaction, timeout_ms)
+    transactions = sum(_file_transactions(file, rows_per_transaction) for file in files)
+    return max(1, transactions) * timeout_ms / 1000 + 2
+
+
+def load_requests(files: Sequence[LoadFile], *, rows_per_transaction: int, timeout_ms: int) -> list[list[LoadFile]]:
+    """``files`` cut into the fewest ``l3.load_files`` requests whose waits fit the cap, in order.
+
+    Whole files only, so no file's transactions span two requests; each request takes the next
+    files while its :func:`load_wait_seconds` stays within :data:`LOAD_FILES_MAX_WAIT_SECONDS`.
+
+    :param files: the load's files, in order
+    :ptype files: Sequence[LoadFile]
+    :param rows_per_transaction: rows per committed transaction; at least one
+    :ptype rows_per_transaction: int
+    :param timeout_ms: the bound on each transaction, in milliseconds; at least one
+    :ptype timeout_ms: int
+    :return: each request's files, in order; none for no files
+    :rtype: list[list[LoadFile]]
+    :raises ValueError: when a bound is under one, or one file alone needs a longer wait than the
+        cap (fewer rows a file, or a tighter ``timeout_ms``, fits it)
+    """
+    _check_load_bounds(rows_per_transaction, timeout_ms)
+    most = math.floor((LOAD_FILES_MAX_WAIT_SECONDS - 2) * 1000 / timeout_ms)
+    requests: list[list[LoadFile]] = []
+    held = 0
+    for index, file in enumerate(files):
+        needed = _file_transactions(file, rows_per_transaction)
+        if needed > most:
+            raise ValueError(
+                f"file {index} of the load holds {file.rows} rows: {needed} transactions of {rows_per_transaction} "
+                f"rows at {timeout_ms} ms each, past the {LOAD_FILES_MAX_WAIT_SECONDS} s a pod waits for one "
+                f"l3.load_files reply; export smaller files or bound each transaction tighter"
+            )
+        if not requests or held + needed > most:
+            requests.append([])
+            held = 0
+        requests[-1].append(file)
+        held += needed
+    return requests
+
+
+@dataclass(frozen=True)
+class FileLoad:
+    """How many rows one file of a load wrote.
+
+    :ivar index: the file's position in the files the load was given
+    :ivar rows_loaded: the rows written from it
+    """
+
+    index: int
+    rows_loaded: int
+
+
+@dataclass(frozen=True)
+class LoadResult:
+    """What a load from files wrote: every row, and each file's share.
+
+    :ivar row_count: the rows written, every file's together
+    :ivar files: each file's rows, in the order the files were given
+    """
+
+    row_count: int
+    files: tuple[FileLoad, ...]
+
+
+@runtime_checkable
+class LoadingStore(Protocol):
+    """A durable store that loads one table from files, outside any transaction of the caller's.
+
+    The seam :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.load_files`
+    loads through. The store fetches each file itself and copies its rows in, committing every
+    ``rows_per_transaction`` rows: on the L3 rail the broker does both (the ``l3.load_files``
+    request), so the rows never cross the bus. No method takes SQL.
+
+    **Which URLs are fetched.** The broker fetches with the hub's network position on a pod's word,
+    so a URL a pod chose freely would make the hub a proxy for any request (SSRF: an internal
+    service, the cloud metadata endpoint, another pod's export). The broker therefore fetches only
+    a presigned ``https`` URL (no user info, no port but 443, no fragment) on an S3 host of the
+    caller's datasource's export bucket, whose key lies under the prefix of an export the hub
+    recorded running for that caller; it follows no redirect, and refuses the whole request,
+    before fetching anything, when any URL is not one. The hub enforces it
+    (``aibots.hub.broker.export_files`` in bluelabsio/14-eng-ai-bot). A direct pool's load
+    (:meth:`~threetears.core.backends.sql.SqlL3Backend.load_files`) runs in a process that already
+    holds the database's credentials and admits more: ``https``, ``http`` on this machine (a local
+    MinIO) and ``file://`` (a :class:`~threetears.object_store.FilesystemObjectStore`'s presign).
+
+    **How long.** A pod waits for one request at most :data:`LOAD_FILES_MAX_WAIT_SECONDS`
+    (:func:`load_wait_seconds`: ``timeout_ms`` for each transaction its files need), and a request
+    that would wait longer is refused before it is sent. A longer load is sent as several requests
+    of whole files, in order (:func:`load_requests`), as
+    :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.load_files` does; its
+    URLs are presigned just before the call, valid for longer than one request's wait.
+    """
+
+    async def load_files(
+        self,
+        table: str,
+        files: Sequence[LoadFile],
+        *,
+        columns: Sequence[str],
+        constants: Mapping[str, Any],
+        rows_per_transaction: int,
+        timeout_ms: int,
+    ) -> LoadResult:
+        """Insert every row of ``files`` into ``table``, insert-only; a key already held fails the load.
+
+        :param table: the table
+        :ptype table: str
+        :param files: the parquet files, each holding the columns ``columns`` names
+        :ptype files: Sequence[LoadFile]
+        :param columns: the table's columns each file supplies
+        :ptype columns: Sequence[str]
+        :param constants: column -> the value every row takes for it, for a column no file holds
+            (a part's own key, a load's stamp)
+        :ptype constants: Mapping[str, Any]
+        :param rows_per_transaction: the most rows one committed transaction writes; at least one
+        :ptype rows_per_transaction: int
+        :param timeout_ms: the most time one transaction may take, in milliseconds
+        :ptype timeout_ms: int
+        :return: the rows written, every file's and each file's
+        :rtype: LoadResult
         """
         ...
 

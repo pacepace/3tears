@@ -5662,6 +5662,7 @@ class NatsClient:
         on_restored: KvRestoredHook | None = None,
         max_bytes: int | None = None,
         still_wanted: Callable[[], Awaitable[bool]] | None = None,
+        replicas: int | None = None,
     ) -> NatsKvBucket:
         """DECLARE a KV bucket's configuration, reconciling a live one.
 
@@ -5807,10 +5808,16 @@ class NatsClient:
             is no longer wanted is forgotten instead of put back. for a bucket whose owner can go away
             without this client hearing of it. ``None`` restores it always
         :ptype still_wanted: Callable[[], Awaitable[bool]] | None
+        :param replicas: how many servers hold the bucket. ``None`` (the default) creates it on one,
+            as nats-py does, and asks nothing of a live bucket's placement. an owner reconciles a
+            live bucket's replicas in place (JetStream keeps its entries), and a restoration after a
+            reconnect creates it again with them
+        :ptype replicas: int | None
         :return: ready KV bucket handle, also installed in the client's cache
         :rtype: NatsKvBucket
         :raises ValueError: if ``owns_bucket=True`` with ``create_if_missing=False``
             or ``storage="file"``, or ``drop_file_storage=True`` without ``owns_bucket``,
+            or ``replicas`` is given and not positive,
             or ``on_restored`` with ``create_if_missing=False`` -- a binder never
             creates the bucket, so the refill could never run
         :raises KvBucketNotFoundError: if the bucket does not exist and this call could not create it --
@@ -5826,6 +5833,8 @@ class NatsClient:
         from threetears.nats.kv import DEFAULT_KV_TIMINGS, NatsKvBucket, build_kv_stream_config
 
         full_name = f"{self._namespace}-{name}" if prefix_namespace else name
+        if replicas is not None and replicas <= 0:
+            raise ValueError(f"KV bucket {full_name!r} needs at least one replica, got {replicas!r}")
         if on_restored is not None and not create_if_missing:
             raise ValueError(
                 f"KV bucket {full_name!r}: on_restored needs create_if_missing=True -- a bind-only open never "
@@ -5840,6 +5849,7 @@ class NatsClient:
             storage_type=StorageType.FILE if storage == "file" else StorageType.MEMORY,
             direct=direct,
             max_bytes=max_bytes,
+            replicas=replicas,
         )
         stream = declared.name or full_name
         async with self._kv_locks.setdefault(full_name, asyncio.Lock()):
@@ -5856,6 +5866,7 @@ class NatsClient:
                 drop_file_storage=drop_file_storage,
                 on_recreated=functools.partial(self._note_refill_owed, stream) if create_if_missing else None,
                 max_bytes=max_bytes,
+                replicas=replicas,
             )
             self._buckets[full_name] = bucket
         if create_if_missing:
@@ -6022,8 +6033,10 @@ class NatsClient:
         :meth:`ensure_jetstream_stream`, the declaration is remembered and created again after every
         reconnect, so a NATS restart that wiped the memory bucket brings it back -- empty.
 
-        A live bucket of the name is updated to the declared shape: its owner is the only declarer,
-        so there is nobody to fight over it.
+        A live bucket of the name is updated to the declared shape in place -- its bound and its
+        replicas included, which JetStream changes on a live stream with its objects kept -- and the
+        change is logged at INFO with the old and new values: its owner is the only declarer, so
+        there is nobody to fight over it.
 
         :param name: bucket name suffix (prefixed by the namespace), or the full name
         :ptype name: str
@@ -6079,12 +6092,24 @@ class NatsClient:
                 ) from exc
             if exc.err_code != _JS_ERR_STREAM_NAME_IN_USE:
                 raise ObjectStoreError(f"declaring object store {full_name!r} failed: {exc}") from exc
+            # name in use: the bucket is live with another shape (an identical one creates idempotently)
             try:
+                live = (await js.stream_info(stream)).config
                 await js.update_stream(config)
             except APIError as update_exc:
                 raise ObjectStoreError(
                     f"object store {full_name!r} is live with another shape and could not be updated: {update_exc}"
                 ) from update_exc
+            log.info(
+                "object store reconciled in place to its declared shape",
+                extra={
+                    "extra_data": {
+                        "bucket": full_name,
+                        "max_bytes": {"was": live.max_bytes, "now": max_bytes},
+                        "replicas": {"was": live.num_replicas, "now": replicas},
+                    }
+                },
+            )
         self._declarations[stream] = dataclasses.replace(config)
         if still_wanted is None:
             self._declaration_guards.pop(stream, None)

@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import asyncio
 import weakref
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, Generic, Protocol, TypeVar, runtime_checkable
@@ -56,7 +56,7 @@ from typing import TYPE_CHECKING, Any, Final, Generic, Protocol, TypeVar, runtim
 from threetears.observe import get_logger
 
 from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
-from threetears.core.keyset import read_keyset_pages
+from threetears.core.keyset import keyset_pages, read_keyset_pages
 from threetears.core.sql_fragments import equality_conditions, quote_identifier
 from threetears.core.fingerprint import KeyFingerprint, key_fingerprint, postgres_fingerprint_sql
 
@@ -74,6 +74,7 @@ __all__ = [
     "WholeTableL1",
     "copy_table",
     "l3_fingerprint",
+    "l3_row_pages",
     "read_l3_rows",
 ]
 
@@ -287,6 +288,20 @@ async def l3_fingerprint(
     return KeyFingerprint(row_count=int(row["row_count"]), digest=str(row["digest"]))
 
 
+def _select_from(table: str, columns: Sequence[str]) -> str:
+    """``SELECT <columns> FROM <table>``, quoted: what a whole-table read pages over.
+
+    :param table: the table, a TRUSTED identifier
+    :ptype table: str
+    :param columns: the columns, TRUSTED identifiers
+    :ptype columns: Sequence[str]
+    :return: the statement's head
+    :rtype: str
+    """
+    selected = ", ".join(quote_identifier(c) for c in columns)
+    return f"SELECT {selected} FROM {quote_identifier(table)}"  # noqa: S608 - trusted identifiers
+
+
 async def read_l3_rows(
     l3: L3Reader,
     table: str,
@@ -326,10 +341,42 @@ async def read_l3_rows(
     :rtype: list[dict[str, Any]]
     :raises ValueError: when ``page_size`` is under one
     """
-    selected = ", ".join(quote_identifier(c) for c in columns)
-    select_from = f"SELECT {selected} FROM {quote_identifier(table)}"  # noqa: S608 - trusted identifiers
-    read = await read_keyset_pages(l3, select_from, key, where=where, page_size=page_size)
+    read = await read_keyset_pages(l3, _select_from(table, columns), key, where=where, page_size=page_size)
     return read.rows
+
+
+def l3_row_pages(
+    l3: L3Reader,
+    table: str,
+    columns: Sequence[str],
+    key: Sequence[str],
+    *,
+    where: Mapping[str, Any] | None = None,
+    page_size: int = DEFAULT_PAGE_SIZE,
+) -> AsyncGenerator[list[dict[str, Any]], None]:
+    """the rows :func:`read_l3_rows` reads, handed over a page at a time as each is read.
+
+    For a reader that must not hold every row at once (a scoped snapshot's rebuild): it keeps what
+    it needs of each page before the next is asked for. The same statements as :func:`read_l3_rows`,
+    in the same order; the last page may be empty.
+
+    :param l3: the L3 backend
+    :ptype l3: L3Reader
+    :param table: the table, a TRUSTED identifier
+    :ptype table: str
+    :param columns: the columns to read, TRUSTED identifiers
+    :ptype columns: Sequence[str]
+    :param key: the table's key, TRUSTED identifiers; unique, so paging steps past no row
+    :ptype key: Sequence[str]
+    :param where: equality filters naming the rows; every row when None
+    :ptype where: Mapping[str, Any] | None
+    :param page_size: rows per page; under the rail's cap
+    :ptype page_size: int
+    :return: the pages, in key order
+    :rtype: AsyncGenerator[list[dict[str, Any]], None]
+    :raises ValueError: when ``page_size`` is under one (at the first page)
+    """
+    return keyset_pages(l3, _select_from(table, columns), key, where=where, page_size=page_size)
 
 
 def _held_differs(
