@@ -38,6 +38,7 @@ from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.kernel import ConflictError, EvalStorage, ValidationFailedError
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink
 from threetears.evals.kernel.errors import StorageError
+from threetears.evals.kernel.host import HostProfile
 from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.kernel.scoring import compute_pass_hat_k
 from threetears.evals.ops import OpsHost, job_poll, run_job_id
@@ -49,12 +50,16 @@ from threetears.evals.run import (
     LaunchRequest,
     LaunchSettings,
     MeteredCallLedger,
+    ResumableJob,
+    RunResumption,
+    StoredCells,
     launch_run,
+    resumable_jobs,
+    resume_run,
     start_run,
 )
 from threetears.evals.run.definition_digests import measured_template_digest
 from threetears.evals.run.jobs import EvalJobManager
-from threetears.evals.run.resume import counted_spend, resume_drift, resume_run
 from threetears.evals.schema import EvalResult, EvalRun, EvalTemplate, JobLease
 from threetears.evals.schema.models import RunLifetime, cell_result_id, eval_trace_doc_id
 from threetears.evals.storage import InMemoryDocumentStore
@@ -107,6 +112,44 @@ def _holder_id(host: OpsHost) -> str:
     leases = host.launch.job_manager.leases
     assert leases is not None
     return leases.holder_id
+
+
+def _offered(host: OpsHost, run_id: str) -> ResumableJob:
+    """The run as ``resumable_jobs`` offers it to a resume, on its own or among its launch's runs."""
+    listed = off_loop(resumable_jobs, host.eval_host.storage, [TOYHOST_SCOPE])
+    (offered,) = [
+        job for job in [*listed.jobs, *(run for group in listed.groups for run in group.runs)] if job.run_id == run_id
+    ]
+    return offered
+
+
+def _spend_of_every_attempt(rows: list[EvalResult]) -> float:
+    """What a run's rows record it spent, each attempt once: a row's own spend and the spend of the attempts it was
+    written over (``EvalResult.superseded_spend_usd``)."""
+    return sum((row.cost_usd or 0.0) + (row.superseded_spend_usd or 0.0) for row in rows)
+
+
+def _measured_otherwise(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profile: HostProfile) -> str | None:
+    """Every difference a take-up of ``stored`` names when its launch assembles ``fresh`` from ``template``, as the
+    launch hands the two to ``RunResumption.take_up``; ``None`` when the take-up goes ahead."""
+    resuming = RunResumption(
+        run=stored,
+        cases=(),
+        stored=StoredCells(),
+        rows=(),
+        holder=None,
+        epoch=1,
+        cell_order_seed=None,
+        etag=None,
+        max_cost_usd=None,
+    )
+    try:
+        resuming.take_up(fresh, template, profile)
+    except ValidationFailedError as refused:
+        _, said, differences = refused.message.partition("it would measure otherwise than it did — ")
+        assert said and differences, refused.message
+        return differences
+    return None
 
 
 async def _interrupted(monkeypatch: pytest.MonkeyPatch, how: str) -> tuple[OpsHost, str, EvalRun, ClockedStore]:
@@ -216,7 +259,7 @@ async def test_a_run_taken_up_again_from_a_fresh_process_ends_as_an_uninterrupte
     after = {row.id: row for row in _rows(holder, run_id)}
     for row in cut_short:
         assert after[row.id].superseded_spend_usd == pytest.approx(CUT_SHORT_USD), "its cut-short attempt's spend moved"
-    assert sum(amount or 0.0 for amount in counted_spend(list(after.values()))) == pytest.approx(
+    assert _spend_of_every_attempt(list(after.values())) == pytest.approx(
         sum(row.cost_usd or 0.0 for row in before)
         + sum(row.cost_usd or 0.0 for row in after.values() if row.lease_epoch)
     ), "every attempt's spend, once"
@@ -262,8 +305,10 @@ def test_a_take_up_that_would_measure_otherwise_names_every_difference_and_no_la
     )
     template = make_template(created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00")
 
-    differences = resume_drift(stored, fresh, template, toyhost_profile())
+    said = _measured_otherwise(stored, fresh, template, toyhost_profile())
 
+    assert said is not None
+    differences = said.split("; ")
     # Read at the current identity version on both sides, the apparatus moves a context component as well as the field.
     assert [difference.split(" ", 1)[0] for difference in differences] == [
         "context",
@@ -273,7 +318,7 @@ def test_a_take_up_that_would_measure_otherwise_names_every_difference_and_no_la
     assert differences[0].startswith("context component apparatus_settings")
     assert "cfg-2" in differences[1] and "pool-b" in differences[2]
     unlabelled = stored.model_copy(update={"subject_snapshot": relabelled})
-    assert resume_drift(stored, unlabelled, template, toyhost_profile()) == []
+    assert _measured_otherwise(stored, unlabelled, template, toyhost_profile()) is None
 
 
 def _edited(template: EvalTemplate, **fields: Any) -> EvalTemplate:
@@ -312,11 +357,17 @@ def test_a_scoring_guide_edited_since_the_run_launched_refuses_its_take_up_namin
     edited = _edited(template, rubric=[dim.model_copy(update={"scoring_guide": {"5": "Warm and plain."}})])
     fresh = stored.model_copy(update={"template_digest": measured_template_digest(edited)})
 
-    (difference,) = resume_drift(stored, fresh, edited, toyhost_profile())
+    difference = _measured_otherwise(stored, fresh, edited, toyhost_profile())
 
+    assert difference is not None
     assert difference.startswith(f"template {template.id!r}: its measured content changed since the run started")
+    assert difference.endswith("its name and description are not)"), (
+        f"the template's is the one difference: {difference}"
+    )
     reworded = _edited(template, description="Reworded for the catalogue.")
-    assert resume_drift(stored, stored.model_copy(), reworded, toyhost_profile()) == [], "an unmeasured edit passes"
+    assert _measured_otherwise(stored, stored.model_copy(), reworded, toyhost_profile()) is None, (
+        "an unmeasured edit passes"
+    )
 
 
 #: When the tests' template edits land: after every run they interrupt was created.
@@ -581,7 +632,7 @@ async def test_a_cut_short_cell_s_spend_counts_once_before_and_after_its_cell_is
     first = _rows(holder, run_id)
     first_total = sum(row.cost_usd or 0.0 for row in first)
     cut_short = {row.id: row for row in first if row.termination == "cancelled"}
-    assert sum(amount or 0.0 for amount in counted_spend(first)) == pytest.approx(first_total)
+    assert _offered(holder, run_id).spent_usd == pytest.approx(first_total)
     resumer = _cheaply_priced(other_process(holder))
 
     # Just above what it spent, so the take-up stops once its first cell lands: some cells run again, the rest wait.
@@ -596,7 +647,7 @@ async def test_a_cut_short_cell_s_spend_counts_once_before_and_after_its_cell_is
         else:
             assert second[row_id] == row, "a cut-short cell not reached keeps its row and its spend"
     second_total = first_total + sum(row.cost_usd or 0.0 for row in second.values() if row.lease_epoch == 1)
-    assert sum(amount or 0.0 for amount in counted_spend(list(second.values()))) == pytest.approx(second_total)
+    assert _offered(holder, run_id).spent_usd == pytest.approx(second_total)
     with pytest.raises(ValidationFailedError, match=f"spent \\${second_total:.4f}"):
         await resume_run(resumer.launch, run_id, TOYHOST_SCOPE, max_cost_usd=second_total - 0.000000001)
 
@@ -604,7 +655,7 @@ async def test_a_cut_short_cell_s_spend_counts_once_before_and_after_its_cell_is
     assert (await settled(resumer, run_job_id(run_id))).state == "completed"
     last = _rows(holder, run_id)
     assert len(last) == 3 * K
-    assert sum(amount or 0.0 for amount in counted_spend(last)) == pytest.approx(
+    assert _spend_of_every_attempt(last) == pytest.approx(
         second_total + sum(row.cost_usd or 0.0 for row in last if row.lease_epoch == 2)
     )
 
@@ -785,9 +836,10 @@ def test_a_run_that_recorded_no_lever_map_its_host_can_no_longer_place_is_a_diff
     fresh = stored.model_copy(update={"variant_levers": {}, "identity_version": IDENTITY_VERSION})
     unplaceable = dataclasses.replace(toyhost_profile(), variant_levers=lambda run: {"an_undeclared_axis": "x"})
 
-    differences = resume_drift(stored, fresh, template, unplaceable)
+    differences = _measured_otherwise(stored, fresh, template, unplaceable)
 
-    assert [d for d in differences if d.startswith("variant levers (the run recorded none")], differences
+    assert differences is not None
+    assert [d for d in differences.split("; ") if d.startswith("variant levers (the run recorded none")], differences
 
 
 # =============================================================================
