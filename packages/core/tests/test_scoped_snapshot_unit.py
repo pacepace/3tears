@@ -2867,3 +2867,51 @@ async def test_stopping_a_rebuild_whose_abandoned_read_failed_stops_it() -> None
 
     # the failed read must not stand in for the cancellation: a worker told it failed carries on
     await asyncio.wait_for(snapshot.stop(), timeout=5)
+
+
+async def test_a_rebuild_and_a_cold_load_count_every_scope_in_the_status() -> None:
+    builder, pointers, store, l3, _ = _paged(_SIZES)
+    await builder.start()
+    await builder.wait_ready(timeout=10)
+    built = builder.status()
+    await builder.stop()
+    cold, _, _, _ = _snapshot(l3=l3, pointers=pointers, store=store)
+    l3.epochs = dict.fromkeys(_SIZES, 1)
+
+    await cold.start()
+    await cold.wait_ready(timeout=10)
+    loaded = cold.status()
+
+    assert built.source is SnapshotSource.L3 and loaded.source is SnapshotSource.L2
+    assert built.scopes_total == built.scopes_done == len(_SIZES)
+    assert loaded.scopes_total == loaded.scopes_done == len(_SIZES)
+    assert set(built.timings) == {"read_l3", "publish", "total"}
+    assert set(loaded.timings) == {"fetch", "load", "total"}
+    await cold.stop()
+
+
+async def test_a_write_that_outruns_a_rebuild_with_nothing_to_read_leaves_no_index_of_nothing() -> None:
+    snapshot, pointers, _, l3, _ = _paged({})
+    written = False
+    listed = l3.fetch
+
+    async def a_write_commits_once_l3_is_listed(sql: str, *args: Any) -> list[dict[str, Any]]:
+        nonlocal written
+        answer = await listed(sql, *args)
+        if "DISTINCT" in sql and not written:
+            # the write lands DE in L3 just after the rebuild listed L3's scopes, and commits
+            written = True
+            l3.sizes["DE"] = 10
+            l3.reads["DE"] = 0
+            l3.epochs["DE"] = 1
+        return answer
+
+    l3.fetch = a_write_commits_once_l3_is_listed  # type: ignore[method-assign]
+
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=10)
+
+    assert _indexed(pointers) == {"DE"}, "a rebuild a write outran wrote its index of nothing"
+    with snapshot.read() as cursor:
+        assert cursor.execute("SELECT count(*) FROM results WHERE state = 'DE'").fetchone() == (10,)
+    await snapshot.stop()

@@ -3514,7 +3514,8 @@ class ScopedSnapshot:
         and the attempt answers ``None``; the scopes it published stay published (each whole, at its
         epoch, as any publish), and the next attempt reads only the scopes not already published at the
         epoch L3 then records. The index is written whole, and the copy declared ready, only once every
-        scope is published: a rebuild that dies part way leaves no index naming it complete.
+        scope is published and the stamp is still ``before`` after the last: a rebuild that dies part
+        way, or that a write outran, leaves no index naming it complete.
 
         :return: the scopes published, or ``None`` when a write committed during the attempt
         :rtype: list[str] | None
@@ -3552,7 +3553,13 @@ class ScopedSnapshot:
             return True
 
         published: list[str] | None = None
-        if await _in_order(pending, read, publish, ahead=self._l3_concurrency):
+        whole = await _in_order(pending, read, publish, ahead=self._l3_concurrency)
+        # once more after the last scope: the index is written whole only when no write committed during
+        # the attempt, even one that left no scope to read (L3 read empty, or every scope published)
+        after = await self._settled() if self._settled is not None and whole else before
+        if whole and after != before:
+            log.info("scoped snapshot %s: a write committed during the rebuild; reading again", self._name)
+        if whole and after == before:
             await self._update_index(add=scopes, whole=only is None)
             gone = set() if only is not None else set(self._index or ()) - l3_scopes
             if gone:

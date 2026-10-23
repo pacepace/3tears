@@ -16,7 +16,8 @@ published (this L1, its chunks, its pointer) and let go before the rebuild reads
 scopes (default 4), in scope order. A scope is published only while the writer's stamp is still the one
 taken before the epochs were read. Once a write commits, the attempt stops and the next one rereads
 only the scopes not already published at their epoch. The index is written whole, and the copy
-declared ready, only once every scope is in: a rebuild that dies part way names no snapshot complete.
+declared ready, only once every scope is in and the stamp is still unchanged after the last (also when
+there was no scope to read): a rebuild that dies part way names no snapshot complete.
 A cold load from L2 likewise commits each scope in its own transaction, in scope order, holding
 `l2_concurrency` scopes' chunks at a time rather than every scope's. Status timings `read_l3`/`publish`
 and `fetch`/`load` are now seconds summed over the scopes, which overlap. Measured on 3 million
