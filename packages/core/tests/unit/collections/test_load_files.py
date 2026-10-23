@@ -81,6 +81,8 @@ class _TableStore(DurableStore):
         self.failing_file: int | None = None
         #: what that file raises; a broker's refusal when None
         self.failure: BaseException | None = None
+        #: the index of a load call that fails before writing anything, the calls before it landed
+        self.failing_call: int | None = None
 
     async def fetch_one(self, table: str, pk: Any, *, conn: Any = None) -> dict[str, Any] | None:
         self.fetches += 1
@@ -117,6 +119,8 @@ class _TableStore(DurableStore):
                 "timeout_ms": timeout_ms,
             }
         )
+        if len(self.loads) - 1 == self.failing_call:
+            raise DataLayerUnavailableError(f"load {self.failing_call} failed; the loads before it stay committed")
         loaded = []
         for index, file in enumerate(files):
             if index == self.failing_file:
@@ -405,3 +409,64 @@ async def test_a_load_cancelled_part_way_drops_and_advances_then_is_cancelled_st
     assert store.rows["a"]["votes"] == 10
     assert not pod.results.exists_in_cache_sync("a")
     assert source.counts["lsf_results"] == 2  # the save's advance, then the cancelled load's
+
+
+def _files(*rows: int) -> list[LoadFile]:
+    return [LoadFile(url=f"https://bucket/part/{index:04d}.parquet", rows=count) for index, count in enumerate(rows)]
+
+
+async def test_a_load_too_long_for_one_reply_is_sent_as_several_requests_of_whole_files_in_order(
+    bus: FakeNatsClient, store: _TableStore, source: _CountingSource
+) -> None:
+    # a second a row and a transaction a row: three files' rows fit one reply's wait of 3600 s at
+    # 1 000 000 ms a transaction (three transactions, 3002 s)
+    pod = _Pod(bus, store, source=source)
+    files = _files(2, 1, 2, 1)
+    written = await pod.results.load_files(files, columns=["id"], rows_per_transaction=1, timeout_ms=1_000_000)
+    assert written == 6
+    assert [load["files"] for load in store.loads] == [files[:2], files[2:]]
+    assert {(load["rows_per_transaction"], load["timeout_ms"]) for load in store.loads} == {(1, 1_000_000)}
+    assert source.counts["lsf_results"] == 1  # one advance for the whole load
+
+
+async def test_a_state_s_many_files_load_in_one_call_with_the_defaults(
+    bus: FakeNatsClient, store: _TableStore, source: _CountingSource
+) -> None:
+    # one call per state per table, as a caller makes it: 40 files of 120 000 rows are three
+    # transactions each at the defaults, so 19 files fit one reply's wait (57 of 59 transactions)
+    pod = _Pod(bus, store, source=source)
+    files = _files(*([120_000] * 40))
+    assert await pod.results.load_files(files, columns=["id"]) == 40 * 120_000
+    assert [len(load["files"]) for load in store.loads] == [19, 19, 2]
+    assert [file for load in store.loads for file in load["files"]] == files
+    assert source.counts["lsf_results"] == 1
+
+
+async def test_a_failure_in_a_later_request_drops_and_advances_then_raises_it(
+    bus: FakeNatsClient, store: _TableStore, source: _CountingSource
+) -> None:
+    pod = _Pod(bus, store, source=source)
+    await _save(pod, "a", 1)
+    store.failing_call = 1
+    with pytest.raises(DataLayerUnavailableError, match="load 1 failed"):
+        await pod.results.load_files(_files(2, 1, 2, 1), columns=["id"], rows_per_transaction=1, timeout_ms=1_000_000)
+    assert len(store.loads) == 2
+    assert not pod.results.exists_in_cache_sync("a")
+    assert source.counts["lsf_results"] == 2  # the save's advance, then the failed load's
+
+
+async def test_one_file_too_long_for_one_reply_is_refused_before_anything_is_sent(
+    bus: FakeNatsClient, store: _TableStore, source: _CountingSource
+) -> None:
+    pod = _Pod(bus, store, source=source)
+    await _save(pod, "a", 1)
+    with pytest.raises(ValueError, match="file 1 of the load holds 3000000 rows"):
+        await pod.results.load_files(_files(10, 3_000_000), columns=["id"])
+    assert store.loads == []
+    assert pod.results.exists_in_cache_sync("a")
+    assert source.counts["lsf_results"] == 1
+
+
+def test_the_default_transaction_bound_is_a_minute() -> None:
+    assert _Results.LOAD_TIMEOUT_MS == 60_000
+    assert _Results.LOAD_ROWS_PER_TRANSACTION == 50_000

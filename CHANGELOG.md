@@ -107,7 +107,8 @@ run's output), which the caller counts part by part before it asks -- the export
 timeout_ms=None) -> int` loads the table in L3 from parquet files -- a warehouse export's, presigned -- through
 the store's new `LoadingStore` seam, outside any transaction of the caller's: the store fetches each file and
 copies its rows, committing every `rows_per_transaction` rows (default `LOAD_ROWS_PER_TRANSACTION`, 50 000;
-each transaction bounded by `timeout_ms`, default `LOAD_TIMEOUT_MS`, 300 000). Insert-only. A column no file
+each transaction bounded by `timeout_ms`, default `LOAD_TIMEOUT_MS`, 60 000: a 50 000-row binary `COPY` takes
+seconds, so a minute is generous and lets one request carry 59 transactions). Insert-only. A column no file
 holds (a part's value, a load's `date_created`) comes from `constants`. Then, exactly as `truncate()`: the
 table is dropped from this process's caches and its write generation advanced once, with no row broadcast.
 A load that fails drops and advances too, before its failure reaches the caller: the transactions before the
@@ -124,13 +125,16 @@ through one hub process, and the warehouse had already written those rows to S3 
 switched-on table, kept as a write's are; a failure raises as every L3 reply's does, a key already held as
 `asyncpg.UniqueViolationError`; a reply counting other rows than the files declare is raised. The pod waits
 `timeout_ms` for each transaction the files need (each file's rows over `rows_per_transaction`, rounded up;
-one for an empty file) plus two seconds. A load whose wait would pass `LOAD_FILES_MAX_WAIT_SECONDS` (3600,
-`threetears.core.backends.protocol`) is refused with `ValueError` before anything is sent, never sent with a
-shorter wait (the pod would give up while the broker kept committing): NATS request/reply is at most once, so
-a reply lost to a broker restart would otherwise hold the caller for the load's worst case (a day for 15.5
-million rows at the defaults). The caller splits such a load into several, one per partition or state, or
-passes a tighter `timeout_ms`. At the defaults one request carries at most 11 transactions -- 11 files of up
-to 50 000 rows each, since every file is at least one. The request's start is logged at INFO
+one for an empty file) plus two seconds (`load_wait_seconds`), and never past `LOAD_FILES_MAX_WAIT_SECONDS`
+(3600, `threetears.core.backends.protocol`): NATS request/reply is at most once, so a reply lost to a broker
+restart would otherwise hold the caller for the load's worst case (a day for 15.5 million rows in one request).
+`load_files` therefore sends a load too long for one reply as several requests, one after another in the
+files' order, each of whole files and each within the cap (`load_requests`), so a caller makes one call however
+many files it has; the cache drop and the generation advance happen once, after the last request or the one
+that failed. Only a single file too long for the wait on its own (more than 59 transactions at the defaults,
+about 2.95 million rows) is refused, with `ValueError`, before anything is sent. `NatsProxyL3Backend.load_files`
+refuses a request whose wait passes the cap rather than send it with a shorter wait (the pod would give up
+while the broker kept committing), as the guard for a caller of the store itself. The request's start is logged at INFO
 with its wait, and a reply that never comes at ERROR, as a load the broker may have lost or may still be
 running. `NatsProxyL3Backend.nats_request` takes the wait as `timeout_s`. `Subjects.l3_load_files()`; agent
 and tool pods are granted it and the hub subscribes to it; the registry, which only reads, is not.

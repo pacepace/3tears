@@ -22,7 +22,6 @@ none changes nothing.
 from __future__ import annotations
 
 import json
-import math
 import re
 from datetime import UTC, datetime, timedelta
 from collections.abc import Callable, Mapping, Sequence
@@ -45,6 +44,7 @@ from threetears.core.backends.protocol import (
     LoadFile,
     LoadResult,
     RowcountUnreadableError,
+    load_wait_seconds,
 )
 from threetears.core.backends.schema_sql import json_default, transport_param
 from threetears.core.exceptions import (
@@ -548,31 +548,6 @@ def _detect_operation(query: str) -> str:
     return result
 
 
-def _load_files_wait_seconds(files: Sequence[LoadFile], *, rows_per_transaction: int, timeout_ms: int) -> float:
-    """how long an ``l3.load_files`` request waits for its reply, in seconds.
-
-    the broker bounds each transaction of the load by ``timeout_ms`` and commits one every
-    ``rows_per_transaction`` rows of a file, so the load can take ``timeout_ms`` for each
-    transaction the files need: each file's rows over ``rows_per_transaction``, rounded up, and one
-    for a file with no rows, which is still fetched. two seconds' grace on top, as every other L3
-    request has. a load whose wait would pass
-    :data:`~threetears.core.backends.protocol.LOAD_FILES_MAX_WAIT_SECONDS` is refused before it is
-    sent (:meth:`NatsProxyL3Backend.load_files`), never sent with a shorter wait: the pod would stop
-    waiting while the broker kept committing.
-
-    :param files: the files
-    :ptype files: Sequence[LoadFile]
-    :param rows_per_transaction: rows per committed transaction; at least one
-    :ptype rows_per_transaction: int
-    :param timeout_ms: the bound on each transaction, in milliseconds
-    :ptype timeout_ms: int
-    :return: the wait
-    :rtype: float
-    """
-    transactions = sum(max(1, math.ceil(file.rows / rows_per_transaction)) for file in files)
-    return max(1, transactions) * timeout_ms / 1000 + 2
-
-
 def _load_result(response: Mapping[str, Any]) -> LoadResult:
     """the :class:`LoadResult` an ``l3.load_files`` reply carries.
 
@@ -963,10 +938,13 @@ class NatsProxyL3Backend:
         the load runs for as long as its transactions take, far past one statement's bound, so the
         request waits ``timeout_ms`` for each transaction the files need (each file's rows over
         ``rows_per_transaction``, rounded up; a file with no rows still one, for its fetch), plus
-        two seconds' grace. a load whose wait would pass
-        :data:`~threetears.core.backends.protocol.LOAD_FILES_MAX_WAIT_SECONDS` is refused before
-        anything is sent: the caller splits it into several loads (one per partition or state), or
-        bounds each transaction tighter. the request's start is logged with its wait, and a reply
+        two seconds' grace (:func:`~threetears.core.backends.protocol.load_wait_seconds`). a request
+        whose wait would pass :data:`~threetears.core.backends.protocol.LOAD_FILES_MAX_WAIT_SECONDS`
+        is refused before anything is sent, never sent with a shorter wait (the pod would give up
+        while the broker kept committing);
+        :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.load_files` cuts a
+        load into requests that fit (:func:`~threetears.core.backends.protocol.load_requests`), so
+        this refusal is the guard for a caller of the store itself. the request's start is logged with its wait, and a reply
         that never comes is logged as a load the broker may have lost or may still be running.
 
         the broker fetches only a presigned ``https`` URL of a file of the caller's own recorded
@@ -1009,13 +987,13 @@ class NatsProxyL3Backend:
             namespace=namespace,
         )
         subject = Subjects.l3_load_files(namespace=self.ns).path
-        wait = _load_files_wait_seconds(files, rows_per_transaction=rows_per_transaction, timeout_ms=timeout_ms)
+        wait = load_wait_seconds(files, rows_per_transaction=rows_per_transaction, timeout_ms=timeout_ms)
         if wait > LOAD_FILES_MAX_WAIT_SECONDS:
             raise ValueError(
                 f"{table}: a load of {len(files)} files and {sum(file.rows for file in files)} rows can take "
                 f"{wait:.0f} s at {timeout_ms} ms a transaction of {rows_per_transaction} rows, past the "
-                f"{LOAD_FILES_MAX_WAIT_SECONDS} s a pod waits for one l3.load_files reply; split it into several "
-                f"loads (one per partition or state), or bound each transaction tighter"
+                f"{LOAD_FILES_MAX_WAIT_SECONDS} s a pod waits for one l3.load_files reply; send it as several "
+                f"requests (load_requests), as SchemaBackedCollection.load_files does"
             )
         detail = {
             "table": table,

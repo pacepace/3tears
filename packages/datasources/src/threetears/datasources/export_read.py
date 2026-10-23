@@ -76,9 +76,11 @@ __all__ = [
 ]
 
 #: how long a presigned export file stays fetchable by default, in seconds: longer than the most a pod
-#: waits for one load (:data:`~threetears.core.backends.protocol.LOAD_FILES_MAX_WAIT_SECONDS`), with
-#: a quarter of an hour over for the request to be sent, so a file the broker reaches inside the
-#: wait has not expired. Presign each load's files just before it is sent.
+#: waits for one request (:data:`~threetears.core.backends.protocol.LOAD_FILES_MAX_WAIT_SECONDS`), with
+#: a quarter of an hour over for the request to be sent. A load sent as several requests reaches its
+#: later files after the earlier requests' actual time, minutes at a binary COPY's pace; a file that
+#: expired first fails its request, and the load drops and advances as for any failure. Presign
+#: each load's files just before it is sent.
 DEFAULT_PRESIGN_SECONDS = LOAD_FILES_MAX_WAIT_SECONDS + 900
 
 log = get_logger(__name__)

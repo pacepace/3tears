@@ -51,6 +51,7 @@ from threetears.core.backends.protocol import (
     LoadingStore,
     OrderedDurableStore,
     TruncatingStore,
+    load_requests,
 )
 from threetears.core.backends.schema_sql import (
     coerce_row as _coerce_row_fn,
@@ -1926,8 +1927,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     #: millions of rows commits as it goes, so no one transaction holds them all
     LOAD_ROWS_PER_TRANSACTION: ClassVar[int] = 50_000
 
-    #: the most time one transaction of a load from files may take, in milliseconds
-    LOAD_TIMEOUT_MS: ClassVar[int] = 300_000
+    #: the most time one transaction of a load from files may take, in milliseconds. A binary
+    #: ``COPY`` of :attr:`LOAD_ROWS_PER_TRANSACTION` rows takes seconds, so a minute is generous
+    #: headroom, and it lets one ``l3.load_files`` request carry 59 transactions inside the pod's
+    #: wait (:data:`~threetears.core.backends.protocol.LOAD_FILES_MAX_WAIT_SECONDS`)
+    LOAD_TIMEOUT_MS: ClassVar[int] = 60_000
 
     async def save_rows(
         self,
@@ -2158,6 +2162,13 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         transactions before the failure stay committed, and a reply lost or timed out can follow a
         load the broker finished.
 
+        A load too long for one ``l3.load_files`` reply is sent as several requests, one after
+        another in the files' order, each of whole files and each within the pod's wait
+        (:func:`~threetears.core.backends.protocol.load_requests`); the caller sends one call
+        however many files it has. The drop and the advance happen once, after the last request
+        (or after the one that failed). Only a single file too long for the wait on its own is
+        refused, before anything is sent.
+
         :param files: the files, in order
         :ptype files: Sequence[LoadFile]
         :param columns: the table's columns each file supplies
@@ -2172,8 +2183,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype timeout_ms: int | None
         :return: the rows written
         :rtype: int
-        :raises ValueError: when the collection has no durable store, its store cannot load files, or
-            it defers its L3 writes (a buffered row would land among the loaded ones)
+        :raises ValueError: when the collection has no durable store, its store cannot load files,
+            it defers its L3 writes (a buffered row would land among the loaded ones), a bound is
+            under one, or one file alone needs a longer wait than the cap
         :raises GenerationUnavailableError: when the table's write generation had to advance and
             could not; the rows are loaded and this process's caches dropped
         """
@@ -2189,24 +2201,29 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             )
         if not files:
             return 0
+        per_transaction = self.LOAD_ROWS_PER_TRANSACTION if rows_per_transaction is None else rows_per_transaction
+        bound = self.LOAD_TIMEOUT_MS if timeout_ms is None else timeout_ms
+        # refused here, before anything is sent: only a single file too long for one reply
+        requests = load_requests(files, rows_per_transaction=per_transaction, timeout_ms=bound)
+        written = 0
         try:
-            result = await store.load_files(
-                self.table_name,
-                files,
-                columns=columns,
-                constants=dict(constants or {}),
-                rows_per_transaction=self.LOAD_ROWS_PER_TRANSACTION
-                if rows_per_transaction is None
-                else rows_per_transaction,
-                timeout_ms=self.LOAD_TIMEOUT_MS if timeout_ms is None else timeout_ms,
-            )
+            for request in requests:
+                result = await store.load_files(
+                    self.table_name,
+                    request,
+                    columns=columns,
+                    constants=dict(constants or {}),
+                    rows_per_transaction=per_transaction,
+                    timeout_ms=bound,
+                )
+                written += result.row_count
         except (Exception, asyncio.CancelledError) as exc:
-            # the load commits as it goes: the transactions before a failure stay committed, and a
-            # reply lost or timed out may follow a load the broker finished
+            # the load commits as it goes: the requests and transactions before a failure stay
+            # committed, and a reply lost or timed out may follow a load the broker finished
             await self._drop_and_advance_after_failure("load from files failed", exc)
             raise
-        await self._drop_and_advance("loaded from files", rows=result.row_count)
-        return result.row_count
+        await self._drop_and_advance("loaded from files", rows=written, requests=len(requests))
+        return written
 
     async def _drop_and_advance_after_failure(self, reason: str, failure: BaseException) -> None:
         """drop and advance as :meth:`_drop_and_advance` does, after a store call that failed.

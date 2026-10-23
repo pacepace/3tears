@@ -37,6 +37,8 @@ from threetears.core.backends.protocol import (
     LoadFile,
     LoadingStore,
     LoadResult,
+    load_requests,
+    load_wait_seconds,
 )
 from threetears.core.backends.sql import SqlL3Backend, bound_request_connection
 from threetears.core.collections.schema_backed import (
@@ -210,7 +212,7 @@ async def test_a_load_whose_wait_would_pass_the_cap_is_refused_before_anything_i
     # shorter wait would leave the broker committing after the pod gave up, so it is refused instead
     files = [LoadFile(url="https://x/0", rows=15_500_000)]
     broker = _Broker()
-    with pytest.raises(ValueError, match="past the 3600 s a pod waits .* split it into several loads"):
+    with pytest.raises(ValueError, match="past the 3600 s a pod waits .* send it as several requests"):
         await broker.proxy().load_files(
             "lsf_rows", files, columns=["geo"], constants={}, rows_per_transaction=50_000, timeout_ms=300_000
         )
@@ -547,3 +549,45 @@ async def test_a_file_url_a_filesystem_store_presigns_is_loaded(tmp_path: Path) 
     pool = _Pool()
     result = await _direct(_store(pool), [_parquet_file(tmp_path / "a.parquet", _geo_rows("g1"))])
     assert result.row_count == 1
+
+
+# -- a load cut into requests that fit the wait ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("rows", "timeout_ms", "requests"),
+    [
+        ([], 60_000, []),
+        ([1], 60_000, [[1]]),
+        # 1 000 000 ms a transaction leaves room for three in one request (3 * 1000 + 2 <= 3600)
+        ([2, 1, 2, 1], 1_000_000, [[2, 1], [2, 1]]),
+        ([3, 3, 3], 1_000_000, [[3], [3], [3]]),
+        ([1, 1, 1, 1, 0], 1_000_000, [[1, 1, 1], [1, 0]]),
+    ],
+)
+def test_a_load_is_cut_into_requests_of_whole_files_in_order_each_within_the_cap(
+    rows: list[int], timeout_ms: int, requests: list[list[int]]
+) -> None:
+    files = [LoadFile(url=f"https://x/{index}", rows=count) for index, count in enumerate(rows)]
+    planned = load_requests(files, rows_per_transaction=1, timeout_ms=timeout_ms)
+    assert [[file.rows for file in request] for request in planned] == requests
+    assert [file for request in planned for file in request] == files
+    assert all(
+        load_wait_seconds(request, rows_per_transaction=1, timeout_ms=timeout_ms) <= LOAD_FILES_MAX_WAIT_SECONDS
+        for request in planned
+    )
+
+
+def test_one_file_too_long_for_the_wait_on_its_own_is_refused() -> None:
+    # 60 transactions of 50 000 rows at a minute each: 3602 s, past the cap
+    files = [LoadFile(url="https://x/0", rows=1), LoadFile(url="https://x/1", rows=3_000_000)]
+    with pytest.raises(ValueError, match="file 1 of the load holds 3000000 rows: 60 transactions"):
+        load_requests(files, rows_per_transaction=50_000, timeout_ms=60_000)
+
+
+@pytest.mark.parametrize(("per_transaction", "timeout_ms"), [(0, 1000), (1, 0)])
+def test_a_plan_with_a_bound_under_one_is_refused(per_transaction: int, timeout_ms: int) -> None:
+    with pytest.raises(ValueError, match="must be at least 1"):
+        load_requests(
+            [LoadFile(url="https://x/0", rows=1)], rows_per_transaction=per_transaction, timeout_ms=timeout_ms
+        )
