@@ -327,6 +327,8 @@ def test_l3_subjects() -> None:
     assert Subjects.l3_batch().path == "3tears.l3.batch"
     assert Subjects.l3_truncate().path == "3tears.l3.truncate"
     assert Subjects.l3_truncate(namespace="aibots").path == "aibots.l3.truncate"
+    assert Subjects.l3_load_files().path == "3tears.l3.load_files"
+    assert Subjects.l3_load_files(namespace="aibots").path == "aibots.l3.load_files"
     assert Subjects.l3_tx("copy").path == "3tears.l3.tx.copy"
     assert Subjects.l3_tx("begin").path == "3tears.l3.tx.begin"
     assert Subjects.l3_tx("execute").path == "3tears.l3.tx.execute"

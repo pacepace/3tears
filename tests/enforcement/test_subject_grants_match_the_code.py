@@ -196,10 +196,10 @@ def _inprocess_pod() -> str:
 def _l3(*, truncates: bool = True) -> tuple[str, ...]:
     """the L3 broker subjects ``NatsProxyL3Backend`` requests, every transaction op included.
 
-    :param truncates: whether the site empties tables (``l3.truncate``); a reader that never does,
-        the registry, is not granted it
+    :param truncates: whether the site empties and reloads tables (``l3.truncate``,
+        ``l3.load_files``); a reader that never does, the registry, is not granted them
     :ptype truncates: bool
-    :return: query, batch, truncate when asked, and each transaction op
+    :return: query, batch, truncate and load_files when asked, and each transaction op
     :rtype: tuple[str, ...]
     """
     ops: tuple[Literal["begin", "execute", "fetch", "fetchrow", "copy", "commit", "rollback"], ...] = (
@@ -211,7 +211,7 @@ def _l3(*, truncates: bool = True) -> tuple[str, ...]:
         "commit",
         "rollback",
     )
-    truncate = (str(Subjects.l3_truncate()),) if truncates else ()
+    truncate = (str(Subjects.l3_truncate()), str(Subjects.l3_load_files())) if truncates else ()
     return (
         str(Subjects.l3_query()),
         str(Subjects.l3_batch()),

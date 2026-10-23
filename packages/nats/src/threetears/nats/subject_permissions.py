@@ -1692,6 +1692,7 @@ def _agent_pod(
         str(Subjects.l3_query()),
         str(Subjects.l3_batch()),
         str(Subjects.l3_truncate()),
+        str(Subjects.l3_load_files()),
         f"{ns}.l3.tx.*",  # mirrors Subjects.l3_tx(op) over all seven ops
         f"{ns}.channels.deliver.*",  # publishes finished answers (any inbound channel type)
         f"{ns}.hub.stream.{_seg(a)}.*",  # streams tokens for its own (per-request) correlation ids under its own authed agent id
@@ -1879,6 +1880,7 @@ def _tool_pod(
         str(Subjects.l3_query()),
         str(Subjects.l3_batch()),
         str(Subjects.l3_truncate()),
+        str(Subjects.l3_load_files()),
         f"{ns}.l3.tx.*",  # mirrors Subjects.l3_tx(op) over all seven ops, as the agent pod holds it
         # a datasource, reached the same way: the hub answers ``{ns}.datasource.{name}.query``
         # for every datasource it serves, verifies the forwarded hub-minted token at the
@@ -2230,6 +2232,7 @@ def _hub(
         str(Subjects.l3_query()),
         str(Subjects.l3_batch()),
         str(Subjects.l3_truncate()),
+        str(Subjects.l3_load_files()),
         f"{ns}.l3.tx.*",
         str(Subjects.datasource_query_wildcard()),  # answers every datasource's query subject
         str(Subjects.tools_register()),  # materializes tool namespace rows

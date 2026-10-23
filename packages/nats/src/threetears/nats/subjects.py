@@ -2082,6 +2082,23 @@ class Subjects:
         return Subject(path=f"{namespace or _ns()}.l3.truncate", kind="point")
 
     @classmethod
+    def l3_load_files(cls, *, namespace: str | None = None) -> Subject:
+        """request/reply subject for agent -> L3 broker bulk load of one of its own tables from files.
+
+        outside any transaction: the broker fetches each presigned URL the pod hands it (a
+        warehouse export's parquet files), and copies their rows with ``COPY`` into a declared table of the
+        caller's own data space, committing every ``rows_per_transaction`` rows. the rows never
+        cross the bus.
+
+        :param namespace: the subject namespace, for a client built on an explicit one; the
+            process default when ``None``
+        :ptype namespace: str | None
+        :return: subject ``{ns}.l3.load_files``
+        :rtype: Subject
+        """
+        return Subject(path=f"{namespace or _ns()}.l3.load_files", kind="point")
+
+    @classmethod
     def l3_tx(
         cls,
         op: Literal["begin", "execute", "fetchrow", "fetch", "copy", "commit", "rollback"],
