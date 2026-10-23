@@ -92,7 +92,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -114,7 +113,6 @@ __all__ = [
     "OperationStatusTool",
     "RecordedOutcome",
     "RequestOperationTool",
-    "RequestedRun",
     "RunningElsewhere",
     "SharedOutcome",
     "SharedProgress",
@@ -186,18 +184,6 @@ class OperationOutcome(Generic[ResultT]):
         :rtype: bool
         """
         return self.error is None
-
-
-@dataclass(frozen=True)
-class RequestedRun:
-    """the run that takes a request (:meth:`BackgroundOperation.request_run`).
-
-    :ivar started: True when the request started this run; False when it runs after the run in progress
-    :ivar run_id: the id of the run that takes the request: the one started, or the one that follows
-    """
-
-    started: bool
-    run_id: str
 
 
 @dataclass(frozen=True)
@@ -676,7 +662,7 @@ class BackgroundOperation(Generic[ResultT]):
         # the id of the run a request made during the run in progress has queued to follow it
         self._next_run_id: str | None = None
         # the ids of the runs that ended here, newest first, whether or not they are kept as the last
-        self._ended_run_ids: deque[str] = deque(maxlen=_ENDED_RUN_IDS)
+        self._ended_run_ids: tuple[str, ...] = ()
         self._last: OperationOutcome[ResultT] | None = None
         # whether the last outcome is a run's and one the shared record holds; not a wait that failed
         # (no run), nor a run that did nothing
@@ -773,15 +759,16 @@ class BackgroundOperation(Generic[ResultT]):
         :rtype: bool
         :raises TypeError: when the operation was built without ``request=``
         """
-        return (await self.request_run()).started
+        started, _run_id = await self.request_run()
+        return started
 
-    async def request_run(self) -> RequestedRun:
+    async def request_run(self) -> tuple[bool, str]:
         """:meth:`request`, answering which run takes the request, by its id.
 
-        :return: whether a run was started, and the id of the run that takes the request: the one
-            started, or the one queued to follow the run in progress (every request made during that
-            run is taken by the same one)
-        :rtype: RequestedRun
+        :return: whether a run was started (False when it runs after the run in progress), and the id of
+            the run that takes the request: the one started, or the one queued to follow the run in
+            progress (every request made during that run is taken by the same one)
+        :rtype: tuple[bool, str]
         :raises TypeError: when the operation was built without ``request=``
         """
         if self._request is None:
@@ -795,7 +782,7 @@ class BackgroundOperation(Generic[ResultT]):
         run_id = self._run_id if started else self._next_run_id
         if run_id is None:
             raise RuntimeError(f"{self._name}: a run was started or queued without an id")
-        return RequestedRun(started=started, run_id=run_id)
+        return started, run_id
 
     async def wait(self) -> None:
         """wait for the run in progress, if any, to end.
@@ -1235,7 +1222,7 @@ class BackgroundOperation(Generic[ResultT]):
             log.info("background operation finished", extra={"extra_data": {"operation": self._name}})
         await self._share(outcome)
         if run_id is not None:
-            self._ended_run_ids.appendleft(run_id)
+            self._ended_run_ids = (run_id, *self._ended_run_ids)[:_ENDED_RUN_IDS]
 
 
 class _OperationTool(TearsTool):
@@ -1426,15 +1413,13 @@ class RequestOperationTool(_OperationTool):
         if operation is None:
             result = ToolResult(success=False, content="", error=_NOT_READY, error_code=TOOL_NOT_READY)
         else:
-            requested = await operation.request_run()
+            started, run_id = await operation.request_run()
             content = (
                 f"started; {self._status_tool} says when it ends and how"
-                if requested.started
+                if started
                 else f"requested; it runs after the run in progress, and {self._status_tool} says when it ends"
             )
-            result = ToolResult(
-                success=True, content=content, metadata={"started": requested.started, "run_id": requested.run_id}
-            )
+            result = ToolResult(success=True, content=content, metadata={"started": started, "run_id": run_id})
         return result
 
 

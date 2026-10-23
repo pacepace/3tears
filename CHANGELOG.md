@@ -141,8 +141,8 @@ writes lost over a run whose lease has passed to another holding. See `packages/
 
 **Added:** each `BackgroundOperation` run has an id, a UUIDv7 string given when it starts:
 `OperationOutcome.run_id`, `BackgroundOperation.run_id` (the run in progress) and
-`BackgroundOperation.request_run()`, which requests as `request()` does and returns a `RequestedRun(started,
-run_id)` naming the run that takes the request (every request made during a run is taken by the one run queued to
+`BackgroundOperation.request_run()`, which requests as `request()` does and returns `(started, run_id)`, naming
+the run that takes the request (every request made during a run is taken by the one run queued to
 follow it). `StartOperationTool` and `RequestOperationTool` answer `run_id` in their metadata beside `started`.
 `OperationStatusTool` reports `run_id` (of the run in progress), `last.run_id`, and `ended_run_ids`: the ids of the
 last 16 runs that ended on the replica answering, newest first, a run that did nothing included (it is never
@@ -171,8 +171,8 @@ past `max_hold_seconds` (new, default 600 s), the lease's rule for a wedged hold
 
 ### core: every collection key read is counted by the tier that answered it
 
-**Added:** `threetears.core.collections.tier_reads` (`ReadTier`, `record_tier_read`, `log_tier_reads_every`,
-`log_tier_reads`, `hold_tier_reads_timer`, `release_tier_reads_timer`, `TIER_READS_LOG_SECONDS`).
+**Added:** `threetears.core.collections.tier_reads` (`ReadTier`, `record_tier_read`, `hold_tier_reads_timer`,
+`release_tier_reads_timer`).
 `BaseCollection.ensure`, a subscript read (`collection[key]`) and every key read built on them count each read as
 L1 (this process, an absence marker included), L2 (the shared cache) or L3 (the store), by table. The counters are
 the process's, and so is the one timer that logs them once a minute at INFO, as one line naming each table's
