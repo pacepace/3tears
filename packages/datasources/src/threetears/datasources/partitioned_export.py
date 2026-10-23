@@ -233,7 +233,7 @@ async def export_partitions(
         asked = sorted(set(before) | set(parts or ()), key=lambda value: (value is not None, value or ""))
 
         def start(value: str | None) -> asyncio.Task[list[dict[str, Any]]]:
-            keys = [file.key for file in files.get(value, [])]
+            keys = [file.object_name for file in files.get(value, [])]
             return asyncio.ensure_future(_read_part(store, keys, file_concurrency))
 
         # the next part is read while the caller works on this one
@@ -402,7 +402,10 @@ async def _counted_files(
                 raise IncompleteExportError(
                     f"{partition_by}={part}: the manifest counts {rows} rows, the caller {counts[part]}"
                 )
-            files[part] = (*files.get(part, ()), *(CountedFile(path=file.key, rows=file.rows) for file in part_files))
+            files[part] = (
+                *files.get(part, ()),
+                *(CountedFile(path=file.object_name, rows=file.rows) for file in part_files),
+            )
     missing = sorted(part for part in set(counts) - set(files))
     if missing:
         raise IncompleteExportError(f"the export holds no file of {partition_by} {missing[:10]}")

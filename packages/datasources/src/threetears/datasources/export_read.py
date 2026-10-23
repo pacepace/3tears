@@ -198,13 +198,13 @@ class _ManifestFile:
 
     :ivar url: the entry's ``url``, as the manifest names it
     :ivar relative: its path under the export's prefix
-    :ivar key: its object key in the export bucket
+    :ivar object_name: its object's name in the export bucket (its key there)
     :ivar rows: the rows the manifest counts for it; None when it counts none
     """
 
     url: str
     relative: str
-    key: str
+    object_name: str
     rows: int | None
 
 
@@ -230,7 +230,9 @@ def _manifest_entries(manifest: Mapping[str, Any], result: DatasourceExportResul
             raise IncompleteExportError(f"the export's manifest names {url!r}, which is not {of} {where}")
         rows = (entry.get("meta") or {}).get("record_count")
         counted = rows if isinstance(rows, int) and not isinstance(rows, bool) and rows >= 0 else None
-        files.append(_ManifestFile(url=url, relative=relative, key=f"{result.object_prefix}{relative}", rows=counted))
+        files.append(
+            _ManifestFile(url=url, relative=relative, object_name=f"{result.object_prefix}{relative}", rows=counted)
+        )
     return files
 
 
@@ -304,7 +306,7 @@ async def read_export(store: ExportStore, result: DatasourceExportResult, *, buc
                 f"the export's manifest counts {counted} rows, the warehouse says it wrote {result.row_count}"
             )
         for file in files:
-            rows.extend(_parquet_rows(await _read_object(store, file.key)))
+            rows.extend(_parquet_rows(await _read_object(store, file.object_name)))
     if len(rows) != result.row_count:
         raise IncompleteExportError(
             f"the export's files hold {len(rows)} rows, the warehouse says it wrote {result.row_count}"
