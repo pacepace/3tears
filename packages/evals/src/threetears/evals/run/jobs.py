@@ -1003,6 +1003,7 @@ class EvalJobManager:
                         run.scope_id,
                         cancel=functools.partial(self.cancel_job, run.id),
                         stop=functools.partial(self._fence, run.id),
+                        epoch=run.lease.epoch if run.lease is not None else 0,
                     )
                 task = asyncio.create_task(
                     self._run_job(run.id, run.scope_id, work, job_timeout_s, slot=slot),
@@ -1156,6 +1157,14 @@ class EvalJobManager:
                 cancellation_reason=self._cancel_reasons.get(run_id),
             )
             raise
+        except JobFenced as fenced:
+            # A cell's write found the run's record no longer this holding's: written lost by another reader, or
+            # taken up at a later epoch. The run's work stopped there, as a fenced renewal stops it, and nothing more
+            # is written of it — its record answers how it ended.
+            # NOSILENT: the record carries the run's ending (its loss, or the later holding's); this holding has none.
+            log.warning("Job %s: %s — stopping it; nothing more is written", run_id, fenced)
+            if self._leases is not None:
+                self._leases.let_go(run_id)
         except BudgetStoppedError as stop:
             # Graceful mid-run cost-cap stop: already-delivered results
             # are persisted. This is an honest terminal outcome, NOT an infra
@@ -1498,8 +1507,8 @@ class EvalJobManager:
             failed — a tick is not retried, since the next one supersedes it; ``None`` when there is no
             document to write to — one deleted from under the live job; ``"declined"`` when the run has
             already reached a terminal status, which no progress tick may reopen; or ``"fenced"`` when that
-            status is a loss another writer recorded, so this job no longer holds the run. None of the last
-            three is a refusal and none is logged as one.
+            status is a loss another writer recorded, or the run's lease has passed to another holding of it, so
+            this job no longer holds the run. None of the last three is a refusal and none is logged as one.
         :rtype: Literal['saved', 'refused', 'declined', 'fenced'] | None
         """
         run, etag = self._storage.load_eval_run_with_etag(run_id, scope_id)

@@ -100,7 +100,8 @@ def update_eval_run(
     :ptype attempts: int
     :param leases: The leases of the process running the run, when this is the run's own write: it is then made as
         the holder's own (:meth:`~threetears.evals.kernel.JobLeases.write_own`), which extends the run's lease, and a
-        run whose lease that write finds lapsed is ``"declined"`` — it no longer holds the run, and writes nothing.
+        run whose lease that write finds lapsed, or passed to another holding of the run (another process, or a later
+        epoch), is ``"declined"`` — it no longer holds the run, and writes nothing.
     :ptype leases: JobLeases | None
     :return: ``"saved"`` when the write landed; ``"declined"`` when ``mutate`` returned
         ``None``, which is a decision and not a failure — the stored document is
@@ -143,8 +144,8 @@ def update_eval_run(
                 leases.write_own(current, EvalRun.from_dict(document), save)
             else:
                 store.save_eval_run(EvalRun.from_dict(document), if_match=etag)
-        except JobFenced:
-            log.warning("eval.update_run run=%s scope=%s: its lease lapsed — not written", run_id, scope_id)
+        except JobFenced as fenced:
+            log.warning("eval.update_run run=%s scope=%s: not written — %s", run_id, scope_id, fenced)
             return "declined"
         except ConflictError:
             # A lost race: another writer's document now stands. Says what happens NEXT, so the last line does not

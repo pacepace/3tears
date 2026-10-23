@@ -61,7 +61,7 @@ from threetears.evals.ops import OpsHost, analyses_list, analysis_generate, job_
 from threetears.evals.ops import LaunchArguments, SweepArguments, SweepArm, generation_key, sweep_launch
 from threetears.evals.ops import sweeps
 from threetears.evals.run import sweep_abandoned_runs
-from threetears.evals.schema import EvalRun, JobLease, StoreConflict
+from threetears.evals.schema import EvalResult, EvalRun, JobLease, StoreConflict
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.kind import TOY_SCRIPTS, ScriptedExtractionClient
@@ -443,6 +443,81 @@ class RenewalRefusingStore(ClockedStore):
             if stored is not None and stored.get("lease") != document["lease"]:
                 raise RuntimeError("the store refused the renewal")
         super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+def _results(host: OpsHost, run_id: str) -> list[EvalResult]:
+    return off_loop(host.eval_host.storage.query_eval_results_by_run, run_id, TOYHOST_SCOPE)
+
+
+async def test_a_holder_whose_run_was_written_lost_elsewhere_writes_no_result_rows_into_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Its cells were in flight when another process wrote the run lost; they finish, and none is stored."""
+    gate = _held_extraction(monkeypatch)
+    store = ClockedStore()
+    holder = off_loop(ops_fixture, store=store).host
+    run_id = await _running_run(holder)
+    store.at = T0 + timedelta(seconds=61)
+    assert (await job_poll(_other_process(holder), run_job_id(run_id), TOYHOST_SCOPE)).state == "lost"
+    written = off_loop(_run, holder, run_id)
+
+    gate.set()
+    await _until(lambda: not holder.launch.job_manager.is_active(run_id))
+
+    assert _results(holder, run_id) == [], "the lost run took no row from the holding it was lost by"
+    assert off_loop(_run, holder, run_id) == written, "nor any other write"
+
+
+async def test_a_graceful_shutdown_s_cancelled_cells_write_no_rows_into_the_run_it_wrote_lost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shutdown writes the run lost, then cancels it: the cells it cancels mid-flight are not the run's."""
+    _held_extraction(monkeypatch)
+    holder = off_loop(ops_fixture).host
+    run_id = await _running_run(holder)
+
+    await holder.launch.job_manager.shutdown()
+
+    run = off_loop(_run, holder, run_id)
+    assert run.lost is not None and run.lost.cause == SHUTDOWN_CAUSE
+    assert _results(holder, run_id) == [], "no cancelled row landed in the run written lost"
+
+
+async def test_an_operator_cancel_still_records_the_cells_it_cut_short(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run cancelled on purpose is not lost: the cells the cancel cut short are recorded, with what they spent."""
+    _held_extraction(monkeypatch)
+    holder = off_loop(ops_fixture).host
+    run_id = await _running_run(holder)
+
+    assert holder.launch.job_manager.cancel_job(run_id, reason="operator said stop")
+    await _until(lambda: not holder.launch.job_manager.is_active(run_id))
+
+    run = off_loop(_run, holder, run_id)
+    assert (run.status, run.lost) == ("cancelled", None)
+    rows = _results(holder, run_id)
+    assert rows and {row.termination for row in rows} == {"cancelled"}, rows
+
+
+async def test_a_holding_whose_run_was_taken_up_at_a_later_epoch_writes_nothing_more_into_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The run's lease passed to a later holding while its cells ran: none of them, nor anything else, is written."""
+    gate = _held_extraction(monkeypatch)
+    holder = off_loop(ops_fixture).host
+    run_id = await _running_run(holder)
+    storage = holder.eval_host.storage
+    stored, etag = off_loop(_stored_run, storage, run_id)
+    later = JobLease(
+        holder="the-later-holding", expires_at=(datetime.now(UTC) + timedelta(hours=1)).isoformat(), epoch=1
+    )
+    off_loop(storage.save_eval_run, stored.model_copy(update={"lease": later}), if_match=etag)
+    taken_up = off_loop(_run, holder, run_id)
+
+    gate.set()
+    await _until(lambda: not holder.launch.job_manager.is_active(run_id))
+
+    assert _results(holder, run_id) == [], "no cell of the superseded holding was stored"
+    assert off_loop(_run, holder, run_id) == taken_up, "nor its progress, its completeness or its ending"
 
 
 async def test_a_run_whose_renewals_fail_for_a_whole_lease_is_stopped_and_writes_nothing_more(
@@ -1172,7 +1247,11 @@ async def test_an_own_write_never_revives_a_lease_the_stores_clock_reads_lapsed(
 
 @pytest.mark.parametrize(
     ("whose", "extended"),
-    [("this process's, held here", True), ("another process's", False), ("this process's, not held here", False)],
+    [
+        ("this process's, held here", True),
+        ("another process's, not held here", False),
+        ("this process's, not held here", False),
+    ],
 )
 async def test_an_own_write_extends_only_a_lease_this_process_holds(whose: str, extended: bool) -> None:
     store = ClockedStore()
@@ -1181,11 +1260,11 @@ async def test_an_own_write_extends_only_a_lease_this_process_holds(whose: str, 
     try:
         lease = (
             JobLease(holder="another-process", expires_at=(T0 + timedelta(seconds=OWN_LEASE_S)).isoformat())
-            if whose == "another process's"
+            if whose == "another process's, not held here"
             else off_loop(leases.grant)
         )
         _seeded_run(storage, "run-own", lease)
-        if whose != "this process's, not held here":
+        if whose == "this process's, held here":
             leases.hold(RUN_JOB, "run-own", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: None)
         await asyncio.sleep(DUE_S)
         store.at = T0 + timedelta(seconds=1)
@@ -1219,6 +1298,62 @@ class ClockFailingStore(ClockedStore):
         if self.clock_down:
             raise RuntimeError("the store's clock query failed")
         return self.at
+
+
+@pytest.mark.parametrize(
+    "passed_to",
+    ["another process", "this process at a later epoch"],
+)
+async def test_an_own_write_of_a_record_whose_lease_passed_to_another_holding_is_fenced(passed_to: str) -> None:
+    """A run held here whose stored lease now names another holding: its progress write is refused, and it stops."""
+    store = ClockedStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=OWN_LEASE_S)
+    stopped: list[str] = []
+    try:
+        granted = off_loop(leases.grant)
+        _seeded_run(storage, "run-own", granted)
+        leases.hold(RUN_JOB, "run-own", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: stopped.append("x"))
+        later = (
+            JobLease(holder="another-process", expires_at=granted.expires_at, epoch=1)
+            if passed_to == "another process"
+            else granted.model_copy(update={"epoch": 1})
+        )
+        stored, etag = off_loop(_stored_run, storage, "run-own")
+        off_loop(storage.save_eval_run, stored.model_copy(update={"lease": later}), if_match=etag)
+
+        with pytest.raises(JobFenced, match="passed to process"):
+            await _own_write(leases, storage, "run-own")
+        await asyncio.sleep(0.05)
+
+        after, _ = off_loop(_stored_run, storage, "run-own")
+        assert (after.lease, after.progress) == (later, stored.progress), "nothing was written"
+        assert leases.fenced("run-own") and stopped == ["x"], "the holder let it go and stopped its job"
+    finally:
+        await leases.shut_down()
+
+
+async def test_a_renewal_finding_its_lease_at_a_later_epoch_stops_the_job() -> None:
+    """The same process holding the record's lease at another epoch is another holding: the renewal fences it."""
+    store = ClockedStore()
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=OWN_LEASE_S)
+    stopped: list[str] = []
+    try:
+        granted = off_loop(leases.grant)
+        _seeded_run(storage, "run-own", granted)
+        leases.hold(RUN_JOB, "run-own", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: stopped.append("x"))
+        stored, etag = off_loop(_stored_run, storage, "run-own")
+        later = granted.model_copy(update={"epoch": 1})
+        off_loop(storage.save_eval_run, stored.model_copy(update={"lease": later}), if_match=etag)
+
+        await _until(lambda: stopped == ["x"], timeout=5.0)  # the first renewal comes at one interval, a second
+
+        after, _ = off_loop(_stored_run, storage, "run-own")
+        assert after.lease == later, "the renewal did not extend a lease it no longer holds"
+        assert leases.fenced("run-own")
+    finally:
+        await leases.shut_down()
 
 
 async def test_an_own_write_whose_clock_read_fails_still_lands_with_its_lease_as_stored(

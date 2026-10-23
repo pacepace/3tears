@@ -17,10 +17,13 @@ did not start a job read a live one as lost, and a cancel there was refused. Her
 - **A holder that has lost its lease writes nothing more.** Its renewal finding the record ended by someone else,
   or its own lease lapsed (which it writes lost itself, as any reader would), stops the work at once; a write the
   work makes of its own record goes through :func:`write_held_record`, which refuses a record already ended and
-  raises :class:`~threetears.evals.kernel.JobFenced`. A run's own writes are refused the same way: its status
-  write takes nothing over a record carrying ``lost``, its own ending included, and the process that lost it
-  neither broadcasts that ending nor tells the run-end hook. The one thing a holder whose renewals failed for a whole
-  lease still writes is why, as a fault on its record (``faults``, every kind alike), never its status or its ending.
+  raises :class:`~threetears.evals.kernel.JobFenced`. So does a holder's write finding the stored lease passed to
+  another holding (another process, or a later ``epoch`` of the job, :meth:`JobLeases.write_own`), and a run's cell
+  write into a run written lost or held at a later epoch (:meth:`~threetears.evals.kernel.EvalStorage.save_eval_result`).
+  A run's own writes are refused the same way: its status write takes nothing over a record carrying ``lost``, its
+  own ending included, and the process that lost it neither broadcasts that ending nor tells the run-end hook. The
+  one thing a holder whose renewals failed for a whole lease still writes is why, as a fault on its record
+  (``faults``, every kind alike), never its status or its ending.
 - **A holder's own writes keep its lease too.** Every conditional write a job makes of its own record — a run's
   progress and status, a launch's, a sweep's or an attempt's record — goes through :meth:`JobLeases.write_own`, which
   extends the lease as a renewal does. So a job whose writes keep beating its renewals to the record keeps its lease,
@@ -250,6 +253,13 @@ def lease_lapsed(record: LeasedRecord, now: datetime) -> bool:
     :rtype: bool
     """
     return record.lease is None or record.lease.expires() <= now
+
+
+def _passed(lease: JobLease | None, holder: str, epoch: int) -> bool:
+    """Whether a stored lease has passed from the holding ``(holder, epoch)``: it names another process, or the same
+    process at another epoch — the job was taken up again. A record carrying no lease has passed from nobody: it reads
+    lost by its own rule (:func:`lease_lapsed`)."""
+    return lease is not None and (lease.holder, lease.epoch) != (holder, epoch)
 
 
 def _lapse_cause(record: LeasedRecord) -> str:
@@ -542,6 +552,9 @@ class _Held:
     scope_id: str
     cancel: Callable[[str | None], object]
     stop: Callable[[], object]
+    #: The epoch of the lease this process was granted on the record: a stored lease at another epoch, or naming
+    #: another holder, is no longer this holding's (:func:`_passed`).
+    epoch: int = field(default=0)
     cancel_delivered: bool = field(default=False)
     #: Why the last renewal failed, as ``<error type>: <message>``, until one succeeds: the fault the record is given
     #: when the failures cost the lease (:meth:`JobLeases._expire`).
@@ -633,15 +646,18 @@ class JobLeases:
         :attr:`lease_s`."""
         return self._lease_s * JOB_LEASE_RENEWAL_FRACTION
 
-    def grant(self) -> JobLease:
+    def grant(self, epoch: int = 0) -> JobLease:
         """A fresh lease for a record about to be written: this process, until :attr:`lease_s` from the store's now.
 
         Blocking: it reads the store's time.
 
+        :param epoch: Which holding of the job the lease is (:attr:`~threetears.evals.schema.JobLease.epoch`): 0 for
+            a job starting fresh.
+        :ptype epoch: int
         :return: The lease.
         :rtype: JobLease
         """
-        return JobLease(holder=self._holder_id, expires_at=self._expiry(self._store.store_time()))
+        return JobLease(holder=self._holder_id, expires_at=self._expiry(self._store.store_time()), epoch=epoch)
 
     def _pool(self) -> ThreadPoolExecutor:
         """The leases' own pool, made when first needed (:meth:`_close_pool` lets it go; the next need makes another)."""
@@ -665,7 +681,7 @@ class JobLeases:
         lease = leased.lease
         if lease is None or lease.holder != self._holder_id or lease_lapsed(leased, now):
             return None
-        return JobLease(holder=self._holder_id, expires_at=self._expiry(now))
+        return JobLease(holder=self._holder_id, expires_at=self._expiry(now), epoch=lease.epoch)
 
     def write_own[R: EvalDocumentModel](self, stored: R, written: R, save: Callable[[R], None]) -> R:
         """The holder's own conditional write of a record it holds: ``written`` lands through ``save``, keeping the lease.
@@ -676,11 +692,13 @@ class JobLeases:
         :attr:`lease_s` from the store's now), and once the write lands it counts as a renewal: the lease is reckoned
         extended from when the write was issued, and a cancel asked of the job is handed to it, on the event loop the
         leases are held on. So a job whose own writes keep beating its renewals to the record keeps its lease, and
-        hears a cancel. Any other record — another process's lease, one this process does not hold — goes out with
-        its lease as stored, and so does a write that ends the job (its lease no longer matters, and a cancel would
-        reach a job already over) and one made while the lease was extended under half a renewal interval ago (no
-        renewal is due, so the store's clock is not read for it: a job ticking fast pays that round-trip at most twice
-        an interval).
+        hears a cancel. A record this process holds whose stored lease names another holding — another process, or
+        this one at another epoch, because the job was taken up again — refuses the write: this process lets it go
+        and stops its job (unless the write was its ending), and nothing is written. A record this process does not
+        hold goes out with its lease as stored, and so does a write that ends the job (its lease no longer matters,
+        and a cancel would reach a job already over) and one made while the lease was extended under half a renewal
+        interval ago (no renewal is due, so the store's clock is not read for it: a job ticking fast pays that
+        round-trip at most twice an interval).
 
         A lease the store's clock reads lapsed is never revived: the record is written lost, as a renewal writes it,
         this process lets it go and stops its job, and nothing is written. A store clock that cannot be read leaves the
@@ -696,13 +714,20 @@ class JobLeases:
         :ptype save: Callable[[R], None]
         :return: The record as written.
         :rtype: R
-        :raises JobFenced: The lease has lapsed by the store's time; nothing was written.
+        :raises JobFenced: The lease has lapsed by the store's time, or has passed to another holding of the job (another
+            process, or another epoch) while this process holds the record; nothing was written.
         :raises ConflictError: ``save`` lost its race.
         :raises StorageError: ``save`` failed.
         """
         leased = _leased(stored)
         held = self._held.get(leased.id)
         lease = leased.lease
+        if held is not None and lease is not None and _passed(lease, self._holder_id, held.epoch):
+            self._fence_passed(held, lease, ending=held.kind.ended(written))
+            raise JobFenced(
+                f"{held.kind.name} job '{leased.id}': its lease passed to process {lease.holder} at epoch "
+                f"{lease.epoch}; this holding (epoch {held.epoch}) writes nothing more"
+            )
         issued = time.monotonic()  # before the store's time is read for the extension, as a renewal's is
         extended: JobLease | None = None
         if (
@@ -741,6 +766,24 @@ class JobLeases:
             asked = (leased.cancel_request_reason,) if leased.cancel_requested_at is not None else None
             self._on_loop(self._renewed_by_own_write, held, issued, asked)
         return out
+
+    def _fence_passed(self, held: _Held, lease: JobLease, *, ending: bool) -> None:
+        """Let go of a record whose stored lease names another holding, and stop its job on the loop unless the refused
+        write was its ending. Nothing is written: the record is the other holding's. Called off the loop, from
+        :meth:`write_own`."""
+        self.let_go(held.record_id)
+        log.warning(
+            "eval.job_lease %s=%s scope=%s: its lease passed to process %s at epoch %d (this holding: epoch %d) — "
+            "stopping it",
+            held.kind.name,
+            held.record_id,
+            held.scope_id,
+            lease.holder,
+            lease.epoch,
+            held.epoch,
+        )
+        if not ending:
+            self._on_loop(held.stop)
 
     def _fence_lapsed(self, held: _Held) -> None:
         """Let go of a record whose lease its own write found lapsed by the store's time, write it lost as a renewal
@@ -818,6 +861,7 @@ class JobLeases:
         *,
         cancel: Callable[[str | None], object],
         stop: Callable[[], object],
+        epoch: int = 0,
     ) -> None:
         """Start renewing a record's lease — its first write carried one from :meth:`grant` — until it is released.
 
@@ -833,10 +877,15 @@ class JobLeases:
             asked of it.
         :ptype cancel: Callable[[str | None], object]
         :param stop: Stops the job at once; called when a renewal finds its record ended by another or its lease
-            lapsed, after which the job's writes are refused.
+            lapsed or passed to another holding, after which the job's writes are refused.
         :ptype stop: Callable[[], object]
+        :param epoch: The epoch of the lease :meth:`grant` gave the record's write; a stored lease at another epoch has
+            passed from this holding.
+        :ptype epoch: int
         """
-        self._held[record_id] = _Held(kind=kind, record_id=record_id, scope_id=scope_id, cancel=cancel, stop=stop)
+        self._held[record_id] = _Held(
+            kind=kind, record_id=record_id, scope_id=scope_id, cancel=cancel, stop=stop, epoch=epoch
+        )
         self._loop = asyncio.get_running_loop()
         if self._renewer is None or self._renewer.done():
             self._renewer = asyncio.create_task(self._renew_while_held(), name="eval-job-leases")
@@ -1206,7 +1255,7 @@ class JobLeases:
                 return "fenced", None
             if held.kind.ended(record):
                 return "ended", None
-            if leased.lease is None or leased.lease.holder != self._holder_id:
+            if leased.lease is None or _passed(leased.lease, self._holder_id, held.epoch):
                 return "fenced", None
             extended = self._extended(leased, self._store.store_time())
             if extended is None:
@@ -1264,10 +1313,11 @@ class JobLeases:
         return ended
 
     def _end_lost(self, held: _Held, cause: str) -> bool:
-        """Write one held record lost with ``cause`` and no lease, unless it has ended; whether it was written."""
+        """Write one held record lost with ``cause`` and no lease, unless it has ended or its lease has passed to another
+        holding (which this process must not end); whether it was written."""
         for _ in range(LEASE_WRITE_ATTEMPTS):
             record, etag = self._store.load_job_record(held.kind.model, held.record_id, held.scope_id)
-            if record is None or held.kind.ended(record):
+            if record is None or held.kind.ended(record) or _passed(_leased(record).lease, self._holder_id, held.epoch):
                 return False
             now = self._store.store_time()
             lost = held.kind.end_lost(record, JobLoss(at=now.isoformat(), cause=cause), self._store)

@@ -4070,6 +4070,7 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                             run.scope_id,
                             cells,
                             metered=metered_calls.tally(),
+                            leases=job_manager.leases,
                         )
                     )
                     cancelled_while_recording = await wait_through_cancellation(recording)

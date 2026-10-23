@@ -85,7 +85,7 @@ from threetears.evals.kernel.covariates import (
     derive_covariates,
 )
 from threetears.evals.kernel.dsl import evaluate_with_detail
-from threetears.evals.kernel.errors import StorageError
+from threetears.evals.kernel.errors import JobFenced, StorageError
 from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.schema.completion import CompletionProtocolDefect
@@ -118,6 +118,7 @@ from threetears.evals.schema.models import (
     PreconditionOutcome,
     RoleUsage,
     RubricScore,
+    cell_result_id,
     eval_trace_doc_id,
     scored_dim_ids,
     utc_now_iso,
@@ -1282,6 +1283,7 @@ async def _run_one_result(
         :rtype: CellOutcome
         """
         result = EvalResult(
+            id=cell_result_id(eval_run_id, test_case.id, model, k_iteration),
             scope_id=scope_id,
             eval_run_id=eval_run_id,
             test_case_id=test_case.id,
@@ -1663,8 +1665,9 @@ async def _run_one_result(
     concurrent_eval_jobs = sample_concurrent_eval_jobs(options, concurrent_eval_jobs)
 
     # 5. Build the EvalResult and its trace — through the one assembly every completed cell takes,
-    # the host-observed ones (:func:`~threetears.evals.run.witnessed.record_witnessed_cell`) included. The ids are this cell's own,
-    # minted here, which is the one thing a host recording a cell after the fact supplies instead.
+    # the host-observed ones (:func:`~threetears.evals.run.witnessed.record_witnessed_cell`) included. The id is the
+    # cell's own, derived from its coordinates so the cell has one row whichever holding of the run writes it; it is
+    # the one thing, with the stamp, that a host recording a cell after the fact supplies instead.
     return assemble_completed_cell(
         scope_id=scope_id,
         eval_run_id=eval_run_id,
@@ -1679,7 +1682,7 @@ async def _run_one_result(
         goal_checks=template.goal_state_checks,
         judged_artifact=judged_artifact,
         rate_table=options.external_rates,
-        result_id=str(uuid.uuid7()),
+        result_id=cell_result_id(eval_run_id, test_case.id, model, k_iteration),
         scored_at=utc_now_iso(),
         judged=judged,
         judge_ms=judge_ms,
@@ -2355,6 +2358,7 @@ def _cut_short_cell(
         else {}
     )
     result = EvalResult(
+        id=cell_result_id(eval_run_id, test_case_id, model, k_iteration),
         scope_id=scope_id,
         eval_run_id=eval_run_id,
         test_case_id=test_case_id,
@@ -3590,7 +3594,10 @@ async def execute_run(
     :raises EveryCellApparatusFailedError: An apparatus fault excluded every cell the run produced.
     :raises NothingMeasuredError: Every cell was excluded for an ``infra`` fault the harness recorded on it, not every
         one by an apparatus fault.
-    :raises asyncio.CancelledError: The run was cancelled; the cell it struck is recorded first.
+    :raises asyncio.CancelledError: The run was cancelled; the cell it struck is recorded first, unless the run is
+        no longer this holding's (below).
+    :raises JobFenced: A cell's write found the run no longer this holding's — written lost, or held at a later lease
+        epoch — so nothing was written of it, and the run's work stopped there.
     """
     from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError
 
@@ -3644,6 +3651,10 @@ async def execute_run(
     # falls through to the derivation inside.
     variant = resolve_variant_identity(run=run, profile=host.profile)
     model = run.candidate_model
+    # The holding of the run every cell is written under: its lease's epoch, stamped on each result so the store
+    # writes the cell only while this holding is the run's (``save_eval_result``'s cell rule). 0 for a run held under
+    # no lease.
+    lease_epoch = run.lease.epoch if run.lease is not None else 0
 
     # Shuffled rather than nested k -> model -> test case: within-run drift
     # (a box that slows, a neighbouring job, a leak) would otherwise land on the
@@ -3900,13 +3911,30 @@ async def execute_run(
         # Off the loop, and waited for to its end even through a cancel: the write cannot be
         # interrupted once a worker has it, so abandoning the wait would record this cell as lost
         # while its row lands anyway. The cancel is delivered once the cell is accounted for below.
+        result = result.model_copy(update={"lease_epoch": lease_epoch})
         saving = asyncio.ensure_future(
-            run_blocking(host.blocking_executor, host.storage.save_eval_result, result, cell_trace)
+            run_blocking(host.blocking_executor, host.storage.save_eval_result, result, cell_trace, run_cell=True)
         )
         cancelled_while_saving = await wait_through_cancellation(saving)
         try:
             saving.result()
             persisted = True
+        except JobFenced as fenced:
+            # The run is no longer this holding's: written lost (by a reader that found its lease lapsed, or by this
+            # process's shutdown), or taken up at a later epoch. Nothing was written, and the cell is not this
+            # run's to count: the run's work stops here, as a fenced renewal stops it — a cancel still pending is
+            # delivered, and otherwise the fence ends the run's loop.
+            log.warning(
+                "Eval cell not recorded — the run is no longer this holding's (test_case=%s model=%s k=%s run=%s): %s",
+                tc.id,
+                model,
+                k,
+                run.id,
+                fenced,
+            )
+            if cancelled_in_cell or cancelled_while_saving:
+                raise asyncio.CancelledError from fenced
+            raise
         except StorageError:
             # NOSILENT: carried on the cell's summary as not persisted, which the run's completeness counts as a
             # lost cell and every surface discloses as DEGRADED.

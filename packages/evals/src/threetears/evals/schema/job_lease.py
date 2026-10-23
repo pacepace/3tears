@@ -78,6 +78,16 @@ class JobLease(EvalBaseModel, CoreShapeModel):
             "Past it, a record that has not ended reads lost."
         ),
     )
+    epoch: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Which holding of the job this lease is: 0 for the job's first, one more each time the job is taken up "
+            "again. A process writes the record, and the job's results, only under the epoch it was granted; a "
+            "record read at a higher epoch has passed to another holding, and the older one writes nothing more. "
+            "0 on a lease stored before the field existed."
+        ),
+    )
 
     def expires(self) -> datetime:
         """The expiry as an aware datetime.

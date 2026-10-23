@@ -296,7 +296,16 @@ CORE_SCHEMA_VERSION: int = 15
 #:   identity, context key or digest. An older build reads such a run at this newer minor, keeping the field
 #:   unread, so it ends a sweep at that arm as it always did; it never refuses the run.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 6
+#: - **v15.7** — a run can be taken up again by another process, and every write says which holding made it:
+#:   ``JobLease.epoch`` (default 0: the job's first holding, or a lease stored before the field existed) on every job
+#:   record's lease, and ``EvalResult.lease_epoch`` (default 0: written outside a leased run, or stored before the
+#:   field existed), the epoch of the run's lease the row was written under. A run's cell result takes an id derived
+#:   from its run, case, model and repetition, so one cell has one row; a holding writes a cell's row only where none
+#:   is stored or the stored one is from a lower epoch, and a holding whose epoch was passed writes nothing more on
+#:   the run. Both fields read 0 where absent, which is what every value stored before them was written under; an
+#:   older build ignores them and does not hold to the epoch.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 7
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

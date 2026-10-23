@@ -5056,11 +5056,10 @@ def eval_trace_doc_id(result_id: str) -> str:
     querying for it. Suffixed rather than reusing the result id because both documents
     share a container and a partition, where an identical id IS the same row.
 
-    **This does not make a re-run idempotent.** ``EvalResult.id`` is a fresh ``uuid7`` per
-    cell, so re-running the same (test case, model, k) mints a new result and a new payload
-    beside it rather than replacing the old pair — which is correct, since the two runs are
-    two observations. Idempotency here is only per result id: writing the same result twice
-    overwrites rather than duplicates.
+    **One payload per result id, so one per cell of a run.** A run's cell takes its id from its
+    coordinates (:func:`cell_result_id`), the run's id among them, so another run of the same
+    (test case, model, k) is another result with its own payload beside it — the two runs are two
+    observations — while the same cell written again replaces its payload rather than adding one.
     """
     return f"{result_id}:trace"
 
@@ -5089,11 +5088,10 @@ class EvalTrace(CoreDocumentModel):
     ``id`` is :func:`eval_trace_doc_id` of the result's id — derived, not random, so
     a detail read is a point read on the result's own partition and the write is
     idempotent **per result id**: writing the same result twice overwrites its payload
-    instead of duplicating it. That is not re-run idempotency, and the difference
-    matters to anyone reasoning about row growth here — re-running the same (test case,
-    model, k) mints a fresh ``EvalResult.id``, so it writes a new payload beside the old
-    pair rather than replacing it, which is correct, since the two runs are two
-    observations. It is **not** the bare result id: both documents live in the same
+    instead of duplicating it. A run's cell has one result id (:func:`cell_result_id`), so
+    one payload; another run of the same (test case, model, k) has its own id, so it writes a
+    new payload beside the old pair rather than replacing it, which is correct, since the two
+    runs are two observations. It is **not** the bare result id: both documents live in the same
     container, so reusing it would collide. ``result_id`` carries the link explicitly
     rather than leaving it to be parsed back out of the key.
     """
@@ -5505,6 +5503,35 @@ class JudgeCutShort(EvalDocumentModel, CoreShapeModel):
         return self.stop_reason in OUT_OF_ROOM_STOP_REASONS
 
 
+#: The namespace every cell's result id is derived in (:func:`cell_result_id`). Fixed for good: moving it would give
+#: a cell already stored a second id, and a run taken up again would store that cell twice.
+CELL_RESULT_ID_NAMESPACE: Final[uuid.UUID] = uuid.UUID("778b48f2-51f2-4df1-b16d-421357a77583")
+
+
+def cell_result_id(run_id: str, test_case_id: str, model: str, k_iteration: int) -> str:
+    """The id of the result a run stores for one cell: the same for the same cell, whichever process writes it.
+
+    Derived, never minted, so a cell has one row however many times it is written: a second process taking the run
+    up writes the cell under the id the first one did, and the store's create-only write refuses a second row
+    (:meth:`~threetears.evals.kernel.EvalStorage.save_eval_result`). A uuid5 in :data:`CELL_RESULT_ID_NAMESPACE`,
+    over the four coordinates as one JSON array, so no two cells' coordinates can run together into one name.
+    Readers order a run's results by when they were stored, never by id, so an id carries no order.
+
+    :param run_id: The run.
+    :ptype run_id: str
+    :param test_case_id: The cell's case.
+    :ptype test_case_id: str
+    :param model: The cell's candidate model.
+    :ptype model: str
+    :param k_iteration: Which repetition, from 1.
+    :ptype k_iteration: int
+    :return: The id, as a uuid string.
+    :rtype: str
+    """
+    name = json.dumps([run_id, test_case_id, model, k_iteration], separators=(",", ":"))
+    return str(uuid.uuid5(CELL_RESULT_ID_NAMESPACE, name))
+
+
 class EvalResult(CoreDocumentModel):
     """One test case x one model x one k-iteration.
 
@@ -5533,6 +5560,16 @@ class EvalResult(CoreDocumentModel):
     test_case_id: str = Field(min_length=1)
     model: str = Field(min_length=1)
     k_iteration: int = Field(ge=1)
+    lease_epoch: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "The epoch of the run's lease this row was written under (``JobLease.epoch``): which holding of the run "
+            "recorded the cell. A cell's row is replaced only by a writer holding the run at a higher epoch, so a "
+            "holding the run has passed from never writes over a newer one's cell. 0 on a row written outside a "
+            "leased run, and on one stored before the field existed."
+        ),
+    )
 
     candidate_kind: str | None = Field(
         default=None,
