@@ -60,6 +60,13 @@ log = get_logger(__name__)
 #: (``mcp>=1.27,<3``), so consumers move to 2.x on their own schedule; 1.x is dropped when the owner says.
 _SDK_V1 = hasattr(_SdkServer, "call_tool")
 
+#: what a client is told when the tool provider fails; the provider's own error is logged, not sent
+_TOOLS_UNAVAILABLE_MESSAGE = "the server's tool set could not be read"
+
+#: how much of a refused result's structured content the refusal's log line keeps: enough for an
+#: operator to see what the call returned, without one oversized result flooding the log
+_MAX_LOGGED_STRUCTURED_CHARS = 4000
+
 
 class McpServer:
     """RBAC-gated MCP server wrapping the official SDK server.
@@ -166,11 +173,13 @@ class McpServer:
                 return self._tools()
 
             # the call handler goes straight into request_handlers, which is all the 1.x call_tool
-            # decorator does once its own work is done -- work _dispatch already does (it checks
-            # the arguments and answers every refusal itself). the decorator's extra is a cache of
-            # an earlier tools/list: stale once a live provider changes a schema, and refreshed on a
-            # miss by calling the provider outside _dispatch, where a failure reached the client
-            # as the exception's own text
+            # decorator does once its own work is done. _dispatch checks the arguments and answers
+            # every refusal itself. two more things the decorator did are left out on purpose: its
+            # cache of an earlier tools/list goes stale once a live provider changes a schema, and is
+            # refreshed on a miss by calling the provider outside _dispatch, where a failure reached
+            # the client as the exception's own text; and it turned an exception escaping the handler
+            # into an isError result. what escapes _dispatch is a bug, which 2.x answers with a
+            # JSON-RPC error, and 1.x now answers alike
             async def _call_tool(request: Any) -> Any:
                 params = request.params
                 # Any: 1.x's ServerResult is the model wrapping a result, 2.x's stubs name a union
@@ -187,8 +196,8 @@ class McpServer:
 
         async def _on_call_tool(_ctx: Any, params: Any) -> mcp_types.CallToolResult:
             # 2.x passes arguments=None for a call that sent none; 1.x passed {}. what escapes
-            # _dispatch is a bug (it answers every refusal itself), so it is not caught here: 2.x
-            # reports it as a JSON-RPC error, where 1.x's decorator made it an isError result
+            # _dispatch is a bug (it answers every refusal itself), so it is not caught here: on
+            # either major the SDK answers the request with a JSON-RPC error
             return await self._dispatch(params.name, params.arguments or {})
 
         return _SdkServer(name, on_list_tools=_on_list_tools, on_call_tool=_on_call_tool)
@@ -213,14 +222,17 @@ class McpServer:
 
         :return: one MCP tool per tool the provider answers
         :rtype: list[mcp_types.Tool]
-        :raises Exception: whatever the provider raised, after logging it; the SDK answers the
-            ``tools/list`` with a JSON-RPC error
+        :raises RuntimeError: when the provider fails, after logging it, with the provider's
+            exception as the cause; the SDK answers the ``tools/list`` with a JSON-RPC error
         """
         try:
             tools = self._current_tools()
-        except Exception:
+        except Exception as exc:
             log.exception("MCP tools/list: the tool provider failed")
-            raise
+            # the SDK puts the exception's text in the JSON-RPC error it answers, on either major:
+            # a fixed message keeps the provider's internals off the wire, as tools/call's
+            # TOOLS_UNAVAILABLE does
+            raise RuntimeError(_TOOLS_UNAVAILABLE_MESSAGE) from exc
         return [_listed_tool(tool) for tool in tools.values()]
 
     async def _dispatch(
@@ -263,7 +275,7 @@ class McpServer:
             return self._error_result(
                 tool_name=tool_name,
                 code="TOOLS_UNAVAILABLE",
-                message="the server's tool set could not be read",
+                message=_TOOLS_UNAVAILABLE_MESSAGE,
             )
         if tool is None:
             log.warning(
@@ -372,11 +384,22 @@ class McpServer:
 
         call_result = _as_call_tool_result(result)
         if tool.output_schema is not None:
-            refusal = _output_schema_refusal(call_result, tool.output_schema)
+            # the result as the client receives it: the SDK sends it in JSON mode, where a UUID or a
+            # datetime is a string
+            wire = call_result.model_dump(mode="json", by_alias=True)
+            refusal = _output_schema_refusal(wire, tool.output_schema)
             if refusal is not None:
+                # the handler has run, so for a tool with side effects this log is the only record
+                # of what it returned
                 log.error(
                     "MCP dispatch: the tool's result does not match its outputSchema",
-                    extra={"extra_data": {"tool_name": tool_name, "reason": refusal}},
+                    extra={
+                        "extra_data": {
+                            "tool_name": tool_name,
+                            "reason": refusal,
+                            "structured_content": _loggable_structured(wire.get("structuredContent")),
+                        }
+                    },
                 )
                 return self._error_result(tool_name=tool_name, code="OUTPUT_VALIDATION_ERROR", message=refusal)
         return call_result
@@ -711,21 +734,20 @@ def _as_call_tool_result(result: Any) -> mcp_types.CallToolResult:
     )
 
 
-def _output_schema_refusal(result: mcp_types.CallToolResult, output_schema: dict[str, Any]) -> str | None:
-    """why a successful ``result`` breaks the tool's ``outputSchema``, or ``None`` when it does not.
+def _output_schema_refusal(wire: dict[str, Any], output_schema: dict[str, Any]) -> str | None:
+    """why a successful result breaks the tool's ``outputSchema``, or ``None`` when it does not.
 
     the spec's server MUST: a tool that declares an output schema returns structured results that
     conform to it. an error result is exempt. 2.x's low-level server checks nothing; 1.x's
     decorator checked only results it built itself, never a returned CallToolResult.
 
-    :param result: the call's result
-    :ptype result: mcp_types.CallToolResult
+    :param wire: the call's result as the JSON the client receives
+    :ptype wire: dict[str, Any]
     :param output_schema: the tool's declared output schema
     :ptype output_schema: dict[str, Any]
     :return: the reason, or ``None``
     :rtype: str | None
     """
-    wire = result.model_dump(by_alias=True)
     if wire.get("isError"):
         return None
     structured = wire.get("structuredContent")
@@ -736,3 +758,17 @@ def _output_schema_refusal(result: mcp_types.CallToolResult, output_schema: dict
     except jsonschema.ValidationError as exc:
         return f"the tool's structured result does not match its outputSchema: {exc.message}"
     return None
+
+
+def _loggable_structured(structured: Any) -> str:
+    """a refused result's structured content as JSON text, cut to a length a log line can carry.
+
+    :param structured: the structured content, as the client would have received it
+    :ptype structured: Any
+    :return: its JSON, length-capped
+    :rtype: str
+    """
+    text = json.dumps(structured)
+    if len(text) > _MAX_LOGGED_STRUCTURED_CHARS:
+        return f"{text[:_MAX_LOGGED_STRUCTURED_CHARS]}...[truncated]"
+    return text

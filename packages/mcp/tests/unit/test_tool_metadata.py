@@ -12,9 +12,10 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import mcp.types as mcp_types
@@ -182,6 +183,45 @@ class TestStructuredResults:
         assert wire.get("structuredContent") is None
         assert json.loads(_text(wire))["error"]["code"] == "OUTPUT_VALIDATION_ERROR"
         handler.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_uuid_or_datetime_is_checked_as_the_string_the_client_receives(self) -> None:
+        runner_id = uuid4()
+        started_at = datetime(2026, 10, 23, 15, 10, 5, tzinfo=UTC)
+        schema = {
+            "type": "object",
+            "properties": {"runner_id": {"type": "string"}, "started_at": {"type": "string"}},
+            "required": ["runner_id", "started_at"],
+        }
+        handler = AsyncMock(return_value={"runner_id": runner_id, "started_at": started_at})
+        wire = await _called(_server(_tool(handler, output_schema=schema)))
+        assert wire["isError"] is False
+        assert UUID(wire["structuredContent"]["runner_id"]) == runner_id
+        assert datetime.fromisoformat(wire["structuredContent"]["started_at"]) == started_at
+
+    @pytest.mark.asyncio
+    async def test_a_refused_result_is_logged_with_what_the_tool_returned(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        handler = AsyncMock(return_value={"runners": [1, 2]})
+        with caplog.at_level(logging.ERROR, logger="threetears.mcp"):
+            await _called(_server(_tool(handler, output_schema=_RUNNER_SCHEMA)))
+        (record,) = [record for record in caplog.records if record.name == "threetears.mcp.server"]
+        logged = record.__dict__["extra_data"]
+        assert logged["tool_name"] == "runners.list"
+        assert json.loads(logged["structured_content"]) == {"runners": [1, 2]}
+
+    @pytest.mark.asyncio
+    async def test_a_large_refused_result_is_logged_cut_short(self, caplog: pytest.LogCaptureFixture) -> None:
+        handler = AsyncMock(return_value={"runners": list(range(10_000))})
+        with caplog.at_level(logging.ERROR, logger="threetears.mcp"):
+            wire = await _called(_server(_tool(handler, output_schema=_RUNNER_SCHEMA)))
+        assert json.loads(_text(wire))["error"]["code"] == "OUTPUT_VALIDATION_ERROR"
+        (record,) = [record for record in caplog.records if record.name == "threetears.mcp.server"]
+        logged: str = record.__dict__["extra_data"]["structured_content"]
+        assert logged.startswith('{"runners": [0, 1, 2')
+        assert logged.endswith("...[truncated]")
+        assert len(logged) < len(json.dumps({"runners": list(range(10_000))}))
 
     @pytest.mark.asyncio
     async def test_a_tool_with_an_output_schema_that_returns_only_text_is_refused(self) -> None:

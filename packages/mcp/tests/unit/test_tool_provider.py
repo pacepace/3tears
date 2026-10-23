@@ -9,6 +9,7 @@ on mcp 1.x, whose ``call_tool`` decorator caches the tools of an earlier ``tools
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from typing import Any
@@ -173,6 +174,24 @@ class TestABadProviderAnswer:
             await session.list_tools()
             with pytest.raises(_JSONRPC_ERROR):
                 await session.list_tools()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_provider_does_not_send_its_own_error_to_the_client(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # the SDK answers with the exception's text on either major, so the server raises a fixed one
+        def _broken() -> list[McpTool]:
+            raise LookupError("the op registry is reloading from /srv/ops")
+
+        with caplog.at_level(logging.ERROR, logger="threetears.mcp"):
+            async with _session(_server(_broken)) as session:
+                with pytest.raises(_JSONRPC_ERROR) as refused:
+                    await session.list_tools()
+        assert str(refused.value) == "the server's tool set could not be read"
+        logged = [record for record in caplog.records if record.name == "threetears.mcp.server"]
+        assert [record.getMessage() for record in logged] == ["MCP tools/list: the tool provider failed"]
+        assert logged[0].exc_info is not None
+        assert str(logged[0].exc_info[1]) == "the op registry is reloading from /srv/ops"
 
 
 class TestTheServerTakesOneToolSource:
