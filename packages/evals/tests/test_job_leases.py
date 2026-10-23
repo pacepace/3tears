@@ -68,26 +68,18 @@ from packages.evals.tests.fixtures.toyhost.kind import TOY_SCRIPTS, ScriptedExtr
 from packages.evals.tests.fixtures.toyhost.launch import toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, TOYHOST_SUBJECT, ops_fixture, settled
+from packages.evals.tests.lease_support import (
+    T0,
+    ClockedStore,
+    held_extraction,
+    launched_run,
+    other_process,
+    until,
+)
 from packages.evals.tests.off_loop import off_loop
 
 #: The sweep's arms, by their prompt style.
 STYLES = ("terse", "standard", "verbose")
-
-#: When the clocked store's clock starts.
-T0 = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
-
-
-class ClockedStore(InMemoryDocumentStore):
-    """An in-memory store keeping a clock of its own, which the test sets — a database server's clock, in effect."""
-
-    def __init__(self, at: datetime = T0) -> None:
-        """Start the clock at ``at``."""
-        super().__init__()
-        self.at = at
-
-    def now(self) -> datetime:
-        """The store's time, as the test set it."""
-        return self.at
 
 
 class ZonelessClockStore(InMemoryDocumentStore):
@@ -96,11 +88,6 @@ class ZonelessClockStore(InMemoryDocumentStore):
     def now(self) -> datetime:
         """A naive time."""
         return datetime(2026, 10, 10, 12, 0)
-
-
-def _other_process(host: OpsHost) -> OpsHost:
-    """Another process over the same store: its own job manager and leases, so its own holder id."""
-    return dataclasses.replace(host, launch=dataclasses.replace(host.launch))
 
 
 def _attempt(host: OpsHost, job_id: str) -> EvalAnalysisAttempt:
@@ -113,25 +100,6 @@ def _run(host: OpsHost, run_id: str) -> EvalRun:
     run, _ = host.eval_host.storage.load_job_record(EvalRun, run_id, TOYHOST_SCOPE)
     assert run is not None
     return run
-
-
-async def _until(condition: Any, *, timeout: float = 10.0) -> None:
-    async with asyncio.timeout(timeout):
-        while not condition():
-            await asyncio.sleep(0.01)
-
-
-def _held_extraction(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
-    """Hold every extraction until the returned event is set, so a launched run stays running."""
-    gate = asyncio.Event()
-    extract = ScriptedExtractionClient.extract
-
-    async def held(self: ScriptedExtractionClient, request: Any) -> Any:
-        await gate.wait()
-        return await extract(self, request)
-
-    monkeypatch.setattr(ScriptedExtractionClient, "extract", held)
-    return gate
 
 
 async def _running_launch(host: OpsHost) -> tuple[str, str]:
@@ -185,7 +153,7 @@ def _heard(host: OpsHost) -> tuple[OpsHost, _Heard]:
 async def test_a_generation_another_process_runs_reads_running_and_is_cancelled_from_there() -> None:
     gate = asyncio.Event()
     holder = off_loop(ops_fixture, gate=gate, job_lease_s=0.3)
-    elsewhere = _other_process(holder.host)
+    elsewhere = other_process(holder.host)
     (job,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
     await asyncio.sleep(0)
 
@@ -207,9 +175,9 @@ async def test_a_generation_another_process_runs_reads_running_and_is_cancelled_
 async def test_a_run_another_process_runs_is_cancelled_from_there_with_its_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _held_extraction(monkeypatch)
+    held_extraction(monkeypatch)
     holder = off_loop(ops_fixture, job_lease_s=0.3)
-    elsewhere = _other_process(holder.host)
+    elsewhere = other_process(holder.host)
     run_id = await _running_run(holder.host)
 
     assert (await job_poll(elsewhere, run_job_id(run_id), TOYHOST_SCOPE)).state == "running"
@@ -230,7 +198,7 @@ async def test_a_holder_that_stops_renewing_reads_lost_after_its_lease_and_the_l
     gate = asyncio.Event()
     store = ClockedStore()
     holder = off_loop(ops_fixture, gate=gate, store=store)  # a 60s lease: no renewal comes due while the test runs
-    elsewhere = _other_process(holder.host)
+    elsewhere = other_process(holder.host)
     (job,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
     await asyncio.sleep(0)
     assert (await job_poll(elsewhere, job.job_id, TOYHOST_SCOPE)).state == "running"
@@ -255,7 +223,7 @@ async def test_a_holder_that_stops_renewing_reads_lost_after_its_lease_and_the_l
 
     # Fenced: the holder, released, finds its record lost and stores nothing — not its analysis, not its ending.
     gate.set()
-    await _until(lambda: not holder.host.launch.job_manager.is_task_active(attempt_id))
+    await until(lambda: not holder.host.launch.job_manager.is_task_active(attempt_id))
     assert off_loop(analyses_list, holder.host.eval_host, holder.campaign.id, TOYHOST_SCOPE).analyses == []
     attempt = off_loop(_attempt, holder.host, job.job_id)
     assert (attempt.outcome, attempt.lost) == ("cancelled", written)
@@ -310,7 +278,7 @@ async def test_a_generation_whose_attempt_is_lost_while_it_stores_withdraws_what
     store.lose_next = True
     (second,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     attempt_id = second.job_id.rsplit(":", 1)[1]
-    await _until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id))
+    await until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id))
 
     assert (await job_poll(fixture.host, second.job_id, TOYHOST_SCOPE)).state == "lost"
     analyses = off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
@@ -339,7 +307,7 @@ async def test_a_withdrawal_that_fails_is_not_reported_as_done(caplog: pytest.Lo
     (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     attempt_id = job.job_id.rsplit(":", 1)[1]
     with caplog.at_level("WARNING"):
-        await _until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id))
+        await until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id))
 
     assert (await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)).state == "lost"
     (left,) = off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
@@ -358,7 +326,7 @@ async def test_a_holder_whose_own_lease_lapsed_writes_itself_lost_at_renewal_and
     await asyncio.sleep(0)
 
     store.at = T0 + timedelta(seconds=30)  # the process stalled past its lease
-    await _until(lambda: not holder.host.launch.job_manager.is_task_active(attempt_id))
+    await until(lambda: not holder.host.launch.job_manager.is_task_active(attempt_id))
 
     attempt = off_loop(_attempt, holder.host, job.job_id)
     assert attempt.outcome == "cancelled" and attempt.lost is not None
@@ -371,10 +339,10 @@ async def test_a_holder_whose_own_lease_lapsed_writes_itself_lost_at_renewal_and
 async def test_a_run_whose_record_was_written_lost_elsewhere_stops_at_its_next_write(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    gate = _held_extraction(monkeypatch)
+    gate = held_extraction(monkeypatch)
     store = ClockedStore()
     holder, heard = _heard(off_loop(ops_fixture, store=store).host)
-    elsewhere = _other_process(holder)
+    elsewhere = other_process(holder)
     run_id = await _running_run(holder)
     assert (await job_poll(elsewhere, run_job_id(run_id), TOYHOST_SCOPE)).state == "running"
 
@@ -387,7 +355,7 @@ async def test_a_run_whose_record_was_written_lost_elsewhere_stops_at_its_next_w
 
     store.at = T0 + timedelta(seconds=75)  # the holder's own ending would be stamped later than the loss
     gate.set()
-    await _until(lambda: not holder.launch.job_manager.is_active(run_id))
+    await until(lambda: not holder.launch.job_manager.is_active(run_id))
     after = off_loop(_run, holder, run_id)
     assert (after.status, after.lost, after.completeness) == ("cancelled", written.lost, written.completeness), (
         "the fenced run wrote nothing more: not its progress, its completeness or its ending"
@@ -400,10 +368,10 @@ async def test_a_run_whose_record_was_written_lost_elsewhere_stops_at_its_next_w
 
 async def test_a_lost_run_cancelled_by_its_old_holder_keeps_the_loss(monkeypatch: pytest.MonkeyPatch) -> None:
     """The holder's operator cancels a run another process already wrote lost: the cancel's ending is refused."""
-    _held_extraction(monkeypatch)
+    held_extraction(monkeypatch)
     store = ClockedStore()
     holder, heard = _heard(off_loop(ops_fixture, store=store).host)
-    elsewhere = _other_process(holder)
+    elsewhere = other_process(holder)
     run_id = await _running_run(holder)
     store.at = T0 + timedelta(seconds=61)
     assert (await job_poll(elsewhere, run_job_id(run_id), TOYHOST_SCOPE)).state == "lost"
@@ -411,7 +379,7 @@ async def test_a_lost_run_cancelled_by_its_old_holder_keeps_the_loss(monkeypatch
     heard.broadcasts.clear()
 
     assert holder.launch.job_manager.cancel_job(run_id, reason="operator said stop")
-    await _until(lambda: not holder.launch.job_manager.is_active(run_id))
+    await until(lambda: not holder.launch.job_manager.is_active(run_id))
 
     after = off_loop(_run, holder, run_id)
     assert (after.completed_at, after.cancellation_reason, after.lost) == (
@@ -453,16 +421,16 @@ async def test_a_holder_whose_run_was_written_lost_elsewhere_writes_no_result_ro
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Its cells were in flight when another process wrote the run lost; they finish, and none is stored."""
-    gate = _held_extraction(monkeypatch)
+    gate = held_extraction(monkeypatch)
     store = ClockedStore()
     holder = off_loop(ops_fixture, store=store).host
     run_id = await _running_run(holder)
     store.at = T0 + timedelta(seconds=61)
-    assert (await job_poll(_other_process(holder), run_job_id(run_id), TOYHOST_SCOPE)).state == "lost"
+    assert (await job_poll(other_process(holder), run_job_id(run_id), TOYHOST_SCOPE)).state == "lost"
     written = off_loop(_run, holder, run_id)
 
     gate.set()
-    await _until(lambda: not holder.launch.job_manager.is_active(run_id))
+    await until(lambda: not holder.launch.job_manager.is_active(run_id))
 
     assert _results(holder, run_id) == [], "the lost run took no row from the holding it was lost by"
     assert off_loop(_run, holder, run_id) == written, "nor any other write"
@@ -472,7 +440,7 @@ async def test_a_graceful_shutdown_s_cancelled_cells_write_no_rows_into_the_run_
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A shutdown writes the run lost, then cancels it: the cells it cancels mid-flight are not the run's."""
-    _held_extraction(monkeypatch)
+    held_extraction(monkeypatch)
     holder = off_loop(ops_fixture).host
     run_id = await _running_run(holder)
 
@@ -485,12 +453,12 @@ async def test_a_graceful_shutdown_s_cancelled_cells_write_no_rows_into_the_run_
 
 async def test_an_operator_cancel_still_records_the_cells_it_cut_short(monkeypatch: pytest.MonkeyPatch) -> None:
     """A run cancelled on purpose is not lost: the cells the cancel cut short are recorded, with what they spent."""
-    _held_extraction(monkeypatch)
+    held_extraction(monkeypatch)
     holder = off_loop(ops_fixture).host
     run_id = await _running_run(holder)
 
     assert holder.launch.job_manager.cancel_job(run_id, reason="operator said stop")
-    await _until(lambda: not holder.launch.job_manager.is_active(run_id))
+    await until(lambda: not holder.launch.job_manager.is_active(run_id))
 
     run = off_loop(_run, holder, run_id)
     assert (run.status, run.lost) == ("cancelled", None)
@@ -502,7 +470,7 @@ async def test_a_holding_whose_run_was_taken_up_at_a_later_epoch_writes_nothing_
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The run's lease passed to a later holding while its cells ran: none of them, nor anything else, is written."""
-    gate = _held_extraction(monkeypatch)
+    gate = held_extraction(monkeypatch)
     holder = off_loop(ops_fixture).host
     run_id = await _running_run(holder)
     storage = holder.eval_host.storage
@@ -514,7 +482,7 @@ async def test_a_holding_whose_run_was_taken_up_at_a_later_epoch_writes_nothing_
     taken_up = off_loop(_run, holder, run_id)
 
     gate.set()
-    await _until(lambda: not holder.launch.job_manager.is_active(run_id))
+    await until(lambda: not holder.launch.job_manager.is_active(run_id))
 
     assert _results(holder, run_id) == [], "no cell of the superseded holding was stored"
     assert off_loop(_run, holder, run_id) == taken_up, "nor its progress, its completeness or its ending"
@@ -524,7 +492,7 @@ async def test_a_shutdown_of_a_holding_whose_run_was_taken_up_at_a_later_epoch_l
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The superseded holder shuts down: it writes neither the loss nor its own ending over the newer holding's run."""
-    _held_extraction(monkeypatch)
+    held_extraction(monkeypatch)
     holder = off_loop(ops_fixture).host
     run_id = await _running_run(holder)
     storage = holder.eval_host.storage
@@ -547,16 +515,16 @@ async def test_a_shutdown_of_a_holding_whose_run_was_taken_up_at_a_later_epoch_l
 async def test_a_run_whose_renewals_fail_for_a_whole_lease_is_stopped_and_writes_nothing_more(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    gate = _held_extraction(monkeypatch)
+    gate = held_extraction(monkeypatch)
     store = RenewalRefusingStore()
     holder, heard = _heard(off_loop(ops_fixture, store=store, job_lease_s=0.3).host)
-    elsewhere = _other_process(holder)
+    elsewhere = other_process(holder)
     run_id = await _running_run(holder)
     store.at = T0 + timedelta(seconds=0.1)  # inside the lease by the store's clock, for the whole test
     store.refusing = True
     heard.broadcasts.clear()
 
-    await _until(lambda: not holder.launch.job_manager.is_active(run_id), timeout=5)
+    await until(lambda: not holder.launch.job_manager.is_active(run_id), timeout=5)
 
     assert not gate.is_set(), "the holder stopped spending, rather than running on past its lease"
     run = off_loop(_run, holder, run_id)
@@ -578,7 +546,7 @@ async def test_a_generation_whose_renewals_fail_for_a_whole_lease_is_stopped_bef
     store.at = T0 + timedelta(seconds=0.1)
     store.refusing = True
 
-    await _until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id), timeout=5)
+    await until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id), timeout=5)
 
     assert not gate.is_set() and all(not writer.calls for writer in fixture.writers), "no call was paid for"
     attempt = off_loop(_attempt, fixture.host, job.job_id)
@@ -589,7 +557,7 @@ async def test_a_generation_whose_renewals_fail_for_a_whole_lease_is_stopped_bef
     assert off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses == []
     store.refusing = False
     store.at = T0 + timedelta(seconds=1)
-    lost = await job_poll(_other_process(fixture.host), job.job_id, TOYHOST_SCOPE)
+    lost = await job_poll(other_process(fixture.host), job.job_id, TOYHOST_SCOPE)
     assert (lost.state, lost.status) == ("lost", "cancelled"), "the next reader writes the loss, as for any lapse"
 
 
@@ -617,7 +585,7 @@ class LeasedWriteRefusingStore(ClockedStore):
 async def test_a_sweep_whose_store_fails_its_writes_for_a_whole_lease_writes_nothing_more_and_launches_nothing_more(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _held_extraction(monkeypatch)  # its first arm runs until the sweep has let go
+    held_extraction(monkeypatch)  # its first arm runs until the sweep has let go
     store = LeasedWriteRefusingStore()
     holder = off_loop(
         _sweeping_host, store, job_lease_s=0.9
@@ -628,7 +596,7 @@ async def test_a_sweep_whose_store_fails_its_writes_for_a_whole_lease_writes_not
     store.at = T0 + timedelta(seconds=0.1)
     store.refusing = True
 
-    await _until(lambda: not holder.launch.job_manager.is_task_active(sweep_id), timeout=5)
+    await until(lambda: not holder.launch.job_manager.is_task_active(sweep_id), timeout=5)
 
     sweep, _ = off_loop(holder.eval_host.storage.load_job_record, EvalSweep, sweep_id, TOYHOST_SCOPE)
     assert sweep is not None and (sweep.outcome, sweep.lost) == ("running", None), (
@@ -694,12 +662,12 @@ async def test_a_start_whose_attempt_cannot_be_written_starts_nothing() -> None:
 
 
 async def test_a_graceful_shutdown_writes_every_held_job_lost_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    _held_extraction(monkeypatch)
+    held_extraction(monkeypatch)
     gate = asyncio.Event()
     store = ClockedStore()
     fixture = off_loop(ops_fixture, gate=gate, store=store)
     holder, heard = _heard(fixture.host)
-    elsewhere = _other_process(holder)
+    elsewhere = other_process(holder)
     (generation,) = (await analysis_generate(holder, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     launch_id, run_id = await _running_launch(holder)
     heard.broadcasts.clear()
@@ -923,7 +891,7 @@ def test_a_job_asks_whether_it_still_holds_its_record_before_it_spends_again() -
 
 async def test_a_sweep_another_process_runs_is_cancelled_from_there() -> None:
     holder = off_loop(_sweeping_host, InMemoryDocumentStore(), job_lease_s=0.3)
-    elsewhere = _other_process(holder)
+    elsewhere = other_process(holder)
     (job,) = (await sweep_launch(holder, _three_arm_sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
     await _first_arm_running(elsewhere, job.job_id)
 
@@ -939,7 +907,7 @@ async def test_a_sweep_another_process_runs_is_cancelled_from_there() -> None:
 async def test_a_sweep_whose_lease_lapsed_reads_lost_and_launches_nothing_more() -> None:
     store = ClockedStore()
     holder = off_loop(_sweeping_host, store)
-    elsewhere = _other_process(holder)
+    elsewhere = other_process(holder)
     (job,) = (await sweep_launch(holder, _three_arm_sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
     sweep_id = job.job_id.removeprefix("sweep:")
     await _first_arm_running(elsewhere, job.job_id)
@@ -948,7 +916,7 @@ async def test_a_sweep_whose_lease_lapsed_reads_lost_and_launches_nothing_more()
     lost = await job_poll(elsewhere, job.job_id, TOYHOST_SCOPE)
     assert (lost.state, lost.status) == ("lost", "cancelled")
 
-    await _until(lambda: not holder.launch.job_manager.is_task_active(sweep_id))
+    await until(lambda: not holder.launch.job_manager.is_task_active(sweep_id))
     after = await job_poll(elsewhere, job.job_id, TOYHOST_SCOPE)
     assert after.state == "lost"
     # Counted in the store, not off the sweep's record: the fence makes that record unwritable, so an arm launched
@@ -973,7 +941,7 @@ async def _every_arm_running(host: OpsHost, job_id: str) -> None:
 async def test_an_interleaved_sweep_cancelled_part_way_stops_every_arm_it_started(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _held_extraction(monkeypatch)  # every arm's cells wait until the cancel stops them
+    held_extraction(monkeypatch)  # every arm's cells wait until the cancel stops them
     holder = off_loop(_sweeping_host, InMemoryDocumentStore())
     (job,) = (await sweep_launch(holder, _interleaved_sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
     await _every_arm_running(holder, job.job_id)
@@ -1010,7 +978,7 @@ async def test_an_interleaved_sweep_whose_record_reads_lost_while_its_arms_prepa
     monkeypatch.setattr(sweeps, "start_run", prepare_then_lapse)
     (job,) = (await sweep_launch(holder, _interleaved_sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
     sweep_id = job.job_id.removeprefix("sweep:")
-    await _until(lambda: not holder.launch.job_manager.is_task_active(sweep_id))
+    await until(lambda: not holder.launch.job_manager.is_task_active(sweep_id))
 
     assert len(prepared) == 3, "every arm was prepared"
     assert off_loop(holder.eval_host.storage.query_eval_runs, TOYHOST_SCOPE) == [], (
@@ -1023,11 +991,11 @@ async def test_an_interleaved_sweep_whose_record_reads_lost_while_its_arms_prepa
 async def test_an_interleaved_sweep_whose_lease_lapsed_while_its_arms_ran_reads_lost(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _held_extraction(monkeypatch)  # its arms run on until the holder lets go
+    held_extraction(monkeypatch)  # its arms run on until the holder lets go
     store = ClockedStore()
     # A short lease, so the holder's own renewal finds the loss: its arms are all launched, and it awaits them.
     holder = off_loop(_sweeping_host, store, job_lease_s=0.9)
-    elsewhere = _other_process(holder)
+    elsewhere = other_process(holder)
     (job,) = (await sweep_launch(holder, _interleaved_sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
     sweep_id = job.job_id.removeprefix("sweep:")
     await _every_arm_running(elsewhere, job.job_id)
@@ -1036,7 +1004,7 @@ async def test_an_interleaved_sweep_whose_lease_lapsed_while_its_arms_ran_reads_
     lost = await job_poll(elsewhere, job.job_id, TOYHOST_SCOPE)
     assert (lost.state, lost.status) == ("lost", "cancelled")
 
-    await _until(lambda: not holder.launch.job_manager.is_task_active(sweep_id))
+    await until(lambda: not holder.launch.job_manager.is_task_active(sweep_id))
     sweep, _ = off_loop(holder.eval_host.storage.load_job_record, EvalSweep, sweep_id, TOYHOST_SCOPE)
     assert sweep is not None and sweep.outcome == "cancelled" and sweep.lost is not None, (
         "the holder wrote no ending over the loss"
@@ -1077,7 +1045,7 @@ async def test_two_processes_racing_a_generation_start_one_wins_and_the_other_is
     gate = asyncio.Event()
     store = RacingStore()
     first = off_loop(ops_fixture, gate=gate, store=store)
-    second = _other_process(first.host)
+    second = other_process(first.host)
 
     outcomes = await asyncio.gather(
         analysis_generate(first.host, first.campaign.id, TOYHOST_SCOPE),
@@ -1111,7 +1079,7 @@ async def test_a_generation_slot_is_taken_over_once_its_attempt_has_ended_or_lap
     gate = asyncio.Event()
     store = ClockedStore()
     holder = off_loop(ops_fixture, gate=gate, store=store)
-    elsewhere = _other_process(holder.host)
+    elsewhere = other_process(holder.host)
     (job,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
 
     with pytest.raises(ConflictError, match=f"job {job.job_id}"):
@@ -1164,27 +1132,13 @@ def _paced_extraction(monkeypatch: pytest.MonkeyPatch, seconds: float) -> None:
     monkeypatch.setattr(ScriptedExtractionClient, "extract", paced)
 
 
-async def _launched_run(host: OpsHost, k_runs: int) -> str:
-    """Launch one arm of ``k_runs`` repeats and wait until its run reads running; the run's id."""
-    arguments = LaunchArguments(
-        template_id=toyhost_template().id, subject_id=TOYHOST_SUBJECT.subject_id, models=[RUN_MODELS[0]], k_runs=k_runs
-    )
-    (job,) = (await run_launch(host, arguments, TOYHOST_SCOPE)).jobs
-    async with asyncio.timeout(10):
-        while not (run_ids := (await job_poll(host, job.job_id, TOYHOST_SCOPE)).run_ids):
-            await asyncio.sleep(0.01)
-        while (await job_poll(host, run_job_id(run_ids[0]), TOYHOST_SCOPE)).status != "running":
-            await asyncio.sleep(0.01)
-    return run_ids[0]
-
-
 async def test_a_run_whose_renewals_lose_to_its_own_writes_for_two_leases_keeps_its_lease(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _paced_extraction(monkeypatch, 0.6)  # thirty cells, four at a time: progress writes in bursts for about 5 s
     store = RunRenewalLosingStore()
     host = off_loop(ops_fixture, store=store, job_lease_s=1.8)
-    run_id = await _launched_run(host.host, k_runs=10)
+    run_id = await launched_run(host.host, k_runs=10)
 
     ended = await settled(host.host, run_job_id(run_id))
 
@@ -1202,10 +1156,10 @@ async def test_a_run_whose_renewals_lose_to_its_own_writes_still_hears_a_cancel_
     _paced_extraction(monkeypatch, 0.6)
     store = RunRenewalLosingStore()
     holder = off_loop(ops_fixture, store=store, job_lease_s=3.0)  # renewed every second
-    run_id = await _launched_run(holder.host, k_runs=10)
+    run_id = await launched_run(holder.host, k_runs=10)
 
     asked = time.monotonic()
-    await job_cancel(_other_process(holder.host), run_job_id(run_id), TOYHOST_SCOPE, reason="stop it from over here")
+    await job_cancel(other_process(holder.host), run_job_id(run_id), TOYHOST_SCOPE, reason="stop it from over here")
     ended = await settled(holder.host, run_job_id(run_id))
 
     assert (ended.state, ended.status) == ("cancelled", "cancelled"), "the cancel reached a run no renewal reached"
@@ -1371,7 +1325,7 @@ async def test_a_renewal_finding_its_lease_at_a_later_epoch_stops_the_job() -> N
         later = granted.model_copy(update={"epoch": 1})
         off_loop(storage.save_eval_run, stored.model_copy(update={"lease": later}), if_match=etag)
 
-        await _until(lambda: stopped == ["x"], timeout=5.0)  # the first renewal comes at one interval, a second
+        await until(lambda: stopped == ["x"], timeout=5.0)  # the first renewal comes at one interval, a second
 
         after, _ = off_loop(_stored_run, storage, "run-own")
         assert after.lease == later, "the renewal did not extend a lease it no longer holds"
@@ -1504,7 +1458,7 @@ async def test_a_stuck_renewal_is_never_resent_its_own_writes_keep_the_lease_and
     stopped: list[str] = []
     tick = 0
 
-    async def writing_until(seconds: float) -> None:
+    async def writinguntil(seconds: float) -> None:
         nonlocal tick
         until = time.monotonic() + seconds
         while time.monotonic() < until and not stopped:
@@ -1516,7 +1470,7 @@ async def test_a_stuck_renewal_is_never_resent_its_own_writes_keep_the_lease_and
         _seeded_run(storage, "run-hung", off_loop(leases.grant))
         leases.hold(RUN_JOB, "run-hung", TOYHOST_SCOPE, cancel=lambda _reason: None, stop=lambda: stopped.append("x"))
 
-        await writing_until(3.6)  # stuck from 0.4 s, hung by about 1.6 s, and due again every interval since
+        await writinguntil(3.6)  # stuck from 0.4 s, hung by about 1.6 s, and due again every interval since
 
         assert stopped == [] and leases.holds("run-hung") and not leases.fenced("run-hung"), (
             "its own writes kept the lease the whole time its renewal was stuck, three leases"
