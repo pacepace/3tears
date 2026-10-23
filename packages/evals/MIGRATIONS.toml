@@ -59,12 +59,12 @@
 
 [[release]]
 version = "unreleased"
-since = "v0.75.0"
+since = "v0.76.0"
 summary = """
 An interrupted run, sweep or launch resumes as the same job (#918): `job_resume` takes it up under its lease's next
 epoch, runs only the cells it has not measured, in their original order, and it ends as an uninterrupted run would
 have; `jobs_resumable` lists what it would take up, for a host to offer at boot. No public name has moved or been
-removed since 0.75.0, and no judge wording changed. The new names are provisional. The stored shapes (core v15.7,
+removed since 0.76.0, and no judge wording changed. The new names are provisional. The stored shapes (core v15.7,
 additive), derived cell result ids, epoch fencing and the behaviour a host sees are listed in `notes`.
 """
 notes = [
