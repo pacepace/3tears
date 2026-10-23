@@ -169,6 +169,14 @@ pointer buckets replicated), all merged to the hub's `develop` on 2026-10-23. A 
 against an older hub the request has no responder (or `l3.tx.copy` is refused) and raises
 `DataLayerUnavailableError`. Roll the hub before any pod on 0.76.0 uses them.
 
+### core: a table dropped for a missed or replaced write generation names what the judgement saw
+
+**Added:** when `CollectionRegistry.settle_generation` drops a table, it logs "write generation judged: the table
+is dropped" at INFO with the table, the verdict, the generation read, the registry's recorded mark and the
+advances heard past a gap that are still waiting (`GenerationMarks.pending(table)`, each as
+`incarnation:count (rows/of)`). A drop now says whether an advance was never heard, heard out of order, or was
+this registry's own write left unaccounted.
+
 ### core: a DuckDB export is sized for its rows, and DuckDB gives freed memory back
 
 **Fixed:** a reports tool pod peaked at 7.5 GiB rebuilding a 360 MB copy, and stayed there once ready.
