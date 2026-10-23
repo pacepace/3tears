@@ -4085,9 +4085,6 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
             configured_max_cost_usd=configured_max_cost_usd,
             enforcement_enabled=eval_enforcement_enabled,
         )
-        if request.resuming is not None:
-            # What the run's earlier holdings spent counts toward its cap, as it would have had the run never stopped.
-            request.resuming.seed(cost_cap)
 
         # Per-run metered-call ceiling: bounds the third-party quota the cost cap cannot
         # see. ONE ledger for the whole run — handed to the runner, which hands it to the kind's
@@ -4103,6 +4100,10 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
             configured_max_metered_calls=configured_max_metered_calls,
             enforcement_enabled=eval_enforcement_enabled,
         )
+        if request.resuming is not None:
+            # What the run's earlier holdings spent and landed counts toward its ceilings, as it would have had the run
+            # never stopped; one whose ceiling its stored cells have already reached is refused, running nothing.
+            request.resuming.seed(cost_cap, metered_calls)
 
         job_manager = host.job_manager
         options = RunnerOptions(

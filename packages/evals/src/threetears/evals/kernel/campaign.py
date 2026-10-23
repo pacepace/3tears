@@ -1399,10 +1399,12 @@ class SweepLifetime(EvalBaseModel, CoreShapeModel):
 def ended_sweep_lifetimes(
     lifetimes: list[SweepLifetime], *, outcome: SweepOutcome, at: str, detail: str | None, lost: JobLoss | None = None
 ) -> list[SweepLifetime]:
-    """A sweep's lifetimes with its open holding closed as the sweep ended: for each writer of a sweep's ending.
+    """A sweep's lifetimes with its open holding closed as the sweep ended: for a take-up, which records the holding
+    that ended.
 
-    A sweep never taken up again has no lifetimes, its one holding described by the sweep itself; they are
-    returned as they are, as are lifetimes whose last holding has already ended.
+    A sweep's current holding, while it is recorded, is closed from the sweep's own ending by its model
+    (``EvalSweep.lifetimes``); a take-up of a sweep never taken up before builds the entry of the holding that ended
+    and closes it here. Lifetimes whose last holding has already ended are returned as they are.
 
     :param lifetimes: The sweep's lifetimes.
     :ptype lifetimes: list[SweepLifetime]
@@ -1506,6 +1508,31 @@ class EvalSweep(CoreDocumentModel):
         if v != "eval_sweep":
             raise ValueError(f"doc_type must be 'eval_sweep', got '{v}'")
         return v
+
+    @model_validator(mode="after")
+    def _current_holding_ends_with_the_sweep(self) -> Self:
+        """Read a sweep taken up again that has ended with its current holding (its last lifetime) ended as it did.
+
+        The sweep's own fields — its outcome, when it ended, its detail and its loss — are the one record of how its
+        current holding ended, and the entry is derived from them each time the sweep is built or a field of it is
+        set, as a run's is (``EvalRun.lifetimes``). While the sweep has ended its last lifetime is its current
+        holding: a take-up appends a new one only as it reopens the sweep ``running``.
+        """
+        if self.outcome == "running" or not self.lifetimes:
+            return self
+        last = self.lifetimes[-1]
+        ended = last.model_copy(
+            update={
+                "outcome": self.outcome,
+                "ended_at": self.ended_at or last.ended_at,
+                "detail": self.detail,
+                "lost": self.lost,
+            }
+        )
+        if ended != last:
+            # Written past assignment validation, which would run this validator again for the same answer.
+            self.__dict__["lifetimes"] = [*self.lifetimes[:-1], ended]
+        return self
 
 
 class EvalInsight(EvalDocumentModel):

@@ -99,6 +99,7 @@ from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.run.lifecycle import get_run
 from threetears.evals.run.resume import (
     RunResumption,
+    next_epoch,
     refuse_a_job_not_taken_up,
     refused_as_one,
     start_take_up,
@@ -559,17 +560,15 @@ async def sweep_resume(
             f"every arm of sweep '{sweep.id}' has ended completed or failed, so there is nothing to take up",
             remedy="read how each arm ended with job_poll on the sweep",
         )
-    previous = sweep.lease.epoch if sweep.lease is not None else (sweep.lifetimes[-1].epoch if sweep.lifetimes else 0)
+    epoch = next_epoch(sweep.lease, sweep.lost, (lifetime.epoch for lifetime in sweep.lifetimes))
     # An interleaved sweep stored before it recorded its group carries it on every arm's run.
     group_id = sweep.launch_group_id
     if group_id is None and sweep.arm_schedule == "interleaved":
         group_id = next((run.launch_group_id for run in runs.values() if run.launch_group_id is not None), None)
     reopened = _reopened(
-        sweep, epoch=previous + 1, holder=leases.holder_id, shared=shared, group_id=group_id, cap=max_cost_usd
+        sweep, epoch=epoch, holder=leases.holder_id, shared=shared, group_id=group_id, cap=max_cost_usd
     )
-    await run_blocking(
-        eval_host.blocking_executor, _write_reopened_sweep, storage, leases, reopened, etag, previous + 1
-    )
+    await run_blocking(eval_host.blocking_executor, _write_reopened_sweep, storage, leases, reopened, etag, epoch)
     taking_up = _TakingUp(resumptions=planned, ended=ended)
 
     async def work() -> None:
@@ -581,13 +580,13 @@ async def sweep_resume(
         budget_s=None,
         key=sweep_key(reopened.id, scope_id),
         record=(SWEEP_JOB, scope_id),
-        epoch=previous + 1,
+        epoch=epoch,
     )
     log.info(
         "eval.sweep_resume sweep=%s scope=%s taken up at epoch %d: %d arm(s) taken up, %d to launch, %d ended",
         sweep.id,
         scope_id,
-        previous + 1,
+        epoch,
         len(planned),
         len(never_launched),
         len(ended),
@@ -806,10 +805,9 @@ class _SweepRun:
             self.refusal = job_refusal(error)
 
     def end(self, outcome: SweepOutcome, detail: str | None) -> None:
-        """Set the sweep's ending on its record, closing the holding a take-up opened."""
+        """Set the sweep's ending on its record; its model closes the holding a take-up opened from it."""
         sweep = self.sweep
         sweep.outcome, sweep.detail, sweep.ended_at = outcome, detail, utc_now_iso()
-        sweep.lifetimes = ended_sweep_lifetimes(sweep.lifetimes, outcome=outcome, at=sweep.ended_at, detail=detail)
 
     async def save(self) -> None:
         eval_host = self.host.eval_host

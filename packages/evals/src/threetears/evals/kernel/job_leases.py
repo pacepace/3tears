@@ -64,7 +64,7 @@ from typing import Any, Literal, cast
 
 from pydantic import ValidationError
 
-from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep, ended_sweep_lifetimes
+from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep
 from threetears.evals.kernel.errors import ConflictError, JobFenced, StorageError
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.scoring import reconstruct_completeness
@@ -79,7 +79,7 @@ from threetears.evals.schema.job_lease import (
     LeasedRecord,
     with_fault,
 )
-from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, EvalRun, ended_lifetimes
+from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, EvalRun
 from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
@@ -175,42 +175,28 @@ def _run_lost(run: EvalRun, loss: JobLoss, store: LeaseStore) -> EvalRun:
                 "written lost with its completeness unknown: a result it stored cannot be read under the current "
                 f"model, so what it delivered cannot be counted — {refused}"
             )
-    return run.model_copy(
+    lost = run.model_copy(
         update={
-            "status": RUN_LOST_STATUS,
             "cancellation_reason": f"lost: {loss.cause}",
             "completed_at": loss.at,
             "completeness": completeness,
             "error_details": [*run.error_details, *unreadable],
             "lost": loss,
-            # A run taken up again loses its current holding with it.
-            "lifetimes": ended_lifetimes(
-                run.lifetimes,
-                status=RUN_LOST_STATUS,
-                at=loss.at,
-                reason=loss.cause,
-                lost=loss,
-                completeness=completeness,
-            ),
         }
     )
+    # Set, not copied in: the run's model derives its current holding's ending from its own as it is set, so a run
+    # taken up again loses that holding with it.
+    lost.status = RUN_LOST_STATUS
+    return lost
 
 
 def _sweep_lost(sweep: EvalSweep, loss: JobLoss, _store: LeaseStore) -> EvalSweep:
     """A sweep written lost: ``cancelled``, no further arm launched, its detail the loss, and a sweep taken up again
     losing its current holding with it."""
-    detail = f"lost: {loss.cause}"
-    return sweep.model_copy(
-        update={
-            "outcome": "cancelled",
-            "detail": detail,
-            "ended_at": loss.at,
-            "lost": loss,
-            "lifetimes": ended_sweep_lifetimes(
-                sweep.lifetimes, outcome="cancelled", at=loss.at, detail=detail, lost=loss
-            ),
-        }
-    )
+    lost = sweep.model_copy(update={"detail": f"lost: {loss.cause}", "ended_at": loss.at, "lost": loss})
+    # Set, not copied in: the sweep's model derives its current holding's ending from its own as it is set.
+    lost.outcome = "cancelled"
+    return lost
 
 
 def _attempt_lost(attempt: EvalAnalysisAttempt, loss: JobLoss, _store: LeaseStore) -> EvalAnalysisAttempt:
@@ -331,7 +317,11 @@ def settle_job_record[R: EvalDocumentModel](
         now = store.store_time()
         if not lease_lapsed(_leased(record), now):
             return record, False
-        lost = kind.end_lost(record, JobLoss(at=now.isoformat(), cause=_lapse_cause(_leased(record))), store)
+        lease = _leased(record).lease
+        loss = JobLoss(
+            at=now.isoformat(), cause=_lapse_cause(_leased(record)), epoch=lease.epoch if lease is not None else 0
+        )
+        lost = kind.end_lost(record, loss, store)
         try:
             store.save_job_record(_document(lost), if_match=etag)
         except ConflictError:
@@ -1356,7 +1346,9 @@ class JobLeases:
                 self.let_go(held.record_id)
                 return False
             now = self._store.store_time()
-            lost = held.kind.end_lost(record, JobLoss(at=now.isoformat(), cause=cause), self._store)
+            # The lease is released with the loss, which keeps the epoch it was held at: a take-up holds a higher one.
+            loss = JobLoss(at=now.isoformat(), cause=cause, epoch=held.epoch)
+            lost = held.kind.end_lost(record, loss, self._store)
             try:
                 self._store.save_job_record(_document(lost.model_copy(update={"lease": None})), if_match=etag)
             except ConflictError:

@@ -3475,11 +3475,12 @@ def ended_lifetimes(
     completeness: RunCompleteness | None = None,
     cells_stored: int | None = None,
 ) -> list[RunLifetime]:
-    """A run's lifetimes with its open holding closed as the run ended: for each writer of a run's ending.
+    """A run's lifetimes with its open holding closed as the run ended: for a take-up, which records the holding
+    that ended.
 
-    A resumed run's last holding is open (``running``) until the run ends; its own terminal status, its loss and its
-    next take-up each close it here, so it reads how it ended. Lifetimes with no open holding — a run never taken up
-    again, whose ending is on the run itself — are returned as they are.
+    A run's current holding, while it is recorded, is closed from the run's own ending by the run's model
+    (``EvalRun.lifetimes``); a take-up of a run never taken up before builds the entry of the holding that ended and
+    closes it here. Lifetimes with no open holding are returned as they are.
 
     :param lifetimes: The run's lifetimes.
     :ptype lifetimes: Sequence[RunLifetime]
@@ -3519,6 +3520,22 @@ def ended_lifetimes(
         }
     )
     return [*lifetimes[:-1], closed]
+
+
+def run_ending_reason(run: EvalRun) -> str | None:
+    """Why a run's holding ended, in the words its record gives: the loss's cause, the cancellation's or the budget
+    stop's reason, or the error an exhausted or failed run recorded last.
+
+    :param run: The run, ended.
+    :ptype run: EvalRun
+    :return: The reason, or None when its record gives none.
+    :rtype: str | None
+    """
+    if run.lost is not None:
+        return run.lost.cause
+    if (reason := run.cancellation_reason or run.budget_stop_reason) is not None:
+        return reason
+    return run.error_details[-1] if run.status in ("exhausted", "failed") and run.error_details else None
 
 
 class EvalRun(CoreDocumentModel):
@@ -4341,6 +4358,37 @@ class EvalRun(CoreDocumentModel):
         if labels != sorted(set(labels)):
             raise ValueError(f"run labels are stored sorted and each once; got {labels!r}")
         return labels
+
+    @model_validator(mode="after")
+    def _current_holding_ends_with_the_run(self) -> Self:
+        """Read a run taken up again that has ended with its current holding (its last lifetime) ended as it did.
+
+        The run's own fields — its status, when it ended, why, its loss, its budget stops and its completeness — are
+        the one record of how its current holding ended. The entry is derived from them each time the run is built
+        or a field of it is set, so no writer of a run's ending has to close the holding, and the two cannot
+        disagree. While the run is terminal its last lifetime is its current holding: a take-up appends a new one
+        only as it reopens the run ``running``.
+        """
+        if self.status not in TERMINAL_RUN_STATUSES or not self.lifetimes:
+            return self
+        last, lost, completeness = self.lifetimes[-1], self.lost, self.completeness
+        ended = last.model_copy(
+            update={
+                "status": self.status,
+                "ended_at": self.completed_at or (lost.at if lost is not None else last.ended_at),
+                "reason": run_ending_reason(self),
+                "lost": lost,
+                "budget_stops": self.budget_stops,
+                "completeness": completeness,
+                "cells_stored": completeness.persisted_cells if completeness is not None else last.cells_stored,
+                # A lost holding's cells in flight left no row, so what it spent reached no record.
+                "spend_lower_bound": lost is not None,
+            }
+        )
+        if ended != last:
+            # Written past assignment validation, which would run this validator again for the same answer.
+            self.__dict__["lifetimes"] = [*self.lifetimes[:-1], ended]
+        return self
 
     @model_validator(mode="after")
     def _replay_names_its_corpus(self) -> Self:
@@ -5737,6 +5785,25 @@ class EvalResult(CoreDocumentModel):
             "it beside cost_usd, which stays the spend of the attempt this row records; no cost total reads it. None "
             "when some of that spend was never priced. 0 on a row written over nothing, and on one stored before the "
             "field existed."
+        ),
+    )
+    metered_calls: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "The metered third-party calls of this cell that its run's metered-call ceiling counts: this attempt's, "
+            "plus those of the attempts the row was written over, so a run taken up again counts every attempt's "
+            "calls once, as its cost cap counts their spend. None when the run counted none (a cell run with no run "
+            "ledger), and on a row stored before the field existed, which a run taken up again counts as none."
+        ),
+    )
+    account_refused: bool = Field(
+        default=False,
+        description=(
+            "Whether the provider account paying for the run refused a call of this cell (out of credit, or its key "
+            "refused), which ends the run exhausted. The cell is excluded as an apparatus fault, and a run taken up "
+            "again once the account is topped up runs it again, written over this row. False on a row stored before "
+            "the field existed."
         ),
     )
 

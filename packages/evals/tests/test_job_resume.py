@@ -10,7 +10,8 @@ Pinned:
   names the action that starts it again.
 - **``jobs_resumable`` lists exactly what ``job_resume`` would take up** — lost, operator-cancelled, budget-stopped
   and exhausted runs, a run whose lease lapsed unwritten included — with how each ended, its cells, its spend, its
-  cap and its lifetimes; never a completed, failed or live run, nor an ad hoc one. A lost sweep and a lost launch are
+  cap and its lifetimes; never a completed, failed or live run, an ad hoc one, nor an archived one, nor a sweep or
+  launch whose every run is archived. A lost sweep and a lost launch are
   listed once each, their arms under them and not again as runs. Each matching row it cannot read is counted. It
   reads the same on every store backend.
 """
@@ -463,6 +464,43 @@ def test_jobs_resumable_lists_a_lost_sweep_and_a_lost_launch_once_with_their_arm
         {"x": "cancelled", "y": "not_launched"},
     )
     assert old_sweep.note is not None and "'y'" in old_sweep.note and "run_launch" in old_sweep.note
+
+
+def test_jobs_resumable_leaves_out_an_archived_run_and_a_sweep_or_launch_whose_every_run_is_archived(
+    store: DocumentStore,
+) -> None:
+    """Archiving a run is how an operator declines it, so it is not offered again at every boot."""
+    storage = EvalStorage(store)
+    lost = {"status": "cancelled", "lost": LOST}
+    _seed(storage, "kept", **lost)
+    for run_id in ("declined", "declined-arm", "declined-launch-run"):
+        _seed(storage, run_id, archived=True, **lost)
+    _sweep_of(
+        storage,
+        "sweep-declined",
+        [SweepArmRecord(label="a", model="sonnet", run_id="declined-arm"), SweepArmRecord(label="b", model="sonnet")],
+        outcome="cancelled",
+        lost=LOST,
+        arguments=SweepLaunchArguments(k_runs=2),
+    )
+    launch = EvalLaunch(
+        id="launch-declined",
+        scope_id=SCOPE,
+        template_id="tpl-1",
+        subject_id="subject",
+        models=["sonnet"],
+        k_runs=2,
+        n_variations=0,
+        run_ids=["declined-launch-run"],
+        outcome="cancelled",
+        lost=LOST,
+    )
+    storage.save_job_record(launch.to_dict(), if_match=None)
+
+    listing = resumable_jobs(storage, [SCOPE])
+
+    assert [job.run_id for job in listing.jobs] == ["kept"]
+    assert listing.groups == []
 
 
 def test_jobs_resumable_counts_each_matching_row_it_cannot_read_and_lists_the_rest(store: DocumentStore) -> None:

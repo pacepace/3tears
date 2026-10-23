@@ -306,15 +306,16 @@ another scope's job reads not found, on poll and on cancel.
 **The one way back is a resume.** `job_resume` takes a run's, a sweep's or a launch's job up again as the same job,
 under its lease's next **epoch**. Every lease carries an epoch, and every result row records the epoch it was
 written under, so a holding the job has passed from writes nothing more into it. A run continues as itself: only
-the cells it has not measured run, in its own order, and a cell a cancel cut short runs again over its row. Its
-spend so far counts toward its cost cap, and it ends as an uninterrupted run would have, `completed` with pass^k
-over its whole case set. Nothing resumes on its own. `jobs_resumable` lists what `job_resume` would take up, for a
+the cells it has not measured run, in its own order, and a cell a cancel cut short, or one its provider account
+refused, runs again over its row. Its spend so far counts toward its cost cap, its metered calls so far toward its
+metered-call ceiling, and it ends as an uninterrupted run would have, `completed` with pass^k over its whole case
+set. Nothing resumes on its own. `jobs_resumable` lists what `job_resume` would take up, for a
 host to offer at boot ([Adopting the engine](adopting-a-host.md#at-boot-settle-then-offer-resumes)).
 
 | A run that ended | Resumable? |
 |---|---|
 | lost, or `cancelled` by an operator (to ship a fix, say) | yes |
-| `budget_stopped`, or `exhausted` (its provider account) | yes; a stop at its cost cap needs `max_cost_usd` above what it spent |
+| `budget_stopped`, or `exhausted` (its provider account) | yes; a stop at its cost cap needs `max_cost_usd` above what it spent, and one at its metered-call ceiling a higher ceiling, which `job_resume` cannot name ([Cost and budgets](cost-and-budgets.md#caps)) |
 | `completed` | no: nothing is left to run |
 | `failed` | no: it failed on a defect, which a resume would run again |
 | still live | no: cancel it or wait for it to end |
@@ -369,9 +370,10 @@ cancelled or budget-stopped arm resumes as its own run, and an arm that never la
 arguments. The arm schedule is kept: interleaved arms resume as one group under the sweep's original launch group,
 so they take their remaining cells in turn in the order they always had, and sequential arms resume one after
 another, in order. One arm's refusal refuses the whole sweep, naming every arm's every difference, before anything is
-written. A sweep stored before sweeps recorded their arms' arguments resumes the arms it launched, but it can't launch
-an arm it never launched; the refusal and `jobs_resumable` name that arm, and the remedy is to launch it with
-`run_launch`. An interleaved sweep launches every arm together, so a lost interleaved sweep has no such arm.
+written. A sweep stored before sweeps recorded their arms' arguments can't launch an arm it never launched, so
+`job_resume sweep:<id>` refuses the whole sweep, naming that arm; `jobs_resumable` names it too. Launch that arm with
+`run_launch`, and resume each other arm by its run's job id (`job_resume run:<id>`). An interleaved sweep launches
+every arm together, so a lost interleaved sweep has no such arm.
 `job_resume launch:<id>` does the same for a multi-arm launch: its unfinished runs resume as one group under its
 original id. `jobs_resumable` lists each sweep and launch once, under `groups`, with each arm's state; their runs are
 not listed again among `jobs`.

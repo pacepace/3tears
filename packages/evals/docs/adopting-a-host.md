@@ -1248,9 +1248,10 @@ can be taken up again:
 1. `sweep_abandoned_runs(storage, scopes)` writes lost every run your last process left running.
 2. The `jobs_resumable` action (or the function behind it, `resumable_jobs(storage, scopes)`) lists the runs, sweeps
    and launches `job_resume` would take up. Each comes with how it ended and why, its cells done and expected, what
-   it spent and its cap, and, for a run its cost cap stopped, the `max_cost_usd` it needs.
+   it spent and its cap, and, for a run its cost cap or its metered-call ceiling stopped, what it needs to resume.
 3. Offer each one to an operator. **Nothing resumes on its own**: a resume spends money, so it is always asked for
-   (`job_resume`).
+   (`job_resume`). An operator declines a run by archiving it (`EvalStorage.set_eval_run_archived`): an archived
+   run is never listed again, nor a sweep or launch whose every run is archived.
 
 `jobs_resumable` does not check whether a run would still measure as it did, since that means replaying its launch
 through your kind. `job_resume` does that check in its call, before anything is spent: it runs your kind's launcher

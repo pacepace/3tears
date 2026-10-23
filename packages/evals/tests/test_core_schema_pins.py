@@ -85,16 +85,16 @@ PINNED_CORE_SCHEMA_MINOR = 7
 
 #: Each core type's validation JSON schema, normalised (:func:`core_shape_digest`), by ``doc_type``.
 CORE_SHAPE_DIGESTS: dict[str, str] = {
-    "eval_action_job": "2541024d9fb2a9d2066c80cee46e4b580629fd2f0750533c4bb215814e86e737",
-    "eval_analysis_attempt": "47dcd086a5dc16b8ec331d18fff247e44cd963d566c6f5048145721e556397f2",
+    "eval_action_job": "89d11e0072622b8f9e45f984aa14ca97fae0fd97701ba696f1f0dfb6bdc32638",
+    "eval_analysis_attempt": "a8c2eacebe59e2ee048191b458546855cb2c112c43f615304f7c509c62a2eedd",
     "eval_generation_slot": "bc54eca8a5d170d64e2c84365f843d255a2c53c5e49308978e963bc218c64ef7",
-    "eval_judge_temperature_check": "ed87fad3c3bc1d9998a8aaab6b4c496288a39812d59b550a5ea504e7ec67b93c",
-    "eval_launch": "e158dc513a6291e39b1d72865322942849fe01bc050c3a58ac39def9b11b751b",
+    "eval_judge_temperature_check": "1ac27b7c76c64689fe87261ff458f85f9055a2ee8e42b08fdfaea720528e8646",
+    "eval_launch": "bf20cf792f59a79ae49db234b2d90786d4469cd585aa56d3f0c44fbda6e74695",
     "eval_out_of_run_spend": "48ebddf293a10bb80222da28aaa1a96965d3c9a4cd9d537c2cc13166a8a21f61",
-    "eval_result": "05b518c7dcd494c6b5bc323dd1f209c35cb7f5d4fa5dc68f083e06d3fab170f0",
-    "eval_run": "ce64a2557b225ba7d97e2c1e7ed6ce477215306a5883baebfa8953ea0102e66b",
-    "eval_second_judge_pass": "f2f7b85b4def2300f8d0c83a259d3f9cb92cd2d359e6e82d5a9fa0147dd98ec5",
-    "eval_sweep": "1ebf7b9dbfc34168ff6ceabb5f49a1690d66e1aaa4e74a2b5c103f200ce1fbf4",
+    "eval_result": "47fa777d3064e1ced847f713715d060a8c801c78e6a38392f2bc6326edb0a606",
+    "eval_run": "c3336888c3b34a3855059c1a370365abc7437dfd573e9d62e9041fc9d444275d",
+    "eval_second_judge_pass": "70100a660cb76424e166ace4142576c4e6bf1056a78740acbdc17aec7b702ae4",
+    "eval_sweep": "2b08c6352f628316373d30ae39189a0138f3acd678ee06bb781ab13a5949521a",
     "eval_trace": "30fd14fe5b3a6017a46361afaea723ce4b67683a29d68d63d1931dd33734b96c",
 }
 

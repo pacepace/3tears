@@ -12,20 +12,23 @@ packages (bumped in lock-step).
 or its provider account, as the same run. Only the cells it has not measured run, in its own order, and it ends as
 an uninterrupted run would have, `completed` with pass^k over its whole case set. A sweep (`sweep:<id>`) or a
 multi-arm launch (`launch:<id>`) resumes as a whole: interleaved arms resume as one group in their original order,
-sequential arms in order, and a sweep's never-launched arms launch from the arguments it now stores. A
-`budget_stopped` run resumes with a `max_cost_usd` above what it has spent, which counts every attempt once. A resume
+sequential arms in order, and a sweep's never-launched arms launch from the arguments it now stores. A run its cost
+cap stopped resumes with a `max_cost_usd` above what it has spent, which counts every attempt once; a run the wall
+clock stopped resumes as it is. Its metered-call ceiling counts the calls its stored cells landed, and a run that
+has reached it is refused until the ceiling is raised. An `exhausted` run's account-refused cells run again. A resume
 is refused, naming every difference, when a launch of the run now would measure otherwise. It is never refused for
 host labels or for a template edit that changes nothing measured; both are recorded on the run's new `lifetimes`
 (`RunLifetime`), one entry per process lifetime. `completed` and `failed` runs are never resumed. `jobs_resumable`
 lists what `job_resume` would take up, with spend and cap, for a host to offer at boot. Nothing resumes on its own.
 
-**Changed:** Core schema v15.7, additive: `JobLease.epoch`, `EvalResult.lease_epoch` and `superseded_spend_usd`,
-`EvalRun.lifetimes` and `template_digest`, and on `EvalSweep` its launch arguments, `launch_group_id` and
-`lifetimes`. A run's cell result id is derived from (run, case, model, k), so each cell has one row however many
-processes write it, and readers order results by insertion, never by id. Each lease carries an epoch, and a holder
-writes a cell or the run record only under the epoch it holds. `job_resume` replays the kind's launcher in its call
-so that drift is refused before any spend, so a launcher must make no model request when it rebuilds a stored run.
-A pod from before epochs, still alive during a rolling deploy, does not enforce the fencing.
+**Changed:** Core schema v15.7, additive: `JobLease.epoch`, `JobLoss.epoch`, `EvalResult.lease_epoch`,
+`superseded_spend_usd`, `metered_calls` and `account_refused`, `EvalRun.lifetimes` and `template_digest`, and on
+`EvalSweep` its launch arguments, `launch_group_id` and `lifetimes`. A run's cell result id is derived from (run, case,
+model, k), so each cell has one row however many processes write it, and readers order results by insertion, never by
+id. Each lease carries an epoch, and a holder writes a cell or the run record only under the epoch it holds.
+`job_resume` replays the kind's launcher in its call so that drift is refused before any spend, so a launcher must make
+no model request when it rebuilds a stored run. A pod from before epochs, still alive during a rolling deploy, does not
+enforce the fencing.
 
 **Fixed:** A holder fenced or shut down after its run was written lost no longer writes `cancelled` rows into that
 run as its in-flight cells unwind. A lost or superseded holder writes nothing more, and a graceful shutdown no longer

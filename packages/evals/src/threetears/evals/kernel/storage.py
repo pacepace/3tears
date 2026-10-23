@@ -2221,15 +2221,20 @@ class EvalStorage:
             written at the result's epoch or a later one.
         :raises StorageError: Every attempt lost its race, or a write failed.
         """
-        run, _ = self.load_job_record(EvalRun, result.eval_run_id, result.scope_id)
-        if run is not None and run.lost is not None:
+        # The rule reads two fields of the run's record, so it reads them off the stored document rather than
+        # validating the whole run on every cell: a large run's record is costly to hydrate, and a record this build's
+        # model would refuse still says whether it was lost and at which epoch it is held.
+        run = self._of_type(EvalRun, self._store.get(result.eval_run_id, result.scope_id)) or {}
+        if run.get("lost") is not None:
             raise JobFenced(
-                f"eval run '{run.id}' was written lost; its cell (case {result.test_case_id}, model {result.model}, "
-                f"k {result.k_iteration}) is not written"
+                f"eval run '{result.eval_run_id}' was written lost; its cell (case {result.test_case_id}, model "
+                f"{result.model}, k {result.k_iteration}) is not written"
             )
-        if run is not None and run.lease is not None and run.lease.epoch > result.lease_epoch:
+        lease = run.get("lease")
+        held_at = int(lease.get("epoch", 0)) if isinstance(lease, dict) else None
+        if held_at is not None and held_at > result.lease_epoch:
             raise JobFenced(
-                f"eval run '{run.id}' is held at lease epoch {run.lease.epoch}; a cell written under epoch "
+                f"eval run '{result.eval_run_id}' is held at lease epoch {held_at}; a cell written under epoch "
                 f"{result.lease_epoch} (case {result.test_case_id}, model {result.model}, k {result.k_iteration}) "
                 "is not written"
             )

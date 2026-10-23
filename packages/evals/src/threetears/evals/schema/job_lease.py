@@ -103,6 +103,15 @@ class JobLoss(EvalBaseModel, CoreShapeModel):
 
     at: str = Field(min_length=1, description="When the loss was written (ISO-8601, UTC).")
     cause: str = Field(min_length=1, description="Why the job is lost, in words a poll reports.")
+    epoch: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "The lease epoch of the holding that was lost. A shutdown releases the lease as it writes the loss, so "
+            "this is where the record keeps the epoch it last held, and a take-up holds a higher one. 0 on a loss "
+            "stored before the field existed."
+        ),
+    )
 
 
 #: A job record's lease: who is running its work and until when; None once released, and on a record no process

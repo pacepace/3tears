@@ -35,16 +35,14 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Itera
 from concurrent.futures import Executor
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
-from typing import Any, Literal, Protocol, TypeVar, cast
+from typing import Any, Literal, Protocol, TypeVar
 
 from threetears.evals.kernel.errors import AdmissionRefusedError, ConflictError, JobFenced, StorageError
 from threetears.evals.schema.models import (
     TERMINAL_RUN_STATUSES,
     BudgetStop,
     EvalRun,
-    EvalRunStatus,
     KnownFailedBecause,
-    ended_lifetimes,
 )
 from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import JobStore
@@ -1100,8 +1098,10 @@ class EvalJobManager:
         :ptype reason: str
         """
         for run in runs:
-            run.status = "cancelled"
+            # A run taken up again ends the holding its take-up opened with it, which its model derives from these.
             run.cancellation_reason = reason
+            run.completed_at = datetime.now(UTC).isoformat()
+            run.status = "cancelled"
             try:
                 self._storage.save_eval_run(run)
             except ConflictError, StorageError:
@@ -1388,17 +1388,8 @@ class EvalJobManager:
             if run.lost is not None:
                 return None
             ended_at = datetime.now(UTC).isoformat()
-            if status in TERMINAL_RUN_STATUSES and run.lifetimes:
-                # A run taken up again ends its current holding with it, so the holding reads how it ended.
-                closed = ended_lifetimes(
-                    run.lifetimes,
-                    status=cast(EvalRunStatus, status),
-                    at=ended_at,
-                    reason=cancellation_reason or budget_stop_reason or error,
-                    budget_stops=budget_stops,
-                    completeness=run.completeness,
-                )
-                run = run.model_copy(update={"lifetimes": closed})
+            # A run taken up again ends its current holding with it: the run's model derives the holding's ending
+            # from the fields written here (``EvalRun.lifetimes``).
             data = run.to_dict()
             data["status"] = status
             if error is not None:

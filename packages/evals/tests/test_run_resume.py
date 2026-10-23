@@ -13,7 +13,12 @@ Pinned:
   description) is taken up, and disclosed on the holding that began after it. A run stored before it froze that
   digest is refused once its template was edited, and taken up while it is not.
 - **Its budget**: a run its budget stopped is taken up only under a cap above what it spent, and each holding
-  records the cap it ran under.
+  records the cap it ran under. A run its metered-call ceiling stopped is taken up only under a ceiling above the
+  calls its stored cells landed, which count toward it. A run its provider account stopped runs the cells the account
+  refused again once taken up.
+- **Across an identity version**: a run stamped under an older one, its inputs unchanged, is taken up; one whose host
+  can no longer place its variant names that as a difference.
+- **A group that never starts**: a run taken up whose group is settled before it starts ends its holding with it.
 - **Old records**: a run an older build stored and lost — no epochs, minted result ids — is taken up, its done rows
   kept and its cut-short rows written over under their own ids.
 - **One holding**: of two take-ups racing, exactly one wins.
@@ -30,19 +35,41 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis.completeness import completeness_disclosure
-from threetears.evals.kernel import ConflictError, ValidationFailedError
+from threetears.evals.kernel import ConflictError, EvalStorage, ValidationFailedError
+from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink
+from threetears.evals.kernel.errors import StorageError
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.kernel.scoring import compute_pass_hat_k
 from threetears.evals.ops import OpsHost, job_poll, run_job_id
-from threetears.evals.run import ArmPrice, ArmQuote
+from threetears.evals.run import (
+    ArmPrice,
+    ArmQuote,
+    KindWiring,
+    LaunchHost,
+    LaunchRequest,
+    LaunchSettings,
+    MeteredCallLedger,
+    launch_run,
+    start_run,
+)
 from threetears.evals.run.definition_digests import measured_template_digest
+from threetears.evals.run.jobs import EvalJobManager
 from threetears.evals.run.resume import counted_spend, resume_drift, resume_run
 from threetears.evals.schema import EvalResult, EvalRun, EvalTemplate, JobLease
-from threetears.evals.schema.models import cell_result_id, eval_trace_doc_id
+from threetears.evals.schema.models import RunLifetime, cell_result_id, eval_trace_doc_id
+from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_run, make_template
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_COST_CEILING_USD, TOYHOST_SUBJECT
-from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, TOYHOST_SUBJECTS
+from packages.evals.tests.fixtures.toyhost.host import with_registry
+from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ScriptedExtractionClient, ToyExtractorKind
+from packages.evals.tests.fixtures.toyhost.launch import (
+    TOYHOST_LAUNCH_SETTINGS,
+    TOYHOST_SUBJECTS,
+    toyhost_launch_host,
+)
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.fixtures.toyhost.run import toyhost_template
+from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template, toyhost_test_cases
+from packages.evals.tests.job_support import InMemoryRunStore
 from packages.evals.tests.lease_support import T0, ClockedStore, held_extraction, launched_run, other_process, until
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture, settled
@@ -226,8 +253,14 @@ def test_a_take_up_that_would_measure_otherwise_names_every_difference_and_no_la
 
     differences = resume_drift(stored, fresh, template, toyhost_profile())
 
-    assert [difference.split(" ", 1)[0] for difference in differences] == ["judge_config_ids", "apparatus_settings"]
-    assert "cfg-2" in differences[0] and "pool-b" in differences[1]
+    # Read at the current identity version on both sides, the apparatus moves a context component as well as the field.
+    assert [difference.split(" ", 1)[0] for difference in differences] == [
+        "context",
+        "judge_config_ids",
+        "apparatus_settings",
+    ]
+    assert differences[0].startswith("context component apparatus_settings")
+    assert "cfg-2" in differences[1] and "pool-b" in differences[2]
     unlabelled = stored.model_copy(update={"subject_snapshot": relabelled})
     assert resume_drift(stored, unlabelled, template, toyhost_profile()) == []
 
@@ -650,20 +683,51 @@ async def test_a_take_up_across_a_deploy_goes_ahead_and_its_holding_records_the_
     assert run.context_key == launched.context_key
 
 
-async def test_a_run_its_provider_account_stopped_is_taken_up_again(monkeypatch: pytest.MonkeyPatch) -> None:
-    holder, run_id, _, store = await _interrupted(monkeypatch, "cancelled")
-    refusal = "the provider account refused a candidate call: out of credit"
-    document = store.get(run_id, TOYHOST_SCOPE)
-    assert document is not None
-    store.upsert(document | {"status": "exhausted", "cancellation_reason": None, "error_details": [refusal]})
+#: What the provider says of a call the account paying for the run cannot pay for.
+OUT_OF_CREDIT = "the provider account refused the extractor's call: out of credit"
+
+
+def _account_refused_after(monkeypatch: pytest.MonkeyPatch, served: int) -> dict[str, bool]:
+    """Serve the first ``served`` extractions, then refuse every later one for the account, until the returned flag's
+    ``funded`` is set: the account topped up."""
+    invoke = ToyExtractorKind.invoke
+    state = {"funded": False}
+    left = [served]
+
+    async def refusing(self: ToyExtractorKind, instance: Any, test_case: Any, sink: Any) -> CandidateOutput:
+        if state["funded"] or left[0] > 0:
+            left[0] -= 1
+            return await invoke(self, instance, test_case, sink)
+        return CandidateOutput(output=[], infra_errors=[OUT_OF_CREDIT], account_refused=True)
+
+    monkeypatch.setattr(ToyExtractorKind, "invoke", refusing)
+    return state
+
+
+async def test_a_run_its_provider_account_stopped_runs_its_refused_cells_again_once_taken_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = _account_refused_after(monkeypatch, served=DONE_BEFORE)
+    holder = off_loop(ops_fixture, store=ClockedStore()).host
+    run_id = await launched_run(holder, K)
+    assert (await settled(holder, run_job_id(run_id))).status == "exhausted"
+    launched = off_loop(_run, holder, run_id)
+    refused = [row for row in _rows(holder, run_id) if row.account_refused]
+    assert refused, "the account's refusal is on the cells it refused"
+    assert all(row.infra_error and OUT_OF_CREDIT in row.infra_error for row in refused)
     resumer = other_process(holder)
 
+    account["funded"] = True
     await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
     assert (await settled(resumer, run_job_id(run_id))).state == "completed"
 
+    await _assert_ends_as_the_control(holder, run_id, launched)
+    after = {row.id: row for row in _rows(holder, run_id)}
+    for row in refused:
+        assert (after[row.id].account_refused, after[row.id].lease_epoch) == (False, 1), "run again, written over"
     first, second = off_loop(_run, holder, run_id).lifetimes
-    assert (first.status, first.reason, second.status) == ("exhausted", refusal, "completed")
-    assert len(_rows(holder, run_id)) == 3 * K
+    assert (first.status, second.status) == ("exhausted", "completed")
+    assert first.reason is not None and OUT_OF_CREDIT in first.reason
 
 
 async def test_a_take_up_runs_under_the_cap_the_run_recorded_not_the_hosts_current_one(
@@ -681,3 +745,293 @@ async def test_a_take_up_runs_under_the_cap_the_run_recorded_not_the_hosts_curre
     run = off_loop(_run, holder, run_id)
     assert (run.max_cost_usd, run.max_cost_usd_origin) == (TOYHOST_COST_CEILING_USD, "inherited")
     assert [lifetime.max_cost_usd for lifetime in run.lifetimes] == [TOYHOST_COST_CEILING_USD] * 2
+
+
+# =============================================================================
+# Across an identity version, and a run its host can no longer place
+# =============================================================================
+
+
+async def test_a_run_stamped_under_an_older_identity_version_with_its_inputs_unchanged_is_taken_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bump of the identity version moves no run's measurement: the stored run is read at today's version."""
+    holder, run_id, launched, store = await _interrupted(monkeypatch, "cancelled")
+    document = store.get(run_id, TOYHOST_SCOPE)
+    assert document is not None
+    # As an older build stamped it: another version, whose predicate digested the same inputs to another key.
+    store.upsert(document | {"identity_version": IDENTITY_VERSION - 1, "context_key": "an-older-predicates-key"})
+
+    await resume_run(other_process(holder).launch, run_id, TOYHOST_SCOPE)
+    assert (await settled(holder, run_job_id(run_id))).state == "completed"
+
+    assert off_loop(_run, holder, run_id).variant_levers == launched.variant_levers
+
+
+def test_a_run_that_recorded_no_lever_map_its_host_can_no_longer_place_is_a_difference_named() -> None:
+    template = make_template(created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00")
+    stored = make_eval_run(variant_levers=None, created_at="2026-06-01T00:00:00+00:00")
+    fresh = stored.model_copy(update={"variant_levers": {}, "identity_version": IDENTITY_VERSION})
+    unplaceable = dataclasses.replace(toyhost_profile(), variant_levers=lambda run: {"an_undeclared_axis": "x"})
+
+    differences = resume_drift(stored, fresh, template, unplaceable)
+
+    assert [d for d in differences if d.startswith("variant levers (the run recorded none")], differences
+
+
+# =============================================================================
+# A take-up whose group never starts
+# =============================================================================
+
+
+class _SiblingSaveFails(InMemoryRunStore):
+    """A store that refuses to save one run as its group starts, so the runs saved before it are settled."""
+
+    def __init__(self, refused: str) -> None:
+        super().__init__()
+        self.refused = refused
+
+    def save_eval_run(self, run: EvalRun, *, if_match: str | None = None) -> None:
+        if run.id == self.refused:
+            raise StorageError(f"run {run.id} could not be saved")
+        super().save_eval_run(run, if_match=if_match)
+
+
+async def test_a_run_taken_up_whose_group_never_starts_ends_its_holding_with_it() -> None:
+    """Settled cancelled before it started, the run's current holding reads how it ended, as the run does."""
+    earlier = RunLifetime(holder="p1", epoch=0, started_at="2026-10-01T00:00:00+00:00", status="cancelled")
+    holding = RunLifetime(holder="p2", epoch=1, started_at="2026-10-02T00:00:00+00:00")
+    taken_up = make_eval_run(status="running", lifetimes=[earlier, holding])
+    sibling = make_eval_run()
+    storage = _SiblingSaveFails(sibling.id)
+    manager = EvalJobManager(storage)
+
+    async def work(progress: Any) -> None:
+        raise AssertionError("no run of the group starts")
+
+    with pytest.raises(StorageError):
+        await manager.start_group([(taken_up, work, None), (sibling, work, None)])
+
+    run = storage.runs[taken_up.id]
+    assert run.status == "cancelled" and run.cancellation_reason is not None
+    assert run.lifetimes[0] == earlier
+    last = run.lifetimes[-1]
+    assert (last.status, last.reason, last.epoch) == ("cancelled", run.cancellation_reason, 1)
+    assert last.ended_at is not None
+
+
+def test_a_run_ended_by_a_writer_that_never_closes_its_holding_reads_its_holding_ended_as_the_run_did() -> None:
+    """The run's own fields are the one record of how its current holding ended: a run read with a terminal status
+    and an open last lifetime reads that lifetime closed from them, and setting the fields in any order lands the same."""
+    earlier = RunLifetime(holder="p1", epoch=0, started_at="2026-10-01T00:00:00+00:00", status="cancelled")
+    holding = RunLifetime(holder="p2", epoch=1, started_at="2026-10-02T00:00:00+00:00")
+    stored = make_eval_run(status="running", lifetimes=[earlier, holding]).to_dict() | {
+        "status": "budget_stopped",
+        "budget_stop_reason": "the cost cap was reached",
+        "completed_at": "2026-10-03T00:00:00+00:00",
+    }
+
+    run = EvalRun.from_dict(stored)
+
+    assert run.lifetimes[0] == earlier
+    last = run.lifetimes[-1]
+    assert (last.status, last.ended_at, last.reason) == (
+        "budget_stopped",
+        "2026-10-03T00:00:00+00:00",
+        "the cost cap was reached",
+    )
+    set_in_turn = make_eval_run(status="running", lifetimes=[earlier, holding])
+    set_in_turn.status = "cancelled"
+    set_in_turn.cancellation_reason = "shipping a fix"
+    set_in_turn.completed_at = "2026-10-03T00:00:00+00:00"
+    assert (set_in_turn.lifetimes[-1].status, set_in_turn.lifetimes[-1].reason) == ("cancelled", "shipping a fix")
+    assert set_in_turn.lifetimes[-1].ended_at == "2026-10-03T00:00:00+00:00"
+    reopened = make_eval_run(status="running", lifetimes=[earlier, holding])
+    assert reopened.lifetimes[-1] == holding, "a running run's holding is open"
+
+
+# =============================================================================
+# The metered-call ceiling
+# =============================================================================
+
+
+class _OneMeteredCallKind(ToyExtractorKind):
+    """A toy extractor whose every cell makes one metered call through the run's ledger, its cells overlapping.
+
+    A cell past the first ``hold.passing`` waits on ``hold.gate`` after its call when a test set one, so a cancel cuts
+    it short with its call made.
+    """
+
+    def __init__(self, *args: Any, ledger: MeteredCallLedger | None, hold: _MeteredHold, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.ledger = ledger
+        self.hold = hold
+
+    async def invoke(self, instance: Any, test_case: Any, sink: CellSink) -> CandidateOutput:
+        await asyncio.sleep(0.01)
+        assert self.ledger is not None and self.ledger.admit(tool="web_search", action="search", spend=None)
+        if self.hold.gate is not None:
+            if self.hold.passing > 0:
+                self.hold.passing -= 1
+            else:
+                self.hold.held += 1
+                await self.hold.gate.wait()
+        sink.add_spend("candidate", 0.0)
+        return CandidateOutput(output=[{"admitted": 1}])
+
+
+@dataclasses.dataclass
+class _MeteredHold:
+    """Which of the metered kind's cells wait after their call, and on what: none, while ``gate`` is None."""
+
+    gate: asyncio.Event | None = None
+    passing: int = 0
+    #: How many cells have waited on the gate, their call made.
+    held: int = 0
+
+
+#: Cells of the metered run: three cases, four repeats.
+METERED_CELLS = 12
+
+
+@dataclasses.dataclass
+class _MeteredHost:
+    """The toy launch host with every cell making one metered call, under a metered-call ceiling a test moves."""
+
+    launching: LaunchHost
+    storage: EvalStorage
+    store: InMemoryDocumentStore
+    ceiling: list[int]
+    hold: _MeteredHold
+
+    async def ended(self, run_id: str) -> tuple[EvalRun, list[EvalResult]]:
+        """The run once its job has ended, and its rows."""
+        await until(lambda: not self.launching.job_manager.is_active(run_id), timeout=20)
+        run = off_loop(self.storage.load_eval_run, run_id, TOYHOST_SCOPE)
+        assert run is not None
+        return run, off_loop(self.storage.query_eval_results_by_run, run_id, TOYHOST_SCOPE)
+
+    async def launch(self) -> EvalRun:
+        """Launch one arm of the metered run, four repeats over the toy cases."""
+        (launched,) = await start_run(
+            self.launching,
+            template_id=toyhost_template().id,
+            scope_id=TOYHOST_SCOPE,
+            subject_id=TOYHOST_SUBJECT.subject_id,
+            models=[RUN_MODELS[0]],
+            k_runs=4,
+        )
+        return launched
+
+
+def _metered_host(ceiling: int) -> _MeteredHost:
+    store = InMemoryDocumentStore()
+    storage = EvalStorage(store)
+    ceilings = [ceiling]
+    hold = _MeteredHold()
+
+    def settings() -> LaunchSettings:
+        return TOYHOST_LAUNCH_SETTINGS.model_copy(update={"max_metered_calls": ceilings[0]})
+
+    host, _client = toyhost_launch_host(storage=storage, settings=settings)
+    world = host.eval_host.profile.world
+    assert world is not None
+
+    async def launch(request: LaunchRequest) -> EvalRun:
+        def factory(context: Any) -> ToyExtractorKind:
+            return _OneMeteredCallKind(
+                client=ScriptedExtractionClient(),
+                world=world,
+                goal_checks=(),
+                ledger=context.options.metered_calls,
+                hold=hold,
+            )
+
+        return await launch_run(
+            launching,
+            request,
+            KindWiring(
+                kind_factory=factory,
+                subject=TOYHOST_SUBJECT,
+                test_cases=toyhost_test_cases(request.template),
+                max_concurrent_cells=2,
+            ),
+        )
+
+    (launchable,) = host.kinds.values()
+    launching = dataclasses.replace(
+        host,
+        eval_host=with_registry(host.eval_host, {TOY_EXTRACTOR_KIND: dataclasses.replace(launchable, launch=launch)}),
+    )
+    template = toyhost_template().model_copy(update={"goal_state_checks": []})
+    storage.save_template(template)
+    # A take-up reads the run's frozen cases from its scope.
+    for case in toyhost_test_cases(template):
+        storage.save_test_case(case)
+    return _MeteredHost(launching=launching, storage=storage, store=store, ceiling=ceilings, hold=hold)
+
+
+async def test_a_run_its_metered_ceiling_stopped_is_taken_up_only_under_a_ceiling_above_what_it_landed() -> None:
+    metered = off_loop(_metered_host, 3)
+    launching, storage, ceiling, ended = metered.launching, metered.storage, metered.ceiling, metered.ended
+
+    launched = await metered.launch()
+    stopped, rows = await ended(launched.id)
+    assert stopped.status == "budget_stopped" and len(rows) < METERED_CELLS
+    landed = sum(row.metered_calls or 0 for row in rows)
+    assert landed == len(rows), "each row records its cell's one metered call"
+
+    with pytest.raises(ValidationFailedError, match="metered-call ceiling of 3") as refused:
+        await resume_run(launching, launched.id, TOYHOST_SCOPE)
+    assert "max_metered_calls" in refused.value.remedy
+    assert off_loop(storage.load_eval_run, launched.id, TOYHOST_SCOPE) == stopped, "a refused take-up writes nothing"
+
+    # Just above what it landed: its landed calls count, so the first cells it lands stop it again — counted from
+    # nothing, it would have run every cell left.
+    ceiling[0] = landed + 1
+    await resume_run(launching, launched.id, TOYHOST_SCOPE)
+    again, rows = await ended(launched.id)
+    assert again.status == "budget_stopped" and len(rows) < METERED_CELLS
+    assert again.max_metered_calls == landed + 1, "the run records the ceiling it ran under"
+    assert again.budget_stops is not None
+    (stop,) = again.budget_stops
+    assert (stop.currency, stop.landed_at_stop >= landed + 1) == ("metered_calls", True)
+
+    ceiling[0] = 100
+    await resume_run(launching, launched.id, TOYHOST_SCOPE)
+    done, rows = await ended(launched.id)
+    assert done.status == "completed" and len(rows) == METERED_CELLS
+    assert sum(row.metered_calls or 0 for row in rows) == METERED_CELLS, "every cell's call, counted once"
+    assert done.metered_calls_refused == 0
+
+
+async def test_a_cut_short_cell_s_metered_calls_and_a_stored_cell_s_refused_calls_carry_into_its_take_up() -> None:
+    """A cell cut short after its metered call, run again on the take-up: its row counts both attempts' calls. A
+    stored cell's refused calls count toward the run's refusals once it ends taken up, beside the holding's own."""
+    metered = off_loop(_metered_host, 100)
+    metered.hold.gate, metered.hold.passing = asyncio.Event(), 3
+    launched = await metered.launch()
+    await until(lambda: len(off_loop(metered.storage.query_eval_results_by_run, launched.id, TOYHOST_SCOPE)) >= 3)
+    # Both cells in flight (the run's width) have made their call and wait.
+    await until(lambda: metered.hold.held == 2)
+    assert metered.launching.job_manager.cancel_job(launched.id, reason="shipping a fix")
+    cancelled, rows = await metered.ended(launched.id)
+    assert cancelled.status == "cancelled"
+    cut_short = {row.id for row in rows if row.termination == "cancelled"}
+    assert cut_short, "the cancel cut a cell short"
+    assert all(row.metered_calls == 1 for row in rows), "each row records its attempt's one call"
+    # A stored cell some of whose calls dispatch refused: a host declaring no metered tools, where every call is.
+    done = next(row for row in rows if row.termination != "cancelled")
+    document = metered.store.get(done.id, TOYHOST_SCOPE)
+    assert document is not None
+    metered.store.upsert(document | {"metered_calls_refused": 3})
+
+    metered.hold.gate.set()
+    await resume_run(metered.launching, launched.id, TOYHOST_SCOPE)
+    run, rows = await metered.ended(launched.id)
+
+    assert run.status == "completed" and len(rows) == METERED_CELLS
+    by_id = {row.id: row for row in rows}
+    assert {by_id[row_id].metered_calls for row_id in cut_short} == {2}, "the cut-short attempt's call, and its own"
+    assert sum(row.metered_calls or 0 for row in rows) == METERED_CELLS + len(cut_short)
+    assert run.metered_calls_refused == 3, "the stored cell's refused calls, and none of this holding's"

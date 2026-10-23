@@ -3415,7 +3415,8 @@ class StoredCells:
     :ivar replaced: ``(case id, k)`` → the stored row of a cell this holding runs again. The cell is written under
         that row's id, over the row (a later epoch replaces an earlier one's row), so the cell keeps one row whatever
         id an older build gave it; and what the row's attempts spent moves onto the row written over it
-        (``EvalResult.superseded_spend_usd``), so the run's cost cap still counts it.
+        (``EvalResult.superseded_spend_usd``, and its metered calls into ``EvalResult.metered_calls``), so the run's
+        cost cap and metered-call ceiling still count it.
     """
 
     done: tuple[EvalResult, ...] = ()
@@ -3946,7 +3947,16 @@ async def execute_run(
         # Off the loop, and waited for to its end even through a cancel: the write cannot be
         # interrupted once a worker has it, so abandoning the wait would record this cell as lost
         # while its row lands anyway. The cancel is delivered once the cell is accounted for below.
-        result = result.model_copy(update={"lease_epoch": lease_epoch})
+        # The cell's metered calls, as the run's ledger lands them below, and whether the account paying for the run
+        # refused it: the row is what a later holding of the run counts its ceiling from and plans its cells by.
+        metered = sink.meter.tally().calls if options.metered_calls is not None and sink.meter is not None else None
+        result = result.model_copy(
+            update={
+                "lease_epoch": lease_epoch,
+                "metered_calls": metered,
+                "account_refused": sink.account_refusal is not None,
+            }
+        )
         if (over := stored.replaced.get((tc.id, k))) is not None:
             # Written over the cell's stored row, under its id (an older build minted ids, so it may not be the
             # derived one), carrying what the attempts it replaces spent: the row was their only record.
@@ -3955,7 +3965,15 @@ async def execute_run(
                 if over.cost_usd is None or over.superseded_spend_usd is None
                 else over.cost_usd + over.superseded_spend_usd
             )
-            result = result.model_copy(update={"id": over.id, "superseded_spend_usd": superseded})
+            result = result.model_copy(
+                update={
+                    "id": over.id,
+                    "superseded_spend_usd": superseded,
+                    "metered_calls": None
+                    if metered is None and over.metered_calls is None
+                    else (metered or 0) + (over.metered_calls or 0),
+                }
+            )
             if cell_trace.result_id != over.id:
                 cell_trace = cell_trace.model_copy(update={"id": eval_trace_doc_id(over.id), "result_id": over.id})
         saving = asyncio.ensure_future(

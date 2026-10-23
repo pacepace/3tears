@@ -14,7 +14,8 @@ Pinned:
   and refused, naming the arm, when one never did.
 - **One arm's drift refuses the whole sweep** before anything is spent, naming it, and leaves every record as it was.
 - **A launch**: ``job_resume launch:<id>`` takes a lost interleaved two-model launch's runs up together, as one group
-  under the launch's id, in their original order.
+  under the launch's id, in their original order. Taken up after each of two shutdowns, which release its lease, it
+  and its runs hold a higher epoch each time, and a write at an earlier holding's epoch is refused.
 """
 
 from __future__ import annotations
@@ -26,11 +27,14 @@ from typing import Any
 import pytest
 
 from threetears.evals.kernel import EvalSweep, SweepArmRecord, ValidationFailedError
+from threetears.evals.kernel.campaign import SweepLifetime
+from threetears.evals.kernel.errors import JobFenced
 from threetears.evals.kernel.scoring import compute_pass_hat_k
 from threetears.evals.ops import LaunchArguments, OpsHost, job_cancel, job_poll, job_resume, run_launch, sweep_launch
 from threetears.evals.run import EvalLaunch, runner
 from threetears.evals.schema import EvalResult, EvalRun
-from threetears.evals.schema.models import ArmSchedule
+from threetears.evals.schema.models import ArmSchedule, cell_result_id
+from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.fixtures.toyhost.contract import ExtractorSpec
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
 from packages.evals.tests.lease_support import (
@@ -500,3 +504,92 @@ async def test_a_lost_interleaved_launch_is_taken_up_as_one_group_under_its_id_i
         ]
         assert seed_first == seed_second == launch_id == run.launch_group_id
         assert first == second, "the run kept the order its launch gave it"
+
+
+async def test_a_launch_shut_down_and_taken_up_twice_holds_a_higher_epoch_each_time_and_fences_its_last_holder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shutdown releases a job's lease as it writes the loss, and the loss keeps the epoch, so a launch taken up after
+    each of two shutdowns holds epoch 1 and then 2, as its runs do, and a write at the first take-up's epoch lands
+    nowhere."""
+    gate = held_extraction(monkeypatch, passing=2)
+    store = ClockedStore()
+    holder = off_loop(ops_fixture, store=store).host
+    arguments = LaunchArguments(
+        template_id=toyhost_template().id, subject_id=TOYHOST_SUBJECT.subject_id, models=list(RUN_MODELS), k_runs=K
+    )
+    (job,) = (await run_launch(holder, arguments, TOYHOST_SCOPE)).jobs
+    launch_id = job.job_id.removeprefix("launch:")
+
+    def launched() -> EvalLaunch:
+        launch, _ = off_loop(holder.eval_host.storage.load_job_record, EvalLaunch, launch_id, TOYHOST_SCOPE)
+        assert launch is not None
+        return launch
+
+    await until(lambda: len(launched().run_ids) == 2 and gate.held >= 1)
+    run_ids = launched().run_ids
+    current = holder
+    epochs: list[tuple[int, list[int]]] = []
+    for _ in range(2):
+        await current.launch.job_manager.shutdown()
+        shut = launched()
+        assert shut.lease is None and shut.lost is not None, "the shutdown released the lease and kept the epoch"
+        held_before = gate.held
+        current = other_process(holder)
+        await job_resume(current, job.job_id, TOYHOST_SCOPE)
+        await until(lambda: gate.held > held_before)
+        lease = launched().lease
+        assert lease is not None
+        epochs.append((lease.epoch, [_lease_epoch(holder, run_id) for run_id in run_ids]))
+
+    assert epochs == [(1, [1, 1]), (2, [2, 2])], "every holding holds an epoch above every earlier one"
+    run = _run(holder, run_ids[0])
+    case_id = run.test_case_ids[0]
+    stale = make_eval_result(
+        id=cell_result_id(run.id, case_id, run.candidate_model, 1),
+        scope_id=TOYHOST_SCOPE,
+        eval_run_id=run.id,
+        test_case_id=case_id,
+        model=run.candidate_model,
+        k_iteration=1,
+        lease_epoch=1,
+    )
+    with pytest.raises(JobFenced):
+        off_loop(holder.eval_host.storage.save_eval_result, stale, None, run_cell=True)
+    gate.set()
+    assert (await settled(current, job.job_id)).state == "completed"
+
+
+def _lease_epoch(host: OpsHost, run_id: str) -> int:
+    lease = _run(host, run_id).lease
+    assert lease is not None
+    return lease.epoch
+
+
+def test_a_sweep_ended_by_a_writer_that_never_closes_its_holding_reads_its_holding_ended_as_the_sweep_did() -> None:
+    """The sweep's own outcome, end and detail are the one record of how its current holding ended."""
+    earlier = SweepLifetime(holder="p1", epoch=0, started_at="2026-10-01T00:00:00+00:00", outcome="cancelled")
+    holding = SweepLifetime(holder="p2", epoch=1, started_at="2026-10-02T00:00:00+00:00")
+    sweep = EvalSweep(
+        scope_id=TOYHOST_SCOPE,
+        campaign_id="campaign",
+        template_id="tpl-1",
+        subject_id="subject",
+        arms=[SweepArmRecord(label="a", model="sonnet")],
+        max_concurrent_arms=1,
+        lifetimes=[earlier, holding],
+    )
+    assert sweep.lifetimes[-1] == holding, "a running sweep's holding is open"
+
+    ended = EvalSweep.from_dict(
+        sweep.to_dict()
+        | {"outcome": "timed_out", "detail": "its budget ran out", "ended_at": "2026-10-03T00:00:00+00:00"}
+    )
+
+    assert ended.lifetimes[0] == earlier
+    last = ended.lifetimes[-1]
+    assert (last.outcome, last.detail, last.ended_at) == (
+        "timed_out",
+        "its budget ran out",
+        "2026-10-03T00:00:00+00:00",
+    )

@@ -6,9 +6,10 @@ new run over the cells left is a different run: its case set is another, so its 
 the first one reached fewer than ``k`` times drops out of both. :func:`resume_run` continues the run itself:
 
 - **Only what is missing runs.** A cell with no stored row runs, and so does a cell whose row was cut short by a
-  cancel (termination ``cancelled``: the attempt a shutdown or a cancel abandoned). Every other row is what the
-  run would have stored uninterrupted, so its cell is done (:func:`planned_cells`). The cells run in the run's own
-  order, its done ones left out, and a re-run cell is written over its row.
+  cancel (termination ``cancelled``: the attempt a shutdown or a cancel abandoned) or refused by the provider
+  account paying for the run (``EvalResult.account_refused``: the call a funded account would have served). Every
+  other row is what the run would have stored uninterrupted, so its cell is done (:func:`planned_cells`). The cells
+  run in the run's own order, its done ones left out, and a re-run cell is written over its row.
 - **The same measurement, or none.** The run is launched again from what it recorded, through its kind's launcher,
   and the run that launch assembles is compared with the stored one: every context component, the variant key, the
   simulator and judge pins, the apparatus, what the run froze of its template (its kind spec, rubric scales, world
@@ -21,13 +22,14 @@ the first one reached fewer than ``k`` times drops out of both. :func:`resume_ru
   are recorded on the holding that began under them (``EvalRun.lifetimes``).
 - **One holding at a time.** The run is reopened under its lease's next epoch, conditionally on the record as read,
   so two take-ups of one run cannot both win, and a holding the run has passed from writes nothing more into it.
-- **Its spend counts.** What its stored rows spent seeds its cost cap; a run its budget stopped is taken up only
-  under a cap above that spend.
+- **Its spend counts.** What its stored rows spent seeds its cost cap, and the metered calls they landed seed its
+  metered-call ceiling; a run its budget stopped is taken up only under a cap above that spend, and none is taken up
+  once its stored cells have landed the metered calls its ceiling allows.
 
 **A launch, or a sweep, as a whole.** A launch's unfinished runs are taken up together, in one group under the
 launch's own id, so an interleaved launch's arms take their remaining cells in turn in the order they always had
 (:func:`resume_launch`); a sweep's are taken up by the sweep's own job, as its arm schedule says, beside the arms it
-never launched (:func:`~threetears.evals.ops.sweep_resume`). Every arm's run is planned and replayed in the call
+never launched (:func:`~threetears.evals.ops.sweeps.sweep_resume`). Every arm's run is planned and replayed in the call
 (:func:`take_up_arms`), so one arm that would measure otherwise refuses the whole take-up, naming every difference of
 every arm, before any arm is started.
 
@@ -47,7 +49,7 @@ from pydantic import Field
 from threetears.evals.kernel.campaign import EvalSweep
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.profile import HostProfile
-from threetears.evals.kernel.identity import resolve_variant_identity
+from threetears.evals.kernel.identity import LeverCoordinateError, resolve_context_identity, resolve_variant_identity
 from threetears.evals.kernel.job_leases import RUN_JOB, JobLeases, LeasedJobKind, settle_job_record
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.remedies import FIND_JOB, FIND_RUN
@@ -56,8 +58,10 @@ from threetears.evals.run.budget import EvalRunCostCap
 from threetears.evals.run.job_work import start_job_work
 from threetears.evals.run.launch import LaunchGroup, LaunchHost, admit_group, admit_resumed_run
 from threetears.evals.run.launch_job import LAUNCH_JOB, EvalLaunch, resumed_launch_work
+from threetears.evals.run.metering import MeteredCallLedger
 from threetears.evals.run.runner import StoredCells
 from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
+from threetears.evals.schema.job_lease import JobLease, JobLoss
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import (
     TERMINAL_RUN_STATUSES,
@@ -68,6 +72,7 @@ from threetears.evals.schema.models import (
     EvalTestCase,
     RunLifetime,
     ended_lifetimes,
+    run_ending_reason,
     utc_now_iso,
 )
 
@@ -99,22 +104,28 @@ PINNED_FIELDS: tuple[str, ...] = (
 )
 
 
+def _run_again(row: EvalResult) -> bool:
+    """Whether a stored row's cell runs again when its run is taken up: an attempt the run abandoned."""
+    return row.termination == "cancelled" or row.account_refused
+
+
 def planned_cells(rows: Sequence[EvalResult]) -> StoredCells:
     """What a run taken up again holds of its matrix: the rows that count as done, and the rows it runs again.
 
-    A row whose cell was cut short by a cancel (``cancelled``) is an attempt a shutdown or a cancel abandoned, which
-    an uninterrupted run never stores, so its cell runs again, written over the row. Every other row — a timeout, a
-    rig fault, a failed seed included — is what the uninterrupted run would also have stored, so its cell is done.
-    A cell with no row is neither, and runs.
+    A row whose cell was cut short by a cancel (``cancelled``) is an attempt a shutdown or a cancel abandoned, and one
+    the provider account paying for the run refused (``account_refused``) is a call a funded account would have
+    served: an uninterrupted run on a funded account stores neither, so each cell runs again, written over its row.
+    Every other row — a timeout, a rig fault, a call the provider itself declined, a failed seed included — is what
+    the uninterrupted run would also have stored, so its cell is done. A cell with no row is neither, and runs.
 
     :param rows: Every row stored for the run.
     :ptype rows: Sequence[EvalResult]
-    :return: The done rows, and the cut-short rows by cell.
+    :return: The done rows, and the rows run again by cell.
     :rtype: StoredCells
     """
     return StoredCells(
-        done=tuple(row for row in rows if row.termination != "cancelled"),
-        replaced={(row.test_case_id, row.k_iteration): row for row in rows if row.termination == "cancelled"},
+        done=tuple(row for row in rows if not _run_again(row)),
+        replaced={(row.test_case_id, row.k_iteration): row for row in rows if _run_again(row)},
     )
 
 
@@ -122,6 +133,10 @@ def counted_spend(rows: Sequence[EvalResult]) -> list[float | None]:
     """What a run's stored rows spent, as its cost cap counts it: each row's attempt, and the attempts it was written
     over (``EvalResult.superseded_spend_usd``), so a cell cut short and run again counts every attempt once. ``None``
     is spend nobody priced.
+
+    The out-of-run spend ledger (``OutOfRunSpend``) is not counted: it records calls made outside every run, such as
+    case generation, which no run's cap counted while the run was uninterrupted, and none of a run's cell spend.
+    Counting it here would hold a resumed run to a stricter cap than the same run uninterrupted.
 
     :param rows: Every row stored for the run.
     :ptype rows: Sequence[EvalResult]
@@ -136,6 +151,25 @@ def counted_spend(rows: Sequence[EvalResult]) -> list[float | None]:
     return spend
 
 
+def next_epoch(lease: JobLease | None, lost: JobLoss | None, held: Iterable[int] = ()) -> int:
+    """The lease epoch a take-up of a job holds: one above every epoch its record has held, so a holding the job has
+    passed from never holds it again.
+
+    The record's lease names the epoch it is held at until a shutdown releases the lease as it writes the job lost;
+    the loss then keeps that epoch (``JobLoss.epoch``). A run's and a sweep's lifetimes keep each earlier holding's.
+
+    :param lease: The record's lease, or ``None`` once released.
+    :ptype lease: JobLease | None
+    :param lost: The record's loss, or ``None``.
+    :ptype lost: JobLoss | None
+    :param held: The epochs of the record's earlier holdings, where it keeps them.
+    :ptype held: Iterable[int]
+    :return: The next epoch: 1 for a job never taken up again.
+    :rtype: int
+    """
+    return 1 + max([lease.epoch if lease is not None else 0, lost.epoch if lost is not None else 0, *held])
+
+
 def _shown(value: Any) -> str:
     """A value as a refusal names it: a long digest cut to its head."""
     text = repr(value)
@@ -145,13 +179,18 @@ def _shown(value: Any) -> str:
 def resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profile: HostProfile) -> list[str]:
     """Every way the run a launch of ``stored`` assembles now would measure otherwise than ``stored`` did.
 
-    Each context component by name, then the context key when no component accounts for its move (a run stamped
-    under another identity version), each variant lever, each of :data:`PINNED_FIELDS`, and the template's measured
+    Each context component by name, then the context key when no component accounts for its move, each variant
+    lever, each of :data:`PINNED_FIELDS`, and the template's measured
     content: the digest the run froze at launch (``EvalRun.template_digest``) against the one the launch froze now,
     so an edit to the intent, the rubric's descriptions and scoring guides, the conversation or any other field a run
     measures is a difference, and one to the template's name or description is not. A run stored before it froze the
     digest is refused once its template was edited after the run was created, since what the edit changed cannot be
     known. The subject's labels and the run's own are none of these: they identify, and determine nothing.
+
+    The context identity is compared as it reads at the current identity version on both sides
+    (:func:`~threetears.evals.kernel.identity.resolve_context_identity`), the comparison pooling makes, so a run
+    stamped before a version bump is re-derived rather than refused for the bump alone. A run that recorded no lever
+    map, and whose variant this host's registry can no longer place, is a difference named as such.
 
     :param stored: The stored run.
     :ptype stored: EvalRun
@@ -159,13 +198,15 @@ def resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profil
     :ptype fresh: EvalRun
     :param template: The template that launch read.
     :ptype template: EvalTemplate
-    :param profile: The host, whose lever reader derives the variant of a run that recorded no lever map.
+    :param profile: The host, which re-derives the context identity of a run stamped under an older identity version,
+        and whose lever reader derives the variant of a run that recorded no lever map.
     :ptype profile: HostProfile
     :return: One phrase per difference; empty when the two measure alike.
     :rtype: list[str]
     """
     differences: list[str] = []
-    was, now = stored.context_components, fresh.context_components
+    was_identity, now_identity = resolve_context_identity(stored, profile), resolve_context_identity(fresh, profile)
+    was, now = was_identity.context_components, now_identity.context_components
     if was is not None and now is not None:
         for name in type(was).model_fields:
             before, after = getattr(was, name), getattr(now, name)
@@ -176,17 +217,27 @@ def resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profil
                 differences.append(f"context component {name} ({', '.join(moved)})")
             else:
                 differences.append(f"context component {name} ({_shown(before)} -> {_shown(after)})")
-    if stored.context_key != fresh.context_key and not differences:
+    if was_identity.context_key != now_identity.context_key and not differences:
         differences.append(
-            f"context key ({_shown(stored.context_key)} at identity version {stored.identity_version} -> "
-            f"{_shown(fresh.context_key)} at {fresh.identity_version})"
+            f"context key ({_shown(was_identity.context_key)} -> {_shown(now_identity.context_key)}, at identity "
+            f"version {now_identity.identity_version})"
         )
-    levers_was = resolve_variant_identity(run=stored, profile=profile).levers
-    levers_now = resolve_variant_identity(run=fresh, profile=profile).levers
-    for name in sorted({*levers_was, *levers_now}):
-        before_lever, after_lever = levers_was.get(name), levers_now.get(name)
-        if (before_lever.content_hash if before_lever else None) != (after_lever.content_hash if after_lever else None):
-            differences.append(f"variant lever {name}")
+    try:
+        levers_was = resolve_variant_identity(run=stored, profile=profile).levers
+    except LeverCoordinateError as unplaced:
+        # A run that recorded no lever map has its variant derived through today's registry, which may no longer
+        # place it: what it varied cannot be compared, so the take-up cannot show it measures alike.
+        differences.append(
+            f"variant levers (the run recorded none, and this host's registry cannot place it: {unplaced})"
+        )
+    else:
+        levers_now = resolve_variant_identity(run=fresh, profile=profile).levers
+        for name in sorted({*levers_was, *levers_now}):
+            before_lever, after_lever = levers_was.get(name), levers_now.get(name)
+            if (before_lever.content_hash if before_lever else None) != (
+                after_lever.content_hash if after_lever else None
+            ):
+                differences.append(f"variant lever {name}")
     for name in PINNED_FIELDS:
         before, after = getattr(stored, name), getattr(fresh, name)
         if before != after:
@@ -209,15 +260,6 @@ def resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profil
 def _edited_since(template: EvalTemplate, run: EvalRun) -> bool:
     """Whether ``template`` was edited after ``run`` was created."""
     return template.updated_at > run.created_at
-
-
-def _why_it_ended(run: EvalRun) -> str | None:
-    """Why a run's holding ended, in the words its record gives."""
-    if run.lost is not None:
-        return run.lost.cause
-    if (reason := run.cancellation_reason or run.budget_stop_reason) is not None:
-        return reason
-    return run.error_details[-1] if run.status == "exhausted" and run.error_details else None
 
 
 @dataclass(frozen=True)
@@ -300,7 +342,7 @@ class RunResumption:
             stored.lifetimes or [first],
             status=stored.status,
             at=stored.completed_at or utc_now_iso(),
-            reason=_why_it_ended(stored),
+            reason=run_ending_reason(stored),
             lost=stored.lost,
             budget_stops=stored.budget_stops,
             completeness=stored.completeness,
@@ -333,6 +375,10 @@ class RunResumption:
                 "max_cost_usd_origin": stored.max_cost_usd_origin
                 if fresh.max_cost_usd == stored.max_cost_usd
                 else fresh.max_cost_usd_origin,
+                # The metered-call ceiling is replayed as the run's launch named it, or inherited again from the host,
+                # which may have raised it since: the run records the one it now runs under.
+                "max_metered_calls": fresh.max_metered_calls,
+                "max_metered_calls_origin": fresh.max_metered_calls_origin,
                 "lifetimes": [*ended, holding],
                 # A run stored before runs froze their template's measured content passed only with its template
                 # unedited since it began, so what the template measures now is what it measured: frozen from here.
@@ -341,14 +387,41 @@ class RunResumption:
         )
         return reopened, list(self.cases)
 
-    def seed(self, cap: EvalRunCostCap) -> None:
-        """Count what the run's stored rows spent toward its cost cap, an unpriced one as unpriced.
+    def seed(self, cap: EvalRunCostCap, metered: MeteredCallLedger) -> None:
+        """Count what the run's stored rows spent toward its cost cap, an unpriced one as unpriced, and the metered
+        calls they landed toward its metered-call ceiling, with the calls they were refused toward its record of
+        refusals: both ceilings bound the whole run, not each holding of it.
 
         :param cap: The cap the launch built for this holding.
         :ptype cap: EvalRunCostCap
+        :param metered: The metered-call ledger the launch built for this holding.
+        :ptype metered: MeteredCallLedger
+        :raises ValidationFailedError: The stored rows have landed the metered calls the run's ceiling allows, so the
+            take-up would run nothing.
         """
         for spend in counted_spend(self.rows):
             cap.record(spend)
+        metered.land_earlier(
+            calls=sum(row.metered_calls or 0 for row in self.rows),
+            refused=sum(row.metered_calls_refused or 0 for row in self.rows),
+        )
+        if metered.ceiling_reached:
+            run = self.run
+            # A take-up names a cost cap and never a metered-call ceiling: one the run inherited moves with the host's
+            # setting, and one its launch chose moves only with a new launch.
+            remedy = (
+                "launch its template again (run_launch) with a higher max_metered_calls: a resume keeps the ceiling "
+                "the run's launch chose, and cannot raise it"
+                if run.max_metered_calls_origin == "chosen"
+                else f"raise the host's max_metered_calls above {metered.landed_calls} and call job_resume again; a "
+                "resume cannot raise a metered-call ceiling itself"
+            )
+            raise ValidationFailedError(
+                f"run '{run.id}' has landed {metered.landed_calls} metered call(s) against its metered-call ceiling of "
+                f"{metered.ceiling}, so taking it up would run nothing — at least that many, since a row stored "
+                "before rows counted their metered calls counts none",
+                remedy=remedy,
+            )
 
 
 @dataclass(frozen=True)
@@ -387,6 +460,29 @@ def _read(storage: EvalStorage, run_id: str, scope_id: str) -> _Read:
     )
 
 
+def _refuse_a_status_not_resumable(run: EvalRun) -> None:
+    """Refuse a run whose status is not one :data:`RESUMABLE_RUN_STATUSES` names, saying why its status is not.
+
+    :raises ValidationFailedError: Always.
+    """
+    if run.status not in TERMINAL_RUN_STATUSES:
+        holder = f" by process {run.lease.holder} until {run.lease.expires_at}" if run.lease is not None else ""
+        raise ValidationFailedError(
+            f"run '{run.id}' is still {run.status}{holder}; a live run is never taken up",
+            remedy="cancel it (job_cancel) or wait for it to end, then call job_resume",
+        )
+    if run.status == "failed":
+        raise ValidationFailedError(
+            f"run '{run.id}' failed ({run.failed_because or 'see its error_details'}); taking it up again would run "
+            "what failed it again",
+            remedy="fix what failed it, which run_get names, and launch its template again (run_launch)",
+        )
+    raise ValidationFailedError(
+        f"run '{run.id}' {run.status}; there is nothing left of it to run",
+        remedy="launch its template again (run_launch) to measure again",
+    )
+
+
 def _refuse_what_cannot_be_taken_up(read: _Read, *, cap: float | None, live_here: bool) -> None:
     """Refuse a run that cannot be taken up, with how to proceed.
 
@@ -394,27 +490,12 @@ def _refuse_what_cannot_be_taken_up(read: _Read, *, cap: float | None, live_here
         reached, or its cases are gone.
     """
     run = read.run
-    if run.status not in TERMINAL_RUN_STATUSES:
-        holder = f" by process {run.lease.holder} until {run.lease.expires_at}" if run.lease is not None else ""
-        raise ValidationFailedError(
-            f"run '{run.id}' is still {run.status}{holder}; a live run is never taken up",
-            remedy="cancel it (job_cancel) or wait for it to end, then call job_resume",
-        )
+    if run.status not in RESUMABLE_RUN_STATUSES:
+        _refuse_a_status_not_resumable(run)
     if live_here:
         raise ValidationFailedError(
             f"run '{run.id}' ended, and its job in this process is still unwinding",
             remedy="call job_resume again once its job has stopped (job_poll reads it done)",
-        )
-    if run.status == "completed":
-        raise ValidationFailedError(
-            f"run '{run.id}' completed; there is nothing left of it to run",
-            remedy="launch its template again (run_launch) to measure again",
-        )
-    if run.status == "failed":
-        raise ValidationFailedError(
-            f"run '{run.id}' failed ({run.failed_because or 'see its error_details'}); taking it up again would run "
-            "what failed it again",
-            remedy="fix what failed it, which run_get names, and launch its template again (run_launch)",
         )
     spent = sum(amount for amount in counted_spend(read.rows) if amount is not None)
     if run.status == "budget_stopped" and cap is not None and spent >= cap:
@@ -465,14 +546,13 @@ async def run_resumption(
     run = read.run
     cap = max_cost_usd if max_cost_usd is not None else run.max_cost_usd
     _refuse_what_cannot_be_taken_up(read, cap=cap, live_here=host.job_manager.is_active(run_id))
-    previous = run.lease.epoch if run.lease is not None else (run.lifetimes[-1].epoch if run.lifetimes else 0)
     return RunResumption(
         run=run,
         cases=read.cases,
         stored=planned_cells(read.rows),
         rows=tuple(read.rows),
         holder=leases.holder_id if leases is not None else None,
-        epoch=previous + 1,
+        epoch=next_epoch(run.lease, run.lost, (lifetime.epoch for lifetime in run.lifetimes)),
         # One arm of an interleaved launch played its cases in the order its group's id gave every arm; a group of one
         # never interleaved, and played them in its own run's order.
         cell_order_seed=run.launch_group_id if run.arm_schedule == "interleaved" and read.group_size > 1 else None,
@@ -669,26 +749,26 @@ def refuse_a_job_not_taken_up(
     :ptype start_again: str
     :raises ValidationFailedError: It cannot be taken up.
     """
-    if outcome == "running":
+    if outcome not in RESUMABLE_JOB_OUTCOMES:
+        if outcome == "running":
+            raise ValidationFailedError(
+                f"{kind} '{record_id}' is still running; a live {kind} is never taken up",
+                remedy="cancel it (job_cancel) or wait for it to end, then call job_resume",
+            )
+        if outcome == "failed":
+            raise ValidationFailedError(
+                f"{kind} '{record_id}' failed ({detail or 'see job_poll'}); taking it up again would run what failed "
+                "it again",
+                remedy=f"fix what failed it, which job_poll names, and start it again ({start_again})",
+            )
         raise ValidationFailedError(
-            f"{kind} '{record_id}' is still running; a live {kind} is never taken up",
-            remedy="cancel it (job_cancel) or wait for it to end, then call job_resume",
+            f"{kind} '{record_id}' {outcome}; there is nothing left of it to run",
+            remedy=f"start it again ({start_again}) to measure again",
         )
     if live_here:
         raise ValidationFailedError(
             f"{kind} '{record_id}' ended, and its job in this process is still unwinding",
             remedy="call job_resume again once its job has stopped (job_poll reads it done)",
-        )
-    if outcome == "completed":
-        raise ValidationFailedError(
-            f"{kind} '{record_id}' completed; there is nothing left of it to run",
-            remedy=f"start it again ({start_again}) to measure again",
-        )
-    if outcome == "failed":
-        raise ValidationFailedError(
-            f"{kind} '{record_id}' failed ({detail or 'see job_poll'}); taking it up again would run what failed it "
-            "again",
-            remedy=f"fix what failed it, which job_poll names, and start it again ({start_again})",
         )
 
 
@@ -823,8 +903,8 @@ async def resume_launch(
             "cancel_request_reason": None,
         }
     )
-    previous = launch.lease.epoch if launch.lease is not None else 0
-    work = resumed_launch_work(host, admitted, reopened, epoch=previous + 1, etag=etag)
+    epoch = next_epoch(launch.lease, launch.lost)
+    work = resumed_launch_work(host, admitted, reopened, epoch=epoch, etag=etag)
     try:
         started = await start_job_work(manager, work, store=storage, executor=eval_host.blocking_executor)
     except ConflictError as moved:
@@ -837,7 +917,7 @@ async def resume_launch(
         "eval.resume_launch launch=%s scope=%s taken up at epoch %d: %d run(s) taken up",
         launch.id,
         scope_id,
-        previous + 1,
+        epoch,
         len(taking_up),
     )
     return started
@@ -884,7 +964,8 @@ class ResumableJob(EvalBaseModel):
     note: str | None = Field(
         default=None,
         description="What a resume needs beyond the job id: for a run its budget stopped at its cost cap, a "
-        "max_cost_usd above what it spent. None when job_resume needs nothing more.",
+        "max_cost_usd above what it spent; for one whose stored cells reached its metered-call ceiling, a higher "
+        "ceiling, which a resume cannot name. None when job_resume needs nothing more.",
     )
 
 
@@ -965,6 +1046,20 @@ def _offered(run: EvalRun, template_id: str, rows: Sequence[EvalResult]) -> Resu
             f"stopped at its cost cap of ${cap:.4f} with ${spent:.4f} spent: resume it with max_cost_usd above "
             f"${spent:.4f}"
         )
+    # And a metered-call ceiling its stored cells have reached, against the ceiling the run recorded: one it inherited
+    # moves with the host's setting, which a take-up reads afresh.
+    landed = sum(row.metered_calls or 0 for row in rows)
+    if run.max_metered_calls_origin != "none_declared" and run.max_metered_calls and landed >= run.max_metered_calls:
+        metered = (
+            f"its stored cells have landed {landed} metered call(s) against its metered-call ceiling of "
+            f"{run.max_metered_calls}: "
+            + (
+                "launch its template again (run_launch) with a higher max_metered_calls"
+                if run.max_metered_calls_origin == "chosen"
+                else f"raise the host's max_metered_calls above {landed}, then resume it"
+            )
+        )
+        note = f"{note}; {metered}" if note is not None else metered
     return ResumableJob(
         # The run job's id, in the shape job_poll and job_resume read.
         job_id=f"run:{run.id}",
@@ -974,7 +1069,7 @@ def _offered(run: EvalRun, template_id: str, rows: Sequence[EvalResult]) -> Resu
         candidate_model=run.candidate_model,
         status=run.status,
         ended=_ended(run),
-        reason=_why_it_ended(run),
+        reason=run_ending_reason(run),
         cells_done=len(planned_cells(rows).done),
         cells_expected=run.expected_cells,
         spent_usd=spent,
@@ -1042,11 +1137,12 @@ def resumable_jobs(storage: EvalStorage, scopes: Iterable[str]) -> ResumableJobs
     resumed here.
 
     A run lost (its holder gone, or shut down), one an operator cancelled, one its budget stopped and one its provider
-    account stopped (``exhausted``); never one that completed or failed, one still live, nor an ad hoc run, which has
-    no template to launch it from again. A sweep or a launch lost, cancelled or timed out, with an arm left to take up
-    or to launch, is listed once, as a whole (``groups``), with each arm's state and each run it takes up again; those
-    runs are not listed again on their own. A record still stored running whose lease has lapsed is read lost, as
-    every read reads it, and listed. A host reads this at boot, after
+    account stopped (``exhausted``); never one that completed or failed, one still live, an ad hoc run, which has no
+    template to launch it from again, nor an archived run, which an operator declined by archiving it. A sweep or a
+    launch whose every run is archived is left out with them. A sweep or a launch lost, cancelled or timed out, with an
+    arm left to take up or to launch, is listed once, as a whole (``groups``), with each arm's state and each run it
+    takes up again; those runs are not listed again on their own. A record still stored running whose lease has lapsed
+    is read lost, as every read reads it, and listed. A host reads this at boot, after
     :func:`~threetears.evals.run.lifecycle.sweep_abandoned_runs` has settled what its last process left running, and
     offers each to an operator: nothing is taken up until someone asks (``job_resume``).
 
@@ -1074,7 +1170,8 @@ def resumable_jobs(storage: EvalStorage, scopes: Iterable[str]) -> ResumableJobs
         sweeps, unread_sweeps = storage.query_job_records_in_outcome(EvalSweep, scope_id, RESUMABLE_JOB_OUTCOMES)
         launches, unread_launches = storage.query_job_records_in_outcome(EvalLaunch, scope_id, RESUMABLE_JOB_OUTCOMES)
         unreadable += len(read.unreadable) + unread_sweeps + unread_launches
-        resumable = {run.id: run for run in read.runs if run.template_id is not None}
+        # An archived run is one an operator declined: it is never offered, nor a sweep or launch whose every run is.
+        resumable = {run.id: run for run in read.runs if run.template_id is not None and not run.archived}
         named = [arm.run_id for sweep in sweeps for arm in sweep.arms if arm.run_id is not None]
         named += [run_id for launch in launches for run_id in launch.run_ids]
         runs = dict(resumable)
@@ -1098,6 +1195,9 @@ def resumable_jobs(storage: EvalStorage, scopes: Iterable[str]) -> ResumableJobs
             if launch.run_ids
         ]
         for record, arms, note in sorted(candidates, key=lambda candidate: candidate[0].created_at, reverse=True):
+            launched = [runs[run_id] for _, run_id in arms if run_id is not None and run_id in runs]
+            if launched and all(run.archived for run in launched):
+                continue
             if (group := _offered_group(record, arms, runs, offered, note=note)) is not None:
                 groups.append(group)
                 grouped.update(run_id for _, run_id in arms if run_id is not None)
@@ -1116,6 +1216,7 @@ __all__ = [
     "RunResumption",
     "check_take_up",
     "counted_spend",
+    "next_epoch",
     "planned_cells",
     "refuse_a_job_not_taken_up",
     "refused_as_one",
