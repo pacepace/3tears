@@ -69,10 +69,10 @@ class TestApiGrowthRequiresAMinorBump:
 
     def test_every_ci_job_running_this_gate_sees_the_tags(self) -> None:
         """
-        a job running ``tests/`` checks this repo out with ``fetch-depth: 0``, or the gate refuses there.
+        a job running ``ci-unit-tests.sh`` checks this repo out with ``fetch-depth: 0``, or the gate refuses there.
 
         :return: nothing
         :rtype: None
         """
-        findings = untagged_checkout_findings(_REPO_ROOT / ".github" / "workflows", "pytest packages/ tests/")
+        findings = untagged_checkout_findings(_REPO_ROOT / ".github" / "workflows", "scripts/ci-unit-tests.sh")
         assert not findings, "\n".join(findings)
