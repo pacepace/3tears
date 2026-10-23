@@ -6,6 +6,44 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### mcp: a host app serves MCP on its own app, with tool metadata, structured tool errors and a live tool set
+
+**Added:** `McpTool` and `register_tool` take optional `output_schema`, `title` and `annotations`
+(`McpToolAnnotations(read_only_hint=, destructive_hint=, idempotent_hint=, open_world_hint=)`), and
+`tools/list` emits `outputSchema`, `title` and `annotations` with only the hints that are set. An output
+schema's `type` is `"object"`, checked at construction. While a tool declares one, a successful call
+whose `structuredContent` is missing or doesn't validate answers `OUTPUT_VALIDATION_ERROR` in place of
+the result, and error results are exempt. The check sees the JSON the client receives, so a UUID or a
+datetime is a string. The handler has already run by then, so the refusal's ERROR log carries the
+refused `structuredContent`, cut to 4000 characters.
+
+`tool_error(error)` builds a tool-execution error for a handler to return: `isError: true`, with the
+object as `structuredContent` and as serialized JSON in a text block. It is passed through unlogged and
+isn't mapped to a framework code.
+
+`McpServer(tool_provider=)` is an alternative to `registry=`, which is now optional: exactly one of
+the two is given. The provider is called on every `tools/list` and `tools/call`, so a tool set that
+changes at runtime is served as it stands. A provider that raises, or that answers two tools with one
+name, makes a call answer `TOOLS_UNAVAILABLE` and makes `tools/list` fail with a JSON-RPC error whose
+message is "the server's tool set could not be read". The provider's own error is logged, not sent.
+
+`McpServer.build_http_transport()` returns an `McpHttpTransport` (`routes`, `endpoint`, `lifespan()`)
+for a host that serves MCP inside its own Starlette app, where a mounted sub-app's lifespan never runs.
+A request that arrives before the lifespan is entered gets a 503 naming it, instead of the SDK's
+"Task group is not initialized". `build_http_app()` is now built on the same transport.
+
+**Changed:** on mcp 1.x, `McpServer` registers its `tools/call` handler directly instead of through
+the SDK's `call_tool` decorator. The decorator validated arguments against a cache of an earlier
+`tools/list`, which goes stale under a live provider, and on a cache miss it called the provider outside
+dispatch, so a provider failure reached the client as the exception's own text. On both majors the
+input-validation refusal reads as before.
+
+**Changed on mcp 1.x:** an exception that escapes `McpServer`'s dispatch now reaches the client as a
+JSON-RPC error, as it already did on 2.x. The decorator turned it into an `isError` result. Dispatch
+answers every refusal and handler failure itself, so only a bug escapes it, such as an
+`IdentityProvider` raising something other than `RuntimeError`. A 1.x client that read that `isError`
+result now gets a protocol error instead.
+
 ## v0.76.0 -- 2026-10-23
 
 **Release order: the hub first.** `l3.truncate`, `l3.tx.copy` and `l3.load_files` are answered by the hub's
