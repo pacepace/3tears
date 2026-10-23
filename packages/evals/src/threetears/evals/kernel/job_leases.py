@@ -692,10 +692,10 @@ class JobLeases:
         :attr:`lease_s` from the store's now), and once the write lands it counts as a renewal: the lease is reckoned
         extended from when the write was issued, and a cancel asked of the job is handed to it, on the event loop the
         leases are held on. So a job whose own writes keep beating its renewals to the record keeps its lease, and
-        hears a cancel. A record this process holds whose stored lease names another holding — another process, or
-        this one at another epoch, because the job was taken up again — refuses the write: this process lets it go
-        and stops its job (unless the write was its ending), and nothing is written. A record this process does not
-        hold goes out with its lease as stored, and so does a write that ends the job (its lease no longer matters,
+        hears a cancel. A record this process has let go of refuses every write. A record this process holds whose
+        stored lease names another holding — another process, or this one at another epoch, because the job was taken
+        up again — refuses the write: this process lets it go and stops its job (unless the write was its ending), and
+        nothing is written. Any other record this process does not hold goes out with its lease as stored, and so does a write that ends the job (its lease no longer matters,
         and a cancel would reach a job already over) and one made while the lease was extended under half a renewal
         interval ago (no renewal is due, so the store's clock is not read for it: a job ticking fast pays that
         round-trip at most twice an interval).
@@ -714,12 +714,15 @@ class JobLeases:
         :ptype save: Callable[[R], None]
         :return: The record as written.
         :rtype: R
-        :raises JobFenced: The lease has lapsed by the store's time, or has passed to another holding of the job (another
-            process, or another epoch) while this process holds the record; nothing was written.
+        :raises JobFenced: This process let go of the record (:meth:`let_go`), or the lease has lapsed by the store's
+            time, or has passed to another holding of the job (another process, or another epoch) while this process
+            holds the record; nothing was written.
         :raises ConflictError: ``save`` lost its race.
         :raises StorageError: ``save`` failed.
         """
         leased = _leased(stored)
+        if leased.id in self._let_go:
+            raise JobFenced(f"job '{leased.id}': this process let go of its lease; it writes nothing more")
         held = self._held.get(leased.id)
         lease = leased.lease
         if held is not None and lease is not None and _passed(lease, self._holder_id, held.epoch):
@@ -1314,10 +1317,18 @@ class JobLeases:
 
     def _end_lost(self, held: _Held, cause: str) -> bool:
         """Write one held record lost with ``cause`` and no lease, unless it has ended or its lease has passed to another
-        holding (which this process must not end); whether it was written."""
+        holding; whether it was written.
+
+        A record whose lease has passed is another holding's to end, so nothing is written, and this process lets it
+        go (:meth:`let_go`): its job, unwinding after this, must not write its own ending, its completeness or anything
+        else over the newer holding's record, and no loss on the record will refuse those writes for it.
+        """
         for _ in range(LEASE_WRITE_ATTEMPTS):
             record, etag = self._store.load_job_record(held.kind.model, held.record_id, held.scope_id)
-            if record is None or held.kind.ended(record) or _passed(_leased(record).lease, self._holder_id, held.epoch):
+            if record is None or held.kind.ended(record):
+                return False
+            if _passed(_leased(record).lease, self._holder_id, held.epoch):
+                self.let_go(held.record_id)
                 return False
             now = self._store.store_time()
             lost = held.kind.end_lost(record, JobLoss(at=now.isoformat(), cause=cause), self._store)

@@ -520,6 +520,30 @@ async def test_a_holding_whose_run_was_taken_up_at_a_later_epoch_writes_nothing_
     assert off_loop(_run, holder, run_id) == taken_up, "nor its progress, its completeness or its ending"
 
 
+async def test_a_shutdown_of_a_holding_whose_run_was_taken_up_at_a_later_epoch_leaves_the_run_to_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The superseded holder shuts down: it writes neither the loss nor its own ending over the newer holding's run."""
+    _held_extraction(monkeypatch)
+    holder = off_loop(ops_fixture).host
+    run_id = await _running_run(holder)
+    storage = holder.eval_host.storage
+    stored, etag = off_loop(_stored_run, storage, run_id)
+    later = JobLease(
+        holder="the-later-holding", expires_at=(datetime.now(UTC) + timedelta(hours=1)).isoformat(), epoch=1
+    )
+    off_loop(storage.save_eval_run, stored.model_copy(update={"lease": later}), if_match=etag)
+    taken_up = off_loop(_run, holder, run_id)
+
+    await holder.launch.job_manager.shutdown()
+
+    after = off_loop(_run, holder, run_id)
+    assert (after.status, after.lease, after.lost) == ("running", later, None), "the run is still the newer holding's"
+    assert (after.completed_at, after.cancellation_reason, after.completeness) == (None, None, None)
+    assert after == taken_up, "nothing at all was written over it"
+    assert _results(holder, run_id) == [], "no cancelled row of the superseded holding was stored"
+
+
 async def test_a_run_whose_renewals_fail_for_a_whole_lease_is_stopped_and_writes_nothing_more(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
