@@ -2142,7 +2142,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         """load the table in L3 from parquet files, then drop what every cache holds of it.
 
         For a table reloaded whole from a warehouse export, after :meth:`truncate`: the files are
-        the export's own (:func:`~threetears.datasources.export_read.presigned_export_files` presigns
+        the export's own (:func:`~threetears.datasources.partitioned_export.presigned_counted_partition` presigns
         them), and the store fetches and copies them itself
         (:meth:`~threetears.core.backends.protocol.LoadingStore.load_files`; on the L3 rail the
         ``l3.load_files`` request, so the broker streams the files and the rows never cross the

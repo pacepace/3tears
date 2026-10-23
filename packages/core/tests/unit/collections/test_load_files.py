@@ -12,6 +12,7 @@ The contract this pins, the same as ``truncate()``'s after the store has run:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -78,6 +79,8 @@ class _TableStore(DurableStore):
         self.contents: dict[str, list[dict[str, Any]]] = {}
         #: the index of a file that fails the load, the files before it staying loaded
         self.failing_file: int | None = None
+        #: what that file raises; a broker's refusal when None
+        self.failure: BaseException | None = None
 
     async def fetch_one(self, table: str, pk: Any, *, conn: Any = None) -> dict[str, Any] | None:
         self.fetches += 1
@@ -117,7 +120,9 @@ class _TableStore(DurableStore):
         loaded = []
         for index, file in enumerate(files):
             if index == self.failing_file:
-                raise DataLayerUnavailableError(f"file {index} failed; the files before it stay committed")
+                raise self.failure or DataLayerUnavailableError(
+                    f"file {index} failed; the files before it stay committed"
+                )
             for row in self.contents.get(file.url, []):
                 self.rows[str(row["id"])] = {**row, **constants}
             loaded.append(FileLoad(index=index, rows_loaded=file.rows))
@@ -386,3 +391,17 @@ async def test_a_failed_load_s_own_failure_wins_over_a_generation_that_cannot_ad
     with pytest.raises(DataLayerUnavailableError, match="file 1 failed"):
         await _load(pod)
     assert not pod.results.exists_in_cache_sync("a")
+
+
+async def test_a_load_cancelled_part_way_drops_and_advances_then_is_cancelled_still(
+    bus: FakeNatsClient, store: _TableStore, source: _CountingSource
+) -> None:
+    pod = _Pod(bus, store, source=source)
+    await _save(pod, "a", 1)
+    store.failing_file = 1
+    store.failure = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await _load(pod)
+    assert store.rows["a"]["votes"] == 10
+    assert not pod.results.exists_in_cache_sync("a")
+    assert source.counts["lsf_results"] == 2  # the save's advance, then the cancelled load's

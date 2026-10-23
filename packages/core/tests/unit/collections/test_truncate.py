@@ -12,6 +12,7 @@ The contract this pins:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any, ClassVar, Literal
 
@@ -70,7 +71,7 @@ class _TableStore(DurableStore):
         self.truncated: list[str] = []
         self.fetches = 0
         #: raised after the table is emptied, as a reply lost after the broker ran the TRUNCATE is
-        self.lost_reply: Exception | None = None
+        self.lost_reply: BaseException | None = None
 
     async def fetch_one(self, table: str, pk: Any, *, conn: Any = None) -> dict[str, Any] | None:
         self.fetches += 1
@@ -344,3 +345,16 @@ async def test_a_failed_truncate_s_own_failure_wins_over_a_generation_that_canno
     with pytest.raises(DataLayerUnavailableError, match="no reply"):
         await pod.results.truncate()
     assert not pod.results.exists_in_cache_sync("a")
+
+
+async def test_a_truncate_cancelled_after_the_broker_ran_it_drops_and_advances_then_is_cancelled_still(
+    bus: FakeNatsClient, store: _TableStore, source: _CountingSource
+) -> None:
+    pod = _Pod(bus, store, source=source)
+    await _save(pod, "a", 1)
+    store.lost_reply = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await pod.results.truncate()
+    assert store.rows == {}
+    assert not pod.results.exists_in_cache_sync("a")
+    assert source.counts["lsf_results"] == 2  # the save's advance, then the cancelled truncate's

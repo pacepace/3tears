@@ -555,9 +555,10 @@ def _load_files_wait_seconds(files: Sequence[LoadFile], *, rows_per_transaction:
     ``rows_per_transaction`` rows of a file, so the load can take ``timeout_ms`` for each
     transaction the files need: each file's rows over ``rows_per_transaction``, rounded up, and one
     for a file with no rows, which is still fetched. two seconds' grace on top, as every other L3
-    request has; and never past :data:`~threetears.core.backends.protocol.LOAD_FILES_MAX_WAIT_SECONDS`,
-    since a reply lost to a broker restart would otherwise hold the caller as long as the load's
-    worst case.
+    request has. a load whose wait would pass
+    :data:`~threetears.core.backends.protocol.LOAD_FILES_MAX_WAIT_SECONDS` is refused before it is
+    sent (:meth:`NatsProxyL3Backend.load_files`), never sent with a shorter wait: the pod would stop
+    waiting while the broker kept committing.
 
     :param files: the files
     :ptype files: Sequence[LoadFile]
@@ -569,7 +570,7 @@ def _load_files_wait_seconds(files: Sequence[LoadFile], *, rows_per_transaction:
     :rtype: float
     """
     transactions = sum(max(1, math.ceil(file.rows / rows_per_transaction)) for file in files)
-    return min(max(1, transactions) * timeout_ms / 1000 + 2, float(LOAD_FILES_MAX_WAIT_SECONDS))
+    return max(1, transactions) * timeout_ms / 1000 + 2
 
 
 def _load_result(response: Mapping[str, Any]) -> LoadResult:
@@ -962,9 +963,10 @@ class NatsProxyL3Backend:
         the load runs for as long as its transactions take, far past one statement's bound, so the
         request waits ``timeout_ms`` for each transaction the files need (each file's rows over
         ``rows_per_transaction``, rounded up; a file with no rows still one, for its fetch), plus
-        two seconds' grace, and never past
-        :data:`~threetears.core.backends.protocol.LOAD_FILES_MAX_WAIT_SECONDS`: a caller with more
-        to load sends several requests. the request's start is logged with its wait, and a reply
+        two seconds' grace. a load whose wait would pass
+        :data:`~threetears.core.backends.protocol.LOAD_FILES_MAX_WAIT_SECONDS` is refused before
+        anything is sent: the caller splits it into several loads (one per partition or state), or
+        bounds each transaction tighter. the request's start is logged with its wait, and a reply
         that never comes is logged as a load the broker may have lost or may still be running.
 
         the broker fetches only a presigned ``https`` URL of a file of the caller's own recorded
@@ -991,8 +993,8 @@ class NatsProxyL3Backend:
         :ptype namespace: str | None
         :return: the rows written, every file's and each file's
         :rtype: LoadResult
-        :raises ValueError: when no column is named, or ``rows_per_transaction`` or ``timeout_ms`` is
-            under one
+        :raises ValueError: when no column is named, ``rows_per_transaction`` or ``timeout_ms`` is
+            under one, or the load's wait would pass ``LOAD_FILES_MAX_WAIT_SECONDS``
         :raises asyncpg.UniqueViolationError: when a row names a key the table already holds
         :raises DataLayerUnavailableError: if the broker refuses or does not answer, or answers a
             count other than the files'
@@ -1008,6 +1010,13 @@ class NatsProxyL3Backend:
         )
         subject = Subjects.l3_load_files(namespace=self.ns).path
         wait = _load_files_wait_seconds(files, rows_per_transaction=rows_per_transaction, timeout_ms=timeout_ms)
+        if wait > LOAD_FILES_MAX_WAIT_SECONDS:
+            raise ValueError(
+                f"{table}: a load of {len(files)} files and {sum(file.rows for file in files)} rows can take "
+                f"{wait:.0f} s at {timeout_ms} ms a transaction of {rows_per_transaction} rows, past the "
+                f"{LOAD_FILES_MAX_WAIT_SECONDS} s a pod waits for one l3.load_files reply; split it into several "
+                f"loads (one per partition or state), or bound each transaction tighter"
+            )
         detail = {
             "table": table,
             "namespace": payload["namespace"],

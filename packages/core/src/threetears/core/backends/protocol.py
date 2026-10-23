@@ -75,10 +75,11 @@ class L3Reader(Protocol):
 #: needless split at worst and never a row.
 L3_RAIL_ROW_CAP: Final = 1000
 
-#: the longest a pod waits for one ``l3.load_files`` reply, in seconds, however many rows its files
-#: hold. NATS request/reply is at most once: a broker that restarts mid-load loses the reply, and a
-#: wait that grew with the load (each transaction's bound times the transactions) held the caller
-#: for a day at the defaults. A load longer than this is sent as several requests, one per
+#: the longest a pod waits for one ``l3.load_files`` reply, in seconds. NATS request/reply is at most
+#: once: a broker that restarts mid-load loses the reply, and a wait that grew with the load (each
+#: transaction's bound times the transactions) held the caller for a day at the defaults. A load
+#: whose wait would pass this is refused before it is sent, never sent with a shorter wait (the pod
+#: would stop waiting while the broker kept committing); the caller sends several, one per
 #: partition of the export. A load's URLs are presigned to outlive it
 #: (:data:`~threetears.datasources.export_read.DEFAULT_PRESIGN_SECONDS` is longer), so the broker
 #: never meets an expired file inside a wait the pod still keeps.
@@ -312,7 +313,7 @@ class LoadFile:
 
     The url is one the loader fetches as it is, with no credential of its own: a presigned GET of a
     warehouse export's parquet file
-    (:func:`~threetears.datasources.export_read.presigned_export_files`). The row count is the
+    (:func:`~threetears.datasources.partitioned_export.presigned_counted_partition`). The row count is the
     export's own count of the file, which the loader holds the file to.
 
     Which URLs a loader fetches is :class:`LoadingStore`'s contract: on the L3 rail only an
@@ -384,9 +385,10 @@ class LoadingStore(Protocol):
     holds the database's credentials and admits more: ``https``, ``http`` on this machine (a local
     MinIO) and ``file://`` (a :class:`~threetears.object_store.FilesystemObjectStore`'s presign).
 
-    **How long.** A pod waits for one load at most :data:`LOAD_FILES_MAX_WAIT_SECONDS`; a caller
-    loading more than that holds splits the load into several calls (one per partition), and
-    presigns each call's URLs just before it, valid for longer than the wait.
+    **How long.** A pod waits for one load at most :data:`LOAD_FILES_MAX_WAIT_SECONDS`, and a load
+    whose wait (``timeout_ms`` for each transaction its files need) would pass it is refused before
+    it is sent; the caller splits it into several calls (one per partition), and presigns each
+    call's URLs just before it, valid for longer than the wait.
     """
 
     async def load_files(

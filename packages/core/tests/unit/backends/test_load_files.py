@@ -205,12 +205,24 @@ async def test_the_wait_is_the_bound_on_a_transaction_times_the_transactions(
     assert broker.timeouts == [timedelta(seconds=wait)]
 
 
-async def test_the_wait_never_passes_the_cap_however_many_rows_the_files_hold() -> None:
-    # 15.5 million rows at the defaults is 310 transactions of 300 s: a day's wait for one reply
+async def test_a_load_whose_wait_would_pass_the_cap_is_refused_before_anything_is_sent() -> None:
+    # 15.5 million rows at the defaults is 310 transactions of 300 s: a day's wait for one reply. A
+    # shorter wait would leave the broker committing after the pod gave up, so it is refused instead
     files = [LoadFile(url="https://x/0", rows=15_500_000)]
-    broker = _Broker(_ok(row_count=15_500_000, files=[{"index": 0, "rows_loaded": 15_500_000}]))
+    broker = _Broker()
+    with pytest.raises(ValueError, match="past the 3600 s a pod waits .* split it into several loads"):
+        await broker.proxy().load_files(
+            "lsf_rows", files, columns=["geo"], constants={}, rows_per_transaction=50_000, timeout_ms=300_000
+        )
+    assert broker.requests == []
+
+
+async def test_a_load_whose_wait_reaches_the_cap_exactly_is_sent() -> None:
+    # 3598 s of transactions and the two seconds' grace: the cap itself
+    files = [LoadFile(url="https://x/0", rows=1799)]
+    broker = _Broker(_ok(row_count=1799, files=[{"index": 0, "rows_loaded": 1799}]))
     await broker.proxy().load_files(
-        "lsf_rows", files, columns=["geo"], constants={}, rows_per_transaction=50_000, timeout_ms=300_000
+        "lsf_rows", files, columns=["geo"], constants={}, rows_per_transaction=1, timeout_ms=2000
     )
     assert broker.timeouts == [timedelta(seconds=LOAD_FILES_MAX_WAIT_SECONDS)]
 
