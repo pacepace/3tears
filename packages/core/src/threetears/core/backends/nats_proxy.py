@@ -37,7 +37,15 @@ from threetears.core.backends.broker_generation import (
     forget_reply_generations,
     record_reply_generations,
 )
-from threetears.core.backends.protocol import L3_RAIL_ROW_CAP, RowcountUnreadableError
+from threetears.core.backends.protocol import (
+    L3_RAIL_ROW_CAP,
+    LOAD_FILES_MAX_WAIT_SECONDS,
+    FileLoad,
+    LoadFile,
+    LoadResult,
+    RowcountUnreadableError,
+    load_wait_seconds,
+)
 from threetears.core.backends.schema_sql import json_default, transport_param
 from threetears.core.exceptions import (
     DataLayerUnavailableError,
@@ -540,6 +548,36 @@ def _detect_operation(query: str) -> str:
     return result
 
 
+def _load_result(response: Mapping[str, Any]) -> LoadResult:
+    """the :class:`LoadResult` an ``l3.load_files`` reply carries.
+
+    :param response: the successful reply
+    :ptype response: Mapping[str, Any]
+    :return: the rows written, every file's and each file's
+    :rtype: LoadResult
+    :raises DataLayerUnavailableError: when the reply's counts are not counts
+    """
+
+    def count(value: Any, what: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise DataLayerUnavailableError(f"L3 load_files answered {what} {value!r}, which is not a count")
+        return value
+
+    files = response.get("files", [])
+    if not isinstance(files, list) or not all(isinstance(entry, Mapping) for entry in files):
+        raise DataLayerUnavailableError(f"L3 load_files answered files {files!r}, which is not a list of files")
+    return LoadResult(
+        row_count=count(response.get("row_count"), "row_count"),
+        files=tuple(
+            FileLoad(
+                index=count(entry.get("index"), "a file index"),
+                rows_loaded=count(entry.get("rows_loaded"), "rows_loaded"),
+            )
+            for entry in files
+        ),
+    )
+
+
 class NatsProxyL3Backend:
     """L3 backend that routes queries through NATS-based broker.
 
@@ -833,6 +871,209 @@ class NatsProxyL3Backend:
         response = await self._send_query(query, list(params), operation, namespace)
         return _format_execute_tag(operation, response.get("row_count"))
 
+    async def truncate(self, table: str, *, namespace: str | None = None) -> None:
+        """empty one of this principal's tables: the ``l3.truncate`` request, outside any transaction.
+
+        the broker runs ``TRUNCATE TABLE`` alone, under the database's DDL lock, and only for a
+        declared table of the caller's own data space; ``table`` is named as a statement names it,
+        and ``namespace`` is bound as it is for ``l3.query``. ``TRUNCATE`` fires no row trigger, so
+        a reply naming the generation the broker advanced for the table is kept as a write's is
+        (:func:`~threetears.core.backends.broker_generation.record_reply_generations`). an empty
+        table is not an error.
+
+        :param table: the table to empty
+        :ptype table: str
+        :param namespace: target namespace (default: this principal's own)
+        :ptype namespace: str | None
+        :return: nothing
+        :rtype: None
+        :raises DataLayerUnavailableError: if the broker refuses or does not answer
+        """
+        payload = self._truncate_payload(table, namespace)
+        subject = Subjects.l3_truncate(namespace=self.ns).path
+        response = await self.nats_request(subject, payload)
+        if not response.get("success", False):
+            self.raise_for_failed_reply(response, "L3 truncate")
+        record_reply_generations(response, ends_write=True)
+
+    def _truncate_payload(self, table: str, namespace: str | None) -> dict[str, Any]:
+        """the ``l3.truncate`` request for ``table``.
+
+        :param table: the table to empty
+        :ptype table: str
+        :param namespace: target namespace
+        :ptype namespace: str | None
+        :return: the request payload
+        :rtype: dict[str, Any]
+        """
+        return {
+            "correlation_id": str(uuid7()),
+            "identity_token": self.forwarded_identity_token(),
+            "namespace": namespace or self.default_namespace,
+            "table": table,
+            "timeout_ms": self.timeout_ms,
+        }
+
+    async def load_files(
+        self,
+        table: str,
+        files: Sequence[LoadFile],
+        *,
+        columns: Sequence[str],
+        constants: Mapping[str, Any],
+        rows_per_transaction: int,
+        timeout_ms: int,
+        namespace: str | None = None,
+    ) -> LoadResult:
+        """load one of this principal's tables from files: the ``l3.load_files`` request.
+
+        outside any transaction. the broker fetches each file's URL itself (a presigned GET of the
+        pod's own warehouse export), reads its parquet, and copies the rows with ``COPY`` into ``table`` --
+        a declared table of the caller's own data space -- committing every
+        ``rows_per_transaction`` rows, so the rows never cross the bus. ``constants`` supply a
+        column no file holds; their values cross as a statement's parameters do
+        (:func:`~threetears.core.backends.schema_sql.transport_param`). insert-only: a key already
+        held fails the load, raised as the ``asyncpg.UniqueViolationError`` a direct pool raises.
+
+        the load runs for as long as its transactions take, far past one statement's bound, so the
+        request waits ``timeout_ms`` for each transaction the files need (each file's rows over
+        ``rows_per_transaction``, rounded up; a file with no rows still one, for its fetch), plus
+        two seconds' grace (:func:`~threetears.core.backends.protocol.load_wait_seconds`). a request
+        whose wait would pass :data:`~threetears.core.backends.protocol.LOAD_FILES_MAX_WAIT_SECONDS`
+        is refused before anything is sent, never sent with a shorter wait (the pod would give up
+        while the broker kept committing);
+        :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.load_files` cuts a
+        load into requests that fit (:func:`~threetears.core.backends.protocol.load_requests`), so
+        this refusal is the guard for a caller of the store itself. the request's start is logged with its wait, and a reply
+        that never comes is logged as a load the broker may have lost or may still be running.
+
+        the broker fetches only a presigned ``https`` URL of a file of the caller's own recorded
+        export, and refuses the request otherwise
+        (:class:`~threetears.core.backends.protocol.LoadingStore` states the rule in full).
+
+        a reply naming the generation the broker advanced for the table is kept as a write's is
+        (:func:`~threetears.core.backends.broker_generation.record_reply_generations`). the reply's
+        count is held to the files' own: a load that wrote any other number of rows is raised.
+
+        :param table: the table
+        :ptype table: str
+        :param files: the files, in order
+        :ptype files: Sequence[LoadFile]
+        :param columns: the table's columns each file supplies
+        :ptype columns: Sequence[str]
+        :param constants: column -> the value every row takes for it
+        :ptype constants: Mapping[str, Any]
+        :param rows_per_transaction: the most rows one committed transaction writes
+        :ptype rows_per_transaction: int
+        :param timeout_ms: the broker's bound on each transaction, in milliseconds
+        :ptype timeout_ms: int
+        :param namespace: target namespace (default: this principal's own)
+        :ptype namespace: str | None
+        :return: the rows written, every file's and each file's
+        :rtype: LoadResult
+        :raises ValueError: when no column is named, ``rows_per_transaction`` or ``timeout_ms`` is
+            under one, or the load's wait would pass ``LOAD_FILES_MAX_WAIT_SECONDS``
+        :raises asyncpg.UniqueViolationError: when a row names a key the table already holds
+        :raises DataLayerUnavailableError: if the broker refuses or does not answer, or answers a
+            count other than the files'
+        """
+        payload = self._load_files_payload(
+            table,
+            files,
+            columns=columns,
+            constants=constants,
+            rows_per_transaction=rows_per_transaction,
+            timeout_ms=timeout_ms,
+            namespace=namespace,
+        )
+        subject = Subjects.l3_load_files(namespace=self.ns).path
+        wait = load_wait_seconds(files, rows_per_transaction=rows_per_transaction, timeout_ms=timeout_ms)
+        if wait > LOAD_FILES_MAX_WAIT_SECONDS:
+            raise ValueError(
+                f"{table}: a load of {len(files)} files and {sum(file.rows for file in files)} rows can take "
+                f"{wait:.0f} s at {timeout_ms} ms a transaction of {rows_per_transaction} rows, past the "
+                f"{LOAD_FILES_MAX_WAIT_SECONDS} s a pod waits for one l3.load_files reply; send it as several "
+                f"requests (load_requests), as SchemaBackedCollection.load_files does"
+            )
+        detail = {
+            "table": table,
+            "namespace": payload["namespace"],
+            "files": len(files),
+            "rows": sum(file.rows for file in files),
+            "wait_s": wait,
+        }
+        _logger.info("l3.load_files sent; waiting for the broker's reply", extra={"extra_data": detail})
+        try:
+            response = await self.nats_request(subject, payload, timeout_s=wait)
+        except DataLayerUnavailableError:
+            _logger.error(
+                "l3.load_files got no reply within its wait: the broker may have lost it (a restart) or may "
+                "still be loading; rows it committed stay committed",
+                extra={"extra_data": detail},
+            )
+            raise
+        if not response.get("success", False):
+            self.raise_for_failed_reply(response, "L3 load_files")
+        record_reply_generations(response, ends_write=True)
+        result = _load_result(response)
+        expected = sum(file.rows for file in files)
+        if result.row_count != expected:
+            raise DataLayerUnavailableError(
+                f"L3 load_files of {table!r} answered {result.row_count} rows; its files hold {expected}"
+            )
+        return result
+
+    def _load_files_payload(
+        self,
+        table: str,
+        files: Sequence[LoadFile],
+        *,
+        columns: Sequence[str],
+        constants: Mapping[str, Any],
+        rows_per_transaction: int,
+        timeout_ms: int,
+        namespace: str | None,
+    ) -> dict[str, Any]:
+        """the ``l3.load_files`` request.
+
+        :param table: the table
+        :ptype table: str
+        :param files: the files
+        :ptype files: Sequence[LoadFile]
+        :param columns: the columns each file supplies
+        :ptype columns: Sequence[str]
+        :param constants: column -> the value every row takes
+        :ptype constants: Mapping[str, Any]
+        :param rows_per_transaction: rows per committed transaction
+        :ptype rows_per_transaction: int
+        :param timeout_ms: the bound on each transaction
+        :ptype timeout_ms: int
+        :param namespace: target namespace
+        :ptype namespace: str | None
+        :return: the request payload
+        :rtype: dict[str, Any]
+        :raises ValueError: when no column is named, or ``rows_per_transaction`` or ``timeout_ms`` is
+            under one
+        """
+        if not columns:
+            raise ValueError(f"{table}: a load names the columns its files supply; none were named")
+        if rows_per_transaction < 1:
+            raise ValueError(f"{table}: rows_per_transaction must be at least 1, got {rows_per_transaction}")
+        if timeout_ms < 1:
+            raise ValueError(f"{table}: timeout_ms must be at least 1, got {timeout_ms}")
+        return {
+            "correlation_id": str(uuid7()),
+            "identity_token": self.forwarded_identity_token(),
+            "namespace": namespace or self.default_namespace,
+            "table": table,
+            "columns": list(columns),
+            "constants": {column: transport_param(value) for column, value in constants.items()},
+            "files": [{"url": file.url, "rows": file.rows} for file in files],
+            "format": "parquet",
+            "rows_per_transaction": rows_per_transaction,
+            "timeout_ms": timeout_ms,
+        }
+
     def forwarded_identity_token(self) -> str:
         """the CURRENT hub-minted identity token to forward on an L3 request.
 
@@ -1058,6 +1299,8 @@ class NatsProxyL3Backend:
         self,
         subject: str,
         payload: dict[str, Any],
+        *,
+        timeout_s: float | None = None,
     ) -> dict[str, Any]:
         """send raw NATS request and parse JSON response.
 
@@ -1075,13 +1318,17 @@ class NatsProxyL3Backend:
             as it arrives -- so a nested datetime is written in
             :func:`~threetears.core.serialization.json_datetime`'s one form, as every tier writes it
         :ptype payload: dict[str, Any]
+        :param timeout_s: how long to wait for the reply, in seconds, for a request whose work runs
+            past one statement's bound (:meth:`load_files`); the backend's ``timeout_ms`` and two
+            seconds' grace when None
+        :ptype timeout_s: float | None
         :return: parsed JSON response dict from broker
         :rtype: dict[str, Any]
         :raises DataLayerUnavailableError: if NATS request times out,
             the broker returns malformed JSON, or the client is closed
         """
         payload_bytes = self.encode_request(subject, payload)
-        nats_timeout = (self.timeout_ms / 1000) + 2
+        nats_timeout = timeout_s if timeout_s is not None else (self.timeout_ms / 1000) + 2
 
         try:
             reply = await self._nc.request_raw(
@@ -1576,6 +1823,103 @@ class _ProxyConnection:
             self._backend.raise_for_failed_reply(response, "tx.fetch")
         raw_rows: list[dict[str, Any]] = response.get("rows", [])
         return [_deserialize_row(r) for r in raw_rows]
+
+    def _copy_payload(self, table: str, columns: Sequence[str], records: Sequence[Sequence[Any]]) -> dict[str, Any]:
+        """the ``l3.tx.copy`` request for rows of ``table`` in the open transaction.
+
+        each row's values cross the rail as a statement's parameters do
+        (:func:`~threetears.core.backends.schema_sql.transport_param`), in the order of ``columns``.
+
+        :param table: the table copied into
+        :ptype table: str
+        :param columns: the columns each row supplies, in order
+        :ptype columns: Sequence[str]
+        :param records: the rows' values, each in the order of ``columns``
+        :ptype records: Sequence[Sequence[Any]]
+        :return: the request payload
+        :rtype: dict[str, Any]
+        """
+        return {
+            "correlation_id": str(uuid7()),
+            "identity_token": self._backend.forwarded_identity_token(),
+            "tx_id": str(self.tx_id),
+            "table": table,
+            "columns": list(columns),
+            "rows": [[transport_param(value) for value in record] for record in records],
+        }
+
+    def copy_request_bytes(self, table: str, columns: Sequence[str], records: Sequence[Sequence[Any]]) -> int:
+        """the bytes of the ``l3.tx.copy`` message :meth:`copy_records_to_table` sends for ``records``.
+
+        built and encoded exactly as it is sent, so a caller sizing a copy for the bus measures what
+        goes on it.
+
+        :param table: the table copied into
+        :ptype table: str
+        :param columns: the columns each row supplies, in order
+        :ptype columns: Sequence[str]
+        :param records: the rows' values
+        :ptype records: Sequence[Sequence[Any]]
+        :return: the size of the request, in bytes
+        :rtype: int
+        :raises DataLayerUnavailableError: when no identity token is available, as sending would
+        """
+        return len(
+            self._backend.encode_request(
+                Subjects.l3_tx("copy", namespace=self._backend.ns).path, self._copy_payload(table, columns, records)
+            )
+        )
+
+    async def copy_records_to_table(
+        self,
+        table_name: str,
+        *,
+        records: Sequence[Sequence[Any]],
+        columns: Sequence[str],
+        schema_name: str | None = None,
+        timeout: float | None = None,
+    ) -> str:
+        """bulk-insert ``records`` into ``table_name`` with ``COPY``, in the open transaction.
+
+        mirrors :meth:`asyncpg.Connection.copy_records_to_table`: the broker runs it on the
+        transaction's pinned connection (the ``l3.tx.copy`` request). insert-only: a key already
+        held fails the copy, and so the transaction. only inside a transaction, where the broker
+        holds a connection to copy on; the table is resolved in the namespace bound at ``tx.begin``.
+
+        :param table_name: the table copied into
+        :ptype table_name: str
+        :param records: the rows' values, each in the order of ``columns``
+        :ptype records: Sequence[Sequence[Any]]
+        :param columns: the columns each row supplies
+        :ptype columns: Sequence[str]
+        :param schema_name: refused when given: the session's namespace names the schema
+        :ptype schema_name: str | None
+        :param timeout: unused; the backend's timeout bounds the request
+        :ptype timeout: float | None
+        :return: the asyncpg-shape status tag, ``"COPY <rows>"``
+        :rtype: str
+        :raises ValueError: when no transaction is open, or ``schema_name`` is given
+        :raises DataLayerUnavailableError: on broker error
+        """
+        del timeout
+        if self.tx_id is None:
+            raise ValueError(
+                "copy_records_to_table runs only inside an open transaction: the broker copies on the "
+                "transaction's pinned connection (l3.tx.copy)"
+            )
+        if schema_name is not None:
+            raise ValueError(
+                "schema_name= is not allowed on the L3 rail; the namespace is declared at "
+                "conn.transaction(namespace=...) and bound on the broker for the session"
+            )
+        payload = self._copy_payload(table_name, columns, records)
+        subject = Subjects.l3_tx("copy", namespace=self._backend.ns).path
+        response = await self._backend.nats_request(subject, payload)
+        if not response.get("success", False):
+            self._backend.raise_for_failed_reply(response, "tx.copy")
+        row_count = response.get("row_count")
+        copied = row_count if isinstance(row_count, int) and not isinstance(row_count, bool) else len(records)
+        return f"COPY {copied}"
 
     async def abort_tx(self) -> None:
         """send ``tx.rollback`` and clear the local tx_id.

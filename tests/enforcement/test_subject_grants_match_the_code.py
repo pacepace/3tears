@@ -193,21 +193,31 @@ def _inprocess_pod() -> str:
     return Subjects.agent_inprocess_pod_id(UUID(_AGENT), "instance-1")
 
 
-def _l3() -> tuple[str, ...]:
+def _l3(*, truncates: bool = True) -> tuple[str, ...]:
     """the L3 broker subjects ``NatsProxyL3Backend`` requests, every transaction op included.
 
-    :return: query, batch and each transaction op
+    :param truncates: whether the site empties and reloads tables (``l3.truncate``,
+        ``l3.load_files``); a reader that never does, the registry, is not granted them
+    :ptype truncates: bool
+    :return: query, batch, truncate and load_files when asked, and each transaction op
     :rtype: tuple[str, ...]
     """
-    ops: tuple[Literal["begin", "execute", "fetch", "fetchrow", "commit", "rollback"], ...] = (
+    ops: tuple[Literal["begin", "execute", "fetch", "fetchrow", "copy", "commit", "rollback"], ...] = (
         "begin",
         "execute",
         "fetch",
         "fetchrow",
+        "copy",
         "commit",
         "rollback",
     )
-    return (str(Subjects.l3_query()), str(Subjects.l3_batch()), *(str(Subjects.l3_tx(op)) for op in ops))
+    truncate = (str(Subjects.l3_truncate()), str(Subjects.l3_load_files())) if truncates else ()
+    return (
+        str(Subjects.l3_query()),
+        str(Subjects.l3_batch()),
+        *truncate,
+        *(str(Subjects.l3_tx(op)) for op in ops),
+    )
 
 
 def _inbox_subjects(principal: Principal) -> tuple[str, ...]:
@@ -542,7 +552,9 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
             # the hub's registry_identity factory, loaded into the registry process, handshakes
             _there("hub:src/aibots/hub/tools/registry_identity.py:281", str(Subjects.hub_handshake())),
             # the RBAC stack and the hub's registry_auth factories read L3 through the broker
-            _here("packages/registry/src/threetears/registry/rbac_stack.py", "NatsProxyL3Backend", *_l3()),
+            _here(
+                "packages/registry/src/threetears/registry/rbac_stack.py", "NatsProxyL3Backend", *_l3(truncates=False)
+            ),
             # the hub's usage_emitter factory, loaded into the registry process, reports endpoint usage
             _there("hub:src/aibots/hub/tools/registry_auth.py:523", str(Subjects.hub_endpoint_usage_track())),
             invalidate,

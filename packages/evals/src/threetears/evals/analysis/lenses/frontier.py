@@ -2036,7 +2036,6 @@ __all__ = [
     "FrontierError",
     "FrontierPoint",
     "PassHatKCellReading",
-    "UnpooledReason",
     "pass_hat_k_cell_lines",
     "FrontierResult",
     "FrontierVerdict",

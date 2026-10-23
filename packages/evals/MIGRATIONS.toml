@@ -59,17 +59,20 @@
 
 [[release]]
 version = "unreleased"
-since = "v0.75.0"
+since = "v0.76.0"
 summary = """
-An interrupted run, sweep or launch resumes as the same job (#918): `job_resume` takes it up under its lease's next
+A change's row reads `within_margin` ("no worse than the margin") where its floor holds, and the seeded writer prompt
+names the new reading, so every host pushes the new seed (`eval_prompt_reset`). An interrupted run, sweep or launch
+resumes as the same job (#918): `job_resume` takes it up under its lease's next
 epoch, runs only the cells it has not measured, in their original order, and it ends as an uninterrupted run would
 have; `jobs_resumable` lists what it would take up, for a host to offer at boot. No public name has moved or been
-removed since 0.75.0, and no judge wording changed. The new names are provisional. The stored shapes (core v15.7,
+removed since 0.76.0, and no judge wording changed. The new names are provisional. The stored shapes (core v15.7,
 additive), derived cell result ids, epoch fencing and the behaviour a host sees are listed in `notes`. Runs pool across
 case sets and across an identity bump (#919): `IDENTITY_VERSION` 25 takes the case set out of the context key, and a
 frontier point names every run kept out of its pass^k cell with why.
 """
 notes = [
+    "A change's row reads `within_margin` where its candidate is neither shown better nor shown worse and its drop is shown to stay within the aspect's margin: `AspectReading.reading` (`ShownReading`, provisional) takes that fourth value, the page's By aspect table reads it `no worse than the margin` (`campaign_page.READING_WORDS` gains the key), and an analysis listing's verdict line says it the same way. A host matching on `reading` handles the new value. It is read at the nominal 95% with no correction, by the floor's own reading of the pass rate, so an aspect whose `RateDrop` floor on the pass rate holds at the margin's points no longer reads `unclear` in the headline table beside a `held` floor (Discodon, 2026-10-22); where a floor and a row still part, on the points or on a check's rate, a line under the table says which. `AspectReading.within_interval` (new, default `None`) carries the nominal interval the reading is read on; the writer's view of each reading carries it as `within_interval`. An unclear row's `projection` (the `To show no worse than the margin` table) is counted at that same level, not the row's corrected drop level, so its count is its floor's count where the two read the same rate and points. A row no worse than the margin licenses nothing by itself: the switch still turns on the declared floors. The seeded writer prompt's description of `readings` names the new value (24,294 of the 24,300 characters; no rule changed), so every host pushes the new seed to its `eval_analysis_gen` store (`eval_prompt_reset`), or its writer is told readings are only `better`, `worse` or `unclear`.",
     "`IDENTITY_VERSION` 24 -> 25 (#919): `ContextComponents.case_basis` digests the subject and the template, no longer the frozen `test_case_ids`, so every stored run's context key re-derives on read (`resolve_context_identity`) and nothing stored is rewritten. A host that pins context-key or `case_basis` goldens re-derives them at 25. Two runs of one variant and context over different case sets now pool into one pass^k cell, covering the union of their cases. A frontier or history contestant whose run recorded its lever map is placed at this version where today's predicate reproduces its key, so the bump splits no contestant. A run whose cases were written by a different `variation_model` pools too: its cases are cases of their own ids. A host that groups on the stamped `context_key` itself (a pivot on it) separates runs stamped before the bump from runs after it; pivot on `context_identity_version` to read them apart.",
     "The pass^k cell is one typed record, `PassHatKCell` in `threetears.evals.kernel.scoring` (not a public root), built by `pass_hat_k_cell(run, profile, served=...)` and completed by `join_unrecorded`: the context resolved at this version, the template id and the run's frozen `template_digest` (a template edited in place keeps its id), the apparatus provenance and the models the provider's responses named for the candidate's calls (`RoleUsage.served_model`). A run that froze no digest, or whose responses named no model, joins its cell, named as joining by assumption; `model_identity_disclosure` still names the unconfirmed identity. A run whose context can no longer be re-derived (subject state its host no longer declares) is a cell of its own rather than failing the frontier read. `pool_pass_hat_k_attempts` keys a unit `(cell, variant_key, model, test_case_id)`.",
     "A frontier point's `pass_hat_k`, curve, interval, bar decision, dominance and verdict read its headline cell (most runs, then most results) alone: a run of another cell no longer counts in them. `FrontierPoint.pass_hat_k_cells` (`PassHatKCellReading`, `UnpooledReason`: `changed_context`, `other_template`, `other_served_model`, `no_recorded_context`; provisional, from `threetears.evals.analysis`) lists every cell, the headline first, each other with its own pass^k and its reason; `frontier_text` and the campaign bundle's writer view (`disclosures.pass_k_unpooled`) name each, through `pass_hat_k_cell_lines`. Composite, cost and latency still pool every run of the variant under one rig. Bundle shape 60 -> 61: a stored analysis keeps its frozen bundle, and a regenerated one moves pass^k over unchanged runs.",
@@ -84,6 +87,16 @@ notes = [
     "A sweep stored before this release that has an arm it never launched is refused as a whole by `job_resume sweep:<id>`, naming the arm: launch that arm with `run_launch`, and resume each other arm with `job_resume run:<id>`. An interleaved sweep launches every arm together, so a lost interleaved sweep has no such arm. A resumed sweep's arms run under its original launch group, interleaved arms as one group in their original order and sequential arms in order.",
     "A resumed run's cost cap counts every attempt its stored rows record (`cost_usd` plus `superseded_spend_usd`), a lower bound when a holding was lost to a hard kill (`RunLifetime.spend_lower_bound`). It runs under its stored cap, or the raised `max_cost_usd`, never the host's current cap, and a stored cap above a ceiling the host has since lowered is refused until one of them moves. Its metered-call ceiling counts the metered calls its stored rows record (`EvalResult.metered_calls`, none on a row stored before this release), and a run whose stored cells have reached the ceiling it would resume under is refused: `job_resume` cannot raise a metered-call ceiling, so raise the host's `max_metered_calls` for a run that inherited it, or launch the template again for one whose launch chose it. The cells of an `exhausted` run its provider account refused (`EvalResult.account_refused`) run again on resume, written over their rows. A shutdown releases a job's lease and keeps its epoch on the loss (`JobLoss.epoch`), so every take-up holds an epoch above every earlier one. `LaunchRequest.resuming`, `execute_run(..., stored=)` and `LaunchGroup(group_id=)` are new keyword arguments with defaults; a host's launcher passes the request through to `launch_run` as before.",
 ]
+
+[[release]]
+version = "0.76.0"
+since = "v0.75.0"
+summary = """
+No public name of 3tears-evals has moved or been removed since 0.75.0, and no judge wording changed. The family moves
+to 0.76.0 for new public API in 3tears-core, 3tears-datasources and 3tears-nats (l3.truncate, l3.tx.copy,
+load_files, counted partitioned exports, KV replicas).
+"""
+notes = []
 
 [[release]]
 version = "0.75.0"

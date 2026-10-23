@@ -381,9 +381,9 @@ from threetears.evals.analysis.lenses.frontier import (
     FrontierVerdict,
     SubjectFrontier,
     FrontierBoundaryCheck,
-    UnpooledReason,
     PassHatKCellReading,
 )
+from threetears.evals.kernel.scoring import UnpooledReason
 from threetears.evals.analysis.lenses.history import HistoryResult, MeasureSeries, RegressionFlag, SeriesPoint
 from threetears.evals.analysis.lenses.export import ExportFormat, ScoreExport
 from threetears.evals.analysis.service import AnalysisStore

@@ -27,7 +27,8 @@ was set and when the runs began, since the operator is trusted and the reader ju
 question was asked, so adopting it into a later campaign never re-dates it.
 
 **Code reports, the writer recommends, a person decides.**
-Code reads each aspect against the control: shown better, shown worse or unclear, on an interval. A model may
+Code reads each aspect against the control: shown better, shown worse, no worse than the margin or unclear, on an
+interval. A model may
 write the recommendation over that evidence; neither decides. A floor (a typed clause, never words a parser reads)
 only warns, loudly, as the page's first line: a rule that blocked would decide for the person reading it, on a
 handful of cases where almost every line is unclear.
@@ -349,7 +350,8 @@ aspect rather than refused.
 
 What a campaign can decide is read off its arms, never declared: one arm is a **measurement** (measures and bars,
 no recommendation), several with no control a **choice** (every pair read both ways), a control and candidates a
-**change** (each candidate shown better, shown worse or unclear against the control). A margin or a relative floor
+**change** (each candidate shown better, shown worse, no worse than the margin or unclear against the control). A
+margin or a relative floor
 needs a control, so a campaign naming none is refused one and held to absolute bars. Each candidate's aspects are one
 Holm family, gains and drops apart, read on the same bounded interval a floor reads, so a one-aspect campaign's floor
 and reading cannot disagree; there is no correction across candidates, and the page says so. One memo is written

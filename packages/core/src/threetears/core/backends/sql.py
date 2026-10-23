@@ -27,6 +27,8 @@ The wrapped pool is the previously-untyped ``l3_pool`` (a bare asyncpg ``Pool`` 
 
 from __future__ import annotations
 
+import asyncio
+import io
 import json
 import os
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
@@ -39,7 +41,15 @@ from typing import TYPE_CHECKING, Any
 from threetears.observe import get_logger
 
 import threetears.core.backends.schema_sql as schema_sql
-from threetears.core.backends.protocol import L3_RAIL_ROW_CAP, parse_rowcount
+from threetears.core.backends.protocol import (
+    L3_RAIL_ROW_CAP,
+    FileLoad,
+    LoadFile,
+    LoadingStore,
+    LoadResult,
+    TruncatingStore,
+    parse_rowcount,
+)
 from threetears.core.keyset import read_keyset_pages
 from threetears.core.sql_fragments import as_written
 
@@ -166,6 +176,108 @@ def _quote_ident(name: str) -> str:
     if '"' in name:
         raise ValueError(f"illegal SQL identifier {name!r}")
     return f'"{name}"'
+
+
+def _plain_identifier(name: str) -> str:
+    """``name`` when it is a plain, optionally schema-qualified SQL identifier; refused otherwise.
+
+    For a statement that interpolates a table name it cannot bind, as the generated SQL elsewhere
+    does (unquoted, so it folds case as they do).
+
+    :param name: a table name, ``table`` or ``schema.table``
+    :ptype name: str
+    :return: the name unchanged
+    :rtype: str
+    :raises ValueError: when any part is not a plain identifier
+    """
+    if not all(part.isidentifier() and part.isascii() for part in name.split(".")) or name.count(".") > 1:
+        raise ValueError(f"illegal table name {name!r}")
+    return name
+
+
+#: the hosts a direct load may fetch plain ``http`` from: a bucket served on this machine (a local
+#: MinIO, a test's server), never one across a network
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _check_load_url(url: str) -> None:
+    """refuse a URL a direct load would not fetch.
+
+    A direct load runs in a process that already holds the database's own credentials, so it gains
+    no reach by fetching; still it fetches only what its callers legitimately hand it: a presigned
+    ``https`` GET (S3), a presigned ``http`` GET of a bucket on this machine (a local MinIO, whose
+    presign is ``http://localhost:9000/...``), or a ``file://`` URL, which is how a
+    :class:`~threetears.object_store.FilesystemObjectStore` presigns. The broker, which fetches with
+    the hub's network position for a pod, admits far less: an ``https`` URL of the caller's own
+    recorded export only (``l3.load_files``, :meth:`NatsProxyL3Backend.load_files
+    <threetears.core.backends.nats_proxy.NatsProxyL3Backend.load_files>`).
+
+    :param url: the file's URL
+    :ptype url: str
+    :return: nothing
+    :rtype: None
+    :raises ValueError: for any other scheme, or plain ``http`` to a host not on this machine
+    """
+    from urllib.parse import urlsplit  # noqa: PLC0415 - only a direct load fetches
+
+    parts = urlsplit(url)
+    if parts.scheme in ("https", "file"):
+        return
+    if parts.scheme == "http":
+        if (parts.hostname or "").lower() not in _LOOPBACK_HOSTS:
+            raise ValueError(f"a load fetches plain http only from this machine, not from {parts.hostname!r}")
+        return
+    raise ValueError(f"a load fetches https, local http and file URLs, not {parts.scheme!r}")
+
+
+async def _fetch_load_file(url: str) -> bytes:
+    """the bytes of one file a load names, once :func:`_check_load_url` admitted its URL.
+
+    :param url: the file's URL
+    :ptype url: str
+    :return: its bytes
+    :rtype: bytes
+    :raises ValueError: for a URL :func:`_check_load_url` refuses
+    """
+    from urllib.parse import urlparse  # noqa: PLC0415 - only a direct load fetches
+    from urllib.request import url2pathname  # noqa: PLC0415 - only a direct load fetches
+
+    _check_load_url(url)
+    parsed = urlparse(url)
+    if parsed.scheme == "file":
+        path = url2pathname(parsed.path)
+
+        def read() -> bytes:
+            with open(path, "rb") as handle:
+                return handle.read()
+
+        return await asyncio.to_thread(read)
+    import httpx  # noqa: PLC0415 - the http extra, needed only once a file is fetched
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0), follow_redirects=False) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        return response.content
+
+
+def _parquet_columns(data: bytes, columns: Sequence[str]) -> tuple[int, list[list[Any]]]:
+    """one parquet file's row count and the values of ``columns``, each column's in file order.
+
+    :param data: the file
+    :ptype data: bytes
+    :param columns: the columns to read
+    :ptype columns: Sequence[str]
+    :return: the file's rows, and each column's values
+    :rtype: tuple[int, list[list[Any]]]
+    :raises ValueError: when the file lacks one of ``columns``
+    """
+    import pyarrow.parquet as pq  # noqa: PLC0415 - the snapshot extra, needed only once a file is read
+
+    table = pq.read_table(io.BytesIO(data))
+    missing = [column for column in columns if column not in table.column_names]
+    if missing:
+        raise ValueError(f"the file holds no column {missing[0]!r}; it holds {table.column_names}")
+    return table.num_rows, [table.column(column).to_pylist() for column in columns]
 
 
 def _request_measure(transport: Any) -> Callable[[str, list[Any]], int | None] | None:
@@ -623,6 +735,242 @@ class SqlL3Backend:
                 await self._execute(sql, *(value for row in batch for value in row), conn=conn)
                 written += len(batch)
         return written
+
+    async def copy_many(
+        self,
+        table: str,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        max_rows: int,
+        max_bytes: int,
+        conn: Any,
+    ) -> int:
+        """Insert many new rows of a schema-registered table with ``COPY``, on the caller's transaction.
+
+        The bulk load's other form beside :meth:`upsert_many`: no conflict clause, so a key already
+        held fails the copy and with it the caller's transaction. The rows are ordered by primary
+        key first, the order a bulk load into YugabyteDB wants, and each copy goes to the
+        connection's ``copy_records_to_table`` -- asyncpg's own on a direct connection, the
+        ``l3.tx.copy`` request on the rail's. Columns and values are the ones :meth:`upsert_many`
+        would bind (:func:`schema_sql.insert_columns_for_data`, :func:`schema_sql.build_insert_params`),
+        so the two forms write the same row. Batches split by ``max_rows`` and, where the connection
+        measures its request (``copy_request_bytes``), by ``max_bytes`` of the whole request; with no
+        measure, by the rows' values alone.
+
+        :param table: the table; its schema must be registered (:meth:`register_schema`)
+        :ptype table: str
+        :param rows: the rows, each keyed by column
+        :ptype rows: Sequence[Mapping[str, Any]]
+        :param max_rows: the most rows one copy carries; at least one
+        :ptype max_rows: int
+        :param max_bytes: the most bytes one copy's request comes to on the L3 rail
+        :ptype max_bytes: int
+        :param conn: the caller's connection, its transaction open
+        :ptype conn: Any
+        :return: rows written
+        :rtype: int
+        :raises ValueError: when no schema is registered for ``table``, ``max_rows`` is under one,
+            the rows disagree on which columns they supply, or a column is one a copy cannot write
+            (:func:`schema_sql.copy_writes`: a jsonb or a vector)
+        """
+        schema = self._schemas.get(table)
+        if schema is None:
+            raise ValueError(f"copy_many needs the schema of {table!r} registered")
+        if max_rows < 1:
+            raise ValueError(f"{table}: max_rows must be at least 1, got {max_rows}")
+        if not rows:
+            return 0
+        columns = schema_sql.insert_columns_for_data(schema, dict(rows[0]))
+        names = [c.name for c in columns]
+        unwritable = [c for c in columns if not schema_sql.copy_writes(c)]
+        if unwritable:
+            raise ValueError(
+                f"{table}: a copy cannot write the {unwritable[0].column_type} column {unwritable[0].name!r}; "
+                f"save the rows with an upsert"
+            )
+        params: list[list[Any]] = []
+        for row in rows:
+            data = dict(row)
+            if [c.name for c in schema_sql.insert_columns_for_data(schema, data)] != names:
+                raise ValueError(
+                    f"{table}: rows of one bulk copy must supply the same columns; "
+                    f"a server-default column is supplied by some rows and not others"
+                )
+            params.append(schema_sql.build_insert_params(schema, data))
+        key_positions = [names.index(name) for name in schema.pk_columns]
+        params.sort(key=lambda values: tuple(values[position] for position in key_positions))
+        measure = getattr(conn, "copy_request_bytes", None)
+        measured = measure(table, names, []) if callable(measure) else None
+        base = measured if isinstance(measured, int) and not isinstance(measured, bool) else 0
+        written = 0
+        for batch in schema_sql.bulk_batches(
+            params,
+            max_rows=max_rows,
+            max_bytes=max_bytes,
+            # a copy binds no parameters, so only the row and byte bounds cut it
+            max_params=max_rows * len(names),
+            base_bytes=base,
+            # each row after the first follows a ", " in the request's list of rows
+            position_bytes=lambda position: 2 if position else 0,
+        ):
+            await conn.copy_records_to_table(table, records=[tuple(values) for values in batch], columns=names)
+            written += len(batch)
+        _logger.debug("bulk copy", extra={"extra_data": {"table": table, "rows": written}})
+        return written
+
+    async def truncate(self, table: str) -> None:
+        """Empty ``table`` with ``TRUNCATE``, alone and outside any transaction.
+
+        On the rail the broker runs it (``NatsProxyL3Backend.truncate``, the ``l3.truncate``
+        request), under the database's DDL lock and only for a table of the caller's own data
+        space. On a direct pool it runs here, on one connection holding that same lock
+        (:func:`~threetears.core.data.migrations.ddl_lock.database_ddl_lock`), so it never meets a
+        migration's DDL halfway. ``TRUNCATE`` is not transactional, so it is refused inside a
+        request's bound transaction (:func:`bound_request_connection`) rather than run beside it.
+
+        :param table: the table, named as the store's other statements name it
+        :ptype table: str
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when a request-scoped connection is bound, or the name is not a plain
+            identifier
+        """
+        if _request_l3_conn.get() is not None:
+            raise ValueError(
+                f"TRUNCATE of {table!r} runs alone, outside any transaction; a request's bound connection is open"
+            )
+        if isinstance(self._pool, TruncatingStore):
+            await self._pool.truncate(table)
+            return
+        from threetears.core.data.migrations.ddl_lock import database_ddl_lock
+        from threetears.core.data.migrations.session import ConnectionSession
+
+        statement = f"TRUNCATE TABLE {as_written(_plain_identifier(table))}"
+        with _unmask_asyncpg_release_race():
+            async with self._pool.acquire() as conn, database_ddl_lock(ConnectionSession(conn)):
+                await conn.execute(statement)
+        _logger.info("table truncated", extra={"extra_data": {"table": table}})
+
+    async def load_files(
+        self,
+        table: str,
+        files: Sequence[LoadFile],
+        *,
+        columns: Sequence[str],
+        constants: Mapping[str, Any],
+        rows_per_transaction: int,
+        timeout_ms: int,
+    ) -> LoadResult:
+        """Insert every row of parquet ``files`` into ``table`` with ``COPY``, committing as it goes.
+
+        The load's columns are checked against the table's registered schema first, on either path,
+        so a caller's local run refuses what the rail would. On the rail the broker then does it
+        (``NatsProxyL3Backend.load_files``, the ``l3.load_files`` request), fetching each file itself
+        and admitting only an ``https`` URL of the caller's own export. On a direct pool -- a local
+        run, a test -- it runs here the way the broker runs it: each URL admitted
+        (:func:`_check_load_url`: ``https``, ``http`` on this machine, or ``file``), each file
+        fetched (:func:`_fetch_load_file`) and read (pyarrow,
+        off the loop), held to the row count its :class:`LoadFile` declares, its rows given the
+        ``constants`` and ordered by primary key, and copied in transactions of
+        ``rows_per_transaction`` rows (``copy_records_to_table``), each bounded by ``timeout_ms``.
+        Values are written as an insert binds them (:func:`schema_sql.normalize_write_value`).
+        Insert-only: a key already held fails that transaction, and the load stops there; the
+        transactions before it stay committed. The load's own checks run before anything is
+        written, and each file's before any of its rows are.
+
+        :param table: the table; its schema must be registered (:meth:`register_schema`)
+        :ptype table: str
+        :param files: the parquet files, in order
+        :ptype files: Sequence[LoadFile]
+        :param columns: the table's columns each file supplies
+        :ptype columns: Sequence[str]
+        :param constants: column -> the value every row takes for it
+        :ptype constants: Mapping[str, Any]
+        :param rows_per_transaction: the most rows one committed transaction writes; at least one
+        :ptype rows_per_transaction: int
+        :param timeout_ms: the most time one transaction may take, in milliseconds
+        :ptype timeout_ms: int
+        :return: the rows written, every file's and each file's
+        :rtype: LoadResult
+        :raises ValueError: when no schema is registered for ``table``, no column is named, a column
+            is named twice, is not the table's or is one a copy cannot write, the key is not wholly supplied,
+            ``rows_per_transaction`` or ``timeout_ms`` is under one, a request's bound connection is
+            open, or a file lacks a column or holds a different number of rows than declared
+        :raises asyncpg.UniqueViolationError: when a row names a key the table already holds
+        """
+        if _request_l3_conn.get() is not None:
+            raise ValueError(f"a load of {table!r} commits its own transactions; a request's bound connection is open")
+        schema = self._schemas.get(table)
+        if schema is None:
+            raise ValueError(f"load_files needs the schema of {table!r} registered")
+        if rows_per_transaction < 1:
+            raise ValueError(f"{table}: rows_per_transaction must be at least 1, got {rows_per_transaction}")
+        if timeout_ms < 1:
+            raise ValueError(f"{table}: timeout_ms must be at least 1, got {timeout_ms}")
+        if not columns:
+            raise ValueError(f"{table}: a load names the columns its files supply; none were named")
+        names = [*columns, *constants]
+        if len(set(names)) != len(names):
+            raise ValueError(f"{table}: a column is named twice among the files' columns and the constants: {names}")
+        declared = {column.name: column for column in schema.columns}
+        unknown = [name for name in names if name not in declared]
+        if unknown:
+            raise ValueError(f"{table} has no column {unknown[0]!r}")
+        unkeyed = [name for name in schema.pk_columns if name not in names]
+        if unkeyed:
+            raise ValueError(
+                f"{table}: a load must supply every key column; {unkeyed[0]!r} is in no file and no constant"
+            )
+        if isinstance(self._pool, LoadingStore):
+            # the checks above are the schema's, so both paths refuse alike; what follows is this
+            # path's own: the broker copies parquet with its own codecs (so a column a binary copy
+            # of bound values cannot write is for it to judge) and admits a URL by its own rule
+            return await self._pool.load_files(
+                table,
+                files,
+                columns=columns,
+                constants=constants,
+                rows_per_transaction=rows_per_transaction,
+                timeout_ms=timeout_ms,
+            )
+        unwritable = [declared[name] for name in names if not schema_sql.copy_writes(declared[name])]
+        if unwritable:
+            raise ValueError(
+                f"{table}: a copy cannot write the {unwritable[0].column_type} column {unwritable[0].name!r}"
+            )
+        for file in files:
+            _check_load_url(file.url)
+        fixed = [schema_sql.normalize_write_value(declared[name], value) for name, value in constants.items()]
+        key_positions = [names.index(name) for name in schema.pk_columns]
+        loaded: list[FileLoad] = []
+        for index, file in enumerate(files):
+            data = await _fetch_load_file(file.url)
+            try:
+                held, values = await asyncio.to_thread(_parquet_columns, data, list(columns))
+            except ValueError as exc:
+                raise ValueError(f"{table}: file {index}: {exc}") from exc
+            if held != file.rows:
+                raise ValueError(f"{table}: file {index} holds {held} rows; the load declares {file.rows}")
+            records = [
+                (
+                    *(schema_sql.normalize_write_value(declared[name], value) for name, value in zip(columns, row)),
+                    *fixed,
+                )
+                for row in zip(*values)
+            ]
+            records.sort(key=lambda record: tuple(record[position] for position in key_positions))
+            for start in range(0, len(records), rows_per_transaction):
+                batch = records[start : start + rows_per_transaction]
+                with _unmask_asyncpg_release_race():
+                    async with asyncio.timeout(timeout_ms / 1000), self._pool.acquire() as conn, conn.transaction():
+                        await conn.copy_records_to_table(table, records=batch, columns=names)
+            loaded.append(FileLoad(index=index, rows_loaded=len(records)))
+        result = LoadResult(row_count=sum(file.rows_loaded for file in loaded), files=tuple(loaded))
+        _logger.info(
+            "table loaded from files",
+            extra={"extra_data": {"table": table, "files": len(loaded), "rows": result.row_count}},
+        )
+        return result
 
     @property
     def rows_per_statement(self) -> int | None:

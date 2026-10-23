@@ -5,8 +5,8 @@ Code reports, the writer recommends, a person decides. This is the report, and w
 campaign's kind, which its arms decide (:func:`campaign_kind`) and nothing declares:
 
 - **A change** (a control and its candidates): per aspect and candidate, the change in pass rate against the control
-  and whether it is **shown better**, **shown worse** or **unclear**; per floor and candidate, whether it is broken,
-  held or unclear; and for an unclear reading, the cases that would settle it.
+  and whether it is **shown better**, **shown worse**, **no worse than the margin** or **unclear**; per floor and
+  candidate, whether it is broken, held or unclear; and for an unclear reading, the cases that would settle it.
 - **A choice** (two or more arms, no control): per aspect, every pair of arms, the difference between them and which
   is **shown ahead**, if either; one family over every pair × aspect, since a pair has no direction.
 - **A measurement** (one arm): each aspect's measures for that arm, each with its interval; nothing is compared.
@@ -23,6 +23,14 @@ interval, so each errs at most α/2 and the gains and drops together at most α,
 control across candidates**: with several candidates, one of them is shown better or worse by chance more often than
 α. Floors are read intersection-union, each at its nominal level with no correction, since a warning that fires less
 often for every floor added is no warning.
+
+**No worse than the margin is read as a floor is.** A row neither shown better nor shown worse reads ``within_margin``
+where the candidate's drop is shown to stay within the aspect's margin: the floor's own reading
+(:func:`~threetears.evals.analysis.report.decision.read_floor`) on the pass rate at the nominal level, uncorrected,
+so a row and a ``RateDrop`` floor on the same rate and points never disagree. It needs no correction because of what
+it feeds: a candidate is no worse only where it holds on every asked aspect, and a claim made only when every part
+holds (an intersection-union test) errs at most α however many parts it has. The cases that would settle an unclear
+row are projected at the same level, so a row's count and its floor's are one count.
 
 **The reading is read off the interval.** Each direction is Holm's step-down over its family, carried on the
 intervals and made monotone by construction (:func:`_step_down`): a family of ``m`` rows is read on each row's
@@ -54,6 +62,7 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.report.decision import (
+    FloorOutcome,
     FloorReadings,
     RateReading,
     SampleProjection,
@@ -65,6 +74,7 @@ from threetears.evals.analysis.report.decision import (
     read_floor,
 )
 from threetears.evals.analysis.stats import (
+    INTERVAL_LEVEL,
     SIGNIFICANCE_ALPHA,
     SMALL_N_BAND_FLOOR,
     bounded_difference_interval,
@@ -94,9 +104,11 @@ __all__ = [
 ]
 
 #: What one aspect × candidate row shows against the control. ``better``: the gain is shown, its Holm-adjusted p
-#: under the campaign's α. ``worse``: a drop past the aspect's margin is shown, likewise — never read on an aspect with
-#: no margin. ``unclear``: neither.
-ShownReading = Literal["better", "worse", "unclear"]
+#: under the campaign's α. ``worse``: a drop past the aspect's margin is shown, likewise. ``within_margin``: neither,
+#: and the drop is shown to stay within the margin, at the nominal level as a floor reads (the page says "no worse
+#: than the margin"). ``unclear``: none of these. Neither ``worse`` nor ``within_margin`` is read on an aspect with no
+#: margin.
+ShownReading = Literal["better", "worse", "within_margin", "unclear"]
 
 #: Where one floor stands for one candidate. ``broken``: the evidence shows the candidate past the floor. ``held``: it
 #: shows the candidate within it. ``unclear``: neither, the reason saying why.
@@ -116,8 +128,10 @@ class AspectReading(EvalDocumentModel):
     **The reading is decided per direction.** The gain and the drop are two Holm families per candidate, so each
     direction has its own p values and its own interval, read at the level that direction's step read it at: ``better`` is the
     gain shown (its interval wholly above zero), ``worse`` the drop past the margin shown (its interval wholly below
-    minus the margin). ``unclear`` is neither, and a page showing one shows both intervals, so a reader sees how far
-    each side is from settling.
+    minus the margin). A row that is neither reads ``within_margin`` where its interval at the nominal level, the
+    floor's own and uncorrected, lies wholly above minus the margin (``within_interval``): the candidate is shown no
+    worse than the control by more than the margin. ``unclear`` is none of these, and a page showing one shows the
+    intervals, so a reader sees how far each side is from settling.
     """
 
     aspect: str = Field(description="The aspect's label.")
@@ -174,6 +188,14 @@ class AspectReading(EvalDocumentModel):
             "(to rounding). None when untested."
         )
     )
+    within_interval: tuple[float, float] | None = Field(
+        default=None,
+        description=(
+            "The change's interval in points, low then high, at the nominal level (`stats.INTERVAL_LEVEL`) with no "
+            "correction, as a floor reads it: what `within_margin` is read on, and what an unclear row's "
+            "`projection` counts from. None when the arms' cases cannot bound it, or the aspect declares no margin."
+        ),
+    )
     drop_p: float | None = Field(
         description=(
             "The drop's p past the margin, unadjusted, on its family's grid as `gain_p` is. None when untested, "
@@ -186,9 +208,14 @@ class AspectReading(EvalDocumentModel):
             "None when untested."
         )
     )
-    reading: ShownReading = Field(description="What the row shows: `better`, `worse` or `unclear`.")
+    reading: ShownReading = Field(
+        description="What the row shows: `better`, `worse`, `within_margin` (no worse than the margin) or `unclear`."
+    )
     margin: float | None = Field(
-        description="The aspect's margin in points, the drop tested against. None = none declared: the row is never `worse`."
+        description=(
+            "The aspect's margin in points, the drop tested against. None = none declared: the row is never `worse` "
+            "and never `within_margin`."
+        )
     )
     control_cases: int = Field(ge=0, description="The usable cases the control's rate was read over.")
     arm_cases: int = Field(ge=0, description="The usable cases the candidate's rate was read over.")
@@ -199,8 +226,9 @@ class AspectReading(EvalDocumentModel):
     projection: SampleProjection | None = Field(
         description=(
             "For an `unclear` row, the drop side only: the cases that would show the candidate no worse than the "
-            "control by more than the aspect's margin. None for a settled row, for an aspect with no margin, or "
-            "where nothing can be projected. No gain is projected."
+            "control by more than the aspect's margin (read `within_margin`), counted at the nominal level from "
+            "`within_interval`, as a floor's are. None for a settled row, for an aspect with no margin, or where "
+            "nothing can be projected. No gain is projected."
         )
     )
     reason: str = Field(
@@ -352,7 +380,8 @@ class CampaignReadings(EvalDocumentModel):
     measures; for every kind, each arm against each absolute bar.
 
     Each candidate's rows are corrected across its own aspects (Holm, gains and drops apart, each direction erring at
-    most α/2); nothing corrects across candidates, so with several, one is shown by chance more often than α.
+    most α/2); nothing corrects across candidates, so with several, one is shown by chance more often than α. A row
+    no worse than the margin is read at the nominal level with no correction, as a floor is.
     """
 
     campaign_id: str = Field(description="The campaign read.")
@@ -462,7 +491,7 @@ class _Row:
     per_case_usd: float | None
     rigs: list[str]
     levels: dict[float, RateReading]
-    drops: dict[float, tuple[bool, str]]
+    drops: dict[float, tuple[FloorOutcome, str]]
 
     def at(self, confidence: float) -> RateReading:
         """The pass rate with its bounded interval at ``confidence``, computed again from the same per-case values a
@@ -490,17 +519,19 @@ class _Row:
             return False
         return rate.interval[0] > 0 and rate.drop_bounds()[1] < 0
 
-    def drop_verdict(self, confidence: float) -> tuple[bool, str]:
-        """Whether a drop past the margin is shown at ``confidence``, and the reason: the floor's own reading
-        (:func:`~threetears.evals.analysis.report.decision.read_floor`) on the pass rate alone, at that level."""
+    def drop_verdict(self, confidence: float) -> tuple[FloorOutcome, str]:
+        """The drop against the margin at ``confidence``, and the reason: the floor's own reading
+        (:func:`~threetears.evals.analysis.report.decision.read_floor`) on the pass rate alone, at that level.
+        ``broken`` is the drop shown past the margin, ``held`` the drop shown within it, ``unclear`` neither; with no
+        margin, ``unclear`` with no reason."""
         if self.margin is None:
-            return False, ""
+            return "unclear", ""
         if confidence not in self.drops:
             rate = self.at(confidence)
             readings = replace(self.base, rates=(rate,), confidence=confidence)
             floor = Floor(aspect=self.aspect, clause=RateDrop(max_points=self.margin))
             verdict = read_floor(floor, readings, control=self.control_label, candidate=self.arm.label)
-            self.drops[confidence] = (verdict.outcome == "broken", verdict.reason)
+            self.drops[confidence] = (verdict.outcome, verdict.reason)
         return self.drops[confidence]
 
 
@@ -671,13 +702,33 @@ def _no_interval(first: str, second: str, rigs: Sequence[str]) -> str:
     return "no interval could be read: a side has fewer than two cases with a usable trial"
 
 
-def _reason(row: _Row, reading: ShownReading, gain_level: float, drop_level: float, drop_reason: str) -> str:
-    """Why a row reads as it does, in one sentence naming the arms."""
+def _percent(level: float) -> str:
+    """A level as a percent, to the precision that tells two levels apart: ``95%``, ``98.33%``."""
+    return format_number(round(100 * level, 2)) + "%"
+
+
+def _reason(
+    row: _Row, reading: ShownReading, gain_level: float, drop_level: float, drop_reason: str, within_reason: str
+) -> str:
+    """Why a row reads as it does, in one sentence naming the arms: for ``worse`` the drop family's reason at the
+    row's level, for ``within_margin`` the floor's reason at the nominal level, and for an unclear row with a margin
+    whose interval reaches both sides, the floor's reason for what keeps the drop from being shown within it."""
     arm, control = row.arm.label, row.control_label
     if reading == "better":
         return f"{arm}'s gain over {control} is shown: its whole interval is above zero"
     if reading == "worse":
         return drop_reason
+    if reading == "within_margin":
+        nominal, corrected = row.at(INTERVAL_LEVEL), row.at(gain_level)
+        if corrected.interval is not None and corrected.interval[0] > 0:
+            # Its gain clears zero at the level its family read it at: only the lost trials keep it from better.
+            return f"{within_reason}; its gain clears zero, but the lost trials could still take it back"
+        if nominal.interval is not None and nominal.interval[0] > 0:
+            return (
+                f"{within_reason}; its gain clears zero at {_percent(INTERVAL_LEVEL)}, not at the "
+                f"{_percent(gain_level)} its gains are read at, corrected across {arm}'s aspects"
+            )
+        return within_reason
     fewest = row.fewest()
     rate = row.at(gain_level)
     if rate.interval is None:
@@ -697,6 +748,8 @@ def _reason(row: _Row, reading: ShownReading, gain_level: float, drop_level: flo
         return f"{arm}'s drop is past the margin on its interval, but the lost trials could still bring it within"
     if _high(row.at(drop_level)) < 0:
         return f"{arm}'s drop is shown, but not past the {points}-point margin on its whole interval"
+    if within_reason:
+        return f"its interval reaches zero, and {within_reason}"
     return f"its interval reaches zero and does not lie past the {points}-point margin"
 
 
@@ -713,8 +766,10 @@ def campaign_readings(
     worse or unclear, read by the step-down on intervals the module describes, Holm across each candidate's aspects
     at :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`, gains and drops apart; nothing corrects across
     candidates. An aspect with no margin
-    is never shown worse and tests no drop. An unclear row with a margin carries the cases that would show the
-    candidate within it (:func:`~threetears.evals.analysis.report.decision.project_rate`, at the row's drop level).
+    is never shown worse and tests no drop. A row neither shown better nor shown worse reads ``within_margin`` where
+    the floor's own reading of its pass rate against the margin, at the nominal level, is ``held``. An unclear row
+    with a margin carries the cases that would show the candidate within it
+    (:func:`~threetears.evals.analysis.report.decision.project_rate`, at the nominal level, as a floor's are).
     Per floor and candidate, :func:`~threetears.evals.analysis.report.decision.evaluate_floor`, at the nominal level
     with no correction. A row is confirmatory where the campaign asks that aspect a question (the bundle's
     ``question_declared``), whenever it was asked: one asked after the aspect's first run reads as one asked before
@@ -800,25 +855,34 @@ def campaign_readings(
         return row.rate.interval is not None and row.margin is not None
 
     gains = _decided(rows, gain_kept, lambda index, level: rows[index].gain_shown(level), alpha)
-    drops = _decided(rows, drop_kept, lambda index, level: rows[index].drop_verdict(level)[0], alpha)
+    drops = _decided(rows, drop_kept, lambda index, level: rows[index].drop_verdict(level)[0] == "broken", alpha)
     gain_holm = _holm(rows, gain_kept, gains, alpha)
     drop_holm = _holm(rows, drop_kept, drops, alpha)
     readings: list[AspectReading] = []
     for index, row in enumerate(rows):
         gain, drop = gains.get(index), drops.get(index)
         gained, dropped = gain is not None and gain.shown, drop is not None and drop.shown
+        # The nominal level's reading is the floor's own: held is the drop shown within the margin, uncorrected.
+        within, within_reason = row.drop_verdict(INTERVAL_LEVEL) if drop_kept(row) else ("unclear", "")
         # A gain and a drop past the margin on one estimate's two intervals would contradict each other; should the
         # two ever both be shown, neither is claimed.
-        reading: ShownReading = "unclear" if gained == dropped else "better" if gained else "worse"
+        reading: ShownReading
+        if gained != dropped:
+            reading = "better" if gained else "worse"
+        elif not gained and within == "held":
+            reading = "within_margin"
+        else:
+            reading = "unclear"
         gain_level = gain.level if gain is not None else None
         drop_level = drop.level if drop is not None else None
         drop_reason = row.drop_verdict(drop_level)[1] if drop_level is not None else ""
         gain_rate = row.at(gain_level) if gain_level is not None else None
         drop_rate = row.at(drop_level) if drop_level is not None else None
+        within_rate = row.at(INTERVAL_LEVEL) if drop_kept(row) else None
         fewest = row.fewest()
         projection = (
-            project_rate(drop_rate, cases=fewest, margin=row.margin, per_case_usd=row.per_case_usd)
-            if reading == "unclear" and drop_rate is not None and row.margin is not None and fewest
+            project_rate(within_rate, cases=fewest, margin=row.margin, per_case_usd=row.per_case_usd)
+            if reading == "unclear" and within_rate is not None and row.margin is not None and fewest
             else None
         )
         readings.append(
@@ -832,6 +896,7 @@ def campaign_readings(
                 gain_confidence=gain_level,
                 drop_interval=_points(drop_rate),
                 drop_confidence=drop_level,
+                within_interval=_points(within_rate),
                 gain_p=gain.p if gain is not None else None,
                 gain_p_holm=gain_holm.get(index),
                 drop_p=drop.p if drop is not None else None,
@@ -846,7 +911,12 @@ def campaign_readings(
                 arm_trials=row.rate.candidate_n,
                 projection=projection,
                 reason=_reason(
-                    row, reading, gain_level or row.rate.confidence or 0.95, drop_level or 0.95, drop_reason
+                    row,
+                    reading,
+                    gain_level or row.rate.confidence or INTERVAL_LEVEL,
+                    drop_level or INTERVAL_LEVEL,
+                    drop_reason,
+                    within_reason,
                 ),
                 confirmatory=row.confirmatory,
             )

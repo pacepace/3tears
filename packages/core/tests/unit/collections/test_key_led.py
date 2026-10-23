@@ -21,7 +21,7 @@ import pytest
 from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
 from threetears.core.backends.schema_sql import build_key_led_delete_sql
 from threetears.core.backends.sql import SqlL3Backend
-from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, read_l3_rows
+from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, l3_row_pages, read_l3_rows
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
@@ -441,6 +441,37 @@ async def test_a_table_whose_schema_the_store_does_not_hold_is_refused() -> None
 async def test_a_whole_table_read_refuses_a_page_of_no_rows() -> None:
     with pytest.raises(ValueError, match="at least one row"):
         await read_l3_rows(_Table([], cap=L3_RAIL_ROW_CAP), "layer", ["feature_id"], ["feature_id"], page_size=0)
+
+
+class _Versions:
+    """one feature's versions in L3, answering each keyset page on the version, and counting statements."""
+
+    def __init__(self, versions: int) -> None:
+        self.rows = [{"feature_id": "f0", "source_version": v} for v in range(versions)]
+        self.statements = 0
+
+    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        self.statements += 1
+        limit = re.search(r"LIMIT (\d+)", sql)
+        assert limit is not None, sql
+        held = [
+            r
+            for r in self.rows
+            if r["feature_id"] == params[0] and (len(params) == 1 or r["source_version"] > params[1])
+        ]
+        return held[: int(limit.group(1))]
+
+
+async def test_a_whole_table_read_hands_over_each_page_before_it_asks_for_the_next() -> None:
+    table = _Versions(25)
+    columns, key, where = ["feature_id", "source_version"], ["source_version"], {"feature_id": "f0"}
+    seen: list[tuple[int, int]] = []
+
+    async for page in l3_row_pages(table, "layer", columns, key, where=where, page_size=10):
+        seen.append((len(page), table.statements))
+
+    assert seen == [(10, 1), (10, 2), (5, 3)], "a page was not handed over as it was read"
+    assert await read_l3_rows(table, "layer", columns, key, where=where, page_size=10) == table.rows
 
 
 async def test_the_store_refuses_a_batch_size_under_one() -> None:
