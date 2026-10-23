@@ -134,6 +134,21 @@ enforce the fencing.
 run as its in-flight cells unwind. A lost or superseded holder writes nothing more, and a graceful shutdown no longer
 writes lost over a run whose lease has passed to another holding. See `packages/evals/MIGRATIONS.toml`.
 
+### agent-tools: a caller waits for exactly the run its start or request began
+
+**Added:** each `BackgroundOperation` run has an id, a UUIDv7 string given when it starts:
+`OperationOutcome.run_id`, `BackgroundOperation.run_id` (the run in progress) and
+`BackgroundOperation.request_run()`, which requests as `request()` does and returns a `RequestedRun(started,
+run_id)` naming the run that takes the request (every request made during a run is taken by the one run queued to
+follow it). `StartOperationTool` and `RequestOperationTool` answer `run_id` in their metadata beside `started`.
+`OperationStatusTool` reports `run_id` (of the run in progress), `last.run_id`, and `ended_run_ids`: the ids of the
+last 16 runs that ended on the replica answering, newest first, a run that did nothing included (it is never
+`last`, because the run before it took its request). `SharedOutcome` records carry `run_id` too. A
+`RequestOperationTool` producer with several replicas and no `SharedOutcome` answers the status from whichever
+replica the call reaches, so a caller comparing times could take another replica's run, ended later, for its own;
+it now matches its run by id. A field that is absent or None (a record or a replica on earlier code) means the
+caller falls back to what it did before.
+
 ### core: a derived value's peer waits while the peer holds the build lock, and takes over only when the peer lets go
 
 **Fixed:** a pod that lost a derivation's build lock waited a fixed budget (`peer_wait_seconds`: 5 s,

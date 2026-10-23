@@ -22,6 +22,16 @@ run. Two tools start one, for two kinds of operation:
 
 :class:`OperationStatusTool` reports either kind.
 
+**Each run has an id, so a caller can wait for its own.** A run is given an id (:attr:`OperationOutcome.run_id`,
+a UUIDv7 string) when it starts. The start or request tool's answer carries the id of the run that takes the
+call (``run_id`` in its metadata), and the status tool reports the id of the run in progress (``run_id``), of
+the last run (``last.run_id``) and of the runs that ended on the replica answering (``ended_run_ids``, newest
+first), so a caller waiting for the run it asked for matches that run exactly, even when another replica, whose
+own earlier run ended later, answers the status. A run that ended may be in ``ended_run_ids`` and not be
+``last``: a run that did nothing (``SharedOutcome(ran=)``) is never the last run, because the run before it already
+took its request. A field that is absent, or None, comes from code that did not give runs ids: the caller falls
+back to comparing times.
+
 **A run that raises is kept as failed, with its reason.** The run is a background task
 with no caller to raise to, so its exception is recorded on the outcome and logged; the
 status tool reports it until the next run ends.
@@ -82,10 +92,12 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, Generic, Literal, TypeVar
+from uuid import uuid7
 
 from threetears.core.serialization import json_datetime, serialize_to_json
 from threetears.observe import cancel_and_wait, contain, get_logger
@@ -102,6 +114,7 @@ __all__ = [
     "OperationStatusTool",
     "RecordedOutcome",
     "RequestOperationTool",
+    "RequestedRun",
     "RunningElsewhere",
     "SharedOutcome",
     "SharedProgress",
@@ -137,6 +150,9 @@ _PROGRESS_HOLDING: Final = "holding"
 #: the fields of a progress entry that are the record's own, never the run's
 _PROGRESS_OWN: Final = frozenset({_PROGRESS_HOLDER, _PROGRESS_OVER, _PROGRESS_HOLDING})
 
+#: how many of a replica's ended runs the status names by id (``ended_run_ids``), newest first
+_ENDED_RUN_IDS: Final = 16
+
 #: how many times a write of the shared outcome is tried again after another replica's write beat it
 _DEFAULT_PUBLISH_ATTEMPTS: Final = 8
 
@@ -152,12 +168,15 @@ class OperationOutcome(Generic[ResultT]):
     :ivar finished_at: when it ended
     :ivar result: what the run returned; None when it failed
     :ivar error: why it failed, as ``<ExceptionType>: <message>``; None when it succeeded
+    :ivar run_id: the run's id, given when it started; None for a record written by code that gave
+        runs no ids, and for a wait that failed before any run
     """
 
     started_at: datetime
     finished_at: datetime
     result: ResultT | None = None
     error: str | None = None
+    run_id: str | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -167,6 +186,18 @@ class OperationOutcome(Generic[ResultT]):
         :rtype: bool
         """
         return self.error is None
+
+
+@dataclass(frozen=True)
+class RequestedRun:
+    """the run that takes a request (:meth:`BackgroundOperation.request_run`).
+
+    :ivar started: True when the request started this run; False when it runs after the run in progress
+    :ivar run_id: the id of the run that takes the request: the one started, or the one that follows
+    """
+
+    started: bool
+    run_id: str
 
 
 @dataclass(frozen=True)
@@ -335,6 +366,7 @@ class SharedOutcome:
                 "finished_at": outcome.finished_at,
                 "result": result,
                 "error": outcome.error,
+                "run_id": outcome.run_id,
             }
         )
 
@@ -351,15 +383,21 @@ class SharedOutcome:
             body = json.loads(value)
             replica = body["replica"]
             error = body["error"]
+            # absent from a record written by code that gave runs no ids
+            run_id = body.get("run_id")
             started_at = datetime.fromisoformat(body["started_at"])
             finished_at = datetime.fromisoformat(body["finished_at"])
-            if not isinstance(replica, str) or not (error is None or isinstance(error, str)):
-                raise TypeError("replica must be a string, and error a string or null")
+            if not isinstance(replica, str) or not all(v is None or isinstance(v, str) for v in (error, run_id)):
+                raise TypeError("replica must be a string, and error and run_id a string or null")
             if started_at.tzinfo is None or finished_at.tzinfo is None:
                 raise ValueError("a time without a zone names no instant to compare")
             recorded = RecordedOutcome(
                 outcome=OperationOutcome(
-                    started_at=started_at, finished_at=finished_at, result=body.get("result"), error=error
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    result=body.get("result"),
+                    error=error,
+                    run_id=run_id,
                 ),
                 replica=replica,
                 own=replica == self.replica,
@@ -634,6 +672,11 @@ class BackgroundOperation(Generic[ResultT]):
         self._task: asyncio.Task[None] | None = None
         self._watcher: asyncio.Task[None] | None = None
         self._started_at: datetime | None = None
+        self._run_id: str | None = None
+        # the id of the run a request made during the run in progress has queued to follow it
+        self._next_run_id: str | None = None
+        # the ids of the runs that ended here, newest first, whether or not they are kept as the last
+        self._ended_run_ids: deque[str] = deque(maxlen=_ENDED_RUN_IDS)
         self._last: OperationOutcome[ResultT] | None = None
         # whether the last outcome is a run's and one the shared record holds; not a wait that failed
         # (no run), nor a run that did nothing
@@ -665,6 +708,15 @@ class BackgroundOperation(Generic[ResultT]):
         :rtype: datetime | None
         """
         return self._started_at if self.running else None
+
+    @property
+    def run_id(self) -> str | None:
+        """the id of the run in progress; None when none runs.
+
+        :return: the id
+        :rtype: str | None
+        """
+        return self._run_id if self.running else None
 
     @property
     def last(self) -> OperationOutcome[ResultT] | None:
@@ -703,7 +755,9 @@ class BackgroundOperation(Generic[ResultT]):
         if started:
             # a run that starts now sees every request already recorded
             self._again = False
+            self._next_run_id = None
             self._started_at = datetime.now(UTC)
+            self._run_id = str(uuid7())
             self._task = asyncio.create_task(self._run_and_keep_outcome(), name=self._name)
             log.info("background operation started", extra={"extra_data": {"operation": self._name}})
         return started
@@ -719,13 +773,29 @@ class BackgroundOperation(Generic[ResultT]):
         :rtype: bool
         :raises TypeError: when the operation was built without ``request=``
         """
+        return (await self.request_run()).started
+
+    async def request_run(self) -> RequestedRun:
+        """:meth:`request`, answering which run takes the request, by its id.
+
+        :return: whether a run was started, and the id of the run that takes the request: the one
+            started, or the one queued to follow the run in progress (every request made during that
+            run is taken by the same one)
+        :rtype: RequestedRun
+        :raises TypeError: when the operation was built without ``request=``
+        """
         if self._request is None:
             raise TypeError(f"{self._name}: built without request=, so it cannot take a request")
         await self._request()
         started = self.start()
         if not started:
             self._again = True
-        return started
+            if self._next_run_id is None:
+                self._next_run_id = str(uuid7())
+        run_id = self._run_id if started else self._next_run_id
+        if run_id is None:
+            raise RuntimeError(f"{self._name}: a run was started or queued without an id")
+        return RequestedRun(started=started, run_id=run_id)
 
     async def wait(self) -> None:
         """wait for the run in progress, if any, to end.
@@ -804,8 +874,9 @@ class BackgroundOperation(Generic[ResultT]):
 
         :param render_result: turns a result into JSON values; the result as it is when None
         :ptype render_result: Callable[[ResultT], Any] | None
-        :return: ``state``, ``running``, ``started_at`` (of the run in progress) and ``last``
-            (``started_at``, ``finished_at``, ``result``, ``error``), times in ISO 8601
+        :return: ``state``, ``running``, ``started_at`` and ``run_id`` (of the run in progress),
+            ``ended_run_ids`` (of the runs that ended here, newest first) and ``last`` (``started_at``,
+            ``finished_at``, ``result``, ``error``, ``run_id``), times in ISO 8601
         :rtype: dict[str, Any]
         """
         return self._status_of(self._rendered_last(render_result))
@@ -858,6 +929,7 @@ class BackgroundOperation(Generic[ResultT]):
                     "finished_at": recorded.outcome.finished_at.isoformat(),
                     "result": recorded.outcome.result,
                     "error": recorded.outcome.error,
+                    "run_id": recorded.outcome.run_id,
                     "replica": recorded.replica,
                     "other_replica": not recorded.own,
                 }
@@ -921,7 +993,8 @@ class BackgroundOperation(Generic[ResultT]):
 
         :param render_result: turns a result into JSON values; the result as it is when None
         :ptype render_result: Callable[[ResultT], Any] | None
-        :return: ``started_at``, ``finished_at``, ``result`` and ``error``; None before a run has ended here
+        :return: ``started_at``, ``finished_at``, ``result``, ``error`` and ``run_id``; None before a run has
+            ended here
         :rtype: dict[str, Any] | None
         """
         last = self._last
@@ -935,6 +1008,7 @@ class BackgroundOperation(Generic[ResultT]):
                 "finished_at": last.finished_at.isoformat(),
                 "result": result,
                 "error": last.error,
+                "run_id": last.run_id,
             }
         return rendered
 
@@ -943,7 +1017,8 @@ class BackgroundOperation(Generic[ResultT]):
 
         :param last: the last run as plain JSON values, or None when none is known
         :ptype last: dict[str, Any] | None
-        :return: ``state``, ``running``, ``started_at`` (of the run in progress) and ``last``
+        :return: ``state``, ``running``, ``started_at`` and ``run_id`` (of the run in progress),
+            ``ended_run_ids`` and ``last``
         :rtype: dict[str, Any]
         """
         started = self.started_at
@@ -960,6 +1035,8 @@ class BackgroundOperation(Generic[ResultT]):
             "state": state,
             "running": self.running,
             "started_at": None if started is None else started.isoformat(),
+            "run_id": self.run_id,
+            "ended_run_ids": list(self._ended_run_ids),
             "last": last,
         }
 
@@ -1126,6 +1203,8 @@ class BackgroundOperation(Generic[ResultT]):
             again, self._again = self._again, False
             if again:
                 self._started_at = datetime.now(UTC)
+                self._run_id = self._next_run_id or str(uuid7())
+                self._next_run_id = None
                 log.info(
                     "background operation runs once more for a request", extra={"extra_data": {"operation": self._name}}
                 )
@@ -1137,12 +1216,13 @@ class BackgroundOperation(Generic[ResultT]):
         :rtype: None
         """
         started = self._started_at or datetime.now(UTC)
+        run_id = self._run_id
         outcome: OperationOutcome[ResultT]
         try:
             result = await self._run()
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- a background run has no caller to raise to; the failure is logged and kept for the status tool
             error = f"{type(exc).__name__}: {exc}"
-            outcome = OperationOutcome(started_at=started, finished_at=datetime.now(UTC), error=error)
+            outcome = OperationOutcome(started_at=started, finished_at=datetime.now(UTC), error=error, run_id=run_id)
             contain(
                 exc,
                 log=log,
@@ -1151,9 +1231,11 @@ class BackgroundOperation(Generic[ResultT]):
                 level="error",
             )
         else:
-            outcome = OperationOutcome(started_at=started, finished_at=datetime.now(UTC), result=result)
+            outcome = OperationOutcome(started_at=started, finished_at=datetime.now(UTC), result=result, run_id=run_id)
             log.info("background operation finished", extra={"extra_data": {"operation": self._name}})
         await self._share(outcome)
+        if run_id is not None:
+            self._ended_run_ids.appendleft(run_id)
 
 
 class _OperationTool(TearsTool):
@@ -1284,7 +1366,7 @@ class StartOperationTool(_OperationTool):
             result = ToolResult(
                 success=True,
                 content=f"started; {self._status_tool} says when it ends and how",
-                metadata={"started": True},
+                metadata={"started": True, "run_id": operation.run_id},
             )
         else:
             started = operation.started_at
@@ -1334,7 +1416,9 @@ class RequestOperationTool(_OperationTool):
 
         :param kwargs: none are taken
         :ptype kwargs: Any
-        :return: that it started, or that the run in progress is followed by one that takes the request
+        :return: that it started, or that the run in progress is followed by one that takes the request; its
+            metadata carries ``started`` and ``run_id``, the id of the run that takes the request, which the
+            status tool reports as ``run_id`` while it runs and ``last.run_id`` once it has ended
         :rtype: ToolResult
         """
         operation = self._operation()
@@ -1342,13 +1426,15 @@ class RequestOperationTool(_OperationTool):
         if operation is None:
             result = ToolResult(success=False, content="", error=_NOT_READY, error_code=TOOL_NOT_READY)
         else:
-            started = await operation.request()
+            requested = await operation.request_run()
             content = (
                 f"started; {self._status_tool} says when it ends and how"
-                if started
+                if requested.started
                 else f"requested; it runs after the run in progress, and {self._status_tool} says when it ends"
             )
-            result = ToolResult(success=True, content=content, metadata={"started": started})
+            result = ToolResult(
+                success=True, content=content, metadata={"started": requested.started, "run_id": requested.run_id}
+            )
         return result
 
 
