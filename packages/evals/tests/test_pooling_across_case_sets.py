@@ -10,7 +10,7 @@ in the campaign bundle the memo writer reads and in the frontier's text. No run 
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -54,17 +54,21 @@ def _results(
     outcomes: dict[str, tuple[bool, ...]],
     *,
     identity_version: int,
-    served: str | None = "model-1",
+    served: str | None | Literal["no call"] = "model-1",
     cost: float = 0.01,
     variant_key: str | None = None,
 ) -> list[EvalResult]:
     """One result per attempt, each case's attempts in order, stamped with the run's variant key.
 
-    ``served`` is the model the provider's response named for each candidate call, or ``None`` for a response that
-    named none.
+    ``served`` is the model the provider's response named for each candidate call, ``None`` for a response that
+    named none, or ``"no call"`` for a candidate that made no model call (no candidate usage row).
     """
     key = variant_key or derive_variant_identity(run=run, profile=PROFILE).variant_key
-    usage = [RoleUsage(role="candidate", model=run.candidate_model, cost_usd=cost, call_count=1, served_model=served)]
+    usage = (
+        []
+        if served == "no call"
+        else [RoleUsage(role="candidate", model=run.candidate_model, cost_usd=cost, call_count=1, served_model=served)]
+    )
     return [
         make_scored_result(test_case_id=case, run_id=run.id, k=k, goal_passes=(passed,)).model_copy(
             update={"variant_key": key, "identity_version": identity_version, "scope_id": run.scope_id, "usage": usage}
@@ -286,7 +290,7 @@ def test_a_run_whose_responses_named_no_model_stands_apart_and_is_named_with_its
     assert aspect["disclosures"]["model_identity_disclosure"] == bundle.model_identity_disclosure
     [[line]] = aspect["disclosures"]["pass_k_unpooled"]["by_arm"].values()
     assert line.startswith("run(s) run-b kept out of this pass^k, as a cell of their own (no recorded served model): ")
-    assert "its responses named no served model" in line
+    assert "named no served model" in line
 
 
 def test_a_run_whose_context_cannot_be_rederived_is_a_cell_of_its_own_and_the_rest_still_read():
@@ -391,11 +395,98 @@ def test_two_silent_runs_each_stand_apart():
     headline, *beside = _cells(point)
     assert headline.run_ids == ["run-a", "run-b"]
     assert [(cell.run_ids, cell.reason) for cell in beside] == [
-        (["run-y1"], "no_recorded_served_model"),
-        (["run-y2"], "no_recorded_served_model"),
         (["run-x1"], "no_recorded_template"),
         (["run-x2"], "no_recorded_template"),
+        (["run-y1"], "no_recorded_served_model"),
+        (["run-y2"], "no_recorded_served_model"),
     ]
+
+
+def test_two_runs_whose_candidate_made_no_model_call_pool():
+    """A plain-return candidate calls no model: that is recorded, not a silence, so its runs pool."""
+    runs = [_launched(run_id, test_case_ids=["tc1"]) for run_id in ("run-a", "run-b")]
+    results = {
+        run.id: _results(run, {"tc1": (True,)}, identity_version=IDENTITY_VERSION, served="no call") for run in runs
+    }
+
+    [point] = _bundle(runs, results).frontier.subjects[0].points
+
+    [headline] = _cells(point)
+    assert (headline.run_ids, headline.reason, headline.served_models) == (["run-a", "run-b"], None, [])
+    assert point.pass_hat_k_curve[-1] == {"k": 2, "pass_hat_k": 1.0, "n_cases": 1}
+
+
+def test_a_run_that_made_no_model_call_does_not_pool_with_one_that_called_a_model():
+    called = [_launched(run_id, test_case_ids=["tc1"]) for run_id in ("run-a", "run-b")]
+    plain = _launched("run-plain", test_case_ids=["tc1"])
+    results = {
+        **{run.id: _results(run, {"tc1": (True,)}, identity_version=IDENTITY_VERSION) for run in called},
+        plain.id: _results(plain, {"tc1": (False,)}, identity_version=IDENTITY_VERSION, served="no call"),
+    }
+
+    [point] = _bundle([*called, plain], results).frontier.subjects[0].points
+
+    headline, beside = _cells(point)
+    assert headline.run_ids == ["run-a", "run-b"]
+    assert (beside.run_ids, beside.reason) == (["run-plain"], "other_served_model")
+    assert beside.detail == (
+        "its candidate made no model call and the headline's candidate calls were answered by model-1, as the "
+        "provider's responses named them"
+    )
+
+
+def test_a_run_some_of_whose_responses_named_no_model_stands_apart():
+    """One unnamed response is a silence, whatever the run's other responses named."""
+    partial = _launched("run-p", test_case_ids=["tc1", "tc2"])
+    runs, results = _silences_corpus(partial, served={})
+    results[partial.id] = [
+        *_results(partial, {"tc1": (False,)}, identity_version=IDENTITY_VERSION, served="model-1"),
+        *_results(partial, {"tc2": (False,)}, identity_version=IDENTITY_VERSION, served=None),
+    ]
+
+    [point] = _bundle(runs, results).frontier.subjects[0].points
+
+    headline, beside = _cells(point)
+    assert headline.run_ids == ["run-a", "run-b"]
+    assert (beside.run_ids, beside.reason) == (["run-p"], "no_recorded_served_model")
+    assert "(the others named model-1)" in (beside.detail or "")
+
+
+def test_a_headline_that_is_one_silent_run_says_so():
+    """When every run is silent the pass^k rests on one of them, and its line says what that run did not record."""
+    runs = [_launched(run_id, test_case_ids=["tc1"], template_digest=None) for run_id in ("run-x1", "run-x2")]
+    results = {run.id: _results(run, {"tc1": (True,)}, identity_version=IDENTITY_VERSION) for run in runs}
+
+    bundle = _bundle(runs, results)
+    [point] = bundle.frontier.subjects[0].points
+
+    headline, beside = _cells(point)
+    assert (headline.run_ids, headline.reason) == (["run-x1"], "no_recorded_template")
+    assert (beside.run_ids, beside.reason) == (["run-x2"], "no_recorded_template")
+    text = frontier_text(bundle.frontier)
+    assert "this pass^k rests on run(s) run-x1 alone, a cell of their own (no recorded template revision)" in text
+    view = writer_view(campaign_bundle(bundle))
+    [aspect] = view["aspects"]
+    [lines] = aspect["disclosures"]["pass_k_unpooled"]["by_arm"].values()
+    assert lines[0].startswith("this pass^k rests on run(s) run-x1 alone")
+
+
+def test_the_writer_view_names_many_silent_runs_in_one_line_per_reason():
+    """Forty runs that froze no digest cost the writer one line, not forty; the page still names each."""
+    silent = [_launched(f"run-s{i:02d}", test_case_ids=["tc1"], template_digest=None) for i in range(40)]
+    runs, results = _silences_corpus(*silent, served={})
+    bundle = _bundle(runs, results)
+
+    view = writer_view(campaign_bundle(bundle))
+
+    [aspect] = view["aspects"]
+    [lines] = aspect["disclosures"]["pass_k_unpooled"]["by_arm"].values()
+    assert lines == [
+        "run(s) run-s00, run-s01, run-s02 and 37 more kept out of this pass^k, as 40 cells of their own "
+        "(no recorded template revision), 40 run(s) in all, each with its own pass^k"
+    ]
+    page = [line for line in _page_run_lines(runs, results) if "kept out of this pass^k" in line]
+    assert len(page) == 40
 
 
 def test_the_cost_per_acceptable_outcome_reads_the_headline_cells_runs_on_both_sides():

@@ -235,7 +235,11 @@ Rules that came with it (`kernel/identity.py`):
   version, its template revision, its apparatus and the model that answered. Labels, and how long ago it ran,
   never count. A run kept out of a pool is not counted in the pool's reading: it stands beside it as a cell of
   its own, named with its reason, never dropped. A record's silence (no template digest frozen, no served model
-  named) is never evidence of a match, so that run is a cell of its own, named with what it did not record.
+  named) is never evidence of a match, so that run is a cell of its own, named with what it did not record. A
+  candidate that made no model call recorded that, and its runs pool on everything else. A candidate requested by
+  a floating alias the provider echoes back (an OpenRouter `~`, `-latest` or `openrouter/` id), or called through
+  a client that reports no served model, leaves the served model silent, so each of its runs stands apart: a host
+  that wants such runs to pool requests a concrete model id, or has its client report the model that answered.
 - **A predicate change is a version bump.** `IDENTITY_VERSION` is stored beside every key, golden-vector
   tests pin the digests, and each key is stored with its pre-image, so a bump costs comparability and
   never the record of what was measured.

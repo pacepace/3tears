@@ -6,18 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: runs pool across case sets and across an identity bump; a run kept out of a pool is named (#919)
+### evals: runs that record their template revision and served model pool across case sets and an identity bump; a run kept out of a pool is named (#919)
 
 **Changed:** `IDENTITY_VERSION` 25: the case set leaves the context key. `ContextComponents.case_basis` digests the
 subject and the template, no longer the frozen `test_case_ids`, so two runs of one variant and context over different
 case sets (a run over more cases, or a hand top-up over the cases another missed) are one pass^k cell: a case's
 attempts pool across them, and pass^k averages over the union of their cases. The cell is the context as it resolves
-at this build's identity version, so a run stamped before the bump pools with one after it; a frontier contestant
+at this build's identity version, so a run stamped before the bump that froze its template digest and named its
+served model pools with one after it, by re-derivation; a frontier contestant
 whose run recorded its lever map is placed at this build's version when today's predicate reproduces its key (frontier
 and history alike). The cell also splits on the template revision (the run's frozen `template_digest`, since an edit
 in place keeps the id) and on the model the provider's responses named as answering the candidate's calls
-(`served_model`). A run that froze no digest, or whose responses named no model, is a cell of its own, named with
-what it did not record: a silence is never evidence of a match, so only runs that record both pool. A point's pass^k,
+(`served_model`). A run that froze no digest, or made a candidate call whose response named no model, is a cell of
+its own, named with what it did not record: a silence is never evidence of a match, so only runs that record both
+pool. Every run stored by v0.76.0 or earlier froze no digest, so each stands apart. A run whose candidate made no
+model call recorded that, and pools on its other fields. A candidate requested by a floating alias that the response
+echoes back, or through a client that reports no served model, stands apart too: request a concrete model id, or
+report the served model, for its runs to pool. A point's pass^k,
 interval, bar and verdict read its headline cell alone, chosen in the order `PassHatKCellReading` states; the arm's
 tables, composite, cost and latency still pool every run of the variant under one rig. Across both #919 entries the bundle shape moves from 60, which v0.76.0 shipped, to 62: a stored analysis
 frozen over a shape-60 bundle is listed as needing regeneration (`AnalysisLine.needs_regeneration`), and its report
@@ -27,9 +32,10 @@ is refused until it is generated again; nothing else is dropped.
 headline first, each other one with its own pass^k and its reason (`UnpooledReason`: `changed_context`,
 `no_recorded_template`, `other_template`, `no_recorded_served_model`, `other_served_model` or `no_recorded_context`),
 read off the first field of the kernel's typed cell record (`PassHatKCell`) in which it differs from the headline, or,
-for a run that left part of its cell unrecorded, off what it did not record. The frontier text, the report page's run disclosures and
-the campaign bundle's writer view (`pass_k_unpooled`, keyed by arm) name each one, after one sentence saying what
-kept out covers. A run whose stored context can no longer be re-derived is a cell of its own,
+for a run that left part of its cell unrecorded, off what it did not record. A headline that is itself such a run says
+so. The frontier text and the report page's run disclosures name each cell, and the campaign bundle's writer view
+(`pass_k_unpooled`, keyed by arm) names them in at most one line per reason, after one sentence saying what kept out
+covers. A run whose stored context can no longer be re-derived is a cell of its own,
 named, instead of failing the read. One case-set comparison over sorted ids, `case_set_fingerprint`, serves comparisons
 and history, and a take-up compares the same sorted ids: one whose launch would run other cases is refused naming
 them, and a reordered set is not.

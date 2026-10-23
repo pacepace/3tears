@@ -56,6 +56,7 @@ from threetears.evals.kernel.scoring import (
     PassHatKCell,
     UnpooledReason,
     pass_hat_k_cell,
+    pass_hat_k_cell_alone,
     pass_hat_k_cell_reason,
     pool_pass_hat_k,
     pool_pass_hat_k_attempts,
@@ -341,20 +342,25 @@ class PassHatKCellReading(EvalBaseModel):
     The point's pass^k, its interval, its bar decision and every verdict read its headline cell alone. **The headline
     is chosen in one order, stated here and nowhere else:** a cell whose runs recorded a measurement context comes
     before one that recorded none, one whose context resolved at this build's identity version before one that did
-    not, one whose runs froze a template digest before one that froze none, and one whose responses named a served
-    model before one whose responses named none; then the cell with the most runs, then the most results, then the
-    alphabetically first run id. Every other cell stands beside it, with its own pass^k at the point's depth and the
-    reason it is not the headline, read off the first field of the cell record in which the two differ
-    (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_reason`), or, for a run that left part of its cell
-    unrecorded, what it did not record. Its runs are kept out of the headline, never dropped. The point's composite, cost and latency still pool every run of the variant under one rig
-    (:data:`PASS_HAT_K_CELL_READING`).
+    not, and a cell that pools before a cell of one run that left its template digest or served model unrecorded; then
+    the cell with the most runs, then the most results, then the alphabetically first run id. Every other cell stands
+    beside it, with its own pass^k at the point's depth and the reason it is not the headline
+    (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_reason`): for a cell of one run, what that run did not
+    record; otherwise the first field of the cell record in which the two differ. Its runs are kept out of the
+    headline, never dropped. A headline that is itself a cell of one run carries the reason it pools with nothing
+    (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_alone`), so the point says its pass^k rests on one run
+    whose record is incomplete. The point's composite, cost and latency still pool every run of the variant under one
+    rig (:data:`PASS_HAT_K_CELL_READING`).
     """
 
     run_ids: list[str]
+    #: Whether this is the headline cell: the one the point's pass^k reads, and the only reading that says so.
     headline: bool
-    #: Why this cell is not the headline; ``None`` on the headline.
+    #: Why this cell is not the headline, or, on a headline that is a cell of one run, why it pools with nothing;
+    #: ``None`` on a headline that pools.
     reason: UnpooledReason | None = None
-    #: What differs from the headline, in a sentence; ``None`` on the headline.
+    #: What differs from the headline, or what the headline's one run did not record, in a sentence; ``None`` with
+    #: ``reason``.
     detail: str | None = None
     #: The models the provider's responses named for this cell's candidate calls.
     served_models: list[str] = []
@@ -390,7 +396,8 @@ def pass_hat_k_cell_lines(reading: PassHatKCellReading) -> list[str]:
     """What a reader is told about one pass^k cell of a frontier point: every surface that renders a point says these.
 
     A cell other than the headline gets one sentence naming its runs, its reason, what differs and its own pass^k,
-    and the fact that the point's pass^k does not count it. The headline gets nothing.
+    and the fact that the point's pass^k does not count it. A headline that is a cell of one run gets one sentence
+    saying the point's pass^k rests on that run and what it did not record. A headline that pools gets nothing.
 
     Each sentence is one line, its whitespace collapsed (a detail can carry a stored error's own line breaks), so a
     surface may indent it or lead it with the arm and nothing of it reads as the next item's.
@@ -402,7 +409,12 @@ def pass_hat_k_cell_lines(reading: PassHatKCellReading) -> list[str]:
     """
     lines: list[str] = []
     runs = ", ".join(reading.run_ids)
-    if not reading.headline and reading.reason is not None:
+    if reading.headline and reading.reason is not None:
+        lines.append(
+            f"this pass^k rests on run(s) {runs} alone, a cell of their own ({_REASON_WORDS[reading.reason]}): "
+            f"{reading.detail}"
+        )
+    elif reading.reason is not None:
         own = (
             f"its own pass^k {format_number(reading.pass_hat_k)} over {reading.n_cases_at_k} case(s)"
             if reading.pass_hat_k is not None
@@ -413,6 +425,44 @@ def pass_hat_k_cell_lines(reading: PassHatKCellReading) -> list[str]:
             f"{reading.detail}; {own}"
         )
     return [" ".join(line.split()) for line in lines]
+
+
+#: How many run ids a bounded line names before it counts the rest (:func:`pass_hat_k_cell_lines_bounded`).
+_RUNS_NAMED = 3
+
+
+def pass_hat_k_cell_lines_bounded(readings: Sequence[PassHatKCellReading]) -> list[str]:
+    """One point's cell lines, bounded for a surface with a budget: at most one line per reason.
+
+    The headline's line is said as :func:`pass_hat_k_cell_lines` says it. A reason only one kept-out cell stands apart
+    for gets that cell's own line. A reason several do gets one line counting their runs and cells, naming the first
+    :data:`_RUNS_NAMED` run ids and how many more, so a contestant of many runs that each recorded
+    nothing costs one line, not one per run.
+
+    :param readings: The point's cells (:attr:`FrontierPoint.pass_hat_k_cells`).
+    :ptype readings: Sequence[PassHatKCellReading]
+    :return: The sentences, each one line.
+    :rtype: list[str]
+    """
+    lines: list[str] = []
+    by_reason: dict[str, list[PassHatKCellReading]] = {}
+    for reading in readings:
+        if reading.headline:
+            lines += pass_hat_k_cell_lines(reading)
+        elif reading.reason is not None:
+            by_reason.setdefault(reading.reason, []).append(reading)
+    for reason, cells in by_reason.items():
+        if len(cells) == 1:
+            lines += pass_hat_k_cell_lines(cells[0])
+            continue
+        run_ids = [run_id for cell in cells for run_id in cell.run_ids]
+        named = ", ".join(run_ids[:_RUNS_NAMED])
+        more = len(run_ids) - _RUNS_NAMED
+        lines.append(
+            f"run(s) {named}{f' and {more} more' if more > 0 else ''} kept out of this pass^k, as {len(cells)} "
+            f"cells of their own ({_REASON_WORDS[reason]}), {len(run_ids)} run(s) in all, each with its own pass^k"
+        )
+    return lines
 
 
 class FrontierPoint(EvalBaseModel):
@@ -865,7 +915,7 @@ def _frontier_point(
     # configuration deepens its cases and a run over other cases of it widens them. A run of another cell (another
     # context, template revision or served model) stays out of it, beside it with its own reading and its reason.
     cells = _pass_hat_k_cells(results, runs=runs_by_id, profile=profile)
-    headline_ids = set(cells.readings[0].run_ids)
+    headline_ids = set(_headline_cell(cells.readings).run_ids)
     headline_results = [r for r in results if r.eval_run_id in headline_ids]
     pooled = pool_pass_hat_k(headline_results, cell_of_run=cells.of_run, k=k, rubric_threshold=rubric_threshold)
     pass_hat_k = pooled["pass_hat_k"]
@@ -1057,25 +1107,42 @@ def _frontier_point(
     return point, cases
 
 
-def _served_by_run(results: Sequence[EvalResult]) -> dict[str, frozenset[str]]:
+class _RunServed(NamedTuple):
+    """What one run's candidate calls say about the models that answered them, for one contestant."""
+
+    #: The models the provider's responses named; empty where its candidate made no model call.
+    served: frozenset[str]
+    #: A response to one of its candidate calls named no model.
+    unrecorded: bool
+
+
+def _served_by_run(results: Sequence[EvalResult]) -> dict[str, _RunServed]:
     """The models the provider's responses named for each run's candidate calls, over one contestant's results.
 
     Read off the candidate usage rows (:func:`~threetears.evals.analysis.reporting.served_reading`), never the id
-    the launch asked for. A call whose response named none adds nothing, so a run whose responses named none maps to
-    the empty set.
+    the launch asked for. A result whose candidate made no model call adds nothing and claims nothing; a call whose
+    response named no model marks its run unrecorded, whatever its other calls named.
 
     :param results: One contestant's results.
     :ptype results: Sequence[EvalResult]
-    :return: Run id → the named models, for every run of ``results``.
-    :rtype: dict[str, frozenset[str]]
+    :return: Run id → what its calls named, for every run of ``results``.
+    :rtype: dict[str, _RunServed]
     """
-    served: dict[str, frozenset[str]] = {}
+    served: dict[str, _RunServed] = {}
     for result in results:
         reading = served_reading(result)
-        served[result.eval_run_id] = served.get(result.eval_run_id, frozenset()) | (
-            reading.served if reading is not None else frozenset()
+        before = served.get(result.eval_run_id, _RunServed(frozenset(), unrecorded=False))
+        served[result.eval_run_id] = (
+            before
+            if reading is None
+            else _RunServed(before.served | reading.served, unrecorded=before.unrecorded or reading.unrecorded)
         )
     return served
+
+
+def _headline_cell(readings: Sequence[PassHatKCellReading]) -> PassHatKCellReading:
+    """The headline among a point's cells, read off :attr:`PassHatKCellReading.headline`."""
+    return next(reading for reading in readings if reading.headline)
 
 
 class _PointCells(NamedTuple):
@@ -1091,10 +1158,10 @@ def _pass_hat_k_cells(
     """Group one contestant's runs into pass^k cells, choose the headline, and say why each other cell stands apart.
 
     Each run's cell is :func:`~threetears.evals.kernel.scoring.pass_hat_k_cell` over the models that answered it for
-    this contestant; a run that froze no template digest, or whose responses named no model, is a cell of its own.
-    The headline is chosen in the order :class:`PassHatKCellReading` states. Each other
-    cell's reason is the first field in which it differs from the headline, so the grouping and the reason are one
-    reading.
+    this contestant; a run that froze no template digest, or made a candidate call whose response named no model, is
+    a cell of its own. The headline is chosen in the order :class:`PassHatKCellReading` states. Each other cell's
+    reason is :func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_reason` against the headline, so the grouping
+    and the reason are one reading; a headline of one run carries why it pools with nothing.
 
     :param results: One contestant's results, never empty.
     :ptype results: Sequence[EvalResult]
@@ -1109,7 +1176,12 @@ def _pass_hat_k_cells(
     weight: dict[str, int] = {}
     for result in results:
         weight[result.eval_run_id] = weight.get(result.eval_run_id, 0) + 1
-    of_run = {run_id: pass_hat_k_cell(runs[run_id], profile, served=served[run_id]) for run_id in weight}
+    of_run = {
+        run_id: pass_hat_k_cell(
+            runs[run_id], profile, served=served[run_id].served, served_unrecorded=served[run_id].unrecorded
+        )
+        for run_id in weight
+    }
     members: dict[PassHatKCell, list[str]] = {}
     for run_id in sorted(of_run):
         members.setdefault(of_run[run_id], []).append(run_id)
@@ -1118,8 +1190,7 @@ def _pass_hat_k_cells(
         key=lambda cell: (
             not cell.recorded,
             cell.unresolved is not None,
-            cell.template_digest is None,
-            not cell.served,
+            cell.run_id is not None,
             -len(members[cell]),
             -sum(weight[run_id] for run_id in members[cell]),
             members[cell][0],
@@ -1130,11 +1201,11 @@ def _pass_hat_k_cells(
     readings: list[PassHatKCellReading] = []
     for cell in ordered:
         run_ids = members[cell]
-        why = pass_hat_k_cell_reason(cell, headline)
+        why = pass_hat_k_cell_alone(cell) if cell is headline else pass_hat_k_cell_reason(cell, headline)
         readings.append(
             PassHatKCellReading(
                 run_ids=run_ids,
-                headline=why is None,
+                headline=cell is headline,
                 reason=None if why is None else why[0],
                 detail=None
                 if why is None
@@ -1155,9 +1226,13 @@ def _cell_detail(
 ) -> str:
     """Word what differs between a cell and the headline, in the field the reason was read from.
 
-    :param field: The first field of the two records that differs (:func:`pass_hat_k_cell_reason`).
+    A field a run left unrecorded (``recorded``, ``unresolved``, ``template_digest`` or ``served`` on a cell of one
+    run) is worded off ``cell`` alone: the headline is never a cell of one run while another cell pools
+    (:class:`PassHatKCellReading`), so the silence read is always ``cell``'s, the headline's own included.
+
+    :param field: The field the reason was read from (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_reason`).
     :ptype field: str
-    :param cell: The cell standing apart.
+    :param cell: The cell standing apart, or the headline when it is a cell of one run.
     :ptype cell: PassHatKCell
     :param headline: The headline cell.
     :ptype headline: PassHatKCell
@@ -1171,26 +1246,27 @@ def _cell_detail(
     :rtype: str
     """
     if field == "recorded":
-        if not cell.recorded:
-            return "it recorded no measurement context, so nothing says what it held fixed"
-        return "the headline's run recorded no measurement context, so nothing says what it held fixed"
+        return "it recorded no measurement context, so nothing says what it held fixed"
     if field == "unresolved":
-        if cell.unresolved is not None:
-            return f"its context could not be re-derived at identity version v{IDENTITY_VERSION}: {cell.unresolved}"
-        return f"the headline's context could not be re-derived at identity version v{IDENTITY_VERSION}"
+        return f"its context could not be re-derived at identity version v{IDENTITY_VERSION}: {cell.unresolved}"
+    if field == "template_digest" and cell.template_digest is None:
+        return (
+            f"it froze no digest of what template {cell.template_id or '(ad hoc)'} measures, so nothing says which "
+            "revision it ran"
+            + (", and a response to one of its candidate calls named no served model" if cell.served_unrecorded else "")
+        )
+    if field == "served" and cell.served_unrecorded:
+        named = f" (the others named {', '.join(cell.served)})" if cell.served else ""
+        return (
+            f"a response to one of its candidate calls named no served model{named}, so nothing says which model "
+            "answered it"
+        )
     if field == "template_id":
         return (
             f"it ran template {cell.template_id or '(ad hoc)'} and the headline's runs ran "
             f"{headline.template_id or '(ad hoc)'}"
         )
     if field == "template_digest":
-        if cell.template_digest is None or headline.template_digest is None:
-            silent = cell if cell.template_digest is None else headline
-            side = "it" if silent is cell else "the headline's run"
-            return (
-                f"{side} froze no digest of what template {silent.template_id or '(ad hoc)'} measures, so nothing says "
-                "which revision it ran" + ("" if silent.served else ", and its responses named no served model")
-            )
         return (
             f"its template {cell.template_id or '(ad hoc)'} was edited in what it measures between it and the "
             "headline's runs (another template_digest)"
@@ -1207,12 +1283,15 @@ def _cell_detail(
         )
     if field == "apparatus_provenance":
         return f"its apparatus was {cell.apparatus_provenance} and the headline's {headline.apparatus_provenance}"
-    if not cell.served or not headline.served:
-        side = "its" if not cell.served else "the headline's run's"
-        return f"{side} responses named no served model, so nothing says which model answered its candidate calls"
+
+    def answered(whose: str, served: tuple[str, ...]) -> str:
+        if served:
+            return f"{whose} candidate calls were answered by {', '.join(served)}"
+        return f"{whose} candidate made no model call"
+
     return (
-        f"its candidate calls were answered by {', '.join(cell.served)} and the headline's by "
-        f"{', '.join(headline.served)}, as the provider's responses named them"
+        f"{answered('its', cell.served)} and {answered("the headline's", headline.served)}, as the provider's "
+        "responses named them"
     )
 
 
@@ -1971,7 +2050,7 @@ def compute_frontier(
                         [
                             result
                             for result in built[costed[0]][2]
-                            if result.eval_run_id in set(pick.pass_hat_k_cells[0].run_ids)
+                            if result.eval_run_id in set(_headline_cell(pick.pass_hat_k_cells).run_ids)
                         ],
                         tiers,
                     ),
@@ -2045,6 +2124,7 @@ __all__ = [
     "PASS_HAT_K_CELL_READING",
     "PassHatKCellReading",
     "pass_hat_k_cell_lines",
+    "pass_hat_k_cell_lines_bounded",
     "FrontierResult",
     "FrontierVerdict",
     "normalize_bar",

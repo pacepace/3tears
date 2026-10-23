@@ -56,6 +56,7 @@ from threetears.evals.kernel.scoring import (
     compute_per_case_composites,
     pass_hat_k_at,
     pass_hat_k_cell,
+    pass_hat_k_cell_alone,
     pass_hat_k_cell_reason,
     percentile,
     pool_pass_hat_k,
@@ -755,9 +756,9 @@ def _launched(run):
     return run.model_copy(update={"template_digest": _DIGEST})
 
 
-def _cell_of(run, profile=None, *, served=_SERVED):
-    """The cell of ``run`` for a contestant whose responses named ``served``."""
-    return pass_hat_k_cell(run, profile, served=served)
+def _cell_of(run, profile=None, *, served=_SERVED, served_unrecorded=False):
+    """The cell of ``run`` for a contestant whose responses named ``served`` (and, ``served_unrecorded``, one named none)."""
+    return pass_hat_k_cell(run, profile, served=served, served_unrecorded=served_unrecorded)
 
 
 class TestTheCellARunsAttemptsPoolUnder:
@@ -840,8 +841,30 @@ class TestTheCellARunsAttemptsPoolUnder:
         """A silent served model is never evidence of a match: which model answered is unknown."""
         a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
         b = _launched(make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION))
-        assert _cell_of(b, served=()).run_id == "r2"
-        assert pass_hat_k_cell_reason(_cell_of(b, served=()), _cell_of(a)) == ("no_recorded_served_model", "served")
+        silent = _cell_of(b, served=(), served_unrecorded=True)
+        assert silent.run_id == "r2"
+        assert pass_hat_k_cell_alone(silent) == ("no_recorded_served_model", "served")
+        assert pass_hat_k_cell_reason(silent, _cell_of(a)) == ("no_recorded_served_model", "served")
+
+    def test_a_run_some_of_whose_responses_named_no_model_pools_with_nothing(self):
+        """One unnamed response leaves which model answered it unknown, whatever the others named."""
+        a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        b = _launched(make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        partial = _cell_of(b, served_unrecorded=True)
+        assert partial.served == _SERVED and partial.run_id == "r2"
+        assert pass_hat_k_cell_reason(partial, _cell_of(a)) == ("no_recorded_served_model", "served")
+
+    def test_two_runs_whose_candidate_made_no_model_call_pool(self):
+        """No call is a recorded fact, not a silence: the runs pool on everything else."""
+        a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        b = _launched(make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        assert _cell_of(a, served=()) == _cell_of(b, served=())
+        assert pass_hat_k_cell_alone(_cell_of(a, served=())) is None
+
+    def test_a_run_that_made_no_model_call_does_not_pool_with_one_that_called_a_model(self):
+        a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        b = _launched(make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        assert pass_hat_k_cell_reason(_cell_of(a, served=()), _cell_of(b)) == ("other_served_model", "served")
 
     def test_two_silent_runs_each_stand_apart(self):
         """Two runs silent alike are no more one cell than a silent run and a recorded one."""
@@ -849,9 +872,10 @@ class TestTheCellARunsAttemptsPoolUnder:
         b = make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION)
         assert _cell_of(a) != _cell_of(b)
         assert pass_hat_k_cell_reason(_cell_of(a), _cell_of(b)) == ("no_recorded_template", "template_digest")
-        quiet_a, quiet_b = _launched(a), _launched(b)
-        assert _cell_of(quiet_a, served=()) != _cell_of(quiet_b, served=())
-        assert pass_hat_k_cell_reason(_cell_of(quiet_a, served=()), _cell_of(quiet_b, served=())) == (
+        quiet_a = _cell_of(_launched(a), served=(), served_unrecorded=True)
+        quiet_b = _cell_of(_launched(b), served=(), served_unrecorded=True)
+        assert quiet_a != quiet_b
+        assert pass_hat_k_cell_reason(quiet_a, quiet_b) == (
             "no_recorded_served_model",
             "served",
         )
