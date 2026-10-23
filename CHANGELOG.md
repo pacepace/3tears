@@ -139,9 +139,11 @@ writes lost over a run whose lease has passed to another holding. See `packages/
 **Fixed:** a pod that lost a derivation's build lock waited a fixed budget (`peer_wait_seconds`: 5 s,
 `VersionedAnswers` 15 s, geo tiles 30 s) and then derived the value itself, whether or not the peer was still
 working. A derivation longer than the budget was computed twice: on cobalt dev (2026-10-23) a 78 s report
-page ran on both tool pods, each freezing in turn. Now the waiter reads the durable tier every
-`peer_poll_interval` for as long as the peer holds the build lock, and every `peer_retake_seconds` (1 s) tries
-the lock; taking it means the peer let go without the value landing, and the waiter derives under it.
+page ran on both tool pods, each freezing in turn. Now the waiter re-reads the durable tier for as long as the
+peer holds the build lock, first after `peer_poll_interval` (0.1 s) and then twice as long each time up to
+`peer_poll_max_interval` (new, 2 s). It logs "waiting for a peer's derivation" at INFO when the wait begins and
+"still waiting for a peer's derivation" every `peer_wait_log_seconds` (new, 30 s) while it lasts. Every
+`peer_retake_seconds` (1 s) it tries the lock; taking it means the peer let go without the value landing, and the waiter derives under it.
 `LeaseBuildLock` holds its lease renewed (`KVLease.hold`, every third of `ttl_seconds`) for the whole build, so
 a held lock is a live builder and a builder that dies hands the lock on within `ttl_seconds`; renewal stops
 past `max_hold_seconds` (new, default 600 s), the lease's rule for a wedged holder.
