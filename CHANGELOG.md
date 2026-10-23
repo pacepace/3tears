@@ -175,9 +175,9 @@ past `max_hold_seconds` (new, default 600 s), the lease's rule for a wedged hold
 `release_tier_reads_timer`).
 `BaseCollection.ensure`, a subscript read (`collection[key]`) and every key read built on them count each read as
 L1 (this process, an absence marker included), L2 (the shared cache) or L3 (the store), by table. The counters are
-the process's, and so is the one timer that logs them once a minute at INFO, as one line naming each table's
-reads, only when a read happened: every tool server in the process holds the timer, and the last to stop logs
-the reads since its last line. This is the measure of whether a pod's reads stay at L1 or keep reaching L2 and
+the process's, and one timer, owned by the event loop the process serves on, logs them once a minute at INFO, as
+one line naming each table's reads, only when a read happened: every tool server on the loop holds the timer, and
+the last to stop logs the reads since its last line. This is the measure of whether a pod's reads stay at L1 or keep reaching L2 and
 L3. A reports tool pod on cobalt dev was found reading `namespaces` from L3 on every read, its L1 dropped about
 every 40 s, with nothing to show it but the drops.
 
