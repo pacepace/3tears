@@ -103,6 +103,8 @@ def test_the_declared_question_repeated_in_the_body_is_flagged_and_dropped() -> 
         "Control and candidate were measured hours apart, which confounds the comparison.",
         "The margin was set after the readings were in, so the gain is provisional.",
         "The control runs were collected before the question, so read them with lower confidence.",
+        # An arm named by its model is no change: the noun alone never keeps an age discount.
+        "The candidate model's gain rests on older runs, so it is provisional.",
     ],
 )
 def test_a_sentence_discounting_a_reading_by_data_age_or_time_apart_is_named(sentence: str) -> None:

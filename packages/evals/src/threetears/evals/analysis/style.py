@@ -276,11 +276,20 @@ _DISCOUNTED = re.compile(
 #: confound a writer is right to name.
 _CONFOUNDED = re.compile(r"\b(?:confound\w*|not attributable|cannot be attributed)\b", re.I)
 
-#: What decides a result, named: a sentence naming one (a prompt, a judge, a model, a template, a setting) says what
-#: changed between the readings, which is a config statement a writer is right to make, never an age discount.
+#: What decides a result, named as changed: a prompt, a judge, a model, a template or a setting beside a word saying it
+#: changed (changed, replaced, re-pinned, swapped, differs, moved, another or a different one, since, a version such
+#: as v1). Such a sentence says what changed between the readings, a config statement a writer is right to make, never
+#: an age discount. The noun alone is not enough: in an eval memo it is what the arms are named by.
+_DECIDER = (
+    r"(?:prompts?|judge[sd]?|judging|models?|templates?|settings?|rubrics?|graders?|simulators?|temperatures?|"
+    r"configs?|configurations?|tools?|cassettes?)"
+)
+_CHANGE_WORD = (
+    r"(?:chang(?:e|ed|es|ing)|replac(?:e|ed|es|ing)|re-?pinn?(?:ed|ing)?|swapp?(?:ed|ing)?|differ(?:s|ed)?|"
+    r"mov(?:e|ed|es)|another|a different|since|upgraded|updated|switched|edited|revised|v\d+(?:\.\d+)*)"
+)
 _CHANGED = re.compile(
-    r"\b(?:prompts?|judge[sd]?|judging|models?|templates?|settings?|rubrics?|graders?|simulators?|temperatures?|"
-    r"configs?|configurations?|tools?|cassettes?)\b",
+    rf"\b{_DECIDER}\b[^.;]{{0,40}}?\b{_CHANGE_WORD}\b|\b{_CHANGE_WORD}\b[^.;]{{0,40}}?\b{_DECIDER}\b",
     re.I,
 )
 
