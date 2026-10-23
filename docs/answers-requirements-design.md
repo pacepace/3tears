@@ -443,13 +443,18 @@ cannot state.
 ### F. Transport and streaming
 
 **AR-F1 (MUST).** `StreamingTransport` declares `egress_name` and
-`stream(method, url, *, headers, json_body, timeout_seconds) -> StreamedResponse`,
+`stream(method, url, *, headers, json_body, timeout_seconds, max_bytes) -> StreamedResponse`,
 where `StreamedResponse` exposes `status_code`, `headers`, `final_url`,
-`egress` before the body, an async iterator of `bytes` chunks, and `elapsed_seconds`
-/ `attempts` after close. Obligations as `SearchTransport` states them
-(configurable timeout, bounded retry *before first byte*, breaker, span,
-egress, SSRF rulings), plus: **a byte cap** on the whole stream (SR-G5's
-rule, applied to a response that is open-ended by construction).
+`egress` and `attempts` before the body, an async iterator of `bytes` chunks,
+and `elapsed_seconds` (final after close), and is released by `async with` or
+`aclose()`. Obligations as `SearchTransport` states them (configurable
+timeout -- bounding the whole stream, body included -- bounded retry *before
+first byte*, breaker, span, egress, SSRF rulings), plus: **a byte cap** on
+the whole stream (SR-G5's rule, applied to a response that is open-ended by
+construction). `max_bytes` is required per call, as on `FetchTransport.fetch`,
+and tightens the transport's configured cap without loosening it. The
+standalone transport discharges every one of these, breaker and span
+included.
 
 **AR-F2 (MUST).** The SSE framing (`data:` lines, `[DONE]`) is the adapter's
 to parse, not the transport's; the transport moves bytes. The tag parser
@@ -538,8 +543,10 @@ Layer names stay module vocabulary (`search-spec.md` §2): no type is called
 - `GroundedAnswer(ContractModel)`: per AR-A1.
 - `AnswerCapabilities(ContractModel)`: per AR-B2, registered through the same
   module-level registry pattern as `ProviderCapabilities` (one registry,
-  keyed by provider name, with a `kind` discriminator so `get_capabilities`
-  stays one call).
+  keyed by provider name **and** `kind` -- a `kind` literal on both
+  declarations -- so one provider can declare both kinds and
+  `get_capabilities(provider, kind)` stays one call, its default `kind` the
+  search one every existing caller means).
 - `AnswerProvider(Protocol)`: `provider`, `provider_instance`,
   `capabilities`, `async answer(request, *, timeout_seconds) -> GroundedAnswer`.
 
@@ -637,17 +644,25 @@ eval cost rows and the budget cap see Brave money for the first time (AC2).
 
 ## 12. Sequencing, and what to verify live first
 
-Slices, each a PR into `develop`, stacked:
+Slices, stacked. Slices 1 and 2 reach `develop` **together** (owner ruling,
+2026-10-23): slice 1 merges onto this document's area branch, which is not
+mergeable to `develop` until slice 2 is on it too, because slice 1's public
+contract names have no caller until slice 2's adapter. Slices 3-5 are each a
+PR into `develop` as before.
 
 0. **Live capture (prerequisite, half a day).** With discodon's provisioned
    key: one single-mode streamed answer with citations, saved as the recorded
    fixture (AR-I2). Settles the three **(verify live)** items: offset units,
    pre/post-strip indexing, and whether `snippet` is page text. The `Anchor`
    field and AR-A4 are finalised from this, not before.
-1. **Contracts + `StreamingTransport` + standalone SSE** (AD11, AR-F1..F3),
-   with the conformance suite's transport pins. MINOR bump.
+1. **Contracts + `StreamingTransport` + the standalone streaming transport**
+   (AD11, AR-F1..F3), with the transport's pins. The transport moves bytes;
+   SSE parsing is slice 2's adapter (AR-F2). Reaches `develop` with slice 2,
+   in a MINOR release.
 2. **`BraveAnswersAdapter` + `answer.py` + `bind_answer.py`** against the
-   fixture; enforcement rows (10.6). MINOR bump.
+   fixture, the SSE and tag parsers in the adapter; enforcement rows (10.6).
+   Lands on the area branch after slice 1, and the two reach `develop`
+   together, in a MINOR release.
 3. **`agent-tools` `web_answer`** (10.5, AD13).
 4. **discodon `fact_check`** (11.1) -- the first production use; AC1 and AC2
    measured there.

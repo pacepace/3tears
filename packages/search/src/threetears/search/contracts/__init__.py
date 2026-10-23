@@ -20,6 +20,13 @@ from threetears.search.contracts._canonical import (
     canonical_digest,
     canonicalize,
 )
+from threetears.search.contracts.answer import (
+    Anchor,
+    AnswerCapabilities,
+    AnswerProvider,
+    AnswerRequest,
+    GroundedAnswer,
+)
 from threetears.search.contracts.capabilities import (
     PRICING_FREE_SELF_HOSTED,
     PRICING_PER_REQUEST,
@@ -100,7 +107,13 @@ from threetears.search.contracts.scores import (
     ScoreEntry,
 )
 from threetears.search.contracts.spend import Spend
-from threetears.search.contracts.transport import FetchTransport, SearchTransport, TransportResponse
+from threetears.search.contracts.transport import (
+    FetchTransport,
+    SearchTransport,
+    StreamedResponse,
+    StreamingTransport,
+    TransportResponse,
+)
 
 __all__ = [
     "CANONICAL_FORM_VERSION",
@@ -135,6 +148,10 @@ __all__ = [
     "SEARCH_RESULTS_METADATA_KEY",
     "SEARCH_RESULTS_SCHEMA_VERSION",
     "WELL_KNOWN_CRITERIA",
+    "Anchor",
+    "AnswerCapabilities",
+    "AnswerProvider",
+    "AnswerRequest",
     "AuthFailed",
     "BudgetDecision",
     "BudgetPort",
@@ -148,6 +165,7 @@ __all__ = [
     "Disposition",
     "FailureRecord",
     "FetchTransport",
+    "GroundedAnswer",
     "LocalCapExceeded",
     "Locator",
     "MalformedResponse",
@@ -166,6 +184,8 @@ __all__ = [
     "SearchResultsMetadata",
     "SearchTransport",
     "Spend",
+    "StreamedResponse",
+    "StreamingTransport",
     "TimedOut",
     "TransportFailed",
     "TransportResponse",

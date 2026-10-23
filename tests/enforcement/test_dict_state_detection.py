@@ -53,6 +53,16 @@ _SRC_ROOTS = (
 #: Genuinely ephemeral, non-serializable, or the infrastructure itself -- never migrating.
 _ALLOWLIST = (
     DictStateAllowlistEntry(
+        file="packages/search/src/threetears/search/standalone.py",
+        class_name="_Breakers",
+        attr_name="_circuits",
+        rationale=(
+            "one live circuit-breaker state machine per failing upstream of this transport, guarded "
+            "by a lock and read off a monotonic clock; a breaker protects this process's own calls, "
+            "so state shared across pods or kept across a restart would trip one replica for another"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/security/door_proof.py",
         class_name="DoorProofModes",
         attr_name="_switches",
