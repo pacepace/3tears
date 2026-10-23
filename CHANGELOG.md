@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.77.0 -- 2026-10-23
+
 ### mcp: a host app serves MCP on its own app, with tool metadata, structured tool errors and a live tool set
 
 **Added:** `McpTool` and `register_tool` take optional `output_schema`, `title` and `annotations`
@@ -146,6 +148,16 @@ past `max_hold_seconds` (new, default 600 s), the lease's rule for a wedged hold
 
 **Changed:** `DerivedCollection.peer_wait_seconds` is removed (and the overrides on `VersionedAnswers` and
 `threetears.geo`'s `TileCollection`): the wait follows the lock, not a timer. A subclass that set it sets nothing now.
+
+### core: every collection key read is counted by the tier that answered it
+
+**Added:** `threetears.core.collections.tier_reads` (`ReadTier`, `record_tier_read`, `log_tier_reads_every`,
+`log_tier_reads`, `TIER_READS_LOG_SECONDS`). `BaseCollection.ensure` (and every key read built on it) counts
+each read as L1 (this process, an absence marker included), L2 (the shared cache) or L3 (the store), by table.
+The tool server logs the counts once a minute at INFO, as one line naming each table's reads, only when a read
+happened: the measure of whether a pod's reads stay at L1 or keep reaching L2 and L3. A reports tool pod on cobalt
+dev was found reading `namespaces` from L3 on every read, its L1 dropped about every 40 s, with nothing to show
+it but the drops.
 
 ## v0.76.0 -- 2026-10-23
 

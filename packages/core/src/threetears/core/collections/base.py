@@ -34,6 +34,7 @@ from sqlalchemy import Column, Float, MetaData, String, Table, Text
 from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.backends.protocol import L3Backend
 from threetears.core.cache import MISSING
+from threetears.core.collections.tier_reads import ReadTier, record_tier_read
 from threetears.core.collections.bypassing_write import BypassingWrite
 from threetears.core.collections.caller_transaction import CallerTransaction, shared_advance_for
 from threetears.core.collections.delete_cascade import (
@@ -2523,15 +2524,18 @@ class BaseCollection(ABC, Generic[EntityT]):
                     "absence served from an L1 marker",
                     extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name}},
                 )
+                record_tier_read(self.table_name, ReadTier.L1)
                 return None
         # a table dropped in this process leaves its own L2 entries untrusted until each is read
         # through from L3 again; the drop count says whether another drop landed during this read.
         drops_before = self._table_drops
         lookup = await self._l2_lookup(entity_id, distrust_row=self._distrusts_l2(entity_id))
         if lookup.row is not None:
+            record_tier_read(self.table_name, ReadTier.L2)
             if self._l1 is not None and self._l1_fence.still_newest(ticket):
                 self._l1_upsert(lookup.row, self.primary_key_columns)
             return lookup.row
+        record_tier_read(self.table_name, ReadTier.L3)
         pg_data = await self.fetch_from_store(entity_id)
         if pg_data is not None and self._row_is_expired(pg_data):
             pg_data = None
@@ -3248,6 +3252,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         row = self._select_from_l1(entity_id, expiring=True)
         if row is not None:
+            record_tier_read(self.table_name, ReadTier.L1)
             return row
         data = await self._pull_through(entity_id)
         return data

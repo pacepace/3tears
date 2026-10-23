@@ -30,6 +30,7 @@ from threetears.core.collections import (
     GenerationVerdict,
     WriteBuffer,
 )
+from threetears.core.collections.tier_reads import log_tier_reads
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.kv import FakeNatsClient
@@ -618,3 +619,28 @@ class TestADerivedCacheThatFails:
         assert not reader.members.exists_in_cache_sync("m1")
         # and the message was not counted, so the next pass drops the table
         assert reader.registry.settle_generation(_TABLE, await source.current(_TABLE)) is GenerationVerdict.MISSED
+
+
+class TestReadsAreCountedByTier:
+    """each key read counts the tier that answered it: L1 (this process), L2 (the shared cache), L3 (the store)."""
+
+    @pytest.mark.asyncio
+    async def test_a_row_only_the_store_holds_is_read_from_l3_then_from_l1(self, bus: _Lossy, source: _Source) -> None:
+        rows: dict[str, dict[str, Any]] = {"r1": {"id": "r1", "member_id": "m1"}}
+        pod = _Pod(bus, rows, source, scope="one")
+        log_tier_reads()
+
+        assert await pod.members.ensure("r1") is not None
+        assert log_tier_reads() == {_TABLE: {"l3": 1}}
+        assert await pod.members.ensure("r1") is not None
+        assert log_tier_reads() == {_TABLE: {"l1": 1}}
+
+    @pytest.mark.asyncio
+    async def test_a_row_another_pod_saved_is_read_from_l2(self, bus: _Lossy, source: _Source) -> None:
+        rows: dict[str, dict[str, Any]] = {}
+        writer, reader = _Pod(bus, rows, source, scope="one"), _Pod(bus, rows, source, scope="one")
+        await _save(writer, "r1", "m1")
+        log_tier_reads()
+
+        assert await reader.members.ensure("r1") is not None
+        assert log_tier_reads() == {_TABLE: {"l2": 1}}
