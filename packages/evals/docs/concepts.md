@@ -228,7 +228,9 @@ judge-a and the v2 runs by judge-b: the rig moved, so the report will not pool t
 #### Apparatus class
 One configuration of the rig as recorded on the runs (`ApparatusClass`). Two observations pool only when
 their variant matches and their apparatus falls in the same class; an arm measured under two classes is
-named with `(test setup <digest>)` in a report.
+named with `(test setup <digest>)` in a report. These cells, and every composite, cost and latency, pool on
+variant x rig alone. pass^k splits further: on the measurement context, the template revision and the model
+that answered (see [Measurement context](#measurement-context)).
 
 #### Apparatus settings
 Rig values your host declares and a launch may set (`apparatus_settings`), so one template can be run at two
@@ -242,10 +244,19 @@ callable kind an `Eval` runs seats none of the judge, simulator or spend ceiling
 judged kind, `callable-judged`, seats the judge and nothing else.
 
 #### Measurement context
-Everything pinned around a run that is not the variant: the subject and its state, the frozen case set, the
-template, the resolved judge and simulator models, judge configs, cassette mode and corpus, tool bound,
-scope, world seed, apparatus settings (`compute_context_components`). Its digest is the context key,
-stamped once at launch.
+Everything pinned around a run that is not the variant: the subject and its state, the template, the resolved
+judge and simulator models, judge configs, cassette mode and corpus, tool bound, scope, world seed, apparatus
+settings (`compute_context_components`). Its digest is the context key, stamped once at launch. The frozen
+case set is not in it: more cases, or more repeats, under one context are more samples of one condition.
+
+A contestant's pass^k pools per case over the runs of one pass^k cell (`PassHatKCell`): one context (read at
+today's identity version), one template revision (the template's id and the digest of what it measured that
+the run froze, `EvalRun.template_digest`), one apparatus provenance and one set of served models, whatever
+cases each run covered and whenever each ran. Its headline figure, interval, bar and verdict read the cell with
+the most runs alone; every other cell stands beside it with its own pass^k and the reason it is not the
+headline (`FrontierPoint.pass_hat_k_cells`). A run stored before runs froze a template digest, and a run whose
+responses named no served model, is not evidence of a difference: it joins its cell and is named as having
+joined by assumption.
 
 ### Running
 

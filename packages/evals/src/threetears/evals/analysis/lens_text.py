@@ -16,7 +16,7 @@ from threetears.evals.analysis.report.verdict import MIN_CASES
 
 
 from threetears.evals.analysis.reporting import ProjectionExclusions
-from threetears.evals.analysis.lenses.frontier import FrontierResult
+from threetears.evals.analysis.lenses.frontier import FrontierResult, pass_hat_k_cell_lines
 
 
 def exclusion_lines(exclusions: ProjectionExclusions) -> list[str]:
@@ -95,6 +95,7 @@ def frontier_text(result: FrontierResult) -> str:
                 f"- {_contestant(point.model, point.variant_key)}: {quality}{cleared}; {cost}; {latency}"
                 + (f"; {standing}" if standing else "")
             )
+            lines += [f"  - {line}" for cell in point.pass_hat_k_cells for line in pass_hat_k_cell_lines(cell)]
         verdict = subject.verdict
         if verdict is not None:
             tied = (

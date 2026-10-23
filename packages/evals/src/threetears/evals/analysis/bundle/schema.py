@@ -2469,8 +2469,13 @@ class AnalysisContextBundle(EvalDocumentModel):
     # runs began no longer counts, and `declared.question_declared_at` is gone. Time apart is no confound either (owner,
     # 2026-10-23): `measurement_window_disclosure` is gone, and `launch_disclosure` says only that a launch's arms
     # co-loaded their providers, never that runs started apart or arms ran one after another.
+    # 62: the case set leaves the pass^k cell, which is read at this build's identity version and splits on the
+    # model that answered and the template revision (`IDENTITY_VERSION` 25); a frontier point's pass^k reads its
+    # headline cell alone and lists every cell with its own reading and reason (`pass_hat_k_cells`), so pass^k and
+    # its curve move over unchanged runs; a comparison set's case-set fingerprint digests the run's frozen case ids
+    # and is never None.
     schema_version: int = Field(
-        default=61, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=62, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---

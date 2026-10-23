@@ -244,6 +244,20 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
             "simulator_sent_settings",
         },
     ),
+    # 62/13: the pass^k cell drops the case set, reads the context at the current identity version and splits on the
+    # served model and template revision; each frontier point lists its pass^k cells. A shape-only bump: the
+    # apparatus set and the cell model hold.
+    (
+        (62, 13),
+        _CORE_V24
+        | {
+            "judge_request_settings",
+            "simulator_request_settings",
+            "judge_temperature",
+            "judge_sent_settings",
+            "simulator_sent_settings",
+        },
+    ),
 )
 
 

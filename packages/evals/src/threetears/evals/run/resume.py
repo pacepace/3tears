@@ -2,8 +2,9 @@
 
 A run lost to a reboot, an OOM kill, a deploy or a provider outage longer than its lease, a run an operator cancelled
 to ship a fix, and a run its budget or its account stopped each end with cells of their matrix never measured. A
-new run over the cells left is a different run: its case set is another, so its pass^k is another cell, and a case
-the first one reached fewer than ``k`` times drops out of both. :func:`resume_run` continues the run itself:
+new run over the cases left pools with the first in pass^k (a case set is no part of a cell), but it is another run:
+it measures every repeat of each case it covers, so a case the first reached part-way is measured past ``k``, and
+the first stays short on its own record. :func:`resume_run` continues the run itself:
 
 - **Only what is missing runs.** A cell with no stored row runs, and so does a cell whose row was cut short by a
   cancel (termination ``cancelled``: the attempt a shutdown or a cancel abandoned) or refused by the provider
@@ -40,6 +41,7 @@ and launches a take-up would accept, which a host reads at boot, after settling 
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -80,7 +82,8 @@ log = get_logger(__name__)
 
 #: The fields of a run's judge and simulator, of its apparatus, and of what it froze of its template, a take-up holds
 #: equal: what scored its cells, what its cells were set up with, and what they were graded against. Most also reach
-#: the context key; each is named on its own so a refusal says which moved.
+#: the context key; each is named on its own so a refusal says which moved. The frozen case set reaches no key (more
+#: cases are more samples of one condition), so :func:`_resume_drift` holds it equal on its own, as a set.
 _PINNED_FIELDS: tuple[str, ...] = (
     "judge_model",
     "judge_config_ids",
@@ -180,7 +183,7 @@ def _resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profi
     """Every way the run a launch of ``stored`` assembles now would measure otherwise than ``stored`` did.
 
     Each context component by name, then the context key when no component accounts for its move, each variant
-    lever, each of :data:`_PINNED_FIELDS`, and the template's measured
+    lever, each of :data:`_PINNED_FIELDS`, the frozen case set (as a set, in any order), and the template's measured
     content: the digest the run froze at launch (``EvalRun.template_digest``) against the one the launch froze now,
     so an edit to the intent, the rubric's descriptions and scoring guides, the conversation or any other field a run
     measures is a difference, and one to the template's name or description is not. A run stored before it froze the
@@ -242,6 +245,11 @@ def _resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profi
         before, after = getattr(stored, name), getattr(fresh, name)
         if before != after:
             differences.append(f"{name} ({_shown(before)} -> {_shown(after)})")
+    # The case set reaches no key, so it is held here: a take-up runs the cases the run froze, never others. Compared
+    # over the sorted ids, as `case_set_fingerprint` compares them, so the same cases in another order are no change;
+    # the template that fingerprint also digests is named by the context component that holds it.
+    if sorted(stored.test_case_ids) != sorted(fresh.test_case_ids):
+        differences.append(f"test_case_ids ({_case_set_drift(stored.test_case_ids, fresh.test_case_ids)})")
     if stored.template_digest is not None and stored.template_digest != fresh.template_digest:
         differences.append(
             f"template {template.id!r}: its measured content changed since the run started (its intent, rubric, "
@@ -255,6 +263,31 @@ def _resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profi
             "the edit changed the measurement cannot be told"
         )
     return differences
+
+
+def _case_set_drift(was: Sequence[str], now: Sequence[str]) -> str:
+    """How a launch's case ids differ from the ones a run froze: the cases left out, added, and listed a different
+    number of times, each sorted.
+
+    :param was: The run's frozen case ids.
+    :ptype was: Sequence[str]
+    :param now: The ones a launch of it assembled.
+    :ptype now: Sequence[str]
+    :return: The parts that differ, joined with ``; ``.
+    :rtype: str
+    """
+    before, after = Counter(was), Counter(now)
+    left_out = sorted(case for case in before if case not in after)
+    added = sorted(case for case in after if case not in before)
+    repeated = sorted(case for case in before if case in after and before[case] != after[case])
+    parts = [
+        f"left out: {', '.join(left_out)}" if left_out else "",
+        f"added: {', '.join(added)}" if added else "",
+        "duplicated: " + ", ".join(f"{case} listed {after[case]} times, was {before[case]}" for case in repeated)
+        if repeated
+        else "",
+    ]
+    return "; ".join(part for part in parts if part)
 
 
 def _edited_since(template: EvalTemplate, run: EvalRun) -> bool:

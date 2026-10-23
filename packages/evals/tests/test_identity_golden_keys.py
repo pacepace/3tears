@@ -45,13 +45,13 @@ from packages.evals.tests.fixtures.toyhost.run import (
 )
 
 #: The ``IDENTITY_VERSION`` every golden below was derived under.
-PINNED_IDENTITY_VERSION = 24
+PINNED_IDENTITY_VERSION = 25
 
 #: The toy host's context, shared by both its arms: one condition, two contestants.
 _TOY_CONTEXT = {
     "subject_state": None,
     "seeded_world": "082338b40e87dda25cf60934744cc37392a995447545889bcfb8db3dbe977e16",
-    "case_basis": "0ee4684cf928e3aef19a726e51eaf1713606616aacbb42db60bde0650d8d4734",
+    "case_basis": "dd1f3878ca6ff8dbc705fa4947afe35ffc354ffc53934a6249108f0e95528fe9",
     "roles": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
     "cassette": "c7978efdb5bf6764fcf4785ba9fc5d0464e9d3e39dc798d06349188b85803d28",
     "tool_permissions": "baf5287548d904d9d942c97182d06b2bbc9ba2c35129e6cc9f1302922224e915",
@@ -59,12 +59,12 @@ _TOY_CONTEXT = {
     "apparatus_settings": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
     "scope": "toyhost-scope",
 }
-_TOY_CONTEXT_KEY = "a784a3ab06c1c496edf240e8ba7528beb16f6df44ed3eacd1cd936c1cbcc376d"
+_TOY_CONTEXT_KEY = "32938755aefdf646ca72c579d5824eb76ff8e92994989fb8d5248f770f8c62de"
 
 _COURIER_CONTEXT = {
     "subject_state": {},
     "seeded_world": "6f3e213054b28d30c9ea12f8c692cd67ebcd062d2577194505cb87c9ffbf38fd",
-    "case_basis": "36a84f34b71d98d70fd81b4ff2fa9e944bcfe6ddaa017e1b5fc1fb1038c2dc04",
+    "case_basis": "af91d959cf9cc7310918968291b4a9a777081353cf6072b9120279fc9e4c2d7b",
     "roles": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
     "cassette": "c7978efdb5bf6764fcf4785ba9fc5d0464e9d3e39dc798d06349188b85803d28",
     "tool_permissions": "baf5287548d904d9d942c97182d06b2bbc9ba2c35129e6cc9f1302922224e915",
@@ -72,7 +72,7 @@ _COURIER_CONTEXT = {
     "apparatus_settings": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
     "scope": "courier-depot-north",
 }
-_COURIER_CONTEXT_KEY = "89a065de810ffb5d09bc8a3cbaaaaf7a5f8ed57bb2980b0a3bda086797ba932e"
+_COURIER_CONTEXT_KEY = "a8824d8721bb5058e2a79b668448f5eb6e2ef15b9d28be5497ecdc1597ff1338"
 
 
 @dataclass(frozen=True)
