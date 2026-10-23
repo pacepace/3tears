@@ -64,7 +64,7 @@ from typing import Any, Literal, cast
 
 from pydantic import ValidationError
 
-from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep
+from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep, ended_sweep_lifetimes
 from threetears.evals.kernel.errors import ConflictError, JobFenced, StorageError
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.scoring import reconstruct_completeness
@@ -197,9 +197,19 @@ def _run_lost(run: EvalRun, loss: JobLoss, store: LeaseStore) -> EvalRun:
 
 
 def _sweep_lost(sweep: EvalSweep, loss: JobLoss, _store: LeaseStore) -> EvalSweep:
-    """A sweep written lost: ``cancelled``, no further arm launched, its detail the loss."""
+    """A sweep written lost: ``cancelled``, no further arm launched, its detail the loss, and a sweep taken up again
+    losing its current holding with it."""
+    detail = f"lost: {loss.cause}"
     return sweep.model_copy(
-        update={"outcome": "cancelled", "detail": f"lost: {loss.cause}", "ended_at": loss.at, "lost": loss}
+        update={
+            "outcome": "cancelled",
+            "detail": detail,
+            "ended_at": loss.at,
+            "lost": loss,
+            "lifetimes": ended_sweep_lifetimes(
+                sweep.lifetimes, outcome="cancelled", at=loss.at, detail=detail, lost=loss
+            ),
+        }
     )
 
 

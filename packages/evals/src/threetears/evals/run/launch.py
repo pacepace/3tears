@@ -816,8 +816,14 @@ class LaunchGroup:
         before): ``asked_schedule``, or its default for whether the members declare latency under test.
     """
 
-    def __init__(self, candidate_models: Sequence[str], *, arm_schedule: ArmSchedule | None = None) -> None:
-        """Mint the group's id; it is stamped on every member run.
+    def __init__(
+        self,
+        candidate_models: Sequence[str],
+        *,
+        arm_schedule: ArmSchedule | None = None,
+        group_id: str | None = None,
+    ) -> None:
+        """Mint the group's id, or take the one given; it is stamped on every member run.
 
         :param candidate_models: Every candidate model the launch names. Required, because the judge is
             chosen against it: a group built without it could hand the launch a judge that is one
@@ -826,8 +832,11 @@ class LaunchGroup:
         :param arm_schedule: How the members share time; ``None`` interleaves them, or runs them one after another
             when they declare latency under test (:func:`~threetears.evals.run.arm_schedule.resolve_arm_schedule`).
         :ptype arm_schedule: ArmSchedule | None
+        :param group_id: The id of the launch whose runs this group takes up again, so its members' cells keep the
+            order that launch's id gave them, and a member it launches anew joins that launch; ``None`` mints one.
+        :ptype group_id: str | None
         """
-        self.id = str(uuid.uuid7())
+        self.id = group_id if group_id is not None else str(uuid.uuid7())
         self.candidate_models = list(candidate_models)
         self.asked_schedule = arm_schedule
         self.arm_schedule: ArmSchedule | None = None
@@ -2103,8 +2112,8 @@ async def admit_resumed_run(
     host: LaunchHost,
     resuming: RunResumption,
     *,
-    max_cost_usd: float | None,
-    attach: Callable[[list[EvalRun]], Awaitable[None]],
+    attach: Callable[[list[EvalRun]], Awaitable[None]] | None = None,
+    launch_group: LaunchGroup | None = None,
 ) -> AdmittedLaunch:
     """Admit a stored run taken up again as its own launch would be admitted now, from the arguments it recorded.
 
@@ -2112,8 +2121,9 @@ async def admit_resumed_run(
     apparatus settings, margins, latency declaration and arm schedule, each as the run recorded it, and every role
     pin it recorded replayed as chosen — its judge, the judge configs it was judged by (by id, so a config the scope
     has since replaced is still the one replayed), and its simulator — so the launch makes every refusal a launch
-    makes, prices the arm, and the kind's launcher wires it as it would now. Its cost cap is the caller's; a
-    metered-call ceiling or a deadline the run's launch named is replayed, and one it inherited is inherited again.
+    makes, prices the arm, and the kind's launcher wires it as it would now. Its cost cap is the take-up's
+    (:attr:`RunResumption.max_cost_usd`); a metered-call ceiling or a deadline the run's launch named is replayed, and
+    one it inherited is inherited again.
     It generates nothing: the run's cases are its own
     (:attr:`LaunchRequest.resuming`). What the launcher assembles is compared with the stored run at the launch tail
     (:func:`launch_run`).
@@ -2122,12 +2132,13 @@ async def admit_resumed_run(
     :ptype host: LaunchHost
     :param resuming: The run taken up again, and what it already holds.
     :ptype resuming: RunResumption
-    :param max_cost_usd: The cost cap the run is taken up under: a raised one, or the one it recorded; ``None``
-        inherits the host's.
-    :ptype max_cost_usd: float | None
-    :param attach: Records the run before its group starts: the take-up's own write of it.
-    :ptype attach: Callable[[list[EvalRun]], Awaitable[None]]
-    :return: The admitted launch of the one run.
+    :param attach: Records the run before its group starts: the take-up's own write of it. ``None`` with
+        ``launch_group``, whose caller records its members.
+    :ptype attach: Callable[[list[EvalRun]], Awaitable[None]] | None
+    :param launch_group: Prepare the run into this group, beside the other arms its caller takes up or launches with
+        it, instead of starting it in a group of its own; the caller admits and starts the group.
+    :ptype launch_group: LaunchGroup | None
+    :return: The admitted launch of the one run; prepared only, with ``launch_group``.
     :rtype: AdmittedLaunch
     :raises ValidationFailedError: The run is ad hoc (no template), or any refusal a launch of it would make now.
     :raises NotFoundError: Its template is gone.
@@ -2155,10 +2166,10 @@ async def admit_resumed_run(
         cassette_corpus_id=run.cassette_corpus_id,
         overlays=run.overlays,
         apparatus_settings=run.apparatus_settings,
-        max_cost_usd=max_cost_usd,
+        max_cost_usd=resuming.max_cost_usd,
         max_metered_calls=run.max_metered_calls if run.max_metered_calls_origin == "chosen" else None,
         scope_id=run.scope_id,
-        launch_group=None,
+        launch_group=launch_group,
         admission=None,
         cell_timeout_s=run.cell_timeout_s if run.cell_timeout_s_origin == "launch" else None,
         margins=run.declared_margins,

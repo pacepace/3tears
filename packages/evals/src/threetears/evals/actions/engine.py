@@ -1812,7 +1812,7 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="job_resume",
-            summary="Resume an interrupted run as the same run: lost, cancelled, or stopped by its budget or account.",
+            summary="Resume an interrupted run, sweep or launch as itself: lost, cancelled, or stopped by a budget.",
             workflow=RUN,
             permission="spend",
             params=JobResumeParams,
@@ -1822,21 +1822,24 @@ def engine_actions() -> tuple[Action, ...]:
             example={"job_id": f"run:{run_id}"},
             long_running=True,
             detail=(
-                "Takes a run's job id ('run:<run id>'), as jobs_resumable lists it. The run continues as itself: only "
-                "the cells it has not measured run (a cell a cancel cut short runs again), in its own order, its spend "
-                "so far counting toward its cost cap, and it ends completed with pass^k over its whole case set. "
-                "Refused in the call, with nothing spent, when it completed, failed or is still live, and when a "
-                "launch of it now would measure otherwise than it did (the template, a context component, a variant "
-                "lever, a judge or simulator pin, the apparatus): every difference is named. A deploy that changes "
-                "only the host's labels is no difference; the run records it. A run its budget stopped at its cap "
-                "needs max_cost_usd above what it spent. Each resume is recorded on the run as a new lifetime. A "
-                "sweep's or a launch's job is not resumed as a whole: job_poll on it names its runs, each resumed by "
-                "its own job id. Nothing is ever resumed without this call."
+                "Takes a job id as jobs_resumable lists it: 'run:<run id>', 'sweep:<sweep id>' or 'launch:<launch id>'. "
+                "A run continues as itself: only the cells it has not measured run (a cell a cancel cut short runs "
+                "again), in its own order, its spend so far counting toward its cost cap, and it ends completed with "
+                "pass^k over its whole case set. A sweep or a launch continues as a whole: each arm's unfinished run "
+                "continues as itself, each arm of a sweep that never launched is launched as the sweep would have, an "
+                "arm that ended is left alone, and the arm schedule is kept (interleaved arms take their cells in turn "
+                "in their original order). Refused in the call, with nothing spent, when the job completed, failed or "
+                "is still live, and when a launch of any of its runs now would measure otherwise than it did (the "
+                "template, a context component, a variant lever, a judge or simulator pin, the apparatus): every "
+                "difference of every arm is named. A deploy that changes only the host's labels is no difference; the "
+                "run records it. A run its budget stopped at its cap needs max_cost_usd above what it spent; given for "
+                "a sweep or a launch, it caps every arm. Each resume is recorded as a new lifetime on each run, and on "
+                "a sweep. Nothing is ever resumed without this call."
             ),
         ),
         Action(
             name="jobs_resumable",
-            summary="List the interrupted runs job_resume would take up, with how each ended, its cells and spend.",
+            summary="List the interrupted runs, sweeps and launches job_resume would take up, with how each ended.",
             workflow=RUN,
             permission="read",
             params=NoParams,
@@ -1849,7 +1852,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "provider account; never one that completed or failed, or is still live. For each: its job id for "
                 "job_resume, how it ended and why, its cells done and expected, what it has spent and its cost cap, "
                 "and how many process lifetimes it has spanned. A run its budget stopped at its cap carries a note "
-                "naming the max_cost_usd it needs. Whether a run would still measure as it did is not checked here: "
+                "naming the max_cost_usd it needs. Each sweep and launch that was lost, cancelled or timed out is "
+                "listed once, under groups, with each arm's state and each run a resume takes up with it; those runs "
+                "are not listed again on their own. Whether a run would still measure as it did is not checked here: "
                 "job_resume checks it before anything is spent. Spends nothing and resumes nothing; a host reads it "
                 "at boot to offer resumes."
             ),

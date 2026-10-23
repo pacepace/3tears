@@ -58,7 +58,7 @@ from threetears.evals.kernel import (
 )
 from threetears.evals.kernel import job_leases
 from threetears.evals.ops import OpsHost, analyses_list, analysis_generate, job_cancel, job_poll, run_job_id, run_launch
-from threetears.evals.ops import LaunchArguments, SweepArguments, SweepArm, generation_key, sweep_launch
+from threetears.evals.ops import LaunchArguments, SweepArguments, generation_key, sweep_launch
 from threetears.evals.ops import sweeps
 from threetears.evals.run import sweep_abandoned_runs
 from threetears.evals.schema import EvalResult, EvalRun, JobLease, StoreConflict
@@ -74,6 +74,7 @@ from packages.evals.tests.lease_support import (
     held_extraction,
     launched_run,
     other_process,
+    style_sweep,
     until,
 )
 from packages.evals.tests.off_loop import off_loop
@@ -843,16 +844,8 @@ def _sweeping_host(store: InMemoryDocumentStore, *, job_lease_s: float = 60.0) -
 
 
 def _three_arm_sweep() -> SweepArguments:
-    return SweepArguments(
-        template_id=toyhost_template().id,
-        subject_id=TOYHOST_SUBJECT.subject_id,
-        campaign_name="prompt styles",
-        campaign_behavior="extraction accuracy",
-        k_runs=1,
-        arms=[SweepArm(model=RUN_MODELS[0], label=style, overlays={"prompt_style": style}) for style in STYLES],
-        # Arm after arm: what these read is the fence checked before each further arm is launched.
-        arm_schedule="sequential",
-    )
+    # Arm after arm: what these read is the fence checked before each further arm is launched.
+    return style_sweep(STYLES, arm_schedule="sequential")
 
 
 async def _first_arm_running(host: OpsHost, job_id: str) -> None:

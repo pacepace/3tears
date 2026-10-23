@@ -226,6 +226,11 @@ class JobWork[R: EvalDocumentModel]:
         counted against it.
     :ivar discard: Releases what admission built (reserved room, admitted clients) when the work never runs: its
         start refused, or its task cancelled before its first step. ``None`` when admission holds nothing.
+    :ivar epoch: Which holding of the job this is (``JobLease.epoch``): 0 for a job starting fresh, whose record's
+        first write is create-only; above 0 for a job taken up again, whose record is written over the stored one,
+        conditionally on :attr:`etag`, under a lease at this epoch.
+    :ivar etag: For a job taken up again, the token its stored record was read with: a take-up that lost its race
+        to another writer starts nothing.
     """
 
     kind: LeasedJobKind[R]
@@ -233,6 +238,8 @@ class JobWork[R: EvalDocumentModel]:
     run: Callable[[JobRecorder[R]], Awaitable[R]]
     budget_s: float | None
     discard: Callable[[], Awaitable[None]] | None = None
+    epoch: int = 0
+    etag: str | None = None
     _used: list[bool] = field(default_factory=list, init=False, repr=False, compare=False)
 
     def claim(self) -> None:
@@ -382,12 +389,17 @@ async def _save_started[R: EvalDocumentModel](
 ) -> R:
     """Write the record as it starts, carrying a fresh lease, so its first poll in any process finds it running.
 
-    Create-only: a record already stored under the id is a job already started, and is never written over.
+    Create-only for a job starting fresh: a record already stored under the id is a job already started, and is never
+    written over. A job taken up again (``work.epoch`` above 0) is written over its stored record, conditionally on
+    the record as its take-up read it, under a lease at its epoch.
     """
 
     def save() -> R:
-        started = work.record.model_copy(update={"lease": leases.grant()})
-        store.save_job_record(started.to_dict(), if_match=None, create_only=True)
+        started = work.record.model_copy(update={"lease": leases.grant(work.epoch)})
+        if work.epoch > 0:
+            store.save_job_record(started.to_dict(), if_match=work.etag)
+        else:
+            store.save_job_record(started.to_dict(), if_match=None, create_only=True)
         return started
 
     return await run_blocking(executor, save)
@@ -418,7 +430,8 @@ async def start_job_work[R: EvalDocumentModel](
     :raises ValueError: The manager holds no leases — its job could be read lost by every other process at once.
     :raises RuntimeError: The work was already started; nothing was written.
     :raises ConflictError: A live job holds ``key``; the record is written ``failed`` and admission's holdings released.
-        Or a record is already stored under the work's id; it is left as it is.
+        Or a record is already stored under the work's id (for a job taken up again: its stored record moved since
+        it was read); it is left as it is.
     :raises StorageError: The record could not be written; nothing started.
     """
     leases = manager.leases
@@ -445,6 +458,7 @@ async def start_job_work[R: EvalDocumentModel](
             key=key,
             record=(work.kind, work.scope_id),
             discard=work.discard,
+            epoch=work.epoch,
         )
     except ConflictError as refused:
         if work.discard is not None:
@@ -497,7 +511,7 @@ async def run_job_work[R: EvalDocumentModel](
     def stop(_reason: str | None = None) -> None:
         caller.cancel()
 
-    leases.hold(work.kind, work.record_id, work.scope_id, cancel=stop, stop=stop)
+    leases.hold(work.kind, work.record_id, work.scope_id, cancel=stop, stop=stop, epoch=work.epoch)
     try:
         return await _run_to_end(work, JobRecorder(store, executor, work.kind, started, leases=leases), deadline=None)
     finally:

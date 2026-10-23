@@ -228,6 +228,7 @@ from threetears.evals.run.runner import EveryCellApparatusFailedError, NothingMe
 from threetears.evals.run.runner import StoredCells
 from threetears.evals.run.resume import (
     ResumableEnding,
+    ResumableGroup,
     ResumableJob,
     ResumableJobs,
     RunResumption,
@@ -411,6 +412,7 @@ __all__ = [
     "resolve_case_set",
     "sweep_abandoned_runs",
     "ResumableEnding",
+    "ResumableGroup",
     "ResumableJob",
     "ResumableJobs",
     "RunResumption",

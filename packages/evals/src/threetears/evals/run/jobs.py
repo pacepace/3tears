@@ -729,6 +729,7 @@ class EvalJobManager:
         key: str | None = None,
         record: tuple[LeasedJobKind[Any], str] | None = None,
         discard: Callable[[], Awaitable[None]] | None = None,
+        epoch: int = 0,
     ) -> str:
         """Run ``work`` in the background under a timeout, tracked until it ends.
 
@@ -768,6 +769,9 @@ class EvalJobManager:
             having begun — cancelled before its first step, which runs none of its body. ``None`` when
             ``work`` holds nothing it must release.
         :ptype discard: Callable[[], Awaitable[None]] | None
+        :param epoch: The epoch of the lease ``record`` was written carrying: 0 for a job starting fresh, the next one
+            for a job taken up again, which this process then holds at that epoch alone.
+        :ptype epoch: int
         :return: ``job_id``.
         :rtype: str
         :raises ConflictError: A live task already holds ``key``.
@@ -799,6 +803,7 @@ class EvalJobManager:
                 scope_id,
                 cancel=lambda _reason: self.cancel_task(job_id),
                 stop=lambda: self.cancel_task(job_id),
+                epoch=epoch,
             )
         return job_id
 

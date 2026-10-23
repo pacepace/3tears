@@ -5,12 +5,14 @@ Pinned:
 - **``job_resume`` takes a lost run up again**, through the catalogue every transport calls, and the run's own job
   then reads it ``completed`` with every cell, having spanned two process lifetimes.
 - **Every refusal reaches the caller with its remedy**: a run that would measure otherwise (every difference
-  named), one its budget stopped at its cap when no higher cap is named, one that completed — and a job of a kind
-  not resumed (a sweep's, a launch's, a judge pass's), which names how to resume its runs instead.
+  named), one its budget stopped at its cap when no higher cap is named, one that completed; a sweep that completed,
+  failed or is live; a sweep or launch id naming nothing; and a job of a kind not resumed (a judge pass's), which
+  names the action that starts it again.
 - **``jobs_resumable`` lists exactly what ``job_resume`` would take up** — lost, operator-cancelled, budget-stopped
   and exhausted runs, a run whose lease lapsed unwritten included — with how each ended, its cells, its spend, its
-  cap and its lifetimes; never a completed, failed or live run, nor an ad hoc one. It reads the same on every store
-  backend.
+  cap and its lifetimes; never a completed, failed or live run, nor an ad hoc one. A lost sweep and a lost launch are
+  listed once each, their arms under them and not again as runs. Each matching row it cannot read is counted. It
+  reads the same on every store backend.
 """
 
 from __future__ import annotations
@@ -23,9 +25,9 @@ from typing import Any
 import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
-from threetears.evals.kernel import EvalStorage
+from threetears.evals.kernel import EvalStorage, EvalSweep, SweepArmArguments, SweepArmRecord, SweepLaunchArguments
 from threetears.evals.ops import JobsStarted, OpsHost, job_poll, run_job_id
-from threetears.evals.run import ArmPrice, ArmQuote, resumable_jobs
+from threetears.evals.run import ArmPrice, ArmQuote, EvalLaunch, resumable_jobs
 from threetears.evals.schema import DocumentStore, EvalRun, JobLease, JobLoss
 from threetears.evals.storage import InMemoryDocumentStore, SqliteDocumentStore
 from packages.evals.tests.factories import make_eval_result, make_eval_run
@@ -33,7 +35,7 @@ from packages.evals.tests.fixtures.toyhost.contract import ExtractorSpec
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.lease_support import T0, ClockedStore, held_extraction, launched_run, other_process, until
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, settled
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, ops_fixture, settled
 
 #: Repeats per case: three cases, nine cells.
 K = 3
@@ -149,23 +151,68 @@ async def test_job_resume_refuses_a_completed_run_with_its_remedy(tool: Any) -> 
 
 
 @pytest.mark.parametrize(
-    ("job_id", "remedy"),
+    ("job_id", "refusal", "remedy"),
     [
-        ("sweep:0193a1b2-sweep", "call job_resume on each that did not complete"),
-        ("launch:0193a1b2-launch", "call job_resume on each that did not complete"),
-        ("second-judge:0193a1b2-pass", "start the work again with the action that started it"),
+        ("sweep:0193a1b2-sweep", "sweep '0193a1b2-sweep' not found", "a job's id is the one the call that started it"),
+        ("launch:0193a1b2-launch", "launch '0193a1b2-launch' not found", "a job's id is the one the call"),
+        (
+            "second-judge:0193a1b2-pass",
+            "only a run's, a sweep's or a launch's job is",
+            "start the work again with the action that started it",
+        ),
     ],
     ids=["sweep", "launch", "second-judge"],
 )
-async def test_job_resume_refuses_a_job_that_is_not_a_runs_naming_what_to_do_instead(
-    tool: Any, job_id: str, remedy: str
+async def test_job_resume_refuses_a_job_it_cannot_find_or_does_not_resume_naming_what_to_do_instead(
+    tool: Any, job_id: str, refusal: str, remedy: str
 ) -> None:
     host = off_loop(ops_fixture, store=ClockedStore()).host
 
     outcome = await _call(tool, host, action="job_resume", job_id=job_id)
 
-    assert outcome.is_error and "only a run's job is" in outcome.text, outcome.text
+    assert outcome.is_error and refusal in outcome.text, outcome.text
     assert remedy in outcome.text.splitlines()[-1]
+
+
+def _ended_sweep(host: OpsHost, outcome: str, **fields: Any) -> EvalSweep:
+    sweep = EvalSweep(
+        scope_id=TOYHOST_SCOPE,
+        campaign_id="0193a1b2-campaign",
+        template_id=toyhost_template().id,
+        subject_id=TOYHOST_SUBJECT.subject_id,
+        arms=[SweepArmRecord(label="only", model="extractor-v2")],
+        max_concurrent_arms=1,
+        outcome=outcome,  # type: ignore[arg-type]
+        **fields,
+    )
+    off_loop(host.eval_host.storage.save_sweep, sweep)
+    return sweep
+
+
+@pytest.mark.parametrize(
+    ("outcome", "fields", "refusal", "remedy"),
+    [
+        ("completed", {}, "completed; there is nothing left of it to run", "start it again (sweep_launch)"),
+        (
+            "running",
+            {"lease": JobLease(holder="another-process", expires_at="2099-01-01T00:00:00+00:00")},
+            "is still running; a live sweep is never taken up",
+            "cancel it (job_cancel) or wait for it to end",
+        ),
+        ("failed", {"detail": "arm 'only' was refused"}, "failed (arm 'only' was refused)", "fix what failed it"),
+    ],
+    ids=["completed", "live", "failed"],
+)
+async def test_job_resume_refuses_a_sweep_that_completed_failed_or_is_live_with_its_remedy(
+    tool: Any, outcome: str, fields: dict[str, Any], refusal: str, remedy: str
+) -> None:
+    host = off_loop(ops_fixture, store=ClockedStore()).host
+    sweep = _ended_sweep(host, outcome, **fields)
+
+    refused = await _call(tool, host, action="job_resume", job_id=f"sweep:{sweep.id}")
+
+    assert refused.is_error and refusal in refused.text, refused.text
+    assert remedy in refused.text.splitlines()[-1]
 
 
 # =============================================================================
@@ -305,3 +352,137 @@ async def test_the_jobs_resumable_action_lists_a_lost_run_for_its_callers_scope(
         3 * K,
     )
     assert outcome.structured["drift"] == "checked_on_resume"
+
+
+#: The loss every lost record in the listing's seeds carries.
+LOST = JobLoss(at="2026-10-06T00:00:00+00:00", cause="its lease lapsed")
+
+
+def _sweep_of(storage: EvalStorage, sweep_id: str, arms: list[SweepArmRecord], **fields: Any) -> EvalSweep:
+    sweep = EvalSweep(
+        id=sweep_id,
+        scope_id=SCOPE,
+        campaign_id="campaign",
+        template_id="tpl-1",
+        subject_id="subject",
+        arms=arms,
+        max_concurrent_arms=1,
+        arm_schedule="sequential",
+        **fields,
+    )
+    storage.save_sweep(sweep)
+    return sweep
+
+
+def test_jobs_resumable_lists_a_lost_sweep_and_a_lost_launch_once_with_their_arms_under_them(
+    store: DocumentStore,
+) -> None:
+    storage = EvalStorage(store)
+    lost = {"status": "cancelled", "lost": LOST}
+    for run_id in ("arm-lost", "launch-lost", "old-arm", "alone"):
+        _seed(storage, run_id, **lost)
+    for run_id in ("arm-done", "spent-arm"):
+        _seed(storage, run_id, status="completed")
+    _seed(storage, "launch-done", status="completed", candidate_model="opus")
+    _row(storage, "arm-lost", "tc-1", 1, cost_usd=0.1)
+    recorded = {"arguments": SweepLaunchArguments(k_runs=2)}
+    sweep = _sweep_of(
+        storage,
+        "sweep-lost",
+        [
+            SweepArmRecord(label="a", model="sonnet", run_id="arm-lost"),
+            SweepArmRecord(label="b", model="sonnet", run_id="arm-done"),
+            SweepArmRecord(label="c", model="sonnet", arguments=SweepArmArguments(overlays={"style": "c"})),
+        ],
+        outcome="cancelled",
+        lost=LOST,
+        detail=f"lost: {LOST.cause}",
+        created_at="2026-10-08T00:00:00+00:00",
+        **recorded,
+    )
+    old = _sweep_of(
+        storage,
+        "sweep-old",
+        [SweepArmRecord(label="x", model="sonnet", run_id="old-arm"), SweepArmRecord(label="y", model="sonnet")],
+        outcome="timed_out",
+        detail="its budget ran out",
+        created_at="2026-10-06T00:00:00+00:00",
+    )
+    _sweep_of(
+        storage, "sweep-completed", [SweepArmRecord(label="z", model="sonnet", run_id="arm-done")], outcome="completed"
+    )
+    _sweep_of(
+        storage,
+        "sweep-spent",
+        [SweepArmRecord(label="s", model="sonnet", run_id="spent-arm")],
+        outcome="cancelled",
+        lost=LOST,
+        **recorded,
+    )
+    launch = EvalLaunch(
+        id="launch-1",
+        scope_id=SCOPE,
+        template_id="tpl-1",
+        subject_id="subject",
+        models=["sonnet", "opus"],
+        k_runs=2,
+        n_variations=0,
+        run_ids=["launch-lost", "launch-done"],
+        outcome="cancelled",
+        lost=LOST,
+        created_at="2026-10-07T00:00:00+00:00",
+    )
+    storage.save_job_record(launch.to_dict(), if_match=None)
+
+    listing = resumable_jobs(storage, [SCOPE])
+
+    assert [job.run_id for job in listing.jobs] == ["alone"], "an arm's run is listed under its sweep or launch only"
+    assert [group.job_id for group in listing.groups] == [
+        f"sweep:{sweep.id}",
+        "launch:launch-1",
+        f"sweep:{old.id}",
+    ], "newest first; a completed sweep, and a lost one with nothing left to take up, are not listed"
+    lost_sweep, lost_launch, old_sweep = listing.groups
+    assert (lost_sweep.kind, lost_sweep.ended, lost_sweep.reason, lost_sweep.note) == (
+        "sweep",
+        "lost",
+        LOST.cause,
+        None,
+    )
+    assert lost_sweep.arms == {"a": "cancelled", "b": "completed", "c": "not_launched"}
+    (arm,) = lost_sweep.runs
+    assert (arm.job_id, arm.cells_done, arm.spent_usd) == ("run:arm-lost", 1, pytest.approx(0.1))
+    assert (lost_launch.kind, lost_launch.ended) == ("launch", "lost")
+    assert lost_launch.arms == {"sonnet": "cancelled", "opus": "completed"}
+    assert [run.run_id for run in lost_launch.runs] == ["launch-lost"]
+    assert (old_sweep.ended, old_sweep.reason, old_sweep.arms) == (
+        "timed_out",
+        "its budget ran out",
+        {"x": "cancelled", "y": "not_launched"},
+    )
+    assert old_sweep.note is not None and "'y'" in old_sweep.note and "run_launch" in old_sweep.note
+
+
+def test_jobs_resumable_counts_each_matching_row_it_cannot_read_and_lists_the_rest(store: DocumentStore) -> None:
+    storage = EvalStorage(store)
+    _seed(storage, "readable", status="cancelled")
+    retired = {"retired_knob": 1}
+    store.upsert(make_eval_run(id="unreadable-lost", scope_id=SCOPE, status="cancelled").to_dict() | retired)
+    store.upsert(make_eval_run(id="unreadable-stopped", scope_id=SCOPE, status="budget_stopped").to_dict() | retired)
+    store.upsert(make_eval_run(id="unreadable-completed", scope_id=SCOPE, status="completed").to_dict() | retired)
+    sweep = EvalSweep(
+        scope_id=SCOPE,
+        campaign_id="campaign",
+        template_id="tpl-1",
+        subject_id="subject",
+        arms=[SweepArmRecord(label="a", model="sonnet")],
+        max_concurrent_arms=1,
+        outcome="cancelled",
+    )
+    store.upsert(sweep.to_dict() | retired)
+
+    listing = resumable_jobs(storage, [SCOPE])
+
+    assert [job.run_id for job in listing.jobs] == ["readable"]
+    assert listing.groups == []
+    assert listing.unreadable == 3, "two runs and a sweep that would be offered; a completed run is not counted"

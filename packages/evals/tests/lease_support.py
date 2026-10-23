@@ -1,6 +1,6 @@
 """Two processes over one store, a store clock a test sets, and a launched run held mid-flight: lease test support.
 
-Shared by ``test_job_leases.py`` and ``test_run_resume.py``. Two "processes" are two launching hosts over one store,
+Shared by ``test_job_leases.py``, ``test_run_resume.py`` and ``test_sweep_resume.py``. Two "processes" are two launching hosts over one store,
 each with its own job manager and its own leases, so its own holder id — which is what two processes sharing a
 database are to the engine.
 """
@@ -14,13 +14,23 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.ops import LaunchArguments, OpsHost, job_poll, run_job_id, run_launch
+from threetears.evals.ops import LaunchArguments, OpsHost, SweepArguments, SweepArm, job_poll, run_job_id, run_launch
+from threetears.evals.schema.models import ArmSchedule
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.fixtures.toyhost.kind import ScriptedExtractionClient
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, TOYHOST_SUBJECT
 
-__all__ = ["T0", "ClockedStore", "HeldGate", "held_extraction", "launched_run", "other_process", "until"]
+__all__ = [
+    "T0",
+    "ClockedStore",
+    "HeldGate",
+    "held_extraction",
+    "launched_run",
+    "other_process",
+    "style_sweep",
+    "until",
+]
 
 #: When the clocked store's clock starts.
 T0 = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
@@ -110,3 +120,16 @@ async def launched_run(host: OpsHost, k_runs: int = 1, *, max_cost_usd: float | 
         while (await job_poll(host, run_job_id(run_ids[0]), TOYHOST_SCOPE)).status == "pending":
             await asyncio.sleep(0.01)
     return run_ids[0]
+
+
+def style_sweep(styles: tuple[str, ...], *, arm_schedule: ArmSchedule | None, k_runs: int = 1) -> SweepArguments:
+    """A sweep of one arm per prompt style, each on the first toy model and labelled by its style."""
+    return SweepArguments(
+        template_id=toyhost_template().id,
+        subject_id=TOYHOST_SUBJECT.subject_id,
+        campaign_name="prompt styles",
+        campaign_behavior="extraction accuracy",
+        k_runs=k_runs,
+        arms=[SweepArm(model=RUN_MODELS[0], label=style, overlays={"prompt_style": style}) for style in styles],
+        arm_schedule=arm_schedule,
+    )

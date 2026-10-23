@@ -1270,6 +1270,38 @@ class EvalStorage:
         """Load a sweep's record by id within a scope."""
         return self._load(EvalSweep, sweep_id, scope_id)
 
+    def query_job_records_in_outcome[R: EvalDocumentModel](
+        self, model: type[R], scope_id: str, outcomes: Iterable[str], /
+    ) -> tuple[list[R], int]:
+        """The scope's job records of ``model``'s type whose ``outcome`` is any of ``outcomes``, in one read, settled
+        as every read settles one, each row the model refuses left out and counted.
+
+        For any job record that ends with an ``outcome`` (a sweep's, a launch's). When ``outcomes`` holds
+        ``cancelled``, a record still stored ``running`` whose lease has lapsed is read too, written lost
+        (``cancelled``), and matched. The rows are matched by the store's ``field_in``, which every backend answers.
+
+        :param model: The records' model; its ``doc_type`` selects the rows.
+        :ptype model: type[R]
+        :param scope_id: The scope whose records to read.
+        :ptype scope_id: str
+        :param outcomes: The outcomes to match.
+        :ptype outcomes: Iterable[str]
+        :return: The matching records that read, settled; and how many rows stored with a matching outcome this
+            build's model refused.
+        :rtype: tuple[list[R], int]
+        """
+        wanted = set(outcomes)
+        asked = wanted | ({"running"} if "cancelled" in wanted else set())
+        doc_type = str(model.model_fields["doc_type"].default)
+        rows = self._store.by_doc_type(doc_type, scope_id, field_in={"outcome": sorted(asked)}) if asked else []
+        read, refused = self._hydrate_isolating(model, rows)
+        stored_matching = {row.get("id") for row in rows if row.get("outcome") in wanted}
+        settled = self._settled(model, read)
+        return (
+            [record for record in settled if getattr(record, "outcome") in wanted],
+            sum(1 for row in refused if row.row_id in stored_matching),
+        )
+
     # =========================================================================
     # EvalCampaign — the analysis hub
     # =========================================================================

@@ -308,7 +308,16 @@ CORE_SCHEMA_VERSION: int = 15
 #:   the cells stored then, the host's labels at its start and the cost cap it ran under — and is in no identity, key
 #:   or digest. ``EvalResult.superseded_spend_usd`` (default 0: written over nothing, or stored before the field
 #:   existed) carries what the cut-short attempts a row was written over spent, which the run's cost cap counts; no
-#:   cost total reads it.
+#:   cost total reads it. A sweep records what it launches each arm with, so one taken up again launches an arm that
+#:   never launched exactly as it would have: ``EvalSweep.arguments`` (a ``SweepLaunchArguments``: repeats, judge and
+#:   simulator pins, cost cap, cell deadline, case set, latency declaration) and ``SweepArmRecord.arguments`` (a
+#:   ``SweepArmArguments``: overlays, apparatus settings, the arm's own judge and simulator), each default None:
+#:   stored before the fields existed, which a take-up reads as an arm it cannot launch, and refuses naming it.
+#:   ``EvalSweep.launch_group_id`` (default None: arms launched arm by arm, or stored before the field existed, whose
+#:   interleaved arms' runs carry it) is the group an interleaved sweep's arms run in, which orders their cells.
+#:   ``EvalSweep.lifetimes`` (default empty: a sweep never taken up again) records each holding of a sweep taken up
+#:   again (``SweepLifetime``: holder, epoch, start, how it ended, the cap its arms ran under). None is in any
+#:   identity, key or digest.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 CORE_SCHEMA_MINOR: int = 7
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
