@@ -40,26 +40,16 @@ class AspectDeclaration(EvalDocumentModel):
     )
     asked_at: str | None = Field(
         description=(
-            "When this aspect was asked its question in full (ISO-8601), which the bundle discloses where it is later "
-            "than the aspect's first run (`reading_scope.question_after_runs`): the aspect's own time (an adopted "
-            "aspect keeps its source's). A bundle dates it no earlier than the control's `named_at` where the control "
-            "was named after the aspect's first result, since a control chosen once the evidence existed was chosen "
-            "with it in view. Never a time a later edit of the design re-stamps. None when no time is recorded, "
-            "disclosed as possibly set after the runs."
-        )
-    )
-    question_declared_at: str | None = Field(
-        description=(
-            "When the campaign's question was worded as `question` reads (ISO-8601): later than `asked_at` when an "
-            "adoption added or joined the words, which the page says were declared after the evidence where that is "
-            "later than the aspect's first result, while this aspect's readings keep `asked_at`. None when unrecorded."
+            "When this aspect was put to the campaign's question (ISO-8601), which is also when its bars, and a margin "
+            "or floor declared with it, were set: the aspect's own time (an adopted aspect keeps its source's). Never "
+            "a time a later edit of the design re-stamps. The bundle names each criterion set after the aspect's "
+            "first result (`reading_scope.late_criteria`). None when no time is recorded."
         )
     )
     margin_declared_at: str | None = Field(
         description=(
-            "When `margin` was declared (ISO-8601): `asked_at`, or the later time a margin was added at adoption, "
-            "which the page says was declared after the evidence where that is later than the aspect's first result. "
-            "None with no margin or no recorded time."
+            "When `margin` was set (ISO-8601): `asked_at`, or the later time a margin was added at adoption. None with "
+            "no margin or no recorded time."
         )
     )
     design: AspectDesign = Field(
@@ -75,14 +65,14 @@ class AspectDeclaration(EvalDocumentModel):
     margin: float | None = Field(
         description=(
             "How far, in points of a 0-100 pass rate, a candidate may fall below the control on this aspect before it "
-            "is shown worse. None = no margin declared: shown better or unclear, never shown worse."
+            "is shown worse. None = no margin declared: shown better or unclear, never shown worse or no worse than "
+            "the margin."
         )
     )
     floors: list[Floor] = Field(
         description=(
             "The floors on this aspect, in declaration order. Empty = none. A floor added at adoption carries its own "
-            "`declared_at`, declared after the evidence where that is later than the aspect's first result; one with "
-            "none was declared with the aspect's question (`asked_at`)."
+            "`declared_at`; one with none was set with the aspect (`asked_at`)."
         )
     )
     declared_at: str | None = Field(description="When this aspect's design was declared (ISO-8601).")
@@ -185,7 +175,6 @@ def _view(campaign: EvalCampaign, aspect: Aspect) -> AspectView:
         else AspectDeclaration(
             question=campaign.question,
             asked_at=aspect.asked_at,
-            question_declared_at=campaign.declared_at,
             margin_declared_at=(aspect.margin_declared_at or aspect.asked_at) if margin is not None else None,
             design=aspect.design,
             control=campaign.control,

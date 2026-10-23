@@ -296,7 +296,40 @@ CORE_SCHEMA_VERSION: int = 15
 #:   identity, context key or digest. An older build reads such a run at this newer minor, keeping the field
 #:   unread, so it ends a sweep at that arm as it always did; it never refuses the run.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 6
+#: - **v15.7** — a run can be taken up again by another process, and every write says which holding made it:
+#:   ``JobLease.epoch`` (default 0: the job's first holding, or a lease stored before the field existed) on every job
+#:   record's lease, and ``EvalResult.lease_epoch`` (default 0: written outside a leased run, or stored before the
+#:   field existed), the epoch of the run's lease the row was written under. A run's cell result takes an id derived
+#:   from its run, case, model and repetition, so one cell has one row; a holding writes a cell's row only where none
+#:   is stored or the stored one is from a lower epoch, and a holding whose epoch was passed writes nothing more on
+#:   the run. Both fields read 0 where absent, which is what every value stored before them was written under; an
+#:   older build ignores them and does not hold to the epoch. ``EvalRun.lifetimes`` (default empty: a run never taken
+#:   up again) records each holding of a run taken up again — its holder and epoch, when it began and how it ended,
+#:   the cells stored then, the host's labels at its start, the cost cap it ran under, and when its template was
+#:   edited for a holding that began after an edit the run's frozen fields show measured nothing
+#:   (``RunLifetime.template_edited_at``, default None) — and is in no identity, key or digest.
+#:   ``EvalRun.template_digest`` (default None: stored before the field existed, or assembled without a launch) is
+#:   the digest of what the run's template said that it measures, frozen at launch; a take-up refuses when it moved, and
+#:   keeps refusing a run without it whose template was edited after it began. In no identity or key.
+#:   ``EvalResult.superseded_spend_usd`` (default 0: written over nothing, or stored before the field existed) carries
+#:   what the cut-short attempts a row was written over spent, which the run's cost cap counts; no cost total reads it.
+#:   ``EvalResult.metered_calls`` (default None: a cell run with no metered-call ledger, or stored before the field
+#:   existed) is the cell's metered calls, its overwritten attempts' included, which a run taken up again seeds its
+#:   metered-call ceiling from. ``EvalResult.account_refused`` (default False: stored before the field existed) marks a
+#:   cell the provider account paying for the run refused, which a run taken up again runs again. ``JobLoss.epoch``
+#:   (default 0: stored before the field existed) keeps the epoch of the holding that was lost, since a shutdown
+#:   releases the lease as it writes the loss; a take-up holds an epoch above it. A sweep records what it launches each
+#:   arm with, so one taken up again launches an arm that never launched exactly as it would have:
+#:   ``EvalSweep.arguments`` (a ``SweepLaunchArguments``: repeats, judge and simulator pins, cost cap, cell deadline,
+#:   case set, latency declaration) and ``SweepArmRecord.arguments`` (a ``SweepArmArguments``: overlays, apparatus
+#:   settings, the arm's own judge and simulator), each default None: stored before the fields existed, which a take-up
+#:   reads as an arm it cannot launch, and refuses naming it. ``EvalSweep.launch_group_id`` (default None: arms launched
+#:   arm by arm, or stored before the field existed, whose interleaved arms' runs carry it) is the group an interleaved
+#:   sweep's arms run in, which orders their cells. ``EvalSweep.lifetimes`` (default empty: a sweep never taken up
+#:   again) records each holding of a sweep taken up again (``SweepLifetime``: holder, epoch, start, how it ended, the
+#:   cap its arms ran under). None is in any identity, key or digest.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 7
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When
@@ -471,14 +504,14 @@ DURABLE_BASELINE_VERSION: Final[int] = 15
 #:   left the core with its stored bytes, and its shape is now ``question``, ``arms`` (``CampaignArm``, the control
 #:   first), ``aspects`` (``Aspect``: label, template, margin, design, runs, when its design was declared),
 #:   ``floors`` (``Floor``), ``declared_at`` and ``declared_by`` (when, and by whom, the question was worded as it
-#:   reads) and ``call`` (``CampaignCall``); ``template_id``, ``run_ids`` and ``declared_design`` are gone. What
-#:   decides pre-registration is each aspect's own ``asked_at``, kept from its source when a campaign adopts it; what
-#:   is added later carries its own time (``Aspect.margin_declared_at``, ``Floor.declared_at``,
-#:   ``CampaignArm.named_at``). The campaign's own rules are closed (the closed list above). The step
+#:   reads) and ``call`` (``CampaignCall``); ``template_id``, ``run_ids`` and ``declared_design`` are gone. Each
+#:   criterion's time is read against its aspect's first result: the aspect's own ``asked_at``, kept from its source
+#:   when a campaign adopts it, and the time of its bars and of a margin or floor declared with it; what is added
+#:   later carries its own time (``Aspect.margin_declared_at``, ``Floor.declared_at``, ``CampaignArm.named_at``). The campaign's own rules are closed (the closed list above). The step
 #:   (``upgrade_campaign_v15``) reads a v15 campaign, core or durable, as one aspect labelled with its behavior; a
 #:   question's id, lineage and retirement are dropped with it, since the campaign asks one question. The step is
-#:   total: a run named twice is held once, and a question time it cannot order leaves the question undated, read
-#:   as asked after the evidence, rather than refusing the document. Every other
+#:   total: a run named twice is held once, and a question time it cannot order leaves the aspect undated, its
+#:   criteria disclosed as carrying no recorded time, rather than refusing the document. Every other
 #:   durable type passes through unchanged but for its number. Costs, recorded rather than avoided: a build before
 #:   this one refuses every durable document this one writes (a durable major is never read back by an older
 #:   build, so a fleet does not roll back past it once it has written); a core baseline reset no longer deletes

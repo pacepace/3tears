@@ -25,7 +25,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Literal, Self, get_args
 
-from pydantic import Field, computed_field, field_validator, model_validator
+from pydantic import ConfigDict, Field, computed_field, field_validator, model_validator
 
 from threetears.evals.kernel.authored import AuthoredCampaignAnalysis, Confidence
 from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCall, Floor
@@ -36,6 +36,7 @@ from threetears.evals.schema.base import (
     CoreDocumentModel,
     CoreShapeModel,
     DurableDocumentModel,
+    EvalBaseModel,
     EvalDocumentModel,
     VerbatimJsonObject,
 )
@@ -43,12 +44,14 @@ from threetears.evals.schema.job_lease import (
     CancelRequestReasonField,
     CancelRequestedAtField,
     FaultsField,
+    JobLoss,
     LeaseField,
     LostField,
 )
 from threetears.evals.schema.refusal import RefusalField
 from threetears.evals.schema.models import (
     ArmSchedule,
+    CaseSetRef,
     CoreSchemaVersion,
     DurableSchemaVersion,
     SchemaVersion,
@@ -1308,12 +1311,132 @@ class EvalGenerationSlot(CoreDocumentModel):
 SweepOutcome = Literal["running", "completed", "failed", "cancelled", "timed_out"]
 
 
+class SweepArmArguments(EvalBaseModel, CoreShapeModel):
+    """What one arm of a sweep launches with beyond its model and what its siblings share: what an arm that never
+    launched is launched with when its sweep is taken up again, exactly as the sweep would have launched it.
+
+    :ivar overlays: The knobs the arm turns, by field, as the sweep named them.
+    :ivar apparatus_settings: The host-declared apparatus values its rig is set up with, as named.
+    :ivar judge_model: The arm's own judge, when it named one.
+    :ivar simulator_model: The arm's own simulated user's model, when it named one.
+    """
+
+    overlays: dict[str, Any] | None = Field(default=None, description="The knobs the arm turns, by field.")
+    apparatus_settings: dict[str, Any] | None = Field(
+        default=None, description="Host-declared apparatus values the arm's rig is set up with."
+    )
+    judge_model: str | None = Field(default=None, min_length=1, description="The arm's own judge, if it named one.")
+    simulator_model: str | None = Field(
+        default=None, min_length=1, description="The arm's own simulated user's model, if it named one."
+    )
+
+
+class SweepLaunchArguments(EvalBaseModel, CoreShapeModel):
+    """What a sweep launches every arm with: the settings its arms share, as it was asked for them.
+
+    With each arm's own (:class:`SweepArmArguments`), the launch of an arm is fully named here, so a sweep taken up
+    again launches an arm that never launched exactly as it would have. The judge and simulator are the sweep's
+    pins as asked; a sweep launching arm after arm still pins every later arm to what its first arm's run recorded.
+
+    :ivar k_runs: Repeats per case.
+    :ivar judge_model: The sweep's judge pin, or ``None`` for the role's default.
+    :ivar simulator_model: The sweep's simulator pin, or ``None`` for the role's default.
+    :ivar max_cost_usd: Each arm's cost cap, or ``None`` for the host's. A take-up that raised it records the raised
+        one here, and each holding of the sweep records the cap it ran under.
+    :ivar cell_timeout_s: Each cell's deadline, or ``None`` for the kind's.
+    :ivar case_set: The case set every arm runs, or ``None`` for the kind's own choice.
+    :ivar measure_latency: Whether latency is under test.
+    """
+
+    k_runs: int = Field(ge=1, description="Repeats per case.")
+    judge_model: str | None = Field(default=None, description="The sweep's judge pin; None for the role's default.")
+    simulator_model: str | None = Field(
+        default=None, description="The sweep's simulator pin; None for the role's default."
+    )
+    max_cost_usd: float | None = Field(
+        default=None, description="Each arm's cost cap, raised by a take-up that raised it; None for the host's."
+    )
+    cell_timeout_s: float | None = Field(default=None, description="Each cell's deadline; None for the kind's.")
+    case_set: CaseSetRef | None = Field(default=None, description="The case set every arm runs; None for the kind's.")
+    measure_latency: bool = Field(default=False, description="Whether latency is under test.")
+
+
+class SweepLifetime(EvalBaseModel, CoreShapeModel):
+    """One holding of a sweep by one process, from when it took the sweep up to how that holding ended.
+
+    A sweep taken up again after its holding ended (lost, cancelled or timed out) spans several holdings, each one
+    entry of ``EvalSweep.lifetimes``. A sibling of a run's lifetime rather than the same model, because a sweep ends
+    as a job does (``SweepOutcome``), never with a run's statuses, and holds no cells of its own.
+
+    :ivar holder: The process that held the sweep, or ``None`` when its record no longer named it.
+    :ivar epoch: The lease epoch of the holding (``JobLease.epoch``).
+    :ivar started_at: When the holding began: the sweep's creation for its first, the take-up for each later one.
+    :ivar outcome: ``running`` while the holding runs; the outcome it ended with once it ended.
+    :ivar ended_at: When it ended; ``None`` while it runs.
+    :ivar detail: Why it ended other than completed, as the sweep's detail said.
+    :ivar lost: The loss, for a holding that was lost.
+    :ivar max_cost_usd: The cost cap each arm ran under in the holding; ``None`` for the host's, or unrecorded.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    holder: str | None = Field(
+        default=None, description="The process that held the sweep; None when its record no longer named it."
+    )
+    epoch: int = Field(default=0, ge=0, description="The lease epoch of the holding (JobLease.epoch).")
+    started_at: str = Field(min_length=1, description="When the holding began (ISO-8601, UTC).")
+    outcome: SweepOutcome = Field(
+        default="running", description="running while the holding runs; the outcome it ended with once it ended."
+    )
+    ended_at: str | None = Field(default=None, description="When the holding ended; None while it runs.")
+    detail: str | None = Field(default=None, description="Why it ended other than completed.")
+    lost: JobLoss | None = Field(default=None, description="The loss, for a holding that was lost.")
+    max_cost_usd: float | None = Field(
+        default=None, description="The cost cap each arm ran under in the holding; None for the host's."
+    )
+
+
+def ended_sweep_lifetimes(
+    lifetimes: list[SweepLifetime], *, outcome: SweepOutcome, at: str, detail: str | None, lost: JobLoss | None = None
+) -> list[SweepLifetime]:
+    """A sweep's lifetimes with its open holding closed as the sweep ended: for a take-up, which records the holding
+    that ended.
+
+    A sweep's current holding, while it is recorded, is closed from the sweep's own ending by its model
+    (``EvalSweep.lifetimes``); a take-up of a sweep never taken up before builds the entry of the holding that ended
+    and closes it here. Lifetimes whose last holding has already ended are returned as they are.
+
+    :param lifetimes: The sweep's lifetimes.
+    :ptype lifetimes: list[SweepLifetime]
+    :param outcome: How it ended.
+    :ptype outcome: SweepOutcome
+    :param at: When.
+    :ptype at: str
+    :param detail: Why, when it did not complete.
+    :ptype detail: str | None
+    :param lost: The loss, when it was lost.
+    :ptype lost: JobLoss | None
+    :return: The lifetimes, the last one closed when it was open.
+    :rtype: list[SweepLifetime]
+    """
+    if not lifetimes or lifetimes[-1].outcome != "running":
+        return list(lifetimes)
+    closed = lifetimes[-1].model_copy(update={"outcome": outcome, "ended_at": at, "detail": detail, "lost": lost})
+    return [*lifetimes[:-1], closed]
+
+
 class SweepArmRecord(EvalDocumentModel, CoreShapeModel):
-    """One arm of a sweep as its record carries it: what it is called, its model, and its run once launched."""
+    """One arm of a sweep as its record carries it: what it is called, its model, what it launches with, and its run
+    once launched."""
 
     label: str = Field(min_length=1, description="The arm's name, unique within the sweep.")
     model: str = Field(min_length=1, description="The arm's candidate model.")
     run_id: str | None = Field(default=None, description="The arm's run, once launched; None before, or never.")
+    arguments: SweepArmArguments | None = Field(
+        default=None,
+        description="What the arm launches with beyond its model; None for a sweep stored before arms recorded it, "
+        "whose arm that never launched cannot be launched when the sweep is taken up again.",
+    )
 
 
 class EvalSweep(CoreDocumentModel):
@@ -1360,6 +1483,23 @@ class EvalSweep(CoreDocumentModel):
     lost: LostField = None
     faults: FaultsField = Field(default_factory=list)
     refusal: RefusalField = None
+    arguments: SweepLaunchArguments | None = Field(
+        default=None,
+        description="What every arm launches with beside its own arguments (SweepArmRecord.arguments); None for a "
+        "sweep stored before the field existed.",
+    )
+    launch_group_id: str | None = Field(
+        default=None,
+        description="The launch group an interleaved sweep's arms run in, whose id orders every arm's cells alike, so "
+        "a take-up runs its arms in one group under it; None for a sweep that launches arm by arm, or one stored "
+        "before the field existed (its arms' runs carry it).",
+    )
+    lifetimes: list[SweepLifetime] = Field(
+        default_factory=list,
+        description="Each holding of the sweep by a process, once it has been taken up again after its holding ended: "
+        "the first holding's entry, closed as it ended, then one per take-up, the last one open while it runs. Empty "
+        "on a sweep never taken up again, whose one holding the sweep itself describes.",
+    )
 
     @field_validator("doc_type")
     @classmethod
@@ -1368,6 +1508,31 @@ class EvalSweep(CoreDocumentModel):
         if v != "eval_sweep":
             raise ValueError(f"doc_type must be 'eval_sweep', got '{v}'")
         return v
+
+    @model_validator(mode="after")
+    def _current_holding_ends_with_the_sweep(self) -> Self:
+        """Read a sweep taken up again that has ended with its current holding (its last lifetime) ended as it did.
+
+        The sweep's own fields — its outcome, when it ended, its detail and its loss — are the one record of how its
+        current holding ended, and the entry is derived from them each time the sweep is built or a field of it is
+        set, as a run's is (``EvalRun.lifetimes``). While the sweep has ended its last lifetime is its current
+        holding: a take-up appends a new one only as it reopens the sweep ``running``.
+        """
+        if self.outcome == "running" or not self.lifetimes:
+            return self
+        last = self.lifetimes[-1]
+        ended = last.model_copy(
+            update={
+                "outcome": self.outcome,
+                "ended_at": self.ended_at or last.ended_at,
+                "detail": self.detail,
+                "lost": self.lost,
+            }
+        )
+        if ended != last:
+            # Written past assignment validation, which would run this validator again for the same answer.
+            self.__dict__["lifetimes"] = [*self.lifetimes[:-1], ended]
+        return self
 
 
 class EvalInsight(EvalDocumentModel):
@@ -1438,9 +1603,13 @@ __all__ = [
     "GenerationProvenance",
     "LeverCoverage",
     "RunIndexEntry",
+    "SweepArmArguments",
     "SweepArmRecord",
+    "SweepLaunchArguments",
+    "SweepLifetime",
     "SweepOutcome",
     "VariantIndexEntry",
     "derive_window",
+    "ended_sweep_lifetimes",
     "evidence_tier_of",
 ]

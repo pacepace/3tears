@@ -159,16 +159,23 @@ campaign = await run_blocking(  # a store write, so it runs off the event loop t
 | `aspects[].design.crossing`, `skipped_cells` | Which combinations of levels (cells) you meant to run: `full`, or `star` (each axis's first level is the centre; cells moving more than one axis from it are skipped), less any `skipped_cells`. `bundle.declared_crossing` then reads a skipped cell as `skipped_by_design`, never a gap, and an unrun cell you meant to run as `not_run`. With neither, no cell is read either way. | a partial grid |
 | `floors` | Lines a candidate is warned for crossing, each `{aspect, clause}` on a declared aspect: `{kind: "rate_drop", max_points, reading?}` or `{kind: "cost_lower"}`, typed, never words. A floor reads a candidate against the control, so a campaign naming none is refused one. A broken floor opens the page; no floor decides anything ([declaring them](adopting-a-host.md#declaring-what-a-campaign-asks)). | a warning nobody can miss |
 
-**A question asked after the runs is said, not demoted.** Each aspect keeps the time its question was asked
-(`asked_at`). A question asked after that aspect's first run reads as one asked before it: the operator is trusted
-to have fixed it in good faith (in a plan, say, before the runs), and every page saying the aspect's readings also
-says when the question was set and when the runs began, so a reader can judge. A control named after the aspect's
-first result (`set_campaign_control`) dates the question at the naming. The declaration is frozen once any aspect
-holds a run: `update_campaign` (the `campaign_update` action) refuses `question`, `aspects` and `floors` in any
-form from then on, and names a control only while none is. To amend a question after the runs, create a new
-campaign that adopts the aspects it keeps (`aspects_from`): each adopted aspect keeps its own `asked_at`, so nothing
-re-dates its question, and whatever the new campaign adds (a margin, a floor, an arm, the question's new words) is
-dated now and marked on the page as declared after the runs.
+**A criterion set after its readings is said, not demoted; data age is never a defect.** What pre-registration
+guards against is criterion selection: a margin, floor, bar, control or aspect chosen once the readings it judges
+could be seen. Each is dated where it is stored (the aspect's `asked_at`, which also dates its bars and a margin or
+floor declared with it; `margin_declared_at`; `Floor.declared_at`; the control's `named_at`) and read against the
+first stored result of its aspect. One set later reads as one set before, since the operator is trusted to have
+fixed it in good faith, and every page saying the aspect's readings names it once with its time
+(`reading_scope.late_criteria`); one stored by an older build with no time says its time is not recorded. When the
+runs ran, or when the campaign holding them was declared, never counts: a run whose measurement context is unchanged
+reads exactly like a fresh one, and rerunning it to make it count only buys the same reading again. The declaration
+is frozen once any aspect holds a run: `update_campaign` (the `campaign_update` action) refuses `question`,
+`aspects` and `floors` in any form from then on, and names a control only while none is. To amend a question after
+the runs, create a new campaign that adopts the aspects it keeps (`aspects_from`): each adopted aspect keeps its
+times, so it reads as the campaign declared before the runs did, and whatever the new campaign adds (a margin, a
+floor, an arm) is dated now and named on the page where it came after its readings. An aspect adopted from a
+campaign that asked no question is the known exception: it keeps its source's time when the new campaign first puts
+it to a question, so that is not named. Runs added to an aspect (`campaign_runs_add`) date nothing: where their results
+predate the aspect's criteria, those criteria are named as set after their readings.
 
 **Declare a design when you know the question; explore when you do not.** Either is a choice you state when the
 campaign is created: a `design` on an aspect, or `exploratory=True`. Declare
@@ -355,12 +362,21 @@ A choice's pairs have no direction, so every pair on every aspect is one family.
   shown better or worse by chance more often than 5%, and the page says what its correction covers.
 - **Floors are not corrected.** A floor warns, and a warning that fires less often for every floor added is no
   warning, so each reads at its nominal 95%.
+- **No worse than the margin is not corrected either.** A row neither shown better nor shown worse reads
+  `within_margin` where the floor's own reading of its pass rate, at 95%, keeps the drop within the margin. What
+  that reading feeds is a claim made only when every part holds: a candidate is no worse only where it holds on
+  every asked aspect, and such an intersection-union claim errs at most α however many aspects it has, so correcting
+  each part would only make the claim harder to reach without making it safer. The cases that would settle an
+  unclear row are counted at the same level, so a row's count and its floor's are one count.
 
 ## Order and time
 
-**Launch compared arms together, and never let running order follow the lever.** Throughput and load
-drift over hours. The engine shuffles cell order within a run and discloses comparisons whose runs did not
-overlap in time (`measurement_window_disclosure`).
+**Never let running order follow the lever; interleaving absorbs drift for free.** A provider's throughput and
+load drift over hours, so a sweep run in lever order can credit the drift to the lever. The engine shuffles cell order
+within a run, and interleaves a launch's arms by default, taking their cases in turn, which costs nothing and absorbs
+that drift across every arm. Arms run apart are not a weaker experiment: measured minutes, hours or days apart, they
+are one experiment while nothing that decides their result changed (owner, 2026-10-23), so no page discounts them. The
+lens tools (`runs_compare`, comparison sets) state when two runs' spans did not overlap, as a fact.
 *Evidence:* agent with tools, a 5-hour sweep run in lever order, 2026-08, Spearman ρ = 0.87 between running position and latency; retrieval sub-agent, 2026-09, throughput drifting 9–25 tok/s across an afternoon explained a ~205 s tail credited to a lever; replicated.
 
 ## Metrics that mislead

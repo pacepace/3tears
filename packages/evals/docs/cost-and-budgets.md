@@ -35,13 +35,39 @@ The sections below state each rule exactly.
 mid-flight ends `budget_stopped`, with the results it already delivered kept: an honest outcome, not
 an infrastructure failure.
 
-**Both per-run ceilings are read between cells, against what has landed.** The cost cap and the metered-call
-ceiling (`max_metered_calls`) are checked before each cell starts, against the recorded cells only: their
-`cost_usd` for the cap, their metered calls for the ceiling. Once either is reached no new cell starts, the cells
-already running finish whole, and the run ends `budget_stopped` once they are saved. **Neither ever refuses a call
-inside a cell.** A refusal inside a cell made the cell that happened to ask after the ceiling was spent the
-contaminated one, so at width above 1 two identical runs contaminated different cells; a cell is the unit of
-measurement, and it is measured whole or never begun.
+**A stopped run resumes as itself** (`job_resume`, see [Operations and jobs](serving.md#operations-and-jobs)). A
+`budget_stopped` run resumes under a cap above what it has spent, so one its cost cap stopped needs a raised
+`max_cost_usd`, which `jobs_resumable` names; one the wall clock stopped resumes as it is. An `exhausted` run (its
+provider account refused) resumes once the account is topped up, and the cells the account refused run again. The
+cap is not part of the measurement, so raising it is no difference, and each of the run's lifetimes records the cap
+it ran under.
+
+- **What it has spent** is what its stored rows record: each row's `cost_usd`, plus `superseded_spend_usd`, the
+  spend of an attempt a cancel cut short that the row was later written over. Each attempt counts once, and that
+  sum seeds the resumed run's cap. It is a lower bound when a holding was lost to a hard kill, since a cell in flight
+  then left no row; that holding's lifetime entry says so (`spend_lower_bound`). The out-of-run ledger
+  (`OutOfRunSpend`) is not counted: it holds calls made outside every run, such as a launch's case generation, which
+  no run's cap counts, and none of a run's own spend.
+- **The resumed run runs under its own cap:** the one it stored, or the raised one, never the host's current cap. A
+  run stored uncapped inherits the host's.
+- **A raised cap is still held to the host's ceiling,** as a launch's is. A run whose stored cap is above a ceiling
+  the host has since lowered is refused until one of them moves: raise the ceiling back, or resume with a lower
+  `max_cost_usd` that is still above the spend.
+- **The metered-call ceiling counts the whole run too.** Each row records its cell's metered calls
+  (`EvalResult.metered_calls`, an overwritten attempt's included), and their sum is counted as landed before the
+  resumed run's first cell; their refused calls carry into the run's `metered_calls_refused` the same way. A run
+  whose stored cells have reached the ceiling it would resume under is refused, since it would run nothing. A resume
+  cannot name a metered-call ceiling: one the run inherited is the host's current `max_metered_calls`, so raise that;
+  one its launch chose is replayed as it was, so launch the template again with a higher one. A row stored before
+  rows recorded their metered calls counts none, so for such a run the count is a lower bound.
+
+**Both per-run ceilings are read between cells, against what has landed.** The cost cap and the metered-call ceiling
+(`max_metered_calls`) are checked before each cell starts, against the recorded cells only: their `cost_usd` for the
+cap, their metered calls for the ceiling, a resumed run's earlier holdings' cells included. Once either is reached no
+new cell starts, the cells already running finish whole, and the run ends `budget_stopped` once they are saved.
+**Neither ever refuses a call inside a cell.** A refusal inside a cell made the cell that happened to ask after the
+ceiling was spent the contaminated one, so at width above 1 two identical runs contaminated different cells; a cell is
+the unit of measurement, and it is measured whole or never begun.
 
 - **A run may land past a ceiling by up to the width's worth of cells, and that is the design.** The cells
   running when the stop is decided are not asked and not refused anything, so the overshoot is what they add:
@@ -79,7 +105,8 @@ measurement, and it is measured whole or never begun.
 both ceilings are reached at the same boundary, both are recorded. The run's summary prints one line written from
 the records, never from prose, for example `stopped by its metered-call ceiling: 40 of 40 at the stop, 47 once 3
 running cells finished (+7); 12 cells not started`; money reads as `$`. A run the wall-clock budget stopped has no
-record, and its `budget_stop_reason` says so.
+record, and its `budget_stop_reason` says so. A resume moves the records to the lifetime entry of the holding
+they stopped, so the run itself only ever describes its current holding.
 
 **The metered-call ceiling.** `max_metered_calls` bounds the third-party calls a run's tools may make, counted at
 the host's action dispatcher (`MeteredCallLedger.admit`). It counts landed calls, those of the recorded cells

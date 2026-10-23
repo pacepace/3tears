@@ -81,6 +81,7 @@ from threetears.evals.schema.job_lease import (
     CancelRequestReasonField,
     CancelRequestedAtField,
     FaultsField,
+    JobLoss,
     LeaseField,
     LostField,
 )
@@ -2347,7 +2348,7 @@ class BudgetStop(EvalBaseModel, CoreShapeModel):
 class CaseSetRef(EvalBaseModel, CoreShapeModel):
     """Which named, versioned case set a run was launched against: a label on its frozen case ids.
 
-    Not an identity of its own: the run's case-set identity stays the frozen ids (``case_basis``), so two runs
+    Not an identity of its own: the run's case-set identity stays its frozen ids (``test_case_ids``), so two runs
     over the same ids are one suite version whatever they were launched by. This names it.
     """
 
@@ -2658,10 +2659,13 @@ class ContextComponents(EvalDocumentModel, CoreShapeModel):
     case_basis: str | None = Field(
         default=None,
         description=(
-            "Digest of the subject_id, the template_id, and the frozen, sorted test_case_ids — "
-            "who was measured, and the denominator they scored against. The subject joined the basis because "
+            "Digest of the subject_id and the template_id — who was measured, and the template its cases come from. "
+            "A template edited in place keeps its id: the pass^k cell splits on the run's frozen template_digest "
+            "instead, and a run stored without one pools with its cell. The subject joined the basis because "
             "without it two different subjects carrying nothing produced an identical key and pooled as one "
-            "condition."
+            "condition. The frozen case SET is not in it: more cases, or a top-up over cases another run missed, are "
+            "more samples of one condition, so runs over different case sets pool per case. The case set stays on "
+            "the run (test_case_ids)."
         ),
     )
     roles: str | None = Field(
@@ -2746,14 +2750,15 @@ EvalRunStatus = Literal["pending", "running", "completed", "failed", "cancelled"
 #: How the arms of one comparison shared time and provider capacity, recorded on each arm's run.
 #:
 #: - ``interleaved`` — every arm ran at once, its cells taken in turn with every other arm's case by case under one
-#:   width shared by the whole launch, so a provider's bad minute lands on every arm alike and the arms' same cases
-#:   ran close together in time.
-#: - ``sequential`` — one arm ran after another, so no arm shared another's provider load, and a difference between
-#:   them can also be when each ran.
+#:   width shared by the whole launch, which loads the providers no more than one arm would alone, costs nothing and
+#:   absorbs a provider's bad minute across every arm: the default.
+#: - ``sequential`` — one arm ran after another, so no arm shared another's provider load.
 #: - ``concurrent`` — every arm ran side by side at its own width, so the launch loaded its providers with every arm
 #:   at once, and a provider's rationing could land on one arm more than another.
 #:
-#: A launch of one arm records the schedule it was launched under, which runs that one arm alone either way.
+#: When the arms ran is no part of what they measured: arms run minutes, hours or days apart are one experiment while
+#: nothing that decides their result changed (owner, 2026-10-23). A launch of one arm records the schedule it was
+#: launched under, which runs that one arm alone either way.
 ArmSchedule = Literal["interleaved", "sequential", "concurrent"]
 
 #: Statuses a run can still leave under its own power — it is either queued or
@@ -3042,9 +3047,9 @@ class VariationCounts(EvalDocumentModel, CoreShapeModel):
             "RESOLVED model that wrote the values of the template's llm-generated variation axes, as the client "
             "that made the calls named it; None when no axis is llm-generated, so no model wrote any case. "
             "Provenance of the stimulus, not a measurement condition: the cases it wrote are what the candidate "
-            "faced, and they are already hashed into the run's context key through `test_case_ids`, so it "
-            "enters no identity. Its calls run before the run starts and are outside the run's cost cap and "
-            "metered-call ceiling."
+            "faced, each a case of its own id in `test_case_ids`, and a case set is no condition (runs over other "
+            "cases pool as more cases), so it enters no identity. Its calls run before the run starts and are "
+            "outside the run's cost cap and metered-call ceiling."
         ),
     )
 
@@ -3381,6 +3386,160 @@ def run_label_problem(label: str) -> str | None:
     if len(label) > RUN_LABEL_MAX_LENGTH:
         return f"is {len(label)} characters, longer than {RUN_LABEL_MAX_LENGTH}"
     return None
+
+
+class RunLifetime(EvalBaseModel, CoreShapeModel):
+    """One holding of a run by one process, from when it took the run up to how that holding ended.
+
+    A run taken up again after its holding ended (lost, cancelled, stopped by its budget or its account) spans
+    several holdings, and each is one entry of ``EvalRun.lifetimes``: who held it, under which lease epoch, what the
+    host said about itself when the holding began (its labels: a deploy shows here, and is not drift), the cost cap
+    it ran under, and how it ended. What the run carried when a holding ended — its ending's reason, its loss, its
+    budget stops and its completeness — moves here when the run is taken up again, so the run itself only ever
+    describes its current holding.
+
+    ``status`` is ``running`` while the holding runs, and the status the run was written with once it ended: a
+    holding that was lost reads ``cancelled``, with ``lost`` set, as the run did.
+
+    :ivar holder: The process that held the run, or ``None`` when its record no longer named it.
+    :ivar epoch: The lease epoch of the holding (``JobLease.epoch``).
+    :ivar started_at: When the holding began: the run's creation for its first, the take-up for each later one.
+    :ivar status: ``running`` while it runs; the status it ended with once it ended.
+    :ivar ended_at: When it ended; ``None`` while it runs.
+    :ivar reason: Why it ended, when something said: the cancellation's reason, the budget stop's, or the error an
+        exhausted or failed holding recorded.
+    :ivar lost: The loss, for a holding that was lost.
+    :ivar budget_stops: The per-run ceilings that stopped it, for a holding they stopped.
+    :ivar completeness: The run's completeness when it ended, over the whole matrix.
+    :ivar cells_stored: The result rows stored for the run when it ended.
+    :ivar spend_lower_bound: Whether what this holding spent is known only as a lower bound: a holding that was
+        lost had cells in flight whose spend reached no row.
+    :ivar labels: The subject's labels as the host captured them when the holding began.
+    :ivar run_labels: The run's own labels when the holding began.
+    :ivar max_cost_usd: The cost cap the holding ran under; ``None`` uncapped.
+    :ivar template_edited_at: When the run's template was last edited, for a holding that began after an edit made
+        after the run was created: an edit in nothing the run froze of it, which measures alike and is disclosed here
+        rather than refused. ``None`` when the template was not edited since the run was created.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    holder: str | None = Field(
+        default=None, description="The process that held the run; None when its record no longer named it."
+    )
+    epoch: int = Field(default=0, ge=0, description="The lease epoch of the holding (JobLease.epoch).")
+    started_at: str = Field(min_length=1, description="When the holding began (ISO-8601, UTC).")
+    status: EvalRunStatus = Field(
+        default="running", description="running while the holding runs; the status it ended with once it ended."
+    )
+    ended_at: str | None = Field(default=None, description="When the holding ended; None while it runs.")
+    reason: str | None = Field(
+        default=None,
+        description="Why it ended, when something said: a cancellation's, a budget stop's, or the error recorded.",
+    )
+    lost: JobLoss | None = Field(default=None, description="The loss, for a holding that was lost.")
+    budget_stops: list[BudgetStop] | None = Field(
+        default=None, description="The per-run ceilings that stopped the holding, for one they stopped."
+    )
+    completeness: RunCompleteness | None = Field(
+        default=None, description="The run's completeness when the holding ended, over the whole matrix."
+    )
+    cells_stored: int | None = Field(
+        default=None, ge=0, description="The result rows stored for the run when the holding ended."
+    )
+    spend_lower_bound: bool = Field(
+        default=False,
+        description=(
+            "Whether what this holding spent is known only as a lower bound: one that was lost had cells in flight "
+            "whose spend reached no row."
+        ),
+    )
+    labels: dict[str, str] = Field(
+        default_factory=dict, description="The subject's labels as the host captured them when the holding began."
+    )
+    run_labels: list[str] = Field(default_factory=list, description="The run's own labels when the holding began.")
+    max_cost_usd: float | None = Field(default=None, description="The cost cap the holding ran under; None uncapped.")
+    template_edited_at: str | None = Field(
+        default=None,
+        description=(
+            "When the run's template was last edited, for a holding that began after an edit made after the run was "
+            "created — an edit in nothing the run froze of it, disclosed rather than refused; None when it was not."
+        ),
+    )
+
+
+def ended_lifetimes(
+    lifetimes: Sequence[RunLifetime],
+    *,
+    status: EvalRunStatus,
+    at: str,
+    reason: str | None = None,
+    lost: JobLoss | None = None,
+    budget_stops: list[BudgetStop] | None = None,
+    completeness: RunCompleteness | None = None,
+    cells_stored: int | None = None,
+) -> list[RunLifetime]:
+    """A run's lifetimes with its open holding closed as the run ended: for a take-up, which records the holding
+    that ended.
+
+    A run's current holding, while it is recorded, is closed from the run's own ending by the run's model
+    (``EvalRun.lifetimes``); a take-up of a run never taken up before builds the entry of the holding that ended and
+    closes it here. Lifetimes with no open holding are returned as they are.
+
+    :param lifetimes: The run's lifetimes.
+    :ptype lifetimes: Sequence[RunLifetime]
+    :param status: The status the run ended with.
+    :ptype status: EvalRunStatus
+    :param at: When it ended.
+    :ptype at: str
+    :param reason: Why, when something said.
+    :ptype reason: str | None
+    :param lost: The loss, when it was lost.
+    :ptype lost: JobLoss | None
+    :param budget_stops: The per-run ceilings that stopped it.
+    :ptype budget_stops: list[BudgetStop] | None
+    :param completeness: Its completeness when it ended.
+    :ptype completeness: RunCompleteness | None
+    :param cells_stored: The result rows stored for the run, when the writer counted them; else the completeness's
+        persisted cells.
+    :ptype cells_stored: int | None
+    :return: The lifetimes, the last one closed when it was open.
+    :rtype: list[RunLifetime]
+    """
+    if not lifetimes or lifetimes[-1].status != "running":
+        return list(lifetimes)
+    closed = lifetimes[-1].model_copy(
+        update={
+            "status": status,
+            "ended_at": at,
+            "reason": reason,
+            "lost": lost,
+            "budget_stops": budget_stops,
+            "completeness": completeness,
+            "cells_stored": cells_stored
+            if cells_stored is not None
+            else (completeness.persisted_cells if completeness is not None else None),
+            # A lost holding's cells in flight left no row, so what it spent reached no record.
+            "spend_lower_bound": lost is not None,
+        }
+    )
+    return [*lifetimes[:-1], closed]
+
+
+def run_ending_reason(run: EvalRun) -> str | None:
+    """Why a run's holding ended, in the words its record gives: the loss's cause, the cancellation's or the budget
+    stop's reason, or the error an exhausted or failed run recorded last.
+
+    :param run: The run, ended.
+    :ptype run: EvalRun
+    :return: The reason, or None when its record gives none.
+    :rtype: str | None
+    """
+    if run.lost is not None:
+        return run.lost.cause
+    if (reason := run.cancellation_reason or run.budget_stop_reason) is not None:
+        return reason
+    return run.error_details[-1] if run.status in ("exhausted", "failed") and run.error_details else None
 
 
 class EvalRun(CoreDocumentModel):
@@ -3754,6 +3913,16 @@ class EvalRun(CoreDocumentModel):
             "level the context key records, not an absence."
         ),
     )
+    template_digest: str | None = Field(
+        default=None,
+        description=(
+            "The digest of what the run's template said that it measures, frozen at launch "
+            "(`measured_template_digest`: every field but its name, description, archive flag and record "
+            "bookkeeping). A take-up of the run refuses when the template's digest has moved, and goes ahead "
+            "past an edit that moved nothing measured. In no identity or key. None = not recorded: a run stored "
+            "before the field existed, or one its host assembled without a launch."
+        ),
+    )
 
     # Cassette layer. ``'off'`` is the default; ``'capture'`` runs tools live and records what
     # came back into this run's own corpus (named by this run's ``id``), ``'replay'`` re-serves the
@@ -4121,6 +4290,15 @@ class EvalRun(CoreDocumentModel):
     cancel_request_reason: CancelRequestReasonField = None
     lost: LostField = None
     faults: FaultsField = Field(default_factory=list)
+    lifetimes: list[RunLifetime] = Field(
+        default_factory=list,
+        description=(
+            "Each holding of the run by a process, once the run has been taken up again after its holding ended: "
+            "the first holding's entry, closed as it ended, then one per take-up, the last one open while it runs "
+            "and closed as the run ends. Empty on a run never taken up again, whose one holding the run itself "
+            "describes."
+        ),
+    )
 
     @property
     def expected_cells(self) -> int:
@@ -4184,6 +4362,37 @@ class EvalRun(CoreDocumentModel):
         if labels != sorted(set(labels)):
             raise ValueError(f"run labels are stored sorted and each once; got {labels!r}")
         return labels
+
+    @model_validator(mode="after")
+    def _current_holding_ends_with_the_run(self) -> Self:
+        """Read a run taken up again that has ended with its current holding (its last lifetime) ended as it did.
+
+        The run's own fields — its status, when it ended, why, its loss, its budget stops and its completeness — are
+        the one record of how its current holding ended. The entry is derived from them each time the run is built
+        or a field of it is set, so no writer of a run's ending has to close the holding, and the two cannot
+        disagree. While the run is terminal its last lifetime is its current holding: a take-up appends a new one
+        only as it reopens the run ``running``.
+        """
+        if self.status not in TERMINAL_RUN_STATUSES or not self.lifetimes:
+            return self
+        last, lost, completeness = self.lifetimes[-1], self.lost, self.completeness
+        ended = last.model_copy(
+            update={
+                "status": self.status,
+                "ended_at": self.completed_at or (lost.at if lost is not None else last.ended_at),
+                "reason": run_ending_reason(self),
+                "lost": lost,
+                "budget_stops": self.budget_stops,
+                "completeness": completeness,
+                "cells_stored": completeness.persisted_cells if completeness is not None else last.cells_stored,
+                # A lost holding's cells in flight left no row, so what it spent reached no record.
+                "spend_lower_bound": lost is not None,
+            }
+        )
+        if ended != last:
+            # Written past assignment validation, which would run this validator again for the same answer.
+            self.__dict__["lifetimes"] = [*self.lifetimes[:-1], ended]
+        return self
 
     @model_validator(mode="after")
     def _replay_names_its_corpus(self) -> Self:
@@ -5056,11 +5265,10 @@ def eval_trace_doc_id(result_id: str) -> str:
     querying for it. Suffixed rather than reusing the result id because both documents
     share a container and a partition, where an identical id IS the same row.
 
-    **This does not make a re-run idempotent.** ``EvalResult.id`` is a fresh ``uuid7`` per
-    cell, so re-running the same (test case, model, k) mints a new result and a new payload
-    beside it rather than replacing the old pair — which is correct, since the two runs are
-    two observations. Idempotency here is only per result id: writing the same result twice
-    overwrites rather than duplicates.
+    **One payload per result id, so one per cell of a run.** A run's cell takes its id from its
+    coordinates (:func:`cell_result_id`), the run's id among them, so another run of the same
+    (test case, model, k) is another result with its own payload beside it — the two runs are two
+    observations — while the same cell written again replaces its payload rather than adding one.
     """
     return f"{result_id}:trace"
 
@@ -5089,11 +5297,10 @@ class EvalTrace(CoreDocumentModel):
     ``id`` is :func:`eval_trace_doc_id` of the result's id — derived, not random, so
     a detail read is a point read on the result's own partition and the write is
     idempotent **per result id**: writing the same result twice overwrites its payload
-    instead of duplicating it. That is not re-run idempotency, and the difference
-    matters to anyone reasoning about row growth here — re-running the same (test case,
-    model, k) mints a fresh ``EvalResult.id``, so it writes a new payload beside the old
-    pair rather than replacing it, which is correct, since the two runs are two
-    observations. It is **not** the bare result id: both documents live in the same
+    instead of duplicating it. A run's cell has one result id (:func:`cell_result_id`), so
+    one payload; another run of the same (test case, model, k) has its own id, so it writes a
+    new payload beside the old pair rather than replacing it, which is correct, since the two
+    runs are two observations. It is **not** the bare result id: both documents live in the same
     container, so reusing it would collide. ``result_id`` carries the link explicitly
     rather than leaving it to be parsed back out of the key.
     """
@@ -5505,6 +5712,35 @@ class JudgeCutShort(EvalDocumentModel, CoreShapeModel):
         return self.stop_reason in OUT_OF_ROOM_STOP_REASONS
 
 
+#: The namespace every cell's result id is derived in (:func:`cell_result_id`). Fixed for good: moving it would give
+#: a cell already stored a second id, and a run taken up again would store that cell twice.
+CELL_RESULT_ID_NAMESPACE: Final[uuid.UUID] = uuid.UUID("778b48f2-51f2-4df1-b16d-421357a77583")
+
+
+def cell_result_id(run_id: str, test_case_id: str, model: str, k_iteration: int) -> str:
+    """The id of the result a run stores for one cell: the same for the same cell, whichever process writes it.
+
+    Derived, never minted, so a cell has one row however many times it is written: a second process taking the run
+    up writes the cell under the id the first one did, and the store's create-only write refuses a second row
+    (:meth:`~threetears.evals.kernel.EvalStorage.save_eval_result`). A uuid5 in :data:`CELL_RESULT_ID_NAMESPACE`,
+    over the four coordinates as one JSON array, so no two cells' coordinates can run together into one name.
+    Readers order a run's results by when they were stored, never by id, so an id carries no order.
+
+    :param run_id: The run.
+    :ptype run_id: str
+    :param test_case_id: The cell's case.
+    :ptype test_case_id: str
+    :param model: The cell's candidate model.
+    :ptype model: str
+    :param k_iteration: Which repetition, from 1.
+    :ptype k_iteration: int
+    :return: The id, as a uuid string.
+    :rtype: str
+    """
+    name = json.dumps([run_id, test_case_id, model, k_iteration], separators=(",", ":"))
+    return str(uuid.uuid5(CELL_RESULT_ID_NAMESPACE, name))
+
+
 class EvalResult(CoreDocumentModel):
     """One test case x one model x one k-iteration.
 
@@ -5533,6 +5769,47 @@ class EvalResult(CoreDocumentModel):
     test_case_id: str = Field(min_length=1)
     model: str = Field(min_length=1)
     k_iteration: int = Field(ge=1)
+    lease_epoch: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "The epoch of the run's lease this row was written under (``JobLease.epoch``): which holding of the run "
+            "recorded the cell. A cell's row is replaced only by a writer holding the run at a higher epoch, so a "
+            "holding the run has passed from never writes over a newer one's cell. 0 on a row written outside a "
+            "leased run, and on one stored before the field existed."
+        ),
+    )
+    superseded_spend_usd: float | None = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "What the attempts this row was written over spent: a cell cut short by a cancel is run again when its "
+            "run is taken up, and its row is written over, so the spend of the attempt it held (its cost_usd, and "
+            "its own superseded_spend_usd, for a cell cut short more than once) moves here. The run's cost cap counts "
+            "it beside cost_usd, which stays the spend of the attempt this row records; no cost total reads it. None "
+            "when some of that spend was never priced. 0 on a row written over nothing, and on one stored before the "
+            "field existed."
+        ),
+    )
+    metered_calls: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "The metered third-party calls of this cell that its run's metered-call ceiling counts: this attempt's, "
+            "plus those of the attempts the row was written over, so a run taken up again counts every attempt's "
+            "calls once, as its cost cap counts their spend. None when the run counted none (a cell run with no run "
+            "ledger), and on a row stored before the field existed, which a run taken up again counts as none."
+        ),
+    )
+    account_refused: bool = Field(
+        default=False,
+        description=(
+            "Whether the provider account paying for the run refused a call of this cell (out of credit, or its key "
+            "refused), which ends the run exhausted. The cell is excluded as an apparatus fault, and a run taken up "
+            "again once the account is topped up runs it again, written over this row. False on a row stored before "
+            "the field existed."
+        ),
+    )
 
     candidate_kind: str | None = Field(
         default=None,
@@ -6259,6 +6536,7 @@ __all__ = [
     "SecondJudging",
     "RubricScore",
     "RunCompleteness",
+    "RunLifetime",
     "SchemaVersion",
     "WorldSeed",
     "VariationAxis",

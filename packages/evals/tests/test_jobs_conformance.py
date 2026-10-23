@@ -123,6 +123,7 @@ def test_every_engine_spend_action_has_a_happy_path_case() -> None:
     assert spend == {
         "run_launch",
         "sweep_launch",
+        "job_resume",
         "analysis_generate",
         "judge_second",
         "judge_drift_check",

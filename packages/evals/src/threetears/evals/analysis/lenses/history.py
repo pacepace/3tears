@@ -19,6 +19,7 @@ from threetears.evals.analysis.stats import ChangeLabel
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.host.profile import HostProfile
+from threetears.evals.kernel.identity import case_set_fingerprint
 from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.kernel.result_condition import (
     counted_score,
@@ -57,10 +58,10 @@ from threetears.evals.analysis.lenses.aggregation import (
     WEIGHTING_EQUAL_PER_SCENARIO,
 )
 from threetears.evals.analysis.lenses.contestants import (
-    _contestant_key,
-    _identity_span_disclosure,
-    _identity_version_disclosure,
-    _identity_version_span,
+    contestant_key,
+    identity_span_disclosure,
+    identity_version_disclosure,
+    identity_version_span,
     ContestantKey,
 )
 
@@ -600,23 +601,23 @@ def _per_case_means(
     return per_case, n_observations
 
 
-def _suite_epoch_key(run: EvalRun) -> tuple[str, tuple[str, ...]]:
+def _suite_epoch_key(run: EvalRun) -> str:
     """The suite-version identity of a run: its template and frozen case set.
 
     Two runs are the same suite version iff they score the same template against
-    the same test cases — exactly what ``context_components.case_basis`` digests,
-    derived here straight from the run's own fields so it is defined for every
-    run, stamped or not. A change in this key between two
+    the same test cases, read straight from the run's own frozen fields so it is
+    defined for every run, stamped or not. The context key does not hold the case
+    set, so this is the one place a history reads it. A change in this key between two
     adjacent runs is a suite-version boundary: an aggregate step across it is the
     denominator changing, not necessarily the contestant regressing.
 
     :param run: The run whose suite identity to key.
     :ptype run: EvalRun
-    :return: ``(template_id, sorted test_case_ids)`` — the empty string stands in for an
-        ad-hoc run's absent template so ad-hoc runs still key stably.
-    :rtype: tuple[str, tuple[str, ...]]
+    :return: The run's :func:`~threetears.evals.kernel.identity.case_set_fingerprint`, the one comparison of case
+        sets every surface makes.
+    :rtype: str
     """
-    return (run.template_id or "", tuple(sorted(run.test_case_ids)))
+    return case_set_fingerprint(run)
 
 
 def _label_epochs_by_case_set(points: list[SeriesPoint], runs: Mapping[str, EvalRun]) -> None:
@@ -786,13 +787,16 @@ def compute_history(
     # — same population and same reason as `frontier`'s, so the two lenses cannot report
     # different spans over one corpus.
     considered: list[EvalResult] = []
+    considered_keys: list[ContestantKey] = []
     for row in placed:
         if subject_id is not None and row.subject_id != subject_id:
             n_filtered_out += 1
             continue
         n_considered += 1
         considered.append(row.result)
-        series_groups.setdefault((row.subject_id, _contestant_key(row.result)), []).append(row)
+        contestant = contestant_key(row.result, row.run)
+        considered_keys.append(contestant)
+        series_groups.setdefault((row.subject_id, contestant), []).append(row)
         subject_labels[row.subject_id] = row.run.subject_snapshot.subject_label
         if (short := completeness_disclosure(row.run.completeness)) is not None:
             degraded_by_run[row.run.id] = short
@@ -808,7 +812,7 @@ def compute_history(
         ordered_run_ids = sorted(runs_in_series, key=lambda run_id: (runs_in_series[run_id].created_at, run_id))
 
         points: list[SeriesPoint] = []
-        prev_epoch_key: tuple[str, tuple[str, ...]] | None = None
+        prev_epoch_key: str | None = None
         prev_per_case: dict[str, float] = {}
         epoch_ordinal = 0
         baseline_value: float | None = None
@@ -920,7 +924,7 @@ def compute_history(
                 subject_label=subject_labels.get(resolved, ""),
                 variant_key=variant_key,
                 variant_identity_version=identity_version,
-                identity_version_disclosure=_identity_version_disclosure(identity_version),
+                identity_version_disclosure=identity_version_disclosure(identity_version),
                 model=first.model,
                 points=points,
                 served_models=pooled_served_models([row.result for row in rows]),
@@ -938,7 +942,7 @@ def compute_history(
         )
     )
 
-    identity_versions = _identity_version_span(considered)
+    identity_versions = identity_version_span(considered_keys)
 
     return HistoryResult(
         metric=metric,
@@ -956,7 +960,7 @@ def compute_history(
         completeness_disclosures=degraded_by_run,
         n_degraded_observations=n_degraded_observations,
         identity_version_span=identity_versions,
-        identity_span_disclosure=_identity_span_disclosure(identity_versions),
+        identity_span_disclosure=identity_span_disclosure(identity_versions),
         attribution_disclosure=_attribution_disclosure(descriptor),
         contended_latency_disclosure=contended_latency_sentence(
             sum(1 for result in considered if result.id in contended), len(considered)

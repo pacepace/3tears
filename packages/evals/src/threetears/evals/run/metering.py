@@ -383,6 +383,21 @@ class MeteredCallLedger:
         """
         self._landed += meter.tally().calls
 
+    def land_earlier(self, *, calls: int, refused: int) -> None:
+        """Count what the run's earlier holdings landed, before this holding runs a cell: a run taken up again.
+
+        Its stored cells' metered calls count as landed, so the ceiling bounds the whole run rather than each
+        holding of it, as the cost cap counts their spend; and their refused calls count toward the run's record
+        of refusals, which this holding's own are then added to.
+
+        :param calls: The metered calls the run's stored cells landed.
+        :ptype calls: int
+        :param refused: The metered calls the run's stored cells were refused at dispatch.
+        :ptype refused: int
+        """
+        self._landed += calls
+        self._refused += refused
+
     @property
     def ceiling_reached(self) -> bool:
         """Whether the landed count has reached the ceiling, so no new cell may start.

@@ -11,10 +11,9 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from html.parser import HTMLParser
-from typing import Any, Literal
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -31,9 +30,9 @@ from threetears.evals.analysis import (
     report_html,
     serialize_report,
 )
-from threetears.evals.analysis.bundle.schema import QuestionAfterRuns
+from threetears.evals.analysis.bundle.schema import CriterionKind, LateCriterion
 from threetears.evals.analysis.lenses.frontier import FrontierCostDecision, FrontierCostTie, FrontierVerdict
-from threetears.evals.analysis.report.campaign_page import CHOICE_NOTE, NO_CALL, NO_RECOMMENDATION
+from threetears.evals.analysis.report.campaign_page import CHOICE_NOTE, NO_CALL, NO_RECOMMENDATION, campaign_verdict
 from threetears.evals.analysis.report.model import (
     CAMPAIGN_JSON_SHAPE,
     CampaignAspectFold,
@@ -54,7 +53,7 @@ from threetears.evals.kernel.authored import (
     Recommendation,
 )
 from threetears.evals.kernel.campaign import EvalCampaign
-from threetears.evals.kernel.declaration import BarOverride, CampaignCall, Floor, OverriddenBar, RateDrop
+from threetears.evals.kernel.declaration import BarOverride, CampaignCall, OverriddenBar, RateDrop
 from threetears.evals.kernel.errors import RefusedInput
 
 from packages.evals.tests.campaign_support import (
@@ -72,22 +71,14 @@ from packages.evals.tests.campaign_support import (
 
 _MEASURED: dict[str, MeasuredAspect] = {}
 
-#: What a flag says was set after the runs.
-QuestionAfterRunsLate = Literal["question", "control"]
-
-#: When the late aspect's question was asked: long after its runs.
+#: When the late aspect was asked, its margin set and its control named: long after its readings were visible.
 _ASKED_LATE = "2099-01-01T00:00:00+00:00"
 
 
-def _paged(stamp: str) -> str:
-    """An ISO-8601 instant as the page dates it: ``1 Jan 2099``."""
-    moment = datetime.fromisoformat(stamp)
-    return f"{moment.day} {moment:%b %Y}"
-
-
 async def _aspect(label: str) -> MeasuredAspect:
-    """Each fixture aspect, measured once for the module: billing regresses past its floor, tone improves, and late
-    improves on a question asked only after its runs."""
+    """Each fixture aspect, measured once for the module: billing regresses past its floor, tone improves, steady
+    holds within a 20-point floor and margin (both arms pass every case, which on twenty cases bounds the drop at 19
+    points), and late improves on a question asked only after its runs."""
     if label not in _MEASURED:
         if label == "billing":
             _MEASURED[label] = await measured_aspect(
@@ -95,6 +86,10 @@ async def _aspect(label: str) -> MeasuredAspect:
             )
         elif label == "tone":
             _MEASURED[label] = await measured_aspect("tone", production=6, candidate=19)
+        elif label == "steady":
+            _MEASURED[label] = await measured_aspect(
+                "steady", production=20, candidate=20, margin=20, floors=(RateDrop(max_points=20),)
+            )
         else:
             _MEASURED[label] = await measured_aspect(label, production=6, candidate=19, asked_at=_ASKED_LATE)
     return _MEASURED[label]
@@ -361,6 +356,54 @@ async def test_an_aspect_with_no_margin_is_said_never_shown_worse_and_has_no_row
     assert "To show no worse than the margin" not in first
 
 
+async def test_a_memo_sentence_discounting_readings_by_age_or_time_apart_never_reaches_the_page() -> None:
+    """The reporter's guard (#919): the writer's prose passes the page's style, which drops a sentence discounting a
+    reading for when its runs ran or how far apart its arms were measured, and keeps the rest of the finding."""
+    memo = _memo()
+    (finding,) = memo.findings
+    aged = finding.model_copy(
+        update={
+            "body": (
+                "It passes far more tone requests and far fewer billing ones. The runs predate the campaign, so read "
+                "the tone gain as provisional. The arms ran on different days, so they are not one experiment."
+            )
+        }
+    )
+    page = await _page("billing", "tone", memo=memo.model_copy(update={"findings": [aged]}))
+    (body,) = [block.body for block in page.blocks if isinstance(block, TextBlock) and block.role == "finding_body"]
+    assert body == "It passes far more tone requests and far fewer billing ones."
+    methods = [block.text for block in page.blocks if isinstance(block, DisclosureBlock) and block.section == "methods"]
+    assert (
+        sum(
+            "which discounts a reading for when its runs ran, so the page does not print it" in line for line in methods
+        )
+        == 2
+    )
+
+
+async def test_a_summary_or_title_discounting_readings_by_age_is_dropped_never_printed_as_written() -> None:
+    """A summary or a finding's title the style pass leaves nothing of is otherwise kept as written; one discounting a
+    reading for when its runs ran falls back as a sentence proposing an uncomputed sample does: not printed, and listed
+    in the methods."""
+    memo = _memo()
+    (finding,) = memo.findings
+    aged_title = "The tone gain rests on older runs, so it is only a lead."
+    aged_summary = "v2 wins on tone, though its readings predate the campaign and are provisional."
+    page = await _page(
+        "billing",
+        "tone",
+        memo=memo.model_copy(
+            update={"summary": aged_summary, "findings": [finding.model_copy(update={"title": aged_title})]}
+        ),
+    )
+    assert "predate" not in _first_screen_markdown(page)
+    assert not [block for block in page.blocks if isinstance(block, TextBlock) and block.role == "summary"]
+    titles = [block.body for block in page.blocks if isinstance(block, TextBlock) and block.role == "finding_title"]
+    assert not any("older runs" in title for title in titles)
+    methods = [block.text for block in page.blocks if isinstance(block, DisclosureBlock) and block.section == "methods"]
+    assert sum("discounts a reading for when its runs ran" in line for line in methods) == 2
+
+
 async def test_an_unclear_row_with_a_margin_is_still_to_settle_beside_one_without() -> None:
     def tone_unclear(readings: CampaignReadings) -> CampaignReadings:
         rows = [
@@ -377,187 +420,155 @@ async def test_an_unclear_row_with_a_margin_is_still_to_settle_beside_one_withou
     assert [row["aspect"].text for row in settle.rows] == ["billing"]
 
 
-async def test_a_margin_late_on_some_aspects_is_one_line_naming_them() -> None:
-    late = "2099-01-01T00:00:00+00:00"
-
-    def tone_late(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
-        return _late(late)(bundle) if bundle.aspect == "tone" else bundle
-
-    page = await _page("billing", "tone", bundle=tone_late)
-    first = _first_screen_markdown(page)
-    assert "The margin on tone was declared after its first result." in first
-    assert "The question was worded after the first result on tone; its readings keep the time it was asked." in first
-    # Billing's margin and wording came before its first result: nothing is said of it.
-    assert first.count("after its first result") == 1 and first.count("after the first result") == 1
-
-
-async def test_an_aspect_asked_after_its_runs_reads_as_asked_and_the_page_says_when_under_the_question() -> None:
-    """Owner ruling (2026-10-21): disclosed, not enforced. Its row reads as tone's, asked in time, does: no lead."""
-    page = await _page("billing", "late")
-    first = _first_screen_markdown(page)
-    late_bundle = page.aspects[1].report.bundle
-    assert late_bundle.design_frozen_at is not None
-    began = _paged(late_bundle.design_frozen_at)
-    said = f"The question was set on 1 Jan 2099, after the runs on late began on {began}."
-    assert said in first, "billing was asked in time, so the line names the aspect it holds on"
-    assert first.index(QUESTION) < first.index(said)
-    assert "a lead" not in first
-    (late,) = page.readings.on_aspect("late")
-    assert late.confirmatory and late.reading == "better"
-    (tone,) = (await _page("billing", "tone")).readings.on_aspect("tone")
-    assert (late.reading, late.change, late.gain_interval) == (tone.reading, tone.change, tone.gain_interval)
-    assert "was set on" not in _first_screen_markdown(await _page("billing", "tone")), "asked in time: nothing said"
-
-
-async def test_a_question_with_no_recorded_date_is_said_to_be_possibly_after_the_runs() -> None:
-    def undated(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
-        late = bundle.reading_scope.question_after_runs
-        if late is None:
-            return bundle
-        scope = bundle.reading_scope.model_copy(update={"question_after_runs": late.model_copy(update={"at": None})})
-        return bundle.model_copy(update={"reading_scope": scope})
-
-    page = await _page("billing", "late", bundle=undated)
-    first = _first_screen_markdown(page)
-    assert "The question carries no date, so it may have been set after the runs on late began on " in first
-
-
-#: When billing's question is flagged as set below: after its runs began, which these tests take as given.
+#: When a criterion is flagged as set below: after its aspect's readings were visible, which these tests take as given.
 _SET = "2099-01-01T00:00:00+00:00"
 
-#: Later than :data:`_SET`: something declared after the late question.
-_LATER = "2099-06-01T00:00:00+00:00"
 
-
-def _flagged(
-    late: QuestionAfterRunsLate = "question", at: str | None = _SET, *, margin_at: str | None = _SET
+def _set_late(
+    *late: tuple[CriterionKind, str | None, str | None], on: Sequence[str] = ("billing",)
 ) -> Callable[[AnalysisContextBundle], AnalysisContextBundle]:
-    """Billing's bundle with what was set after its runs flagged at ``at``, its question worded then, and its margin
-    declared at ``margin_at``."""
+    """The bundles of the aspects ``on``, each with ``late`` (kind, name, time) as its criteria set after its
+    readings were visible."""
 
     def change(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
-        if bundle.aspect != "billing":
+        if bundle.aspect not in on:
             return bundle
-        assert bundle.declared is not None and bundle.design_frozen_at is not None
-        flag = QuestionAfterRuns(late=late, at=at, first_run_at=bundle.design_frozen_at)
-        scope = bundle.reading_scope.model_copy(update={"question_after_runs": flag})
-        declared = bundle.declared.model_copy(update={"question_declared_at": _SET, "margin_declared_at": margin_at})
-        return bundle.model_copy(update={"reading_scope": scope, "declared": declared})
+        criteria = [LateCriterion(criterion=kind, name=name, set_at=at) for kind, name, at in late]
+        scope = bundle.reading_scope.model_copy(update={"late_criteria": criteria})
+        return bundle.model_copy(update={"reading_scope": scope})
 
     return change
 
 
-async def _billing_floor_at(stamp: str | None) -> list[Floor]:
-    (floor,) = (await _aspect("billing")).campaign.floors
-    return [floor.model_copy(update={"declared_at": stamp})]
-
-
-async def test_a_margin_and_a_floor_added_after_a_question_set_late_are_still_said() -> None:
-    """The line under the question says what was declared with it; what came later is said as any late stamp is."""
-    later = await _page("billing", "tone", bundle=_flagged(margin_at=_LATER), floors=await _billing_floor_at(_LATER))
-    first = _first_screen_markdown(later)
-    assert "The question was set on 1 Jan 2099, after the runs on billing began on " in first
-    assert "The margin on billing was declared after its first result." in first
-    assert (
-        "The floor that no pass rate drops by more than 10 points on billing was declared after its first result."
-        in first
-    )
-    assert "worded after" not in first, "worded when it was set: the line under the question says it"
-
-    with_it = await _page("billing", "tone", bundle=_flagged(), floors=await _billing_floor_at(_SET))
-    assert "declared after its first result" not in _first_screen_markdown(with_it), "declared with the question"
-
-
-async def test_an_undated_question_or_a_late_control_holds_no_late_stamp_back() -> None:
-    """Neither orders the margin against the question: a question with no date orders nothing, and a control named
-    late dates only itself, so a margin later than the first result is said either way."""
-    for flag in (_flagged("question", None), _flagged("control", _SET)):
-        first = _first_screen_markdown(await _page("billing", "tone", bundle=flag))
-        assert "The margin on billing was declared after its first result." in first
-
-
-async def test_a_control_named_after_the_first_result_is_said_as_the_control_not_the_question() -> None:
-    first = _first_screen_markdown(await _page("billing", "tone", bundle=_flagged("control", _SET)))
-    assert "The control was named on 1 Jan 2099, after the runs on billing began on " in first
-    assert "The question was set" not in first
-    undated = _first_screen_markdown(await _page("billing", "tone", bundle=_flagged("control", None)))
-    assert (
-        "The control was named at a time that cannot be ordered, so it may have been named after the runs on" in undated
-    )
-
-
-def test_two_times_on_one_day_carry_their_times_of_day() -> None:
-    same = QuestionAfterRuns(late="question", at="2026-10-14T15:00:00+00:00", first_run_at="2026-10-14T09:30:00+00:00")
-    assert same.page_dates() == ("14 Oct 2026 at 15:00 UTC", "14 Oct 2026 at 09:30 UTC")
-    apart = QuestionAfterRuns(late="question", at="2026-10-20T15:00:00+00:00", first_run_at="2026-10-14T09:30:00+00:00")
-    assert apart.page_dates() == ("20 Oct 2026", "14 Oct 2026")
-    undated = QuestionAfterRuns(late="question", at=None, first_run_at="2026-10-14T09:30:00+00:00")
-    assert undated.page_dates() == (None, "14 Oct 2026")
-
-
-def test_each_time_is_dated_in_its_own_offset_as_the_rest_of_the_page_dates_it() -> None:
-    """The Methods row dates the design's freeze in the stamp's own offset; the line under the question dates the same
-    instant the same way, so one page never prints one instant as two days. Where the later time falls on no later day
-    than the earlier in their own offsets, both carry their times of day and offsets, so it never reads as earlier."""
-    began = "2026-10-15T01:00:00+00:00"
-    apart = QuestionAfterRuns(late="question", at="2026-10-16T23:30:00-05:00", first_run_at=began)
-    assert apart.page_dates() == ("16 Oct 2026", "15 Oct 2026")
-    # 04:30 UTC on 15 Oct, after the runs; in its own offset, still 14 Oct.
-    crossed = QuestionAfterRuns(late="question", at="2026-10-14T23:30:00-05:00", first_run_at=began)
-    assert crossed.page_dates() == ("14 Oct 2026 at 23:30 UTC-05:00", "15 Oct 2026 at 01:00 UTC")
-
-
-@pytest.mark.parametrize("field", ["at", "first_run_at"])
-@pytest.mark.parametrize("stamp", ["sometime in October", "2026-10-14T09:30:00"])
-def test_a_flag_whose_time_cannot_be_ordered_is_refused_not_printed_raw(field: str, stamp: str) -> None:
-    times = {"at": "2026-10-20T15:00:00+00:00", "first_run_at": "2026-10-14T09:30:00+00:00", field: stamp}
-    with pytest.raises(ValidationError, match=rf"the late-question flag's {field} is stamped {re.escape(repr(stamp))}"):
-        QuestionAfterRuns(late="question", **times)
-    flag = QuestionAfterRuns(late="question", at="2026-10-20T15:00:00+00:00", first_run_at="2026-10-14T09:30:00+00:00")
-    assert flag.page_dates() == ("20 Oct 2026", "14 Oct 2026"), "the same flag with ordered times is read"
-
-
-@pytest.mark.parametrize(
-    ("flag", "said"),
-    [
-        (None, "question declared before the runs"),
-        (("question", _SET), "question declared after the runs began"),
-        (("question", None), "question undated, so possibly declared after the runs began"),
-        (("control", _SET), "question declared before the runs, control named after they began"),
-        (("control", None), "question declared before the runs, control named at a time that cannot be ordered"),
-    ],
-)
-async def test_the_methods_name_the_design_as_the_line_under_the_question_does(
-    flag: tuple[QuestionAfterRunsLate, str | None] | None, said: str
-) -> None:
-    bundle = (await _aspect("billing")).bundle
-    if flag is not None:
-        bundle = _flagged(*flag)(bundle)
-    report = build_code_only_report(bundle, assembled_at=ASSEMBLED_AT)
-    (methods,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "methods"]
-    (design,) = [str(row["value"].value) for row in methods.rows if row["item"].value == "Design"]
-    assert design.startswith(said + ", frozen ")
-
-
-async def test_the_page_json_carries_each_aspect_s_flag_beside_its_readings() -> None:
-    page = await _page("billing", "tone", bundle=_flagged())
-    aspects = page.json_document()["aspects"]
-    assert isinstance(aspects, list)
-    billing = (await _aspect("billing")).bundle
-    assert [aspect["question_after_runs"] for aspect in aspects] == [
-        {"late": "question", "at": _SET, "first_run_at": billing.design_frozen_at},
-        None,
-    ]
-
-
-async def test_the_line_saying_when_the_question_was_set_shows_no_field_name() -> None:
-    page = await _page("billing", "late")
-    (said,) = [
+def _timing(page: CampaignReport) -> list[str]:
+    """The first screen's lines naming criteria set after their readings, in order."""
+    return [
         block.text
         for block in page.blocks
         if isinstance(block, DisclosureBlock) and block.section == "header" and block.source == "timing"
     ]
-    assert "_" not in said and "after_runs" not in campaign_report_html(page)
+
+
+async def test_a_margin_late_on_some_aspects_is_one_line_naming_them() -> None:
+    page = await _page("billing", "tone", bundle=_set_late(("margin", None, _SET), on=("tone",)))
+    assert _timing(page) == ["The margin on tone was set on 1 Jan 2099, after its readings were visible."]
+    # Billing's margin came before its first result: nothing is said of it.
+    assert "billing was set" not in _first_screen_markdown(page)
+
+
+async def test_an_aspect_set_after_its_readings_reads_as_asked_and_each_criterion_is_said_once() -> None:
+    """Owner rulings (2026-10-21, 2026-10-23): disclosed, not enforced. Its row reads as tone's, set in time, does: no
+    lead. Each criterion set late is named once, with its time, under the question, and no line names the question or
+    when the runs began."""
+    page = await _page("billing", "late")
+    first = _first_screen_markdown(page)
+    said = _timing(page)
+    assert said == [
+        "The aspect late was declared on 1 Jan 2099, after its readings were visible.",
+        "The control was named on 1 Jan 2099, after the readings on late were visible.",
+        "The margin on late was set on 1 Jan 2099, after its readings were visible.",
+    ], "billing was set in time, so each line names the aspect it holds on"
+    assert all(first.index(QUESTION) < first.index(line) for line in said)
+    assert "a lead" not in first
+    assert "The question" not in " ".join(said) and "began" not in first and "after the runs" not in first
+    (late,) = page.readings.on_aspect("late")
+    assert late.confirmatory and late.reading == "better"
+    (tone,) = (await _page("billing", "tone")).readings.on_aspect("tone")
+    assert (late.reading, late.change, late.gain_interval) == (tone.reading, tone.change, tone.gain_interval)
+    assert _timing(await _page("billing", "tone")) == [], "set in time: nothing said"
+
+
+async def test_a_criterion_with_no_recorded_time_says_so_and_never_guesses() -> None:
+    page = await _page(
+        "billing", "tone", bundle=_set_late(("aspect", None, None), ("control", None, None), ("margin", None, None))
+    )
+    assert _timing(page) == [
+        "When the aspect billing was declared is not recorded.",
+        "When the control was named is not recorded.",
+        "When the margin on billing was set is not recorded.",
+    ]
+
+
+async def test_a_bar_and_a_floor_set_after_their_readings_are_each_named_by_what_they_hold() -> None:
+    (floor,) = (await _aspect("billing")).campaign.floors
+    page = await _page("billing", "tone", bundle=_set_late(("bar", "cost_usd", _SET), ("floor", floor.key, _SET)))
+    bar, floored = _timing(page)
+    assert bar.startswith("The ") and bar.endswith(
+        " bar on billing was set on 1 Jan 2099, after its readings were visible."
+    )
+    assert floored == (
+        "The floor that no pass rate drops by more than 10 points on billing was set on 1 Jan 2099, after its "
+        "readings were visible."
+    )
+
+
+async def test_a_criterion_late_on_every_aspect_is_one_line_never_one_per_aspect() -> None:
+    page = await _page(
+        "billing", "tone", bundle=_set_late(("aspect", None, _SET), ("margin", None, _SET), on=("billing", "tone"))
+    )
+    assert _timing(page) == [
+        "Every aspect was declared on 1 Jan 2099, after its readings were visible.",
+        "The margins on every aspect were set on 1 Jan 2099, after their readings were visible.",
+    ]
+    control = await _page("billing", "tone", bundle=_set_late(("control", None, _SET), on=("billing", "tone")))
+    assert _timing(control) == ["The control was named on 1 Jan 2099, after every aspect's readings were visible."]
+
+
+async def test_the_one_aspect_page_says_its_late_criteria_and_the_campaign_s_fold_does_not_repeat_them() -> None:
+    page = await _page("billing", "late")
+    own = build_code_only_report((await _aspect("late")).bundle, assembled_at=ASSEMBLED_AT)
+    own_timing = [
+        block.text
+        for block in own.blocks
+        if isinstance(block, DisclosureBlock) and block.section == "header" and block.source == "timing"
+    ]
+    assert own_timing == _timing(page)
+    fold = next(fold for fold in page.aspects if fold.aspect == "late")
+    assert not [block for block in fold.head if isinstance(block, DisclosureBlock) and block.source == "timing"]
+
+
+def test_a_late_criterion_is_dated_in_its_own_offset_as_the_rest_of_the_page_dates_it() -> None:
+    """The Methods row dates the design's freeze in the stamp's own offset; a late criterion's line dates its instant
+    the same way, so one page never prints one instant as two days."""
+    assert LateCriterion(criterion="margin", set_at="2026-10-16T23:30:00-05:00").page_date() == "16 Oct 2026"
+    assert LateCriterion(criterion="margin", set_at="2026-10-14T23:30:00-05:00").page_date() == "14 Oct 2026"
+    assert LateCriterion(criterion="margin", set_at=None).page_date() is None
+
+
+@pytest.mark.parametrize("stamp", ["sometime in October", "2026-10-14T09:30:00"])
+def test_a_late_criterion_whose_time_cannot_be_ordered_is_refused_not_printed_raw(stamp: str) -> None:
+    with pytest.raises(ValidationError, match=rf"a late criterion's set_at is stamped {re.escape(repr(stamp))}"):
+        LateCriterion(criterion="margin", set_at=stamp)
+    assert LateCriterion(criterion="margin", set_at="2026-10-20T15:00:00+00:00").page_date() == "20 Oct 2026"
+
+
+@pytest.mark.parametrize("late", [False, True])
+async def test_the_methods_name_the_design_without_its_timing(late: bool) -> None:
+    bundle = (await _aspect("billing")).bundle
+    if late:
+        bundle = _set_late(("aspect", None, _SET))(bundle)
+    report = build_code_only_report(bundle, assembled_at=ASSEMBLED_AT)
+    (methods,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "methods"]
+    (design,) = [str(row["value"].value) for row in methods.rows if row["item"].value == "Design"]
+    assert design.startswith("question declared, frozen ")
+
+
+async def test_the_page_json_carries_each_aspect_s_late_criteria_beside_its_readings() -> None:
+    page = await _page("billing", "tone", bundle=_set_late(("margin", None, _SET)))
+    aspects = page.json_document()["aspects"]
+    assert isinstance(aspects, list)
+    assert CAMPAIGN_JSON_SHAPE == 3
+    assert [aspect["late_criteria"] for aspect in aspects] == [
+        [{"criterion": "margin", "name": None, "set_at": _SET}],
+        [],
+    ]
+
+
+async def test_the_lines_naming_late_criteria_show_no_field_name() -> None:
+    page = await _page("billing", "late")
+    said = _timing(page)
+    assert said and not any("_" in line for line in said)
+    assert "late_criteria" not in campaign_report_html(page)
 
 
 class _Tags(HTMLParser):
@@ -669,41 +680,6 @@ async def test_a_floor_broken_beside_a_row_not_shown_worse_says_the_two_read_dif
     )
 
 
-def _late(stamp: str) -> Callable[[AnalysisContextBundle], AnalysisContextBundle]:
-    """A bundle whose aspect's question was worded, and its margin declared, at ``stamp``."""
-
-    def change(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
-        assert bundle.declared is not None
-        declared = bundle.declared.model_copy(update={"question_declared_at": stamp, "margin_declared_at": stamp})
-        return bundle.model_copy(update={"declared": declared})
-
-    return change
-
-
-async def test_what_was_declared_after_an_aspect_s_first_result_is_said_so() -> None:
-    billing = await _aspect("billing")
-    assert billing.bundle.first_result_at is not None
-    (floor,) = billing.campaign.floors
-    late = "2099-01-01T00:00:00+00:00"
-    page = await _page("billing", "tone", bundle=_late(late), floors=[floor.model_copy(update={"declared_at": late})])
-    first = _first_screen_markdown(page)
-    # Late on both aspects, each kind of lateness is one line naming every aspect, never a line per aspect.
-    assert (
-        "The question was worded after the first result on every aspect; their readings keep the time it was asked."
-        in first
-    )
-    assert "The margins on every aspect were declared after their first results." in first
-    assert first.count("after the first result") == 1 and first.count("declared after") == 2
-    assert (
-        "The floor that no pass rate drops by more than 10 points on billing was declared after its first result."
-        in first
-    )
-    # Declared before the first result, nothing is said.
-    early = await _page("billing", "tone", bundle=_late("2000-01-01T00:00:00+00:00"))
-    assert "after its first result" not in _first_screen_markdown(early)
-    assert "worded after" not in _first_screen_markdown(early)
-
-
 async def test_an_unclear_row_s_cases_show_it_no_worse_than_the_margin_and_not_better() -> None:
     page = await _page("billing", "tone", margins={"billing": 70.0})
     settle = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "to_settle")
@@ -711,6 +687,75 @@ async def test_an_unclear_row_s_cases_show_it_no_worse_than_the_margin_and_not_b
     note = page.blocks[page.blocks.index(settle) + 1]
     assert isinstance(note, DisclosureBlock)
     assert "would not show the arm better, so its row stays unclear unless its gain clears too" in note.text
+
+
+async def test_a_row_no_worse_than_the_margin_reads_so_beside_its_held_floor_and_has_nothing_to_settle() -> None:
+    page = await _page("steady", "tone")
+    (row,) = page.readings.on_aspect("steady")
+    (status,) = page.readings.floors
+    assert row.reading == "within_margin" and status.status == "held"
+    table = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "aspects")
+    readings = {cells["aspect"].text: cells["reading"].text for cells in table.rows}
+    assert readings == {"steady": "no worse than the margin", "tone": "shown better"}
+    # The headline row and the floor read one interval, so neither contradicts the other, and nothing is to settle.
+    assert not any(isinstance(block, TableBlock) and block.name == "to_settle" for block in page.blocks)
+    first = _first_screen_markdown(page)
+    assert (
+        "A row no worse than the margin reads its interval at 95% on its own, as a floor does: a candidate is no "
+        "worse only where it holds on every asked aspect, which needs no correction." in first
+    )
+    # The one corrected row is tone's, read in v2's family of two at 97.5%, so it is not called a floor's level; the
+    # error-rate line is said whatever the rows read.
+    assert "The interval is read at 97.5%, corrected across each arm's aspects." in first
+    assert "Each arm's gains and its drops are each shown wrongly at most 2.5% of the time." in first
+    assert "such an interval clearing zero is not a gain shown" not in first
+    markdown = campaign_report_markdown(page)
+    steady = markdown[markdown.index("## steady") : markdown.index("## tone")]
+    assert "v2 no worse than the margin." in steady
+    assert (
+        campaign_verdict(page.readings, ["steady", "tone"])
+        == "steady: v2 no worse than the margin; tone: v2 shown better"
+    )
+
+
+async def test_a_page_whose_every_row_is_no_worse_still_states_the_error_rate_and_that_nothing_corrects_across_arms() -> (
+    None
+):
+    def all_within(readings: CampaignReadings) -> CampaignReadings:
+        rows = [
+            row.model_copy(update={"reading": "within_margin", "within_interval": (1.3, 62.7), "projection": None})
+            for row in readings.readings
+        ]
+        return readings.model_copy(update={"readings": rows + [rows[0].model_copy(update={"arm": "v3"})]})
+
+    page = await _page("steady", "tone", readings=all_within)
+    first = _first_screen_markdown(page)
+    assert "The interval is read at" not in first and "Each interval is read at" not in first
+    assert "Each arm's gains and its drops are each shown wrongly at most 2.5% of the time." in first
+    assert (
+        "Nothing corrects across arms, so with several arms one is shown better or worse by chance more often." in first
+    )
+    assert (
+        "Its gain is still read corrected across the arm's aspects, so such an interval clearing zero is not a gain "
+        "shown." in first
+    )
+
+
+async def test_a_floor_held_beside_a_row_left_unclear_says_the_two_read_different_points() -> None:
+    # The same interval against a 10-point margin is unclear while the 20-point floor holds.
+    page = await _page("steady", margins={"steady": 10.0})
+    (row,) = page.readings.on_aspect("steady")
+    (status,) = page.readings.floors
+    assert row.reading == "unclear" and status.status == "held"
+    assert (
+        "The floor held on steady for v2 reads its pass rate against 20 points, while its row reads the pass rate "
+        "against the 10-point margin." in _first_screen_markdown(page)
+    )
+    settle = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "to_settle")
+    assert [cells["aspect"].text for cells in settle.rows] == ["steady"]
+    note = page.blocks[page.blocks.index(settle) + 1]
+    assert isinstance(note, DisclosureBlock)
+    assert "read at 95% as a floor's count is, so a floor on the same rate and points gives the same count" in note.text
 
 
 async def test_a_code_only_page_refuses_a_fold_that_renders_an_analysis() -> None:

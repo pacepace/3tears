@@ -8,7 +8,7 @@ names the cost ties it cannot separate, and checks the boundary pillar.
 from __future__ import annotations
 
 import math
-from collections.abc import Hashable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from fractions import Fraction
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
@@ -46,13 +46,18 @@ from threetears.evals.kernel.result_condition import (
     harness_faulted,
 )
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgeEvidenceTier
+from threetears.evals.kernel.identity import IDENTITY_VERSION, resolve_context_identity
 from threetears.evals.kernel.scoring import (
     CompositeBasis,
     capability_scores,
     PassHatPoint,
     case_pass_hat_k,
     pass_hat_k_at,
+    PassHatKCell,
+    UnpooledReason,
+    join_unrecorded,
     pass_hat_k_cell,
+    pass_hat_k_cell_reason,
     pool_pass_hat_k,
     pool_pass_hat_k_attempts,
     result_composite,
@@ -60,6 +65,7 @@ from threetears.evals.kernel.scoring import (
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.reporting import (
     place_results,
+    served_reading,
     pooled_composite_basis,
     pooled_cost_compositions,
     pooled_served_models,
@@ -69,10 +75,10 @@ from threetears.evals.analysis.reporting import (
 from threetears.evals.analysis.cassette_mode import cassette_mode_disclosure
 from threetears.evals.analysis.lenses.aggregation import _aggregate, WEIGHTING_EQUAL_PER_SCENARIO
 from threetears.evals.analysis.lenses.contestants import (
-    _contestant_key,
-    _identity_span_disclosure,
-    _identity_version_disclosure,
-    _identity_version_span,
+    contestant_key,
+    identity_span_disclosure,
+    identity_version_disclosure,
+    identity_version_span,
     ContestantKey,
 )
 
@@ -224,9 +230,9 @@ def _template_span_disclosure(span_entries: Sequence[str]) -> str | None:
     contestant stack — everything that would ship, and nothing about the conditions it was
     measured under. ``template_id`` is one of those conditions: it is hashed into the
     CONTEXT key, and :func:`compute_comparison_sets` groups on it. So every scenario suite a
-    variant was ever entered into pools into this one point, and ``pass_hat_k``,
-    ``mean_composite`` and ``mean_total_ms`` are each one number over cases drawn from all
-    of them.
+    variant was ever entered into pools into this one point: ``pass_hat_k`` reads its headline
+    cell (one suite) and names the others beside it, while ``mean_composite``, the cost and
+    ``mean_total_ms`` are each one number over cases drawn from all of them.
 
     Pool-and-disclose, not key-it — the position the cassette span already records for its
     axis (:func:`cassette_mode_disclosure`), taken here for the same two reasons. The
@@ -263,12 +269,12 @@ def _template_span_disclosure(span_entries: Sequence[str]) -> str | None:
         return None
     detail = ", ".join(span_entries)
     return (
-        f"This contestant's observations span {len(span_entries)} scenario templates ({detail}). pass^k, "
-        "composite and latency here are each ONE number over cases pooled from all of them, and two suites "
-        "need not be of equal difficulty — so this is a weighted average over whichever mix happened to run, "
-        "not a score on any one suite, and a contestant measured over a different mix is not being ranked on "
-        "the same cases. Group by template (`comparison_sets` does) before reading a gap between rows as a "
-        "difference between the contestants."
+        f"This contestant's observations span {len(span_entries)} scenario templates ({detail}). pass^k reads "
+        "one of them, its headline cell, and names the others beside it; composite, cost and latency here are "
+        "each ONE number over cases pooled from all of them, and two suites need not be of equal difficulty — so "
+        "those are a weighted average over whichever mix happened to run, not a score on any one suite, and a "
+        "contestant measured over a different mix is not being ranked on the same cases. Group by template "
+        "(`comparison_sets` does) before reading a gap between rows as a difference between the contestants."
     )
 
 
@@ -330,14 +336,108 @@ class FrontierCostTie(EvalBaseModel):
     p_value: float | None = None
 
 
+class PassHatKCellReading(EvalBaseModel):
+    """One pass^k cell behind a frontier point: the runs whose attempts at a case pooled in it, and its own reading.
+
+    The point's pass^k, its interval, its bar decision and every verdict read its headline cell alone. **The headline
+    is chosen in one order, stated here and nowhere else:** a cell whose runs recorded a measurement context comes
+    before one that recorded none, and one whose context resolved at this build's identity version before one that
+    did not; then the cell with the most runs, then the most results, then the alphabetically first run id. Every other
+    cell stands beside it, with its own pass^k at the point's depth and the reason it is not the headline, read off the
+    first field of the cell record in which the two differ
+    (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_reason`). Its runs are kept out of the headline, never
+    dropped. The point's composite, cost and latency still pool every run of the variant under one rig
+    (:data:`PASS_HAT_K_CELL_READING`).
+    """
+
+    run_ids: list[str]
+    headline: bool
+    #: Why this cell is not the headline; ``None`` on the headline.
+    reason: UnpooledReason | None = None
+    #: What differs from the headline, in a sentence; ``None`` on the headline.
+    detail: str | None = None
+    #: The models the provider's responses named for this cell's candidate calls.
+    served_models: list[str] = []
+    #: Runs whose responses named no model, placed in this cell because its other runs' named ones: not evidence of
+    #: another model, so pooled, and named here.
+    served_model_assumed: list[str] = []
+    #: Runs stored before runs froze their template's measured digest, placed in this cell because its other runs
+    #: froze one: not evidence of an edit, so pooled, and named here.
+    template_digest_assumed: list[str] = []
+    #: This cell's own pass^k at the point's depth, over its own cases; ``None`` when no case reached it.
+    pass_hat_k: float | None = None
+    #: The cases this cell's pass^k averages.
+    n_cases_at_k: int = 0
+
+
+#: What "kept out" covers, said once before a contestant's cell lines wherever they are shown (the frontier's text,
+#: the report page's run disclosures, the memo writer's view): only the frontier's pass^k, its interval, its bar and its
+#: verdict leave a kept-out run out; every other figure of the arm still counts it.
+PASS_HAT_K_CELL_READING = (
+    "An arm's frontier pass^k, with its interval, bar and verdict, reads its headline pass^k cell alone: one "
+    "measurement context, template revision, apparatus provenance and served model, whatever cases each run covered "
+    "and whenever it ran. A run of another such cell is named below with why and its own pass^k, and is kept out of "
+    "that headline only: the arm's tables, cells, composite, cost and latency still count it, pooling every run of the "
+    "variant under one rig."
+)
+
+#: Each reason a pass^k cell stands apart, as a reader is told it.
+_REASON_WORDS: dict[str, str] = {
+    "changed_context": "another measurement context",
+    "other_template": "another template or template revision",
+    "other_served_model": "another served model",
+    "no_recorded_context": "no recorded measurement context",
+}
+
+
+def pass_hat_k_cell_lines(reading: PassHatKCellReading) -> list[str]:
+    """What a reader is told about one pass^k cell of a frontier point: every surface that renders a point says these.
+
+    A cell other than the headline gets one sentence naming its runs, its reason, what differs and its own pass^k,
+    and the fact that the point's pass^k does not count it. Any cell gets one more per kind of silence its runs were
+    placed by (no served model named, no template digest frozen). The headline with neither gets nothing.
+
+    Each sentence is one line, its whitespace collapsed (a detail can carry a stored error's own line breaks), so a
+    surface may indent it or lead it with the arm and nothing of it reads as the next item's.
+
+    :param reading: The cell.
+    :ptype reading: PassHatKCellReading
+    :return: The sentences, possibly none, each one line.
+    :rtype: list[str]
+    """
+    lines: list[str] = []
+    runs = ", ".join(reading.run_ids)
+    if not reading.headline and reading.reason is not None:
+        own = (
+            f"its own pass^k {format_number(reading.pass_hat_k)} over {reading.n_cases_at_k} case(s)"
+            if reading.pass_hat_k is not None
+            else "no pass^k of its own at this depth"
+        )
+        lines.append(
+            f"run(s) {runs} kept out of this pass^k, as a cell of their own ({_REASON_WORDS[reading.reason]}): "
+            f"{reading.detail}; {own}"
+        )
+    if reading.served_model_assumed:
+        lines.append(
+            f"run(s) {', '.join(reading.served_model_assumed)} named no served model and pooled with run(s) {runs}"
+        )
+    if reading.template_digest_assumed:
+        lines.append(
+            f"run(s) {', '.join(reading.template_digest_assumed)} froze no template digest and pooled with run(s) "
+            f"{runs}"
+        )
+    return [" ".join(line.split()) for line in lines]
+
+
 class FrontierPoint(EvalBaseModel):
     """One contestant's position on quality x cost x latency, within a subject.
 
     A point is one ``(subject, variant, predicate version)``. ``model`` is the human
     label; ``variant_key`` is the grouping identity, and it is qualified by the
-    identity version stamped beside it — two keys carrying different stamps are ranked as
-    separate contestants, since the stamp cannot say which predicate moved and merging on
-    an unverifiable digest is the direction nothing downstream undoes.
+    identity version the contestant is placed at (:func:`contestant_key`): this build's where
+    its run's recorded lever map reproduces the key, else the stamped one. Two keys placed at
+    different versions are ranked as separate contestants, since a stamp alone cannot say which
+    predicate moved and merging on an unverifiable digest is the direction nothing downstream undoes.
 
     Every axis carries its own denominator (``n_pass_cases``, ``n_composite_cases``,
     ``n_cost``, ``n_latency``) because the axes are independently sourced: a
@@ -348,8 +448,9 @@ class FrontierPoint(EvalBaseModel):
 
     variant_key: str
     model: str
-    #: The predicate version that minted ``variant_key``. Carried onto the row because
-    #: this surface GATES on it — two keys carrying different stamps are ranked separately,
+    #: The identity version this contestant is placed at: this build's where its run's recorded lever
+    #: map reproduces ``variant_key``, else the version stamped beside it. Carried onto the row because
+    #: this surface GATES on it — two keys placed at different versions are ranked separately,
     #: because the stamp cannot say which predicate moved and a wrong merge is the direction
     #: nothing downstream undoes — and a reader who meets that split needs the number that
     #: caused it.
@@ -423,7 +524,8 @@ class FrontierPoint(EvalBaseModel):
     # chance ONE attempt passes, because the cost is the mean of one attempt: dividing it by
     # pass^k would price a k-attempt streak at one attempt's cost. ``None`` when
     # cost is unknown or pass^1 is zero (dividing by a zero pass rate is undefined,
-    # not "infinitely expensive").
+    # not "infinitely expensive"). Both sides read the headline pass^k cell's runs, so its cost can
+    # differ from ``production_replicating_cost``, which pools every run of the variant.
     cost_per_acceptable_outcome: float | None = None
     #: What the runs behind ``production_replicating_cost`` set away from the subject's production configuration
     #: (#571), each run's own footing read off the host's sweepable declarations: the cost is what production would
@@ -491,6 +593,12 @@ class FrontierPoint(EvalBaseModel):
     #: pass^k from 1.00 over 3 cases to 1.00 over 4, lower its mean cost by a third,
     #: and flip its rival from *on frontier* to *dominated*.
     completeness_disclosures: dict[str, str] = {}
+
+    #: Every pass^k cell behind this point, the headline first (:class:`PassHatKCellReading`). ``pass_hat_k`` and
+    #: everything read off it — its curve, its interval, the bar, dominance and the verdict — rest on the headline
+    #: cell's runs alone; each other cell stands beside it, named with why. Together they name every run behind the
+    #: point, so none leaves the counts unsaid.
+    pass_hat_k_cells: list[PassHatKCellReading] = []
 
     #: Which models the provider's responses named as having answered this contestant's candidate calls (#684):
     #: ``one``, ``pooled`` — the contestant asked for one model id (a floating alias, say) and several models
@@ -694,12 +802,13 @@ def _frontier_point(
     *,
     contestant: ContestantKey,
     k: int,
-    cell_of_run: Mapping[str, Hashable],
     rubric_threshold: int,
     cassette_modes_by_run: Mapping[str, str],
     templates_by_run: Mapping[str, str | None],
     degraded_by_run: Mapping[str, str],
     footing_by_run: Mapping[str, ProductionFooting | None] | None,
+    runs_by_id: Mapping[str, EvalRun],
+    profile: HostProfile | None,
 ) -> tuple[FrontierPoint, _ContestantCases]:
     """Aggregate one contestant's results into a single frontier point, and the per-case values behind it.
 
@@ -714,7 +823,7 @@ def _frontier_point(
     :param results: One contestant's observations (all sharing a model, and a
         ``variant_key`` when captured). Never empty.
     :ptype results: list[EvalResult]
-    :param contestant: The :func:`_contestant_key` these results were grouped under. Passed
+    :param contestant: The :func:`contestant_key` these results were grouped under. Passed
         rather than re-derived off ``results[0]``: the key is what placed them
         together, so reading the identity back out of it makes "no row in this pool
         can disagree" structural instead of a claim a later change to the key could
@@ -723,10 +832,6 @@ def _frontier_point(
     :ptype contestant: ContestantKey
     :param k: The subject's depth, at which ``pass_hat_k`` is read (:attr:`SubjectFrontier.k`).
     :ptype k: int
-    :param cell_of_run: Run id → the cell its attempts are repeats of
-        (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell`), so two runs of one
-        configuration pool their attempts at a case and two configurations never do.
-    :ptype cell_of_run: Mapping[str, Hashable]
     :param rubric_threshold: Pass threshold forwarded to pass^k.
     :ptype rubric_threshold: int
     :param cassette_modes_by_run: Every candidate run's recorded ``cassette_mode``, keyed by
@@ -754,6 +859,10 @@ def _frontier_point(
         ``None`` when the frontier was given no host declarations to read one with; narrowed here to the
         runs these results came from.
     :ptype footing_by_run: Mapping[str, ProductionFooting | None] | None
+    :param runs_by_id: Every placed run by id, whose cells this point's pass^k reads.
+    :ptype runs_by_id: Mapping[str, EvalRun]
+    :param profile: The host that re-derives each run's context at this build's identity version.
+    :ptype profile: HostProfile | None
     :return: A :class:`FrontierPoint` with quality (and its interval), cost, latency, and every
         denominator, and the per-case values each axis averages, which a domination test pairs
         on. Domination and the bar are filled by the caller, which needs the subject's other
@@ -766,19 +875,30 @@ def _frontier_point(
     # Unpacked from the group key, never re-derived off a row.
     variant_key, identity_version = contestant
 
-    # pass^k — the canonical estimator, over this contestant's attempts pooled per case within
-    # each cell: a repeat run of one configuration deepens its cases, while the same case under
-    # another context (a second template, a replayed cassette) stays a case of its own beside it.
-    pooled = pool_pass_hat_k(results, cell_of_run=cell_of_run, k=k, rubric_threshold=rubric_threshold)
+    # pass^k — the canonical estimator, over the headline cell's attempts pooled per case: a repeat run of one
+    # configuration deepens its cases and a run over other cases of it widens them. A run of another cell (another
+    # context, template revision or served model) stays out of it, beside it with its own reading and its reason.
+    cells = _pass_hat_k_cells(results, runs=runs_by_id, profile=profile)
+    headline_ids = set(cells.readings[0].run_ids)
+    headline_results = [r for r in results if r.eval_run_id in headline_ids]
+    pooled = pool_pass_hat_k(headline_results, cell_of_run=cells.of_run, k=k, rubric_threshold=rubric_threshold)
     pass_hat_k = pooled["pass_hat_k"]
     pass_hat_1 = pass_hat_k_at(pooled["pass_hat_k_curve"], 1)["pass_hat_k"]
     # The same cases the headline averages, one estimate each: the interval runs over them, and a
     # domination test pairs two contestants on the test cases both measured.
-    attempts, _ = pool_pass_hat_k_attempts(results, cell_of_run=cell_of_run, rubric_threshold=rubric_threshold)
+    attempts, _ = pool_pass_hat_k_attempts(
+        headline_results, cell_of_run=cells.of_run, rubric_threshold=rubric_threshold
+    )
+    readings = [
+        reading.model_copy(
+            update=_cell_pass_hat_k(results, reading.run_ids, cells.of_run, k=k, rubric_threshold=rubric_threshold)
+        )
+        for reading in cells.readings
+    ]
     unit_estimates: list[float] = []
     unit_attempts = 0
     pass_by_case: dict[str, list[float]] = {}
-    for (_, _, _, _, test_case_id), case_attempts in attempts.items():
+    for (_, _, _, test_case_id), case_attempts in attempts.items():
         estimate = case_pass_hat_k(case_attempts, k)
         if estimate is None:
             continue
@@ -820,8 +940,8 @@ def _frontier_point(
     # spend, and averaged in they rank a refusing contestant cheap. A cell an apparatus fault cut short spent
     # less than a whole one, so averaged in it lets the rig make a contestant look cheaper. Both dollars stay
     # in program spend (`cost_usd`), which is accounting rather than a comparison.
-    priced = [
-        (r.test_case_id, c)
+    priced_by_run = [
+        (r.eval_run_id, r.test_case_id, c)
         for r, c in (
             (
                 r,
@@ -836,6 +956,7 @@ def _frontier_point(
         )
         if c is not None
     ]
+    priced = [(case, c) for _, case, c in priced_by_run]
     observed_costs = [c for _, c in priced]
     n_cost = len(observed_costs)
     prod_cost = math.fsum(observed_costs) / n_cost if n_cost else None
@@ -868,8 +989,11 @@ def _frontier_point(
     mean_total_ms = round(sum(totals) / n_latency, 3) if n_latency else None
 
     # cost / pass-probability — undefined when cost is unknown or nothing passed.
-    # One attempt's mean cost over one attempt's pass probability, pass^1 — see the field.
-    cost_per_acceptable_outcome = (prod_cost / pass_hat_1) if (prod_cost is not None and pass_hat_1) else None
+    # One attempt's mean cost over one attempt's pass probability, pass^1 — see the field. Both sides read the
+    # headline cell's runs: pass^1 is that cell's, so a cost over every run would divide one set by another.
+    headline_costs = [c for run_id, _, c in priced_by_run if run_id in headline_ids]
+    headline_cost = math.fsum(headline_costs) / len(headline_costs) if headline_costs else None
+    cost_per_acceptable_outcome = (headline_cost / pass_hat_1) if (headline_cost is not None and pass_hat_1) else None
 
     # Does this contestant's pool span cassette modes? Narrowed from the caller's whole
     # map to the runs these results actually came from, so a point can never be qualified
@@ -908,10 +1032,11 @@ def _frontier_point(
         completeness_disclosures={
             run_id: degraded_by_run[run_id] for run_id in contributing_runs if run_id in degraded_by_run
         },
+        pass_hat_k_cells=readings,
         variant_key=variant_key,
         model=model,
         variant_identity_version=identity_version,
-        identity_version_disclosure=_identity_version_disclosure(identity_version),
+        identity_version_disclosure=identity_version_disclosure(identity_version),
         pass_hat_k=pass_hat_k,
         k=k,
         n_pass_cases=pooled["n_cases_at_k"],
@@ -944,6 +1069,209 @@ def _frontier_point(
         served_models=pooled_served_models(results),
     )
     return point, cases
+
+
+def _served_by_run(results: Sequence[EvalResult]) -> dict[str, frozenset[str]]:
+    """The models the provider's responses named for each run's candidate calls, over one contestant's results.
+
+    Read off the candidate usage rows (:func:`~threetears.evals.analysis.reporting.served_reading`), never the id
+    the launch asked for. A call whose response named none adds nothing, so a run whose responses named none maps to
+    the empty set.
+
+    :param results: One contestant's results.
+    :ptype results: Sequence[EvalResult]
+    :return: Run id → the named models, for every run of ``results``.
+    :rtype: dict[str, frozenset[str]]
+    """
+    served: dict[str, frozenset[str]] = {}
+    for result in results:
+        reading = served_reading(result)
+        served[result.eval_run_id] = served.get(result.eval_run_id, frozenset()) | (
+            reading.served if reading is not None else frozenset()
+        )
+    return served
+
+
+class _PointCells(NamedTuple):
+    """One contestant's pass^k cells: each run's cell, and one reading per cell, the headline first."""
+
+    of_run: dict[str, PassHatKCell]
+    readings: list[PassHatKCellReading]
+
+
+def _pass_hat_k_cells(
+    results: Sequence[EvalResult], *, runs: Mapping[str, EvalRun], profile: HostProfile | None
+) -> _PointCells:
+    """Group one contestant's runs into pass^k cells, choose the headline, and say why each other cell stands apart.
+
+    Each run's cell is :func:`~threetears.evals.kernel.scoring.pass_hat_k_cell` over the models that answered it for
+    this contestant, with a silent template digest or served model joined by
+    :func:`~threetears.evals.kernel.scoring.join_unrecorded`. The headline is chosen in the order
+    :class:`PassHatKCellReading` states. Each other
+    cell's reason is the first field in which it differs from the headline, so the grouping and the reason are one
+    reading.
+
+    :param results: One contestant's results, never empty.
+    :ptype results: Sequence[EvalResult]
+    :param runs: Every placed run by id; every run of ``results`` is in it.
+    :ptype runs: Mapping[str, EvalRun]
+    :param profile: The host that re-derives a run's context, or ``None``.
+    :ptype profile: HostProfile | None
+    :return: Each run's cell, and a reading per cell with no pass^k yet.
+    :rtype: _PointCells
+    """
+    served = _served_by_run(results)
+    weight: dict[str, int] = {}
+    for result in results:
+        weight[result.eval_run_id] = weight.get(result.eval_run_id, 0) + 1
+    raw = {run_id: pass_hat_k_cell(runs[run_id], profile, served=served[run_id]) for run_id in weight}
+    of_run, assumed = join_unrecorded(raw, weight)
+    members: dict[PassHatKCell, list[str]] = {}
+    for run_id in sorted(of_run):
+        members.setdefault(of_run[run_id], []).append(run_id)
+    ordered = sorted(
+        members,
+        key=lambda cell: (
+            not cell.recorded,
+            cell.unresolved is not None,
+            -len(members[cell]),
+            -sum(weight[run_id] for run_id in members[cell]),
+            members[cell][0],
+        ),
+    )
+    headline = ordered[0]
+    reference = runs[members[headline][0]]
+    readings: list[PassHatKCellReading] = []
+    for cell in ordered:
+        run_ids = members[cell]
+        why = pass_hat_k_cell_reason(cell, headline)
+        readings.append(
+            PassHatKCellReading(
+                run_ids=run_ids,
+                headline=why is None,
+                reason=None if why is None else why[0],
+                detail=None
+                if why is None
+                else _cell_detail(why[1], cell, headline, runs[run_ids[0]], reference, profile),
+                served_models=list(cell.served),
+                served_model_assumed=[r for r in assumed.get("served", []) if r in run_ids],
+                template_digest_assumed=[r for r in assumed.get("template_digest", []) if r in run_ids],
+            )
+        )
+    return _PointCells(of_run=of_run, readings=readings)
+
+
+def _cell_detail(
+    field: str,
+    cell: PassHatKCell,
+    headline: PassHatKCell,
+    run: EvalRun,
+    reference: EvalRun,
+    profile: HostProfile | None,
+) -> str:
+    """Word what differs between a cell and the headline, in the field the reason was read from.
+
+    :param field: The first field of the two records that differs (:func:`pass_hat_k_cell_reason`).
+    :ptype field: str
+    :param cell: The cell standing apart.
+    :ptype cell: PassHatKCell
+    :param headline: The headline cell.
+    :ptype headline: PassHatKCell
+    :param run: A run of ``cell``.
+    :ptype run: EvalRun
+    :param reference: A run of ``headline``.
+    :ptype reference: EvalRun
+    :param profile: The host that re-derives a context, or ``None``.
+    :ptype profile: HostProfile | None
+    :return: The sentence.
+    :rtype: str
+    """
+    if field in ("recorded", "run_id"):
+        if not cell.recorded:
+            return "it recorded no measurement context, so nothing says what it held fixed"
+        return "the headline's run recorded no measurement context, so nothing says what it held fixed"
+    if field == "unresolved":
+        if cell.unresolved is not None:
+            return f"its context could not be re-derived at identity version v{IDENTITY_VERSION}: {cell.unresolved}"
+        return f"the headline's context could not be re-derived at identity version v{IDENTITY_VERSION}"
+    if field == "template_id":
+        return (
+            f"it ran template {cell.template_id or '(ad hoc)'} and the headline's runs ran "
+            f"{headline.template_id or '(ad hoc)'}"
+        )
+    if field == "template_digest":
+        if cell.template_digest is None or headline.template_digest is None:
+            return (
+                f"its template {cell.template_id or '(ad hoc)'} matches the headline's, and one side froze no digest of "
+                "what it measures, so whether it was edited between them cannot be told"
+            )
+        return (
+            f"its template {cell.template_id or '(ad hoc)'} was edited in what it measures between it and the "
+            "headline's runs (another template_digest)"
+        )
+    if field == "context_key":
+        moved = _moved_components(run, reference, profile)
+        if moved:
+            return f"its context differs from the headline's in {', '.join(moved)}"
+        return "its context key differs from the headline's"
+    if field == "identity_version":
+        return (
+            f"it was stamped under identity version v{cell.identity_version} and the headline's runs under "
+            f"v{headline.identity_version}, and no host was given to re-derive either"
+        )
+    if field == "apparatus_provenance":
+        return f"its apparatus was {cell.apparatus_provenance} and the headline's {headline.apparatus_provenance}"
+    return (
+        f"its candidate calls were answered by {', '.join(cell.served) or 'no named model'} and the headline's by "
+        f"{', '.join(headline.served) or 'no named model'}, as the provider's responses named them"
+    )
+
+
+def _cell_pass_hat_k(
+    results: Sequence[EvalResult],
+    run_ids: Sequence[str],
+    of_run: Mapping[str, PassHatKCell],
+    *,
+    k: int,
+    rubric_threshold: int,
+) -> dict[str, float | int | None]:
+    """One cell's own pass^k at the point's depth, over its own results.
+
+    :return: ``{"pass_hat_k", "n_cases_at_k"}`` for :class:`PassHatKCellReading`.
+    :rtype: dict[str, float | int | None]
+    """
+    own = set(run_ids)
+    entry = pool_pass_hat_k(
+        [r for r in results if r.eval_run_id in own], cell_of_run=of_run, k=k, rubric_threshold=rubric_threshold
+    )
+    return {"pass_hat_k": entry["pass_hat_k"], "n_cases_at_k": entry["n_cases_at_k"]}
+
+
+def _moved_components(run: EvalRun, pooled: EvalRun, profile: HostProfile | None) -> list[str]:
+    """The context components two runs differ in, read at this build's identity version.
+
+    Without a host nothing is re-derived, so stamped components are compared only where both were stamped under
+    one version; otherwise none can be named.
+
+    :param run: A run of the cell standing apart.
+    :ptype run: EvalRun
+    :param pooled: A run of the headline cell.
+    :ptype pooled: EvalRun
+    :param profile: The host that re-derives a context, or ``None``.
+    :ptype profile: HostProfile | None
+    :return: The differing component names, in field order; empty when none can be named.
+    :rtype: list[str]
+    """
+    if profile is not None:
+        was = resolve_context_identity(run, profile).context_components
+        now = resolve_context_identity(pooled, profile).context_components
+    elif run.identity_version == pooled.identity_version:
+        if run.context_components is None or pooled.context_components is None:
+            return []
+        was, now = run.context_components, pooled.context_components
+    else:
+        return []
+    return [name for name in type(was).model_fields if getattr(was, name) != getattr(now, name)]
 
 
 class _ContestantCases(NamedTuple):
@@ -1346,7 +1674,8 @@ def compute_frontier(
     (secondary), production-replicating cost, total latency, and every denominator.
     The version is part of the contestant because one counter backs both key
     predicates and cannot say which moved, so pooling on the digest alone would merge
-    on unverifiable provenance. The non-dominated set
+    on unverifiable provenance; a key its run's recorded lever map reproduces under this
+    build is verified, and placed at this build's version (:func:`contestant_key`). The non-dominated set
     is computed and dominated points are flagged rather than dropped.
 
     The subjects partition; the CONDITIONS do not. ``variant_key`` names the shipping
@@ -1362,10 +1691,12 @@ def compute_frontier(
     shallowest ``k_runs`` among the subject's ranked runs, and estimated without bias from each
     case's attempts pooled across the runs of one cell
     (:func:`~threetears.evals.kernel.scoring.pool_pass_hat_k`): two runs of one variant under
-    one ``context_key`` are more attempts at the same cases, while the same case measured under
-    another context is a separate case beside it. So a repeat run sharpens a contestant's estimate
-    rather than doubling its case count, and no contestant is ranked on a different depth than
-    its rivals.
+    one context, resolved at this build's identity version, are more samples of one cell whatever
+    cases each covered, while the same case measured under another context is a separate case
+    beside it as a cell of its own, kept out of the point's pass^k and named with why
+    (:attr:`FrontierPoint.pass_hat_k_cells`). So a
+    repeat run sharpens a contestant's estimate rather than doubling its case count, a run over
+    more cases widens it, and no contestant is ranked on a different depth than its rivals.
 
     When ``bar`` is supplied it gates pass^k, read by each point's pass^k interval the way every
     campaign bar is read (:attr:`FrontierPoint.bar_decision`): cleared only when the whole interval is at
@@ -1499,10 +1830,7 @@ def compute_frontier(
     # filter keeps the span from naming a predicate no row in this answer was keyed under
     # — the same rule the cassette-mode and template maps below follow.
     considered: list[EvalResult] = []
-    # Which configuration each run measured, so a contestant's repeat runs pool their attempts at
-    # a case (more depth) and runs under different conditions never do. Collected on the same seam
-    # as the maps above: a point is built from RESULTS and the measurement context lives on the RUN.
-    cell_of_run: dict[str, Hashable] = {}
+    considered_keys: list[ContestantKey] = []
     # The depth each subject is ranked at: the shallowest k any of its ranked runs was
     # commissioned to (see SubjectFrontier.k).
     k_by_subject: dict[str, int] = {}
@@ -1517,11 +1845,12 @@ def compute_frontier(
 
         n_considered += 1
         considered.append(result)
-        by_subject.setdefault(resolved, {}).setdefault(_contestant_key(result), []).append(result)
+        contestant = contestant_key(result, run)
+        considered_keys.append(contestant)
+        by_subject.setdefault(resolved, {}).setdefault(contestant, []).append(result)
         subject_labels[resolved] = run.subject_snapshot.subject_label
         cassette_modes_by_run[run.id] = run.cassette_mode
         templates_by_run[run.id] = run.template_id
-        cell_of_run[run.id] = pass_hat_k_cell(run)
         placed_runs[run.id] = run
         results_of_run.setdefault(run.id, []).append(result)
         k_by_subject[resolved] = min(k_by_subject.get(resolved, run.k_runs), run.k_runs)
@@ -1550,12 +1879,13 @@ def compute_frontier(
                     groups[key],
                     contestant=key,
                     k=subject_k,
-                    cell_of_run=cell_of_run,
                     rubric_threshold=rubric_threshold,
                     cassette_modes_by_run=cassette_modes_by_run,
                     templates_by_run=templates_by_run,
                     degraded_by_run=degraded_by_run,
                     footing_by_run=footing_by_run,
+                    runs_by_id=placed_runs,
+                    profile=profile,
                 ),
                 groups[key],
             )
@@ -1647,7 +1977,15 @@ def compute_frontier(
                     cost_decision=cost_decision,
                     tied_with=tied_with,
                     boundary_unchecked=boundary_dimensions if control_variant_key is None else [],
-                    judge_evidence_tier=_judged_pass_tier(built[costed[0]][2], tiers),
+                    # The judges behind the pass^k the pick was made on: its headline cell's.
+                    judge_evidence_tier=_judged_pass_tier(
+                        [
+                            result
+                            for result in built[costed[0]][2]
+                            if result.eval_run_id in set(pick.pass_hat_k_cells[0].run_ids)
+                        ],
+                        tiers,
+                    ),
                 )
 
         subjects.append(
@@ -1670,7 +2008,7 @@ def compute_frontier(
             )
         )
 
-    identity_versions = _identity_version_span(considered)
+    identity_versions = identity_version_span(considered_keys)
 
     return FrontierResult(
         bar=bar,
@@ -1683,7 +2021,7 @@ def compute_frontier(
         completeness_disclosures=degraded_by_run,
         n_degraded_observations=n_degraded_observations,
         identity_version_span=identity_versions,
-        identity_span_disclosure=_identity_span_disclosure(identity_versions),
+        identity_span_disclosure=identity_span_disclosure(identity_versions),
         contended_latency_disclosure=contended_latency_sentence(
             sum(1 for result in considered if result.id in contended), len(considered)
         ),
@@ -1715,6 +2053,9 @@ __all__ = [
     "FrontierDominator",
     "FrontierError",
     "FrontierPoint",
+    "PASS_HAT_K_CELL_READING",
+    "PassHatKCellReading",
+    "pass_hat_k_cell_lines",
     "FrontierResult",
     "FrontierVerdict",
     "normalize_bar",

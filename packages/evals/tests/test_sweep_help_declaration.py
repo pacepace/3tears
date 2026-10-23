@@ -123,4 +123,4 @@ async def test_the_declaration_the_help_names_is_made_over_a_real_sweeps_runs(ev
     assert declared is not None and set(declared.run_ids) == set(run_ids)
     eval_host = host.eval_host
     bundle = off_loop(assemble_context_bundle, declared, storage=storage, profile=eval_host.profile)
-    assert bundle.reading_scope.question_after_runs is not None, "a question asked after the runs says so"
+    assert bundle.reading_scope.late_criteria != [], "an aspect declared over stored results says so"

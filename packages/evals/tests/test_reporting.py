@@ -43,7 +43,6 @@ from threetears.evals.analysis.cassette_mode import CASSETTE_SPAN_CLAUSE, casset
 from threetears.evals.analysis.lenses.aggregation import WEIGHTING_EQUAL_PER_SCENARIO, WEIGHTING_SAMPLE_WEIGHTED
 from threetears.evals.analysis.lenses.comparison_sets import (
     BADGE_CASE_SET_DIFFERS,
-    BADGE_CASE_SET_UNRESOLVED,
     BADGE_CASSETTE_MODE_DIFFERS,
     BADGE_CONTEXT_DIFFERS,
     BADGE_CONTEXT_INCOMPLETE,
@@ -72,7 +71,7 @@ from threetears.evals.analysis.stats import UNIFORM_MOVE_NEEDS_RANGE, bounded_se
 from threetears.evals.kernel.host import freeze
 from threetears.evals.ops import pivot_text
 from threetears.evals.schema.values import SweepableValue
-from threetears.evals.kernel.identity import IDENTITY_VERSION, derive_context_identity, resolve_context_identity
+from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key, derive_context_identity
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, describe_measure
 from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
@@ -1671,15 +1670,17 @@ class TestComparisonSets:
         # A count of 3 shared cases would have read as "these ran the same 3 cases".
         assert group.shared_test_case_ids == ["tc-1", "tc-2", "tc-3"]
 
-    def test_the_fingerprint_is_the_runs_own_case_basis_not_a_second_digest(self):
-        """A competing case-set identity would be free to drift from the stamped one."""
-        run, _ = _run_with_results(test_case_ids=["tc-1", "tc-2"])
+    def test_a_case_set_difference_is_badged_as_the_case_set_never_as_the_context(self):
+        """More cases are more samples of one condition: the context key does not hold them, the fingerprint does."""
+        run_a = _stamped_run(test_case_ids=["tc-1", "tc-2"])
+        run_b = _stamped_run(test_case_ids=["tc-1", "tc-2", "tc-3"])
 
-        group = compute_comparison_sets([run], profile=_JUDGED_HOST).comparison_sets[0]
+        group = compute_comparison_sets([run_a, run_b], profile=_JUDGED_HOST).comparison_sets[0]
 
-        assert (
-            group.case_sets[0].fingerprint == resolve_context_identity(run, _JUDGED_HOST).context_components.case_basis
-        )
+        assert run_a.context_key == run_b.context_key
+        assert BADGE_CASE_SET_DIFFERS in group.badges
+        assert BADGE_CONTEXT_DIFFERS not in group.badges
+        assert len({entry.fingerprint for entry in group.case_sets}) == 2
 
     def test_runs_sharing_a_case_set_share_a_fingerprint(self):
         """Order of resolution must not split an otherwise identical basis."""
@@ -1690,81 +1691,6 @@ class TestComparisonSets:
 
         assert len(group.case_sets) == 1
         assert BADGE_CASE_SET_DIFFERS not in group.badges
-
-    @staticmethod
-    def _without_case_basis(monkeypatch, *unresolved_run_ids: str):
-        """Blank ``case_basis`` on the named runs, leaving the rest resolved.
-
-        Driven through the resolver rather than by hand-stamping a field, because
-        the resolver is the single place the stamped-or-derived decision is made
-        and the surface reads it rather than the raw run. Patched rather than
-        constructed: nothing stamps an identity without ``case_basis`` at the
-        current ``IDENTITY_VERSION``, so the state is latent — which is exactly
-        why the bucketing must be structurally safe before the next bump makes it
-        reachable, and why a test cannot reach it any other way today.
-        """
-        from threetears.evals.analysis.lenses import comparison_sets
-
-        real = comparison_sets.resolve_context_identity
-        targets = set(unresolved_run_ids)
-
-        def _resolve(run, profile):
-            identity = real(run, profile)
-            if run.id not in targets:
-                return identity
-            components = identity.context_components.model_copy(update={"case_basis": None})
-            return identity.model_copy(update={"context_components": components})
-
-        monkeypatch.setattr(comparison_sets, "resolve_context_identity", _resolve)
-
-    def test_unresolved_case_bases_never_merge_into_one_bucket(self, monkeypatch):
-        """Two unknowns are not a match, and must not be reported as one.
-
-        Keying every unresolved run on a shared ``""`` merged them into a single
-        bucket. Two consequences, both silent: the group compared as one case set
-        so no caveat fired, and ``n_cases`` — read from the bucket's first member
-        as its representative — reported that one run's denominator as the whole
-        bucket's, here 2 standing in for a run that executed 3.
-        """
-        run_a, _ = _run_with_results(test_case_ids=["tc-1", "tc-2"])
-        run_b, _ = _run_with_results(test_case_ids=["tc-3", "tc-4", "tc-5"])
-        self._without_case_basis(monkeypatch, run_a.id, run_b.id)
-
-        group = compute_comparison_sets([run_a, run_b], profile=_JUDGED_HOST).comparison_sets[0]
-
-        assert len(group.case_sets) == 2
-        assert all(entry.fingerprint is None for entry in group.case_sets)
-        # Each bucket holds exactly its own run, so the representative really is one.
-        assert sorted(entry.n_cases for entry in group.case_sets) == [2, 3]
-        assert sorted(entry.run_ids[0] for entry in group.case_sets) == sorted([run_a.id, run_b.id])
-
-    def test_an_unresolved_basis_badges_unknown_not_different(self, monkeypatch):
-        """``case_set_differs`` asserts an observation; an unresolved basis has none.
-
-        Firing it here would claim the sets were compared and found to differ, when
-        what happened is that one of them could not be read at all. The distinction
-        is the same one ``context_incomplete`` exists to make, one axis over.
-        """
-        run_a, _ = _run_with_results(test_case_ids=["tc-1", "tc-2"])
-        run_b, _ = _run_with_results(test_case_ids=["tc-1", "tc-2"])
-        self._without_case_basis(monkeypatch, run_b.id)
-
-        group = compute_comparison_sets([run_a, run_b], profile=_JUDGED_HOST).comparison_sets[0]
-
-        assert BADGE_CASE_SET_UNRESOLVED in group.badges
-        assert BADGE_CASE_SET_DIFFERS not in group.badges
-
-    def test_resolved_runs_that_really_differ_still_badge_differs(self, monkeypatch):
-        """The unknown badge must not swallow the observed one when both apply."""
-        run_a, _ = _run_with_results(test_case_ids=["tc-1", "tc-2"])
-        run_b, _ = _run_with_results(test_case_ids=["tc-1", "tc-2", "tc-3"])
-        run_c, _ = _run_with_results(test_case_ids=["tc-9"])
-        self._without_case_basis(monkeypatch, run_c.id)
-
-        group = compute_comparison_sets([run_a, run_b, run_c], profile=_JUDGED_HOST).comparison_sets[0]
-
-        assert BADGE_CASE_SET_DIFFERS in group.badges
-        assert BADGE_CASE_SET_UNRESOLVED in group.badges
 
     def test_context_drift_is_badged(self):
         """Driven through a real pinned condition, not two hand-written key strings.
@@ -5233,6 +5159,71 @@ class TestBothLensesGateOnTheIdentityVersion:
         assert len(result.series) == 2, "one series trended two predicate versions as one contestant"
         assert {series.variant_identity_version for series in result.series} == {9, 10}
 
+    def test_a_series_whose_older_run_recorded_its_lever_map_runs_through_the_bump(self):
+        """Today's predicate over the run's recorded map reproduces the key, so the older stamp splits nothing."""
+        levers: dict = {}
+        key = compute_variant_key(levers)
+        before = _fr_run(variant_levers=levers, identity_version=IDENTITY_VERSION - 1)
+        after = _fr_run(variant_levers=levers, identity_version=IDENTITY_VERSION)
+        results = [
+            _fr_result(
+                before,
+                model="sonnet",
+                variant_key=key,
+                test_case_id="tc1",
+                total_ms=100.0,
+                identity_version=IDENTITY_VERSION - 1,
+            ),
+            _fr_result(
+                after,
+                model="sonnet",
+                variant_key=key,
+                test_case_id="tc1",
+                total_ms=200.0,
+                identity_version=IDENTITY_VERSION,
+            ),
+        ]
+
+        result = compute_history(
+            [before, after], results, metric=METRIC_TOTAL_MS, profile=_JUDGED_HOST, archived_run_ids=None
+        )
+
+        [series] = result.series
+        assert series.variant_identity_version == IDENTITY_VERSION
+        assert series.identity_version_disclosure is None
+        assert result.identity_version_span == [IDENTITY_VERSION]
+        assert result.identity_span_disclosure is None
+
+    def test_a_series_whose_older_run_recorded_no_lever_map_is_split_at_the_bump(self):
+        """Nothing verifies the older stamp, so the two stay two contestants, and the span says why."""
+        before = _fr_run(identity_version=IDENTITY_VERSION - 1)
+        after = _fr_run(identity_version=IDENTITY_VERSION)
+        results = [
+            _fr_result(
+                before,
+                model="sonnet",
+                variant_key="vk-1",
+                test_case_id="tc1",
+                total_ms=100.0,
+                identity_version=IDENTITY_VERSION - 1,
+            ),
+            _fr_result(
+                after,
+                model="sonnet",
+                variant_key="vk-1",
+                test_case_id="tc1",
+                total_ms=200.0,
+                identity_version=IDENTITY_VERSION,
+            ),
+        ]
+
+        result = compute_history(
+            [before, after], results, metric=METRIC_TOTAL_MS, profile=_JUDGED_HOST, archived_run_ids=None
+        )
+
+        assert len(result.series) == 2
+        assert result.identity_version_span == [IDENTITY_VERSION - 1, IDENTITY_VERSION]
+
     def test_one_key_under_one_predicate_stays_one_history_series(self):
         run = _fr_run()
         results = [
@@ -5577,9 +5568,13 @@ class TestFrontierCassetteSpan:
 
         `cost_is_partial` already rides along for the weaker version of this reason;
         an operator who reads only the verdict line must not be handed a pick whose
-        quality figure came half from a re-served recording.
+        quality figure came half from a re-served recording. Its pass^k reads one cell (the two modes are two
+        contexts), so the capture run carries two cases for an interval; the cost it was picked on pools both.
         """
         runs, results = self._corpus()
+        results.append(
+            _fr_result(runs[0], model="flash", variant_key="vk-1", test_case_id="c3", roles={"candidate": 0.02})
+        )
 
         verdict = compute_frontier(runs, results, bar=0.0, archived_run_ids=None).subjects[0].verdict
 
@@ -5730,20 +5725,21 @@ class TestFrontierTemplateSpan:
         assert points["vk-other"].template_span_disclosure is None
 
     def test_the_verdict_carries_it_too(self):
-        """The bar was applied to the pooled pass^k, so the recommendation owes the caveat.
+        """The pick was costed over both suites, so the recommendation owes the caveat.
 
         An operator who reads only the verdict line must not be handed a pick whose
-        quality figure is an average over suites of different difficulty.
+        cost and composite are averages over suites of different difficulty. Its pass^k reads one suite, the
+        headline cell, beside the other.
         """
         easy = _fr_run(template_id="single_turn_plain_v1")
         hard = _fr_run(template_id="multi_turn_tools_v1")
-        # Four cases from each suite, all passed: enough for the pooled pass^k's interval to clear 0.5.
+        # Eight cases from each suite, all passed: enough for one suite's pass^k interval to clear 0.5.
         results = [
             _fr_result(
                 run, model="flash", variant_key="vk-1", test_case_id=f"{suite}{index}", roles={"candidate": 0.01}
             )
             for run, suite in ((easy, "easy"), (hard, "hard"))
-            for index in range(4)
+            for index in range(8)
         ]
 
         verdict = compute_frontier([easy, hard], results, bar=0.5, archived_run_ids=None).subjects[0].verdict
@@ -5756,14 +5752,14 @@ class TestFrontierTemplateSpan:
         """Disclosure only — the ranking itself is unchanged by this fix."""
         easy = _fr_run(template_id="single_turn_plain_v1")
         hard = _fr_run(template_id="multi_turn_tools_v1")
-        # Eight passed cases from each suite: sixteen, enough for an all-pass interval to clear 0.7.
+        # Sixteen passed cases from each suite: enough for one suite's all-pass interval to clear 0.7.
         results = [
             _fr_result(
                 run, model=model, variant_key=f"vk-{model}", test_case_id=f"{suite}{index}", roles={"candidate": cost}
             )
             for model, cost in (("cheap", 0.01), ("dear", 0.50))
             for run, suite in ((easy, "easy"), (hard, "hard"))
-            for index in range(8)
+            for index in range(16)
         ]
 
         verdict = compute_frontier([easy, hard], results, bar=0.7, archived_run_ids=None).subjects[0].verdict
@@ -6272,7 +6268,8 @@ class TestFrontierPassHatKPoolsRepeatRuns:
         assert (point.k, point.pass_hat_k, point.n_pass_cases) == (1, 0.5, 1)
         assert [(p["k"], p["pass_hat_k"], p["n_cases"]) for p in point.pass_hat_k_curve] == [(1, 0.5, 1), (2, 0.0, 1)]
 
-    def test_runs_under_different_contexts_keep_one_case_as_two(self):
+    def test_runs_under_different_contexts_are_two_cells_and_the_headline_reads_one(self):
+        """A run of another context stays out of the point's pass^k: beside it, with its own reading and reason."""
         first, second = self._run("ctx-1"), self._run("ctx-2")
         results = [
             _fr_result(first, model="m", variant_key="vk", test_case_id="c1", passes=True),
@@ -6281,8 +6278,13 @@ class TestFrontierPassHatKPoolsRepeatRuns:
 
         point = compute_frontier([first, second], results, archived_run_ids=None).subjects[0].points[0]
 
-        assert (point.pass_hat_k, point.n_pass_cases) == (0.5, 2)
-        assert len(point.pass_hat_k_curve) == 1
+        headline, beside = point.pass_hat_k_cells
+        assert headline.headline and not beside.headline
+        assert sorted([*headline.run_ids, *beside.run_ids]) == sorted([first.id, second.id])
+        assert beside.reason == "changed_context"
+        passed = {first.id: 1.0, second.id: 0.0}
+        assert (point.pass_hat_k, point.n_pass_cases) == (passed[headline.run_ids[0]], 1)
+        assert (beside.pass_hat_k, beside.n_cases_at_k) == (passed[beside.run_ids[0]], 1)
 
     def test_every_contestant_is_ranked_at_the_subject_depth(self):
         """A k=1 run beside a k=3 run ranks the subject at pass^1 — one depth, never two."""

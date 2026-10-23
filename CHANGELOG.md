@@ -44,6 +44,94 @@ answers every refusal and handler failure itself, so only a bug escapes it, such
 `IdentityProvider` raising something other than `RuntimeError`. A 1.x client that read that `isError`
 result now gets a protocol error instead.
 
+### evals: runs pool across case sets and across an identity bump; a run kept out of a pool is named (#919)
+
+**Changed:** `IDENTITY_VERSION` 25: the case set leaves the context key. `ContextComponents.case_basis` digests the
+subject and the template, no longer the frozen `test_case_ids`, so two runs of one variant and context over different
+case sets (a run over more cases, or a hand top-up over the cases another missed) are one pass^k cell: a case's
+attempts pool across them, and pass^k averages over the union of their cases. The cell is the context as it resolves
+at this build's identity version, so a run stamped before the bump pools with one after it; a frontier contestant
+whose run recorded its lever map is placed at this build's version when today's predicate reproduces its key (frontier
+and history alike). The cell also splits on the template revision (the run's frozen `template_digest`, since an edit
+in place keeps the id) and on the model the provider's responses named as answering the candidate's calls
+(`served_model`). A run that froze no digest, or whose responses named no model, joins its cell and is named as
+joining by assumption. A point's pass^k, interval, bar and verdict read its headline cell alone, chosen in the order
+`PassHatKCellReading` states; the arm's tables, composite, cost and latency still pool every run of the variant under
+one rig. Across both #919 entries the bundle shape moves from 60, which v0.76.0 shipped, to 62: a stored analysis
+frozen over a shape-60 bundle is listed as needing regeneration (`AnalysisLine.needs_regeneration`), and its report
+is refused until it is generated again; nothing else is dropped.
+
+**Added:** `FrontierPoint.pass_hat_k_cells` (`PassHatKCellReading`) lists every pass^k cell behind a point, the
+headline first, each other one with its own pass^k and its reason (`UnpooledReason`: `changed_context`,
+`other_template`, `other_served_model` or `no_recorded_context`), read off the first field of the kernel's typed cell
+record (`PassHatKCell`) in which it differs from the headline. The frontier text, the report page's run disclosures and
+the campaign bundle's writer view (`pass_k_unpooled`, keyed by arm) name each one, after one sentence saying what
+kept out covers. A run whose stored context can no longer be re-derived is a cell of its own,
+named, instead of failing the read. One case-set comparison over sorted ids, `case_set_fingerprint`, serves comparisons
+and history, and a take-up compares the same sorted ids: one whose launch would run other cases is refused naming
+them, and a reordered set is not.
+A comparison set's case-set fingerprint is never None, and `case_set_unresolved` is gone. See
+`packages/evals/MIGRATIONS.toml`.
+
+### evals: past runs that are still valid count as evidence; a criterion set after its readings is named, data age never (#919)
+
+**Changed:** A campaign that adopts another's aspects over runs which are still valid (`aspects_from`) reads exactly
+as the one that declared them: the writer's input, the page and its confidence wording differ only in ids and dates.
+Criterion-selection risk is disclosed per criterion and only where it is true: the aspect and its control (where a
+question asks it), its margin, bars, guardrails' margins and floors are each read on their
+own time against the first stored result of the aspect's runs, and one set later gets one line, "The margin on billing
+was set on 20 Oct 2026, after its readings were visible.", grouped across aspects; one stored by an older build says
+its time is not recorded. Runs added to an aspect with `campaign_runs_add` whose results predate its criteria name
+those criteria, truly, as set after their readings. No line names the question or when the runs began, and a memo
+sentence discounting a reading for when its runs ran is dropped and listed. Time apart is no confound either: runs
+started in separate launches, or arms run one after another, are no longer flagged, and the lens tools state
+non-overlapping spans as a plain fact. An eval's campaign is dated when its call launched its arms; one filed
+before this release reads as it did unless it declared judged guardrail margins, which it dated at filing. `ReadingScope.question_after_runs` (`QuestionAfterRuns`) is replaced by
+`ReadingScope.late_criteria` (`LateCriterion`); `measurement_window_disclosure` leaves the bundle (the bundle shape is in the entry above);
+page JSON shape 3. The seeded writer prompt changed, so hosts push the new seed. Known gap: an aspect adopted from a
+campaign that asked no question is not named when the adopting campaign first puts it to a question. See
+`packages/evals/MIGRATIONS.toml`.
+
+### evals: a row no worse than the margin says so in the headline table
+
+**Fixed:** A change's `By aspect` row read only `shown better`, `shown worse` or `unclear`, so an aspect whose floor
+held at the margin read `unclear` in the headline beside a `held` floor, and its `To show no worse than the margin`
+row said no more cases were needed. A row neither shown better nor shown worse now reads `no worse than the margin`
+(`within_margin` in the JSON) where the floor's own reading of its pass rate, at 95% and uncorrected, keeps the drop
+within the margin, since the claim it feeds holds only when every asked aspect holds and needs no correction; the
+cases that would settle an unclear row are counted at that same level, so the row's count is its floor's. A floor and
+a row that still part, on the points they read against or on a check's rate the floor also reads, get a line under the
+table saying which. The seeded writer prompt names the new reading, so a host pushes the new seed to its store
+(`eval_prompt_reset`).
+
+### evals: resume an interrupted run, sweep or launch (#918)
+
+**Added:** `job_resume` takes up a run (`run:<id>`) that was lost, cancelled by an operator, or stopped by its budget
+or its provider account, as the same run. Only the cells it has not measured run, in its own order, and it ends as
+an uninterrupted run would have, `completed` with pass^k over its whole case set. A sweep (`sweep:<id>`) or a
+multi-arm launch (`launch:<id>`) resumes as a whole: interleaved arms resume as one group in their original order,
+sequential arms in order, and a sweep's never-launched arms launch from the arguments it now stores. A run its cost
+cap stopped resumes with a `max_cost_usd` above what it has spent, which counts every attempt once; a run the wall
+clock stopped resumes as it is. Its metered-call ceiling counts the calls its stored cells landed, and a run that
+has reached it is refused until the ceiling is raised. An `exhausted` run's account-refused cells run again. A resume
+is refused, naming every difference, when a launch of the run now would measure otherwise. It is never refused for
+host labels or for a template edit that changes nothing measured; both are recorded on the run's new `lifetimes`
+(`RunLifetime`), one entry per process lifetime. `completed` and `failed` runs are never resumed. `jobs_resumable`
+lists what `job_resume` would take up, with spend and cap, for a host to offer at boot. Nothing resumes on its own.
+
+**Changed:** Core schema v15.7, additive: `JobLease.epoch`, `JobLoss.epoch`, `EvalResult.lease_epoch`,
+`superseded_spend_usd`, `metered_calls` and `account_refused`, `EvalRun.lifetimes` and `template_digest`, and on
+`EvalSweep` its launch arguments, `launch_group_id` and `lifetimes`. A run's cell result id is derived from (run, case,
+model, k), so each cell has one row however many processes write it, and readers order results by insertion, never by
+id. Each lease carries an epoch, and a holder writes a cell or the run record only under the epoch it holds.
+`job_resume` replays the kind's launcher in its call so that drift is refused before any spend, so a launcher must make
+no model request when it rebuilds a stored run. A pod from before epochs, still alive during a rolling deploy, does not
+enforce the fencing.
+
+**Fixed:** A holder fenced or shut down after its run was written lost no longer writes `cancelled` rows into that
+run as its in-flight cells unwind. A lost or superseded holder writes nothing more, and a graceful shutdown no longer
+writes lost over a run whose lease has passed to another holding. See `packages/evals/MIGRATIONS.toml`.
+
 ## v0.76.0 -- 2026-10-23
 
 **Release order: the hub first.** `l3.truncate`, `l3.tx.copy` and `l3.load_files` are answered by the hub's

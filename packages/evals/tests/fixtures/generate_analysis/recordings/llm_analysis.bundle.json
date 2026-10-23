@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "campaign_id": "01a160b4-0cf5-71b1-bc81-0486f6646299",
+  "campaign_id": "01a16a05-c0ee-708d-b160-ff3046682e93",
   "scope_id": "llm-analysis",
   "name": "baseline vs candidate",
   "subject_id": "baseline vs candidate",
@@ -8,7 +8,7 @@
   "behavior": "classify",
   "declaration": {
     "question": "",
-    "declared_at": "2026-10-21T23:02:54.962973+00:00",
+    "declared_at": "2026-10-23T18:28:44.306659+00:00",
     "declared_by": "eval",
     "arms": [
       {
@@ -41,8 +41,8 @@
             "raw": null
           }
         },
-        "identity_version": 24,
-        "named_at": "2026-10-21T23:02:54.962973+00:00"
+        "identity_version": 25,
+        "named_at": "2026-10-23T18:28:44.306659+00:00"
       }
     ],
     "aspects": [
@@ -91,11 +91,11 @@
           "measure_latency": false
         },
         "run_ids": [
-          "01a160b4-0c93-72cb-a83f-4e082cdf3918",
-          "01a160b4-0c95-707e-be93-0ea35a72b0df"
+          "01a16a05-c097-74e6-925b-6042a1b503df",
+          "01a16a05-c09b-7053-849a-0dcf7529e6ec"
         ],
-        "declared_at": "2026-10-21T23:02:54.962973+00:00",
-        "asked_at": "2026-10-21T23:02:54.962973+00:00",
+        "declared_at": "2026-10-23T18:28:44.306659+00:00",
+        "asked_at": "2026-10-23T18:28:44.306659+00:00",
         "margin_declared_at": null
       }
     ],
@@ -132,8 +132,8 @@
           "raw": null
         }
       },
-      "identity_version": 24,
-      "named_at": "2026-10-21T23:02:54.962973+00:00"
+      "identity_version": 25,
+      "named_at": "2026-10-23T18:28:44.306659+00:00"
     },
     {
       "label": "candidate",
@@ -165,12 +165,12 @@
           "raw": null
         }
       },
-      "identity_version": 24,
+      "identity_version": 25,
       "named_at": null
     }
   ],
   "readings": {
-    "campaign_id": "01a160b4-0cf5-71b1-bc81-0486f6646299",
+    "campaign_id": "01a16a05-c0ee-708d-b160-ff3046682e93",
     "alpha": 0.05,
     "control": "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6",
     "control_label": "baseline",
@@ -193,6 +193,7 @@
         "drop_confidence": null,
         "gain_p": 1.0,
         "gain_p_holm": 1.0,
+        "within_interval": null,
         "drop_p": null,
         "drop_p_holm": null,
         "reading": "unclear",
@@ -216,8 +217,8 @@
   },
   "aspects": [
     {
-      "schema_version": 60,
-      "campaign_id": "01a160b4-0cf5-71b1-bc81-0486f6646299",
+      "schema_version": 62,
+      "campaign_id": "01a16a05-c0ee-708d-b160-ff3046682e93",
       "subject_id": "baseline vs candidate",
       "subject_kind": "",
       "behavior": "classify",
@@ -225,8 +226,8 @@
       "template_id": "eval-4feedbcc275d466e",
       "scope_id": "llm-analysis",
       "run_ids": [
-        "01a160b4-0c93-72cb-a83f-4e082cdf3918",
-        "01a160b4-0c95-707e-be93-0ea35a72b0df"
+        "01a16a05-c097-74e6-925b-6042a1b503df",
+        "01a16a05-c09b-7053-849a-0dcf7529e6ec"
       ],
       "unresolved_run_ids": [],
       "archived_run_ids": [],
@@ -234,14 +235,14 @@
         "candidate": "callable"
       },
       "window": {
-        "start": "2026-10-21T23:02:54.867269+00:00",
-        "end": "2026-10-21T23:02:54.869607+00:00"
+        "start": "2026-10-23T18:28:44.311075+00:00",
+        "end": "2026-10-23T18:28:44.315519+00:00"
       },
       "run_summaries": [
         {
-          "run_id": "01a160b4-0c93-72cb-a83f-4e082cdf3918",
+          "run_id": "01a16a05-c097-74e6-925b-6042a1b503df",
           "status": "completed",
-          "created_at": "2026-10-21T23:02:54.867269+00:00",
+          "created_at": "2026-10-23T18:28:44.311075+00:00",
           "candidate_model": "callable",
           "k_runs": 2,
           "config": {
@@ -528,13 +529,13 @@
                 "ci_high": null,
                 "case_means": null,
                 "categories": {
-                  "billing → account": 2,
                   "account → account": 4,
                   "billing → billing": 6,
-                  "feature_request → billing": 2,
-                  "bug → account": 2,
                   "feature_request → bug": 4,
-                  "bug → bug": 4
+                  "bug → account": 2,
+                  "bug → bug": 4,
+                  "billing → account": 2,
+                  "feature_request → billing": 2
                 },
                 "rate": null,
                 "n_true": null,
@@ -595,9 +596,9 @@
           "judge_shares_candidate_model": []
         },
         {
-          "run_id": "01a160b4-0c95-707e-be93-0ea35a72b0df",
+          "run_id": "01a16a05-c09b-7053-849a-0dcf7529e6ec",
           "status": "completed",
-          "created_at": "2026-10-21T23:02:54.869607+00:00",
+          "created_at": "2026-10-23T18:28:44.315519+00:00",
           "candidate_model": "callable",
           "k_runs": 2,
           "config": {
@@ -928,11 +929,11 @@
                 "ci_high": null,
                 "case_means": null,
                 "categories": {
-                  "billing → billing": 6,
-                  "account → account": 4,
-                  "feature_request → feature_request": 6,
                   "bug → bug": 6,
-                  "billing → bug": 2
+                  "feature_request → feature_request": 6,
+                  "billing → bug": 2,
+                  "billing → billing": 6,
+                  "account → account": 4
                 },
                 "rate": null,
                 "n_true": null,
@@ -1000,8 +1001,8 @@
             "subject_label": "baseline vs candidate",
             "template_id": "eval-4feedbcc275d466e",
             "run_ids": [
-              "01a160b4-0c93-72cb-a83f-4e082cdf3918",
-              "01a160b4-0c95-707e-be93-0ea35a72b0df"
+              "01a16a05-c097-74e6-925b-6042a1b503df",
+              "01a16a05-c09b-7053-849a-0dcf7529e6ec"
             ],
             "shared_test_case_ids": [
               "eval-4feedbcc275d466e-0",
@@ -1019,11 +1020,11 @@
             ],
             "case_sets": [
               {
-                "fingerprint": "00083aea9c64182bfc677af9f016c1c4572cd96fbea1e7a85e7bf0174637cca1",
+                "fingerprint": "6cd82961453a6fd392c76b68602a69985e50e008b29e9cec971e411be04eef36",
                 "n_cases": 12,
                 "run_ids": [
-                  "01a160b4-0c93-72cb-a83f-4e082cdf3918",
-                  "01a160b4-0c95-707e-be93-0ea35a72b0df"
+                  "01a16a05-c097-74e6-925b-6042a1b503df",
+                  "01a16a05-c09b-7053-849a-0dcf7529e6ec"
                 ]
               }
             ],
@@ -1048,7 +1049,7 @@
               {
                 "variant_key": "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b",
                 "model": "callable",
-                "variant_identity_version": 24,
+                "variant_identity_version": 25,
                 "identity_version_disclosure": null,
                 "pass_hat_k": null,
                 "k": 2,
@@ -1079,7 +1080,7 @@
                 "cost_per_acceptable_outcome": null,
                 "production_footing": {
                   "runs": {
-                    "01a160b4-0c95-707e-be93-0ea35a72b0df": {
+                    "01a16a05-c09b-7053-849a-0dcf7529e6ec": {
                       "moved": {},
                       "unchecked": {},
                       "held": [
@@ -1099,6 +1100,21 @@
                 "template_span_disclosure": null,
                 "template_span": [],
                 "completeness_disclosures": {},
+                "pass_hat_k_cells": [
+                  {
+                    "run_ids": [
+                      "01a16a05-c09b-7053-849a-0dcf7529e6ec"
+                    ],
+                    "headline": true,
+                    "reason": null,
+                    "detail": null,
+                    "served_models": [],
+                    "served_model_assumed": [],
+                    "template_digest_assumed": [],
+                    "pass_hat_k": null,
+                    "n_cases_at_k": 0
+                  }
+                ],
                 "served_models": null,
                 "dominated": false,
                 "dominance": "untested",
@@ -1108,7 +1124,7 @@
               {
                 "variant_key": "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6",
                 "model": "callable",
-                "variant_identity_version": 24,
+                "variant_identity_version": 25,
                 "identity_version_disclosure": null,
                 "pass_hat_k": null,
                 "k": 2,
@@ -1139,7 +1155,7 @@
                 "cost_per_acceptable_outcome": null,
                 "production_footing": {
                   "runs": {
-                    "01a160b4-0c93-72cb-a83f-4e082cdf3918": {
+                    "01a16a05-c097-74e6-925b-6042a1b503df": {
                       "moved": {},
                       "unchecked": {},
                       "held": [
@@ -1159,6 +1175,21 @@
                 "template_span_disclosure": null,
                 "template_span": [],
                 "completeness_disclosures": {},
+                "pass_hat_k_cells": [
+                  {
+                    "run_ids": [
+                      "01a16a05-c097-74e6-925b-6042a1b503df"
+                    ],
+                    "headline": true,
+                    "reason": null,
+                    "detail": null,
+                    "served_models": [],
+                    "served_model_assumed": [],
+                    "template_digest_assumed": [],
+                    "pass_hat_k": null,
+                    "n_cases_at_k": 0
+                  }
+                ],
                 "served_models": null,
                 "dominated": false,
                 "dominance": "untested",
@@ -1185,7 +1216,7 @@
         "completeness_disclosures": {},
         "n_degraded_observations": 0,
         "identity_version_span": [
-          24
+          25
         ],
         "identity_span_disclosure": null,
         "contended_latency_disclosure": null
@@ -1504,13 +1535,13 @@
               "ci_high": null,
               "case_means": null,
               "categories": {
-                "billing → account": 2,
                 "account → account": 8,
                 "billing → billing": 12,
-                "feature_request → billing": 2,
-                "bug → account": 2,
                 "feature_request → bug": 4,
+                "bug → account": 2,
                 "bug → bug": 10,
+                "billing → account": 2,
+                "feature_request → billing": 2,
                 "feature_request → feature_request": 6,
                 "billing → bug": 2
               },
@@ -1616,8 +1647,7 @@
       "divergences_untested": 0,
       "declared": {
         "question": "",
-        "asked_at": "2026-10-21T23:02:54.962973+00:00",
-        "question_declared_at": "2026-10-21T23:02:54.962973+00:00",
+        "asked_at": "2026-10-23T18:28:44.306659+00:00",
         "margin_declared_at": null,
         "design": {
           "axes": [
@@ -1688,12 +1718,12 @@
               "raw": null
             }
           },
-          "identity_version": 24,
-          "named_at": "2026-10-21T23:02:54.962973+00:00"
+          "identity_version": 25,
+          "named_at": "2026-10-23T18:28:44.306659+00:00"
         },
         "margin": null,
         "floors": [],
-        "declared_at": "2026-10-21T23:02:54.962973+00:00",
+        "declared_at": "2026-10-23T18:28:44.306659+00:00",
         "declared_by": "eval",
         "unread_without_control": null
       },
@@ -1701,7 +1731,7 @@
         "control_arm": {
           "variant_key": "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6",
           "run_ids": [
-            "01a160b4-0c93-72cb-a83f-4e082cdf3918"
+            "01a16a05-c097-74e6-925b-6042a1b503df"
           ],
           "k": 2,
           "moved": {},
@@ -1714,7 +1744,7 @@
           {
             "variant_key": "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b",
             "run_ids": [
-              "01a160b4-0c95-707e-be93-0ea35a72b0df"
+              "01a16a05-c09b-7053-849a-0dcf7529e6ec"
             ],
             "k": 2,
             "moved": {
@@ -1750,8 +1780,8 @@
         "stimulus_reason": "",
         "declared_apparatus": "commissioned",
         "run_provenance": {
-          "01a160b4-0c93-72cb-a83f-4e082cdf3918": "commissioned",
-          "01a160b4-0c95-707e-be93-0ea35a72b0df": "commissioned"
+          "01a16a05-c097-74e6-925b-6042a1b503df": "commissioned",
+          "01a16a05-c09b-7053-849a-0dcf7529e6ec": "commissioned"
         },
         "contradicting_run_ids": [],
         "disclosure": null
@@ -1988,7 +2018,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0c9f-718f-9394-cf47775f1ddf"
+          "result_id": "549fb864-f542-5ea8-b141-31a9caaff8a2"
         },
         {
           "trial_id": "T2",
@@ -2005,7 +2035,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0c9f-718f-9394-cf43722596e8"
+          "result_id": "e07b39d4-b76e-5fd0-86d2-ab916f3be901"
         },
         {
           "trial_id": "T3",
@@ -2022,7 +2052,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ca1-7341-8990-790d0c4f455c"
+          "result_id": "aeea337e-d16e-5a9b-b6d3-e158579e3663"
         },
         {
           "trial_id": "T4",
@@ -2039,7 +2069,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0c9f-718f-9394-cf45745cb8f2"
+          "result_id": "f5741430-3450-53e1-a442-ca228332c54a"
         },
         {
           "trial_id": "T5",
@@ -2056,7 +2086,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cd7-75c2-bd1f-fb63908eb6ad"
+          "result_id": "1db95348-f635-5399-9055-eacdd2905cf8"
         },
         {
           "trial_id": "T6",
@@ -2073,7 +2103,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ccc-77a2-97ad-0eb44a894448"
+          "result_id": "5d8d8d8e-577b-5f29-8e4c-fed946ee8749"
         },
         {
           "trial_id": "T7",
@@ -2095,7 +2125,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cd7-75c2-bd1f-fb65bb2dd7d8"
+          "result_id": "58eabe5a-61bc-5d2b-b4e8-a7b18f883747"
         },
         {
           "trial_id": "T8",
@@ -2117,7 +2147,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ccc-77a2-97ad-0eb6999d0c3e"
+          "result_id": "d1239035-c981-57ed-b69e-62644991b7e4"
         },
         {
           "trial_id": "T9",
@@ -2134,7 +2164,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ce0-7395-80ec-affa6d285e49"
+          "result_id": "8e8f0302-ac6c-5f2d-8fa6-6986facbf2ea"
         },
         {
           "trial_id": "T10",
@@ -2151,7 +2181,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cd1-7024-a875-07bd2738600c"
+          "result_id": "f06b4b0a-853a-57e7-a62b-1387fce9b04e"
         },
         {
           "trial_id": "T11",
@@ -2168,7 +2198,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ce2-7522-a785-7da5374d2b70"
+          "result_id": "6697bdb5-a294-5660-b74c-ac2a3abd759d"
         },
         {
           "trial_id": "T12",
@@ -2185,7 +2215,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cd1-7024-a875-07bf3666f12e"
+          "result_id": "a1fbfcc8-f77f-5e78-9226-85ffc8b7f26f"
         },
         {
           "trial_id": "T13",
@@ -2207,7 +2237,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cde-759b-8801-bdfad559abce"
+          "result_id": "c41b8768-728e-5565-bd4f-197fef263a85"
         },
         {
           "trial_id": "T14",
@@ -2229,7 +2259,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0c9a-718d-a30e-fb051374ec97"
+          "result_id": "d4c2977b-31a0-5301-be75-f864b3d8caf3"
         },
         {
           "trial_id": "T15",
@@ -2246,7 +2276,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cde-759b-8801-bdfc4ea66181"
+          "result_id": "9e2b87cd-45fd-5479-970c-538465ab20c6"
         },
         {
           "trial_id": "T16",
@@ -2263,7 +2293,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0c9a-718d-a30e-fb07381e74a6"
+          "result_id": "b539a7a0-e4b2-58b0-a0a7-3819a9b97051"
         },
         {
           "trial_id": "T17",
@@ -2280,7 +2310,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cb5-7285-9a34-115718bfab46"
+          "result_id": "9cdfa3b3-c70e-57f3-bdbc-750eb2baf0db"
         },
         {
           "trial_id": "T18",
@@ -2297,7 +2327,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cb9-7566-b253-7dfe26d8eadb"
+          "result_id": "cbac5084-5633-58a6-8b61-84518ab17f71"
         },
         {
           "trial_id": "T19",
@@ -2314,7 +2344,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cb9-7566-b253-7dfc2ddc06b3"
+          "result_id": "d20d18b2-c52c-5de0-8391-c24ddd8bec5a"
         },
         {
           "trial_id": "T20",
@@ -2331,7 +2361,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cbb-73e4-99aa-422dea624899"
+          "result_id": "b4881a99-a673-5b6e-9236-824d0208473d"
         },
         {
           "trial_id": "T21",
@@ -2348,7 +2378,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cd3-7350-a4ea-f6d08a26feb6"
+          "result_id": "7ddfa48d-78d5-5518-87d0-753237278d5f"
         },
         {
           "trial_id": "T22",
@@ -2365,7 +2395,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cc5-74a1-ae39-bcd95884b8a0"
+          "result_id": "fdd428b4-5312-5feb-88c4-d917a67632db"
         },
         {
           "trial_id": "T23",
@@ -2382,7 +2412,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cd5-7662-82c7-d345acc1ee57"
+          "result_id": "b8d9e55f-f912-554a-a43d-86844cf2074f"
         },
         {
           "trial_id": "T24",
@@ -2399,7 +2429,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cc6-7235-8648-ca6ef7393cf7"
+          "result_id": "ac5be9ec-fb1e-5197-ba82-e94be895ffab"
         },
         {
           "trial_id": "T25",
@@ -2421,7 +2451,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cb5-7285-9a34-115306d3e263"
+          "result_id": "ae8aad1c-d33d-5848-b610-ac4a542c1874"
         },
         {
           "trial_id": "T26",
@@ -2443,7 +2473,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cab-7225-a8a4-152a1832cca3"
+          "result_id": "586806a5-e25c-5e73-a5f4-246aac106e8a"
         },
         {
           "trial_id": "T27",
@@ -2460,7 +2490,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cb5-7285-9a34-1155a2202926"
+          "result_id": "47646a29-6762-5a78-bd87-05c9b17bed75"
         },
         {
           "trial_id": "T28",
@@ -2477,7 +2507,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cab-7225-a8a4-152c3bfd8f42"
+          "result_id": "ffb244fa-092a-5f6a-a39c-22e92fdb18ec"
         },
         {
           "trial_id": "T29",
@@ -2494,7 +2524,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cc9-7605-bf9b-93b591397a7b"
+          "result_id": "11519087-5a9a-5a75-91e5-b77b29eec036"
         },
         {
           "trial_id": "T30",
@@ -2511,7 +2541,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cda-70b6-accb-0afecf30c09f"
+          "result_id": "5169b549-9f48-5fe4-aabf-5ca8b56d1269"
         },
         {
           "trial_id": "T31",
@@ -2528,7 +2558,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cc9-7605-bf9b-93b763b586c1"
+          "result_id": "6b278f4c-a547-59fb-93ba-b1cd9b8b99fe"
         },
         {
           "trial_id": "T32",
@@ -2545,7 +2575,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cdb-70f3-b600-b8d2b4be7903"
+          "result_id": "943c037e-a646-5606-bce2-2b9a0ddf4ba9"
         },
         {
           "trial_id": "T33",
@@ -2562,7 +2592,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0c9a-718d-a30e-fb0950c451d4"
+          "result_id": "92c589d7-097e-514f-8866-f399d2cf4c9e"
         },
         {
           "trial_id": "T34",
@@ -2579,7 +2609,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ca4-765f-84a0-13ba28491aeb"
+          "result_id": "eb2077ac-d1fb-5d1c-b238-628ba43950c5"
         },
         {
           "trial_id": "T35",
@@ -2596,7 +2626,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0c9a-718d-a30e-fb0b74c9db5a"
+          "result_id": "dbeafa4d-0bf6-5a19-9664-29b9e7a67338"
         },
         {
           "trial_id": "T36",
@@ -2613,7 +2643,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ca4-765f-84a0-13bc078b3513"
+          "result_id": "73234a03-92a5-5ffb-b2da-378f23a15029"
         },
         {
           "trial_id": "T37",
@@ -2635,7 +2665,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cc3-7227-99d1-2d3e524dfc63"
+          "result_id": "b5a581eb-0c25-5d8e-a1b1-71cf47fc5e4b"
         },
         {
           "trial_id": "T38",
@@ -2657,7 +2687,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0caf-7137-abf9-302045c0991c"
+          "result_id": "49b48c90-0ba8-5980-b97b-4c3ea50d4d97"
         },
         {
           "trial_id": "T39",
@@ -2674,7 +2704,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cc3-7227-99d1-2d400a60e2d9"
+          "result_id": "7b22c53b-0451-5d9a-a26f-51762417f02c"
         },
         {
           "trial_id": "T40",
@@ -2691,7 +2721,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cb4-77a2-a6c5-d9f84a8c4dcf"
+          "result_id": "5120c89d-f560-5725-8d2d-d5c5c64fb408"
         },
         {
           "trial_id": "T41",
@@ -2713,7 +2743,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cae-73d8-a383-b4cfc236e10e"
+          "result_id": "f186824b-31df-5a88-babd-d6a67a6f9d39"
         },
         {
           "trial_id": "T42",
@@ -2735,7 +2765,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cbc-7555-a39e-c798baef2df0"
+          "result_id": "e4603c0b-52d2-53a7-a815-5ba78137106a"
         },
         {
           "trial_id": "T43",
@@ -2752,7 +2782,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cae-73d8-a383-b4d1fc733aea"
+          "result_id": "e7de57ca-fc38-5b8d-be09-996b6bf39b13"
         },
         {
           "trial_id": "T44",
@@ -2769,7 +2799,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cc2-704f-9b7d-097a394007cf"
+          "result_id": "bf053bcd-da12-529f-8e27-13e2a47eab4e"
         },
         {
           "trial_id": "T45",
@@ -2791,7 +2821,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ccf-70e2-a5af-bae6eba3554e"
+          "result_id": "f3135a62-86e9-5374-b731-494aa30ec82b"
         },
         {
           "trial_id": "T46",
@@ -2813,7 +2843,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ca7-77a3-95af-dfba226062ac"
+          "result_id": "cb511b25-b7ec-535f-a877-0e000fa7f4f1"
         },
         {
           "trial_id": "T47",
@@ -2830,7 +2860,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ccf-70e2-a5af-bae805ffb30b"
+          "result_id": "b07258f1-38d9-56ab-a2e1-91bcbfd7fbf1"
         },
         {
           "trial_id": "T48",
@@ -2847,17 +2877,18 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ca8-745f-8f4d-31f8c9649062"
+          "result_id": "ff117049-3288-5193-9a62-2788833f1c5c"
         }
       ],
       "trials_omitted": 0,
       "case_sets": [],
-      "design_frozen_at": "2026-10-21T23:02:54.867269+00:00",
-      "first_result_at": "2026-10-21T23:02:54.874073+00:00",
-      "package_version": "0.74.0",
+      "design_frozen_at": "2026-10-23T18:28:44.311075+00:00",
+      "first_result_at": "2026-10-23T18:28:44.320108+00:00",
+      "package_version": "0.76.0",
       "reading_scope": {
         "questions_declared": false,
-        "question_after_runs": null,
+        "late_criteria": [],
+        "untimed_results": 0,
         "exploratory_measures": [],
         "exploratory_dimensions": [],
         "disclosure": "This campaign declares no question, so every finding it supports is exploratory: nothing was asked before the evidence was read, and a pattern found in it is a lead for a campaign that asks, not an answer."
@@ -2891,20 +2922,19 @@
       },
       "measurement_windows": [
         {
-          "run_id": "01a160b4-0c93-72cb-a83f-4e082cdf3918",
-          "start": "2026-10-21T23:02:54.874073+00:00",
-          "end": "2026-10-21T23:02:54.944494+00:00"
+          "run_id": "01a16a05-c097-74e6-925b-6042a1b503df",
+          "start": "2026-10-23T18:28:44.320108+00:00",
+          "end": "2026-10-23T18:28:44.380505+00:00"
         },
         {
-          "run_id": "01a160b4-0c95-707e-be93-0ea35a72b0df",
-          "start": "2026-10-21T23:02:54.874474+00:00",
-          "end": "2026-10-21T23:02:54.946791+00:00"
+          "run_id": "01a16a05-c09b-7053-849a-0dcf7529e6ec",
+          "start": "2026-10-23T18:28:44.320491+00:00",
+          "end": "2026-10-23T18:28:44.382224+00:00"
         }
       ],
       "launch_disclosure": null,
       "model_identity_disclosure": null,
       "request_settings_disclosure": null,
-      "measurement_window_disclosure": null,
       "apparatus_confounds": [],
       "aliased_factors": [],
       "factor_pairs": {
@@ -2940,7 +2970,7 @@
       "arm_production_footings": {
         "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b": {
           "runs": {
-            "01a160b4-0c95-707e-be93-0ea35a72b0df": {
+            "01a16a05-c09b-7053-849a-0dcf7529e6ec": {
               "moved": {},
               "unchecked": {},
               "held": [
@@ -2953,7 +2983,7 @@
         },
         "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6": {
           "runs": {
-            "01a160b4-0c93-72cb-a83f-4e082cdf3918": {
+            "01a16a05-c097-74e6-925b-6042a1b503df": {
               "moved": {},
               "unchecked": {},
               "held": [
@@ -2977,30 +3007,30 @@
           "repeats_per_case_min": 2,
           "repeats_per_case_max": 2,
           "observation_ids": [
-            "01a160b4-0c9a-718d-a30e-fb07381e74a6",
-            "01a160b4-0c9a-718d-a30e-fb0b74c9db5a",
-            "01a160b4-0c9f-718f-9394-cf45745cb8f2",
-            "01a160b4-0ca1-7341-8990-790d0c4f455c",
-            "01a160b4-0ca4-765f-84a0-13bc078b3513",
-            "01a160b4-0ca8-745f-8f4d-31f8c9649062",
-            "01a160b4-0cab-7225-a8a4-152c3bfd8f42",
-            "01a160b4-0cae-73d8-a383-b4d1fc733aea",
-            "01a160b4-0cb4-77a2-a6c5-d9f84a8c4dcf",
-            "01a160b4-0cb5-7285-9a34-1155a2202926",
-            "01a160b4-0cb9-7566-b253-7dfc2ddc06b3",
-            "01a160b4-0cbb-73e4-99aa-422dea624899",
-            "01a160b4-0cc2-704f-9b7d-097a394007cf",
-            "01a160b4-0cc3-7227-99d1-2d400a60e2d9",
-            "01a160b4-0cc6-7235-8648-ca6ef7393cf7",
-            "01a160b4-0cc9-7605-bf9b-93b763b586c1",
-            "01a160b4-0ccc-77a2-97ad-0eb6999d0c3e",
-            "01a160b4-0ccf-70e2-a5af-bae805ffb30b",
-            "01a160b4-0cd1-7024-a875-07bf3666f12e",
-            "01a160b4-0cd5-7662-82c7-d345acc1ee57",
-            "01a160b4-0cd7-75c2-bd1f-fb65bb2dd7d8",
-            "01a160b4-0cdb-70f3-b600-b8d2b4be7903",
-            "01a160b4-0cde-759b-8801-bdfc4ea66181",
-            "01a160b4-0ce2-7522-a785-7da5374d2b70"
+            "47646a29-6762-5a78-bd87-05c9b17bed75",
+            "5120c89d-f560-5725-8d2d-d5c5c64fb408",
+            "58eabe5a-61bc-5d2b-b4e8-a7b18f883747",
+            "6697bdb5-a294-5660-b74c-ac2a3abd759d",
+            "6b278f4c-a547-59fb-93ba-b1cd9b8b99fe",
+            "73234a03-92a5-5ffb-b2da-378f23a15029",
+            "7b22c53b-0451-5d9a-a26f-51762417f02c",
+            "943c037e-a646-5606-bce2-2b9a0ddf4ba9",
+            "9e2b87cd-45fd-5479-970c-538465ab20c6",
+            "a1fbfcc8-f77f-5e78-9226-85ffc8b7f26f",
+            "ac5be9ec-fb1e-5197-ba82-e94be895ffab",
+            "aeea337e-d16e-5a9b-b6d3-e158579e3663",
+            "b07258f1-38d9-56ab-a2e1-91bcbfd7fbf1",
+            "b4881a99-a673-5b6e-9236-824d0208473d",
+            "b539a7a0-e4b2-58b0-a0a7-3819a9b97051",
+            "b8d9e55f-f912-554a-a43d-86844cf2074f",
+            "bf053bcd-da12-529f-8e27-13e2a47eab4e",
+            "d1239035-c981-57ed-b69e-62644991b7e4",
+            "d20d18b2-c52c-5de0-8391-c24ddd8bec5a",
+            "dbeafa4d-0bf6-5a19-9664-29b9e7a67338",
+            "e7de57ca-fc38-5b8d-be09-996b6bf39b13",
+            "f5741430-3450-53e1-a442-ca228332c54a",
+            "ff117049-3288-5193-9a62-2788833f1c5c",
+            "ffb244fa-092a-5f6a-a39c-22e92fdb18ec"
           ],
           "unknown_dimensions": []
         },
@@ -3013,30 +3043,30 @@
           "repeats_per_case_min": 2,
           "repeats_per_case_max": 2,
           "observation_ids": [
-            "01a160b4-0c9a-718d-a30e-fb051374ec97",
-            "01a160b4-0c9a-718d-a30e-fb0950c451d4",
-            "01a160b4-0c9f-718f-9394-cf43722596e8",
-            "01a160b4-0c9f-718f-9394-cf47775f1ddf",
-            "01a160b4-0ca4-765f-84a0-13ba28491aeb",
-            "01a160b4-0ca7-77a3-95af-dfba226062ac",
-            "01a160b4-0cab-7225-a8a4-152a1832cca3",
-            "01a160b4-0cae-73d8-a383-b4cfc236e10e",
-            "01a160b4-0caf-7137-abf9-302045c0991c",
-            "01a160b4-0cb5-7285-9a34-115306d3e263",
-            "01a160b4-0cb5-7285-9a34-115718bfab46",
-            "01a160b4-0cb9-7566-b253-7dfe26d8eadb",
-            "01a160b4-0cbc-7555-a39e-c798baef2df0",
-            "01a160b4-0cc3-7227-99d1-2d3e524dfc63",
-            "01a160b4-0cc5-74a1-ae39-bcd95884b8a0",
-            "01a160b4-0cc9-7605-bf9b-93b591397a7b",
-            "01a160b4-0ccc-77a2-97ad-0eb44a894448",
-            "01a160b4-0ccf-70e2-a5af-bae6eba3554e",
-            "01a160b4-0cd1-7024-a875-07bd2738600c",
-            "01a160b4-0cd3-7350-a4ea-f6d08a26feb6",
-            "01a160b4-0cd7-75c2-bd1f-fb63908eb6ad",
-            "01a160b4-0cda-70b6-accb-0afecf30c09f",
-            "01a160b4-0cde-759b-8801-bdfad559abce",
-            "01a160b4-0ce0-7395-80ec-affa6d285e49"
+            "11519087-5a9a-5a75-91e5-b77b29eec036",
+            "1db95348-f635-5399-9055-eacdd2905cf8",
+            "49b48c90-0ba8-5980-b97b-4c3ea50d4d97",
+            "5169b549-9f48-5fe4-aabf-5ca8b56d1269",
+            "549fb864-f542-5ea8-b141-31a9caaff8a2",
+            "586806a5-e25c-5e73-a5f4-246aac106e8a",
+            "5d8d8d8e-577b-5f29-8e4c-fed946ee8749",
+            "7ddfa48d-78d5-5518-87d0-753237278d5f",
+            "8e8f0302-ac6c-5f2d-8fa6-6986facbf2ea",
+            "92c589d7-097e-514f-8866-f399d2cf4c9e",
+            "9cdfa3b3-c70e-57f3-bdbc-750eb2baf0db",
+            "ae8aad1c-d33d-5848-b610-ac4a542c1874",
+            "b5a581eb-0c25-5d8e-a1b1-71cf47fc5e4b",
+            "c41b8768-728e-5565-bd4f-197fef263a85",
+            "cb511b25-b7ec-535f-a877-0e000fa7f4f1",
+            "cbac5084-5633-58a6-8b61-84518ab17f71",
+            "d4c2977b-31a0-5301-be75-f864b3d8caf3",
+            "e07b39d4-b76e-5fd0-86d2-ab916f3be901",
+            "e4603c0b-52d2-53a7-a815-5ba78137106a",
+            "eb2077ac-d1fb-5d1c-b238-628ba43950c5",
+            "f06b4b0a-853a-57e7-a62b-1387fce9b04e",
+            "f186824b-31df-5a88-babd-d6a67a6f9d39",
+            "f3135a62-86e9-5374-b731-494aa30ec82b",
+            "fdd428b4-5312-5feb-88c4-d917a67632db"
           ],
           "unknown_dimensions": []
         }
@@ -3547,7 +3577,7 @@
           "variant_key": "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6",
           "apparatus_class_id": "baa7449f304b814aebfc03744a092b5e603697a09def6dd14cb48b2aa9df1e15",
           "run_ids": [
-            "01a160b4-0c93-72cb-a83f-4e082cdf3918"
+            "01a16a05-c097-74e6-925b-6042a1b503df"
           ],
           "n_observations": 24,
           "n_cases": 12,
@@ -3818,13 +3848,13 @@
                 "ci_high": null,
                 "case_means": null,
                 "categories": {
-                  "billing → account": 2,
                   "account → account": 4,
                   "billing → billing": 6,
-                  "feature_request → billing": 2,
-                  "bug → account": 2,
                   "feature_request → bug": 4,
-                  "bug → bug": 4
+                  "bug → account": 2,
+                  "bug → bug": 4,
+                  "billing → account": 2,
+                  "feature_request → billing": 2
                 },
                 "rate": null,
                 "n_true": null,
@@ -3891,7 +3921,7 @@
           "variant_key": "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b",
           "apparatus_class_id": "baa7449f304b814aebfc03744a092b5e603697a09def6dd14cb48b2aa9df1e15",
           "run_ids": [
-            "01a160b4-0c95-707e-be93-0ea35a72b0df"
+            "01a16a05-c09b-7053-849a-0dcf7529e6ec"
           ],
           "n_observations": 24,
           "n_cases": 12,
@@ -4206,11 +4236,11 @@
                 "ci_high": null,
                 "case_means": null,
                 "categories": {
-                  "billing → billing": 6,
-                  "account → account": 4,
-                  "feature_request → feature_request": 6,
                   "bug → bug": 6,
-                  "billing → bug": 2
+                  "feature_request → feature_request": 6,
+                  "billing → bug": 2,
+                  "billing → billing": 6,
+                  "account → account": 4
                 },
                 "rate": null,
                 "n_true": null,
@@ -4275,7 +4305,7 @@
         }
       ],
       "time_axis": null,
-      "time_axis_withheld": "every run started on one day (2026-10-21) and the host labels no build",
+      "time_axis_withheld": "every run started on one day (2026-10-23) and the host labels no build",
       "confound_catalog": {},
       "prior_insights": [],
       "prior_insights_omitted": 0,

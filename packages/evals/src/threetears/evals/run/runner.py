@@ -85,7 +85,7 @@ from threetears.evals.kernel.covariates import (
     derive_covariates,
 )
 from threetears.evals.kernel.dsl import evaluate_with_detail
-from threetears.evals.kernel.errors import StorageError
+from threetears.evals.kernel.errors import JobFenced, StorageError
 from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.schema.completion import CompletionProtocolDefect
@@ -118,6 +118,7 @@ from threetears.evals.schema.models import (
     PreconditionOutcome,
     RoleUsage,
     RubricScore,
+    cell_result_id,
     eval_trace_doc_id,
     scored_dim_ids,
     utc_now_iso,
@@ -1282,6 +1283,7 @@ async def _run_one_result(
         :rtype: CellOutcome
         """
         result = EvalResult(
+            id=cell_result_id(eval_run_id, test_case.id, model, k_iteration),
             scope_id=scope_id,
             eval_run_id=eval_run_id,
             test_case_id=test_case.id,
@@ -1663,8 +1665,9 @@ async def _run_one_result(
     concurrent_eval_jobs = sample_concurrent_eval_jobs(options, concurrent_eval_jobs)
 
     # 5. Build the EvalResult and its trace — through the one assembly every completed cell takes,
-    # the host-observed ones (:func:`~threetears.evals.run.witnessed.record_witnessed_cell`) included. The ids are this cell's own,
-    # minted here, which is the one thing a host recording a cell after the fact supplies instead.
+    # the host-observed ones (:func:`~threetears.evals.run.witnessed.record_witnessed_cell`) included. The id is the
+    # cell's own, derived from its coordinates so the cell has one row whichever holding of the run writes it; it is
+    # the one thing, with the stamp, that a host recording a cell after the fact supplies instead.
     return assemble_completed_cell(
         scope_id=scope_id,
         eval_run_id=eval_run_id,
@@ -1679,7 +1682,7 @@ async def _run_one_result(
         goal_checks=template.goal_state_checks,
         judged_artifact=judged_artifact,
         rate_table=options.external_rates,
-        result_id=str(uuid.uuid7()),
+        result_id=cell_result_id(eval_run_id, test_case.id, model, k_iteration),
         scored_at=utc_now_iso(),
         judged=judged,
         judge_ms=judge_ms,
@@ -2355,6 +2358,7 @@ def _cut_short_cell(
         else {}
     )
     result = EvalResult(
+        id=cell_result_id(eval_run_id, test_case_id, model, k_iteration),
         scope_id=scope_id,
         eval_run_id=eval_run_id,
         test_case_id=test_case_id,
@@ -3401,6 +3405,24 @@ class RunCallbacks:
     on_result: Callable[[EvalResult], Awaitable[None]] | None = None
 
 
+@dataclass(frozen=True)
+class StoredCells:
+    """What a run taken up again already holds of its matrix: the cells it does not run again, and the rows it
+    writes over.
+
+    :ivar done: The stored rows that count as done. Their cells are not run again, and the run's progress, its
+        completeness and its every-cell checks count them beside the cells this holding runs.
+    :ivar replaced: ``(case id, k)`` → the stored row of a cell this holding runs again. The cell is written under
+        that row's id, over the row (a later epoch replaces an earlier one's row), so the cell keeps one row whatever
+        id an older build gave it; and what the row's attempts spent moves onto the row written over it
+        (``EvalResult.superseded_spend_usd``, and its metered calls into ``EvalResult.metered_calls``), so the run's
+        cost cap and metered-call ceiling still count it.
+    """
+
+    done: tuple[EvalResult, ...] = ()
+    replaced: Mapping[tuple[str, int], EvalResult] = field(default_factory=dict)
+
+
 def cell_execution_order(
     run: EvalRun,
     test_cases: list[EvalTestCase],
@@ -3486,6 +3508,7 @@ async def execute_run(
     budget_gate: Callable[[float | None], CapBreach | None] | None = None,
     on_cost: Callable[[float | None], None] | None = None,
     cell_sink: list[CellSummary] | None = None,
+    stored: StoredCells | None = None,
 ) -> list[CellSummary]:
     """Execute an entire :class:`EvalRun` end-to-end.
 
@@ -3568,6 +3591,12 @@ async def execute_run(
     declined every call, say), it raises :class:`NothingMeasuredError` the same way. A cell lost to a judge call's
     error alone does not count toward it: a re-judge recovers that cell.
 
+    **A run taken up again** (``stored``) runs only the cells it does not already hold: the run's whole order, with
+    its done cells left out, never an order of the rest, which would be another order (a shuffle's permutation
+    depends on the list it shuffles). Its done cells count as they would have, had the run never stopped: its
+    progress starts from them over the whole matrix, they are in what this returns (so in its completeness), and
+    the every-cell checks below count them. A cell it runs again over a stored row is written under that row's id.
+
     Cancellation: a cancel that lands while a cell runs is delivered once that cell is recorded —
     excluded under the ``cancelled`` termination, with the spend its sink holds — and saved, so
     the money a cancelled run spent on its last cell is on the record with the rest.
@@ -3590,7 +3619,10 @@ async def execute_run(
     :raises EveryCellApparatusFailedError: An apparatus fault excluded every cell the run produced.
     :raises NothingMeasuredError: Every cell was excluded for an ``infra`` fault the harness recorded on it, not every
         one by an apparatus fault.
-    :raises asyncio.CancelledError: The run was cancelled; the cell it struck is recorded first.
+    :raises asyncio.CancelledError: The run was cancelled; the cell it struck is recorded first, unless the run is
+        no longer this holding's (below).
+    :raises JobFenced: A cell's write found the run no longer this holding's — written lost, or held at a later lease
+        epoch — so nothing was written of it, and the run's work stopped there.
     """
     from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError
 
@@ -3611,15 +3643,21 @@ async def execute_run(
     # does not turn every cell into a rig fault; the run names the check and why (`EvalRun.refused_goal_checks`).
     template = template_as_graded(template, run.refused_goal_checks)
     callbacks = callbacks or RunCallbacks()
+    stored = stored if stored is not None else StoredCells()
     total = len(test_cases) * run.k_runs
-    done = 0
+    done = len(stored.done)
     # Each cell an apparatus fault excluded, by its fault — see the check after the loop.
-    apparatus_failures: list[str] = []
+    apparatus_failures: list[str] = [
+        row.infra_error or "an apparatus fault" for row in stored.done if row.termination == "apparatus_failed"
+    ]
     # Each cell excluded for an ``infra`` cause, by its error — see the check after the loop.
-    infra_exclusions: list[str] = []
+    infra_exclusions: list[str] = [
+        row.infra_error for row in stored.done if trial_exclusion(row) == "infra" and row.infra_error
+    ]
     # The caller's list when it supplied one, so what it can read mid-flight is
     # the identical object this returns — never a copy that could disagree.
     summaries: list[CellSummary] = cell_sink if cell_sink is not None else []
+    summaries.extend(CellSummary.from_result(row, persisted=True) for row in stored.done)
 
     # One lane for the whole run, so every cell records into — or replays — the one corpus the run
     # names: its own id for a capture, the capture it names for a replay. ``None`` with cassettes off.
@@ -3644,6 +3682,10 @@ async def execute_run(
     # falls through to the derivation inside.
     variant = resolve_variant_identity(run=run, profile=host.profile)
     model = run.candidate_model
+    # The holding of the run every cell is written under: its lease's epoch, stamped on each result so the store
+    # writes the cell only while this holding is the run's (``save_eval_result``'s cell rule). 0 for a run held under
+    # no lease.
+    lease_epoch = run.lease.epoch if run.lease is not None else 0
 
     # Shuffled rather than nested k -> model -> test case: within-run drift
     # (a box that slows, a neighbouring job, a leak) would otherwise land on the
@@ -3651,6 +3693,11 @@ async def execute_run(
     # :func:`cell_execution_order` for the order's derivation and why its seed is
     # not a measurement condition. Cells START in this order however many run at once.
     order = cell_execution_order(run, test_cases, rng=options.cell_order_rng, seed=options.cell_order_seed)
+    if stored.done:
+        # Filtered after it is ordered, never ordered after it is filtered: the run's own order with its done cells
+        # left out is the order an uninterrupted run would have run the rest in.
+        held = {(row.test_case_id, row.k_iteration) for row in stored.done}
+        order = [(k, tc) for k, tc in order if (tc.id, k) not in held]
     # The run's width, narrowed to its own matrix: a run of one cell is serial whatever was asked, and
     # its cells say so (``execution_mode`` reads the width off these options).
     width = min(options.max_concurrent_cells, max(len(order), 1))
@@ -3900,13 +3947,58 @@ async def execute_run(
         # Off the loop, and waited for to its end even through a cancel: the write cannot be
         # interrupted once a worker has it, so abandoning the wait would record this cell as lost
         # while its row lands anyway. The cancel is delivered once the cell is accounted for below.
+        # The cell's metered calls, as the run's ledger lands them below, and whether the account paying for the run
+        # refused it: the row is what a later holding of the run counts its ceiling from and plans its cells by.
+        metered = sink.meter.tally().calls if options.metered_calls is not None and sink.meter is not None else None
+        result = result.model_copy(
+            update={
+                "lease_epoch": lease_epoch,
+                "metered_calls": metered,
+                "account_refused": sink.account_refusal is not None,
+            }
+        )
+        if (over := stored.replaced.get((tc.id, k))) is not None:
+            # Written over the cell's stored row, under its id (an older build minted ids, so it may not be the
+            # derived one), carrying what the attempts it replaces spent: the row was their only record.
+            superseded = (
+                None
+                if over.cost_usd is None or over.superseded_spend_usd is None
+                else over.cost_usd + over.superseded_spend_usd
+            )
+            result = result.model_copy(
+                update={
+                    "id": over.id,
+                    "superseded_spend_usd": superseded,
+                    "metered_calls": None
+                    if metered is None and over.metered_calls is None
+                    else (metered or 0) + (over.metered_calls or 0),
+                }
+            )
+            if cell_trace.result_id != over.id:
+                cell_trace = cell_trace.model_copy(update={"id": eval_trace_doc_id(over.id), "result_id": over.id})
         saving = asyncio.ensure_future(
-            run_blocking(host.blocking_executor, host.storage.save_eval_result, result, cell_trace)
+            run_blocking(host.blocking_executor, host.storage.save_eval_result, result, cell_trace, run_cell=True)
         )
         cancelled_while_saving = await wait_through_cancellation(saving)
         try:
             saving.result()
             persisted = True
+        except JobFenced as fenced:
+            # The run is no longer this holding's: written lost (by a reader that found its lease lapsed, or by this
+            # process's shutdown), or taken up at a later epoch. Nothing was written, and the cell is not this
+            # run's to count: the run's work stops here, as a fenced renewal stops it — a cancel still pending is
+            # delivered, and otherwise the fence ends the run's loop.
+            log.warning(
+                "Eval cell not recorded — the run is no longer this holding's (test_case=%s model=%s k=%s run=%s): %s",
+                tc.id,
+                model,
+                k,
+                run.id,
+                fenced,
+            )
+            if cancelled_in_cell or cancelled_while_saving:
+                raise asyncio.CancelledError from fenced
+            raise
         except StorageError:
             # NOSILENT: carried on the cell's summary as not persisted, which the run's completeness counts as a
             # lost cell and every surface discloses as DEGRADED.

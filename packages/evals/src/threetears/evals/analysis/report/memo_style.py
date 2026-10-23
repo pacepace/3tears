@@ -40,7 +40,15 @@ from dataclasses import dataclass, field
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.report.decision import FloorVerdict, SampleProjection, projection_sentence
-from threetears.evals.analysis.style import ArmName, StyleViolation, fix_prose, humanize, lint_prose, sentences
+from threetears.evals.analysis.style import (
+    ArmName,
+    StyleViolation,
+    discounts_by_age,
+    fix_prose,
+    humanize,
+    lint_prose,
+    sentences,
+)
 from threetears.evals.kernel.metrics import goal_check_of
 
 #: A sentence saying the evidence cannot confirm, establish or show a difference: what a settled clause has already
@@ -123,6 +131,7 @@ class MemoStyle:
     violations: list[StyleViolation] = field(default_factory=list)
     hedged: list[str] = field(default_factory=list)
     proposed: list[str] = field(default_factory=list)
+    aged: list[str] = field(default_factory=list)
     dropped: int = 0
 
     def __post_init__(self) -> None:
@@ -297,6 +306,8 @@ class MemoStyle:
         :rtype: str
         """
         named = self.names_arms(" ".join(text.split()))
+        if self._aged(named):
+            return fallback or ""
         if plans and not (named := self._planned(named)):
             return ""
         if settled is not None and _HEDGES.search(named):
@@ -313,6 +324,17 @@ class MemoStyle:
             return fallback or ""
         self.violations += lint_prose(fixed, question=self.question)
         return fixed
+
+    def _aged(self, sentence: str) -> bool:
+        """Whether ``sentence`` discounts a reading for when its runs ran or how far apart its arms were measured;
+        recorded, so the methods list it, where it does. The arms' labels and model ids are taken out first, so a name that
+        carries a change word or a version is never read as a change."""
+        names = [name for arm in self.names.values() for name in (arm.label, arm.model) if name]
+        if not discounts_by_age(sentence, names=names):
+            return False
+        if sentence not in self.aged:
+            self.aged.append(sentence)
+        return True
 
     def prose(self, text: str, *, settled: str | None = None, said: str | None = None, plans: bool = False) -> str:
         """A paragraph in a fold (a finding's body, a caveat), each sentence held to every rule.
@@ -336,6 +358,8 @@ class MemoStyle:
             if plans and self.proposes_sample(part):
                 self.proposed.append(part)
                 continue
+            if self._aged(part):
+                continue
             if settled is not None and _HEDGES.search(part):
                 self.hedged.append(part)
                 if settled not in (said or "") and settled not in kept:
@@ -355,7 +379,8 @@ class MemoStyle:
         Where that pass would leave none of it, and none of it proposed a sample size or cost, it is kept as written (its
         arms named) and nothing is recorded as dropped, as a finding's title is kept: the page opens on the read the memo
         was written for, and the tables beside it say any number it restates. A summary proposing a sample or cost no
-        code computed is dropped and listed in the methods, as any such sentence is.
+        code computed, or discounting a reading for when its runs ran, is dropped and listed in the methods, as any such
+        sentence is.
 
         :param text: What the memo wrote.
         :ptype text: str
@@ -367,8 +392,10 @@ class MemoStyle:
     def or_as_written(self, styled: Callable[[], str], written: str) -> str:
         """What ``styled`` leaves of a sentence the page never lays out without (a summary, a finding's title), or, where
         it leaves none, ``written`` kept as written (:meth:`kept`) with nothing recorded as dropped, since the page
-        prints it. Where the pass dropped it for proposing a sample size or cost no code computed, nothing: that is
-        dropped and listed in the methods, as any such sentence is. The one place the drop count is put back.
+        prints it. Where the pass dropped it for proposing a sample size or cost no code computed, or for discounting a
+        reading by when its runs ran (:func:`~threetears.evals.analysis.style.discounts_by_age`), nothing: that is
+        dropped and listed in the methods, as any such sentence is, never printed as written. The one place the drop
+        count is put back.
 
         :param styled: The style pass over the sentence, run here once; it may record what it drops on this style.
         :ptype styled: Callable[[], str]
@@ -377,10 +404,10 @@ class MemoStyle:
         :return: The sentence to print; empty only where the pass recorded it as proposing a sample or cost.
         :rtype: str
         """
-        proposed, dropped = len(self.proposed), self.dropped
+        proposed, aged, dropped = len(self.proposed), len(self.aged), self.dropped
         if said := styled().strip():
             return said
-        if len(self.proposed) > proposed:
+        if len(self.proposed) > proposed or len(self.aged) > aged:
             return ""
         self.dropped = dropped
         return self.kept(written)
@@ -422,6 +449,10 @@ def decision_disclosures(style: MemoStyle) -> Sequence[str]:
     lines += [
         f"The memo said “{said}”, a sample size or cost no code computed, so the page does not print it."
         for said in style.proposed
+    ]
+    lines += [
+        f"The memo said “{said}”, which discounts a reading for when its runs ran, so the page does not print it."
+        for said in style.aged
     ]
     if style.dropped:
         lines.append(

@@ -21,13 +21,16 @@ measurement; its value is the regression it catches, so most of its runs change 
 **What nobody asked about is a lead, not an answer.**
 A reading the question did not ask about is labelled exploratory wherever a reader meets it, so a report cannot
 lead with it as if it were confirmed; a campaign that asks no question says once that every finding is exploratory,
-rather than on every row, where the label would be skipped. A question asked only once the evidence existed is
-disclosed, not demoted: its readings read as an asked question's, and every page and listing over them says when it
-was set and when the runs began, since the operator is trusted and the reader judges. Each aspect keeps the time its
-question was asked, so adopting it into a later campaign never re-dates it.
+rather than on every row, where the label would be skipped. A criterion (an aspect, its control, margin, bars or
+floors) set once the readings it judges were visible is disclosed, not demoted: its readings read as any others, and
+every page and listing over them names that criterion and when it was set, since the operator is trusted and the
+reader judges. Data age is no signal: a run whose measurement context is unchanged reads exactly like a fresh one,
+and arms measured minutes, hours or days apart are one experiment while nothing that decides their result changed.
+Each aspect keeps the time it was asked, so adopting it into a later campaign never re-dates it.
 
 **Code reports, the writer recommends, a person decides.**
-Code reads each aspect against the control: shown better, shown worse or unclear, on an interval. A model may
+Code reads each aspect against the control: shown better, shown worse, no worse than the margin or unclear, on an
+interval. A model may
 write the recommendation over that evidence; neither decides. A floor (a typed clause, never words a parser reads)
 only warns, loudly, as the page's first line: a rule that blocked would decide for the person reading it, on a
 handful of cases where almost every line is unclear.
@@ -152,6 +155,14 @@ readers hide drift until it corrupts a comparison. The one tolerance is scoped t
 the unknown safe: a newer minor of the evidence core, additive by rule, whose fields are kept untouched and
 written back rather than read.
 
+**Assume good intent: disclose, don't force a costly rerun.**
+"If we have to choose between a powerful, efficient system that assumes good intent, and a weaker, slower, more
+expensive system that assumes bad faith or incompetent usage, always err on the side of the former. Disclosure,
+warnings, flags are all good. But just demanding huge increases in expenses and wall clock time in case the user is
+nefarious is the wrong balance here." (owner, 2026-10-23). A check whose only effect is to force a costly rerun
+becomes a disclosure: a resumed run records a template edit that changed nothing measured, and is not refused for it.
+A refusal that guards correctness (two different measurements pooled as one) or money (a cap already spent) stays.
+
 **Statistical rigour, not enterprise plumbing.**
 Sized for one operator: rigour earns its cost by changing decisions, while multi-tenant access control
 would govern users that do not exist.
@@ -218,6 +229,13 @@ Rules that came with it (`kernel/identity.py`):
 - **Never hash one input into both keys.** The variant key holds the contestant and the
   [context key](concepts.md#measurement-context) the conditions; a lever in the context key would report a
   deliberate sweep as not comparable.
+- **A case set is a sample, not a condition.** More cases or more repeats of an unchanged variant and context
+  are more samples of one cell, never a replacement and never more authoritative, so the case set is in no
+  key. Whether a stored run still counts is structural: its variant, its context resolved at today's identity
+  version, its template revision, its apparatus and the model that answered. Labels, and how long ago it ran,
+  never count. A run kept out of a pool is not counted in the pool's reading: it stands beside it as a cell of
+  its own, named with its reason, never dropped. A record's silence (no template digest frozen, no served model
+  named) is not a difference, so that run pools and is named as joining by assumption.
 - **A predicate change is a version bump.** `IDENTITY_VERSION` is stored beside every key, golden-vector
   tests pin the digests, and each key is stored with its pre-image, so a bump costs comparability and
   never the record of what was measured.
@@ -334,7 +352,8 @@ aspect rather than refused.
 
 What a campaign can decide is read off its arms, never declared: one arm is a **measurement** (measures and bars,
 no recommendation), several with no control a **choice** (every pair read both ways), a control and candidates a
-**change** (each candidate shown better, shown worse or unclear against the control). A margin or a relative floor
+**change** (each candidate shown better, shown worse, no worse than the margin or unclear against the control). A
+margin or a relative floor
 needs a control, so a campaign naming none is refused one and held to absolute bars. Each candidate's aspects are one
 Holm family, gains and drops apart, read on the same bounded interval a floor reads, so a one-aspect campaign's floor
 and reading cannot disagree; there is no correction across candidates, and the page says so. One memo is written
@@ -478,7 +497,7 @@ accepted but absent ([open problems](open-problems.md)).
 | [Kohavi, Henne & Sommerfield](https://ai.stanford.edu/~ronnyk/2007GuideControlledExperiments.pdf) (2007); [NIST/SEMATECH e-Handbook](https://www.itl.nist.gov/div898/handbook/pri/section3/pri332.htm) | Factors and levels; control against treatments; one overall evaluation criterion; blocking on nuisance factors; A/A tests to measure the system's own noise. | Adapted | A [lever](concepts.md#lever) is a factor, and the [rig](concepts.md#apparatus-rig) is the held-constant nuisance factors. Arms launched together share drift, which is blocking. The composite stays secondary to per-dimension results. A/A runs are not a built practice. |
 | [Kohavi, Tang & Xu, *Trustworthy Online Controlled Experiments*](https://doi.org/10.1017/9781108653985) (2020); [Ng, *Machine Learning Yearning*](https://home-wordpress.deeplearning.ai/wp-content/uploads/2022/03/andrew-ng-machine-learning-yearning.pdf) (2018), "optimizing and satisficing metrics" | Keep guardrail metrics, which must not degrade, apart from the criterion you optimize (Kohavi); a "satisficing" metric need only clear a threshold while one "optimizing" metric is maximized (Ng). | Adapted | A boundary judged dimension or a measure declared `guardrail` joins no composite and no comparison family. Each is decided per arm against the control as non-inferiority against its margin: `held`, `breached` or `undecided`. A breach warns, and the writer may not recommend the arm; an undecided guardrail is stated rather than blocking anything, since at a few cases almost every guardrail is undecided. |
 | [Kapoor et al., "AI Agents That Matter"](https://arxiv.org/abs/2407.01502) (2024) | Optimise accuracy and cost jointly, and hold out data against overfitting. | Adapted | The frontier ranks on what shipping costs, and the cost of measuring is kept apart ([cost and budgets](cost-and-budgets.md)). A contestant is flagged dominated only when another is shown better on every axis by paired tests, Holm-adjusted across the subject's pairs; otherwise it reads `not_separated`, or `untested` where no test could decide. There is no held-out split. |
-| [Center for Open Science, preregistration](https://www.cos.io/initiatives/prereg) | State the plan before the study; keep confirmatory work apart from exploratory work. | Adapted | A [campaign](concepts.md#campaign) declares its question and each aspect's design, and the bundle compares the design with the one actually realised. Each aspect keeps the time its question was asked, and a question asked (or a control named) after the aspect's first run is disclosed with both times wherever its readings are shown, never demoted (owner, 2026-10-21: operators are trusted to act in good faith). A reading the question did not ask about is labelled exploratory in the bundle, the report and the writer's view, and a finding resting only on such readings carries the label; a campaign asking no question says once that every finding is exploratory. The declaration freezes once an aspect holds a run; asking again is a new campaign that adopts the aspects, each keeping its own time, and what it adds is marked as declared after the runs. |
+| [Center for Open Science, preregistration](https://www.cos.io/initiatives/prereg) | State the plan before the study; keep confirmatory work apart from exploratory work. | Adapted | A [campaign](concepts.md#campaign) declares its question and each aspect's design, and the bundle compares the design with the one actually realised. Each aspect keeps the time it was asked, and each criterion set after the aspect's first stored result is disclosed with its time wherever its readings are shown, never demoted; when the runs ran never counts (owner, 2026-10-21 and 2026-10-23: operators are trusted to act in good faith). A reading the question did not ask about is labelled exploratory in the bundle, the report and the writer's view, and a finding resting only on such readings carries the label; a campaign asking no question says once that every finding is exploratory. The declaration freezes once an aspect holds a run; asking again is a new campaign that adopts the aspects, each keeping its own times, and what it adds is named where it was set after its aspect's readings were visible. |
 | [Messing, "Hidden Measurement Error in LLM Pipelines"](https://arxiv.org/abs/2604.11581) (2026); [Kotawala, "Resolution Diagnostics for Paired LLM Evaluation"](https://arxiv.org/abs/2605.30315) (2026) | Naive standard errors omit judge and prompt variance. Invert the paired test to find the smallest detectable effect; many published gaps do not resolve. | Adapted | One judge per dimension; its noise sets the evidence tier, not the interval. A launch estimate states the smallest difference its paired test detects at 80% power, from earlier runs' repeat and case variance ([cost and budgets](cost-and-budgets.md)); judge and prompt variance are not separated in it. |
 
 ### Judging and graders

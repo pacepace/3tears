@@ -148,8 +148,8 @@ def _bundle(
             for case in range(cases if unpaired is None or model == CONTROL else unpaired)
             if model == CONTROL or contrast_cases is None or case in contrast_cases
         ]
-    # Asked before the runs, so the bundle carries no flag that it was set after them (``question_after_runs``);
-    # ``asked_after_runs`` asks it a day after the last of them instead.
+    # Asked before the runs, so the bundle names no criterion as set after its readings (``late_criteria``);
+    # ``asked_after_runs`` asks it a day after the last of them, after their results, instead.
     asked = max(run.created_at for run in runs) if asked_after_runs else min(run.created_at for run in runs)
     if asked_after_runs:
         asked = (datetime.fromisoformat(asked) + timedelta(days=1)).isoformat()
@@ -159,7 +159,12 @@ def _bundle(
         design=minimal_aspect_design(merit_axes=(merit_axes or ["quality"]) if questions else None),
         question="is the contrast better?" if questions else "",
         asked_at=asked if questions else None,
-        control=CampaignArm(label="control", role="control", variant_key=fixture_variant_key(control))
+        control=CampaignArm(
+            label="control",
+            role="control",
+            variant_key=fixture_variant_key(control),
+            named_at=asked if questions else None,
+        )
         if control
         else None,
         scope_id=runs[0].scope_id,
@@ -355,7 +360,7 @@ class TestWhatAFamilyCovers:
 
     def test_a_question_asked_after_the_runs_builds_the_family_one_asked_before_them_builds(self) -> None:
         """Disclosed, never enforced (owner, 2026-10-21): the same question over the same runs reads the same family,
-        corrected the same way, whenever it was asked; only the flag says it came after them."""
+        corrected the same way, whenever it was asked; only the late criteria say the aspect came after them."""
         timely = _bundle([CLEAR, *[NOISE] * 9])
         late = _bundle([CLEAR, *[NOISE] * 9], asked_after_runs=True)
 
@@ -363,10 +368,10 @@ class TestWhatAFamilyCovers:
         assert (family.aspect, family.family_size) == ("b", 10)
         assert late.multiple_comparisons == timely.multiple_comparisons
         assert late.question_declared and timely.question_declared
-        flag = late.reading_scope.question_after_runs
-        assert flag is not None and flag.first_run_at == late.design_frozen_at
-        assert flag.late == "question" and flag.at is not None and flag.at > flag.first_run_at
-        assert timely.reading_scope.question_after_runs is None
+        (aspect,) = [said for said in late.reading_scope.late_criteria if said.criterion == "aspect"]
+        assert late.first_result_at is not None
+        assert aspect.set_at is not None and aspect.set_at > late.first_result_at
+        assert timely.reading_scope.late_criteria == []
 
     def test_a_chance_difference_in_a_campaign_with_no_question_does_not_separate(self) -> None:
         """The Done-when case, with no question declared: raw p ≈ 0.026 separates alone and not among ten."""

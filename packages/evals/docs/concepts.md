@@ -228,7 +228,9 @@ judge-a and the v2 runs by judge-b: the rig moved, so the report will not pool t
 #### Apparatus class
 One configuration of the rig as recorded on the runs (`ApparatusClass`). Two observations pool only when
 their variant matches and their apparatus falls in the same class; an arm measured under two classes is
-named with `(test setup <digest>)` in a report.
+named with `(test setup <digest>)` in a report. These cells, and every composite, cost and latency, pool on
+variant x rig alone. pass^k splits further: on the measurement context, the template revision and the model
+that answered (see [Measurement context](#measurement-context)).
 
 #### Apparatus settings
 Rig values your host declares and a launch may set (`apparatus_settings`), so one template can be run at two
@@ -242,10 +244,22 @@ callable kind an `Eval` runs seats none of the judge, simulator or spend ceiling
 judged kind, `callable-judged`, seats the judge and nothing else.
 
 #### Measurement context
-Everything pinned around a run that is not the variant: the subject and its state, the frozen case set, the
-template, the resolved judge and simulator models, judge configs, cassette mode and corpus, tool bound,
-scope, world seed, apparatus settings (`compute_context_components`). Its digest is the context key,
-stamped once at launch.
+Everything pinned around a run that is not the variant: the subject and its state, the template, the resolved
+judge and simulator models, judge configs, cassette mode and corpus, tool bound, scope, world seed, apparatus
+settings (`compute_context_components`). Its digest is the context key, stamped once at launch. The frozen
+case set is not in it: more cases, or more repeats, under one context are more samples of one condition.
+
+A contestant's pass^k pools per case over the runs of one pass^k cell (`PassHatKCell`): one context (read at
+today's identity version), one template revision (the template's id and the digest of what it measured that
+the run froze, `EvalRun.template_digest`), one apparatus provenance and one set of served models, whatever
+cases each run covered and whenever each ran. Its headline figure, interval, bar and verdict read the headline
+cell alone, chosen in the one order `PassHatKCellReading` states (a recorded, resolved context first, then most
+runs, most results and the first run id); every other cell stands beside it with its own pass^k and the reason
+it is not the headline (`FrontierPoint.pass_hat_k_cells`), named on the frontier's text, the report page and
+the memo writer's view. A run kept out of the headline is kept out of the frontier's pass^k, bar and verdict
+only: the arm's tables, its cells (see [Apparatus class](#apparatus-class)), composite, cost and latency still
+count it. A run stored before runs froze a template digest, and a run whose responses named no served model, is
+not evidence of a difference: it joins its cell and is named as having joined by assumption.
 
 ### Running
 
@@ -289,14 +303,15 @@ bar, a question or a ranking on it) without declaring it is refused. Each run re
 How the arms of one launch share time and provider capacity, on `run_launch`, `sweep_launch` and `start_run`.
 Running every arm side by side at its own width (`concurrent`) loads one provider with every arm at once, and a
 provider rationing one arm's calls shrinks that arm's sample and not the other's: the comparison reads host capacity
-as a difference between arms. Running them one after another (`sequential`) puts a provider's bad minute on whichever
-arm was running. So by default the arms are `interleaved`: every arm runs at once, their cells taken in turn, case by
-case, under one width shared by the launch, and every arm plays its cases in one order, so a bad minute lands on every
-arm alike and the arms' same cases run close together in time (exactly side by side at a width of 1). The shared
-width holds within one launch: separate launches are separate widths, so arms launched apart still load their
-providers side by side. Latency under test runs the arms `sequential`, the
+as a difference between arms. Running them one after another (`sequential`) shares no load. By default the arms are
+`interleaved`: every arm runs at once, their cells taken in turn, case by case, under one width shared by the launch,
+and every arm plays its cases in one order. It is the default because it costs nothing and absorbs a provider's bad
+minute across every arm. It does not make a comparison more of one: arms measured minutes, hours or days apart are one
+experiment while nothing that decides their result changed. The shared width holds within one launch: separate
+launches are separate widths, so arms launched apart still load their providers side by side. Latency under test runs the arms `sequential`, the
 only schedule it takes. Each run records the schedule it ran under (`arm_schedule`), and a campaign whose arms were
-run one after another or side by side says so beside its readings. It is a disclosure, never part of a run's identity.
+run side by side at their own widths says so beside its readings, since co-loading changes a provider's capacity per
+arm; when the arms ran is never said. It is a disclosure, never part of a run's identity.
 
 #### k (repeats)
 How many times each case is played in a run (`k_runs`, `Eval(k=...)`, CLI `--k`; default 3). LLM
@@ -343,7 +358,16 @@ Work started by an operation because it is long or calls a model (a launch, a sw
 second judge's pass, a judge temperature comparison, a host action's draft), answered by `job_poll` and
 `job_cancel`: the operation's call prices and admits it and returns at once, so no call waits on a model. Its id names the durable record the work writes, so it survives a restart and reads the same in
 every process. The record carries the running process's lease; a job whose lease lapses before it ends is
-`lost`, which the first reader writes on the record.
+`lost`, which the first reader writes on the record. A run's, a sweep's or a launch's job that ended before its work
+did (lost, cancelled, or stopped by a budget) is taken up again as the same job by `job_resume`, and never on its
+own; `jobs_resumable` lists what it would take up. See [Operations and jobs](serving.md#operations-and-jobs).
+
+#### Lifetime (holding)
+One process's holding of a run, from when it took the run up to how that holding ended. A run that is resumed spans
+several, each an entry of `EvalRun.lifetimes` (`RunLifetime`): its holder and lease epoch, how it ended, the cells
+stored by then, the cost cap it ran under, and the host's labels when it began. A deploy shows here, and is not a
+change in what the run measures. A sweep records its own (`SweepLifetime`). A run never resumed has none: the run
+itself describes its one holding.
 
 ### Grading
 
@@ -410,10 +434,13 @@ never stored. One that declares a design but asks no question asks nothing, so i
 One place a campaign's question is measured (`Aspect`): a template, the runs gathered on it, its **margin** (how
 far, in points of the pass rate, a candidate may fall below the control there before it is shown worse) and its
 **design** (the axes it varies, what it held fixed, the merit axes its readings are tested on, its bars). Each
-aspect is read on its own, against the same control, and keeps its own pre-registration time (`asked_at`): a
-question asked after that aspect's first run reads as one asked before it, and every page says when each happened
-(`reading_scope.question_after_runs`). A campaign adopting another's aspect
-(`aspects_from`) keeps that time; whatever it adds is dated when it is added. A campaign stored before aspects
+aspect is read on its own, against the same control, and keeps its own pre-registration time (`asked_at`), which
+also dates its bars and a margin or floor declared with it. A criterion set after the aspect's first stored result
+reads as one set before it, and every page names it once with its time (`reading_scope.late_criteria`); when the
+runs ran never counts. A campaign adopting another's aspect (`aspects_from`) keeps those times, so it reads as the
+campaign declared before the runs did; whatever it adds is dated when it is added. (Known gap: an aspect adopted from
+a campaign that asked no question keeps that time when the adopting campaign first asks it one, so being put to the
+question after its readings is not named.) A campaign stored before aspects
 existed reads as one aspect labelled with its behavior.
 
 #### Floor
@@ -431,7 +458,7 @@ What a campaign can decide, read off its arms and never declared (`campaign_kind
 |---|---|---|---|
 | measurement | one | each measure with its interval, and each bar met or missed | a summary and findings; no recommendation |
 | choice | two or more, no control | every pair's difference with its interval, and which arm is shown ahead | picks an arm, or says no clear winner |
-| change | a control and candidates | each candidate against the control: shown better, shown worse or unclear | recommends a switch or keeping the control |
+| change | a control and candidates | each candidate against the control: shown better, shown worse, no worse than the margin or unclear | recommends a switch or keeping the control |
 
 A margin and a relative floor read a candidate against a control, so a campaign naming none is refused either,
 with the remedy to declare a bar instead. A bar is absolute, so every kind is held to its bars.
@@ -451,8 +478,8 @@ so any run of that configuration counts toward it. An `Eval` comparison sets it 
 key; elsewhere it is the campaign's first arm, with role `control` (`CampaignArm`), addressed from a run: an arm's
 `from_run_ids` at creation, or `set_campaign_control` (`control_from_run_id` on the `campaign_update` action)
 afterwards. The server records the run's variant key beside its lever map and identity version, as a run records
-its own; nobody types those. A control named after an aspect's first result dates that aspect's question at the
-naming, which its pages disclose as set after the runs.
+its own; nobody types those. A control named after an aspect's first result is named on that aspect's pages as a
+criterion set after its readings were visible.
 Every read resolves it through `resolve_control_arm` to the
 keys it matches: the stored key, which the cells stamped under its identity version keep, and, under a later
 version, also the key recomputed from that lever map, which new runs of the arm carry. That recomputation follows a
@@ -577,7 +604,9 @@ kept runs, a cassette by capturing it anew. A store can route each lifecycle to 
 #### Lease
 A running [job](#job)'s claim on its record: the process running it renews it on a schedule (`JobLeases`,
 `LaunchHost.job_lease_s`), stamped in the store's own time when the store offers a `StoreClock`. A job whose lease
-lapses before it ends reads `lost` everywhere. See [Operations and jobs](serving.md#operations-and-jobs).
+lapses before it ends reads `lost` everywhere, and no renewal revives it. Each lease carries an **epoch**, one higher
+each time the job is resumed, and each result row records the epoch it was written under, so a process holding an
+older epoch writes nothing more into the job. See [Operations and jobs](serving.md#operations-and-jobs).
 
 #### Seam
 A place the engine calls code your host supplies, through a protocol the engine declares: the kind seam
