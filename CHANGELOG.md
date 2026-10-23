@@ -6,6 +6,32 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### datasources: a partitioned export proven against the caller's own counts, read or handed to L3, then deleted
+
+**Added** (`threetears.datasources.partitioned_export`), for rows that never change once written (a model
+run's output), which the caller counts part by part before it asks -- the export's counterpart to
+`read_counted`, as `export_partitions` is `read_all`'s:
+
+- `export_counted_partitions(client, store, datasource_name, *, select, partition_by, counts, destination,
+  bucket) -> CountedPartitionedExport` exports the caller's own `SELECT` divided by `partition_by` and refuses
+  it (`IncompleteExportError`) unless it is the one asked for (under `destination`, in `bucket`, its manifest
+  its prefix's own), the warehouse wrote as many rows as `counts` add up to, the manifest names no part not
+  counted and counts each part as counted, and each counted part with rows has files. A part value comes back
+  stripped (a warehouse `char` column's is padded). A refused export -- or one the caller stopped waiting
+  for -- is deleted before the error is raised; a proven one is the caller's to delete.
+- `CountedPartitionedExport(destination, result, partition_by, files, rows)`: each part's files as
+  `CountedFile(path, rows)` (the manifest's count of the file, None where it counts none), and each part's
+  rows as counted (a part counted with none left out).
+- `read_counted_partition(store, export, part, *, file_concurrency=8) -> list[dict]`: one part's rows, its
+  files read several at once and held to its count.
+- `presigned_counted_partition(store, export, part, *, expires_in=3600) -> list[LoadFile]`: one part's files
+  presigned with their manifest counts, for `SchemaBackedCollection.load_files`; refused when the manifest
+  does not count a file or its counts are not the part's. The files keep the partition column (the
+  `UNLOAD` `INCLUDE`s it).
+- `delete_counted_export(client, datasource_name, export, *, unwinding=None) -> int | None`: the delete after
+  load, public: a failed delete raises `ExportNotDeletedError` unless the caller is unwinding another error,
+  which then wins and the failed delete is logged at ERROR.
+
 ### core, nats, datasources: a table is loaded from its own export's files, which the L3 broker streams
 
 **Added:** `SchemaBackedCollection.load_files(files, *, columns, constants=None, rows_per_transaction=None,
