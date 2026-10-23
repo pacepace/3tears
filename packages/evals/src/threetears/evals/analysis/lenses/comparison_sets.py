@@ -36,23 +36,19 @@ class CaseSetIdentity(EvalBaseModel):
     A ``template_id`` does not establish case-set identity while templates are
     mutable in place: a template can gain or lose cases between runs, so two runs
     of "the same suite" may have scored different denominators. The identity is
-    already computed — it is ``ContextComponents.case_basis``, the digest of
-    ``(template_id, sorted test_case_ids)`` stamped on every run at launch — but
-    nothing rendered it, so the fact was recorded and unreadable.
+    the run's own frozen case set: a digest of ``(template_id, sorted test_case_ids)``
+    read off the run, which every run carries from launch. The context key does not
+    hold it (a run over other cases of one condition pools with it), so this is where
+    a reader sees how a group's denominators differ.
 
     ``n_cases`` is the size of the set this fingerprint stands for, which is the
     number the group's ``shared_test_case_ids`` intersection cannot give you: an
     intersection of 3 is equally consistent with runs of 3 cases and runs of 31.
     """
 
-    #: Full ``case_basis`` digest — the run's own stamped value where present,
-    #: re-derived from its stored fields otherwise (a run its host assembled without
-    #: the launch), so every run is identified on the same predicate. ``None`` when the run's basis could
-    #: not be resolved at all: the entry then stands for that ONE run (``run_ids`` has
-    #: one member), because an unresolved basis says the set is unknown and merging
-    #: unknowns would assert a sameness nothing established. It is a state, not a
-    #: digest, so a renderer branches on ``None`` rather than displaying anything.
-    fingerprint: str | None
+    #: Digest of the run's template id and its sorted frozen ``test_case_ids``, so the
+    #: order the cases were resolved in cannot split one set.
+    fingerprint: str
     n_cases: int
     run_ids: list[str]
 
@@ -161,13 +157,6 @@ BADGE_ROLES_DIFFER = "roles_differ"
 # two runs that both stored a blank compare equal on the blank — so the group would
 # otherwise render as the one case needing no caveat at all.
 BADGE_CONTEXT_INCOMPLETE = "context_incomplete"
-# At least one run's case basis could not be resolved. The sibling of
-# ``context_incomplete``, one axis over, and separate from ``case_set_differs`` for
-# the reason that badge cannot carry: an unresolved basis means the sets are
-# UNKNOWN, not known-different. Asserting a difference we did not observe is the
-# same dishonesty as asserting a match. See ``CaseSetIdentity.fingerprint`` for
-# why such runs never merge into one entry.
-BADGE_CASE_SET_UNRESOLVED = "case_set_unresolved"
 # The candidate's own resolved tool config (search depth, token budgets, call caps,
 # the inner-agent model). Unlike the three above it is not a caveat on the
 # comparison — sweeping it is usually the POINT — but it has to be said out loud,
@@ -211,6 +200,11 @@ class ComparisonSetsResult(EvalBaseModel):
 
     comparison_sets: list[ComparisonSet] = []
     out_of_scope_run_ids: list[str] = []
+
+
+def _case_set_fingerprint(run: EvalRun) -> str:
+    """A run's frozen case set as one digest: its template and its sorted case ids."""
+    return canonical_digest({"template_id": run.template_id, "test_case_ids": sorted(run.test_case_ids)})
 
 
 def compute_comparison_sets(
@@ -351,40 +345,19 @@ def compute_comparison_sets(
         # were whole.
         identities = {run.id: resolve_context_identity(run, profile) for run in grouped}
 
-        # The group's distinct case sets, keyed by the run's own `case_basis` digest.
-        # Computed BEFORE the badges because the case-set badge is derived from it:
-        # one notion of "the sets differ", so the badge and the fingerprints cannot
-        # come apart. Deciding the badge separately — over `set(test_case_ids)` — was
-        # a second derivation that really did disagree, since a set comparison cannot
-        # see a duplicate id that the sorted-list digest does.
+        # The group's distinct case sets, keyed by each run's own frozen ids. Computed BEFORE
+        # the badges because the case-set badge is derived from it: one notion of "the sets
+        # differ", so the badge and the fingerprints cannot come apart. Deciding the badge
+        # separately — over `set(test_case_ids)` — was a second derivation that really did
+        # disagree, since a set comparison cannot see a duplicate id that the sorted-list
+        # digest does.
         by_fingerprint: dict[str, list[EvalRun]] = {}
-        unresolved: list[EvalRun] = []
         for run in grouped:
-            basis = identities[run.id].context_components.case_basis
-            # An unresolved basis is held apart, one entry PER RUN. Keying every such
-            # run on a shared ``""`` merged them into one bucket, which broke two things
-            # at once: the case-set badge could not fire between them (they compared as
-            # a single set), and ``n_cases`` below — read from the first member as the
-            # set's representative, sound only while a bucket really IS one set —
-            # reported that one member's denominator as the whole bucket's. Keeping them
-            # out of the digest-keyed buckets makes the merge structurally impossible
-            # rather than merely unlikely, which matters because the state is latent
-            # today: nothing stamps an identity without ``case_basis`` at the current
-            # IDENTITY_VERSION, so the reachable version would arrive unnoticed on the
-            # next bump.
-            if basis:
-                by_fingerprint.setdefault(basis, []).append(run)
-            else:
-                unresolved.append(run)
+            by_fingerprint.setdefault(_case_set_fingerprint(run), []).append(run)
 
         badges: list[str] = []
-        # Only RESOLVED fingerprints can evidence a difference. Counting the
-        # per-run unresolved entries here would report "the sets differ" on the
-        # strength of not knowing what they were.
         if len(by_fingerprint) > 1:
             badges.append(BADGE_CASE_SET_DIFFERS)
-        if unresolved:
-            badges.append(BADGE_CASE_SET_UNRESOLVED)
         if len({identities[run.id].context_key for run in grouped}) > 1:
             badges.append(BADGE_CONTEXT_DIFFERS)
         # Equality on the pins is only meaningful once both are recorded. Two runs that
@@ -408,9 +381,9 @@ def compute_comparison_sets(
         # hash in the same breath. Folding it into the per-run tuple then reproduced the
         # absence-as-difference bug one level down: a run with no recorded attribution
         # contributes a different tuple element from one that has it, so merely MIXING
-        # them fired the badge on the strength of what one run could not say. This is the
-        # shape the case-basis arm above already uses — only resolved values evidence a
-        # difference, and the undecidable case is BADGE_CONTEXT_INCOMPLETE's to carry.
+        # them fired the badge on the strength of what one run could not say. Only recorded
+        # values evidence a difference, and the undecidable case is BADGE_CONTEXT_INCOMPLETE's
+        # to carry.
         # The pinned CONFIG set is the third arm, on the argument above carried one step
         # further: two runs can agree on every pin AND on every effective judge model and
         # still have been scored by different judge PROMPTS, which is what a judge A/B is
@@ -481,8 +454,8 @@ def compute_comparison_sets(
             > 1
         ):
             badges.append(BADGE_TOOL_CONFIG_DIFFERS)
-        # Only RESOLVED windows are collected, on the rule the case-basis and
-        # attribution arms already follow: a run that cannot say when it was
+        # Only RESOLVED windows are collected, on the rule the attribution arm
+        # already follows: a run that cannot say when it was
         # measured is not thereby evidence that it was measured somewhere else.
         # The badge is gated on the DISCLOSURE rather than on the predicate
         # directly, so a group can never carry the flag with no sentence naming
@@ -513,12 +486,6 @@ def compute_comparison_sets(
             # odd run out is visibly the exception rather than one row among equals.
             for fingerprint, members in sorted(by_fingerprint.items(), key=lambda kv: (-len(kv[1]), kv[0]))
         ]
-        # The unresolved runs last, one entry each: a set of one is the least-used there
-        # is, and nothing established that any two of them ran the same cases.
-        case_sets.extend(
-            CaseSetIdentity(fingerprint=None, n_cases=len(set(run.test_case_ids)), run_ids=[run.id])
-            for run in sorted(unresolved, key=lambda run: run.id)
-        )
 
         sets.append(
             ComparisonSet(
@@ -542,7 +509,6 @@ def compute_comparison_sets(
 
 __all__ = [
     "BADGE_CASE_SET_DIFFERS",
-    "BADGE_CASE_SET_UNRESOLVED",
     "BADGE_CASSETTE_MODE_DIFFERS",
     "BADGE_CONTEXT_DIFFERS",
     "BADGE_CONTEXT_INCOMPLETE",

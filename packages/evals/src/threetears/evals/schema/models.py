@@ -2348,7 +2348,7 @@ class BudgetStop(EvalBaseModel, CoreShapeModel):
 class CaseSetRef(EvalBaseModel, CoreShapeModel):
     """Which named, versioned case set a run was launched against: a label on its frozen case ids.
 
-    Not an identity of its own: the run's case-set identity stays the frozen ids (``case_basis``), so two runs
+    Not an identity of its own: the run's case-set identity stays its frozen ids (``test_case_ids``), so two runs
     over the same ids are one suite version whatever they were launched by. This names it.
     """
 
@@ -2659,10 +2659,12 @@ class ContextComponents(EvalDocumentModel, CoreShapeModel):
     case_basis: str | None = Field(
         default=None,
         description=(
-            "Digest of the subject_id, the template_id, and the frozen, sorted test_case_ids — "
-            "who was measured, and the denominator they scored against. The subject joined the basis because "
+            "Digest of the subject_id and the template_id — who was measured, and the template (one revision of it, "
+            "since a revision is a template of its own id) its cases come from. The subject joined the basis because "
             "without it two different subjects carrying nothing produced an identical key and pooled as one "
-            "condition."
+            "condition. The frozen case SET is not in it: more cases, or a top-up over cases another run missed, are "
+            "more samples of one condition, so runs over different case sets pool per case. The case set stays on "
+            "the run (test_case_ids)."
         ),
     )
     roles: str | None = Field(
@@ -3043,9 +3045,9 @@ class VariationCounts(EvalDocumentModel, CoreShapeModel):
             "RESOLVED model that wrote the values of the template's llm-generated variation axes, as the client "
             "that made the calls named it; None when no axis is llm-generated, so no model wrote any case. "
             "Provenance of the stimulus, not a measurement condition: the cases it wrote are what the candidate "
-            "faced, and they are already hashed into the run's context key through `test_case_ids`, so it "
-            "enters no identity. Its calls run before the run starts and are outside the run's cost cap and "
-            "metered-call ceiling."
+            "faced, each a case of its own id in `test_case_ids`, and a case set is no condition (runs over other "
+            "cases pool as more cases), so it enters no identity. Its calls run before the run starts and are "
+            "outside the run's cost cap and metered-call ceiling."
         ),
     )
 

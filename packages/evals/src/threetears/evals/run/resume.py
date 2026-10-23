@@ -2,8 +2,9 @@
 
 A run lost to a reboot, an OOM kill, a deploy or a provider outage longer than its lease, a run an operator cancelled
 to ship a fix, and a run its budget or its account stopped each end with cells of their matrix never measured. A
-new run over the cells left is a different run: its case set is another, so its pass^k is another cell, and a case
-the first one reached fewer than ``k`` times drops out of both. :func:`resume_run` continues the run itself:
+new run over the cases left pools with the first in pass^k (a case set is no part of a cell), but it is another run:
+it measures every repeat of each case it covers, so a case the first reached part-way is measured past ``k``, and
+the first stays short on its own record. :func:`resume_run` continues the run itself:
 
 - **Only what is missing runs.** A cell with no stored row runs, and so does a cell whose row was cut short by a
   cancel (termination ``cancelled``: the attempt a shutdown or a cancel abandoned) or refused by the provider
@@ -80,8 +81,10 @@ log = get_logger(__name__)
 
 #: The fields of a run's judge and simulator, of its apparatus, and of what it froze of its template, a take-up holds
 #: equal: what scored its cells, what its cells were set up with, and what they were graded against. Most also reach
-#: the context key; each is named on its own so a refusal says which moved.
+#: the context key; each is named on its own so a refusal says which moved. The frozen case set reaches no key (more
+#: cases are more samples of one condition), so it is held here: a take-up runs the cases the run froze, never others.
 PINNED_FIELDS: tuple[str, ...] = (
+    "test_case_ids",
     "judge_model",
     "judge_config_ids",
     "effective_judges",

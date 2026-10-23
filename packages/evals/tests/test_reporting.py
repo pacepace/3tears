@@ -43,7 +43,6 @@ from threetears.evals.analysis.cassette_mode import CASSETTE_SPAN_CLAUSE, casset
 from threetears.evals.analysis.lenses.aggregation import WEIGHTING_EQUAL_PER_SCENARIO, WEIGHTING_SAMPLE_WEIGHTED
 from threetears.evals.analysis.lenses.comparison_sets import (
     BADGE_CASE_SET_DIFFERS,
-    BADGE_CASE_SET_UNRESOLVED,
     BADGE_CASSETTE_MODE_DIFFERS,
     BADGE_CONTEXT_DIFFERS,
     BADGE_CONTEXT_INCOMPLETE,
@@ -72,7 +71,7 @@ from threetears.evals.analysis.stats import UNIFORM_MOVE_NEEDS_RANGE, bounded_se
 from threetears.evals.kernel.host import freeze
 from threetears.evals.ops import pivot_text
 from threetears.evals.schema.values import SweepableValue
-from threetears.evals.kernel.identity import IDENTITY_VERSION, derive_context_identity, resolve_context_identity
+from threetears.evals.kernel.identity import IDENTITY_VERSION, derive_context_identity
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, describe_measure
 from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
@@ -1671,15 +1670,17 @@ class TestComparisonSets:
         # A count of 3 shared cases would have read as "these ran the same 3 cases".
         assert group.shared_test_case_ids == ["tc-1", "tc-2", "tc-3"]
 
-    def test_the_fingerprint_is_the_runs_own_case_basis_not_a_second_digest(self):
-        """A competing case-set identity would be free to drift from the stamped one."""
-        run, _ = _run_with_results(test_case_ids=["tc-1", "tc-2"])
+    def test_a_case_set_difference_is_badged_as_the_case_set_never_as_the_context(self):
+        """More cases are more samples of one condition: the context key does not hold them, the fingerprint does."""
+        run_a = _stamped_run(test_case_ids=["tc-1", "tc-2"])
+        run_b = _stamped_run(test_case_ids=["tc-1", "tc-2", "tc-3"])
 
-        group = compute_comparison_sets([run], profile=_JUDGED_HOST).comparison_sets[0]
+        group = compute_comparison_sets([run_a, run_b], profile=_JUDGED_HOST).comparison_sets[0]
 
-        assert (
-            group.case_sets[0].fingerprint == resolve_context_identity(run, _JUDGED_HOST).context_components.case_basis
-        )
+        assert run_a.context_key == run_b.context_key
+        assert BADGE_CASE_SET_DIFFERS in group.badges
+        assert BADGE_CONTEXT_DIFFERS not in group.badges
+        assert len({entry.fingerprint for entry in group.case_sets}) == 2
 
     def test_runs_sharing_a_case_set_share_a_fingerprint(self):
         """Order of resolution must not split an otherwise identical basis."""
@@ -1690,81 +1691,6 @@ class TestComparisonSets:
 
         assert len(group.case_sets) == 1
         assert BADGE_CASE_SET_DIFFERS not in group.badges
-
-    @staticmethod
-    def _without_case_basis(monkeypatch, *unresolved_run_ids: str):
-        """Blank ``case_basis`` on the named runs, leaving the rest resolved.
-
-        Driven through the resolver rather than by hand-stamping a field, because
-        the resolver is the single place the stamped-or-derived decision is made
-        and the surface reads it rather than the raw run. Patched rather than
-        constructed: nothing stamps an identity without ``case_basis`` at the
-        current ``IDENTITY_VERSION``, so the state is latent — which is exactly
-        why the bucketing must be structurally safe before the next bump makes it
-        reachable, and why a test cannot reach it any other way today.
-        """
-        from threetears.evals.analysis.lenses import comparison_sets
-
-        real = comparison_sets.resolve_context_identity
-        targets = set(unresolved_run_ids)
-
-        def _resolve(run, profile):
-            identity = real(run, profile)
-            if run.id not in targets:
-                return identity
-            components = identity.context_components.model_copy(update={"case_basis": None})
-            return identity.model_copy(update={"context_components": components})
-
-        monkeypatch.setattr(comparison_sets, "resolve_context_identity", _resolve)
-
-    def test_unresolved_case_bases_never_merge_into_one_bucket(self, monkeypatch):
-        """Two unknowns are not a match, and must not be reported as one.
-
-        Keying every unresolved run on a shared ``""`` merged them into a single
-        bucket. Two consequences, both silent: the group compared as one case set
-        so no caveat fired, and ``n_cases`` — read from the bucket's first member
-        as its representative — reported that one run's denominator as the whole
-        bucket's, here 2 standing in for a run that executed 3.
-        """
-        run_a, _ = _run_with_results(test_case_ids=["tc-1", "tc-2"])
-        run_b, _ = _run_with_results(test_case_ids=["tc-3", "tc-4", "tc-5"])
-        self._without_case_basis(monkeypatch, run_a.id, run_b.id)
-
-        group = compute_comparison_sets([run_a, run_b], profile=_JUDGED_HOST).comparison_sets[0]
-
-        assert len(group.case_sets) == 2
-        assert all(entry.fingerprint is None for entry in group.case_sets)
-        # Each bucket holds exactly its own run, so the representative really is one.
-        assert sorted(entry.n_cases for entry in group.case_sets) == [2, 3]
-        assert sorted(entry.run_ids[0] for entry in group.case_sets) == sorted([run_a.id, run_b.id])
-
-    def test_an_unresolved_basis_badges_unknown_not_different(self, monkeypatch):
-        """``case_set_differs`` asserts an observation; an unresolved basis has none.
-
-        Firing it here would claim the sets were compared and found to differ, when
-        what happened is that one of them could not be read at all. The distinction
-        is the same one ``context_incomplete`` exists to make, one axis over.
-        """
-        run_a, _ = _run_with_results(test_case_ids=["tc-1", "tc-2"])
-        run_b, _ = _run_with_results(test_case_ids=["tc-1", "tc-2"])
-        self._without_case_basis(monkeypatch, run_b.id)
-
-        group = compute_comparison_sets([run_a, run_b], profile=_JUDGED_HOST).comparison_sets[0]
-
-        assert BADGE_CASE_SET_UNRESOLVED in group.badges
-        assert BADGE_CASE_SET_DIFFERS not in group.badges
-
-    def test_resolved_runs_that_really_differ_still_badge_differs(self, monkeypatch):
-        """The unknown badge must not swallow the observed one when both apply."""
-        run_a, _ = _run_with_results(test_case_ids=["tc-1", "tc-2"])
-        run_b, _ = _run_with_results(test_case_ids=["tc-1", "tc-2", "tc-3"])
-        run_c, _ = _run_with_results(test_case_ids=["tc-9"])
-        self._without_case_basis(monkeypatch, run_c.id)
-
-        group = compute_comparison_sets([run_a, run_b, run_c], profile=_JUDGED_HOST).comparison_sets[0]
-
-        assert BADGE_CASE_SET_DIFFERS in group.badges
-        assert BADGE_CASE_SET_UNRESOLVED in group.badges
 
     def test_context_drift_is_badged(self):
         """Driven through a real pinned condition, not two hand-written key strings.
