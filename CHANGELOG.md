@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: every collection key read is counted by the tier that answered it
+
+**Added:** `threetears.core.collections.tier_reads` (`ReadTier`, `record_tier_read`, `take_tier_reads`,
+`log_tier_reads`, `TIER_READS_LOG_SECONDS`). `BaseCollection.ensure` (and every key read built on it) counts
+each read as L1 (this process, an absence marker included), L2 (the shared cache) or L3 (the store), by table.
+The tool server logs the counts once a minute at INFO, as one line naming each table's reads, only when a read
+happened: the measure of whether a pod's reads stay at L1 or keep reaching L2 and L3. A reports tool pod on cobalt
+dev was found reading `namespaces` from L3 on every read, its L1 dropped about every 40 s, with nothing to show
+it but the drops.
+
 ## v0.76.0 -- 2026-10-23
 
 **Release order: the hub first.** `l3.truncate`, `l3.tx.copy` and `l3.load_files` are answered by the hub's
