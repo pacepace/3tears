@@ -19,14 +19,18 @@ the first one reached fewer than ``k`` times drops out of both. :func:`resume_ru
 - **Its spend counts.** What its stored rows spent seeds its cost cap; a run its budget stopped is taken up only
   under a cap above that spend.
 
-A take-up is always asked for, never made at boot.
+A take-up is always asked for, never made at boot. A host offers one: :func:`resumable_jobs` lists the runs a
+take-up would accept, which a host reads at boot, after settling what its last process left running
+(:func:`~threetears.evals.run.lifecycle.sweep_abandoned_runs`), and offers to an operator.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import Field
 
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.profile import HostProfile
@@ -38,11 +42,13 @@ from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.run.budget import EvalRunCostCap
 from threetears.evals.run.launch import LaunchHost, admit_resumed_run
 from threetears.evals.run.runner import StoredCells
+from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import (
     TERMINAL_RUN_STATUSES,
     EvalResult,
     EvalRun,
+    EvalRunStatus,
     EvalTemplate,
     EvalTestCase,
     RunLifetime,
@@ -230,8 +236,8 @@ class RunResumption:
                 f"run '{stored.id}' is not taken up again: launched now, it would measure otherwise than it did — "
                 f"{'; '.join(differences)}",
                 remedy=(
-                    "launch the template again to measure as things stand now, or restore what moved and take the run "
-                    "up again"
+                    "launch the template again (run_launch) to measure as things stand now, or restore what moved and "
+                    "call job_resume again"
                 ),
             )
         first = RunLifetime(
@@ -340,23 +346,23 @@ def _refuse_what_cannot_be_taken_up(read: _Read, *, cap: float | None, live_here
         holder = f" by process {run.lease.holder} until {run.lease.expires_at}" if run.lease is not None else ""
         raise ValidationFailedError(
             f"run '{run.id}' is still {run.status}{holder}; a live run is never taken up",
-            remedy="cancel it (job_cancel) or wait for it to end, then take it up again",
+            remedy="cancel it (job_cancel) or wait for it to end, then call job_resume",
         )
     if live_here:
         raise ValidationFailedError(
             f"run '{run.id}' ended, and its job in this process is still unwinding",
-            remedy="take it up again once its job has stopped",
+            remedy="call job_resume again once its job has stopped (job_poll reads it done)",
         )
     if run.status == "completed":
         raise ValidationFailedError(
             f"run '{run.id}' completed; there is nothing left of it to run",
-            remedy="launch its template again to measure again",
+            remedy="launch its template again (run_launch) to measure again",
         )
     if run.status == "failed":
         raise ValidationFailedError(
             f"run '{run.id}' failed ({run.failed_because or 'see its error_details'}); taking it up again would run "
             "what failed it again",
-            remedy="fix what failed it, which its error_details name, and launch its template again",
+            remedy="fix what failed it, which run_get names, and launch its template again (run_launch)",
         )
     spent = sum(amount for amount in counted_spend(read.rows) if amount is not None)
     if run.status == "budget_stopped" and cap is not None and spent >= cap:
@@ -364,18 +370,18 @@ def _refuse_what_cannot_be_taken_up(read: _Read, *, cap: float | None, live_here
             f"run '{run.id}' was stopped by its budget ({run.budget_stop_reason}), and its stored rows have spent "
             f"${spent:.4f} — at least that, since a cell in flight when it stopped may have spent more — against a "
             f"cap of ${cap:.4f}",
-            remedy=f"take it up with max_cost_usd above ${spent:.4f}",
+            remedy=f"call job_resume with max_cost_usd above ${spent:.4f}",
         )
     if run.template_id is None:
         raise ValidationFailedError(
             f"run '{run.id}' is ad hoc, so there is no template to launch it from again",
-            remedy="take up a run launched from a template",
+            remedy="only a run launched from a template is resumed (job_resume); run this eval again to measure again",
         )
     if read.missing_cases:
         raise ValidationFailedError(
             f"run '{run.id}' froze case(s) {', '.join(read.missing_cases)}, which scope {run.scope_id!r} no longer "
             "holds, so its cells cannot run",
-            remedy="launch its template again over the cases the scope holds",
+            remedy="launch its template again (run_launch) over the cases the scope holds",
         )
 
 
@@ -472,15 +478,157 @@ def _write_reopened(storage: EvalStorage, leases: JobLeases | None, run: EvalRun
         raise ConflictError(
             f"run '{run.id}' changed while it was being taken up — another take-up of it won, or another writer moved "
             "it — so this one started nothing",
-            remedy="read it with job_poll; take it up again if it is still not running",
+            remedy="read it with job_poll; call job_resume again if it is still not running",
         ) from moved
+
+
+#: The statuses a run :func:`resume_run` takes up has ended with: ``cancelled`` (lost, or cancelled by an operator),
+#: ``budget_stopped`` and ``exhausted``. ``completed`` and ``failed`` are never taken up, nor a live run.
+RESUMABLE_RUN_STATUSES: frozenset[EvalRunStatus] = frozenset({"cancelled", "budget_stopped", "exhausted"})
+
+#: How a resumable run's last holding ended: lost (its process went away), cancelled by an operator, stopped by its
+#: budget, or stopped by its provider account.
+ResumableEnding = Literal["lost", "cancelled", "budget_stopped", "exhausted"]
+
+
+class ResumableJob(EvalBaseModel):
+    """One run :func:`resume_run` would take up, as a host offers it: how it ended, how far it got, what it spent."""
+
+    job_id: str = Field(description="The job id job_resume takes: 'run:<run id>'.")
+    run_id: str
+    scope_id: str
+    template_id: str
+    candidate_model: str
+    status: EvalRunStatus = Field(
+        description="Its stored status: cancelled (lost, or by an operator), budget_stopped or exhausted."
+    )
+    ended: ResumableEnding = Field(
+        description="How its last holding ended: lost (its process went away), cancelled by an operator, stopped by "
+        "its budget, or stopped by its provider account (exhausted)."
+    )
+    reason: str | None = Field(
+        default=None,
+        description="Why, in its record's words: the loss's cause, the cancellation's reason, the budget stop's, or "
+        "the account's refusal.",
+    )
+    cells_done: int = Field(ge=0, description="Cells whose stored row counts as done; a resume runs the rest.")
+    cells_expected: int = Field(ge=0, description="Every cell of its matrix: its cases times its repeats.")
+    spent_usd: float = Field(
+        description="What its stored rows spent, every attempt once: what its cost cap counts on a resume. A lower "
+        "bound when a holding was lost with cells in flight."
+    )
+    unpriced: int = Field(ge=0, description="Attempts its rows record that nobody priced, which spent_usd leaves out.")
+    max_cost_usd: float | None = Field(description="The cost cap it ran under; None for uncapped.")
+    lifetimes: int = Field(ge=1, description="The process lifetimes it has spanned: 1 until it is first resumed.")
+    note: str | None = Field(
+        default=None,
+        description="What a resume needs beyond the job id: for a run its budget stopped at its cost cap, a "
+        "max_cost_usd above what it spent. None when job_resume needs nothing more.",
+    )
+
+
+class ResumableJobs(EvalBaseModel):
+    """The runs in the scopes asked about that a host may offer to resume (:func:`resumable_jobs`)."""
+
+    jobs: list[ResumableJob] = Field(description="Each run job_resume would take up, newest first within a scope.")
+    unreadable: int = Field(
+        default=0,
+        description="Rows that matched which this build's model cannot read, left out; runs_unreadable names them.",
+    )
+    drift: Literal["checked_on_resume"] = Field(
+        default="checked_on_resume",
+        description="Whether each run would still measure as it did is not read here: that means replaying its launch "
+        "through the host's kind. job_resume checks it before anything is spent, and refuses naming every difference.",
+    )
+
+
+def _ended(run: EvalRun) -> ResumableEnding:
+    """How a resumable run's last holding ended."""
+    if run.lost is not None:
+        return "lost"
+    if run.status == "budget_stopped":
+        return "budget_stopped"
+    return "exhausted" if run.status == "exhausted" else "cancelled"
+
+
+def _offered(run: EvalRun, template_id: str, rows: Sequence[EvalResult]) -> ResumableJob:
+    """One resumable run as it is offered, read off its record and its stored rows."""
+    spend = counted_spend(rows)
+    spent = sum(amount for amount in spend if amount is not None)
+    cap = run.max_cost_usd
+    note = None
+    # The same rule the take-up refuses by: a cap its stored rows have reached.
+    if run.status == "budget_stopped" and cap is not None and spent >= cap:
+        note = (
+            f"stopped at its cost cap of ${cap:.4f} with ${spent:.4f} spent: resume it with max_cost_usd above "
+            f"${spent:.4f}"
+        )
+    return ResumableJob(
+        # The run job's id, in the shape job_poll and job_resume read.
+        job_id=f"run:{run.id}",
+        run_id=run.id,
+        scope_id=run.scope_id,
+        template_id=template_id,
+        candidate_model=run.candidate_model,
+        status=run.status,
+        ended=_ended(run),
+        reason=_why_it_ended(run),
+        cells_done=len(planned_cells(rows).done),
+        cells_expected=run.expected_cells,
+        spent_usd=spent,
+        unpriced=sum(1 for amount in spend if amount is None),
+        max_cost_usd=cap,
+        lifetimes=max(1, len(run.lifetimes)),
+        note=note,
+    )
+
+
+def resumable_jobs(storage: EvalStorage, scopes: Iterable[str]) -> ResumableJobs:
+    """The runs in ``scopes`` that :func:`resume_run` would take up, for a host to offer: nothing is resumed here.
+
+    A run lost (its holder gone, or shut down), one an operator cancelled, one its budget stopped and one its provider
+    account stopped (``exhausted``); never one that completed or failed, one still live, nor an ad hoc run, which has
+    no template to launch it from again. A run still stored ``running`` whose lease has lapsed is read lost, as every
+    read reads it, and listed. A host reads this at boot, after
+    :func:`~threetears.evals.run.lifecycle.sweep_abandoned_runs` has settled what its last process left running, and
+    offers each to an operator: a run is taken up only when someone asks (``job_resume``).
+
+    What a take-up would refuse on what it reads beyond the record is not checked here: whether the run would still
+    measure as it did, which means replaying its launch through the host's kind (``job_resume`` checks it before
+    anything is spent, naming every difference), and whether its frozen cases are still in its scope. A run its budget
+    stopped at its cap carries a ``note`` naming the cap it needs.
+
+    :param storage: The runs' store.
+    :ptype storage: EvalStorage
+    :param scopes: The scopes to read, which the host names, as it names them to the boot sweep.
+    :ptype scopes: Iterable[str]
+    :return: The runs, and how many rows matched that this build cannot read.
+    :rtype: ResumableJobs
+    :raises UnreadableRunError: A run read, but writing it lost was refused by a model.
+    :raises StorageError: The store failed to answer.
+    """
+    jobs: list[ResumableJob] = []
+    unreadable = 0
+    for scope_id in scopes:
+        read = storage.query_eval_runs_in_status(scope_id, RESUMABLE_RUN_STATUSES)
+        unreadable += len(read.unreadable)
+        for run in sorted(read.runs, key=lambda run: run.created_at, reverse=True):
+            if run.template_id is None:
+                continue
+            jobs.append(_offered(run, run.template_id, storage.query_eval_results_by_run(run.id, scope_id)))
+    return ResumableJobs(jobs=jobs, unreadable=unreadable)
 
 
 __all__ = [
     "PINNED_FIELDS",
+    "RESUMABLE_RUN_STATUSES",
+    "ResumableEnding",
+    "ResumableJob",
+    "ResumableJobs",
     "RunResumption",
     "counted_spend",
     "planned_cells",
+    "resumable_jobs",
     "resume_drift",
     "resume_run",
 ]

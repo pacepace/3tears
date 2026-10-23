@@ -91,7 +91,11 @@ def held_extraction(monkeypatch: pytest.MonkeyPatch, *, passing: int = 0) -> Hel
 
 
 async def launched_run(host: OpsHost, k_runs: int = 1, *, max_cost_usd: float | None = None) -> str:
-    """Launch one arm of ``k_runs`` repeats on ``host`` and wait until its run reads running; the run's id."""
+    """Launch one arm of ``k_runs`` repeats on ``host`` and wait until its run has started; the run's id.
+
+    Started is read as no longer ``pending``: a run its cap stops at its first cell can be ``budget_stopped`` before
+    any poll catches it ``running``.
+    """
     arguments = LaunchArguments(
         template_id=toyhost_template().id,
         subject_id=TOYHOST_SUBJECT.subject_id,
@@ -103,6 +107,6 @@ async def launched_run(host: OpsHost, k_runs: int = 1, *, max_cost_usd: float | 
     async with asyncio.timeout(10):
         while not (run_ids := (await job_poll(host, job.job_id, TOYHOST_SCOPE)).run_ids):
             await asyncio.sleep(0.01)
-        while (await job_poll(host, run_job_id(run_ids[0]), TOYHOST_SCOPE)).status != "running":
+        while (await job_poll(host, run_job_id(run_ids[0]), TOYHOST_SCOPE)).status == "pending":
             await asyncio.sleep(0.01)
     return run_ids[0]

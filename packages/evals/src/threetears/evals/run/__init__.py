@@ -225,6 +225,15 @@ from threetears.evals.run.jobs import WorkFn
 from threetears.evals.run.judge_service import JudgeClientFactory, JudgeContext, JudgeOutcome
 from threetears.evals.run.rejudge import JudgeInputStore, ReproducibleJudgeInputs, RequestSettingsPolicy
 from threetears.evals.run.runner import EveryCellApparatusFailedError, NothingMeasuredError, RunCallbacks
+from threetears.evals.run.runner import StoredCells
+from threetears.evals.run.resume import (
+    ResumableEnding,
+    ResumableJob,
+    ResumableJobs,
+    RunResumption,
+    resumable_jobs,
+    resume_run,
+)
 
 
 __all__ = [
@@ -401,6 +410,13 @@ __all__ = [
     "mint_case_set",
     "resolve_case_set",
     "sweep_abandoned_runs",
+    "ResumableEnding",
+    "ResumableJob",
+    "ResumableJobs",
+    "RunResumption",
+    "StoredCells",
+    "resumable_jobs",
+    "resume_run",
     "update_judge_config",
     "update_rubric_dim",
     "update_template",

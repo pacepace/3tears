@@ -2137,7 +2137,7 @@ async def admit_resumed_run(
     if run.template_id is None:
         raise ValidationFailedError(
             f"run '{run.id}' is ad hoc, so there is no template to launch it from again",
-            remedy="take up a run launched from a template",
+            remedy="only a run launched from a template is resumed (job_resume); run this eval again to measure again",
         )
     return await _admit_run(
         host,

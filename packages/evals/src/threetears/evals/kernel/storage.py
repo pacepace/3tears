@@ -1821,6 +1821,32 @@ class EvalStorage:
             unreadable=[row for row in refused if not status or row.status == status],
         )
 
+    def query_eval_runs_in_status(self, scope_id: str, statuses: Iterable[EvalRunStatus], /) -> RunsRead:
+        """The scope's runs whose status is any of ``statuses``, in one read, leaving out each row the model refuses
+        and naming it instead (as :meth:`query_eval_runs_isolating` does).
+
+        Settled as every read settles a run, so the status matched is the settled one: when ``statuses`` holds
+        ``cancelled``, a run still stored ``pending`` or ``running`` whose lease has lapsed is read too, written lost
+        (``cancelled``), and matched. The rows are matched by the store's ``field_in``, which every backend answers.
+
+        :param scope_id: The scope whose runs to read.
+        :ptype scope_id: str
+        :param statuses: The statuses to match.
+        :ptype statuses: Iterable[EvalRunStatus]
+        :return: The matching runs that read, settled, and each matched row that did not.
+        :rtype: RunsRead
+        :raises UnreadableRunError: A run read, but writing it lost was refused by a model.
+        """
+        wanted: set[str] = set(statuses)
+        asked = wanted | (NON_TERMINAL_RUN_STATUSES if RUN_LOST_STATUS in wanted else set())
+        rows = self._store.by_doc_type("eval_run", scope_id, field_in={"status": sorted(asked)}) if asked else []
+        read, refused = self._hydrate_isolating(EvalRun, rows)
+        runs = self._settled_runs(read, frozenset(), scope_id)
+        return RunsRead(
+            runs=[run for run in runs if run.status in wanted],
+            unreadable=[row for row in refused if row.status in wanted],
+        )
+
     def _run_rows(self, scope_id: str, status: str | None, elide_payload: frozenset[str]) -> list[dict[str, Any]]:
         """The stored run rows a listing by ``status`` matches, before they are read (:meth:`query_eval_runs`)."""
         field_eq: dict[str, Any] = {}

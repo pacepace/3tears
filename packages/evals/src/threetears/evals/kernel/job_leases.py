@@ -28,6 +28,11 @@ did not start a job read a live one as lost, and a cancel there was refused. Her
   progress and status, a launch's, a sweep's or an attempt's record — goes through :meth:`JobLeases.write_own`, which
   extends the lease as a renewal does. So a job whose writes keep beating its renewals to the record keeps its lease,
   and hears a cancel asked of it, as a renewal would have; a lease the store's clock reads lapsed is never revived.
+- **The one way back is a resume, under a new epoch.** No renewal and no write of the holding that lost a job brings
+  it back. A run that was lost (or cancelled, or stopped by its budget or its account) is continued only when someone
+  asks (:func:`~threetears.evals.run.resume_run`, the ``job_resume`` action): its record is reopened, conditionally on
+  the record as read, under a lease at the next ``epoch`` held by the process resuming it, and every holding at an
+  earlier epoch is fenced as above. Nothing resumes a job on its own, at boot or otherwise.
 - **A cancel is a field on the record** (``cancel_requested_at``), written by whichever process was asked
   (:func:`request_job_cancel`); the holder reads it at its next renewal and ends the job ``cancelled``, so a cancel
   lands within one renewal interval from anywhere.
@@ -710,8 +715,9 @@ class JobLeases:
         round-trip at most twice an interval).
 
         A lease the store's clock reads lapsed is never revived: the record is written lost, as a renewal writes it,
-        this process lets it go and stops its job, and nothing is written. A store clock that cannot be read leaves the
-        lease as stored, logged: the write it was only to extend still lands.
+        this process lets it go and stops its job, and nothing is written. Only a resume continues the job, under a
+        new lease at the next epoch (:func:`~threetears.evals.run.resume_run`). A store clock that cannot be read
+        leaves the lease as stored, logged: the write it was only to extend still lands.
 
         Blocking: call it off the event loop, as every store call is.
 
