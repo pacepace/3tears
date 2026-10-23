@@ -58,9 +58,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import partial
-from typing import Annotated, Any
+from typing import Annotated, Any, assert_never
 
 from pydantic import Field, model_validator
 
@@ -436,15 +436,73 @@ def _budget_s(sweep: EvalSweep) -> float:
 
 
 @dataclass(frozen=True)
-class _TakingUp:
-    """What a sweep taken up again holds of its arms: each arm's run taken up again, and each arm that had ended.
+class _ArmEnded:
+    """An arm whose run had ended ``completed`` or ``failed``: left alone, and read as it ended.
 
-    :ivar resumptions: Each arm's run taken up again, by the arm's label, as its take-up planned it in the call.
-    :ivar ended: Each arm whose run had ended ``completed`` or ``failed``, by label: left alone, and read as it ended.
+    :ivar run: Its run, as it ended.
     """
 
-    resumptions: dict[str, RunResumption] = field(default_factory=dict)
-    ended: dict[str, EvalRun] = field(default_factory=dict)
+    run: EvalRun
+
+
+@dataclass(frozen=True)
+class _ArmTakenUp:
+    """An arm whose run is taken up again, started as that run.
+
+    :ivar resumption: Its run's take-up, as planned in the call.
+    """
+
+    resumption: RunResumption
+
+
+@dataclass(frozen=True)
+class _ArmLaunched:
+    """An arm launched as the sweep launches it: every arm of a sweep starting fresh, and an arm that never launched."""
+
+
+#: What a sweep's job does with one arm, set once for every arm before the job starts.
+_ArmTakeUp = _ArmEnded | _ArmTakenUp | _ArmLaunched
+
+
+@dataclass(frozen=True)
+class _TakingUp:
+    """What a sweep's job does with each of its arms, by label: set for every arm, so none is launched by default.
+
+    :ivar arms: Each arm's take-up, by the arm's label.
+    """
+
+    arms: dict[str, _ArmTakeUp]
+
+    @classmethod
+    def fresh(cls, sweep: EvalSweep) -> _TakingUp:
+        """A sweep starting fresh: every arm is launched.
+
+        :param sweep: The sweep.
+        :ptype sweep: EvalSweep
+        :return: Every arm launched.
+        :rtype: _TakingUp
+        """
+        return cls(arms={arm.label: _ArmLaunched() for arm in sweep.arms})
+
+    def of(self, label: str) -> _ArmTakeUp:
+        """What the job does with one arm.
+
+        :param label: The arm's label.
+        :ptype label: str
+        :return: Its take-up.
+        :rtype: _ArmTakeUp
+        :raises KeyError: The arm has none: every arm's is set before the job starts, so this is a defect.
+        """
+        return self.arms[label]
+
+    @property
+    def resumptions(self) -> list[RunResumption]:
+        """Every arm's run taken up again, in the sweep's arm order.
+
+        :return: The take-ups.
+        :rtype: list[RunResumption]
+        """
+        return [arm.resumption for arm in self.arms.values() if isinstance(arm, _ArmTakenUp)]
 
 
 def _never_launched(sweep: EvalSweep, arm: SweepArmRecord) -> ValidationFailedError:
@@ -520,7 +578,7 @@ async def sweep_resume(
     if shared is not None and max_cost_usd is not None:
         shared = shared.model_copy(update={"max_cost_usd": max_cost_usd})
     refusals: list[ValidationFailedError] = []
-    ended: dict[str, EvalRun] = {}
+    ended: dict[str, _ArmEnded] = {}
     unfinished: list[tuple[str, str]] = []
     never_launched: list[SweepArmRecord] = []
     for arm in sweep.arms:
@@ -537,7 +595,7 @@ async def sweep_resume(
                 )
             )
         elif run.status in ("completed", "failed"):
-            ended[arm.label] = run
+            ended[arm.label] = _ArmEnded(run)
         else:
             unfinished.append((arm.label, run.id))
     planned, refused = await take_up_arms(launch, unfinished, scope_id, max_cost_usd=max_cost_usd)
@@ -571,7 +629,21 @@ async def sweep_resume(
         sweep, epoch=epoch, holder=leases.holder_id, shared=shared, group_id=group_id, cap=max_cost_usd
     )
     await run_blocking(eval_host.blocking_executor, _write_reopened_sweep, storage, leases, reopened, etag, epoch)
-    taking_up = _TakingUp(resumptions=planned, ended=ended)
+    # Every arm's take-up is set here, once: an arm refused ended the call above, so each is ended, taken up or launched.
+    arms: dict[str, _ArmTakeUp] = {}
+    launching = {arm.label for arm in never_launched}
+    for arm in sweep.arms:
+        if arm.label in ended:
+            arms[arm.label] = ended[arm.label]
+        elif arm.label in planned:
+            arms[arm.label] = _ArmTakenUp(planned[arm.label])
+        elif arm.label in launching:
+            arms[arm.label] = _ArmLaunched()
+        else:
+            raise RuntimeError(
+                f"sweep '{sweep.id}' arm {arm.label!r} was neither ended, taken up, launched nor refused"
+            )
+    taking_up = _TakingUp(arms=arms)
 
     async def work() -> None:
         await _run_sweep(host, reopened, budget_s=_budget_s(reopened), taking_up=taking_up)
@@ -720,12 +792,13 @@ async def _run_sweep(host: OpsHost, sweep: EvalSweep, *, budget_s: float, taking
     :ptype sweep: EvalSweep
     :param budget_s: The sweep's wall-clock budget.
     :ptype budget_s: float
-    :param taking_up: For a sweep taken up again, what it holds of its arms; ``None`` for a sweep starting fresh.
+    :param taking_up: For a sweep taken up again, what it does with each arm; ``None`` for a sweep starting fresh, every
+        arm of which is launched.
     :ptype taking_up: _TakingUp | None
     """
     manager = host.launch.job_manager
     scope_id = sweep.scope_id
-    run = _SweepRun(host, sweep, taking_up if taking_up is not None else _TakingUp())
+    run = _SweepRun(host, sweep, taking_up if taking_up is not None else _TakingUp.fresh(sweep))
 
     def fenced(why: JobFenced) -> None:
         log.warning("eval.sweep sweep=%s scope=%s stopped: %s", sweep.id, scope_id, why)
@@ -910,8 +983,10 @@ class _SweepRun:
             if self.failure:
                 slots.release()
                 return
-            if (ended := taking_up.ended.get(record.label)) is not None:
+            arm = taking_up.of(record.label)
+            if isinstance(arm, _ArmEnded):
                 # Read as it ended, as a launched arm's run is once it ends: a failure ends the sweep here, as it did.
+                ended = arm.run
                 self.in_flight[ended.id] = asyncio.create_task(self.settle(record.label, ended.id, done=slots))
                 judge_pin = judge_pin or ended.judge_model
                 simulator_pin = simulator_pin or ended.simulator_model
@@ -923,17 +998,19 @@ class _SweepRun:
             except JobFenced:
                 slots.release()
                 raise
-            resuming = taking_up.resumptions.get(record.label)
             try:
-                if resuming is not None:
-                    run = await start_take_up(self.host.launch, resuming)
-                else:
-                    (run,) = await start_run(
-                        self.host.launch,
-                        **self._arm_launch(record, judge_model=self._judge(record, judge_pin)),
-                        simulator_model=self._simulator(record, simulator_pin),
-                        arm_schedule=sweep.arm_schedule,
-                    )
+                match arm:
+                    case _ArmTakenUp(resumption=resuming):
+                        run = await start_take_up(self.host.launch, resuming)
+                    case _ArmLaunched():
+                        (run,) = await start_run(
+                            self.host.launch,
+                            **self._arm_launch(record, judge_model=self._judge(record, judge_pin)),
+                            simulator_model=self._simulator(record, simulator_pin),
+                            arm_schedule=sweep.arm_schedule,
+                        )
+                    case unreachable:
+                        assert_never(unreachable)
             # prawduct:ok-broad-except — any refusal of one arm ends the sweep, recorded on its record
             except Exception as refused:
                 contain(refused, log=log, what=f"eval.sweep arm {record.label!r} was refused at its launch")
@@ -944,7 +1021,8 @@ class _SweepRun:
                 )
                 return
             self.in_flight[run.id] = asyncio.create_task(self.settle(record.label, run.id, done=slots))
-            if resuming is None:
+            if isinstance(arm, _ArmLaunched):
+                # A run taken up again is already the arm's, and already a member.
                 record.run_id = run.id
                 await self.join_campaign([run])
             await self.save()
@@ -969,7 +1047,7 @@ class _SweepRun:
             group_id=sweep.launch_group_id,
         )
         sweep.launch_group_id = group.id
-        going = [record for record in sweep.arms if record.label not in taking_up.ended]
+        going = [record for record in sweep.arms if not isinstance(taking_up.of(record.label), _ArmEnded)]
         shared = sweep.arguments
         preparing: list[str] = []
 
@@ -980,18 +1058,26 @@ class _SweepRun:
             prepared: list[EvalRun] = []
             for record in going:
                 preparing[:] = [record.label]
-                resuming = taking_up.resumptions.get(record.label)
-                if resuming is not None:
-                    prepared += await (await admit_resumed_run(self.host.launch, resuming, launch_group=group)).start()
-                    continue
-                prepared += await start_run(
-                    self.host.launch,
-                    **self._arm_launch(
-                        record, judge_model=self._judge(record, shared.judge_model if shared is not None else None)
-                    ),
-                    simulator_model=self._simulator(record, shared.simulator_model if shared is not None else None),
-                    launch_group=group,
-                )
+                match taking_up.of(record.label):
+                    case _ArmTakenUp(resumption=resuming):
+                        admitted = await admit_resumed_run(self.host.launch, resuming, launch_group=group)
+                        prepared += await admitted.start()
+                    case _ArmLaunched():
+                        prepared += await start_run(
+                            self.host.launch,
+                            **self._arm_launch(
+                                record,
+                                judge_model=self._judge(record, shared.judge_model if shared is not None else None),
+                            ),
+                            simulator_model=self._simulator(
+                                record, shared.simulator_model if shared is not None else None
+                            ),
+                            launch_group=group,
+                        )
+                    case _ArmEnded():
+                        raise RuntimeError(f"arm {record.label!r} had ended, so it is not among the arms prepared")
+                    case unreachable:
+                        assert_never(unreachable)
             preparing.clear()
             # Asked again once every arm is prepared and before any starts: preparing can be long (a generating
             # launch writes its cases), and a sweep whose record read lost meanwhile would start every arm unowned.
@@ -1000,7 +1086,7 @@ class _SweepRun:
             return prepared
 
         async def reopen(runs: list[EvalRun]) -> None:
-            await write_taken_up(self.host.launch, list(taking_up.resumptions.values()), runs)
+            await write_taken_up(self.host.launch, taking_up.resumptions, runs)
 
         try:
             runs = await launch_as_group(
@@ -1023,11 +1109,17 @@ class _SweepRun:
         for record, run in zip(going, runs, strict=True):
             self.in_flight[run.id] = asyncio.create_task(self.settle(record.label, run.id))
             record.run_id = run.id
-        for label, ended in taking_up.ended.items():
-            self.in_flight[ended.id] = asyncio.create_task(self.settle(label, ended.id))
-        # Members once they exist, as an arm launched on its own joins once its run is created.
+        for label, arm in taking_up.arms.items():
+            if isinstance(arm, _ArmEnded):
+                self.in_flight[arm.run.id] = asyncio.create_task(self.settle(label, arm.run.id))
+        # Members once they exist, as an arm launched on its own joins once its run is created; a run taken up again is
+        # a member already.
         await self.join_campaign(
-            [run for record, run in zip(going, runs, strict=True) if record.label not in taking_up.resumptions]
+            [
+                run
+                for record, run in zip(going, runs, strict=True)
+                if isinstance(taking_up.of(record.label), _ArmLaunched)
+            ]
         )
         await self.save()
 
