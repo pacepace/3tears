@@ -8,3 +8,5 @@ packages/datasources/src/threetears/datasources/partitioned_export.py:delete_cou
 packages/datasources/src/threetears/datasources/partitioned_export.py:export_counted_partitions  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/loader.py and lsf_export.py export a model run's LSF rows
 packages/datasources/src/threetears/datasources/partitioned_export.py:presigned_counted_partition  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/loader.py and lsf_export.py hand a state's files to load_files
 packages/datasources/src/threetears/datasources/partitioned_export.py:read_counted_partition  # bluelabsio/14-eng-ai-bot-agent-reports: src/aibots_reports/pod/loader.py and lsf_export.py read a state's rows
+packages/mcp/src/threetears/mcp/tool.py:McpToolAnnotations  # brookstalley/testament: src/testament/ops/mcp.py marks each op's McpTool read-only or destructive from the op registry
+packages/mcp/src/threetears/mcp/__init__.py:McpToolAnnotations  # brookstalley/testament: src/testament/ops/mcp.py imports it from threetears.mcp to mark each op read-only or destructive
