@@ -13,8 +13,9 @@ The counters are the process's, and one timer logs them, owned by the event loop
 :func:`hold_tier_reads_timer` starts it on the running loop for that loop's first holder, and
 :func:`release_tier_reads_timer` stops it, and logs the last counts, when the loop's last holder lets go. Two tool
 servers in one process run on its one loop, so they share one line a minute rather than each draining the other's reads
-into a line of its own. A timer belongs to its loop because its task does: a loop that has closed takes its timer and
-its holders with it, and never leaves a later loop believing a timer runs.
+into a line of its own. A timer belongs to its loop because its task does: the first holder on another loop starts a
+timer of its own, so a loop that has gone takes its timer and its holders with it, and never leaves a later loop
+believing a timer runs.
 """
 
 from __future__ import annotations
@@ -109,15 +110,25 @@ async def _log_tier_reads_every(every: float = _TIER_READS_LOG_SECONDS) -> None:
 
 
 class _LoopTimer:
-    """one event loop's :func:`_log_tier_reads_every` task, and how many holders keep it running."""
+    """the :func:`_log_tier_reads_every` task, the loop it runs on, and how many holders on that loop keep it running."""
 
     def __init__(self) -> None:
+        self.loop: weakref.ref[asyncio.AbstractEventLoop] | None = None
         self.task: asyncio.Task[None] | None = None
         self.holders = 0
 
+    def on(self, loop: asyncio.AbstractEventLoop) -> bool:
+        """whether this is ``loop``'s timer.
 
-#: each running loop's timer; a loop that is collected takes its timer with it
-_timers: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, _LoopTimer] = weakref.WeakKeyDictionary()
+        :param loop: the running loop
+        :ptype loop: asyncio.AbstractEventLoop
+        :return: True when the timer was started on ``loop``
+        :rtype: bool
+        """
+        return self.loop is not None and self.loop() is loop
+
+
+_timer = _LoopTimer()
 
 
 def hold_tier_reads_timer(every: float | None = None) -> None:
@@ -129,10 +140,13 @@ def hold_tier_reads_timer(every: float | None = None) -> None:
     :return: nothing
     :rtype: None
     """
-    timer = _timers.setdefault(asyncio.get_running_loop(), _LoopTimer())
-    timer.holders += 1
-    if timer.task is None:
-        timer.task = asyncio.create_task(_log_tier_reads_every(_TIER_READS_LOG_SECONDS if every is None else every))
+    loop = asyncio.get_running_loop()
+    if not _timer.on(loop):
+        # the first holder on this loop: a timer on another loop is that loop's, and goes with it
+        _timer.loop, _timer.task, _timer.holders = weakref.ref(loop), None, 0
+    _timer.holders += 1
+    if _timer.task is None:
+        _timer.task = asyncio.create_task(_log_tier_reads_every(_TIER_READS_LOG_SECONDS if every is None else every))
 
 
 async def release_tier_reads_timer() -> dict[str, dict[str, int]]:
@@ -143,12 +157,11 @@ async def release_tier_reads_timer() -> dict[str, dict[str, int]]:
     :rtype: dict[str, dict[str, int]]
     :raises RuntimeError: nothing on the running loop holds the timer
     """
-    timer = _timers.get(asyncio.get_running_loop())
-    if timer is None or timer.holders == 0:
+    if not _timer.on(asyncio.get_running_loop()) or _timer.holders == 0:
         raise RuntimeError("the tier-read timer was released more times than it was held")
-    timer.holders -= 1
-    if timer.holders > 0 or timer.task is None:
+    _timer.holders -= 1
+    if _timer.holders > 0 or _timer.task is None:
         return {}
-    task, timer.task = timer.task, None
+    task, _timer.task = _timer.task, None
     await cancel_and_wait(task)
     return _log_tier_reads()

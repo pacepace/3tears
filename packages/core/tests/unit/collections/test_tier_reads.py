@@ -36,6 +36,7 @@ async def test_the_last_holder_logs_the_reads_since_the_last_line_once_and_start
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     await _drained()
+    caplog.clear()  # the reads earlier tests in this process left, logged by the drain
     with caplog.at_level(logging.INFO, logger="threetears.core.collections.tier_reads"):
         hold_tier_reads_timer()
         hold_tier_reads_timer()
@@ -52,6 +53,7 @@ async def test_the_last_holder_logs_the_reads_since_the_last_line_once_and_start
 @pytest.mark.asyncio
 async def test_the_timer_logs_the_reads_each_period(caplog: pytest.LogCaptureFixture) -> None:
     await _drained()
+    caplog.clear()  # the reads earlier tests in this process left, logged by the drain
     with caplog.at_level(logging.INFO, logger="threetears.core.collections.tier_reads"):
         hold_tier_reads_timer(every=0.01)
         record_tier_read("namespaces", ReadTier.L3)

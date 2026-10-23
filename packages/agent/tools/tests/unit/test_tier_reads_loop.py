@@ -78,6 +78,7 @@ async def test_the_tool_server_holds_the_timer_while_it_runs_and_its_stop_logs_t
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     await _drained()
+    caplog.clear()  # the reads earlier tests in this process left, logged by the drain
     with (
         patch("threetears.agent.tools.server.nats_connect", return_value=_mock_nc()),
         caplog.at_level(logging.INFO, logger="threetears.core.collections.tier_reads"),
@@ -97,6 +98,7 @@ async def test_the_tool_server_holds_the_timer_while_it_runs_and_its_stop_logs_t
 @pytest.mark.asyncio
 async def test_two_tool_servers_in_one_process_share_one_timer(caplog: pytest.LogCaptureFixture) -> None:
     await _drained()
+    caplog.clear()  # the reads earlier tests in this process left, logged by the drain
     with (
         patch("threetears.agent.tools.server.nats_connect", side_effect=[_mock_nc(), _mock_nc()]),
         caplog.at_level(logging.INFO, logger="threetears.core.collections.tier_reads"),
