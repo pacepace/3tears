@@ -8,7 +8,10 @@ Pinned:
   run an operator cancelled, whose cut-short cells left ``cancelled`` rows, is taken up the same way, each of those
   rows written over; and so is one taken up by the very process that held it.
 - **Only the same measurement**: a take-up that would measure otherwise is refused, naming every difference, and
-  leaves the run as it was.
+  leaves the run as it was. A template edited after the run began is refused when its measured content moved (the
+  digest the run froze at launch: a scoring guide, the intent, a goal check); an edit in nothing measured (its
+  description) is taken up, and disclosed on the holding that began after it. A run stored before it froze that
+  digest is refused once its template was edited, and taken up while it is not.
 - **Its budget**: a run its budget stopped is taken up only under a cap above what it spent, and each holding
   records the cap it ran under.
 - **Old records**: a run an older build stored and lost — no epochs, minted result ids — is taken up, its done rows
@@ -31,11 +34,11 @@ from threetears.evals.kernel import ConflictError, ValidationFailedError
 from threetears.evals.kernel.scoring import compute_pass_hat_k
 from threetears.evals.ops import OpsHost, job_poll, run_job_id
 from threetears.evals.run import ArmPrice, ArmQuote
+from threetears.evals.run.definition_digests import measured_template_digest
 from threetears.evals.run.resume import counted_spend, resume_drift, resume_run
-from threetears.evals.schema import EvalResult, EvalRun, JobLease
+from threetears.evals.schema import EvalResult, EvalRun, EvalTemplate, JobLease
 from threetears.evals.schema.models import cell_result_id, eval_trace_doc_id
 from packages.evals.tests.factories import make_eval_run, make_template
-from packages.evals.tests.fixtures.toyhost.contract import ExtractorSpec
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_COST_CEILING_USD, TOYHOST_SUBJECT
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, TOYHOST_SUBJECTS
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -225,22 +228,63 @@ def test_a_take_up_that_would_measure_otherwise_names_every_difference_and_no_la
 
     assert [difference.split(" ", 1)[0] for difference in differences] == ["judge_config_ids", "apparatus_settings"]
     assert "cfg-2" in differences[0] and "pool-b" in differences[1]
-    assert (
-        resume_drift(stored, stored.model_copy(update={"subject_snapshot": relabelled}), template, toyhost_profile())
-        == []
+    unlabelled = stored.model_copy(update={"subject_snapshot": relabelled})
+    assert resume_drift(stored, unlabelled, template, toyhost_profile()) == []
+
+
+def _edited(template: EvalTemplate, **fields: Any) -> EvalTemplate:
+    return template.model_copy(update={**fields, "updated_at": "2099-01-01T00:00:00+00:00"})
+
+
+def test_a_template_edit_moves_its_measured_digest_only_where_a_run_measures_it() -> None:
+    template = make_template()
+    (dim,) = template.rubric
+    digest = measured_template_digest(template)
+
+    measured = {
+        "scoring_guide": _edited(template, rubric=[dim.model_copy(update={"scoring_guide": {"5": "Warm and plain."}})]),
+        "rubric description": _edited(template, rubric=[dim.model_copy(update={"description": "Sounds curt"})]),
+        "intent": _edited(template, intent="Probe the subject's patience with a slow shopper."),
+        "conversation": _edited(template, conversation=None),
+    }
+    unmeasured = {
+        "description": _edited(template, description="Reworded for the catalogue."),
+        "name": _edited(template, name="category_bundle_renamed"),
+        "archived": _edited(template, archived=True),
+    }
+
+    assert {what: measured_template_digest(edit) != digest for what, edit in measured.items()} == dict.fromkeys(
+        measured, True
+    )
+    assert {what: measured_template_digest(edit) == digest for what, edit in unmeasured.items()} == dict.fromkeys(
+        unmeasured, True
     )
 
 
-async def test_a_run_whose_template_moved_is_refused_naming_every_difference_and_left_as_it_was(
+def test_a_scoring_guide_edited_since_the_run_launched_refuses_its_take_up_naming_the_template() -> None:
+    template = make_template(created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00")
+    (dim,) = template.rubric
+    stored = make_eval_run(created_at="2026-06-01T00:00:00+00:00", template_digest=measured_template_digest(template))
+    edited = _edited(template, rubric=[dim.model_copy(update={"scoring_guide": {"5": "Warm and plain."}})])
+    fresh = stored.model_copy(update={"template_digest": measured_template_digest(edited)})
+
+    (difference,) = resume_drift(stored, fresh, edited, toyhost_profile())
+
+    assert difference.startswith(f"template {template.id!r}: its measured content changed since the run started")
+    reworded = _edited(template, description="Reworded for the catalogue.")
+    assert resume_drift(stored, stored.model_copy(), reworded, toyhost_profile()) == [], "an unmeasured edit passes"
+
+
+#: When the tests' template edits land: after every run they interrupt was created.
+EDITED_AT = "2099-01-01T00:00:00+00:00"
+
+
+async def test_a_run_whose_template_was_edited_in_what_it_measures_is_refused_naming_it_and_left_as_it_was(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     holder, run_id, _, _ = await _interrupted(monkeypatch, "cancelled")
-    template = toyhost_template()
-    edited = template.model_copy(
-        update={
-            "kind_spec": {"graded_fields": list(ExtractorSpec().graded_fields[:1])},
-            "updated_at": "2099-01-01T00:00:00+00:00",
-        }
+    edited = toyhost_template().model_copy(
+        update={"goal_state_checks": [], "goal_check_controls": None, "updated_at": EDITED_AT}
     )
     off_loop(holder.eval_host.storage.save_template, edited)
     before, rows = off_loop(_run, holder, run_id), _rows(holder, run_id)
@@ -248,10 +292,88 @@ async def test_a_run_whose_template_moved_is_refused_naming_every_difference_and
     with pytest.raises(ValidationFailedError) as refused:
         await resume_run(other_process(holder).launch, run_id, TOYHOST_SCOPE)
 
-    assert "template" in str(refused.value) and "kind_spec" in str(refused.value), refused.value
+    assert "goal_check_proofs" in refused.value.message, refused.value.message
+    assert "edited at" not in refused.value.message, "the edit is refused for what it changed, never for its time"
     assert refused.value.remedy
     assert off_loop(_run, holder, run_id) == before, "nothing was written"
     assert _rows(holder, run_id) == rows
+
+
+async def test_a_run_whose_template_intent_was_edited_is_refused_as_measuring_otherwise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holder, run_id, _, _ = await _interrupted(monkeypatch, "cancelled")
+    edited = toyhost_template().model_copy(update={"intent": "Extract only the totals.", "updated_at": EDITED_AT})
+    off_loop(holder.eval_host.storage.save_template, edited)
+    before = off_loop(_run, holder, run_id)
+    assert before.template_digest is not None
+
+    with pytest.raises(ValidationFailedError) as refused:
+        await resume_run(other_process(holder).launch, run_id, TOYHOST_SCOPE)
+
+    assert "its measured content changed since the run started" in refused.value.message, refused.value.message
+    assert off_loop(_run, holder, run_id) == before, "nothing was written"
+
+
+def _as_stored_before_template_digests(store: ClockedStore, run_id: str) -> None:
+    """Rewrite a run's record as a build before runs froze their template's measured content stored it."""
+    document = store.get(run_id, TOYHOST_SCOPE)
+    assert document is not None
+    document.pop("template_digest", None)
+    store.upsert(document)
+
+
+async def test_a_run_stored_before_it_froze_its_template_is_refused_once_its_template_was_edited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holder, run_id, _, store = await _interrupted(monkeypatch, "cancelled")
+    _as_stored_before_template_digests(store, run_id)
+    edited = toyhost_template().model_copy(
+        update={"description": "Reworded for the catalogue.", "updated_at": EDITED_AT}
+    )
+    off_loop(holder.eval_host.storage.save_template, edited)
+    before = off_loop(_run, holder, run_id)
+
+    with pytest.raises(ValidationFailedError) as refused:
+        await resume_run(other_process(holder).launch, run_id, TOYHOST_SCOPE)
+
+    message = refused.value.message
+    assert f"edited at {EDITED_AT}" in message and "whether the edit changed the measurement cannot be told" in message
+    assert "taken up only while its template is unedited since the run was created" in refused.value.remedy
+    assert off_loop(_run, holder, run_id) == before, "nothing was written"
+
+
+async def test_a_run_stored_before_it_froze_its_template_is_taken_up_while_its_template_is_unedited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holder, run_id, launched, store = await _interrupted(monkeypatch, "cancelled")
+    _as_stored_before_template_digests(store, run_id)
+    resumer = other_process(holder)
+
+    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    assert (await settled(resumer, run_job_id(run_id))).state == "completed"
+
+    run = await _assert_ends_as_the_control(holder, run_id, launched)
+    assert run.template_digest == launched.template_digest, "frozen from the take-up on"
+    assert [holding.template_edited_at for holding in run.lifetimes] == [None, None]
+
+
+async def test_a_run_whose_template_was_edited_in_nothing_it_measures_is_taken_up_and_the_edit_disclosed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holder, run_id, launched, _ = await _interrupted(monkeypatch, "cancelled")
+    edited = toyhost_template().model_copy(
+        update={"description": "Reworded for the catalogue.", "updated_at": EDITED_AT}
+    )
+    off_loop(holder.eval_host.storage.save_template, edited)
+    resumer = other_process(holder)
+
+    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    assert (await settled(resumer, run_job_id(run_id))).state == "completed"
+
+    run = await _assert_ends_as_the_control(holder, run_id, launched)
+    first, second = run.lifetimes
+    assert (first.template_edited_at, second.template_edited_at) == (None, EDITED_AT), "the holding after it says so"
 
 
 # =============================================================================

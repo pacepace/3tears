@@ -73,6 +73,7 @@ from threetears.evals.run.authoring import (
 )
 from threetears.evals.run.budget import EvalRunCostCap
 from threetears.evals.run.case_sets import resolve_case_set
+from threetears.evals.run.definition_digests import measured_template_digest
 from threetears.evals.run.ceilings import CeilingRaisedError, refuse_raised_ceiling
 from threetears.evals.kernel.cassettes import CassetteMode
 from threetears.evals.run.jobs import (
@@ -4056,6 +4057,9 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
         # comparable runs in a query, with the components kept alongside so a
         # mismatch can name which condition moved.
         identity = derive_context_identity(run, host.eval_host.profile)
+        # What the template said that the run measures, frozen: the template is editable, and a take-up of the run
+        # refuses one edited in it since.
+        run.template_digest = measured_template_digest(template)
         run.context_key = identity.context_key
         run.context_components = identity.context_components
         run.identity_version = identity.identity_version

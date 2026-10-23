@@ -11,9 +11,14 @@ the first one reached fewer than ``k`` times drops out of both. :func:`resume_ru
   order, its done ones left out, and a re-run cell is written over its row.
 - **The same measurement, or none.** The run is launched again from what it recorded, through its kind's launcher,
   and the run that launch assembles is compared with the stored one: every context component, the variant key, the
-  template, the simulator and judge pins and the apparatus. Any difference refuses the take-up, naming every one
-  (:func:`resume_drift`). The host's labels — a build, a version — are not the measurement: they are recorded on
-  the holding that began under them (``EvalRun.lifetimes``).
+  simulator and judge pins, the apparatus, what the run froze of its template (its kind spec, rubric scales, world
+  seed, tool bound and goal checks), and the digest of everything its template says that a run measures
+  (``EvalRun.template_digest``: every field but its name, description, archive flag and record bookkeeping). Any
+  difference refuses the take-up, naming every one (:func:`resume_drift`). A template edited after the run began in
+  none of that — its description, say — measures alike: the edit is disclosed on the holding that began after it,
+  not refused. A run stored before it froze that digest cannot tell the two apart, so its take-up is refused once
+  its template was edited after it began. Nor are the host's labels — a build, a version — the measurement: they
+  are recorded on the holding that began under them (``EvalRun.lifetimes``).
 - **One holding at a time.** The run is reopened under its lease's next epoch, conditionally on the record as read,
   so two take-ups of one run cannot both win, and a holding the run has passed from writes nothing more into it.
 - **Its spend counts.** What its stored rows spent seeds its cost cap; a run its budget stopped is taken up only
@@ -68,9 +73,9 @@ from threetears.evals.schema.models import (
 
 log = get_logger(__name__)
 
-#: The fields of a run's judge and simulator, and of its apparatus, a take-up holds equal: what scored its cells and
-#: what its cells were set up with. Most also reach the context key; each is named on its own so a refusal says
-#: which moved.
+#: The fields of a run's judge and simulator, of its apparatus, and of what it froze of its template, a take-up holds
+#: equal: what scored its cells, what its cells were set up with, and what they were graded against. Most also reach
+#: the context key; each is named on its own so a refusal says which moved.
 PINNED_FIELDS: tuple[str, ...] = (
     "judge_model",
     "judge_config_ids",
@@ -87,6 +92,10 @@ PINNED_FIELDS: tuple[str, ...] = (
     "resolved_world_seed",
     "resolved_ambient_perturbation_turns",
     "resolved_tools_allowed",
+    "rubric_scales",
+    "goal_check_proofs",
+    "goal_check_proof_rules",
+    "refused_goal_checks",
 )
 
 
@@ -137,9 +146,12 @@ def resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profil
     """Every way the run a launch of ``stored`` assembles now would measure otherwise than ``stored`` did.
 
     Each context component by name, then the context key when no component accounts for its move (a run stamped
-    under another identity version), each variant lever, the template when it was edited after the run was created,
-    and each of :data:`PINNED_FIELDS`. The subject's labels and the run's own are none of these: they identify, and
-    determine nothing.
+    under another identity version), each variant lever, each of :data:`PINNED_FIELDS`, and the template's measured
+    content: the digest the run froze at launch (``EvalRun.template_digest``) against the one the launch froze now,
+    so an edit to the intent, the rubric's descriptions and scoring guides, the conversation or any other field a run
+    measures is a difference, and one to the template's name or description is not. A run stored before it froze the
+    digest is refused once its template was edited after the run was created, since what the edit changed cannot be
+    known. The subject's labels and the run's own are none of these: they identify, and determine nothing.
 
     :param stored: The stored run.
     :ptype stored: EvalRun
@@ -175,16 +187,28 @@ def resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profil
         before_lever, after_lever = levers_was.get(name), levers_now.get(name)
         if (before_lever.content_hash if before_lever else None) != (after_lever.content_hash if after_lever else None):
             differences.append(f"variant lever {name}")
-    if template.updated_at > stored.created_at:
-        differences.append(
-            f"template {template.id!r} (edited at {template.updated_at}, after the run was created at "
-            f"{stored.created_at})"
-        )
     for name in PINNED_FIELDS:
         before, after = getattr(stored, name), getattr(fresh, name)
         if before != after:
             differences.append(f"{name} ({_shown(before)} -> {_shown(after)})")
+    if stored.template_digest is not None and stored.template_digest != fresh.template_digest:
+        differences.append(
+            f"template {template.id!r}: its measured content changed since the run started (its intent, rubric, "
+            "conversation, preconditions, goal checks, world seed, tool bounds, kind spec or another field a run "
+            "measures; its name and description are not)"
+        )
+    elif stored.template_digest is None and _edited_since(template, stored):
+        differences.append(
+            f"template {template.id!r}: edited at {template.updated_at}, after the run was created at "
+            f"{stored.created_at}, and the run was stored before runs froze what their template measures, so whether "
+            "the edit changed the measurement cannot be told"
+        )
     return differences
+
+
+def _edited_since(template: EvalTemplate, run: EvalRun) -> bool:
+    """Whether ``template`` was edited after ``run`` was created."""
+    return template.updated_at > run.created_at
 
 
 def _why_it_ended(run: EvalRun) -> str | None:
@@ -233,7 +257,9 @@ class RunResumption:
         The reopened run reads ``running``. What it carried of its ending — its loss, its reasons, its budget stops,
         its completeness and when it ended — moves to the holding that ended (its first holding's entry is written
         now, for a run never taken up before), and a new holding opens: this process, at :attr:`epoch`, under the
-        labels the host captured now and the cost cap the launch resolved, which the run records as its own.
+        labels the host captured now and the cost cap the launch resolved, which the run records as its own. A
+        template edited after the run was created in nothing it measures (its digest unmoved) is disclosed on the new
+        holding.
 
         :param fresh: The run the launch assembled and stamped.
         :ptype fresh: EvalRun
@@ -248,13 +274,19 @@ class RunResumption:
         """
         stored = self.run
         if differences := resume_drift(stored, fresh, template, profile):
+            remedy = (
+                "launch the template again (run_launch) to measure as things stand now, or restore what moved and call "
+                "job_resume again"
+            )
+            if stored.template_digest is None and _edited_since(template, stored):
+                remedy += (
+                    "; a run stored before runs froze their template's measured content is taken up only while its "
+                    "template is unedited since the run was created"
+                )
             raise ValidationFailedError(
                 f"run '{stored.id}' is not taken up again: launched now, it would measure otherwise than it did — "
                 f"{'; '.join(differences)}",
-                remedy=(
-                    "launch the template again (run_launch) to measure as things stand now, or restore what moved and "
-                    "call job_resume again"
-                ),
+                remedy=remedy,
             )
         first = RunLifetime(
             holder=stored.lease.holder if stored.lease is not None else None,
@@ -281,6 +313,7 @@ class RunResumption:
             labels=dict(fresh.subject_snapshot.labels),
             run_labels=list(stored.labels),
             max_cost_usd=fresh.max_cost_usd,
+            template_edited_at=template.updated_at if _edited_since(template, stored) else None,
         )
         reopened = stored.model_copy(
             update={
@@ -301,6 +334,9 @@ class RunResumption:
                 if fresh.max_cost_usd == stored.max_cost_usd
                 else fresh.max_cost_usd_origin,
                 "lifetimes": [*ended, holding],
+                # A run stored before runs froze their template's measured content passed only with its template
+                # unedited since it began, so what the template measures now is what it measured: frozen from here.
+                "template_digest": stored.template_digest or fresh.template_digest,
             }
         )
         return reopened, list(self.cases)

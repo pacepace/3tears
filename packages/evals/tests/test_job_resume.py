@@ -114,7 +114,9 @@ async def test_job_resume_refuses_a_run_that_would_measure_otherwise_naming_the_
     outcome = await _call(tool, other_process(holder), action="job_resume", job_id=run_job_id(run_id))
 
     assert outcome.is_error and outcome.text.startswith("refused: job_resume: ")
-    assert "template" in outcome.text and "kind_spec" in outcome.text, outcome.text
+    refusal = outcome.text.splitlines()[0]
+    assert "kind_spec (" in refusal, outcome.text
+    assert "its measured content changed since the run started" in refusal, outcome.text
     assert "remedy:" in outcome.text and "run_launch" in outcome.text.splitlines()[-1]
     assert off_loop(_run, holder, run_id) == before, "a refused resume writes nothing"
 
@@ -486,3 +488,77 @@ def test_jobs_resumable_counts_each_matching_row_it_cannot_read_and_lists_the_re
     assert [job.run_id for job in listing.jobs] == ["readable"]
     assert listing.groups == []
     assert listing.unreadable == 3, "two runs and a sweep that would be offered; a completed run is not counted"
+
+
+def test_jobs_resumable_reads_a_sweep_and_a_launch_still_stored_running_with_a_lapsed_lease_as_lost(
+    store: DocumentStore,
+) -> None:
+    storage = EvalStorage(store)
+    lapsed = JobLease(holder="a-dead-pod", expires_at="2020-01-01T00:00:00+00:00")
+    live = JobLease(holder="another-process", expires_at=LIVE_UNTIL)
+    to_launch = SweepArmRecord(label="a", model="sonnet", arguments=SweepArmArguments())
+    recorded = {"arguments": SweepLaunchArguments(k_runs=2), "outcome": "running"}
+    _sweep_of(storage, "sweep-lapsed", [to_launch], lease=lapsed, **recorded)
+    _sweep_of(storage, "sweep-live", [to_launch], lease=live, **recorded)
+    for name, lease in (("lapsed", lapsed), ("live", live)):
+        _seed(storage, f"run-of-{name}", status="running", lease=lease)
+        launch = EvalLaunch(
+            id=f"launch-{name}",
+            scope_id=SCOPE,
+            template_id="tpl-1",
+            subject_id="subject",
+            models=["sonnet"],
+            k_runs=2,
+            n_variations=0,
+            run_ids=[f"run-of-{name}"],
+            lease=lease,
+        )
+        storage.save_job_record(launch.to_dict(), if_match=None)
+
+    listing = resumable_jobs(storage, [SCOPE])
+
+    assert sorted((group.job_id, group.ended) for group in listing.groups) == [
+        ("launch:launch-lapsed", "lost"),
+        ("sweep:sweep-lapsed", "lost"),
+    ], "a lapsed record is read lost and listed; a live one is not"
+    launch_group = next(group for group in listing.groups if group.kind == "launch")
+    assert launch_group.arms == {"sonnet": "cancelled"} and [run.run_id for run in launch_group.runs] == [
+        "run-of-lapsed"
+    ], "the launch's run is settled lost with it"
+    assert listing.jobs == []
+    stored, _ = storage.load_job_record(EvalSweep, "sweep-lapsed", SCOPE)
+    assert stored is not None and stored.lost is not None, "the loss was written, as any reader writes it"
+
+
+@pytest.mark.parametrize(
+    ("run_ids", "refusal"),
+    [
+        ([], "ended before it started any run"),
+        (["finished"], "every run launch 'launch-ended' started has ended completed or failed"),
+    ],
+    ids=["no-run", "every-run-ended"],
+)
+async def test_job_resume_refuses_a_launch_with_nothing_left_to_take_up(
+    tool: Any, run_ids: list[str], refusal: str
+) -> None:
+    host = off_loop(ops_fixture, store=ClockedStore()).host
+    storage = host.eval_host.storage
+    off_loop(storage.save_eval_run, make_eval_run(id="finished", scope_id=TOYHOST_SCOPE, status="completed"))
+    launch = EvalLaunch(
+        id="launch-ended",
+        scope_id=TOYHOST_SCOPE,
+        template_id=toyhost_template().id,
+        subject_id=TOYHOST_SUBJECT.subject_id,
+        models=["extractor-v2"],
+        k_runs=1,
+        n_variations=0,
+        run_ids=run_ids,
+        outcome="cancelled",
+        detail="lost: its lease lapsed",
+    )
+    off_loop(storage.save_job_record, launch.to_dict(), if_match=None)
+
+    outcome = await _call(tool, host, action="job_resume", job_id="launch:launch-ended")
+
+    assert outcome.is_error and refusal in outcome.text, outcome.text
+    assert outcome.text.splitlines()[-1].startswith("remedy: ")

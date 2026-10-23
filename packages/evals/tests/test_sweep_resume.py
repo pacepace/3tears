@@ -8,6 +8,8 @@ Pinned:
   launch group, so each arm's cells kept the order they had; the sweep ends ``completed`` and records two lifetimes.
 - **A sequential sweep keeps its order**: an arm that completed is left alone, the arm that was running is taken up,
   and the arm that never launched is launched from what the sweep recorded, after it.
+- **However it ended**: a sweep an operator cancelled, and one its own budget stopped, are taken up the same way;
+  and a sweep taken up again that is then lost itself closes its open holding with the loss.
 - **Old records**: a sweep stored before sweeps recorded their arms' arguments is taken up when every arm launched,
   and refused, naming the arm, when one never did.
 - **One arm's drift refuses the whole sweep** before anything is spent, naming it, and leaves every record as it was.
@@ -25,7 +27,7 @@ import pytest
 
 from threetears.evals.kernel import EvalSweep, SweepArmRecord, ValidationFailedError
 from threetears.evals.kernel.scoring import compute_pass_hat_k
-from threetears.evals.ops import LaunchArguments, OpsHost, job_poll, job_resume, run_launch, sweep_launch
+from threetears.evals.ops import LaunchArguments, OpsHost, job_cancel, job_poll, job_resume, run_launch, sweep_launch
 from threetears.evals.run import EvalLaunch, runner
 from threetears.evals.schema import EvalResult, EvalRun
 from threetears.evals.schema.models import ArmSchedule
@@ -284,6 +286,67 @@ async def test_a_lost_sequential_sweep_leaves_its_finished_arm_takes_up_the_runn
     assert [holding.max_cost_usd for holding in sweep.lifetimes] == [None, RAISED_CAP], "each holding's cap"
     campaign = off_loop(holder.eval_host.storage.load_campaign, sweep.campaign_id, TOYHOST_SCOPE)
     assert campaign is not None and set(campaign.run_ids) >= {finished, running, launched}
+
+
+@pytest.mark.parametrize("ended", ["cancelled", "timed_out"])
+async def test_a_sweep_an_operator_cancelled_or_its_own_budget_stopped_is_taken_up_and_completes(
+    monkeypatch: pytest.MonkeyPatch, ended: str
+) -> None:
+    gate = held_extraction(monkeypatch)
+    store = ClockedStore()
+    holder = off_loop(ops_fixture, store=store).host
+    (job,) = (
+        await sweep_launch(holder, style_sweep(TWO_STYLES, arm_schedule="sequential"), TOYHOST_SCOPE, created_by="t")
+    ).jobs
+    sweep_id = job.job_id.removeprefix("sweep:")
+    await until(lambda: gate.held >= 1)
+    await job_cancel(holder, job.job_id, TOYHOST_SCOPE, reason="shipping a fix")
+    assert (await settled(holder, job.job_id)).state == "cancelled"
+    gate.set()
+    manager = holder.launch.job_manager
+    await until(
+        lambda: (
+            not manager.is_task_active(sweep_id)
+            and not any(manager.is_active(run_id) for run_id in _arm_runs(holder, sweep_id).values() if run_id)
+        )
+    )
+    if ended == "timed_out":
+        # What a sweep its own budget stopped stores: its arms in flight cancelled, none launched after, timed out.
+        document = store.get(sweep_id, TOYHOST_SCOPE)
+        assert document is not None
+        store.upsert(document | {"outcome": "timed_out", "detail": "the sweep ran out of its budget"})
+    assert _arm_runs(holder, sweep_id)[TWO_STYLES[1]] is None, "its second arm never launched"
+
+    (resumed,) = (await job_resume(holder, job.job_id, TOYHOST_SCOPE)).jobs
+
+    assert (await settled(holder, resumed.job_id)).state == "completed"
+    sweep = _sweep(holder, sweep_id)
+    assert [holding.outcome for holding in sweep.lifetimes] == [ended, "completed"]
+    for run_id in _arm_runs(holder, sweep_id).values():
+        assert run_id is not None and _run(holder, run_id).status == "completed"
+
+
+async def test_a_sweep_taken_up_again_and_then_lost_closes_its_holding_with_the_loss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holder, store, sweep_id = await _lost_interleaved_sweep(monkeypatch, k_runs=1, stored=2)
+    again = held_extraction(monkeypatch)  # the second holding's cells wait in flight until it too is lost
+    resumer = other_process(holder)
+    (job,) = (await job_resume(resumer, f"sweep:{sweep_id}", TOYHOST_SCOPE)).jobs
+    await until(lambda: again.held >= 1)
+
+    # The second holding's lease, granted at the store's T0+61s, lapses in turn.
+    store.at = T0 + timedelta(seconds=200)
+    assert (await job_poll(other_process(holder), job.job_id, TOYHOST_SCOPE)).state == "lost"
+    again.set()
+    await until(lambda: not resumer.launch.job_manager.is_task_active(sweep_id))
+
+    sweep = _sweep(holder, sweep_id)
+    assert (sweep.outcome, sweep.lost is not None) == ("cancelled", True)
+    first, second = sweep.lifetimes
+    assert (first.outcome, first.lost is not None) == ("cancelled", True)
+    assert (second.holder, second.epoch, second.outcome) == (_holder_id(resumer), 1, "cancelled")
+    assert second.lost is not None and second.lost == sweep.lost and second.ended_at == sweep.ended_at
 
 
 # =============================================================================

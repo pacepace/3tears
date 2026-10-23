@@ -3413,6 +3413,9 @@ class RunLifetime(EvalBaseModel, CoreShapeModel):
     :ivar labels: The subject's labels as the host captured them when the holding began.
     :ivar run_labels: The run's own labels when the holding began.
     :ivar max_cost_usd: The cost cap the holding ran under; ``None`` uncapped.
+    :ivar template_edited_at: When the run's template was last edited, for a holding that began after an edit made
+        after the run was created: an edit in nothing the run froze of it, which measures alike and is disclosed here
+        rather than refused. ``None`` when the template was not edited since the run was created.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -3452,6 +3455,13 @@ class RunLifetime(EvalBaseModel, CoreShapeModel):
     )
     run_labels: list[str] = Field(default_factory=list, description="The run's own labels when the holding began.")
     max_cost_usd: float | None = Field(default=None, description="The cost cap the holding ran under; None uncapped.")
+    template_edited_at: str | None = Field(
+        default=None,
+        description=(
+            "When the run's template was last edited, for a holding that began after an edit made after the run was "
+            "created — an edit in nothing the run froze of it, disclosed rather than refused; None when it was not."
+        ),
+    )
 
 
 def ended_lifetimes(
@@ -3880,6 +3890,16 @@ class EvalRun(CoreDocumentModel):
             "repetitions of one condition while the apparatus scan reported the rig as having held still. "
             "``None`` means unbounded — the template allowed every tool the subject carried — which is a "
             "level the context key records, not an absence."
+        ),
+    )
+    template_digest: str | None = Field(
+        default=None,
+        description=(
+            "The digest of what the run's template said that it measures, frozen at launch "
+            "(`measured_template_digest`: every field but its name, description, archive flag and record "
+            "bookkeeping). A take-up of the run refuses when the template's digest has moved, and goes ahead "
+            "past an edit that moved nothing measured. In no identity or key. None = not recorded: a run stored "
+            "before the field existed, or one its host assembled without a launch."
         ),
     )
 

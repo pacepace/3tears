@@ -305,8 +305,12 @@ CORE_SCHEMA_VERSION: int = 15
 #:   the run. Both fields read 0 where absent, which is what every value stored before them was written under; an
 #:   older build ignores them and does not hold to the epoch. ``EvalRun.lifetimes`` (default empty: a run never taken
 #:   up again) records each holding of a run taken up again — its holder and epoch, when it began and how it ended,
-#:   the cells stored then, the host's labels at its start and the cost cap it ran under — and is in no identity, key
-#:   or digest. ``EvalResult.superseded_spend_usd`` (default 0: written over nothing, or stored before the field
+#:   the cells stored then, the host's labels at its start, the cost cap it ran under, and when its template was
+#:   edited for a holding that began after an edit the run's frozen fields show measured nothing
+#:   (``RunLifetime.template_edited_at``, default None) — and is in no identity, key or digest.
+#:   ``EvalRun.template_digest`` (default None: stored before the field existed, or assembled without a launch) is
+#:   the digest of what the run's template said that it measures, frozen at launch; a take-up refuses when it moved,
+#:   and keeps refusing a run without it whose template was edited after it began. In no identity or key. ``EvalResult.superseded_spend_usd`` (default 0: written over nothing, or stored before the field
 #:   existed) carries what the cut-short attempts a row was written over spent, which the run's cost cap counts; no
 #:   cost total reads it. A sweep records what it launches each arm with, so one taken up again launches an arm that
 #:   never launched exactly as it would have: ``EvalSweep.arguments`` (a ``SweepLaunchArguments``: repeats, judge and
