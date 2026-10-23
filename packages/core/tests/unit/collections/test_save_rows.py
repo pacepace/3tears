@@ -9,9 +9,11 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
-from uuid import UUID
+from uuid import UUID, uuid4
 
+import asyncpg
 import pytest
+from sqlalchemy import MetaData
 from threetears.nats import Subject
 
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
@@ -24,6 +26,7 @@ from threetears.core.backends.schema_sql import (
     transport_params_bytes,
 )
 from threetears.core.backends.sql import SqlL3Backend
+from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
@@ -254,9 +257,11 @@ class _RowStore(_BulkStore):
     def __init__(self) -> None:
         super().__init__()
         self.rows: list[tuple[str, dict[str, Any], Any]] = []
+        self.on_conflict: list[str] = []
 
     async def upsert(self, table: str, row: Any, **kwargs: Any) -> int:
         self.rows.append((table, dict(row), kwargs.get("conn")))
+        self.on_conflict.append(kwargs.get("on_conflict", "update"))
         return 1
 
 
@@ -653,3 +658,115 @@ class _DeletingStore(_BulkStore):
 
     async def delete(self, table: str, pk: Any, *, conn: Any = None) -> None:
         self.deleted.append((table, dict(pk), conn is not None))
+
+
+# -- save_rows(copy=True): insert-only, through COPY -------------------------------------------------
+
+
+class _CopyConn(_Conn):
+    """a connection that also copies, keeping each copy only when its transaction commits."""
+
+    def __init__(self, *, fail_copy: Exception | None = None) -> None:
+        super().__init__()
+        self.fail_copy = fail_copy
+        self.copies: list[tuple[str, list[tuple[Any, ...]], list[str]]] = []
+
+    async def copy_records_to_table(self, table_name: str, *, records: Any, columns: Any) -> str:
+        if self.fail_copy is not None:
+            raise self.fail_copy
+        self.copies.append((table_name, list(records), list(columns)))
+        return f"COPY {len(records)}"
+
+
+async def test_save_rows_with_copy_copies_every_row_and_writes_no_upsert() -> None:
+    collection, conn = _collection(), _CopyConn()
+    async with CallerTransaction(conn):
+        assert await collection.save_rows(_rows(3), conn=conn, copy=True) == 3
+    assert conn.executed == []
+    [(table, records, columns)] = conn.copies
+    assert table == "results"
+    assert columns == ["office_key", "geo_id", "votes", "date_created", "date_updated"]
+    assert [record[:3] for record in records] == [
+        ("sn_NC1", "00000", 0),
+        ("sn_NC1", "00001", 1),
+        ("sn_NC1", "00002", 2),
+    ]
+    assert all(isinstance(record[3], datetime) and isinstance(record[4], datetime) for record in records)
+
+
+async def test_save_rows_without_copy_upserts_as_before() -> None:
+    collection, conn = _collection(), _CopyConn()
+    async with CallerTransaction(conn):
+        await collection.save_rows(_rows(2), conn=conn)
+    assert conn.copies == []
+    [(sql, _)] = conn.committed
+    assert sql == build_bulk_insert_sql(SCHEMA, rows=2)
+
+
+async def test_a_copy_naming_a_key_already_held_fails_the_whole_transaction() -> None:
+    collection, conn = _collection(), _CopyConn(fail_copy=asyncpg.UniqueViolationError("duplicate key"))
+    with pytest.raises(asyncpg.UniqueViolationError):
+        async with CallerTransaction(conn):
+            await collection.save_rows(_rows(2), conn=conn, copy=True)
+    assert conn.rolled_back
+
+
+async def test_every_row_copied_leaves_l1_now_and_is_settled_once_when_the_transaction_ends() -> None:
+    metadata = MetaData()
+    SCHEMA.to_sqlalchemy_table(metadata)
+    l1 = SQLiteBackend(db_name=f"save_rows_copy_{uuid4().hex[:8]}")
+    l1.initialize(metadata)
+    registry = CollectionRegistry()
+    registry.configure(l1_backend=l1)
+    collection = collection_for_schema(SCHEMA, entity_class=_ResultRow)(registry, DefaultCoreConfig(), None)
+    collection.l3_pool = _Pool()
+    conn = _CopyConn()
+    now = datetime.now(UTC)
+    collection.write_to_cache_sync({**_rows(1)[0], "votes": 99, "date_created": now, "date_updated": now})
+    assert collection.exists_in_cache_sync(("sn_NC1", "00000"))
+    settled: list[list[Any]] = []
+
+    async def settle(keys: Any) -> None:
+        settled.append(list(keys))
+
+    collection.invalidate_cache_many = settle
+    async with CallerTransaction(conn):
+        await collection.save_rows(_rows(2), conn=conn, copy=True)
+        assert not collection.exists_in_cache_sync(("sn_NC1", "00000"))
+        assert settled == []
+    assert settled == [[("sn_NC1", "00000"), ("sn_NC1", "00001")]]
+
+
+async def test_two_rows_with_one_key_are_refused_before_anything_is_copied() -> None:
+    collection, conn = _collection(), _CopyConn()
+    with pytest.raises(ValueError, match="share a key"):
+        async with CallerTransaction(conn):
+            await collection.save_rows([*_rows(2), _rows(1)[0]], conn=conn, copy=True)
+    assert conn.copies == []
+
+
+async def test_a_copy_refuses_a_connection_no_caller_transaction_opened() -> None:
+    with pytest.raises(ValueError, match="CallerTransaction"):
+        await _collection().save_rows(_rows(1), conn=_CopyConn(), copy=True)
+
+
+async def test_a_store_that_cannot_copy_inserts_a_row_at_a_time_and_never_updates() -> None:
+    collection, conn, store = _collection(), _Conn(), _RowStore()
+    collection.l3_pool = store
+    async with CallerTransaction(conn):
+        assert await collection.save_rows(_rows(2), conn=conn, copy=True) == 2
+    assert [(r["geo_id"], c is conn) for _, r, c in store.rows] == [("00000", True), ("00001", True)]
+    assert store.on_conflict == ["raise", "raise"]
+
+
+async def test_a_copy_over_the_rail_goes_on_the_caller_s_transaction() -> None:
+    proxy, sent = _recording_proxy()
+    collection = _collection()
+    collection.l3_pool = proxy
+    async with proxy.acquire() as conn, CallerTransaction(conn):
+        await collection.save_rows(_rows(3), conn=conn, copy=True)
+    copies = [json.loads(request) for request in sent if b'"rows"' in request]
+    assert len(copies) == 1
+    assert copies[0]["tx_id"] == _TX_ID
+    assert copies[0]["table"] == "results"
+    assert [row[1] for row in copies[0]["rows"]] == ["00000", "00001", "00002"]

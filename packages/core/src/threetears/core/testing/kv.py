@@ -1106,6 +1106,7 @@ class FakeNatsClient:
         on_restored: Callable[[FakeKvBucket], Awaitable[None]] | None = None,
         max_bytes: int | None = None,
         still_wanted: Callable[[], Awaitable[bool]] | None = None,
+        replicas: int | None = None,
     ) -> FakeKvBucket:
         """declare a bucket -- create it, or reconcile a live one in place -- or bind one somebody declared.
 
@@ -1152,9 +1153,13 @@ class FakeNatsClient:
             answering ``False`` is forgotten instead. remembered with the declaration; a
             re-declaration without it gives it up
         :ptype still_wanted: Callable[[], Awaitable[bool]] | None
+        :param replicas: how many servers hold the bucket; checked as the real one checks it, and
+            otherwise ignored, as the fake broker is one server
+        :ptype replicas: int | None
         :return: the bucket, the same instance every later open receives
         :rtype: FakeKvBucket
-        :raises ValueError: when ``owns_bucket=True`` with ``create_if_missing=False`` or file storage,
+        :raises ValueError: when ``replicas`` is given and not positive, as the real one,
+            or ``owns_bucket=True`` with ``create_if_missing=False`` or file storage,
             or ``drop_file_storage=True`` without ``owns_bucket``, or ``on_restored`` with
             ``create_if_missing=False``, as the real one
         :raises KvConfigMismatch: when an owner finds the bucket live on file storage without
@@ -1164,6 +1169,8 @@ class FakeNatsClient:
             broker rather than the client's cache
         """
         del history, prefix_namespace
+        if replicas is not None and replicas <= 0:
+            raise ValueError(f"KV bucket {name!r} needs at least one replica, got {replicas!r}")
         if on_restored is not None and not create_if_missing:
             raise ValueError(
                 f"KV bucket {name!r}: on_restored needs create_if_missing=True -- a bind-only open never "

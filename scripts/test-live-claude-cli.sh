@@ -16,8 +16,8 @@ cd "$REPO_ROOT"
 # pooled CLI switches between system prompts. Every other test of the subscription
 # route and of claude_cli_pool fakes the CLI's messages, which is how 0.55.0
 # shipped with a third of one consumer's structured calls failing. The release
-# runs this before tagging anything that touches packages/models
-# (docs/releasing.md, "Cutting a release").
+# workflow runs this on the tagged commit before it builds anything (release.yml's
+# live-claude-cli job; docs/releasing.md, "Cutting a release").
 #
 # The token is a subscription token from `claude setup-token`. A logged-in
 # `claude` does not stand in for it: 3tears runs the CLI in an isolated
@@ -26,9 +26,9 @@ cd "$REPO_ROOT"
 # The script turns the test on itself, so it cannot skip: with no token or no
 # Agent SDK the test fails. On every run -- pass or fail -- it writes one line to
 # build/release-evidence/live-claude-cli.txt: the commit it ran on, whether the
-# tree had changes on top of it, the version, and pytest's summary line. That
-# line goes into the release PR body, which is what shows the batch ran against
-# the commit being tagged.
+# tree had changes on top of it, the version, and pytest's summary line. In the
+# release workflow that line is the run's summary; run by hand, it shows which
+# commit the batch ran against.
 
 if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
     echo "CLAUDE_CODE_OAUTH_TOKEN is not set: give it a subscription token from \`claude setup-token\`" >&2
@@ -56,6 +56,6 @@ SUMMARY="$(grep -E '(passed|failed|error|skipped)' "$OUTPUT" | tail -n 1 | sed '
 RECORD="$(date -u +%Y-%m-%dT%H:%M:%SZ) commit=$COMMIT tree=$TREE version=$VERSION exit=$STATUS summary=\"$SUMMARY\""
 echo "$RECORD" > "$EVIDENCE"
 echo
-echo "Recorded in $EVIDENCE (paste it into the release PR body):"
+echo "Recorded in $EVIDENCE:"
 echo "$RECORD"
 exit "$STATUS"

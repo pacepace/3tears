@@ -58,6 +58,16 @@
 # callers.
 
 [[release]]
+version = "0.76.0"
+since = "v0.75.0"
+summary = """
+No public name of 3tears-evals has moved or been removed since 0.75.0, and no judge wording changed. The family moves
+to 0.76.0 for new public API in 3tears-core, 3tears-datasources and 3tears-nats (l3.truncate, l3.tx.copy,
+load_files, counted partitioned exports, KV replicas).
+"""
+notes = []
+
+[[release]]
 version = "0.75.0"
 since = "v0.74.0"
 summary = """
