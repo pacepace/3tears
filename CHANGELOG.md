@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.77.0 -- 2026-10-23
+
 ### core: every collection key read is counted by the tier that answered it
 
 **Added:** `threetears.core.collections.tier_reads` (`ReadTier`, `record_tier_read`, `take_tier_reads`,
