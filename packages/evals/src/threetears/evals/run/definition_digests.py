@@ -56,7 +56,7 @@ def template_digest(template: EvalTemplate) -> str:
 
 #: The fields of a template that cannot change what a run of it measures, each for its reason; every other field —
 #: one a later build adds included — is measured content (:func:`measured_template_digest`).
-UNMEASURED_TEMPLATE_FIELDS: frozenset[str] = RECORD_FIELDS | {
+_UNMEASURED_TEMPLATE_FIELDS: frozenset[str] = RECORD_FIELDS | {
     # The record's own bookkeeping (:data:`RECORD_FIELDS`): which document it is, its scope, its revision number,
     # what it was seeded from and when it was written. A run names its template by id already.
     # Its name: what an operator finds it by, never shown to a judge, a simulator or a candidate.
@@ -70,7 +70,7 @@ UNMEASURED_TEMPLATE_FIELDS: frozenset[str] = RECORD_FIELDS | {
 
 def measured_template_digest(template: EvalTemplate) -> str:
     """The digest of what a template says that a run of it measures: every field but
-    :data:`UNMEASURED_TEMPLATE_FIELDS`, each left out at its default.
+    :data:`_UNMEASURED_TEMPLATE_FIELDS`, each left out at its default.
 
     Named by exclusion, so a field a later build adds is measured content unless it is excluded on purpose: the
     intent every judge call states, the rubric whose descriptions and scoring guides are the judge's prompt, the
@@ -83,7 +83,7 @@ def measured_template_digest(template: EvalTemplate) -> str:
     :return: A sha256 hex digest.
     :rtype: str
     """
-    declared = set(type(template).model_fields) - UNMEASURED_TEMPLATE_FIELDS
+    declared = set(type(template).model_fields) - _UNMEASURED_TEMPLATE_FIELDS
     return canonical_digest(
         {"measured_template": template.model_dump(mode="json", include=declared, exclude_defaults=True)}
     )
@@ -170,7 +170,6 @@ __all__ = [
     "RECORD_FIELDS",
     "TEMPLATE_CASE_CONTENT_FIELDS",
     "TEMPLATE_CASE_FIELDS",
-    "UNMEASURED_TEMPLATE_FIELDS",
     "case_set_digest",
     "current_revisions",
     "judge_config_digest",

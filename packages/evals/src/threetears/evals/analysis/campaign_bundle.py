@@ -793,6 +793,7 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
                 "gain_confidence": reading.gain_confidence,
                 "drop_interval": _figures(reading.drop_interval),
                 "drop_confidence": reading.drop_confidence,
+                "within_interval": _figures(reading.within_interval),
                 "margin": reading.margin,
                 "control_passed": f"{reading.control_passed} of {reading.control_trials}",
                 "arm_passed": f"{reading.arm_passed} of {reading.arm_trials}",

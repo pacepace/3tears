@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "campaign_id": "01a160b4-0cf5-71b1-bc81-0486f6646299",
+  "campaign_id": "01a165ae-e240-734e-90a4-7e119aac70f7",
   "scope_id": "llm-analysis",
   "name": "baseline vs candidate",
   "subject_id": "baseline vs candidate",
@@ -8,7 +8,7 @@
   "behavior": "classify",
   "declaration": {
     "question": "",
-    "declared_at": "2026-10-21T23:02:54.962973+00:00",
+    "declared_at": "2026-10-22T22:15:22.430637+00:00",
     "declared_by": "eval",
     "arms": [
       {
@@ -42,7 +42,7 @@
           }
         },
         "identity_version": 24,
-        "named_at": "2026-10-21T23:02:54.962973+00:00"
+        "named_at": "2026-10-22T22:15:22.430637+00:00"
       }
     ],
     "aspects": [
@@ -91,11 +91,11 @@
           "measure_latency": false
         },
         "run_ids": [
-          "01a160b4-0c93-72cb-a83f-4e082cdf3918",
-          "01a160b4-0c95-707e-be93-0ea35a72b0df"
+          "01a165ae-e208-7755-9cd3-60ea37973806",
+          "01a165ae-e20a-70bd-888d-cc3d23b19ded"
         ],
-        "declared_at": "2026-10-21T23:02:54.962973+00:00",
-        "asked_at": "2026-10-21T23:02:54.962973+00:00",
+        "declared_at": "2026-10-22T22:15:22.430637+00:00",
+        "asked_at": "2026-10-22T22:15:22.430637+00:00",
         "margin_declared_at": null
       }
     ],
@@ -133,7 +133,7 @@
         }
       },
       "identity_version": 24,
-      "named_at": "2026-10-21T23:02:54.962973+00:00"
+      "named_at": "2026-10-22T22:15:22.430637+00:00"
     },
     {
       "label": "candidate",
@@ -170,7 +170,7 @@
     }
   ],
   "readings": {
-    "campaign_id": "01a160b4-0cf5-71b1-bc81-0486f6646299",
+    "campaign_id": "01a165ae-e240-734e-90a4-7e119aac70f7",
     "alpha": 0.05,
     "control": "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6",
     "control_label": "baseline",
@@ -193,6 +193,7 @@
         "drop_confidence": null,
         "gain_p": 1.0,
         "gain_p_holm": 1.0,
+        "within_interval": null,
         "drop_p": null,
         "drop_p_holm": null,
         "reading": "unclear",
@@ -217,7 +218,7 @@
   "aspects": [
     {
       "schema_version": 60,
-      "campaign_id": "01a160b4-0cf5-71b1-bc81-0486f6646299",
+      "campaign_id": "01a165ae-e240-734e-90a4-7e119aac70f7",
       "subject_id": "baseline vs candidate",
       "subject_kind": "",
       "behavior": "classify",
@@ -225,8 +226,8 @@
       "template_id": "eval-4feedbcc275d466e",
       "scope_id": "llm-analysis",
       "run_ids": [
-        "01a160b4-0c93-72cb-a83f-4e082cdf3918",
-        "01a160b4-0c95-707e-be93-0ea35a72b0df"
+        "01a165ae-e208-7755-9cd3-60ea37973806",
+        "01a165ae-e20a-70bd-888d-cc3d23b19ded"
       ],
       "unresolved_run_ids": [],
       "archived_run_ids": [],
@@ -234,14 +235,14 @@
         "candidate": "callable"
       },
       "window": {
-        "start": "2026-10-21T23:02:54.867269+00:00",
-        "end": "2026-10-21T23:02:54.869607+00:00"
+        "start": "2026-10-22T22:15:22.376797+00:00",
+        "end": "2026-10-22T22:15:22.378319+00:00"
       },
       "run_summaries": [
         {
-          "run_id": "01a160b4-0c93-72cb-a83f-4e082cdf3918",
+          "run_id": "01a165ae-e208-7755-9cd3-60ea37973806",
           "status": "completed",
-          "created_at": "2026-10-21T23:02:54.867269+00:00",
+          "created_at": "2026-10-22T22:15:22.376797+00:00",
           "candidate_model": "callable",
           "k_runs": 2,
           "config": {
@@ -529,12 +530,12 @@
                 "case_means": null,
                 "categories": {
                   "billing → account": 2,
-                  "account → account": 4,
-                  "billing → billing": 6,
                   "feature_request → billing": 2,
-                  "bug → account": 2,
+                  "billing → billing": 6,
+                  "bug → bug": 4,
                   "feature_request → bug": 4,
-                  "bug → bug": 4
+                  "account → account": 4,
+                  "bug → account": 2
                 },
                 "rate": null,
                 "n_true": null,
@@ -595,9 +596,9 @@
           "judge_shares_candidate_model": []
         },
         {
-          "run_id": "01a160b4-0c95-707e-be93-0ea35a72b0df",
+          "run_id": "01a165ae-e20a-70bd-888d-cc3d23b19ded",
           "status": "completed",
-          "created_at": "2026-10-21T23:02:54.869607+00:00",
+          "created_at": "2026-10-22T22:15:22.378319+00:00",
           "candidate_model": "callable",
           "k_runs": 2,
           "config": {
@@ -929,10 +930,10 @@
                 "case_means": null,
                 "categories": {
                   "billing → billing": 6,
-                  "account → account": 4,
                   "feature_request → feature_request": 6,
+                  "billing → bug": 2,
                   "bug → bug": 6,
-                  "billing → bug": 2
+                  "account → account": 4
                 },
                 "rate": null,
                 "n_true": null,
@@ -1000,8 +1001,8 @@
             "subject_label": "baseline vs candidate",
             "template_id": "eval-4feedbcc275d466e",
             "run_ids": [
-              "01a160b4-0c93-72cb-a83f-4e082cdf3918",
-              "01a160b4-0c95-707e-be93-0ea35a72b0df"
+              "01a165ae-e208-7755-9cd3-60ea37973806",
+              "01a165ae-e20a-70bd-888d-cc3d23b19ded"
             ],
             "shared_test_case_ids": [
               "eval-4feedbcc275d466e-0",
@@ -1022,8 +1023,8 @@
                 "fingerprint": "00083aea9c64182bfc677af9f016c1c4572cd96fbea1e7a85e7bf0174637cca1",
                 "n_cases": 12,
                 "run_ids": [
-                  "01a160b4-0c93-72cb-a83f-4e082cdf3918",
-                  "01a160b4-0c95-707e-be93-0ea35a72b0df"
+                  "01a165ae-e208-7755-9cd3-60ea37973806",
+                  "01a165ae-e20a-70bd-888d-cc3d23b19ded"
                 ]
               }
             ],
@@ -1079,7 +1080,7 @@
                 "cost_per_acceptable_outcome": null,
                 "production_footing": {
                   "runs": {
-                    "01a160b4-0c95-707e-be93-0ea35a72b0df": {
+                    "01a165ae-e20a-70bd-888d-cc3d23b19ded": {
                       "moved": {},
                       "unchecked": {},
                       "held": [
@@ -1139,7 +1140,7 @@
                 "cost_per_acceptable_outcome": null,
                 "production_footing": {
                   "runs": {
-                    "01a160b4-0c93-72cb-a83f-4e082cdf3918": {
+                    "01a165ae-e208-7755-9cd3-60ea37973806": {
                       "moved": {},
                       "unchecked": {},
                       "held": [
@@ -1505,12 +1506,12 @@
               "case_means": null,
               "categories": {
                 "billing → account": 2,
-                "account → account": 8,
-                "billing → billing": 12,
                 "feature_request → billing": 2,
-                "bug → account": 2,
-                "feature_request → bug": 4,
+                "billing → billing": 12,
                 "bug → bug": 10,
+                "feature_request → bug": 4,
+                "account → account": 8,
+                "bug → account": 2,
                 "feature_request → feature_request": 6,
                 "billing → bug": 2
               },
@@ -1616,8 +1617,8 @@
       "divergences_untested": 0,
       "declared": {
         "question": "",
-        "asked_at": "2026-10-21T23:02:54.962973+00:00",
-        "question_declared_at": "2026-10-21T23:02:54.962973+00:00",
+        "asked_at": "2026-10-22T22:15:22.430637+00:00",
+        "question_declared_at": "2026-10-22T22:15:22.430637+00:00",
         "margin_declared_at": null,
         "design": {
           "axes": [
@@ -1689,11 +1690,11 @@
             }
           },
           "identity_version": 24,
-          "named_at": "2026-10-21T23:02:54.962973+00:00"
+          "named_at": "2026-10-22T22:15:22.430637+00:00"
         },
         "margin": null,
         "floors": [],
-        "declared_at": "2026-10-21T23:02:54.962973+00:00",
+        "declared_at": "2026-10-22T22:15:22.430637+00:00",
         "declared_by": "eval",
         "unread_without_control": null
       },
@@ -1701,7 +1702,7 @@
         "control_arm": {
           "variant_key": "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6",
           "run_ids": [
-            "01a160b4-0c93-72cb-a83f-4e082cdf3918"
+            "01a165ae-e208-7755-9cd3-60ea37973806"
           ],
           "k": 2,
           "moved": {},
@@ -1714,7 +1715,7 @@
           {
             "variant_key": "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b",
             "run_ids": [
-              "01a160b4-0c95-707e-be93-0ea35a72b0df"
+              "01a165ae-e20a-70bd-888d-cc3d23b19ded"
             ],
             "k": 2,
             "moved": {
@@ -1750,8 +1751,8 @@
         "stimulus_reason": "",
         "declared_apparatus": "commissioned",
         "run_provenance": {
-          "01a160b4-0c93-72cb-a83f-4e082cdf3918": "commissioned",
-          "01a160b4-0c95-707e-be93-0ea35a72b0df": "commissioned"
+          "01a165ae-e208-7755-9cd3-60ea37973806": "commissioned",
+          "01a165ae-e20a-70bd-888d-cc3d23b19ded": "commissioned"
         },
         "contradicting_run_ids": [],
         "disclosure": null
@@ -1988,7 +1989,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0c9f-718f-9394-cf47775f1ddf"
+          "result_id": "01a165ae-e21e-71cd-afb5-6ad23fcb3809"
         },
         {
           "trial_id": "T2",
@@ -2005,7 +2006,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0c9f-718f-9394-cf43722596e8"
+          "result_id": "01a165ae-e210-7036-84d1-005be7c0651d"
         },
         {
           "trial_id": "T3",
@@ -2022,7 +2023,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ca1-7341-8990-790d0c4f455c"
+          "result_id": "01a165ae-e21e-71cd-afb5-6ad4d58b0e21"
         },
         {
           "trial_id": "T4",
@@ -2039,7 +2040,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0c9f-718f-9394-cf45745cb8f2"
+          "result_id": "01a165ae-e211-7108-ac63-fcf52f4692e0"
         },
         {
           "trial_id": "T5",
@@ -2056,7 +2057,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cd7-75c2-bd1f-fb63908eb6ad"
+          "result_id": "01a165ae-e212-7506-aabb-0b85a1a9ebb7"
         },
         {
           "trial_id": "T6",
@@ -2073,7 +2074,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ccc-77a2-97ad-0eb44a894448"
+          "result_id": "01a165ae-e21f-7667-8899-1fbc293d684d"
         },
         {
           "trial_id": "T7",
@@ -2095,7 +2096,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cd7-75c2-bd1f-fb65bb2dd7d8"
+          "result_id": "01a165ae-e213-70ad-acb4-0fb3628c3d3b"
         },
         {
           "trial_id": "T8",
@@ -2117,7 +2118,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ccc-77a2-97ad-0eb6999d0c3e"
+          "result_id": "01a165ae-e220-70ad-8215-df50f46cdc80"
         },
         {
           "trial_id": "T9",
@@ -2134,7 +2135,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ce0-7395-80ec-affa6d285e49"
+          "result_id": "01a165ae-e228-761f-824e-59b0db90477a"
         },
         {
           "trial_id": "T10",
@@ -2151,7 +2152,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cd1-7024-a875-07bd2738600c"
+          "result_id": "01a165ae-e21a-7748-8799-a7bbe5d81806"
         },
         {
           "trial_id": "T11",
@@ -2168,7 +2169,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ce2-7522-a785-7da5374d2b70"
+          "result_id": "01a165ae-e228-761f-824e-59b28ca5fea9"
         },
         {
           "trial_id": "T12",
@@ -2185,7 +2186,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cd1-7024-a875-07bf3666f12e"
+          "result_id": "01a165ae-e21c-706e-94cf-c94bed2c4568"
         },
         {
           "trial_id": "T13",
@@ -2207,7 +2208,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cde-759b-8801-bdfad559abce"
+          "result_id": "01a165ae-e217-7511-9d15-47b43aec065c"
         },
         {
           "trial_id": "T14",
@@ -2229,7 +2230,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0c9a-718d-a30e-fb051374ec97"
+          "result_id": "01a165ae-e20d-7522-852a-5a52bf919097"
         },
         {
           "trial_id": "T15",
@@ -2246,7 +2247,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cde-759b-8801-bdfc4ea66181"
+          "result_id": "01a165ae-e218-71b1-8651-f79220ab17ce"
         },
         {
           "trial_id": "T16",
@@ -2263,7 +2264,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0c9a-718d-a30e-fb07381e74a6"
+          "result_id": "01a165ae-e20d-7522-852a-5a548a409a4b"
         },
         {
           "trial_id": "T17",
@@ -2280,7 +2281,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cb5-7285-9a34-115718bfab46"
+          "result_id": "01a165ae-e224-75ec-bdcd-09c6fcd6b29f"
         },
         {
           "trial_id": "T18",
@@ -2297,7 +2298,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cb9-7566-b253-7dfe26d8eadb"
+          "result_id": "01a165ae-e214-76c5-a4f0-d6816ccec5c0"
         },
         {
           "trial_id": "T19",
@@ -2314,7 +2315,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cb9-7566-b253-7dfc2ddc06b3"
+          "result_id": "01a165ae-e225-757d-a98f-cff9b7bbaf47"
         },
         {
           "trial_id": "T20",
@@ -2331,7 +2332,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cbb-73e4-99aa-422dea624899"
+          "result_id": "01a165ae-e215-7608-93d3-314719b131dc"
         },
         {
           "trial_id": "T21",
@@ -2348,7 +2349,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cd3-7350-a4ea-f6d08a26feb6"
+          "result_id": "01a165ae-e233-71ef-b870-ee7584eb0659"
         },
         {
           "trial_id": "T22",
@@ -2365,7 +2366,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cc5-74a1-ae39-bcd95884b8a0"
+          "result_id": "01a165ae-e230-77c4-b3dd-51d2a01ac15f"
         },
         {
           "trial_id": "T23",
@@ -2382,7 +2383,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cd5-7662-82c7-d345acc1ee57"
+          "result_id": "01a165ae-e233-71ef-b870-ee7755879582"
         },
         {
           "trial_id": "T24",
@@ -2399,7 +2400,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cc6-7235-8648-ca6ef7393cf7"
+          "result_id": "01a165ae-e231-7101-b0e5-f2a76987cc4f"
         },
         {
           "trial_id": "T25",
@@ -2421,7 +2422,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cb5-7285-9a34-115306d3e263"
+          "result_id": "01a165ae-e22c-708c-a46e-67848f58a5e3"
         },
         {
           "trial_id": "T26",
@@ -2443,7 +2444,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cab-7225-a8a4-152a1832cca3"
+          "result_id": "01a165ae-e226-7600-9439-1966419c23e0"
         },
         {
           "trial_id": "T27",
@@ -2460,7 +2461,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cb5-7285-9a34-1155a2202926"
+          "result_id": "01a165ae-e22c-708c-a46e-67865a410a51"
         },
         {
           "trial_id": "T28",
@@ -2477,7 +2478,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cab-7225-a8a4-152c3bfd8f42"
+          "result_id": "01a165ae-e226-7600-9439-1968a68c8c14"
         },
         {
           "trial_id": "T29",
@@ -2494,7 +2495,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cc9-7605-bf9b-93b591397a7b"
+          "result_id": "01a165ae-e223-73d1-b993-9878edade6d9"
         },
         {
           "trial_id": "T30",
@@ -2511,7 +2512,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cda-70b6-accb-0afecf30c09f"
+          "result_id": "01a165ae-e221-7791-abbb-c77b950df0f4"
         },
         {
           "trial_id": "T31",
@@ -2528,7 +2529,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cc9-7605-bf9b-93b763b586c1"
+          "result_id": "01a165ae-e223-73d1-b993-987af26683aa"
         },
         {
           "trial_id": "T32",
@@ -2545,7 +2546,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cdb-70f3-b600-b8d2b4be7903"
+          "result_id": "01a165ae-e221-7791-abbb-c77d970a3580"
         },
         {
           "trial_id": "T33",
@@ -2562,7 +2563,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0c9a-718d-a30e-fb0950c451d4"
+          "result_id": "01a165ae-e218-71b1-8651-f794a69c7a00"
         },
         {
           "trial_id": "T34",
@@ -2579,7 +2580,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ca4-765f-84a0-13ba28491aeb"
+          "result_id": "01a165ae-e21c-706e-94cf-c94dc10ca0ae"
         },
         {
           "trial_id": "T35",
@@ -2596,7 +2597,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0c9a-718d-a30e-fb0b74c9db5a"
+          "result_id": "01a165ae-e21a-7748-8799-a7b9bb6af1b3"
         },
         {
           "trial_id": "T36",
@@ -2613,7 +2614,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ca4-765f-84a0-13bc078b3513"
+          "result_id": "01a165ae-e21e-71cd-afb5-6ad022a902ad"
         },
         {
           "trial_id": "T37",
@@ -2635,7 +2636,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cc3-7227-99d1-2d3e524dfc63"
+          "result_id": "01a165ae-e22e-739b-b541-24ba6b45b932"
         },
         {
           "trial_id": "T38",
@@ -2657,7 +2658,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0caf-7137-abf9-302045c0991c"
+          "result_id": "01a165ae-e216-7707-96e3-4d3a3e9ab77e"
         },
         {
           "trial_id": "T39",
@@ -2674,7 +2675,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cc3-7227-99d1-2d400a60e2d9"
+          "result_id": "01a165ae-e22e-739b-b541-24bcb72be8ef"
         },
         {
           "trial_id": "T40",
@@ -2691,7 +2692,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cb4-77a2-a6c5-d9f84a8c4dcf"
+          "result_id": "01a165ae-e216-7707-96e3-4d3c70ca25d1"
         },
         {
           "trial_id": "T41",
@@ -2713,7 +2714,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cae-73d8-a383-b4cfc236e10e"
+          "result_id": "01a165ae-e229-77f8-a306-b4d78feb09cb"
         },
         {
           "trial_id": "T42",
@@ -2735,7 +2736,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cbc-7555-a39e-c798baef2df0"
+          "result_id": "01a165ae-e22f-763f-abcd-fd11bc47e313"
         },
         {
           "trial_id": "T43",
@@ -2752,7 +2753,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cae-73d8-a383-b4d1fc733aea"
+          "result_id": "01a165ae-e229-77f8-a306-b4d9ddc69feb"
         },
         {
           "trial_id": "T44",
@@ -2769,7 +2770,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0cc2-704f-9b7d-097a394007cf"
+          "result_id": "01a165ae-e22f-763f-abcd-fd131b68281f"
         },
         {
           "trial_id": "T45",
@@ -2791,7 +2792,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ccf-70e2-a5af-bae6eba3554e"
+          "result_id": "01a165ae-e22b-73f9-b047-f155aa4787cd"
         },
         {
           "trial_id": "T46",
@@ -2813,7 +2814,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ca7-77a3-95af-dfba226062ac"
+          "result_id": "01a165ae-e20e-7425-b1ce-b18e66930a1b"
         },
         {
           "trial_id": "T47",
@@ -2830,7 +2831,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ccf-70e2-a5af-bae805ffb30b"
+          "result_id": "01a165ae-e22b-73f9-b047-f157a2c60174"
         },
         {
           "trial_id": "T48",
@@ -2847,14 +2848,14 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "01a160b4-0ca8-745f-8f4d-31f8c9649062"
+          "result_id": "01a165ae-e20e-7425-b1ce-b190c81f8653"
         }
       ],
       "trials_omitted": 0,
       "case_sets": [],
-      "design_frozen_at": "2026-10-21T23:02:54.867269+00:00",
-      "first_result_at": "2026-10-21T23:02:54.874073+00:00",
-      "package_version": "0.74.0",
+      "design_frozen_at": "2026-10-22T22:15:22.376797+00:00",
+      "first_result_at": "2026-10-22T22:15:22.381586+00:00",
+      "package_version": "0.75.0",
       "reading_scope": {
         "questions_declared": false,
         "question_after_runs": null,
@@ -2891,14 +2892,14 @@
       },
       "measurement_windows": [
         {
-          "run_id": "01a160b4-0c93-72cb-a83f-4e082cdf3918",
-          "start": "2026-10-21T23:02:54.874073+00:00",
-          "end": "2026-10-21T23:02:54.944494+00:00"
+          "run_id": "01a165ae-e208-7755-9cd3-60ea37973806",
+          "start": "2026-10-22T22:15:22.381586+00:00",
+          "end": "2026-10-22T22:15:22.419280+00:00"
         },
         {
-          "run_id": "01a160b4-0c95-707e-be93-0ea35a72b0df",
-          "start": "2026-10-21T23:02:54.874474+00:00",
-          "end": "2026-10-21T23:02:54.946791+00:00"
+          "run_id": "01a165ae-e20a-70bd-888d-cc3d23b19ded",
+          "start": "2026-10-22T22:15:22.381962+00:00",
+          "end": "2026-10-22T22:15:22.419463+00:00"
         }
       ],
       "launch_disclosure": null,
@@ -2940,7 +2941,7 @@
       "arm_production_footings": {
         "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b": {
           "runs": {
-            "01a160b4-0c95-707e-be93-0ea35a72b0df": {
+            "01a165ae-e20a-70bd-888d-cc3d23b19ded": {
               "moved": {},
               "unchecked": {},
               "held": [
@@ -2953,7 +2954,7 @@
         },
         "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6": {
           "runs": {
-            "01a160b4-0c93-72cb-a83f-4e082cdf3918": {
+            "01a165ae-e208-7755-9cd3-60ea37973806": {
               "moved": {},
               "unchecked": {},
               "held": [
@@ -2977,30 +2978,30 @@
           "repeats_per_case_min": 2,
           "repeats_per_case_max": 2,
           "observation_ids": [
-            "01a160b4-0c9a-718d-a30e-fb07381e74a6",
-            "01a160b4-0c9a-718d-a30e-fb0b74c9db5a",
-            "01a160b4-0c9f-718f-9394-cf45745cb8f2",
-            "01a160b4-0ca1-7341-8990-790d0c4f455c",
-            "01a160b4-0ca4-765f-84a0-13bc078b3513",
-            "01a160b4-0ca8-745f-8f4d-31f8c9649062",
-            "01a160b4-0cab-7225-a8a4-152c3bfd8f42",
-            "01a160b4-0cae-73d8-a383-b4d1fc733aea",
-            "01a160b4-0cb4-77a2-a6c5-d9f84a8c4dcf",
-            "01a160b4-0cb5-7285-9a34-1155a2202926",
-            "01a160b4-0cb9-7566-b253-7dfc2ddc06b3",
-            "01a160b4-0cbb-73e4-99aa-422dea624899",
-            "01a160b4-0cc2-704f-9b7d-097a394007cf",
-            "01a160b4-0cc3-7227-99d1-2d400a60e2d9",
-            "01a160b4-0cc6-7235-8648-ca6ef7393cf7",
-            "01a160b4-0cc9-7605-bf9b-93b763b586c1",
-            "01a160b4-0ccc-77a2-97ad-0eb6999d0c3e",
-            "01a160b4-0ccf-70e2-a5af-bae805ffb30b",
-            "01a160b4-0cd1-7024-a875-07bf3666f12e",
-            "01a160b4-0cd5-7662-82c7-d345acc1ee57",
-            "01a160b4-0cd7-75c2-bd1f-fb65bb2dd7d8",
-            "01a160b4-0cdb-70f3-b600-b8d2b4be7903",
-            "01a160b4-0cde-759b-8801-bdfc4ea66181",
-            "01a160b4-0ce2-7522-a785-7da5374d2b70"
+            "01a165ae-e20d-7522-852a-5a548a409a4b",
+            "01a165ae-e20e-7425-b1ce-b190c81f8653",
+            "01a165ae-e211-7108-ac63-fcf52f4692e0",
+            "01a165ae-e213-70ad-acb4-0fb3628c3d3b",
+            "01a165ae-e215-7608-93d3-314719b131dc",
+            "01a165ae-e216-7707-96e3-4d3c70ca25d1",
+            "01a165ae-e218-71b1-8651-f79220ab17ce",
+            "01a165ae-e21a-7748-8799-a7b9bb6af1b3",
+            "01a165ae-e21c-706e-94cf-c94bed2c4568",
+            "01a165ae-e21e-71cd-afb5-6ad022a902ad",
+            "01a165ae-e21e-71cd-afb5-6ad4d58b0e21",
+            "01a165ae-e220-70ad-8215-df50f46cdc80",
+            "01a165ae-e221-7791-abbb-c77d970a3580",
+            "01a165ae-e223-73d1-b993-987af26683aa",
+            "01a165ae-e225-757d-a98f-cff9b7bbaf47",
+            "01a165ae-e226-7600-9439-1968a68c8c14",
+            "01a165ae-e228-761f-824e-59b28ca5fea9",
+            "01a165ae-e229-77f8-a306-b4d9ddc69feb",
+            "01a165ae-e22b-73f9-b047-f157a2c60174",
+            "01a165ae-e22c-708c-a46e-67865a410a51",
+            "01a165ae-e22e-739b-b541-24bcb72be8ef",
+            "01a165ae-e22f-763f-abcd-fd131b68281f",
+            "01a165ae-e231-7101-b0e5-f2a76987cc4f",
+            "01a165ae-e233-71ef-b870-ee7755879582"
           ],
           "unknown_dimensions": []
         },
@@ -3013,30 +3014,30 @@
           "repeats_per_case_min": 2,
           "repeats_per_case_max": 2,
           "observation_ids": [
-            "01a160b4-0c9a-718d-a30e-fb051374ec97",
-            "01a160b4-0c9a-718d-a30e-fb0950c451d4",
-            "01a160b4-0c9f-718f-9394-cf43722596e8",
-            "01a160b4-0c9f-718f-9394-cf47775f1ddf",
-            "01a160b4-0ca4-765f-84a0-13ba28491aeb",
-            "01a160b4-0ca7-77a3-95af-dfba226062ac",
-            "01a160b4-0cab-7225-a8a4-152a1832cca3",
-            "01a160b4-0cae-73d8-a383-b4cfc236e10e",
-            "01a160b4-0caf-7137-abf9-302045c0991c",
-            "01a160b4-0cb5-7285-9a34-115306d3e263",
-            "01a160b4-0cb5-7285-9a34-115718bfab46",
-            "01a160b4-0cb9-7566-b253-7dfe26d8eadb",
-            "01a160b4-0cbc-7555-a39e-c798baef2df0",
-            "01a160b4-0cc3-7227-99d1-2d3e524dfc63",
-            "01a160b4-0cc5-74a1-ae39-bcd95884b8a0",
-            "01a160b4-0cc9-7605-bf9b-93b591397a7b",
-            "01a160b4-0ccc-77a2-97ad-0eb44a894448",
-            "01a160b4-0ccf-70e2-a5af-bae6eba3554e",
-            "01a160b4-0cd1-7024-a875-07bd2738600c",
-            "01a160b4-0cd3-7350-a4ea-f6d08a26feb6",
-            "01a160b4-0cd7-75c2-bd1f-fb63908eb6ad",
-            "01a160b4-0cda-70b6-accb-0afecf30c09f",
-            "01a160b4-0cde-759b-8801-bdfad559abce",
-            "01a160b4-0ce0-7395-80ec-affa6d285e49"
+            "01a165ae-e20d-7522-852a-5a52bf919097",
+            "01a165ae-e20e-7425-b1ce-b18e66930a1b",
+            "01a165ae-e210-7036-84d1-005be7c0651d",
+            "01a165ae-e212-7506-aabb-0b85a1a9ebb7",
+            "01a165ae-e214-76c5-a4f0-d6816ccec5c0",
+            "01a165ae-e216-7707-96e3-4d3a3e9ab77e",
+            "01a165ae-e217-7511-9d15-47b43aec065c",
+            "01a165ae-e218-71b1-8651-f794a69c7a00",
+            "01a165ae-e21a-7748-8799-a7bbe5d81806",
+            "01a165ae-e21c-706e-94cf-c94dc10ca0ae",
+            "01a165ae-e21e-71cd-afb5-6ad23fcb3809",
+            "01a165ae-e21f-7667-8899-1fbc293d684d",
+            "01a165ae-e221-7791-abbb-c77b950df0f4",
+            "01a165ae-e223-73d1-b993-9878edade6d9",
+            "01a165ae-e224-75ec-bdcd-09c6fcd6b29f",
+            "01a165ae-e226-7600-9439-1966419c23e0",
+            "01a165ae-e228-761f-824e-59b0db90477a",
+            "01a165ae-e229-77f8-a306-b4d78feb09cb",
+            "01a165ae-e22b-73f9-b047-f155aa4787cd",
+            "01a165ae-e22c-708c-a46e-67848f58a5e3",
+            "01a165ae-e22e-739b-b541-24ba6b45b932",
+            "01a165ae-e22f-763f-abcd-fd11bc47e313",
+            "01a165ae-e230-77c4-b3dd-51d2a01ac15f",
+            "01a165ae-e233-71ef-b870-ee7584eb0659"
           ],
           "unknown_dimensions": []
         }
@@ -3547,7 +3548,7 @@
           "variant_key": "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6",
           "apparatus_class_id": "baa7449f304b814aebfc03744a092b5e603697a09def6dd14cb48b2aa9df1e15",
           "run_ids": [
-            "01a160b4-0c93-72cb-a83f-4e082cdf3918"
+            "01a165ae-e208-7755-9cd3-60ea37973806"
           ],
           "n_observations": 24,
           "n_cases": 12,
@@ -3819,12 +3820,12 @@
                 "case_means": null,
                 "categories": {
                   "billing → account": 2,
-                  "account → account": 4,
-                  "billing → billing": 6,
                   "feature_request → billing": 2,
-                  "bug → account": 2,
+                  "billing → billing": 6,
+                  "bug → bug": 4,
                   "feature_request → bug": 4,
-                  "bug → bug": 4
+                  "account → account": 4,
+                  "bug → account": 2
                 },
                 "rate": null,
                 "n_true": null,
@@ -3891,7 +3892,7 @@
           "variant_key": "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b",
           "apparatus_class_id": "baa7449f304b814aebfc03744a092b5e603697a09def6dd14cb48b2aa9df1e15",
           "run_ids": [
-            "01a160b4-0c95-707e-be93-0ea35a72b0df"
+            "01a165ae-e20a-70bd-888d-cc3d23b19ded"
           ],
           "n_observations": 24,
           "n_cases": 12,
@@ -4207,10 +4208,10 @@
                 "case_means": null,
                 "categories": {
                   "billing → billing": 6,
-                  "account → account": 4,
                   "feature_request → feature_request": 6,
+                  "billing → bug": 2,
                   "bug → bug": 6,
-                  "billing → bug": 2
+                  "account → account": 4
                 },
                 "rate": null,
                 "n_true": null,
@@ -4275,7 +4276,7 @@
         }
       ],
       "time_axis": null,
-      "time_axis_withheld": "every run started on one day (2026-10-21) and the host labels no build",
+      "time_axis_withheld": "every run started on one day (2026-10-22) and the host labels no build",
       "confound_catalog": {},
       "prior_insights": [],
       "prior_insights_omitted": 0,

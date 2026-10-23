@@ -173,6 +173,7 @@ REQUESTABLE_KV_STREAM_FIELDS: tuple[str, ...] = (
     "allow_direct",
     "allow_msg_ttl",
     "max_bytes",
+    "num_replicas",
 )
 
 #: The subset of :data:`REQUESTABLE_KV_STREAM_FIELDS` an open RECONCILES -- by
@@ -213,7 +214,11 @@ RECONCILED_KV_STREAM_FIELDS: tuple[str, ...] = ("allow_direct", "allow_msg_ttl")
 #: keeps refusing every such opener for as long as nothing removes it, and only the bucket's one
 #: declarer may remove it. ``max_msgs_per_subject`` (the declared history) because the owner of the
 #: whole shape owns that too.
-_OWNED_IN_PLACE_KV_STREAM_FIELDS: tuple[str, ...] = ("max_age", "max_msgs_per_subject", "max_bytes")
+#:
+#: ``max_bytes`` and ``num_replicas`` because the owner sizes and places the bucket: JetStream
+#: updates both on a live stream, moving a memory bucket from one server to three (or back) with its
+#: entries kept, so a declaration that asks for more replicas gets them without a delete.
+_OWNED_IN_PLACE_KV_STREAM_FIELDS: tuple[str, ...] = ("max_age", "max_msgs_per_subject", "max_bytes", "num_replicas")
 
 #: The fields a declaration that owns its bucket reconciles by DELETING the backing stream and
 #: creating it again with the declared config: the ones JetStream refuses to change on a live stream.
@@ -438,6 +443,7 @@ def build_kv_stream_config(
     storage_type: StorageType,
     direct: bool | None,
     max_bytes: int | None = None,
+    replicas: int | None = None,
 ) -> StreamConfig:
     """build the JetStream stream shape that MAKES a stream a KV bucket.
 
@@ -471,6 +477,9 @@ def build_kv_stream_config(
     :param max_bytes: the most bytes the bucket may hold, refusing a write past it (``discard: new``);
         ``None`` leaves it unbounded and asks nothing of a live bucket
     :ptype max_bytes: int | None
+    :param replicas: how many servers hold the bucket; ``None`` creates it on one, as
+        ``create_key_value`` does, and asks nothing of a live bucket
+    :ptype replicas: int | None
     :return: stream config equivalent to what ``create_key_value`` would send
     :rtype: StreamConfig
     """
@@ -496,7 +505,9 @@ def build_kv_stream_config(
         max_msg_size=None,
         max_msgs=-1,
         max_msgs_per_subject=history,
-        num_replicas=1,
+        # unsent when not asked: the server creates the stream on one server, and a live bucket's
+        # placement is no request of this caller's, so it is never reported as drift
+        num_replicas=replicas,
         storage=storage_type,
         republish=None,
         subject_delete_marker_ttl=None,
@@ -551,6 +562,9 @@ def _normalised(field: str, value: Any) -> Any:
     if field == "max_bytes":
         # unset, zero and -1 all mean unbounded
         return value if value is not None and value > 0 else -1
+    if field == "num_replicas":
+        # unset and zero both mean the server's one
+        return value if value else 1
     return value
 
 
@@ -1404,6 +1418,7 @@ async def _bind_kv_handle(
     drop_file_storage: bool = False,
     detect_creation: bool = False,
     max_bytes: int | None = None,
+    replicas: int | None = None,
 ) -> _KvHandleBinding:
     """open, create or reconcile a bucket and return the handle it yields.
 
@@ -1437,6 +1452,8 @@ async def _bind_kv_handle(
     :ptype detect_creation: bool
     :param max_bytes: the bucket's byte bound, or ``None`` for none
     :ptype max_bytes: int | None
+    :param replicas: how many servers hold the bucket, or ``None`` to ask nothing of its placement
+    :ptype replicas: int | None
     :return: the handle, its per-entry TTL, the connection it was bound through, and whether this
         open created the bucket's stream
     :rtype: _KvHandleBinding
@@ -1464,6 +1481,7 @@ async def _bind_kv_handle(
             storage_type=storage_type,
             direct=direct,
             max_bytes=max_bytes,
+            replicas=replicas,
         ),
         create_if_missing=create_if_missing,
         timings=timings,
@@ -1511,6 +1529,9 @@ class NatsKvBucket:
     :param max_bytes: the bucket's byte bound as declared, kept for a self-heal re-open; ``None``
         for none
     :ptype max_bytes: int | None
+    :param replicas: how many servers hold the bucket as declared, kept for a self-heal re-open;
+        ``None`` for not asked
+    :ptype replicas: int | None
     """
 
     __slots__ = (
@@ -1526,6 +1547,7 @@ class NatsKvBucket:
         "_max_bytes",
         "_on_recreated",
         "_owns_bucket",
+        "_replicas",
         "_storage",
         "_timings",
         "_ttl",
@@ -1549,8 +1571,12 @@ class NatsKvBucket:
         drop_file_storage: bool = False,
         on_recreated: Callable[[], None] | None = None,
         max_bytes: int | None = None,
+        replicas: int | None = None,
     ) -> None:
         self._client = client
+        # retained for self-heal with the bound: a re-open that forgot it would recreate a
+        # replicated bucket on one server, and lose it with that server
+        self._replicas = replicas
         # retained for self-heal, as ``direct`` is: a re-open that forgot it would recreate the bucket
         # unbounded, and one pod could then fill the server's memory store through it
         self._max_bytes = max_bytes
@@ -1627,6 +1653,7 @@ class NatsKvBucket:
         drop_file_storage: bool = False,
         on_recreated: Callable[[], None] | None = None,
         max_bytes: int | None = None,
+        replicas: int | None = None,
     ) -> NatsKvBucket:
         """open, create or reconcile a JetStream KV bucket.
 
@@ -1672,6 +1699,9 @@ class NatsKvBucket:
         :ptype on_recreated: Callable[[], None] | None
         :param max_bytes: the bucket's byte bound; ``None`` for none. only a declaring open sets it
         :ptype max_bytes: int | None
+        :param replicas: how many servers hold the bucket; ``None`` asks nothing of its placement.
+            only a declaring open sets it
+        :ptype replicas: int | None
         :return: ready bucket
         :rtype: NatsKvBucket
         :raises ValueError: if ``owns_bucket`` is asked of a bind-only open or a file bucket, or
@@ -1696,6 +1726,7 @@ class NatsKvBucket:
             owns_bucket=owns_bucket,
             drop_file_storage=drop_file_storage,
             max_bytes=max_bytes,
+            replicas=replicas,
         )
         return cls(
             client=client,
@@ -1713,6 +1744,7 @@ class NatsKvBucket:
             drop_file_storage=drop_file_storage,
             on_recreated=on_recreated,
             max_bytes=max_bytes,
+            replicas=replicas,
         )
 
     # ------------------------------------------------------------------
@@ -1760,6 +1792,7 @@ class NatsKvBucket:
             drop_file_storage=self._drop_file_storage,
             detect_creation=self._on_recreated is not None,
             max_bytes=self._max_bytes,
+            replicas=self._replicas,
         )
         self._kv = binding.kv
         self._entry_ttl = binding.entry_ttl
@@ -2975,6 +3008,7 @@ class KvDeclaring(Protocol):
         on_restored: KvRestoredHook | None = None,
         max_bytes: int | None = None,
         still_wanted: Callable[[], Awaitable[bool]] | None = None,
+        replicas: int | None = None,
     ) -> KvBucketLike:
         """declare a KV bucket's configuration, or bind to one somebody else declared.
 
@@ -3012,6 +3046,9 @@ class KvDeclaring(Protocol):
         :param still_wanted: asked before a restoration after a reconnect; a declaration no longer
             wanted is forgotten instead of put back
         :ptype still_wanted: Callable[[], Awaitable[bool]] | None
+        :param replicas: how many servers hold the bucket; ``None`` creates it on one and asks nothing
+            of a live one's placement. an owner reconciles a live bucket's replicas in place
+        :ptype replicas: int | None
         :return: ready bucket handle
         :rtype: KvBucketLike
         :raises ValueError: if ``owns_bucket`` is asked of a bind (``create_if_missing=False``) or of a

@@ -875,7 +875,8 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
 
     A campaign asks one question of its arms, and an aspect is where that question is measured: one behavior's
     template, the runs gathered on it, and the design they were gathered under. Each aspect is read on its own
-    (shown better, shown worse or unclear against the control) and the campaign's recommendation reads them all.
+    (shown better, shown worse, no worse than the margin or unclear against the control) and the campaign's
+    recommendation reads them all.
     """
 
     label: str = Field(
