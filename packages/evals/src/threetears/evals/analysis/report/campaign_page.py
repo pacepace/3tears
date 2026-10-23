@@ -14,10 +14,10 @@ line saying no recommendation was written. A measurement recommends nothing, so 
 **a change**:
 
 1. **Code's table**, one row per aspect × candidate: the cases, each arm's pass count, the change in points with the
-   interval it was read on, the aspect's margin, and what the row shows (shown better, shown worse or unclear). Under
-   it, the lines that change how a row reads: the level each interval was read at, an aspect with no margin (never
-   shown worse), a margin or a floor declared after the runs, the test setup a row was read under where the arms ran
-   under several.
+   interval it was read on, the aspect's margin, and what the row shows (shown better, shown worse, no worse than the
+   margin, or unclear). Under it, the lines that change how a row reads: the level each interval was read at, an
+   aspect with no margin (never shown worse), a margin or a floor declared after the runs, the test setup a row was
+   read under where the arms ran under several.
 2. **What would settle each unclear row** on an aspect with a margin: the cases that would show the arm within it,
    if the arms do not differ and if they differ as observed.
 
@@ -75,6 +75,7 @@ from threetears.evals.analysis.report.model import (
     reading_anchor,
     table_row,
 )
+from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.report.words import (
     CONFIDENCE_WORDS,
     NO_RECOMMENDATION_WORDS,
@@ -106,8 +107,14 @@ __all__ = [
     "campaign_warnings",
 ]
 
-#: What each reading is called on the page.
-READING_WORDS: dict[str, str] = {"better": "shown better", "worse": "shown worse", "unclear": "unclear"}
+#: What each reading is called on the page. "Shown worse" is a drop shown past the margin, which is worse than the
+#: control; the other direction says the margin, since within it the candidate may still be a little worse.
+READING_WORDS: dict[str, str] = {
+    "better": "shown better",
+    "worse": "shown worse",
+    "within_margin": "no worse than the margin",
+    "unclear": "unclear",
+}
 
 #: The first screen's line where no memo was written over the campaign.
 NO_RECOMMENDATION = "No recommendation was written: no analysis has been generated over this campaign."
@@ -548,11 +555,14 @@ def _recommendation_blocks(
 
 def _shown_interval(row: AspectReading) -> tuple[tuple[float, float] | None, float | None]:
     """The interval a row's reading was read on, and its level: the gain's for shown better, the drop's for shown
-    worse; for unclear, the wider of the two, which reaches past zero and short of the margin as the reading says."""
+    worse, the nominal level's (a floor's own) for no worse than the margin; for unclear, the wider of the gain's and
+    the drop's, which reaches past zero and short of the margin as the reading says."""
     if row.reading == "better":
         return row.gain_interval, row.gain_confidence
     if row.reading == "worse":
         return row.drop_interval, row.drop_confidence
+    if row.reading == "within_margin":
+        return row.within_interval, INTERVAL_LEVEL
     sides = [
         (interval, level)
         for interval, level in ((row.gain_interval, row.gain_confidence), (row.drop_interval, row.drop_confidence))
@@ -597,7 +607,7 @@ def _table_blocks(
     levels: list[float] = []
     for row in readings.readings:
         interval, level = _shown_interval(row)
-        if level is not None:
+        if level is not None and row.reading != "within_margin":
             levels.append(level)
         change = round(row.change, 1)
         values: dict[str, CellValue] = {
@@ -632,7 +642,8 @@ def _table_blocks(
             total_rows=len(rows),
         )
     ]
-    notes = _level_lines(levels, readings) if levels else []
+    notes = _level_lines(levels, readings) if readings.readings else []
+    notes += _within_lines(readings)
     notes += [
         _rig_line(row.aspect, f"{row.arm_label}'s change against {control}", row.rig)
         for row in readings.readings
@@ -659,20 +670,25 @@ def _percent(level: float) -> str:
 
 
 def _level_lines(levels: Sequence[float], readings: CampaignReadings) -> list[str]:
-    """The level the table's intervals were read at, how often a reading can be wrong, and, with several arms, that
-    nothing corrects across them."""
-    low, high = min(levels), max(levels)
-    if round(low, 4) == round(high, 4) and len(levels) == 1:
-        said = f"The interval is read at {_percent(low)}, as a floor's is."
-    elif round(low, 4) == round(high, 4):
-        said = f"Each interval is read at {_percent(low)}, corrected across each arm's aspects."
-    else:
-        said = (
-            f"Each interval is read at the level its row was tested at, from {_percent(low)} to {_percent(high)}, "
-            "corrected across each arm's aspects; a reading never contradicts its interval."
-        )
+    """The level the table's corrected intervals were read at (``levels``: every row's but one no worse than the
+    margin, whose line is :func:`_within_lines`; none where every row is), how often a reading can be wrong, and,
+    with several arms, that nothing corrects across them."""
+    lines: list[str] = []
+    if levels:
+        low, high = min(levels), max(levels)
+        if len(levels) == 1 and round(low, 4) == round(INTERVAL_LEVEL, 4):
+            lines.append(f"The interval is read at {_percent(low)}, as a floor's is.")
+        elif len(levels) == 1:
+            lines.append(f"The interval is read at {_percent(low)}, corrected across each arm's aspects.")
+        elif round(low, 4) == round(high, 4):
+            lines.append(f"Each interval is read at {_percent(low)}, corrected across each arm's aspects.")
+        else:
+            lines.append(
+                f"Each interval is read at the level its row was tested at, from {_percent(low)} to {_percent(high)}, "
+                "corrected across each arm's aspects; a reading never contradicts its interval."
+            )
     half = _percent(readings.alpha / 2)
-    lines = [said, f"Each arm's gains and its drops are each shown wrongly at most {half} of the time."]
+    lines.append(f"Each arm's gains and its drops are each shown wrongly at most {half} of the time.")
     if len({row.arm for row in readings.readings}) > 1:
         lines.append(
             "Nothing corrects across arms, so with several arms one is shown better or worse by chance more often."
@@ -680,17 +696,58 @@ def _level_lines(levels: Sequence[float], readings: CampaignReadings) -> list[st
     return lines
 
 
+def _within_lines(readings: CampaignReadings) -> list[str]:
+    """Where a row reads no worse than the margin, the level it was read at and why that is not corrected; where
+    such a row's interval clears zero, that its gain is still read corrected, so that is not a gain shown."""
+    within = [row for row in readings.readings if row.reading == "within_margin"]
+    if not within:
+        return []
+    lines = [
+        f"A row no worse than the margin reads its interval at {_percent(INTERVAL_LEVEL)} on its own, as a floor "
+        "does: a candidate is no worse only where it holds on every asked aspect, which needs no correction."
+    ]
+    if any(row.within_interval is not None and row.within_interval[0] > 0 for row in within):
+        lines.append(
+            "Its gain is still read corrected across the arm's aspects, so such an interval clearing zero is not a "
+            "gain shown."
+        )
+    return lines
+
+
 def _floor_beside_lines(campaign: EvalCampaign, readings: CampaignReadings) -> list[str]:
-    """A broken floor beside a row that is not shown worse: the two read different intervals, and say which."""
+    """A broken floor beside a row that is not shown worse, and a held floor beside a row left unclear: the two read
+    different intervals, or different points, and say which."""
     lines: list[str] = []
     for status in readings.broken_floors():
         row = next((row for row in readings.on_aspect(status.aspect) if row.arm == status.arm), None)
         if row is None or row.reading == "worse":
             continue
         lines.append(
-            f"The floor broken on {status.aspect} for {status.arm_label} reads its {_which(status)} at 95% on its "
-            f"own, while its row reads only the pass rate, corrected across {status.arm_label}'s aspects."
+            f"The floor broken on {status.aspect} for {status.arm_label} reads its {_which(status)} at "
+            f"{_percent(INTERVAL_LEVEL)} on its own, while its row reads only the pass rate, corrected across "
+            f"{status.arm_label}'s aspects."
         )
+    for status in readings.floors:
+        row = next((row for row in readings.on_aspect(status.aspect) if row.arm == status.arm), None)
+        floor = _floor_of(campaign.floors, status.floor)
+        if row is None or row.margin is None or floor is None or not isinstance(floor.clause, RateDrop):
+            continue
+        # A rate floor and its row read one interval at one level, so they part only on which rates they read (a
+        # floor reads every rate its clause names, a row the pass rate alone) or on the points they read it against.
+        if status.status == "held" and row.reading == "unclear":
+            state = "held"
+        elif status.status == "unclear" and row.reading == "within_margin":
+            state = "left unclear"
+        else:
+            continue
+        lead = f"The floor {state} on {status.aspect} for {status.arm_label} reads its {_which(status)}"
+        if floor.clause.max_points != row.margin:
+            lines.append(
+                f"{lead} against {format_number(floor.clause.max_points)} points, while its row reads the pass rate "
+                f"against the {format_number(row.margin)}-point margin."
+            )
+        else:
+            lines.append(f"{lead}, while its row reads only the pass rate, both at {_percent(INTERVAL_LEVEL)}.")
     return lines
 
 
@@ -807,9 +864,11 @@ def _on(labels: Sequence[str], campaign: EvalCampaign) -> str:
 
 def _settle_blocks(readings: CampaignReadings) -> list[ReportBlock]:
     """Each unclear row: why it is unclear, and the cases that would show the arm no worse than the control by more
-    than the aspect's margin, if the arms do not differ and if they differ as observed. They would not show it better:
-    the row stays unclear unless its gain clears too, and the note says so. A row on an aspect that declared no margin
-    has nothing to show it within, and the table above already says no margin was declared there, so it is left out.
+    than the aspect's margin, if the arms do not differ and if they differ as observed. The count is read at the
+    nominal level, as a floor's is, so where a floor reads the same rate against the same points the two counts are
+    one. They would not show it better: the row stays unclear unless its gain clears too, and the note says so. A row
+    on an aspect that declared no margin has nothing to show it within, and the table above already says no margin
+    was declared there, so it is left out; a row already no worse than the margin has nothing left to show.
     """
     unclear = [row for row in readings.readings if row.reading == "unclear" and row.margin is not None]
     if not unclear:
@@ -850,9 +909,10 @@ def _settle_blocks(readings: CampaignReadings) -> list[ReportBlock]:
             source="comparisons",
             text=(
                 "A count is the independent cases that would show the arm no worse than the control by more than the "
-                "aspect's margin. It would not show the arm better, so its row stays unclear unless its gain clears "
-                "too. Each count reads the interval again over this run's cases repeated to that many; repeats of a "
-                "case narrow it far less than new cases."
+                f"aspect's margin, read at {_percent(INTERVAL_LEVEL)} as a floor's count is, so a floor on the same "
+                "rate and points gives the same count. It would not show the arm better, so its row stays unclear "
+                "unless its gain clears too. Each count reads the interval again over this run's cases repeated to "
+                "that many; repeats of a case narrow it far less than new cases."
             ),
         ),
     ]

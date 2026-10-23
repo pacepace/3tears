@@ -440,7 +440,7 @@ What a campaign can decide, read off its arms and never declared (`campaign_kind
 |---|---|---|---|
 | measurement | one | each measure with its interval, and each bar met or missed | a summary and findings; no recommendation |
 | choice | two or more, no control | every pair's difference with its interval, and which arm is shown ahead | picks an arm, or says no clear winner |
-| change | a control and candidates | each candidate against the control: shown better, shown worse or unclear | recommends a switch or keeping the control |
+| change | a control and candidates | each candidate against the control: shown better, shown worse, no worse than the margin or unclear | recommends a switch or keeping the control |
 
 A margin and a relative floor read a candidate against a control, so a campaign naming none is refused either,
 with the remedy to declare a bar instead. A bar is absolute, so every kind is held to its bars.

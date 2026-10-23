@@ -355,6 +355,12 @@ A choice's pairs have no direction, so every pair on every aspect is one family.
   shown better or worse by chance more often than 5%, and the page says what its correction covers.
 - **Floors are not corrected.** A floor warns, and a warning that fires less often for every floor added is no
   warning, so each reads at its nominal 95%.
+- **No worse than the margin is not corrected either.** A row neither shown better nor shown worse reads
+  `within_margin` where the floor's own reading of its pass rate, at 95%, keeps the drop within the margin. What
+  that reading feeds is a claim made only when every part holds: a candidate is no worse only where it holds on
+  every asked aspect, and such an intersection-union claim errs at most α however many aspects it has, so correcting
+  each part would only make the claim harder to reach without making it safer. The cases that would settle an
+  unclear row are counted at the same level, so a row's count and its floor's are one count.
 
 ## Order and time
 
