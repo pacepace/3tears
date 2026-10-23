@@ -321,9 +321,10 @@ def test_one_result_whose_time_cannot_be_ordered_hides_no_late_criterion_and_is_
     )
 
 
-def test_a_guardrail_s_margin_is_timed_where_a_question_asks_the_aspect_and_never_where_none_does() -> None:
-    """A guardrail bears on recommending a candidate, which needs an asked aspect: under a question its margin is timed
-    like the aspect's other criteria; with none asked it is not, as the aspect and its control are not."""
+def test_a_guardrail_s_margin_is_timed_whatever_is_asked_and_said_once() -> None:
+    """A guardrail breached or not yet shown safe opens the first screen whether or not a question is asked, so its
+    margin is timed always. Under a question it carries the aspect's own time, which the aspect's line names, so it is
+    not said twice; with none asked it gets its one line."""
     fixture = ops_fixture()
     _asked_late(fixture)
     bundle = _bundle(fixture)
@@ -341,8 +342,16 @@ def test_a_guardrail_s_margin_is_timed_where_a_question_asks_the_aspect_and_neve
     assert [(late.criterion, late.name) for late in late_criteria(guarded, bundle.first_result_at)] == [
         ("aspect", None),
         ("bar", "cost_usd"),
-        ("guardrail", "tone"),
     ]
-    assert [(late.criterion, late.name) for late in late_criteria(unasked, bundle.first_result_at)] == [
-        ("bar", "cost_usd"),
+    late = late_criteria(unasked, bundle.first_result_at)
+    assert [(said.criterion, said.name) for said in late] == [("bar", "cost_usd"), ("guardrail", "tone")]
+    page = bundle.model_copy(
+        update={
+            "declared": unasked,
+            "reading_scope": bundle.reading_scope.model_copy(update={"late_criteria": late}),
+        }
+    )
+    guard_lines = [line for line in late_criteria_lines([page]) if "guardrail" in line]
+    assert guard_lines == [
+        f"The tone guardrail's margin on {bundle.aspect} was set on 15 Mar 2026, after its readings were visible."
     ]

@@ -242,7 +242,8 @@ BANNED_PHRASES: tuple[str, ...] = (
 _AGED = re.compile(
     r"\bpost[- ]hoc\b"
     r"|\bretrospective(?:ly)?\b"
-    r"|\bafter the (?:runs?|data|results?|evidence)\b"
+    r"|\bafter the (?:runs?|data|results?|readings?|measurements?|evidence)\b"
+    r"|\b(?:collected|taken|measured|run|ran|scored|gathered) before the (?:question|campaign|criteria|criterion|margin)\b"
     r"|\b(?:runs?|data|results?|readings?|evidence|measurements?) (?:pre-?dat(?:e|es|ed|ing)|came before|were taken before)\b"
     r"|\b(?:old|older|earlier|stale|outdated|pre-?existing|aging|ageing|past) (?:runs?|data|results?|readings?|evidence|measurements?)\b",
     re.I,
@@ -262,6 +263,7 @@ _APART = re.compile(
 _DISCOUNTED = re.compile(
     r"\b(?:weaker|less (?:reliable|trustworthy|certain|conclusive|authoritative|valid|attributable|comparable)|"
     r"provisional|tentative|preliminary|(?:only|just|merely) (?:a )?leads?|exploratory|"
+    r"(?:lower|less|reduced|limited) (?:confidence|certainty)|"
     r"(?:not|never) (?:one|a single|the same) experiment|not (?:directly )?comparable|cannot be compared|"
     r"discount\w*|counts? for less|less weight|with caution|cautiously|"
     r"(?:should|must|needs? to) be (?:re-?run|repeated|re-?measured|confirmed|re-?validated)|"
@@ -274,18 +276,29 @@ _DISCOUNTED = re.compile(
 #: confound a writer is right to name.
 _CONFOUNDED = re.compile(r"\b(?:confound\w*|not attributable|cannot be attributed)\b", re.I)
 
+#: What decides a result, named: a sentence naming one (a prompt, a judge, a model, a template, a setting) says what
+#: changed between the readings, which is a config statement a writer is right to make, never an age discount.
+_CHANGED = re.compile(
+    r"\b(?:prompts?|judge[sd]?|judging|models?|templates?|settings?|rubrics?|graders?|simulators?|temperatures?|"
+    r"configs?|configurations?|tools?|cassettes?)\b",
+    re.I,
+)
+
 
 def discounts_by_age(sentence: str) -> bool:
     """Whether ``sentence`` lowers a reading's standing for when its data was measured: a timing framing (:data:`_AGED`)
     beside a discount (:data:`_DISCOUNTED`), or arms measured apart (:data:`_APART`) beside a discount or a confound
-    (:data:`_CONFOUNDED`). The memo's style pass drops such a sentence, wherever it stands, and lists it in the
-    methods.
+    (:data:`_CONFOUNDED`), in a sentence naming nothing that decides a result (:data:`_CHANGED`): one that names what
+    changed is a config statement. The memo's style pass drops such a sentence, wherever it stands, and lists it in
+    the methods.
 
     :param sentence: One sentence of the memo.
     :ptype sentence: str
     :return: True when it discounts data by age or time apart.
     :rtype: bool
     """
+    if _CHANGED.search(sentence):
+        return False
     if _APART.search(sentence):
         return bool(_DISCOUNTED.search(sentence) or _CONFOUNDED.search(sentence))
     return bool(_AGED.search(sentence)) and bool(_DISCOUNTED.search(sentence))

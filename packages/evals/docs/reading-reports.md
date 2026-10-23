@@ -469,9 +469,10 @@ says so: its readings confirm nothing, and the design its comparisons read was i
 
 **A criterion set after its readings is said, never demoted; data age is never said.** What pre-registration
 guards against is a criterion chosen once the readings it judges could be seen: the aspect itself and its control
-(where a question asks it), its margin, a bar, a judged guardrail's margin (where a question asks it) or a floor.
-Where no question is asked, every reading is a lead and the control is kept, so when the aspect, its control and its
-guardrails were chosen decides nothing and is not said. Each is read on its own time, where it is stored: the aspect's
+(where a question asks it), its margin, a bar, a judged guardrail's margin or a floor. Where no question is asked,
+every reading is a lead and the control is kept, so when the aspect and its control were chosen decides nothing and is
+not said; a margin, a bar, a guardrail's margin and a floor read or warn either way, so each is timed always. Under a
+question a guardrail's margin carries the aspect's own time, which the aspect's line names. Each is read on its own time, where it is stored: the aspect's
 `asked_at` (which also dates its bars, its guardrails' margins, and a margin or floor declared with it), `margin_declared_at`,
 `Floor.declared_at` and the control's `named_at`, against the first stored result of the aspect's runs
 (`first_result_at`). One set later reads exactly as it would had it been set first, because the operator is trusted

@@ -1997,7 +1997,8 @@ class ReadingScope(EvalDocumentModel):
         description=(
             "Each criterion this aspect's readings are judged by that was set after its first result was stored "
             "(`first_result_at`), or carries no time: the aspect itself and its control where a question asks it, "
-            "then its margin and bars, its guardrails' margins where a question asks it, and its floors. Every page, listing and page JSON reading this "
+            "then its margin and bars, its guardrails' margins where no question does (under one they carry the "
+            "aspect's time, which its entry names), and its floors. Every page, listing and page JSON reading this "
             "aspect names each once. It changes no reading. Empty when every criterion came first, or no result with "
             "an orderable time is stored yet."
         ),
@@ -2100,7 +2101,8 @@ def asks_a_question(declared: AspectDeclaration | None) -> bool:
 def late_criteria(declared: AspectDeclaration | None, first_result_at: str | None) -> list[LateCriterion]:
     """Each criterion ``declared`` judges the aspect's readings by that was set after the first of them was stored,
     or carries no time, in the order a page names them: the aspect and its control (where a question asks it), its
-    margin, its bars, its guardrails' margins (where a question asks it), its floors.
+    margin, its bars, its guardrails' margins (where no question asks it: under one they carry the aspect's time, which
+    its line names), its floors.
 
     **Disclosed, never enforced** (owner, 2026-10-21 and 2026-10-23): a criterion set once its readings were visible
     reads as one set before them, and this is what lets a reader judge. Each is read on its own time: the aspect's
@@ -2124,19 +2126,22 @@ def late_criteria(declared: AspectDeclaration | None, first_result_at: str | Non
     visible = _instant(first_result_at, "the aspect's first result")
     asked = declared.asked_at
     timed: list[tuple[CriterionKind, str | None, str | None]] = []
-    # The aspect, its control and its guardrails' margins bear only on what a question confirms and on recommending a
-    # candidate, which needs an asked aspect: where none is asked every reading is a lead and the control is kept
-    # whenever they were chosen, so they are timed only under a question. An eval's campaign asks none, so one filed
-    # once its arms had run (as every eval before #919 was) never reads late for how it was filed. A bar, a margin and
-    # a floor each warn or read on the page whatever is asked, so each is timed always.
-    if asks_a_question(declared):
+    # The aspect and its control bear only on what a question confirms and on recommending a candidate, which needs an
+    # asked aspect: where none is asked every reading is a lead and the control is kept whenever they were chosen, so
+    # they are timed only under a question. An eval's campaign asks none, so one filed once its arms had run (as every
+    # eval before #919 was) never reads late for its control. A margin, a bar, a guardrail's margin and a floor each
+    # read or warn on the page whatever is asked (a guardrail breached or not yet shown safe opens the first screen),
+    # so each is timed always. Under a question a guardrail's margin carries the aspect's own time, which the aspect's
+    # line already names, so it is not listed again.
+    asked_aspect = asks_a_question(declared)
+    if asked_aspect:
         timed.append(("aspect", None, asked))
         if declared.control is not None:
             timed.append(("control", None, declared.control.named_at))
     if declared.margin is not None:
         timed.append(("margin", None, declared.margin_declared_at))
     timed += [("bar", bar.measure_id, asked) for bar in declared.design.bars]
-    if asks_a_question(declared):
+    if not asked_aspect:
         timed += [("guardrail", guard.dimension, asked) for guard in declared.design.guardrail_margins]
     timed += [("floor", floor.key, floor.declared_at or asked) for floor in declared.floors]
     late: list[LateCriterion] = []

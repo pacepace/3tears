@@ -101,6 +101,8 @@ def test_the_declared_question_repeated_in_the_body_is_flagged_and_dropped() -> 
         "Read post hoc, the tone gain is only a lead.",
         "The arms ran on different days, so they are not one experiment.",
         "Control and candidate were measured hours apart, which confounds the comparison.",
+        "The margin was set after the readings were in, so the gain is provisional.",
+        "The control runs were collected before the question, so read them with lower confidence.",
     ],
 )
 def test_a_sentence_discounting_a_reading_by_data_age_or_time_apart_is_named(sentence: str) -> None:
@@ -116,6 +118,8 @@ def test_a_sentence_discounting_a_reading_by_data_age_or_time_apart_is_named(sen
         "The judge was re-pinned after the runs started, so the arms were graded by different judges.",
         "The older runs were scored by a judge since replaced.",
         "Older runs used the v1 prompt.",
+        "Older runs used the v1 prompt, so they are not directly comparable.",
+        "The arms ran on different days and the judge changed between them, so the comparison is confounded.",
         # The late-criterion disclosure the writer is asked for, in its own words and in code's.
         "The margin was set after the results were in.",
         "The margin on billing was set on 20 Oct 2026, after its readings were visible.",
