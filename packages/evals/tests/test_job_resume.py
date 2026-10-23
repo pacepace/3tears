@@ -34,7 +34,15 @@ from threetears.evals.storage import InMemoryDocumentStore, SqliteDocumentStore
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.contract import ExtractorSpec
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
-from packages.evals.tests.lease_support import T0, ClockedStore, held_extraction, launched_run, other_process, until
+from packages.evals.tests.lease_support import (
+    T0,
+    ClockedStore,
+    held_extraction,
+    launched_arm,
+    launched_run,
+    other_process,
+    until,
+)
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, ops_fixture, settled
 
@@ -67,13 +75,16 @@ async def _lost_run(monkeypatch: pytest.MonkeyPatch) -> tuple[OpsHost, str]:
     gate = held_extraction(monkeypatch, passing=DONE_BEFORE)
     store = ClockedStore()
     holder = off_loop(ops_fixture, store=store).host
-    run_id = await launched_run(holder, K)
+    launch_id, run_id = await launched_arm(holder, K)
     rows = holder.eval_host.storage.query_eval_results_by_run
     await until(lambda: len(off_loop(rows, run_id, TOYHOST_SCOPE)) == DONE_BEFORE and gate.held >= 1)
     store.at = T0 + timedelta(seconds=61)
     assert (await job_poll(other_process(holder), run_job_id(run_id), TOYHOST_SCOPE)).state == "lost"
     gate.set()
-    await until(lambda: not holder.launch.job_manager.is_active(run_id))
+    manager = holder.launch.job_manager
+    # The launch too: one still running when a later read finds its lease lapsed is written lost, which lists the run
+    # under it rather than on its own.
+    await until(lambda: not manager.is_active(run_id) and not manager.is_task_active(launch_id))
     return holder, run_id
 
 

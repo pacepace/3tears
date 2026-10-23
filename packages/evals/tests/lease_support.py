@@ -14,7 +14,16 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.ops import LaunchArguments, OpsHost, SweepArguments, SweepArm, job_poll, run_job_id, run_launch
+from threetears.evals.ops import (
+    LaunchArguments,
+    OpsHost,
+    SweepArguments,
+    SweepArm,
+    job_poll,
+    parse_job_id,
+    run_job_id,
+    run_launch,
+)
 from threetears.evals.schema.models import ArmSchedule
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.fixtures.toyhost.kind import ScriptedExtractionClient
@@ -26,6 +35,7 @@ __all__ = [
     "ClockedStore",
     "HeldGate",
     "held_extraction",
+    "launched_arm",
     "launched_run",
     "other_process",
     "style_sweep",
@@ -106,6 +116,16 @@ async def launched_run(host: OpsHost, k_runs: int = 1, *, max_cost_usd: float | 
     Started is read as no longer ``pending``: a run its cap stops at its first cell can be ``budget_stopped`` before
     any poll catches it ``running``.
     """
+    _launch_id, run_id = await launched_arm(host, k_runs, max_cost_usd=max_cost_usd)
+    return run_id
+
+
+async def launched_arm(host: OpsHost, k_runs: int = 1, *, max_cost_usd: float | None = None) -> tuple[str, str]:
+    """:func:`launched_run`, answering the launch's record id beside the run's.
+
+    A test that lets the holder go on after its run is lost waits for the launch's task to end as well: until it
+    ends, the launch's record is stored running, and a read once its lease has lapsed writes it lost too.
+    """
     arguments = LaunchArguments(
         template_id=toyhost_template().id,
         subject_id=TOYHOST_SUBJECT.subject_id,
@@ -119,7 +139,8 @@ async def launched_run(host: OpsHost, k_runs: int = 1, *, max_cost_usd: float | 
             await asyncio.sleep(0.01)
         while (await job_poll(host, run_job_id(run_ids[0]), TOYHOST_SCOPE)).status == "pending":
             await asyncio.sleep(0.01)
-    return run_ids[0]
+    _kind, launch_id, _attempt = parse_job_id(job.job_id)
+    return launch_id, run_ids[0]
 
 
 def style_sweep(styles: tuple[str, ...], *, arm_schedule: ArmSchedule | None, k_runs: int = 1) -> SweepArguments:

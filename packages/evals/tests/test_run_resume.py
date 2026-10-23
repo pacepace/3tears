@@ -70,7 +70,15 @@ from packages.evals.tests.fixtures.toyhost.launch import (
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template, toyhost_test_cases
 from packages.evals.tests.job_support import InMemoryRunStore
-from packages.evals.tests.lease_support import T0, ClockedStore, held_extraction, launched_run, other_process, until
+from packages.evals.tests.lease_support import (
+    T0,
+    ClockedStore,
+    held_extraction,
+    launched_arm,
+    launched_run,
+    other_process,
+    until,
+)
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture, settled
 
@@ -113,22 +121,25 @@ async def _interrupted(monkeypatch: pytest.MonkeyPatch, how: str) -> tuple[OpsHo
     gate = held_extraction(monkeypatch, passing=DONE_BEFORE)
     store = ClockedStore()
     holder = off_loop(ops_fixture, store=store).host
-    run_id = await launched_run(holder, K)
+    launch_id, run_id = await launched_arm(holder, K)
     await until(lambda: len(_rows(holder, run_id)) == DONE_BEFORE and gate.held >= 1)
     launched = off_loop(_run, holder, run_id)
+    manager = holder.launch.job_manager
     if how == "lost":
         store.at = T0 + timedelta(seconds=61)
         assert (await job_poll(other_process(holder), run_job_id(run_id), TOYHOST_SCOPE)).state == "lost"
         in_flight = gate.held
         assert in_flight >= 1, "cells were in flight when the lease lapsed"
         gate.set()
-        await until(lambda: gate.released >= in_flight and not holder.launch.job_manager.is_active(run_id))
+        await until(lambda: gate.released >= in_flight and not manager.is_active(run_id))
         assert len(_rows(holder, run_id)) == DONE_BEFORE, "the dead holder's cells in flight finished and wrote nothing"
     else:
-        assert holder.launch.job_manager.cancel_job(run_id, reason="shipping a fix")
-        await until(lambda: not holder.launch.job_manager.is_active(run_id))
+        assert manager.cancel_job(run_id, reason="shipping a fix")
+        await until(lambda: not manager.is_active(run_id))
         assert "cancelled" in {row.termination for row in _rows(holder, run_id)}, "the cancel cut cells short"
         gate.set()
+    # Its launch has ended too, so nothing of the first holding is still writing when the test takes the run up.
+    await until(lambda: not manager.is_task_active(launch_id))
     return holder, run_id, launched, store
 
 
