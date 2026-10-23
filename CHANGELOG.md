@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### nats: a declared KV bucket on more than one server, and an Object Store's in-place reshape logged
+
+**Added** `replicas: int | None = None` to `NatsClient.ensure_kv_bucket` (and the `KvDeclaring` protocol and
+the testing fake): how many servers hold the bucket. `None` is no request -- the bucket is created on one
+server, as before, and a live bucket's placement is never compared -- so every existing declarer is unchanged.
+A declarer that owns its bucket (`owns_bucket=True`) reconciles a live bucket's replicas in place (JetStream
+keeps its entries), a self-heal re-open and a restoration after a reconnect create it with them, and a
+non-positive value raises `ValueError`. For a tool pod's pointer bucket, whose loss with one server made a
+replicated Object Store's chunks unreachable.
+
+**Changed** `NatsClient.ensure_object_store`: a live bucket reconciled to a new bound or replica count is
+logged at INFO ("object store reconciled in place to its declared shape") with the old and new `max_bytes`
+and replicas. It was already updated in place; now a deployment that raises them can see it land.
+
 ### datasources: a partitioned export proven against the caller's own counts, read or handed to L3, then deleted
 
 **Added** (`threetears.datasources.partitioned_export`), for rows that never change once written (a model
