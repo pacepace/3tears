@@ -41,7 +41,7 @@ from __future__ import annotations
 import math
 from collections.abc import Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import (
@@ -62,7 +62,11 @@ from threetears.evals.kernel.result_condition import (
     delivered_a_turn,
     trial_exclusion,
 )
+from threetears.evals.kernel.identity import resolve_context_identity
 from threetears.evals.kernel.usage_capture import production_replicating_cost, resolve_result_usage
+
+if TYPE_CHECKING:
+    from threetears.evals.kernel.host.profile import HostProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -620,16 +624,22 @@ def compute_pass_hat_k(
     }
 
 
-def pass_hat_k_cell(run: EvalRun) -> tuple[str, ...]:
+def pass_hat_k_cell(run: EvalRun, profile: HostProfile | None) -> tuple[str, ...]:
     """The configuration a run's attempts are repeats of, for pooling pass^k across runs.
 
     A cell is a variant under one measurement context (:mod:`threetears.evals.kernel.identity`).
-    The variant is stamped per result; the context is the run's ``context_key``, the digest of
-    every condition a comparison must hold fixed (case basis, judges and their configs, simulator,
-    cassette, seeded world, subject state, tool permissions) — and NOT ``k_runs``, which is how
-    many repeats were taken under a condition rather than a condition. Two runs sharing it, at one
-    identity version and one apparatus provenance, measured one configuration, so their attempts
-    at a case are more attempts at that case.
+    The variant is stamped per result; the context is the run's context key, the digest of
+    every condition a comparison must hold fixed (subject and template, judges and their configs,
+    simulator, cassette, seeded world, subject state, tool permissions, apparatus settings), and one
+    apparatus provenance. Neither ``k_runs`` nor the case set is a condition: how many repeats were
+    taken, and over which cases, is how much was sampled under one condition. So two runs of one cell
+    are more samples of it whatever cases each covered, and their attempts at a case pool.
+
+    The key is the one the run's context RESOLVES to at this build's identity version
+    (:func:`~threetears.evals.kernel.identity.resolve_context_identity`), never the stamp alone: a run
+    stamped under an older predicate is re-derived from what it stored, so it pools with a run stamped
+    under this one whenever their inputs agree. Without a profile nothing can be re-derived, and a run
+    stamped under another version is a cell of its own beside this build's.
 
     A run that carries no ``context_key`` (its host assembled it without the launch) is its own
     cell: nothing recorded says what it held fixed, and pooling it would be a merge nothing
@@ -637,12 +647,18 @@ def pass_hat_k_cell(run: EvalRun) -> tuple[str, ...]:
 
     :param run: The run whose cell is wanted.
     :ptype run: EvalRun
+    :param profile: The host that re-derives a run stamped under an older identity version; ``None`` reads the
+        stamp as it is.
+    :ptype profile: HostProfile | None
     :return: A hashable cell id; equal for two runs exactly when their attempts may pool.
     :rtype: tuple[str, ...]
     """
     if run.context_key is None:
         return ("run", run.id)
-    return ("context", run.context_key, str(run.identity_version), run.apparatus_provenance)
+    if profile is None:
+        return ("context", run.context_key, str(run.identity_version), run.apparatus_provenance)
+    identity = resolve_context_identity(run, profile)
+    return ("context", identity.context_key, str(identity.identity_version), run.apparatus_provenance)
 
 
 def pool_pass_hat_k_attempts(
@@ -650,7 +666,7 @@ def pool_pass_hat_k_attempts(
     *,
     cell_of_run: Mapping[str, Hashable],
     rubric_threshold: int = 3,
-) -> tuple[dict[tuple[Hashable, str, int, str, str], list[bool]], int]:
+) -> tuple[dict[tuple[Hashable, str, str, str], list[bool]], int]:
     """Each case's scored attempts in one pool, keyed as :func:`pool_pass_hat_k` keys them.
 
     The grouping behind :func:`pool_pass_hat_k`, public so a surface that needs the cases themselves — an
@@ -663,12 +679,12 @@ def pool_pass_hat_k_attempts(
     :ptype cell_of_run: Mapping[str, Hashable]
     :param rubric_threshold: The 1–5 score a rubric dimension must reach to pass.
     :ptype rubric_threshold: int
-    :return: ``(attempts, n_cannot_tell)``: each ``(cell, variant_key, identity_version, model, test_case_id)``
-        unit's scored attempts in result order, and the attempts left out because a judge could not tell.
-        A unit whose every attempt was left out is absent.
-    :rtype: tuple[dict[tuple[Hashable, str, int, str, str], list[bool]], int]
+    :return: ``(attempts, n_cannot_tell)``: each ``(cell, variant_key, model, test_case_id)`` unit's scored attempts
+        in result order, and the attempts left out because a judge could not tell. A unit whose every attempt was
+        left out is absent.
+    :rtype: tuple[dict[tuple[Hashable, str, str, str], list[bool]], int]
     """
-    cases: dict[tuple[Hashable, str, int, str, str], list[bool]] = {}
+    cases: dict[tuple[Hashable, str, str, str], list[bool]] = {}
     n_cannot_tell = 0
     for r in results:
         passed, was_cannot_tell = _trial_pass(r, rubric_threshold=rubric_threshold)
@@ -676,7 +692,7 @@ def pool_pass_hat_k_attempts(
         if passed is None:
             continue
         cell = cell_of_run.get(r.eval_run_id, ("run", r.eval_run_id))
-        cases.setdefault((cell, r.variant_key, r.identity_version, r.model, r.test_case_id), []).append(passed)
+        cases.setdefault((cell, r.variant_key, r.model, r.test_case_id), []).append(passed)
     return cases, n_cannot_tell
 
 
@@ -714,9 +730,12 @@ def pool_pass_hat_k(
     The cross-run sibling of :func:`compute_pass_hat_k`, with the same estimator and the same row.
     A *case* here is a test case within one cell: its attempts from every run of that cell pool
     into one ``(n, c)``, so a repeat run of a configuration adds depth to its cases instead of
-    adding a second copy of each. Attempts are keyed by ``(cell, variant_key, identity_version,
-    model, test_case_id)``, so a caller handing in a mixed pool still never pools two variants,
-    and the same test case measured under two cells stays two cases, averaged side by side.
+    adding a second copy of each, and runs of one cell over different case sets cover the union
+    of their cases. Attempts are keyed by ``(cell, variant_key, model, test_case_id)``, so a
+    caller handing in a mixed pool still never pools two variants, and the same test case
+    measured under two cells stays two cases, averaged side by side. Which identity version a
+    variant key is read at is the caller's to settle before it pools: the frontier pools one
+    contestant at a time.
 
     :param results: The pool — typically one contestant's results across runs.
     :ptype results: Sequence[EvalResult]

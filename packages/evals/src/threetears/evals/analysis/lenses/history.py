@@ -604,9 +604,9 @@ def _suite_epoch_key(run: EvalRun) -> tuple[str, tuple[str, ...]]:
     """The suite-version identity of a run: its template and frozen case set.
 
     Two runs are the same suite version iff they score the same template against
-    the same test cases — exactly what ``context_components.case_basis`` digests,
-    derived here straight from the run's own fields so it is defined for every
-    run, stamped or not. A change in this key between two
+    the same test cases, read straight from the run's own frozen fields so it is
+    defined for every run, stamped or not. The context key does not hold the case
+    set, so this is the one place a history reads it. A change in this key between two
     adjacent runs is a suite-version boundary: an aggregate step across it is the
     denominator changing, not necessarily the contestant regressing.
 
@@ -786,13 +786,16 @@ def compute_history(
     # — same population and same reason as `frontier`'s, so the two lenses cannot report
     # different spans over one corpus.
     considered: list[EvalResult] = []
+    considered_keys: list[ContestantKey] = []
     for row in placed:
         if subject_id is not None and row.subject_id != subject_id:
             n_filtered_out += 1
             continue
         n_considered += 1
         considered.append(row.result)
-        series_groups.setdefault((row.subject_id, _contestant_key(row.result)), []).append(row)
+        contestant = _contestant_key(row.result, row.run)
+        considered_keys.append(contestant)
+        series_groups.setdefault((row.subject_id, contestant), []).append(row)
         subject_labels[row.subject_id] = row.run.subject_snapshot.subject_label
         if (short := completeness_disclosure(row.run.completeness)) is not None:
             degraded_by_run[row.run.id] = short
@@ -938,7 +941,7 @@ def compute_history(
         )
     )
 
-    identity_versions = _identity_version_span(considered)
+    identity_versions = _identity_version_span(considered_keys)
 
     return HistoryResult(
         metric=metric,

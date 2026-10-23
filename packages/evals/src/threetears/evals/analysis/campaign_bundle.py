@@ -860,6 +860,17 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
     }
     if unmeasured:
         view["disclosures"]["pass_k_unmeasured"] = unmeasured
+    # A run whose attempts did not pool into its contestant's pass^k cell, with why: its cases still count, beside the
+    # cell's, so the writer reads why they are not more samples of it.
+    # Keyed by model as `pass_k_unmeasured` is, and extended rather than overwritten, so two contestants of one model
+    # each keep their runs.
+    unpooled: dict[str, list[dict[str, Any]]] = {}
+    for subject in aspect.frontier.subjects:
+        for point in subject.points:
+            unpooled.setdefault(point.model, []).extend(entry.model_dump(mode="json") for entry in point.unpooled_runs)
+    unpooled = {model: entries for model, entries in unpooled.items() if entries}
+    if unpooled:
+        view["disclosures"]["pass_k_unpooled"] = unpooled
     if aspect.telemetry.measures.absent_scopes:
         view["disclosures"]["absent_scopes"] = list(aspect.telemetry.measures.absent_scopes)
     if aspect.telemetry.measures.unreported_observations:

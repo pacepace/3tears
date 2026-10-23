@@ -46,6 +46,7 @@ from threetears.evals.kernel.result_condition import (
     harness_faulted,
 )
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgeEvidenceTier
+from threetears.evals.kernel.identity import resolve_context_identity
 from threetears.evals.kernel.scoring import (
     CompositeBasis,
     capability_scores,
@@ -60,6 +61,7 @@ from threetears.evals.kernel.scoring import (
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.reporting import (
     place_results,
+    served_reading,
     pooled_composite_basis,
     pooled_cost_compositions,
     pooled_served_models,
@@ -330,6 +332,29 @@ class FrontierCostTie(EvalBaseModel):
     p_value: float | None = None
 
 
+#: Why a run of a contestant did not pool into its pass^k cell. ``changed_context``: its resolved measurement context
+#: (minus the case set, which never splits a cell) or its apparatus provenance differs from the cell's.
+#: ``other_template``: it ran another template, or another revision of one, which is another template id.
+#: ``other_served_model``: its context matches, but the provider's responses named another model as having answered
+#: its candidate calls (a floating alias re-pointed, say); a run whose responses named none still pools.
+#: ``no_recorded_context``: its host assembled it without the launch, so nothing records what it held fixed.
+UnpooledReason = Literal["changed_context", "other_template", "other_served_model", "no_recorded_context"]
+
+
+class UnpooledRun(EvalBaseModel):
+    """A run behind a frontier point whose attempts did not pool into the point's pass^k cell, and why.
+
+    Its results stay in the point: its cases are averaged beside the cell's as cases of their own, so a case both
+    measured counts twice rather than gaining depth. Naming it says why it was not more samples of the cell.
+    """
+
+    run_id: str
+    reason: UnpooledReason
+    #: What differs from the cell, in a sentence: the context components that moved, the two templates, the
+    #: apparatus provenance, the models that answered, or the identity version nothing re-derived.
+    detail: str
+
+
 class FrontierPoint(EvalBaseModel):
     """One contestant's position on quality x cost x latency, within a subject.
 
@@ -491,6 +516,18 @@ class FrontierPoint(EvalBaseModel):
     #: pass^k from 1.00 over 3 cases to 1.00 over 4, lower its mean cost by a third,
     #: and flip its rival from *on frontier* to *dominated*.
     completeness_disclosures: dict[str, str] = {}
+
+    #: The runs whose attempts pooled into this point's pass^k cell: one variant under one resolved measurement
+    #: context and apparatus provenance, answered by the same served models (a run whose responses named none joins
+    #: the cell), whatever cases each run covered and whenever it ran, so a case's attempts across them are one
+    #: case's attempts and pass^k averages over the union of their cases (:func:`_pass_hat_k_pool`). The cell is
+    #: the one holding the most runs. Every other run behind the point is in ``unpooled_runs``, so the two lists
+    #: name every run behind it.
+    pooled_run_ids: list[str] = []
+
+    #: The runs behind this point that did not pool into its pass^k cell, each with why (:class:`UnpooledRun`).
+    #: Their results are still in the point, as cases of their own beside the cell's. Empty when every run pooled.
+    unpooled_runs: list[UnpooledRun] = []
 
     #: Which models the provider's responses named as having answered this contestant's candidate calls (#684):
     #: ``one``, ``pooled`` — the contestant asked for one model id (a floating alias, say) and several models
@@ -700,6 +737,8 @@ def _frontier_point(
     templates_by_run: Mapping[str, str | None],
     degraded_by_run: Mapping[str, str],
     footing_by_run: Mapping[str, ProductionFooting | None] | None,
+    runs_by_id: Mapping[str, EvalRun],
+    profile: HostProfile | None,
 ) -> tuple[FrontierPoint, _ContestantCases]:
     """Aggregate one contestant's results into a single frontier point, and the per-case values behind it.
 
@@ -754,6 +793,10 @@ def _frontier_point(
         ``None`` when the frontier was given no host declarations to read one with; narrowed here to the
         runs these results came from.
     :ptype footing_by_run: Mapping[str, ProductionFooting | None] | None
+    :param runs_by_id: Every placed run by id, which says why a run of this point did not pool into its cell.
+    :ptype runs_by_id: Mapping[str, EvalRun]
+    :param profile: The host that re-derived each run's cell, which re-derives what differs between two of them.
+    :ptype profile: HostProfile | None
     :return: A :class:`FrontierPoint` with quality (and its interval), cost, latency, and every
         denominator, and the per-case values each axis averages, which a domination test pairs
         on. Domination and the bar are filled by the caller, which needs the subject's other
@@ -767,18 +810,22 @@ def _frontier_point(
     variant_key, identity_version = contestant
 
     # pass^k — the canonical estimator, over this contestant's attempts pooled per case within
-    # each cell: a repeat run of one configuration deepens its cases, while the same case under
-    # another context (a second template, a replayed cassette) stays a case of its own beside it.
-    pooled = pool_pass_hat_k(results, cell_of_run=cell_of_run, k=k, rubric_threshold=rubric_threshold)
+    # each cell: a repeat run of one configuration deepens its cases and a run over other cases of it
+    # widens them, while the same case under another context (a second template, a replayed
+    # cassette) stays a case of its own beside it, and its run is named in `unpooled_runs`.
+    # Each run's cell for THIS contestant: its context cell, and the models that answered its candidate calls here.
+    served_of_run = _served_by_run(results)
+    point_cells = _served_cells(results, cell_of_run, served_of_run)
+    pooled = pool_pass_hat_k(results, cell_of_run=point_cells, k=k, rubric_threshold=rubric_threshold)
     pass_hat_k = pooled["pass_hat_k"]
     pass_hat_1 = pass_hat_k_at(pooled["pass_hat_k_curve"], 1)["pass_hat_k"]
     # The same cases the headline averages, one estimate each: the interval runs over them, and a
     # domination test pairs two contestants on the test cases both measured.
-    attempts, _ = pool_pass_hat_k_attempts(results, cell_of_run=cell_of_run, rubric_threshold=rubric_threshold)
+    attempts, _ = pool_pass_hat_k_attempts(results, cell_of_run=point_cells, rubric_threshold=rubric_threshold)
     unit_estimates: list[float] = []
     unit_attempts = 0
     pass_by_case: dict[str, list[float]] = {}
-    for (_, _, _, _, test_case_id), case_attempts in attempts.items():
+    for (_, _, _, test_case_id), case_attempts in attempts.items():
         estimate = case_pass_hat_k(case_attempts, k)
         if estimate is None:
             continue
@@ -892,6 +939,9 @@ def _frontier_point(
     # alone, the entries for one showing it beside its siblings. Two derivations could
     # disagree; one cannot.
     template_span = _template_span_entries(contributing_templates)
+    pooled_run_ids, unpooled_runs = _pass_hat_k_pool(
+        results, cell_of_run=point_cells, runs=runs_by_id, served_of_run=served_of_run, profile=profile
+    )
 
     cases = _ContestantCases(
         pass_hat_k=_case_means((case, value) for case, values in pass_by_case.items() for value in values),
@@ -908,6 +958,8 @@ def _frontier_point(
         completeness_disclosures={
             run_id: degraded_by_run[run_id] for run_id in contributing_runs if run_id in degraded_by_run
         },
+        pooled_run_ids=pooled_run_ids,
+        unpooled_runs=unpooled_runs,
         variant_key=variant_key,
         model=model,
         variant_identity_version=identity_version,
@@ -944,6 +996,230 @@ def _frontier_point(
         served_models=pooled_served_models(results),
     )
     return point, cases
+
+
+def _served_by_run(results: Sequence[EvalResult]) -> dict[str, frozenset[str]]:
+    """The models the provider's responses named for each run's candidate calls, over one contestant's results.
+
+    Read off the candidate usage rows (:func:`~threetears.evals.analysis.reporting.served_reading`), never the id
+    the launch asked for. A call whose response named none adds nothing, so a run whose responses named none maps to
+    the empty set.
+
+    :param results: One contestant's results.
+    :ptype results: Sequence[EvalResult]
+    :return: Run id → the named models, for every run of ``results``.
+    :rtype: dict[str, frozenset[str]]
+    """
+    served: dict[str, frozenset[str]] = {}
+    for result in results:
+        reading = served_reading(result)
+        served[result.eval_run_id] = served.get(result.eval_run_id, frozenset()) | (
+            reading.served if reading is not None else frozenset()
+        )
+    return served
+
+
+def _served_cells(
+    results: Sequence[EvalResult], cell_of_run: Mapping[str, Hashable], served_of_run: Mapping[str, frozenset[str]]
+) -> dict[str, tuple[Hashable, tuple[str, ...]]]:
+    """Each run's pass^k cell for one contestant: its context cell and the models that answered its calls.
+
+    The model that answered is what was measured, whatever id was asked for, so two runs of one context answered by
+    different models are two cells. A run answered by several models (an alias re-pointed mid-run) is a cell of
+    that mix: it pools with a run answered by the same mix, never with one answered by part of it. A run whose
+    responses named no model is not evidence of another one, so it joins the cell its context shares with the most
+    runs that did name theirs; the unconfirmed identity is disclosed where every reading of the model is
+    (``model_identity_disclosure``), never refused.
+
+    :param results: One contestant's results.
+    :ptype results: Sequence[EvalResult]
+    :param cell_of_run: Run id → its context cell (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell`); a run
+        absent from it is its own cell.
+    :ptype cell_of_run: Mapping[str, Hashable]
+    :param served_of_run: Run id → the models its responses named here (:func:`_served_by_run`).
+    :ptype served_of_run: Mapping[str, frozenset[str]]
+    :return: Run id → ``(context cell, sorted served models)``, for every run of ``results``.
+    :rtype: dict[str, tuple[Hashable, tuple[str, ...]]]
+    """
+    n_results: dict[str, int] = {}
+    for result in results:
+        n_results[result.eval_run_id] = n_results.get(result.eval_run_id, 0) + 1
+    context = {run_id: cell_of_run.get(run_id, ("run", run_id)) for run_id in n_results}
+    named: dict[Hashable, dict[tuple[str, ...], list[str]]] = {}
+    for run_id, cell in context.items():
+        if served_of_run.get(run_id):
+            named.setdefault(cell, {}).setdefault(tuple(sorted(served_of_run[run_id])), []).append(run_id)
+    # Where a run named none: the served set most of its context's runs named, then the one most results rest on.
+    joined = {
+        cell: min(
+            by_served,
+            key=lambda served: (
+                -len(by_served[served]),
+                -sum(n_results[run_id] for run_id in by_served[served]),
+                served,
+            ),
+        )
+        for cell, by_served in named.items()
+    }
+    return {
+        run_id: (
+            cell,
+            tuple(sorted(served_of_run[run_id])) if served_of_run.get(run_id) else joined.get(cell, ()),
+        )
+        for run_id, cell in context.items()
+    }
+
+
+def _pass_hat_k_pool(
+    results: Sequence[EvalResult],
+    *,
+    cell_of_run: Mapping[str, tuple[Hashable, tuple[str, ...]]],
+    runs: Mapping[str, EvalRun],
+    served_of_run: Mapping[str, frozenset[str]],
+    profile: HostProfile | None,
+) -> tuple[list[str], list[UnpooledRun]]:
+    """Which of one contestant's runs pooled into its pass^k cell, and why each other one did not.
+
+    The cell is the one holding the most of the contestant's runs, then the most of its results, then the
+    alphabetically first run. A cell with a recorded context is preferred over a run that recorded none, which
+    is a cell of one run however it ranks. Every run outside the chosen cell is named, so none drops out of the
+    point unsaid.
+
+    :param results: One contestant's results.
+    :ptype results: Sequence[EvalResult]
+    :param cell_of_run: Run id → its cell for this contestant (:func:`_served_cells`), covering every run of
+        ``results``.
+    :ptype cell_of_run: Mapping[str, tuple[Hashable, tuple[str, ...]]]
+    :param runs: Every placed run by id.
+    :ptype runs: Mapping[str, EvalRun]
+    :param served_of_run: The models each run's responses named for this contestant (:func:`_served_by_run`).
+    :ptype served_of_run: Mapping[str, frozenset[str]]
+    :param profile: The host that re-derives a run's context, or ``None``.
+    :ptype profile: HostProfile | None
+    :return: The pooled run ids, sorted, and every other run with its reason, sorted by run id.
+    :rtype: tuple[list[str], list[UnpooledRun]]
+    """
+    members: dict[tuple[Hashable, tuple[str, ...]], set[str]] = {}
+    n_results: dict[tuple[Hashable, tuple[str, ...]], int] = {}
+    for result in results:
+        cell = cell_of_run[result.eval_run_id]
+        members.setdefault(cell, set()).add(result.eval_run_id)
+        n_results[cell] = n_results.get(cell, 0) + 1
+    if not members:
+        return [], []
+    pooled = min(
+        members,
+        key=lambda cell: (
+            not (isinstance(cell[0], tuple) and cell[0][:1] == ("context",)),
+            -len(members[cell]),
+            -n_results[cell],
+            min(members[cell]),
+        ),
+    )
+    pooled_ids = sorted(members[pooled])
+    reference = runs.get(pooled_ids[0])
+    unpooled = [
+        _unpooled_run(run_id, runs.get(run_id), reference, profile, served=(cell[1], pooled[1]))
+        for cell, run_ids in members.items()
+        if cell != pooled
+        for run_id in sorted(run_ids)
+    ]
+    return pooled_ids, sorted(unpooled, key=lambda entry: entry.run_id)
+
+
+def _unpooled_run(
+    run_id: str,
+    run: EvalRun | None,
+    pooled: EvalRun | None,
+    profile: HostProfile | None,
+    *,
+    served: tuple[tuple[str, ...], tuple[str, ...]],
+) -> UnpooledRun:
+    """Say why ``run`` is not in the cell ``pooled`` stands for.
+
+    :param run_id: The run kept out.
+    :ptype run_id: str
+    :param run: That run, or ``None`` where it was not placed (a caller's cell map naming a run it did not pass).
+    :ptype run: EvalRun | None
+    :param pooled: A run of the pooled cell, or ``None`` likewise.
+    :ptype pooled: EvalRun | None
+    :param profile: The host that re-derives a context, or ``None``.
+    :ptype profile: HostProfile | None
+    :param served: The served models of the run's cell, then of the pooled cell.
+    :ptype served: tuple[tuple[str, ...], tuple[str, ...]]
+    :return: The run and its reason.
+    :rtype: UnpooledRun
+    """
+    if run is None or run.context_key is None:
+        return UnpooledRun(
+            run_id=run_id,
+            reason="no_recorded_context",
+            detail="it recorded no measurement context, so nothing says what it held fixed",
+        )
+    if pooled is None or pooled.context_key is None:
+        return UnpooledRun(
+            run_id=run_id,
+            reason="no_recorded_context",
+            detail="the runs it would pool with recorded no measurement context",
+        )
+    if run.template_id != pooled.template_id:
+        return UnpooledRun(
+            run_id=run_id,
+            reason="other_template",
+            detail=(
+                f"it ran template {run.template_id or '(ad hoc)'} and the pooled runs ran "
+                f"{pooled.template_id or '(ad hoc)'}: another template, or another revision of one"
+            ),
+        )
+    moved = _moved_components(run, pooled, profile)
+    if not moved and run.apparatus_provenance == pooled.apparatus_provenance and served[0] != served[1]:
+        return UnpooledRun(
+            run_id=run_id,
+            reason="other_served_model",
+            detail=(
+                f"its candidate calls were answered by {', '.join(served[0])} and the pooled runs' by "
+                f"{', '.join(served[1])}, as the provider's responses named them"
+            ),
+        )
+    if moved:
+        detail = f"its context differs from the pooled runs' in {', '.join(moved)}"
+    elif run.apparatus_provenance != pooled.apparatus_provenance:
+        detail = f"its apparatus was {run.apparatus_provenance} and the pooled runs' {pooled.apparatus_provenance}"
+    elif profile is None and run.identity_version != pooled.identity_version:
+        detail = (
+            f"it was stamped under identity version v{run.identity_version} and the pooled runs under "
+            f"v{pooled.identity_version}, and no host was given to re-derive either"
+        )
+    else:
+        detail = "its context key differs from the pooled runs'"
+    return UnpooledRun(run_id=run_id, reason="changed_context", detail=detail)
+
+
+def _moved_components(run: EvalRun, pooled: EvalRun, profile: HostProfile | None) -> list[str]:
+    """The context components two runs differ in, read at this build's identity version.
+
+    Without a host nothing is re-derived, so stamped components are compared only where both were stamped under
+    one version; otherwise none can be named.
+
+    :param run: The run kept out.
+    :ptype run: EvalRun
+    :param pooled: A run of the pooled cell.
+    :ptype pooled: EvalRun
+    :param profile: The host that re-derives a context, or ``None``.
+    :ptype profile: HostProfile | None
+    :return: The differing component names, in field order; empty when none can be named.
+    :rtype: list[str]
+    """
+    if profile is not None:
+        was = resolve_context_identity(run, profile).context_components
+        now = resolve_context_identity(pooled, profile).context_components
+    elif run.identity_version == pooled.identity_version:
+        if run.context_components is None or pooled.context_components is None:
+            return []
+        was, now = run.context_components, pooled.context_components
+    else:
+        return []
+    return [name for name in type(was).model_fields if getattr(was, name) != getattr(now, name)]
 
 
 class _ContestantCases(NamedTuple):
@@ -1346,7 +1622,8 @@ def compute_frontier(
     (secondary), production-replicating cost, total latency, and every denominator.
     The version is part of the contestant because one counter backs both key
     predicates and cannot say which moved, so pooling on the digest alone would merge
-    on unverifiable provenance. The non-dominated set
+    on unverifiable provenance; a key its run's recorded lever map reproduces under this
+    build is verified, and placed at this build's version (:func:`_contestant_key`). The non-dominated set
     is computed and dominated points are flagged rather than dropped.
 
     The subjects partition; the CONDITIONS do not. ``variant_key`` names the shipping
@@ -1362,10 +1639,11 @@ def compute_frontier(
     shallowest ``k_runs`` among the subject's ranked runs, and estimated without bias from each
     case's attempts pooled across the runs of one cell
     (:func:`~threetears.evals.kernel.scoring.pool_pass_hat_k`): two runs of one variant under
-    one ``context_key`` are more attempts at the same cases, while the same case measured under
-    another context is a separate case beside it. So a repeat run sharpens a contestant's estimate
-    rather than doubling its case count, and no contestant is ranked on a different depth than
-    its rivals.
+    one context, resolved at this build's identity version, are more samples of one cell whatever
+    cases each covered, while the same case measured under another context is a separate case
+    beside it, and the point names the run and why (:attr:`FrontierPoint.unpooled_runs`). So a
+    repeat run sharpens a contestant's estimate rather than doubling its case count, a run over
+    more cases widens it, and no contestant is ranked on a different depth than its rivals.
 
     When ``bar`` is supplied it gates pass^k, read by each point's pass^k interval the way every
     campaign bar is read (:attr:`FrontierPoint.bar_decision`): cleared only when the whole interval is at
@@ -1499,6 +1777,7 @@ def compute_frontier(
     # filter keeps the span from naming a predicate no row in this answer was keyed under
     # — the same rule the cassette-mode and template maps below follow.
     considered: list[EvalResult] = []
+    considered_keys: list[ContestantKey] = []
     # Which configuration each run measured, so a contestant's repeat runs pool their attempts at
     # a case (more depth) and runs under different conditions never do. Collected on the same seam
     # as the maps above: a point is built from RESULTS and the measurement context lives on the RUN.
@@ -1517,11 +1796,14 @@ def compute_frontier(
 
         n_considered += 1
         considered.append(result)
-        by_subject.setdefault(resolved, {}).setdefault(_contestant_key(result), []).append(result)
+        contestant = _contestant_key(result, run)
+        considered_keys.append(contestant)
+        by_subject.setdefault(resolved, {}).setdefault(contestant, []).append(result)
         subject_labels[resolved] = run.subject_snapshot.subject_label
         cassette_modes_by_run[run.id] = run.cassette_mode
         templates_by_run[run.id] = run.template_id
-        cell_of_run[run.id] = pass_hat_k_cell(run)
+        if run.id not in cell_of_run:
+            cell_of_run[run.id] = pass_hat_k_cell(run, profile)
         placed_runs[run.id] = run
         results_of_run.setdefault(run.id, []).append(result)
         k_by_subject[resolved] = min(k_by_subject.get(resolved, run.k_runs), run.k_runs)
@@ -1556,6 +1838,8 @@ def compute_frontier(
                     templates_by_run=templates_by_run,
                     degraded_by_run=degraded_by_run,
                     footing_by_run=footing_by_run,
+                    runs_by_id=placed_runs,
+                    profile=profile,
                 ),
                 groups[key],
             )
@@ -1670,7 +1954,7 @@ def compute_frontier(
             )
         )
 
-    identity_versions = _identity_version_span(considered)
+    identity_versions = _identity_version_span(considered_keys)
 
     return FrontierResult(
         bar=bar,
@@ -1715,6 +1999,8 @@ __all__ = [
     "FrontierDominator",
     "FrontierError",
     "FrontierPoint",
+    "UnpooledReason",
+    "UnpooledRun",
     "FrontierResult",
     "FrontierVerdict",
     "normalize_bar",

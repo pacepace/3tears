@@ -2428,8 +2428,12 @@ class AnalysisContextBundle(EvalDocumentModel):
     # not enforced), so it builds its family, scopes the reading scope and the verdict order, and confirms its
     # readings over unchanged runs; `reading_scope.question_post_hoc` is replaced by `reading_scope.question_after_runs`
     # (both times), which every page and listing says.
+    # 61: the case set leaves the pass^k cell, which is read at this build's identity version and splits on the
+    # model that answered (`IDENTITY_VERSION` 25), so pass^k and its curve move over unchanged runs; each frontier
+    # point names the runs that pooled into its cell (`pooled_run_ids`) and every other one with why
+    # (`unpooled_runs`); a comparison set's case-set fingerprint digests the run's frozen case ids and is never None.
     schema_version: int = Field(
-        default=60, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=61, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---

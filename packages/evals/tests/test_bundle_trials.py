@@ -244,7 +244,7 @@ def test_the_writer_reads_the_flagged_trials_and_only_the_tail_of_what_their_jud
 
 def test_the_build_is_carried_and_left_out_of_the_fingerprint() -> None:
     bundle = _bundle(RESULTS)
-    assert bundle.schema_version == 60
+    assert bundle.schema_version == 61
     assert bundle.package_version is not None
     assert bundle.model_copy(update={"package_version": "9.9.9"}).fingerprint() == bundle.fingerprint()
 
