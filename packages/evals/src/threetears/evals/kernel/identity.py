@@ -518,8 +518,8 @@ def case_set_fingerprint(run: EvalRun) -> str:
 
     The one comparison of case sets every surface makes. The context key does not hold the case set (more cases are
     more samples of one condition), so a surface that asks whether two runs scored the same cases (a comparison's
-    case-set badge, a history's suite boundary, a take-up holding the run's cases equal) reads this. Sorted, so the
-    order the cases were resolved in cannot split one set.
+    case-set badge, a history's suite boundary) reads this. Sorted, so the order the cases were resolved in cannot
+    split one set.
 
     :param run: The run.
     :ptype run: EvalRun

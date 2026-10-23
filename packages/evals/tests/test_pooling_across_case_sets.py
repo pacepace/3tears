@@ -372,3 +372,28 @@ def test_the_cost_per_acceptable_outcome_reads_the_headline_cells_runs_on_both_s
     assert point.pass_hat_k_curve[0]["pass_hat_k"] == 0.5
     assert point.cost_per_acceptable_outcome == pytest.approx(0.01 / 0.5)
     assert point.production_replicating_cost == pytest.approx((4 * 0.01 + 2 * 1.0) / 6)
+
+
+def test_a_run_silent_on_both_takes_one_peers_whole_pair_never_two_majorities():
+    """Three runs share digest d2 but no served model; two share (d1, s1). Silent X joins those two, not (d2, s1)."""
+    pairs = {
+        "run-a": ("d1", "s1"),
+        "run-b": ("d1", "s1"),
+        "run-c": ("d2", "s2"),
+        "run-d": ("d2", "s3"),
+        "run-e": ("d2", "s4"),
+    }
+    runs = [_launched(run_id, test_case_ids=["tc1"], template_digest=digest) for run_id, (digest, _) in pairs.items()]
+    silent = _launched("run-x", test_case_ids=["tc1"])
+    results = {
+        run.id: _results(run, {"tc1": (True,)}, identity_version=IDENTITY_VERSION, served=pairs[run.id][1])
+        for run in runs
+    }
+    results[silent.id] = _results(silent, {"tc1": (True,)}, identity_version=IDENTITY_VERSION, served=None)
+
+    [point] = _bundle([*runs, silent], results).frontier.subjects[0].points
+
+    headline = _cells(point)[0]
+    assert headline.run_ids == ["run-a", "run-b", "run-x"]
+    assert headline.template_digest_assumed == ["run-x"]
+    assert headline.served_model_assumed == ["run-x"]

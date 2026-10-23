@@ -744,9 +744,9 @@ def join_unrecorded(
     """Place each run that froze no template digest, or whose responses named no model, in the cell it would join.
 
     Neither silence is evidence of a difference: a run stored before runs froze their template's digest, and a call
-    whose response named no model, say nothing about what changed. So such a run takes, for each field it left
-    silent, the value most of its peers carry (then the one most results rest on, then the first in order), and
-    pools with them, and the run is named as having joined by assumption. Its peers are the runs equal to it on
+    whose response named no model, say nothing about what changed. So such a run takes the values most of its peers
+    carry, as one peer carries them together (:func:`_filled_silences`), and pools with them, and the run is named as
+    having joined by assumption. Its peers are the runs equal to it on
     every other field, with both silences masked, that agree with it wherever it did record a value, so a run silent
     on both joins too. Where no peer carries a value, the silent runs pool with each other.
 
@@ -782,27 +782,59 @@ def join_unrecorded(
                     if name not in quiet
                 )
             ]
-            filled: dict[str, Any] = {}
-            for name in quiet:
-                silent = masked[name]
-                by_value: dict[Any, list[str]] = {}
-                for other in peers:
-                    if (value := getattr(cells[other], name)) != silent:
-                        by_value.setdefault(value, []).append(other)
-                if by_value:
-                    filled[name] = min(
-                        by_value,
-                        key=lambda value: (
-                            -len(by_value[value]),
-                            -sum(weight.get(r, 0) for r in by_value[value]),
-                            str(value),
-                        ),
-                    )
+            filled = _filled_silences(quiet, peers, cells, weight)
             if filled:
                 joined[run_id] = replace(cell, **filled)
                 for name in filled:
                     assumed.setdefault(name, []).append(run_id)
     return joined, {name: sorted(run_ids) for name, run_ids in assumed.items()}
+
+
+def _filled_silences(
+    quiet: Sequence[str], peers: Sequence[str], cells: Mapping[str, PassHatKCell], weight: Mapping[str, int]
+) -> dict[str, Any]:
+    """The values a run silent on ``quiet`` takes from its peers, as one peer carries them together.
+
+    The candidates are whole tuples of the silent fields, as each peer carries them, so a run silent on both its
+    template digest and its served model lands on a pair some peer actually carries, never on one assembled from two
+    majorities. Ranked by the runs carrying the tuple, then the results they rest on, then string order. Where no
+    peer carries every silent field, each is filled on its own from the peers that carry it.
+
+    :param quiet: The fields the run left silent.
+    :ptype quiet: Sequence[str]
+    :param peers: The runs it could be (:func:`join_unrecorded`).
+    :ptype peers: Sequence[str]
+    :param cells: Run id → its cell.
+    :ptype cells: Mapping[str, PassHatKCell]
+    :param weight: Run id → how many results it puts in the pool.
+    :ptype weight: Mapping[str, int]
+    :return: Field name → the value it takes; empty when no peer carries any.
+    :rtype: dict[str, Any]
+    """
+    silences = dict(_SILENCES)
+
+    def ranked(by_value: dict[Any, list[str]]) -> Any:
+        return min(
+            by_value,
+            key=lambda value: (-len(by_value[value]), -sum(weight.get(r, 0) for r in by_value[value]), str(value)),
+        )
+
+    whole: dict[tuple[Any, ...], list[str]] = {}
+    for other in peers:
+        values = tuple(getattr(cells[other], name) for name in quiet)
+        if all(value != silences[name] for name, value in zip(quiet, values, strict=True)):
+            whole.setdefault(values, []).append(other)
+    if whole:
+        return dict(zip(quiet, ranked(whole), strict=True))
+    filled: dict[str, Any] = {}
+    for name in quiet:
+        by_value: dict[Any, list[str]] = {}
+        for other in peers:
+            if (value := getattr(cells[other], name)) != silences[name]:
+                by_value.setdefault(value, []).append(other)
+        if by_value:
+            filled[name] = ranked(by_value)
+    return filled
 
 
 def pass_hat_k_cell_reason(cell: PassHatKCell, other: PassHatKCell) -> tuple[UnpooledReason, str] | None:
