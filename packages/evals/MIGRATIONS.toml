@@ -58,7 +58,7 @@
 # callers.
 
 [[release]]
-version = "unreleased"
+version = "0.77.0"
 since = "v0.76.0"
 summary = """
 A change's row reads `within_margin` ("no worse than the margin") where its floor holds, and the seeded writer prompt
