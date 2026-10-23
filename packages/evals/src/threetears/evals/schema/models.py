@@ -2661,7 +2661,7 @@ class ContextComponents(EvalDocumentModel, CoreShapeModel):
         description=(
             "Digest of the subject_id and the template_id — who was measured, and the template its cases come from. "
             "A template edited in place keeps its id: the pass^k cell splits on the run's frozen template_digest "
-            "instead, and a run stored without one pools with its cell. The subject joined the basis because "
+            "instead, and a run that froze none is a cell of its own. The subject joined the basis because "
             "without it two different subjects carrying nothing produced an identical key and pooled as one "
             "condition. The frozen case SET is not in it: more cases, or a top-up over cases another run missed, are "
             "more samples of one condition, so runs over different case sets pool per case. The case set stays on "

@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Collection, Hashable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from threetears.evals.schema.base import EvalBaseModel
@@ -624,15 +624,24 @@ def compute_pass_hat_k(
     }
 
 
-#: Why two runs of one contestant are two pass^k cells, read off the first field of :class:`PassHatKCell` in which they
-#: differ (:func:`pass_hat_k_cell_reason`). ``no_recorded_context``: a run its host assembled without the launch, so
-#: nothing records what it held fixed. ``changed_context``: its measurement context resolved to another key (another
-#: judge, cassette, seeded world, tool bound, subject state, world or apparatus setting), its apparatus provenance
-#: differs, it was stamped under another identity version nothing re-derived, or its context could not be re-derived
-#: at all. ``other_template``: it ran another template, or the same template edited in what it measures (another
-#: ``template_digest``). ``other_served_model``: the provider's responses named another model as having answered its
-#: candidate calls.
-UnpooledReason = Literal["changed_context", "other_template", "other_served_model", "no_recorded_context"]
+#: Why a pass^k cell is not another (:func:`pass_hat_k_cell_reason`), or why a cell of one run pools with nothing
+#: (:func:`pass_hat_k_cell_alone`). ``no_recorded_context``: a run its host assembled without the launch, so nothing
+#: records what it held fixed. ``changed_context``: its measurement context resolved to another key (another judge,
+#: cassette, seeded world, tool bound, subject state, world or apparatus setting), its apparatus provenance differs,
+#: it was stamped under another identity version nothing re-derived, or its context could not be re-derived at all.
+#: ``no_recorded_template``: it froze no digest of what its template measures, so nothing says which revision of the
+#: template it ran. ``other_template``: it ran another template, or the same template edited in what it measures
+#: (another ``template_digest``). ``no_recorded_served_model``: a response to one of its candidate calls named no
+#: model, so nothing says which model answered. ``other_served_model``: the provider's responses named another model
+#: as having answered its candidate calls.
+UnpooledReason = Literal[
+    "changed_context",
+    "no_recorded_template",
+    "other_template",
+    "no_recorded_served_model",
+    "other_served_model",
+    "no_recorded_context",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -645,21 +654,23 @@ class PassHatKCell:
     cases each covered and whenever each ran, and their attempts at a case pool. Built by :func:`pass_hat_k_cell`;
     two runs whose records are equal pool.
 
-    The fields are in the order :func:`pass_hat_k_cell_reason` reads them, so the reason two runs are two cells is
-    the first field they differ in, and the grouping and the reason cannot disagree.
+    A run that leaves part of its cell unrecorded (no context, no template digest, a candidate call whose response
+    named no model) or whose context cannot be re-derived is a cell of its own, keyed by its run id: a silence is never
+    evidence of a match. A run whose candidate made no model call recorded that, and pools on its other fields.
 
     :ivar recorded: Whether the run recorded a measurement context. ``False`` is a cell of that one run.
     :ivar unresolved: Why the run's context could not be re-derived at this build's identity version, on a cell of
         that one run; ``None`` otherwise.
-    :ivar run_id: The run, on a cell of one run (unrecorded, or unresolvable); ``None`` otherwise.
+    :ivar run_id: The run, on a cell of one run (:func:`pass_hat_k_cell_alone` says why); ``None`` otherwise.
     :ivar template_id: The run's template, ``None`` for an ad-hoc run.
     :ivar template_digest: What the template measured when the run launched (``EvalRun.template_digest``). ``None``
-        for a run stored before runs froze it, which joins its cell's digest (:func:`join_unrecorded`).
+        where the run froze none, on a cell of that one run.
     :ivar context_key: The run's context key, resolved at this build's identity version where a host was given.
     :ivar identity_version: The version ``context_key`` is read at.
     :ivar apparatus_provenance: ``commissioned`` or ``witnessed``.
-    :ivar served: The models the provider's responses named for the run's candidate calls, sorted. Empty where none
-        named one, which joins its cell's set (:func:`join_unrecorded`).
+    :ivar served: The models the provider's responses named for the run's candidate calls, sorted. Empty where its
+        candidate made no model call.
+    :ivar served_unrecorded: A response to one of its candidate calls named no model, on a cell of that one run.
     """
 
     recorded: bool
@@ -671,14 +682,12 @@ class PassHatKCell:
     identity_version: int | None = None
     apparatus_provenance: str | None = None
     served: tuple[str, ...] = ()
+    served_unrecorded: bool = False
 
 
-#: Each field of :class:`PassHatKCell` in reading order, and the reason two cells differing first in it are two.
+#: The fields two cells that each pool can differ in, in the order :func:`pass_hat_k_cell_reason` reads them, and the
+#: reason two cells differing first in it are two.
 _CELL_FIELD_REASONS: tuple[tuple[str, UnpooledReason], ...] = (
-    ("recorded", "no_recorded_context"),
-    ("unresolved", "changed_context"),
-    # Two cells of one run each that differ in nothing else: the run's own record is why it stands alone.
-    ("run_id", "no_recorded_context"),
     ("template_id", "other_template"),
     ("template_digest", "other_template"),
     ("context_key", "changed_context"),
@@ -688,13 +697,9 @@ _CELL_FIELD_REASONS: tuple[tuple[str, UnpooledReason], ...] = (
 )
 
 
-#: The fields of :class:`PassHatKCell` a run's record can leave silent, and the value that silence reads as. A silence is
-#: no difference: it joins its cell (:func:`join_unrecorded`) and is passed over when a reason is read
-#: (:func:`pass_hat_k_cell_reason`).
-_SILENCES: tuple[tuple[str, Any], ...] = (("template_digest", None), ("served", ()))
-
-
-def pass_hat_k_cell(run: EvalRun, profile: HostProfile | None, *, served: Collection[str] = ()) -> PassHatKCell:
+def pass_hat_k_cell(
+    run: EvalRun, profile: HostProfile | None, *, served: Collection[str] = (), served_unrecorded: bool = False
+) -> PassHatKCell:
     """The cell a run's attempts pool in, for one contestant.
 
     The context key is the one the run's context RESOLVES to at this build's identity version
@@ -704,8 +709,10 @@ def pass_hat_k_cell(run: EvalRun, profile: HostProfile | None, *, served: Collec
     its own. A run whose context cannot be re-derived (its subject state names an input its host no longer declares)
     is a cell of its own, and says why, rather than failing the read of every other run.
 
-    A run that carries no ``context_key`` (its host assembled it without the launch) is its own cell: nothing
-    recorded says what it held fixed, and pooling it would be a merge nothing downstream can undo.
+    A run that carries no ``context_key`` (its host assembled it without the launch), froze no ``template_digest``, or
+    made a candidate call whose response named no model is its own cell, keyed by its run id: nothing recorded says
+    what it held fixed there, and pooling it would be a merge nothing downstream can undo. A run whose candidate made
+    no model call (``served`` empty, ``served_unrecorded`` false) recorded that, and pools on its other fields.
 
     :param run: The run whose cell is wanted.
     :ptype run: EvalRun
@@ -715,8 +722,9 @@ def pass_hat_k_cell(run: EvalRun, profile: HostProfile | None, *, served: Collec
     :param served: The models the provider's responses named for this run's candidate calls, for the contestant the
         cell is read for: a run of several candidate models is answered differently per contestant.
     :ptype served: Collection[str]
-    :return: The cell. Before :func:`join_unrecorded`, a run that froze no template digest or whose responses named
-        no model carries ``None`` and ``()`` there.
+    :param served_unrecorded: Whether a response to one of those calls named no model.
+    :ptype served_unrecorded: bool
+    :return: The cell.
     :rtype: PassHatKCell
     """
     if run.context_key is None:
@@ -726,119 +734,52 @@ def pass_hat_k_cell(run: EvalRun, profile: HostProfile | None, *, served: Collec
         "template_digest": run.template_digest,
         "apparatus_provenance": run.apparatus_provenance,
         "served": tuple(sorted(set(served))),
+        "served_unrecorded": served_unrecorded,
     }
+    alone = run.id if run.template_digest is None or served_unrecorded else None
     if profile is None:
-        return PassHatKCell(recorded=True, context_key=run.context_key, identity_version=run.identity_version, **shared)
+        return PassHatKCell(
+            recorded=True, run_id=alone, context_key=run.context_key, identity_version=run.identity_version, **shared
+        )
     try:
         identity = resolve_context_identity(run, profile)
     except StateCoordinateError as unplaced:
         return PassHatKCell(recorded=True, run_id=run.id, unresolved=str(unplaced), **shared)
     return PassHatKCell(
-        recorded=True, context_key=identity.context_key, identity_version=identity.identity_version, **shared
+        recorded=True,
+        run_id=alone,
+        context_key=identity.context_key,
+        identity_version=identity.identity_version,
+        **shared,
     )
 
 
-def join_unrecorded(
-    cells: Mapping[str, PassHatKCell], weight: Mapping[str, int]
-) -> tuple[dict[str, PassHatKCell], dict[str, list[str]]]:
-    """Place each run that froze no template digest, or whose responses named no model, in the cell it would join.
+def pass_hat_k_cell_alone(cell: PassHatKCell) -> tuple[UnpooledReason, str] | None:
+    """Why a cell of one run pools with nothing, read off its own record.
 
-    Neither silence is evidence of a difference: a run stored before runs froze their template's digest, and a call
-    whose response named no model, say nothing about what changed. So such a run takes the values most of its peers
-    carry, as one peer carries them together (:func:`_filled_silences`), and pools with them, and the run is named as
-    having joined by assumption. Its peers are the runs equal to it on
-    every other field, with both silences masked, that agree with it wherever it did record a value, so a run silent
-    on both joins too. Where no peer carries a value, the silent runs pool with each other.
-
-    :param cells: Run id → its cell, from :func:`pass_hat_k_cell`.
-    :ptype cells: Mapping[str, PassHatKCell]
-    :param weight: Run id → how many results it puts in the pool.
-    :ptype weight: Mapping[str, int]
-    :return: Run id → its cell with the silences filled, and field name (``template_digest``, ``served``) → the runs
-        whose value was filled by assumption.
-    :rtype: tuple[dict[str, PassHatKCell], dict[str, list[str]]]
+    :param cell: A cell.
+    :ptype cell: PassHatKCell
+    :return: ``(reason, field)``, the field being what the run did not record (``recorded``, ``template_digest``,
+        ``served``) or ``unresolved``; ``None`` for a cell that pools.
+    :rtype: tuple[UnpooledReason, str] | None
     """
-    masked = {name: silent for name, silent in _SILENCES}
-    groups: dict[PassHatKCell, list[str]] = {}
-    for run_id, cell in cells.items():
-        if cell.recorded and cell.unresolved is None:
-            groups.setdefault(replace(cell, **masked), []).append(run_id)
-    joined = dict(cells)
-    assumed: dict[str, list[str]] = {}
-    for run_ids in groups.values():
-        for run_id in run_ids:
-            cell = cells[run_id]
-            quiet = [name for name, silent in _SILENCES if getattr(cell, name) == silent]
-            if not quiet:
-                continue
-            # The runs this one could be: every other run of its group that agrees on what this one did record.
-            peers = [
-                other
-                for other in run_ids
-                if other != run_id
-                and all(
-                    getattr(cells[other], name) in (getattr(cell, name), silent)
-                    for name, silent in _SILENCES
-                    if name not in quiet
-                )
-            ]
-            filled = _filled_silences(quiet, peers, cells, weight)
-            if filled:
-                joined[run_id] = replace(cell, **filled)
-                for name in filled:
-                    assumed.setdefault(name, []).append(run_id)
-    return joined, {name: sorted(run_ids) for name, run_ids in assumed.items()}
-
-
-def _filled_silences(
-    quiet: Sequence[str], peers: Sequence[str], cells: Mapping[str, PassHatKCell], weight: Mapping[str, int]
-) -> dict[str, Any]:
-    """The values a run silent on ``quiet`` takes from its peers, as one peer carries them together.
-
-    The candidates are whole tuples of the silent fields, as each peer carries them, so a run silent on both its
-    template digest and its served model lands on a pair some peer actually carries, never on one assembled from two
-    majorities. Ranked by the runs carrying the tuple, then the results they rest on, then string order. Where no
-    peer carries every silent field, each is filled on its own from the peers that carry it.
-
-    :param quiet: The fields the run left silent.
-    :ptype quiet: Sequence[str]
-    :param peers: The runs it could be (:func:`join_unrecorded`).
-    :ptype peers: Sequence[str]
-    :param cells: Run id → its cell.
-    :ptype cells: Mapping[str, PassHatKCell]
-    :param weight: Run id → how many results it puts in the pool.
-    :ptype weight: Mapping[str, int]
-    :return: Field name → the value it takes; empty when no peer carries any.
-    :rtype: dict[str, Any]
-    """
-    silences = dict(_SILENCES)
-
-    def ranked(by_value: dict[Any, list[str]]) -> Any:
-        return min(
-            by_value,
-            key=lambda value: (-len(by_value[value]), -sum(weight.get(r, 0) for r in by_value[value]), str(value)),
-        )
-
-    whole: dict[tuple[Any, ...], list[str]] = {}
-    for other in peers:
-        values = tuple(getattr(cells[other], name) for name in quiet)
-        if all(value != silences[name] for name, value in zip(quiet, values, strict=True)):
-            whole.setdefault(values, []).append(other)
-    if whole:
-        return dict(zip(quiet, ranked(whole), strict=True))
-    filled: dict[str, Any] = {}
-    for name in quiet:
-        by_value: dict[Any, list[str]] = {}
-        for other in peers:
-            if (value := getattr(cells[other], name)) != silences[name]:
-                by_value.setdefault(value, []).append(other)
-        if by_value:
-            filled[name] = ranked(by_value)
-    return filled
+    if cell.run_id is None:
+        return None
+    if not cell.recorded:
+        return "no_recorded_context", "recorded"
+    if cell.unresolved is not None:
+        return "changed_context", "unresolved"
+    if cell.template_digest is None:
+        return "no_recorded_template", "template_digest"
+    return "no_recorded_served_model", "served"
 
 
 def pass_hat_k_cell_reason(cell: PassHatKCell, other: PassHatKCell) -> tuple[UnpooledReason, str] | None:
-    """Why ``cell`` is not ``other``: the reason for the first field they differ in, and that field's name.
+    """Why ``cell`` is not ``other``: the reason, and the name of the field it is read from.
+
+    Where either is a cell of one run, the reason is why that run pools with nothing (:func:`pass_hat_k_cell_alone`),
+    read off ``cell`` first, whatever else differs. Otherwise it is the first field of :data:`_CELL_FIELD_REASONS`
+    the two differ in, so the grouping and the reason cannot disagree.
 
     :param cell: One cell.
     :ptype cell: PassHatKCell
@@ -847,21 +788,15 @@ def pass_hat_k_cell_reason(cell: PassHatKCell, other: PassHatKCell) -> tuple[Unp
     :return: ``(reason, field)``, or ``None`` when the two are one cell.
     :rtype: tuple[UnpooledReason, str] | None
     """
-    silences = dict(_SILENCES)
-    unread: tuple[UnpooledReason, str] | None = None
+    if cell == other:
+        return None
+    alone = pass_hat_k_cell_alone(cell) or pass_hat_k_cell_alone(other)
+    if alone is not None:
+        return alone
     for name, reason in _CELL_FIELD_REASONS:
         if getattr(cell, name) != getattr(other, name):
-            # A value missing on either side is no difference (a run stored before runs froze their template's digest,
-            # a response that named no model), so the reason is read on past it.
-            if name in silences and silences[name] in (getattr(cell, name), getattr(other, name)):
-                unread = unread or (reason, name)
-                continue
-            # A run whose context could not be re-derived is a cell of its own for that reason, not for a missing record.
-            if name == "run_id" and cell.recorded:
-                return "changed_context", "unresolved"
             return reason, name
-    # Two cells that differ only where one side recorded nothing: a silence nothing could fill, so it is the reason.
-    return unread
+    return None
 
 
 def pool_pass_hat_k_attempts(
@@ -1608,8 +1543,8 @@ __all__ = [
     "median_unbiased_quantile",
     "median_unbiased_quantile_min_n",
     "pass_hat_k_at",
-    "join_unrecorded",
     "pass_hat_k_cell",
+    "pass_hat_k_cell_alone",
     "pass_hat_k_cell_reason",
     "PassHatKCell",
     "UnpooledReason",

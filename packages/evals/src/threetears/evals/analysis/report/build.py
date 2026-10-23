@@ -3933,7 +3933,7 @@ def _run_disclosures(
     bundle: AnalysisContextBundle, say: Callable[[DisclosureSource, str | None], None], arm: Callable[[str], str]
 ) -> None:
     """The member runs left out, unfinished, short, or of unknown completeness, and every run an arm's pass^k kept out
-    of its headline cell or pooled by assumption (:func:`~threetears.evals.analysis.lenses.frontier.pass_hat_k_cell_lines`),
+    of its headline cell (:func:`~threetears.evals.analysis.lenses.frontier.pass_hat_k_cell_lines`),
     each line led by the arm, as the frontier's text leads it."""
     if not bundle.run_ids:
         say("runs", "The campaign resolved no runs in this scope, so no table or chart here holds anything.")
