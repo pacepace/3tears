@@ -1264,6 +1264,8 @@
 "threetears.evals.analysis.UnpairedReason": "provisional",
 "threetears.evals.analysis.UnpairedSecondReason": "provisional",
 "threetears.evals.analysis.UnpairedSecondScore": "provisional",
+"threetears.evals.analysis.UnpooledReason": "provisional",
+"threetears.evals.analysis.UnpooledRun": "provisional",
 "threetears.evals.analysis.UNPRICED": "provisional",
 "threetears.evals.analysis.UnreadJudgeTrial": "provisional",
 "threetears.evals.analysis.UnrepeatedReason": "provisional",

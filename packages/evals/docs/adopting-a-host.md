@@ -852,9 +852,9 @@ when the cassette itself changes, because re-capturing a corpus calls your third
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
-**Each version space moves on its own.** Core documents (v15.5), durable documents (v16.0), regenerable documents
-(v13), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 59), the cell model
-(`CELL_MODEL_VERSION`, 13) and the identity keys (`IDENTITY_VERSION`, 24) carry separate versions. The report has none: it is a page rendered from the bundle, which is the versioned machine
+**Each version space moves on its own.** Core documents (v15.7), durable documents (v16.1), regenerable documents
+(v13), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 61), the cell model
+(`CELL_MODEL_VERSION`, 13) and the identity keys (`IDENTITY_VERSION`, 25) carry separate versions. The report has none: it is a page rendered from the bundle, which is the versioned machine
 form.
 **A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked
 each dim (`EvalResult.judge_config_ids`): `builtin:<sha12>`, a fingerprint of the engine's own judge prompt, or
@@ -1377,7 +1377,8 @@ generated once for every arm:
   `variation` role (never the simulator's), plans and admits its calls there, and hands them to the launcher
   as `request.generation`. The launcher builds no writer of its own.
 - The run records the model the client resolved to on `variation_counts.variation_model`; it enters no
-  identity, because the cases it wrote are already hashed through `test_case_ids`.
+  identity. The cases it wrote are cases of their own ids in `test_case_ids`, and a case set is no condition:
+  runs over other written cases pool with this one as more cases.
 - The launcher hands `generate_variations` the request's `generation=request.generation`, which makes exactly
   the calls the launch admitted. A rubric proposal is planned (`plan_draft`), admitted in your call and made in
   your job (`propose_draft(client, admitted, ...)`) the same way.

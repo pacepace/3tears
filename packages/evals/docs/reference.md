@@ -358,7 +358,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`FIND_TEMPLATE`** · *host contract* · constant (str) · How a caller finds a template's id.
   <br>`= "templates_list names this scope's templates"`
 - **`IDENTITY_VERSION`** · *host contract* · constant (int) · One counter covers both predicates, so a bump on either side re-derives the other's keys — conservative in the safe direction, since re-deriving unchanged inputs reproduces the same digest.
-  <br>`= 24`
+  <br>`= 25`
 - **`INCOMPLETE_STOP_REASONS`** · constant (frozenset) · The `CompletionResult.stop_reason` values meaning the completion was CUT SHORT rather than finished.
 - **`JUDGE_KIND`** · constant (str) · The `candidate_kind` a judge template declares.
   <br>`= 'judge'`
@@ -1211,7 +1211,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schema_version` | `int` | `60` | Bundle-shape version, for future evolution + fingerprint clarity. |
+| `schema_version` | `int` | `61` | Bundle-shape version, for future evolution + fingerprint clarity. |
 | `campaign_id` | `str` | required | The campaign this bundle summarises. |
 | `subject_id` | `str` | required | The analysed subject's stable id. |
 | `subject_kind` | `str` | `''` | Discriminator; data, never a code branch. |

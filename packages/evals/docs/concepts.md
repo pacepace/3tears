@@ -242,10 +242,13 @@ callable kind an `Eval` runs seats none of the judge, simulator or spend ceiling
 judged kind, `callable-judged`, seats the judge and nothing else.
 
 #### Measurement context
-Everything pinned around a run that is not the variant: the subject and its state, the frozen case set, the
-template, the resolved judge and simulator models, judge configs, cassette mode and corpus, tool bound,
-scope, world seed, apparatus settings (`compute_context_components`). Its digest is the context key,
-stamped once at launch.
+Everything pinned around a run that is not the variant: the subject and its state, the template (a revision
+is a template of its own), the resolved judge and simulator models, judge configs, cassette mode and corpus,
+tool bound, scope, world seed, apparatus settings (`compute_context_components`). Its digest is the context
+key, stamped once at launch. The frozen case set is not in it: more cases, or more repeats, under one context
+are more samples of one condition, so runs of one variant and context pool per case for pass^k whatever cases
+each covered, and whenever each ran. A run kept out of that pool (another context, template or served model,
+or no recorded context) is named on its frontier point with why (`FrontierPoint.unpooled_runs`).
 
 ### Running
 

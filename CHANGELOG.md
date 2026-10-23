@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: runs pool across case sets and across an identity bump; a run kept out of a pool is named (#919)
+
+**Changed:** `IDENTITY_VERSION` 25: the case set leaves the context key. `ContextComponents.case_basis` digests the
+subject and the template, no longer the frozen `test_case_ids`, so two runs of one variant and context over different
+case sets (a run over more cases, or a hand top-up over the cases another missed) are one pass^k cell: a case's
+attempts pool across them, and pass^k averages over the union of their cases. The cell is the context as it resolves
+at this build's identity version, so a run stamped before the bump pools with one after it; a frontier contestant
+whose run recorded its lever map is placed at this build's version when today's predicate reproduces its key. The
+cell also splits on the model the provider's responses named as answering the candidate's calls (`served_model`); a
+run whose responses named none still pools, and its unconfirmed identity is disclosed as before. Bundle shape 61.
+
+**Added:** each frontier point names the runs that pooled into its pass^k cell (`pooled_run_ids`) and every other run
+behind it with its reason (`unpooled_runs`, `UnpooledRun`: `changed_context`, `other_template`, `other_served_model`
+or `no_recorded_context`); the campaign bundle's writer view carries them as `pass_k_unpooled`. A take-up holds the
+run's frozen `test_case_ids` equal (`PINNED_FIELDS`), since no key holds the case set now. A comparison set's case-set
+fingerprint digests the run's frozen case ids, and `case_set_unresolved` is gone: a run always carries its case ids.
+See `packages/evals/MIGRATIONS.toml`.
+
 ### evals: resume an interrupted run, sweep or launch (#918)
 
 **Added:** `job_resume` takes up a run (`run:<id>`) that was lost, cancelled by an operator, or stopped by its budget

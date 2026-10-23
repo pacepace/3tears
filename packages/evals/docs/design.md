@@ -226,6 +226,11 @@ Rules that came with it (`kernel/identity.py`):
 - **Never hash one input into both keys.** The variant key holds the contestant and the
   [context key](concepts.md#measurement-context) the conditions; a lever in the context key would report a
   deliberate sweep as not comparable.
+- **A case set is a sample, not a condition.** More cases or more repeats of an unchanged variant and context
+  are more samples of one cell, never a replacement and never more authoritative, so the case set is in no
+  key. Whether a stored run still counts is structural: its variant, its context resolved at today's identity
+  version, its apparatus and the model that answered. Labels, and how long ago it ran, never count. A run
+  kept out of a pool is named with its reason, never dropped.
 - **A predicate change is a version bump.** `IDENTITY_VERSION` is stored beside every key, golden-vector
   tests pin the digests, and each key is stored with its pre-image, so a bump costs comparability and
   never the record of what was measured.
