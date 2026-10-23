@@ -86,7 +86,9 @@ _ARROW_BATCH_ROWS = 1_000_000
 #: the database settings every backend opens with. ``allocator_background_threads``: DuckDB's
 #: allocator (jemalloc, on Linux x86_64) gives freed pages back to the OS from a thread of its own;
 #: without it an arena gives them back only when its thread allocates again, so the memory a rebuild
-#: or a load touched once stays resident for the life of a process that then sits idle.
+#: or a load touched once stays resident for the life of a process that then sits idle. DuckDB has
+#: the setting from 1.1 (1.0 refuses the key, so every connect would fail): the floor the `duckdb`
+#: and `snapshot` extras declare.
 _DATABASE_CONFIG: Mapping[str, Any] = MappingProxyType({"allocator_background_threads": True})
 
 
@@ -97,6 +99,10 @@ def fetch_arrow(result: Any, rows: int) -> Any:
     default, and the table holds them for as long as it is held: an export of a thousand rows
     carried ten times its data that way, and a rebuild holding a scope's pages held all of it.
     So a batch is asked for at most ``rows`` rows (and never more than DuckDB's default).
+
+    Public for a backend that exports its own statements: a :class:`DuckDBBackend` subclass's
+    export (bluelabsio/14-eng-ai-bot-agent-reports' ``RetainingDuckDB.export_rows``) sizes its
+    result through this, as this module's own exports do.
 
     :param result: an executed DuckDB statement (a connection or cursor after ``execute``)
     :ptype result: duckdb.DuckDBPyConnection
