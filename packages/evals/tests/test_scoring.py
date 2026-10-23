@@ -46,6 +46,7 @@ from threetears.evals.schema.models import (
 from threetears.evals.kernel.result_condition import ResultOutcome
 from threetears.evals.kernel.scoring import (
     PassHatKCell,
+    pass_hat_k_cell_reason,
     NO_PASS_CRITERION_REASON,
     CellSummary,
     compute_async_delivery_summary,
@@ -1786,10 +1787,18 @@ class TestWhatAJudgedDimCountsAs:
         assert self._dims(faulted, healthy) == {"reply.tone": 3.0}
 
 
-def test_every_field_of_a_pass_hat_k_cell_has_a_reason_in_reading_order() -> None:
-    """A field a later build adds to the cell splits runs into cells; the reason it gives must be named with it."""
-    from threetears.evals.kernel import scoring
-
-    fields = [field.name for field in dataclasses.fields(PassHatKCell)]
-    assert [name for name, _ in scoring._CELL_FIELD_REASONS] == fields
-    assert {name for name, _ in scoring._SILENCES} <= set(fields)
+def test_two_cells_differing_in_any_one_field_are_two_for_a_reason_read_from_that_field() -> None:
+    """Every field of the cell has a reason; a field it gains without one fails the import of the scoring module."""
+    differing: dict[str, tuple[Any, Any]] = {
+        "bool": (True, False),
+        "int | None": (1, 2),
+        "tuple[str, ...]": (("model-a",), ("model-b",)),
+        "str | None": ("a", "b"),
+    }
+    base = PassHatKCell(recorded=False)
+    for field in dataclasses.fields(PassHatKCell):
+        one, other = differing[str(field.type)]
+        cell = dataclasses.replace(base, **{field.name: one})
+        apart = dataclasses.replace(base, **{field.name: other})
+        reason = pass_hat_k_cell_reason(cell, apart)
+        assert reason is not None and reason[1] == field.name, (field.name, reason)

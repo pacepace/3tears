@@ -58,7 +58,6 @@ from threetears.evals.run import (
     resume_run,
     start_run,
 )
-from threetears.evals.run import resume as resume_module
 from threetears.evals.run.definition_digests import measured_template_digest
 from threetears.evals.run.jobs import EvalJobManager
 from threetears.evals.schema import EvalResult, EvalRun, EvalTemplate, JobLease
@@ -320,18 +319,6 @@ def test_a_take_up_that_would_measure_otherwise_names_every_difference_and_no_la
     assert "cfg-2" in differences[1] and "pool-b" in differences[2]
     unlabelled = stored.model_copy(update={"subject_snapshot": relabelled})
     assert _measured_otherwise(stored, unlabelled, template, toyhost_profile()) is None
-
-
-def test_every_field_of_a_run_is_pinned_by_a_take_up_or_left_unpinned_for_a_reason() -> None:
-    """A field a later build adds to the run is neither pinned nor passed over until someone says which: the take-up's
-    two lists, read off its module, are every field of the run between them."""
-    pinned, unpinned = set(resume_module._PINNED_FIELDS), set(resume_module._UNPINNED_FIELDS)
-    assert len(pinned) == len(resume_module._PINNED_FIELDS), "a pinned field is named twice"
-    assert not pinned & unpinned, f"both pinned and not: {sorted(pinned & unpinned)}"
-    assert pinned | unpinned == set(EvalRun.model_fields), (
-        f"unclassified: {sorted(set(EvalRun.model_fields) - pinned - unpinned)}; "
-        f"not a field: {sorted((pinned | unpinned) - set(EvalRun.model_fields))}"
-    )
 
 
 @pytest.mark.parametrize(

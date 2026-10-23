@@ -80,41 +80,8 @@ from threetears.evals.schema.models import (
 
 log = get_logger(__name__)
 
-#: The fields of a run's judge and simulator, of its apparatus, and of what it froze of its template, a take-up holds
-#: equal: what scored its cells, what its cells were set up with, and what they were graded against. Most also reach
-#: the context key; each is named on its own so a refusal says which moved. The frozen case set reaches no key (more
-#: cases are more samples of one condition), so :func:`_resume_drift` holds it equal on its own, as a set.
-_PINNED_FIELDS: tuple[str, ...] = (
-    "judge_model",
-    "judge_config_ids",
-    "effective_judges",
-    "judge_asked_settings",
-    "judge_temperature",
-    "simulator_model",
-    "simulator_asked_settings",
-    "apparatus_settings",
-    "overlays",
-    "kind_spec",
-    "cassette_mode",
-    "cassette_corpus_id",
-    "resolved_world_seed",
-    "resolved_ambient_perturbation_turns",
-    "resolved_tools_allowed",
-    "rubric_scales",
-    "goal_check_proofs",
-    "goal_check_proof_rules",
-    "refused_goal_checks",
-    # The candidate kind the run launched: which apparatus its cells had. Read off the template, which is editable.
-    "candidate_kind",
-    # The deadlines its cells and its candidate's turns ran under: a cell past one is excluded and a turn past the
-    # other ends as a candidate failure, and the run records one value of each for every holding.
-    "cell_timeout_s",
-    "turn_budget_s",
-)
-
-#: Every other field of a run, each for its reason: what a take-up need not hold equal field by field. Named so that a
-#: field a later build adds to the run is neither pinned nor passed over by accident: a test holds this and
-#: :data:`_PINNED_FIELDS` together to every field of :class:`~threetears.evals.schema.models.EvalRun`.
+#: The fields of a run a take-up does not hold equal field by field, each for its reason. Every other field is pinned
+#: (:data:`_PINNED_FIELDS`), so a field a later build adds to the run is pinned unless it is left out here on purpose.
 _UNPINNED_FIELDS: frozenset[str] = frozenset(
     {
         # The record's own: which document it is, in which scope, written when.
@@ -190,6 +157,12 @@ _UNPINNED_FIELDS: frozenset[str] = frozenset(
         "lifetimes",
     }
 )
+
+#: The fields of a run's judge and simulator, of its apparatus, of what it froze of its template, its candidate kind and
+#: the deadlines its cells and turns ran under, a take-up holds equal: every field but :data:`_UNPINNED_FIELDS`, in the
+#: run's own order. Most also reach the context key; each is named on its own so a refusal says which moved. The deadlines
+#: reach no key, and the run records one value of each for every holding, so a holding under another is refused.
+_PINNED_FIELDS: tuple[str, ...] = tuple(name for name in EvalRun.model_fields if name not in _UNPINNED_FIELDS)
 
 
 def _run_again(row: EvalResult) -> bool:

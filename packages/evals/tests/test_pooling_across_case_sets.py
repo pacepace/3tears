@@ -483,24 +483,3 @@ def test_the_writer_view_keys_each_arms_cells_by_the_arm_so_two_arms_on_one_mode
         "run(s) run-b-rig",
     ]
     assert aspect["disclosures"]["pass_k_unpooled"]["reading"] == PASS_HAT_K_CELL_READING
-
-
-def test_the_frontier_words_every_field_a_cell_can_stand_apart_in_and_no_other() -> None:
-    """A field a later build adds to the cell is worded before a reader is told a cell stands apart for it, never
-    passed off as another field's sentence."""
-    import dataclasses
-
-    from threetears.evals.analysis.lenses import frontier
-    from threetears.evals.kernel.scoring import PassHatKCell
-
-    run, reference = make_eval_run(), make_eval_run()
-    cell = PassHatKCell(recorded=True, template_id="t-1", served=("model-a",))
-    headline = PassHatKCell(recorded=True, template_id="t-1", served=("model-b",))
-    worded = {
-        field.name: frontier._cell_detail(field.name, cell, headline, run, reference, None)
-        for field in dataclasses.fields(PassHatKCell)
-    }
-    assert all(worded.values())
-    assert "model-a" in worded["served"] and "model-a" not in worded["apparatus_provenance"]
-    with pytest.raises(ValueError, match="no wording"):
-        frontier._cell_detail("k_runs", cell, headline, run, reference, None)

@@ -38,6 +38,8 @@ know no eval model at all.
 
 from __future__ import annotations
 
+import dataclasses
+
 import math
 from collections.abc import Collection, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -673,19 +675,43 @@ class PassHatKCell:
     served: tuple[str, ...] = ()
 
 
-#: Each field of :class:`PassHatKCell` in reading order, and the reason two cells differing first in it are two.
-_CELL_FIELD_REASONS: tuple[tuple[str, UnpooledReason], ...] = (
-    ("recorded", "no_recorded_context"),
-    ("unresolved", "changed_context"),
+#: The reason two cells differing first in a field of :class:`PassHatKCell` are two, by field.
+_REASON_OF_CELL_FIELD: dict[str, UnpooledReason] = {
+    "recorded": "no_recorded_context",
+    "unresolved": "changed_context",
     # Two cells of one run each that differ in nothing else: the run's own record is why it stands alone.
-    ("run_id", "no_recorded_context"),
-    ("template_id", "other_template"),
-    ("template_digest", "other_template"),
-    ("context_key", "changed_context"),
-    ("identity_version", "changed_context"),
-    ("apparatus_provenance", "changed_context"),
-    ("served", "other_served_model"),
-)
+    "run_id": "no_recorded_context",
+    "template_id": "other_template",
+    "template_digest": "other_template",
+    "context_key": "changed_context",
+    "identity_version": "changed_context",
+    "apparatus_provenance": "changed_context",
+    "served": "other_served_model",
+}
+
+
+def _cell_field_reasons() -> tuple[tuple[str, UnpooledReason], ...]:
+    """Each field of :class:`PassHatKCell` in its own order, which is the reading order, with its reason.
+
+    Read off the cell's fields, so the reading order is the cell's and a field the cell gains with no reason fails the
+    import of this module, before any two runs can be split on it with no reason to give.
+
+    :return: ``(field, reason)`` for every field of the cell.
+    :rtype: tuple[tuple[str, UnpooledReason], ...]
+    :raises TypeError: A field of the cell has no reason, or a reason names no field of it.
+    """
+    fields = [field.name for field in dataclasses.fields(PassHatKCell)]
+    if set(fields) != set(_REASON_OF_CELL_FIELD):
+        raise TypeError(
+            f"PassHatKCell's fields and their reasons disagree: no reason for "
+            f"{sorted(set(fields) - set(_REASON_OF_CELL_FIELD))}, a reason for no field "
+            f"{sorted(set(_REASON_OF_CELL_FIELD) - set(fields))}"
+        )
+    return tuple((name, _REASON_OF_CELL_FIELD[name]) for name in fields)
+
+
+#: Each field of :class:`PassHatKCell` in reading order, and the reason two cells differing first in it are two.
+_CELL_FIELD_REASONS: tuple[tuple[str, UnpooledReason], ...] = _cell_field_reasons()
 
 
 #: The fields of :class:`PassHatKCell` a run's record can leave silent, and the value that silence reads as. A silence is

@@ -7,8 +7,9 @@ names the cost ties it cannot separate, and checks the boundary pillar.
 
 from __future__ import annotations
 
+import dataclasses
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from fractions import Fraction
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
@@ -1161,6 +1162,117 @@ def _pass_hat_k_cells(
     return _PointCells(of_run=of_run, readings=readings)
 
 
+class _CellPair(NamedTuple):
+    """A cell standing apart and the headline it is read against, with a run of each and the host, if any."""
+
+    cell: PassHatKCell
+    headline: PassHatKCell
+    run: EvalRun
+    reference: EvalRun
+    profile: HostProfile | None
+
+
+def _no_recorded_context(pair: _CellPair) -> str:
+    """A cell of one run that recorded no context, read against the headline."""
+    if not pair.cell.recorded:
+        return "it recorded no measurement context, so nothing says what it held fixed"
+    return "the headline's run recorded no measurement context, so nothing says what it held fixed"
+
+
+def _unresolved(pair: _CellPair) -> str:
+    """A cell whose context, or the headline's, could not be re-derived."""
+    if pair.cell.unresolved is not None:
+        return f"its context could not be re-derived at identity version v{IDENTITY_VERSION}: {pair.cell.unresolved}"
+    return f"the headline's context could not be re-derived at identity version v{IDENTITY_VERSION}"
+
+
+def _other_template(pair: _CellPair) -> str:
+    """A cell that ran another template."""
+    return (
+        f"it ran template {pair.cell.template_id or '(ad hoc)'} and the headline's runs ran "
+        f"{pair.headline.template_id or '(ad hoc)'}"
+    )
+
+
+def _other_template_digest(pair: _CellPair) -> str:
+    """A cell whose template was edited in what it measures, or which cannot tell."""
+    if pair.cell.template_digest is None or pair.headline.template_digest is None:
+        return (
+            f"its template {pair.cell.template_id or '(ad hoc)'} matches the headline's, and one side froze no digest "
+            "of what it measures, so whether it was edited between them cannot be told"
+        )
+    return (
+        f"its template {pair.cell.template_id or '(ad hoc)'} was edited in what it measures between it and the "
+        "headline's runs (another template_digest)"
+    )
+
+
+def _other_context(pair: _CellPair) -> str:
+    """A cell whose context key differs, naming the components that moved where they can be read."""
+    moved = _moved_components(pair.run, pair.reference, pair.profile)
+    if moved:
+        return f"its context differs from the headline's in {', '.join(moved)}"
+    return "its context key differs from the headline's"
+
+
+def _other_identity_version(pair: _CellPair) -> str:
+    """A cell stamped under another identity version, with no host to re-derive either."""
+    return (
+        f"it was stamped under identity version v{pair.cell.identity_version} and the headline's runs under "
+        f"v{pair.headline.identity_version}, and no host was given to re-derive either"
+    )
+
+
+def _other_apparatus(pair: _CellPair) -> str:
+    """A cell whose apparatus provenance differs."""
+    return f"its apparatus was {pair.cell.apparatus_provenance} and the headline's {pair.headline.apparatus_provenance}"
+
+
+def _other_served(pair: _CellPair) -> str:
+    """A cell whose candidate calls another model answered."""
+    return (
+        f"its candidate calls were answered by {', '.join(pair.cell.served) or 'no named model'} and the headline's by "
+        f"{', '.join(pair.headline.served) or 'no named model'}, as the provider's responses named them"
+    )
+
+
+#: How a cell standing apart in each field of :class:`PassHatKCell` is worded, by field.
+_WORDING_OF_CELL_FIELD: dict[str, Callable[[_CellPair], str]] = {
+    "recorded": _no_recorded_context,
+    "unresolved": _unresolved,
+    "run_id": _no_recorded_context,
+    "template_id": _other_template,
+    "template_digest": _other_template_digest,
+    "context_key": _other_context,
+    "identity_version": _other_identity_version,
+    "apparatus_provenance": _other_apparatus,
+    "served": _other_served,
+}
+
+
+def _checked_cell_wordings() -> dict[str, Callable[[_CellPair], str]]:
+    """:data:`_WORDING_OF_CELL_FIELD`, once it words every field of :class:`PassHatKCell` and no other.
+
+    Checked when this module is imported, so a field the cell gains is worded before a reader can be told a cell
+    stands apart for it, never in another field's words.
+
+    :return: The wordings.
+    :rtype: dict[str, Callable[[_CellPair], str]]
+    :raises TypeError: A field of the cell has no wording, or a wording names no field of it.
+    """
+    fields = {field.name for field in dataclasses.fields(PassHatKCell)}
+    if fields != set(_WORDING_OF_CELL_FIELD):
+        raise TypeError(
+            f"PassHatKCell's fields and the frontier's wordings disagree: none for "
+            f"{sorted(fields - set(_WORDING_OF_CELL_FIELD))}, one for no field "
+            f"{sorted(set(_WORDING_OF_CELL_FIELD) - fields)}"
+        )
+    return _WORDING_OF_CELL_FIELD
+
+
+_CELL_WORDINGS = _checked_cell_wordings()
+
+
 def _cell_detail(
     field: str,
     cell: PassHatKCell,
@@ -1185,50 +1297,8 @@ def _cell_detail(
     :ptype profile: HostProfile | None
     :return: The sentence.
     :rtype: str
-    :raises ValueError: ``field`` is not a field of :class:`PassHatKCell` this words.
     """
-    if field in ("recorded", "run_id"):
-        if not cell.recorded:
-            return "it recorded no measurement context, so nothing says what it held fixed"
-        return "the headline's run recorded no measurement context, so nothing says what it held fixed"
-    if field == "unresolved":
-        if cell.unresolved is not None:
-            return f"its context could not be re-derived at identity version v{IDENTITY_VERSION}: {cell.unresolved}"
-        return f"the headline's context could not be re-derived at identity version v{IDENTITY_VERSION}"
-    if field == "template_id":
-        return (
-            f"it ran template {cell.template_id or '(ad hoc)'} and the headline's runs ran "
-            f"{headline.template_id or '(ad hoc)'}"
-        )
-    if field == "template_digest":
-        if cell.template_digest is None or headline.template_digest is None:
-            return (
-                f"its template {cell.template_id or '(ad hoc)'} matches the headline's, and one side froze no digest of "
-                "what it measures, so whether it was edited between them cannot be told"
-            )
-        return (
-            f"its template {cell.template_id or '(ad hoc)'} was edited in what it measures between it and the "
-            "headline's runs (another template_digest)"
-        )
-    if field == "context_key":
-        moved = _moved_components(run, reference, profile)
-        if moved:
-            return f"its context differs from the headline's in {', '.join(moved)}"
-        return "its context key differs from the headline's"
-    if field == "identity_version":
-        return (
-            f"it was stamped under identity version v{cell.identity_version} and the headline's runs under "
-            f"v{headline.identity_version}, and no host was given to re-derive either"
-        )
-    if field == "apparatus_provenance":
-        return f"its apparatus was {cell.apparatus_provenance} and the headline's {headline.apparatus_provenance}"
-    if field == "served":
-        return (
-            f"its candidate calls were answered by {', '.join(cell.served) or 'no named model'} and the headline's by "
-            f"{', '.join(headline.served) or 'no named model'}, as the provider's responses named them"
-        )
-    # A field PassHatKCell gains is worded here before a reason read from it can reach a reader.
-    raise ValueError(f"no wording for the pass^k cell field {field!r}")
+    return _CELL_WORDINGS[field](_CellPair(cell, headline, run, reference, profile))
 
 
 def _cell_pass_hat_k(
