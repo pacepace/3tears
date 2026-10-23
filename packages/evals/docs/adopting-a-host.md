@@ -1240,6 +1240,31 @@ above, every arm planned and priced, the runs' room reserved) and runs the rest 
 waited for to their end. So your launcher runs inside a job and may call a model; `plan_arm` and your pricer run
 in the call and must not. A script awaits both halves in a row through `start_run`.
 
+### At boot: settle, then offer resumes
+
+A process that dies leaves its runs to read `lost` once their leases lapse. At boot, settle them, then offer what
+can be taken up again:
+
+1. `sweep_abandoned_runs(storage, scopes)` writes lost every run your last process left running.
+2. The `jobs_resumable` action (or the function behind it, `resumable_jobs(storage, scopes)`) lists the runs, sweeps
+   and launches `job_resume` would take up. Each comes with how it ended and why, its cells done and expected, what
+   it spent and its cap, and, for a run its cost cap stopped, the `max_cost_usd` it needs.
+3. Offer each one to an operator. **Nothing resumes on its own**: a resume spends money, so it is always asked for
+   (`job_resume`).
+
+`jobs_resumable` does not check whether a run would still measure as it did, since that means replaying its launch
+through your kind. `job_resume` does that check in its call, before anything is spent: it runs your kind's launcher
+on the recorded arguments and compares what it assembles with the stored run. So your launcher runs in the call on a
+resume, and must make no model request when it rebuilds a stored run. A resume generates no cases. The jobs
+conformance kit's `job_resume` case fails a launcher that does.
+
+**Whatever your kind reads from the template, it measures.** A resume treats a template edit as a difference only
+when it moves what a run measures: every field but the template's name, description and archive flag. A kind that
+reads the template's name or description into a candidate's prompt is measuring them, but the engine can't see
+that. An edit to either then resumes the run with only a disclosure (`template_edited_at` on the new lifetime), and
+the run pools cells measured under both wordings. Keep both out of what a candidate reads, or launch a new run after
+editing them.
+
 ### Your own actions are jobs too
 
 A host adds its own actions to the catalogue (`eval_catalogue(my_actions)`). One whose work calls a model — a

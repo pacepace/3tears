@@ -249,7 +249,8 @@ The operations (`threetears.evals.ops`) run over an `OpsHost`: the `LaunchHost`,
 
 **No transport call waits on a model.** Every operation whose work calls one is a **job**: `run_launch`,
 `sweep_launch`, `analysis_generate`, `judge_second`, `judge_drift_check` and `judge_temperature` return
-`JobsStarted`, and `job_poll` / `job_cancel` take any job id they returned. The call does what it can
+`JobsStarted`, and `job_poll` / `job_cancel` take any job id they returned; `job_resume` takes up a run's, a
+sweep's or a launch's job that ended before its work did (below). The call does what it can
 refuse cheaply before money is spent — the refusals it can name from a few store reads, and the admission
 ceiling — and refuses there with nothing spent; the job does the spending. An analysis generation does less in
 its call: assembling its bundle reads every member run's results, so its job assembles it, builds the client and
@@ -264,9 +265,9 @@ Each job writes its own record, and polling reads it:
 
 | Job id | Started by | Its record | What `job_poll` returns once it completes |
 |---|---|---|---|
-| `launch:<id>` | `run_launch` | `EvalLaunch`: the case generation and every arm's preparation, then the runs to their end | `run_ids`, in arm order (from the moment they start), and each run's status in `progress` |
-| `run:<id>` | one run of a launch | the `EvalRun` | the run's status; read it with `run_get` |
-| `sweep:<id>` | `sweep_launch` | `EvalSweep` | the arms launched and finished |
+| `launch:<id>` | `run_launch`; `job_resume` takes it up again | `EvalLaunch`: the case generation and every arm's preparation, then the runs to their end | `run_ids`, in arm order (from the moment they start), and each run's status in `progress` |
+| `run:<id>` | one run of a launch; `job_resume` takes it up again | the `EvalRun` | the run's status; read it with `run_get` |
+| `sweep:<id>` | `sweep_launch`; `job_resume` takes it up again | `EvalSweep` | the arms launched and finished |
 | `analysis:<campaign>:<attempt>` | `analysis_generate` | `EvalAnalysisAttempt` | the stored analysis's id; read it with `report_read` |
 | `second-judge:<id>` | `judge_second`, `judge_drift_check` | `EvalSecondJudgePass`, its id the pass id every paired score names | `result`: the pass's report, agreement and drift |
 | `judge-temperature:<id>` | `judge_temperature` | `EvalJudgeTemperatureCheck`, every answer kept | `result`: the comparison |
@@ -287,7 +288,9 @@ ended and whose lease has
 lapsed reads `lost`, and the first read to see that writes it on the record: not only `job_poll`, but every read
 of the record — `run_get`, `runs_list`, a campaign's or a report's read of its runs, a sweep's, an analysis
 attempt's — so a job whose process died reads `lost` everywhere once its lease lapses, and nothing counts it as
-still running. A run whose stored document this build's model refuses cannot be written lost: the boot reclaim counts
+still running. A lapsed lease is never revived: the lost holder's renewals and its writes of the record are refused,
+and so are its cell writes, so a cell in flight at the loss lands nothing in the run. What the run stored before the
+loss stays. A run whose stored document this build's model refuses cannot be written lost: the boot reclaim counts
 it `unreadable` and leaves it, and `runs_unreadable` names each such run of the scope with why. `runs_list` leaves
 such a run out and says how many it left out (`unreadable`). Every other read that reaches one (`run_get`,
 `job_poll`, a comparison, a campaign's report, a launch's pricing) refuses with `UnreadableRunError` (status 500),
@@ -299,6 +302,43 @@ written lost settles the runs it names with it. A cancel is written on the recor
 too, so `job_cancel` works from any process: the job ends `cancelled` within one renewal interval. A graceful
 shutdown writes every job its process holds `lost` at once. A job is answered only in the caller's scope:
 another scope's job reads not found, on poll and on cancel.
+
+**The one way back is a resume.** `job_resume` takes a run's, a sweep's or a launch's job up again as the same job,
+under its lease's next **epoch**. Every lease carries an epoch, and every result row records the epoch it was
+written under, so a holding the job has passed from writes nothing more into it. A run continues as itself: only
+the cells it has not measured run, in its own order, and a cell a cancel cut short runs again over its row. Its
+spend so far counts toward its cost cap, and it ends as an uninterrupted run would have, `completed` with pass^k
+over its whole case set. Nothing resumes on its own. `jobs_resumable` lists what `job_resume` would take up, for a
+host to offer at boot ([Adopting the engine](adopting-a-host.md#at-boot-settle-then-offer-resumes)).
+
+| A run that ended | Resumable? |
+|---|---|
+| lost, or `cancelled` by an operator (to ship a fix, say) | yes |
+| `budget_stopped`, or `exhausted` (its provider account) | yes; a stop at its cost cap needs `max_cost_usd` above what it spent |
+| `completed` | no: nothing is left to run |
+| `failed` | no: it failed on a defect, which a resume would run again |
+| still live | no: cancel it or wait for it to end |
+
+**A resume refuses only what would change the result.** In the call, before anything is spent, the run's launch is
+replayed from what it recorded, through its kind's launcher, and compared with the stored run. Any difference in
+what is measured refuses the resume, and the refusal names every one: a context component (the subject's state
+included), a variant lever, a judge or simulator pin, the apparatus, or what the run froze of its template. For a
+sweep or a launch, it names every arm's every difference. A different measurement pooled under one run would be two
+measurements reported as one, so this refusal stays. Two things do not refuse, because they change nothing
+measured, and each is disclosed instead:
+
+- **The host's labels** (`SubjectSnapshot.labels`, the run's own labels): a deploy changes them, and a deploy is
+  the usual reason to resume.
+- **A template edit that changes nothing measured**, such as its name or description. A run freezes a digest of
+  its template's measured content at launch (`EvalRun.template_digest`), and only a moved digest refuses. A run
+  stored before that digest existed can't tell the two apart, so it resumes only while its template is unedited
+  since the run started.
+
+What is disclosed sits on the run's `lifetimes`. The first resume writes the original holding's entry, closed as it
+ended, and opens one per resume: its holder and epoch, when it began and how it ended, the cells stored when it
+ended, the labels it began under, the cost cap it ran under, and `template_edited_at` when the template was edited
+in nothing measured. A run never resumed has no entries; once resumed, `len(lifetimes)` is the number of process
+lifetimes it has spanned. A sweep records its own holdings the same way.
 
 **In the foreground.** A caller that is not a transport — a script, a test, a host's own batch — may await
 what it started instead of polling: `await_job(host, started, scope_id)` waits for the jobs to end and returns
@@ -321,6 +361,20 @@ the sweep `failed`, except an arm whose run failed because it measured nothing (
 no allowed provider serves): that arm fails alone and the sweep goes on to the others. The judge and simulator are the sweep's. Where it names none, the role's default is resolved
 once for every arm (by the one interleaved launch, or from the first arm's run when they launch one by one), so a
 role default that moves mid-sweep cannot split the arms.
+
+**A sweep resumes as a whole.** `job_resume sweep:<id>` takes up a sweep that was lost, cancelled, or stopped by its
+own time budget (`timed_out`). The sweep stores each arm's launch arguments, and its job launches every arm from that
+record, so a resumed sweep runs as a fresh one would. An arm whose run completed or failed is left alone. Each lost,
+cancelled or budget-stopped arm resumes as its own run, and an arm that never launched launches from the stored
+arguments. The arm schedule is kept: interleaved arms resume as one group under the sweep's original launch group,
+so they take their remaining cells in turn in the order they always had, and sequential arms resume one after
+another, in order. One arm's refusal refuses the whole sweep, naming every arm's every difference, before anything is
+written. A sweep stored before sweeps recorded their arms' arguments resumes the arms it launched, but it can't launch
+an arm it never launched; the refusal and `jobs_resumable` name that arm, and the remedy is to launch it with
+`run_launch`. An interleaved sweep launches every arm together, so a lost interleaved sweep has no such arm.
+`job_resume launch:<id>` does the same for a multi-arm launch: its unfinished runs resume as one group under its
+original id. `jobs_resumable` lists each sweep and launch once, under `groups`, with each arm's state; their runs are
+not listed again among `jobs`.
 
 On a host that enforces its ceilings (`LaunchSettings.enforcement_enabled`), every spend operation is bounded
 in dollars before it spends: a launch by the per-run ceiling and its case generation by the host's out-of-run

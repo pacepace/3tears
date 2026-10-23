@@ -152,6 +152,14 @@ readers hide drift until it corrupts a comparison. The one tolerance is scoped t
 the unknown safe: a newer minor of the evidence core, additive by rule, whose fields are kept untouched and
 written back rather than read.
 
+**Assume good intent: disclose, don't force a costly rerun.**
+"If we have to choose between a powerful, efficient system that assumes good intent, and a weaker, slower, more
+expensive system that assumes bad faith or incompetent usage, always err on the side of the former. Disclosure,
+warnings, flags are all good. But just demanding huge increases in expenses and wall clock time in case the user is
+nefarious is the wrong balance here." (owner, 2026-10-23). A check whose only effect is to force a costly rerun
+becomes a disclosure: a resumed run records a template edit that changed nothing measured, and is not refused for it.
+A refusal that guards correctness (two different measurements pooled as one) or money (a cap already spent) stays.
+
 **Statistical rigour, not enterprise plumbing.**
 Sized for one operator: rigour earns its cost by changing decisions, while multi-tenant access control
 would govern users that do not exist.

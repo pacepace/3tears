@@ -343,7 +343,16 @@ Work started by an operation because it is long or calls a model (a launch, a sw
 second judge's pass, a judge temperature comparison, a host action's draft), answered by `job_poll` and
 `job_cancel`: the operation's call prices and admits it and returns at once, so no call waits on a model. Its id names the durable record the work writes, so it survives a restart and reads the same in
 every process. The record carries the running process's lease; a job whose lease lapses before it ends is
-`lost`, which the first reader writes on the record.
+`lost`, which the first reader writes on the record. A run's, a sweep's or a launch's job that ended before its work
+did (lost, cancelled, or stopped by a budget) is taken up again as the same job by `job_resume`, and never on its
+own; `jobs_resumable` lists what it would take up. See [Operations and jobs](serving.md#operations-and-jobs).
+
+#### Lifetime (holding)
+One process's holding of a run, from when it took the run up to how that holding ended. A run that is resumed spans
+several, each an entry of `EvalRun.lifetimes` (`RunLifetime`): its holder and lease epoch, how it ended, the cells
+stored by then, the cost cap it ran under, and the host's labels when it began. A deploy shows here, and is not a
+change in what the run measures. A sweep records its own (`SweepLifetime`). A run never resumed has none: the run
+itself describes its one holding.
 
 ### Grading
 
@@ -577,7 +586,9 @@ kept runs, a cassette by capturing it anew. A store can route each lifecycle to 
 #### Lease
 A running [job](#job)'s claim on its record: the process running it renews it on a schedule (`JobLeases`,
 `LaunchHost.job_lease_s`), stamped in the store's own time when the store offers a `StoreClock`. A job whose lease
-lapses before it ends reads `lost` everywhere. See [Operations and jobs](serving.md#operations-and-jobs).
+lapses before it ends reads `lost` everywhere, and no renewal revives it. Each lease carries an **epoch**, one higher
+each time the job is resumed, and each result row records the epoch it was written under, so a process holding an
+older epoch writes nothing more into the job. See [Operations and jobs](serving.md#operations-and-jobs).
 
 #### Seam
 A place the engine calls code your host supplies, through a protocol the engine declares: the kind seam
