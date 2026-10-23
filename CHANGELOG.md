@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a DuckDB export is sized for its rows, and DuckDB gives freed memory back
+
+**Fixed:** a reports tool pod peaked at 7.5 GiB rebuilding a 360 MB copy, and stayed there once ready.
+DuckDB sizes an Arrow export's buffers for a million rows unless told otherwise, and the rebuild held
+every page's export of a scope: a 999-row page held 2.2 MiB for 0.23 MiB of data. `DuckDBBackend.export_rows`
+and `export_partition` now fetch through `fetch_arrow(result, rows)` (new, public), which asks for
+batches of at most the rows the result can hold. A rebuild of 1 million synthetic rows in 50 scopes
+(DuckDB 1.5.5, pyarrow 25.0.1, Linux) peaked at 0.9 GB, from 8.4 GB. Every backend now opens its
+database with `allocator_background_threads`, so DuckDB's jemalloc (Linux x86_64) gives freed pages
+back to the OS from a thread of its own rather than keeping them until an idle thread allocates again
+(`docs/design-scoped-snapshot.md`, "Bounded memory").
+
 ### core: a scoped snapshot rebuilds from L3 and loads from L2 a few scopes at a time
 
 **Fixed:** `ScopedSnapshot`'s rebuild from L3 read every scope's rows as Python dicts before it

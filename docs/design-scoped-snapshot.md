@@ -192,6 +192,22 @@ went from 3.7 GB to 1.1 GB: what a rebuild holds beyond the copy tracks its larg
 The price is time where L3 and NATS cost nothing: the rebuild took 24 to 31 s against 22 s (each page
 typed on its own), the load 3 to 5 s against 2 s (a transaction per scope).
 
+**An export is sized for its rows (2026-10-23).** On dev the rebuild still peaked at 7.5 GiB and the pod
+stayed there after it was ready. Two causes, both in DuckDB's allocations, which neither Python nor Arrow's
+pool counts:
+
+- DuckDB sizes an Arrow export's buffers for a million rows unless asked for fewer, and a held export
+  keeps them. A 999-row page held 2.2 MiB resident for 0.23 MiB of data, so a scope's pages held ten
+  times the scope. Every export now asks for batches of at most its rows (`fetch_arrow`): the rows
+  given to `export_rows`, the scope's rows counted by `export_partition`. With DuckDB 1.5.5 and pyarrow
+  25.0.1 (Linux arm64, 1 million rows in 50 scopes) the rebuild's peak went from 8.4 GB to 0.9 GB; with
+  3 million rows it peaks at 1.7 GB, where before it ran out of a 10 GB container.
+- On Linux x86_64 DuckDB allocates through its own jemalloc, whose arenas give freed pages back to the
+  OS only when their thread allocates again. A pod that sits idle after its rebuild keeps them. Every
+  backend opens its database with `allocator_background_threads`, so a thread of jemalloc's own gives
+  them back. Measured with jemalloc preloaded for the whole process (arm64, where DuckDB has none of its
+  own), 1 million rows on the old export: 1.27 GB stayed resident without the thread, 0.85 GB with it.
+
 ## Chunk lifecycle
 
 One rule (`_Sweeper.deletable`, beside the snapshot in its module) decides whether a chunk may be

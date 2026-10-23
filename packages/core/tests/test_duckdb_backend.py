@@ -693,3 +693,52 @@ class TestPartitions:
         Table("results", metadata, Column("race", String(64), primary_key=True), Column("votes", String(8)))
         other.initialize(metadata)
         assert other.schema_digest("results") != _partitioned_backend().schema_digest("results")
+
+
+class TestMemoryAnExportHolds:
+    """an export's Arrow buffers are sized for its rows, and freed memory goes back to the OS."""
+
+    def test_a_result_is_fetched_in_batches_no_bigger_than_its_rows(self) -> None:
+        from threetears.core.cache.duckdb import fetch_arrow
+
+        class Result:
+            def __init__(self) -> None:
+                self.asked: list[int] = []
+
+            def to_arrow_table(self, batch_size: int) -> str:
+                self.asked.append(batch_size)
+                return "table"
+
+        result = Result()
+        assert fetch_arrow(result, 999) == "table"
+        fetch_arrow(result, 0)
+        fetch_arrow(result, 5_000_000)
+        # DuckDB's own default is the most a batch is ever sized for; an empty result still asks for one row
+        assert result.asked == [999, 1, 1_000_000]
+
+    def test_a_release_without_to_arrow_table_is_fetched_the_same_way(self) -> None:
+        from threetears.core.cache.duckdb import fetch_arrow
+
+        older = mock.Mock(spec=["fetch_arrow_table"])
+        fetch_arrow(older, 42)
+        older.fetch_arrow_table.assert_called_once_with(42)
+
+    def test_each_export_is_sized_for_the_rows_it_can_hold(self) -> None:
+        pytest.importorskip("pyarrow")
+        import threetears.core.cache.duckdb as module
+
+        backend = _partitioned_backend()
+        key = ("race", "county")
+        backend.upsert_many(
+            "results", [_result("r1", f"c{i}", "TX", i) for i in range(5)] + [_result("r1", "c9", "CA", 9)], key
+        )
+        page = [_result("r2", "c1", "TX", 1), _result("r2", "c2", "TX", 2), _result("r2", "c3", "NV", 3)]
+        with mock.patch.object(module, "fetch_arrow", wraps=module.fetch_arrow) as fetch:
+            assert backend.export_partition("results", "state", "TX", order_by=key).num_rows == 5
+            assert backend.export_rows("results", "state", "TX", page, primary_key=key, order_by=key).num_rows == 2
+        # the scope's rows, counted; the page's rows, at most
+        assert [call.args[1] for call in fetch.call_args_list] == [5, 3]
+
+    def test_the_database_gives_freed_memory_back_from_a_thread_of_its_own(self, backend: DuckDBBackend) -> None:
+        found = backend.execute_query("SELECT current_setting('allocator_background_threads') AS on")
+        assert found == [{"on": True}]

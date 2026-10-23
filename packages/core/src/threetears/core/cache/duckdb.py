@@ -28,6 +28,7 @@ from threetears.observe import contain, get_logger
 __all__ = [
     "DuckDBBackend",
     "PartitionReplacement",
+    "fetch_arrow",
 ]
 
 try:
@@ -78,6 +79,35 @@ class PartitionReplacement:
 
 #: whether this process has said pyarrow is missing (once is enough)
 _ARROW_MISSING_SAID = False
+
+#: the most rows one Arrow batch of a result is sized for: DuckDB's own default
+_ARROW_BATCH_ROWS = 1_000_000
+
+#: the database settings every backend opens with. ``allocator_background_threads``: DuckDB's
+#: allocator (jemalloc, on Linux x86_64) gives freed pages back to the OS from a thread of its own;
+#: without it an arena gives them back only when its thread allocates again, so the memory a rebuild
+#: or a load touched once stays resident for the life of a process that then sits idle.
+_DATABASE_CONFIG: Mapping[str, Any] = MappingProxyType({"allocator_background_threads": True})
+
+
+def fetch_arrow(result: Any, rows: int) -> Any:
+    """a DuckDB result as one Arrow table, its buffers sized for the ``rows`` it holds at most.
+
+    DuckDB sizes each Arrow batch's buffers for the rows a batch is asked for, a million by
+    default, and the table holds them for as long as it is held: an export of a thousand rows
+    carried ten times its data that way, and a rebuild holding a scope's pages held all of it.
+    So a batch is asked for at most ``rows`` rows (and never more than DuckDB's default).
+
+    :param result: an executed DuckDB statement (a connection or cursor after ``execute``)
+    :ptype result: duckdb.DuckDBPyConnection
+    :param rows: the most rows the result holds
+    :ptype rows: int
+    :return: the rows
+    :rtype: pyarrow.Table
+    """
+    # ``to_arrow_table`` replaced ``fetch_arrow_table`` (deprecated in 1.4); older releases have only the latter
+    fetch = getattr(result, "to_arrow_table", None) or result.fetch_arrow_table
+    return fetch(min(max(int(rows), 1), _ARROW_BATCH_ROWS))
 
 
 def _ddl_type(code: str) -> str:
@@ -194,7 +224,7 @@ class DuckDBBackend:
             log.debug("DuckDB already initialized, skipping")
             return
 
-        self._db = duckdb.connect(":memory:")
+        self._db = duckdb.connect(":memory:", config=dict(_DATABASE_CONFIG))
 
         for table in sa_metadata.tables.values():
             ddl = self._generate_create_table(table)
@@ -475,12 +505,12 @@ class DuckDBBackend:
         """
         condition, params = self._partition_filter(table, column, value)
         order = ", ".join(quote_identifier(c) for c in order_by)
-        sql = f"SELECT * FROM {quote_identifier(table)} WHERE {condition}" + (f" ORDER BY {order}" if order else "")  # noqa: S608
+        relation = f"{quote_identifier(table)} WHERE {condition}"
+        sql = f"SELECT * FROM {relation}" + (f" ORDER BY {order}" if order else "")  # noqa: S608
         with self._db_lock:
-            result = self._db.execute(sql, params)
-            # ``to_arrow_table`` replaced ``fetch_arrow_table`` (deprecated in 1.4); older releases have only the latter
-            fetch = getattr(result, "to_arrow_table", None) or result.fetch_arrow_table
-            return fetch()
+            # counted first so the export's buffers are sized for the scope (:func:`fetch_arrow`)
+            held = self._db.execute(f"SELECT count(*) FROM {relation}", params).fetchone()[0]  # noqa: S608
+            return fetch_arrow(self._db.execute(sql, params), held)
 
     def export_rows(
         self,
@@ -551,9 +581,7 @@ class DuckDBBackend:
             if arrow is not None:
                 self._db.register(source, arrow)
             try:
-                result = self._db.execute(sql, [*bound, *params])
-                fetch = getattr(result, "to_arrow_table", None) or result.fetch_arrow_table
-                exported = fetch()
+                exported = fetch_arrow(self._db.execute(sql, [*bound, *params]), len(rows))
             finally:
                 if arrow is not None:
                     self._db.unregister(source)
