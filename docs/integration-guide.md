@@ -126,10 +126,31 @@ Consequences:
    The pool is **duck-typed**: any object with `async` `.execute()` / `.fetch()` /
    `.fetchrow()` works; `asyncpg` pools satisfy this directly.
 2. **Proxy (`NatsProxyL3Backend`)** -- the process has **no DB credentials**. It
-   serializes SQL and sends it over NATS request/reply (`<ns>.l3.query`,
-   `<ns>.l3.batch`) to a central broker that owns the real pool. Use for sandboxed
-   worker pods. **Note:** only the *client* ships in `threetears.core`; the broker
-   that answers those subjects is **not** part of the package (see §13).
+   serializes SQL and sends it over NATS request/reply to a central broker that owns
+   the real pool, on the subjects below. Use for sandboxed worker pods. **Note:** only
+   the *client* ships in `threetears.core`; the broker that answers those subjects is
+   **not** part of the package (see §13).
+
+### The L3 broker's subjects
+
+A broker answers every one of these on `<ns>.` (the client's `namespace_prefix`), or
+the client calls that need it raise `DataLayerUnavailableError`. Each subject's helper
+is `threetears.nats.subjects.Subjects.l3_*`; the request bodies are pinned field for
+field in `packages/core/tests/unit/backends/` and stated in the CHANGELOG's "the wire"
+entries.
+
+| Subject | Sent by | Contract |
+|---|---|---|
+| `l3.query` | every read and single write | one statement, its own transaction; replies rows or a row count, plus a write's `generations` |
+| `l3.batch` | `NatsProxyL3Backend.execute_batch` | several statements in one request, in one transaction when it asks for one |
+| `l3.tx.begin` / `execute` / `fetchrow` / `fetch` / `commit` / `rollback` | a transaction opened on the proxy (`transaction()`) | one explicit transaction the broker holds open across requests, by `tx_id` |
+| `l3.tx.copy` | `save_rows(..., copy=True)` inside a transaction | body `{correlation_id, identity_token, tx_id, table, columns, rows}`, each value encoded as a statement parameter (`transport_param`); insert-only `COPY` into the open transaction; a key already held fails it as `asyncpg.UniqueViolationError` |
+| `l3.truncate` | `SchemaBackedCollection.truncate()` | body `{correlation_id, identity_token, namespace, table, timeout_ms}`; `TRUNCATE` alone, outside any transaction, under the database's DDL lock, only for a declared table of the caller's own data space; replies as `l3.query` does |
+| `l3.load_files` | `SchemaBackedCollection.load_files()` | body `{correlation_id, identity_token, namespace, table, columns, constants, files: [{url, rows}], format: "parquet", rows_per_transaction, timeout_ms}`; the broker fetches each file and `COPY`s its rows into a declared table of the caller's own data space, committing every `rows_per_transaction` rows, outside any transaction; replies `{success, row_count, files: [{index, rows_loaded}]}` plus `generations`. It fetches only a presigned `https` URL (no user info, no port but 443, no fragment, no redirect followed) on an S3 host of the caller's export bucket, under the prefix of an export recorded for that caller, and refuses the whole request otherwise (`LoadingStore`'s docstring). The pod waits at most `LOAD_FILES_MAX_WAIT_SECONDS` |
+
+The platform's broker (bluelabsio/14-eng-ai-bot) answers `l3.truncate`, `l3.tx.copy`
+and `l3.load_files` from its 2026-10-23 `develop` (hub PRs #653, #654, #656); roll the
+hub before any pod uses them.
 
 ---
 
@@ -441,15 +462,15 @@ from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 
 l3 = NatsProxyL3Backend(
     nats_client=nats,            # a connected NATS client
-    namespace_prefix="myapp",    # subjects become myapp.l3.query / myapp.l3.batch
+    namespace_prefix="myapp",    # subjects become myapp.l3.query, myapp.l3.batch, ... (§3)
     agent_id=str(pod_id),        # used for ACL/namespacing at the broker
 )
 registry.configure(l1_backend=l1, l3_pool=l3)
 ```
 
-> The broker that *answers* `myapp.l3.query` (owns the real PostgreSQL pool, executes
-> SQL, returns rows) is **not** included in `threetears.core`. You must provide it.
-> See §13.
+> The broker that *answers* `myapp.l3.*` (owns the real PostgreSQL pool, executes
+> SQL, returns rows) is **not** included in `threetears.core`. You must provide it,
+> answering every subject in §3's table. See §13.
 
 ---
 
@@ -726,8 +747,8 @@ A separate L3 broker that you provide (§13) holds the real DSN and answers thei
 Flagged honestly. Verify each against current source.
 
 1. **The L3 proxy broker is not part of `threetears.core`.** `NatsProxyL3Backend` is
-   only the client; the service answering `*.l3.query` / `*.l3.batch` must be provided
-   separately. Budget for it if you choose the sandboxed-pod topology.
+   only the client; the service answering every `*.l3.*` subject in §3's table must be
+   provided separately. Budget for it if you choose the sandboxed-pod topology.
 
 2. **Schema namespacing.** The migration runner and L3 layer set `search_path` to the
    target schema before DDL runs (see `how-to-add-a-migration.md`), so migration/table

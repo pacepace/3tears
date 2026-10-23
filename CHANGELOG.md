@@ -8,17 +8,30 @@ packages (bumped in lock-step).
 
 ## v0.76.0 -- 2026-10-23
 
+**Release order: the hub first.** `l3.truncate`, `l3.tx.copy` and `l3.load_files` are answered by the hub's
+broker from bluelabsio/14-eng-ai-bot PRs #653 (truncate, tx.copy), #654 (a tool pod owns its provider node,
+which `l3.truncate` and `l3.load_files` check), #656 (load_files) and #657 (tool pod Object Stores and
+pointer buckets replicated), all merged to the hub's `develop` on 2026-10-23. A consumer calling
+`truncate()`, `load_files()` or `save_rows(copy=True)` on the rail needs a hub at or after those merges;
+against an older hub the request has no responder (or `l3.tx.copy` is refused) and raises
+`DataLayerUnavailableError`. Roll the hub before any pod on 0.76.0 uses them.
+
 ### core: a DuckDB export is sized for its rows, and DuckDB gives freed memory back
 
 **Fixed:** a reports tool pod peaked at 7.5 GiB rebuilding a 360 MB copy, and stayed there once ready.
 DuckDB sizes an Arrow export's buffers for a million rows unless told otherwise, and the rebuild held
 every page's export of a scope: a 999-row page held 2.2 MiB for 0.23 MiB of data. `DuckDBBackend.export_rows`
-and `export_partition` now fetch through `fetch_arrow(result, rows)` (new, public), which asks for
-batches of at most the rows the result can hold. A rebuild of 1 million synthetic rows in 50 scopes
+and `export_partition` now fetch through `fetch_arrow(result, rows)` (new, public: a `DuckDBBackend`
+subclass's own export sizes its result through it, as bluelabsio/14-eng-ai-bot-agent-reports'
+`RetainingDuckDB.export_rows` does), which asks for batches of at most the rows the result can hold. A rebuild of 1 million synthetic rows in 50 scopes
 (DuckDB 1.5.5, pyarrow 25.0.1, Linux) peaked at 0.9 GB, from 8.4 GB. Every backend now opens its
 database with `allocator_background_threads`, so DuckDB's jemalloc (Linux x86_64) gives freed pages
 back to the OS from a thread of its own rather than keeping them until an idle thread allocates again
 (`docs/design-scoped-snapshot.md`, "Bounded memory").
+
+**Changed:** the `duckdb` and `snapshot` extras (and the workspace's dev dependency) need `duckdb>=1.1`,
+from `>=1.0`: DuckDB 1.0 refuses the `allocator_background_threads` setting (`Unrecognized configuration
+property`), so on 1.0 no DuckDB backend could open; 1.1.0 is the first release that accepts it.
 
 ### core: a scoped snapshot rebuilds from L3 and loads from L2 a few scopes at a time
 
@@ -80,7 +93,7 @@ run's output), which the caller counts part by part before it asks -- the export
   rows as counted (a part counted with none left out).
 - `read_counted_partition(store, export, part, *, file_concurrency=8) -> list[dict]`: one part's rows, its
   files read several at once and held to its count.
-- `presigned_counted_partition(store, export, part, *, expires_in=3600) -> list[LoadFile]`: one part's files
+- `presigned_counted_partition(store, export, part, *, expires_in=DEFAULT_PRESIGN_SECONDS) -> list[LoadFile]`: one part's files
   presigned with their manifest counts, for `SchemaBackedCollection.load_files`; refused when the manifest
   does not count a file or its counts are not the part's. The files keep the partition column (the
   `UNLOAD` `INCLUDE`s it).
@@ -97,6 +110,9 @@ copies its rows, committing every `rows_per_transaction` rows (default `LOAD_ROW
 each transaction bounded by `timeout_ms`, default `LOAD_TIMEOUT_MS`, 300 000). Insert-only. A column no file
 holds (a part's value, a load's `date_created`) comes from `constants`. Then, exactly as `truncate()`: the
 table is dropped from this process's caches and its write generation advanced once, with no row broadcast.
+A load that fails drops and advances too, before its failure reaches the caller: the transactions before the
+failure stay committed, and a reply lost or timed out can follow a load the broker finished (a failure of
+the drop itself is logged at ERROR, the load's failure is the one raised).
 Refused for a collection with no durable store, a store that cannot load files, or one that defers its L3
 writes. For a full reload: sending ~15.5 million rows over `l3.tx.copy` as JSON ran at ~6 000 rows a second
 through one hub process, and the warehouse had already written those rows to S3 in the table's shape.
@@ -108,23 +124,41 @@ through one hub process, and the warehouse had already written those rows to S3 
 switched-on table, kept as a write's are; a failure raises as every L3 reply's does, a key already held as
 `asyncpg.UniqueViolationError`; a reply counting other rows than the files declare is raised. The pod waits
 `timeout_ms` for each transaction the files need (each file's rows over `rows_per_transaction`, rounded up;
-one for an empty file) plus two seconds (`load_files_wait_seconds`); `NatsProxyL3Backend.nats_request`
-takes the wait as `timeout_s`. `Subjects.l3_load_files()`; agent and tool pods are granted it and the hub
-subscribes to it; the registry, which only reads, is not.
+one for an empty file) plus two seconds, never past `LOAD_FILES_MAX_WAIT_SECONDS` (3600,
+`threetears.core.backends.protocol`): NATS request/reply is at most once, so a reply lost to a broker restart
+would otherwise hold the caller for the load's worst case (a day for 15.5 million rows at the defaults). A
+caller with more to load sends several requests, one per partition. The request's start is logged at INFO
+with its wait, and a reply that never comes at ERROR, as a load the broker may have lost or may still be
+running. `NatsProxyL3Backend.nats_request` takes the wait as `timeout_s`. `Subjects.l3_load_files()`; agent
+and tool pods are granted it and the hub subscribes to it; the registry, which only reads, is not.
+
+**The wire's URL contract:** the broker fetches each URL with the hub's network position on a pod's word, so
+it fetches only a presigned `https` URL (no user info, no port but 443, no fragment) on an S3 host of the
+caller's datasource's export bucket, whose key lies under the prefix of an export the hub recorded running for
+that caller; it follows no redirect, and refuses the whole request before fetching anything when any URL is not
+one. The hub enforces it (`aibots.hub.broker.export_files`, hub PR #656). The `LoadingStore` docstring states
+it for any other broker.
 
 **Added, the seams:** `LoadFile(url, rows)`, `LoadResult(row_count, files)`, `FileLoad(index, rows_loaded)`
 and the `LoadingStore` protocol (`threetears.core.backends.protocol`); `NatsProxyL3Backend.load_files`;
-`SqlL3Backend.load_files` -- through the broker on the rail, and on a direct pool (local runs, tests) the
-broker's load done here: each file fetched (`https` or `file://`), read with pyarrow off the loop, held to
-its declared rows, ordered by key and copied in transactions of `rows_per_transaction`.
+`SqlL3Backend.load_files` -- the columns checked against the table's registered schema on either path (a
+column named twice or not the table's, a key column no file or constant supplies), then through the broker on
+the rail, and on a direct pool (local runs, tests) the broker's load done here: each URL admitted (`https`,
+plain `http` only to this machine -- a local MinIO -- and `file://`, a `FilesystemObjectStore`'s presign; the
+process already holds the database's credentials), each file fetched with no redirect followed, read with
+pyarrow off the loop, held to its declared rows, ordered by key and copied in transactions of
+`rows_per_transaction`.
 
 **Added, presigning an export:** `threetears.datasources.export_read.presigned_export_files(store, result, *,
-bucket, expires_in=3600) -> list[LoadFile]` and `threetears.datasources.partitioned_export.presigned_partition_files(
-store, result, *, bucket, partition_by, expires_in=3600) -> dict[str | None, list[LoadFile]]`: the export's
+bucket, expires_in=DEFAULT_PRESIGN_SECONDS) -> list[LoadFile]` and
+`threetears.datasources.partitioned_export.presigned_partition_files(store, result, *, bucket, partition_by,
+expires_in=DEFAULT_PRESIGN_SECONDS) -> dict[str | None, list[LoadFile]]`: the export's
 files, checked as a read checks them, presigned through the store's `presigned_get_url`, each with the rows
 its manifest counts for it (a file the manifest does not count, or counts that differ from the warehouse's,
 are refused). A partitioned export's part value lives in its directory name, not its files: pass it back as
-a constant. The fingerprints and the delete after load stay the caller's.
+a constant. The fingerprints and the delete after load stay the caller's. `DEFAULT_PRESIGN_SECONDS` is
+`LOAD_FILES_MAX_WAIT_SECONDS` plus fifteen minutes, so a URL presigned just before its load outlives the
+pod's wait for it; presign each load's files just before it is sent.
 
 ### core, nats: a table is emptied with TRUNCATE and loaded again with COPY, through the L3 broker
 
@@ -133,7 +167,8 @@ transaction, then drops the table from this process's caches (`CollectionRegistr
 cached scans, derived caches; L2 entries are read past until each is read through again) and advances
 the table's write generation once, with no row broadcast, so a pod following the table drops it at its
 next catch-up. `TRUNCATE` fires no write-mark trigger, so the advance is the only signal. Safe to call
-twice. Refused for a collection with no durable store, a store that cannot truncate, or one that defers
+twice. A `TRUNCATE` that fails drops and advances too (a reply lost after the broker ran it leaves the
+table emptied), and its failure still reaches the caller. Refused for a collection with no durable store, a store that cannot truncate, or one that defers
 its L3 writes. For a table reloaded whole: deleting every row left a tombstone per row, and on
 YugabyteDB one such transaction ran 60-90 s and blocked every other writer.
 
@@ -141,7 +176,11 @@ YugabyteDB one such transaction ran 60-90 s and blocked every other writer.
 already held fails the write and the caller's transaction. The rows are ordered by key. L1 eviction and
 settling are as for an upsert. `copy=False`, the default, is unchanged. A jsonb or vector column is
 refused (asyncpg copies in the binary format only; a 3tears pool binds jsonb through a text codec, and a
-vector needs an insert's cast).
+vector needs an insert's cast). It serves rows the caller holds and no export file holds, a page per
+transaction of the caller's, which `load_files` (files only, its own transactions) cannot:
+bluelabsio/14-eng-ai-bot-agent-reports appends a run's LSF rows with it when there are no export files to load
+(`_add_lsf_rows` writing pages with `copy=True`, `aibots_reports/pod/refresh/lsf_pull.py`). A whole-table
+reload from an export goes through `load_files`.
 
 **Added, the wire (the hub's broker answers both):** `l3.truncate`, body `{correlation_id,
 identity_token, namespace, table, timeout_ms}`, replying as `l3.query` does (a write's `generations`
