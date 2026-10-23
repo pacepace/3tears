@@ -58,6 +58,7 @@ __all__ = [
     "coerce_datetime_for_write_tz",
     "coerce_row",
     "coerce_uuid",
+    "copy_writes",
     "decode_jsonb",
     "decode_l2_value",
     "decode_vector",
@@ -501,6 +502,22 @@ def render_param(column: Column, idx: int) -> str:
     else:
         result = f"${idx}"
     return result
+
+
+def copy_writes(column: Column) -> bool:
+    """whether a ``COPY`` can write ``column`` from the value an insert would bind for it.
+
+    Every type but two. asyncpg copies records in the binary format only, and a 3tears pool binds
+    ``jsonb`` through a text-format codec (:mod:`~threetears.core.collections.asyncpg_init`), so it
+    has no binary encoder for one; and an insert binds a vector's text with a
+    ``::text::public.vector`` cast (:func:`render_param`), which a copy has no place to give.
+
+    :param column: column descriptor
+    :ptype column: Column
+    :return: ``True`` when a copy writes the column as an insert would
+    :rtype: bool
+    """
+    return column.column_type not in (_JSONB_TYPE, _VECTOR_TYPE)
 
 
 def insert_columns_for_data(schema: TableSchema, data: dict[str, Any]) -> list[Column]:

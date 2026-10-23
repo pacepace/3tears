@@ -400,6 +400,28 @@ class TestBootCompleteness:
         perm = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
         assert str(Subjects.l3_query()) in perm.publish
         assert str(Subjects.l3_batch()) in perm.publish
+        # a pod reloading a table of its own empties it first; the broker decides which tables
+        assert str(Subjects.l3_truncate()) in perm.publish
+        # and loads it again from its own export's files, which the broker fetches
+        assert str(Subjects.l3_load_files()) in perm.publish
+
+    def test_only_the_hub_answers_a_truncate_and_the_registry_cannot_send_one(self) -> None:
+        """the registry only reads L3, so it is not given the one request that empties a table.
+
+        :return: none
+        :rtype: None
+        """
+        assert str(Subjects.l3_truncate()) in _build(Principal.HUB).subscribe
+        assert str(Subjects.l3_truncate()) not in _build(Principal.REGISTRY).publish
+
+    def test_only_the_hub_answers_a_load_from_files_and_the_registry_cannot_send_one(self) -> None:
+        """the registry only reads L3, so it is not given the request that reloads a table either.
+
+        :return: none
+        :rtype: None
+        """
+        assert str(Subjects.l3_load_files()) in _build(Principal.HUB).subscribe
+        assert str(Subjects.l3_load_files()) not in _build(Principal.REGISTRY).publish
 
     def test_tool_pod_may_run_a_transaction(self) -> None:
         """a write of more than one statement needs the tx subjects too.
@@ -560,6 +582,8 @@ class TestBootCompleteness:
     def test_agent_can_reach_l3_and_gateway(self) -> None:
         perm = _build(Principal.AGENT_POD)
         assert f"{_NS}.l3.query" in perm.publish
+        assert f"{_NS}.l3.truncate" in perm.publish
+        assert f"{_NS}.l3.load_files" in perm.publish
         assert f"{_NS}.l3.tx.*" in perm.publish
         assert f"{_NS}.gateway.completion" in perm.publish
         # receives its streamed tokens on its OWN agent-scoped subject (W1);
