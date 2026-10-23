@@ -2067,23 +2067,38 @@ class Subjects:
         return Subject(path=f"{namespace or _ns()}.l3.batch", kind="point")
 
     @classmethod
+    def l3_truncate(cls, *, namespace: str | None = None) -> Subject:
+        """request/reply subject for agent -> L3 broker ``TRUNCATE`` of one of its own tables.
+
+        outside any transaction: the broker runs the statement alone, under the database's DDL
+        lock, and only for a declared table of the caller's own data space.
+
+        :param namespace: the subject namespace, for a client built on an explicit one; the
+            process default when ``None``
+        :ptype namespace: str | None
+        :return: subject ``{ns}.l3.truncate``
+        :rtype: Subject
+        """
+        return Subject(path=f"{namespace or _ns()}.l3.truncate", kind="point")
+
+    @classmethod
     def l3_tx(
         cls,
-        op: Literal["begin", "execute", "fetchrow", "fetch", "commit", "rollback"],
+        op: Literal["begin", "execute", "fetchrow", "fetch", "copy", "commit", "rollback"],
         *,
         namespace: str | None = None,
     ) -> Subject:
         """request/reply subject for L3 broker explicit-transaction operations.
 
-        the platform broker exposes six per-op subjects (versus the
+        the platform broker exposes seven per-op subjects (versus the
         original four-method shape) so DML ``execute``, single-row
-        ``fetchrow``, and multi-row ``fetch`` are addressable
-        independently from a generic ``exec``. the asyncpg session
-        on the broker side dispatches each op to the matching
+        ``fetchrow``, multi-row ``fetch`` and the bulk ``copy`` are
+        addressable independently from a generic ``exec``. the asyncpg
+        session on the broker side dispatches each op to the matching
         connection method without pre-classifying the SQL verb.
 
         :param op: transaction operation phase
-        :ptype op: Literal["begin", "execute", "fetchrow", "fetch", "commit", "rollback"]
+        :ptype op: Literal["begin", "execute", "fetchrow", "fetch", "copy", "commit", "rollback"]
         :param namespace: the subject namespace, for a client built on an explicit one; the
             process default when ``None``
         :ptype namespace: str | None

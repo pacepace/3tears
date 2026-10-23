@@ -1691,7 +1691,8 @@ def _agent_pod(
         str(Subjects.namespace_discover()),
         str(Subjects.l3_query()),
         str(Subjects.l3_batch()),
-        f"{ns}.l3.tx.*",  # mirrors Subjects.l3_tx(op) over all six ops
+        str(Subjects.l3_truncate()),
+        f"{ns}.l3.tx.*",  # mirrors Subjects.l3_tx(op) over all seven ops
         f"{ns}.channels.deliver.*",  # publishes finished answers (any inbound channel type)
         f"{ns}.hub.stream.{_seg(a)}.*",  # streams tokens for its own (per-request) correlation ids under its own authed agent id
         f"{ns}.agents.complete.*",  # resilience-task-07: per-turn completion signal the router awaits to ack the durable turn (keyed by correlation id)
@@ -1877,7 +1878,8 @@ def _tool_pod(
         # materialized, and the pod cannot send the request that would use them.
         str(Subjects.l3_query()),
         str(Subjects.l3_batch()),
-        f"{ns}.l3.tx.*",  # mirrors Subjects.l3_tx(op) over all six ops, as the agent pod holds it
+        str(Subjects.l3_truncate()),
+        f"{ns}.l3.tx.*",  # mirrors Subjects.l3_tx(op) over all seven ops, as the agent pod holds it
         # a datasource, reached the same way: the hub answers ``{ns}.datasource.{name}.query``
         # for every datasource it serves, verifies the forwarded hub-minted token at the
         # door, and evaluates the pod's own grant on that datasource's namespace. The request
@@ -2089,7 +2091,7 @@ def _registry(
         str(Subjects.hub_handshake()),
         str(Subjects.l3_query()),
         str(Subjects.l3_batch()),
-        f"{ns}.l3.tx.*",  # mirrors Subjects.l3_tx(op) over all six ops
+        f"{ns}.l3.tx.*",  # mirrors Subjects.l3_tx(op) over all seven ops
         # the hub's ``usage_emitter`` factory, loaded into this process, reports each endpoint tool
         # call's usage
         str(Subjects.hub_endpoint_usage_track()),
@@ -2227,6 +2229,7 @@ def _hub(
         str(Subjects.agent_heartbeat_wildcard()),  # heartbeat monitor
         str(Subjects.l3_query()),
         str(Subjects.l3_batch()),
+        str(Subjects.l3_truncate()),
         f"{ns}.l3.tx.*",
         str(Subjects.datasource_query_wildcard()),  # answers every datasource's query subject
         str(Subjects.tools_register()),  # materializes tool namespace rows
