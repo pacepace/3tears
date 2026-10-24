@@ -172,6 +172,7 @@ def register_builtins(registry: ToolRegistry) -> None:
         ("date_math", "threetears.agent.tools.builtin.date_math", "create_date_math_tool"),
         ("web_search", "threetears.agent.tools.builtin.web_search", "create_web_search_tool"),
         ("web_fetch", "threetears.agent.tools.builtin.web_fetch", "create_web_fetch_tool"),
+        ("web_answer", "threetears.agent.tools.builtin.web_answer", "create_web_answer_tool"),
         ("analyze_media", "threetears.agent.tools.builtin.analyze_media", "create_analyze_media_tool"),
     ]
 

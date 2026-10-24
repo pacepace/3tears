@@ -813,9 +813,9 @@ class AnalyzeMediaTool(TearsTool):
                 # Nothing to read about: the document holds no such word from there on.
                 # Not a failure -- the answer to "where does it say X" is "it does not".
                 return (
+                    f"{found_note}\n"
                     f"Looked through {mid_str} from character {start:,} of {len(extracted):,} for {find.strip()!r}: "
-                    "no match, so no part was read.\n"
-                    f"{found_note}"
+                    "no match, so no part was read."
                 )
             start = found.start
 

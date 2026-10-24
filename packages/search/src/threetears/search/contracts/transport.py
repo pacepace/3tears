@@ -49,17 +49,45 @@ upstream -- one base URL that paths join onto, one breaker guarding it -- and
 buffers whole bodies, while a fetch is a different host every call read
 against a per-call cap. Hosts therefore inject *two* objects, and the split
 is the reason declaring two protocols was right rather than merely cautious.
+
+**A third protocol for an open-ended stream (AD11, 2026-10-23).** A cited
+answer arrives as a stream whose citations exist only when streaming
+(``answers-requirements-design.md`` §4.2), and whose length nobody states in
+advance. Neither existing protocol can carry it: :class:`SearchTransport`
+returns a buffered body, and :class:`FetchTransport` returns one too, read
+whole under its cap. A stream differs in what the caller holds -- an open
+response it reads chunk by chunk, with the status and headers in hand before
+the first chunk -- and in one obligation the others never had to state: a
+retry is only honest **before the first byte**, because once body bytes have
+reached the caller the provider has started answering (and, for a metered
+provider, billing) and a second attempt would be a second bill. So it is a
+third protocol, :class:`StreamingTransport`, for the Gate A reason the second
+one was: folding ``stream`` into either existing protocol would invalidate
+every implementation already written against it, while a third leaves them
+conformant and lets an implementation satisfy whichever union it can. The
+host-side ``TracedHttpClient`` adapter cannot implement it, for the reason it
+cannot implement :class:`FetchTransport`: it buffers. The transport moves
+bytes and nothing more; any framing inside them (SSE ``data:`` lines, a
+provider's tags) is the adapter's to parse (AR-F2).
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from types import TracebackType
+from typing import Protocol, Self, runtime_checkable
 
 from pydantic import JsonValue
 
-__all__ = ["FetchTransport", "HeavyFetcher", "SearchTransport", "TransportResponse"]
+__all__ = [
+    "FetchTransport",
+    "HeavyFetcher",
+    "SearchTransport",
+    "StreamedResponse",
+    "StreamingTransport",
+    "TransportResponse",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +260,222 @@ class FetchTransport(Protocol):
             taxonomy: cap and gate refusals as ``LocalCapExceeded`` with
             the refusing scope named); Extract maps everything else onto
             the taxonomy (SR-J1)
+        """
+        ...
+
+
+@runtime_checkable
+class StreamedResponse(Protocol):
+    """One open streamed response: the head now, the body as it arrives.
+
+    Not a value like :class:`TransportResponse`: it holds a live connection,
+    which is why it is a protocol rather than a frozen dataclass. The head --
+    :attr:`status_code`, :attr:`headers`, :attr:`final_url`, :attr:`egress`,
+    :attr:`attempts` -- is complete when :meth:`StreamingTransport.stream`
+    returns, before any body byte is read, so a caller can refuse an error
+    status without reading what follows it. The body is an async iterator of
+    ``bytes`` chunks, each yielded as it arrives, and it is iterated once.
+
+    **The connection is always released.** Use it as an async context manager,
+    or call :meth:`aclose`; either releases the connection whether the body was
+    read to the end, abandoned part-way, or broken by a failure. An exhausted
+    or failed body releases it too. :meth:`aclose` is idempotent.
+
+    A failure while the body is read -- the byte cap, the deadline, a broken
+    connection -- raises from the iteration, typed as the implementation's
+    other failures are, and is never retried (see
+    :class:`StreamingTransport`).
+    """
+
+    @property
+    def status_code(self) -> int:
+        """Final HTTP status code, available before the body.
+
+        :return: the status of the response that answered, after any
+            redirects the implementation's policy allowed (D21)
+        :rtype: int
+        """
+        ...
+
+    @property
+    def headers(self) -> Mapping[str, str]:
+        """Response headers with lower-cased keys, available before the body.
+
+        :return: the headers of the response that answered
+        :rtype: Mapping[str, str]
+        """
+        ...
+
+    @property
+    def final_url(self) -> str:
+        """The URL that actually answered, after any redirects followed.
+
+        :return: the answering URL
+        :rtype: str
+        """
+        ...
+
+    @property
+    def egress(self) -> str:
+        """Which egress the request left by (D20) -- ``direct`` is a named value.
+
+        :return: the egress name
+        :rtype: str
+        """
+        ...
+
+    @property
+    def attempts(self) -> int:
+        """Attempts made to open this stream, including the one that answered.
+
+        Final once :meth:`StreamingTransport.stream` returns: no attempt is
+        ever made after the first body byte, so the count cannot move while
+        the body is read (D4, AR-E1).
+
+        :return: the attempt count, at least 1
+        :rtype: int
+        """
+        ...
+
+    @property
+    def elapsed_seconds(self) -> float:
+        """Wall-clock the call has taken, across every attempt and the body.
+
+        Final once the stream is closed; while it is open, the time so far.
+
+        :return: elapsed seconds
+        :rtype: float
+        """
+        ...
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        """Iterate the body, chunk by chunk, as it arrives.
+
+        :return: the body's chunks, none empty
+        :rtype: AsyncIterator[bytes]
+        """
+        ...
+
+    async def aclose(self) -> None:
+        """Release the connection. Idempotent; safe after a failure or exhaustion."""
+        ...
+
+    async def __aenter__(self) -> Self:
+        """Enter the block that owns this response.
+
+        :return: this response
+        :rtype: Self
+        """
+        ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Release the connection on leaving the block, however it is left.
+
+        :param exc_type: exception type, if the block raised
+        :ptype exc_type: type[BaseException] | None
+        :param exc: the exception, if the block raised
+        :ptype exc: BaseException | None
+        :param traceback: the traceback, if the block raised
+        :ptype traceback: TracebackType | None
+        """
+        ...
+
+
+@runtime_checkable
+class StreamingTransport(Protocol):
+    """Structural protocol for an open-ended response read as a stream (AD11).
+
+    The seam a streaming provider (a cited answer, AD5) reads through. The one
+    implementer is this package's ``standalone`` module, beside the two
+    protocols it already implements; the host-side ``TracedHttpClient``
+    adapter cannot implement it, because it buffers.
+
+    What an implementation owes, behind this one :meth:`stream` method -- the
+    obligations :class:`SearchTransport` states, restated where a stream
+    changes their meaning:
+
+    - **configurable timeout** (SR-G1, SR-G2) -- the per-call
+      ``timeout_seconds`` bounds the **whole stream**: the attempts, the
+      backoff between them, and the reading of the body. A stream bounded only
+      until its headers could hold a caller forever on a trickle;
+    - **bounded retry, before the first byte only** (SR-G4, AR-E1) -- connect
+      failures, timeouts and 5xx answers are retried, with backoff and a finite
+      attempt ceiling, while no body byte has reached the caller; once one has,
+      nothing is retried, because the provider has begun answering and a
+      second attempt would be a second bill (D4). A body broken after the
+      first byte fails with the attempts already counted;
+    - **circuit-breaking** per upstream (SR-D3), as for :class:`SearchTransport`;
+    - **a per-call span** where telemetry exists, zero-cost where it does not
+      (SR-I1);
+    - **egress selection** at construction (D20), reported as
+      :attr:`egress_name` and on every response;
+    - **the SSRF rulings** (D21) -- base URLs from deployment config only, the
+      redirect policy and private-address guards here and not per call site,
+      and a direct connection opened to the address the guard checked;
+    - **a byte cap on the whole stream** (SR-G5, AR-F1) -- ``max_bytes``
+      bounds the sum of every chunk, counted incrementally as each arrives. A
+      declared length past the cap is refused before a byte is read; a stream
+      that runs past it is refused as the implementation's local-cap failure
+      (the ``fetch`` refusal, scope ``response-bytes``) without yielding the
+      chunk that crossed it, so the caller never receives more than the cap.
+
+    Framing is not the transport's business (AR-F2): it yields bytes as the
+    socket delivers them, and a chunk boundary means nothing. SSE events,
+    ``[DONE]`` and a provider's inline tags are parsed by the adapter, which
+    must tolerate any of them straddling chunks.
+    """
+
+    @property
+    def egress_name(self) -> str:
+        """Name of the egress this transport's requests leave by (D20).
+
+        :return: the configured exit's name; ``direct`` for the default
+            route
+        :rtype: str
+        """
+        ...
+
+    async def stream(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        json_body: Mapping[str, JsonValue] | None = None,
+        timeout_seconds: float | None = None,
+        max_bytes: int,
+    ) -> StreamedResponse:
+        """Open one bounded, guarded stream and return it with its head read.
+
+        :param method: HTTP method (``POST`` for a streamed completion)
+        :ptype method: str
+        :param url: absolute URL on a deployment-configured base -- never a
+            caller-supplied base (D21)
+        :ptype url: str
+        :param headers: request headers, if any
+        :ptype headers: Mapping[str, str] | None
+        :param json_body: JSON request body, if any
+        :ptype json_body: Mapping[str, JsonValue] | None
+        :param timeout_seconds: bound on the whole stream, body included
+            (SR-G2); None uses the implementation's configured value (SR-G1)
+        :ptype timeout_seconds: float | None
+        :param max_bytes: hard cap on the whole body (SR-G5). Required and
+            per-call, as on :meth:`FetchTransport.fetch`: the cap is the
+            caller's budget for this response, not a transport constant
+        :ptype max_bytes: int
+        :return: the open response, head complete and body unread. The caller
+            owns it and must release it (``async with`` or ``aclose``)
+        :rtype: StreamedResponse
+        :raises Exception: implementations surface failures however they
+            choose (the standalone implementation speaks the typed taxonomy:
+            ``TimedOut``, ``TransportFailed``, and ``LocalCapExceeded`` with
+            the refusing scope named); adapters map them onto the taxonomy
+            (SR-J1)
         """
         ...
 

@@ -22,6 +22,7 @@ nothing about the shipped path.
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import re
 import ssl
@@ -34,6 +35,11 @@ from urllib.parse import urlparse
 import anyio
 import anyio.abc
 import pytest
+from opentelemetry import trace as otel_trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -47,6 +53,8 @@ from threetears.search.contracts import (
     LocalCapExceeded,
     SearchRequest,
     SearchTransport,
+    StreamedResponse,
+    StreamingTransport,
     TimedOut,
     TransportFailed,
 )
@@ -1515,3 +1523,549 @@ async def test_a_losers_fault_is_raised_only_after_the_winner_is_closed(
     chain = [raised.value, *(raised.value.__cause__, raised.value.__context__)]
     assert any("a fault in the losing connect" in str(error) for error in chain if error is not None), raised.value
     assert winner.closed, "the winning stream was dropped open"
+
+
+# --- the streaming seam (AD11, AR-F1..F3) ---------------------------------
+#
+# The same machine as request and fetch, ending each attempt at the head
+# instead of after the body. The pins every streaming transport owes run in
+# test_conformance_streaming.py; these are the standalone transport's own --
+# its retry policy, its deadline, its cap arithmetic and its address guard
+# applied to a stream.
+
+
+async def _body(response: StreamedResponse) -> bytes:
+    """Read a stream to its end.
+
+    :param response: the open stream
+    :ptype response: StreamedResponse
+    :return: the whole body
+    :rtype: bytes
+    """
+    return b"".join([chunk async for chunk in response])
+
+
+def test_the_transport_satisfies_all_three_seams() -> None:
+    """One machine, three protocols: a host injects the one object wherever each is asked for."""
+    transport = _transport()
+    assert isinstance(transport, StreamingTransport)
+    assert isinstance(transport, SearchTransport)
+    assert isinstance(transport, FetchTransport)
+
+
+@pytest.mark.parametrize("max_bytes", [0, -1])
+async def test_a_stream_cap_that_cannot_bind_is_refused_where_it_is_written(max_bytes: int) -> None:
+    """A cap of nothing is a programming error, refused before any socket opens."""
+    with pytest.raises(ValueError, match="positive"):
+        await _transport().stream("GET", "http://127.0.0.1:1/stream", max_bytes=max_bytes)
+
+
+async def test_a_connect_failure_before_the_first_byte_is_retried() -> None:
+    """Nothing has been answered yet, so another attempt bills nothing twice."""
+    async with LocalHttpServer((Reply(close_early=True), Reply(chunks=(b"data: ok\n\n",)))) as server:
+        async with await _transport(max_attempts=3).stream("POST", f"{server.base_url}/s", max_bytes=1024) as response:
+            assert response.attempts == 2, "the attempt count is what budget-follows-the-bill reads (D4)"
+            assert await _body(response) == b"data: ok\n\n"
+
+
+async def test_a_5xx_before_the_first_byte_is_retried() -> None:
+    """A server error at the head is retried exactly as a buffered request's is."""
+    async with LocalHttpServer((Reply(status=503, body=b""), Reply(chunks=(b"ok",)))) as server:
+        async with await _transport(max_attempts=3).stream("POST", f"{server.base_url}/s", max_bytes=1024) as response:
+            assert response.status_code == 200
+            assert response.attempts == 2
+            assert await _body(response) == b"ok"
+        assert len(server.requests) == 2
+
+
+async def test_the_last_5xx_comes_back_open_with_its_body_readable() -> None:
+    """Finite attempts: the final error answer is the caller's to read, not hidden behind a failure."""
+    async with LocalHttpServer((Reply(status=500, body=b"boom"),)) as server:
+        async with await _transport(max_attempts=2).stream("POST", f"{server.base_url}/s", max_bytes=1024) as response:
+            assert response.status_code == 500
+            assert response.attempts == 2
+            assert await _body(response) == b"boom"
+
+
+async def test_a_4xx_stream_is_never_retried() -> None:
+    """A 429 comes back for the adapter to raise as RateLimited, not hammered."""
+    async with LocalHttpServer((Reply(status=429, body=b""),)) as server:
+        async with await _transport(max_attempts=3).stream("POST", f"{server.base_url}/s", max_bytes=1024) as response:
+            assert response.status_code == 429
+            assert response.attempts == 1
+        assert len(server.requests) == 1
+
+
+async def test_a_stream_broken_mid_body_fails_typed_with_what_it_read() -> None:
+    """AR-E1: a broken stream is TransportFailed, stamped, carrying the bytes it consumed -- and not retried."""
+    async with LocalHttpServer((Reply(chunks=(b"partial",), truncate=True), Reply(chunks=(b"retry",)))) as server:
+        response = await _transport(max_attempts=3, egress_name="warp").stream(
+            "POST", f"{server.base_url}/s", max_bytes=1024
+        )
+        with pytest.raises(TransportFailed, match="never retried") as raised:
+            async with response:
+                await _body(response)
+        assert len(server.requests) == 1
+
+    assert "1 attempt(s)" in raised.value.message
+    assert raised.value.spend.bytes_transferred == len(b"partial")
+    assert raised.value.spend.calls == 0, "the transport bills nothing; the adapter owns the call count"
+    assert raised.value.egress == "warp"
+    assert raised.value.occurred_at is not None
+
+
+async def test_a_declared_length_past_the_stream_cap_is_refused_before_the_body() -> None:
+    """A declared overrun costs nothing to refuse, so it is refused before stream() returns."""
+    async with LocalHttpServer((Reply(body=b"x" * 4096),)) as server:
+        with pytest.raises(LocalCapExceeded) as raised:
+            await _transport(max_attempts=3).stream("GET", f"{server.base_url}/s", max_bytes=64)
+        assert len(server.requests) == 1, "a deterministic refusal is not retried"
+
+    assert raised.value.scope == RESPONSE_BYTES_SCOPE
+
+
+async def test_the_stream_cap_is_exact_at_its_own_boundary() -> None:
+    """A stream of exactly the cap is read whole; one byte more is refused."""
+    async with LocalHttpServer((Reply(chunks=(b"a" * 32, b"b" * 32)),)) as server:
+        async with await _transport().stream("GET", f"{server.base_url}/s", max_bytes=64) as response:
+            assert len(await _body(response)) == 64
+    async with LocalHttpServer((Reply(chunks=(b"a" * 32, b"b" * 33)),)) as server:
+        response = await _transport().stream("GET", f"{server.base_url}/s", max_bytes=64)
+        received: list[bytes] = []
+        with pytest.raises(LocalCapExceeded):
+            async with response:
+                async for chunk in response:
+                    received.append(chunk)
+    assert received == [b"a" * 32], "the chunk that crossed the cap was handed over"
+
+
+async def test_a_per_call_stream_cap_tightens_the_deployment_cap_and_cannot_loosen_it() -> None:
+    """The host's memory budget binds whatever a caller asks for, and the refusal names whose cap bound."""
+    async with LocalHttpServer((Reply(chunks=(b"a" * 40, b"b" * 40)),)) as server:
+        response = await _transport(max_response_bytes=64).stream("GET", f"{server.base_url}/s", max_bytes=4096)
+        with pytest.raises(LocalCapExceeded, match="this transport's 64-byte cap"):
+            async with response:
+                await _body(response)
+
+
+async def test_a_stream_whose_head_never_comes_times_out() -> None:
+    """The bound covers the wait for the head, like any request."""
+    async with LocalHttpServer((Reply(delay=2.0, chunks=(b"late",)),)) as server:
+        with pytest.raises(TimedOut):
+            await _transport(max_attempts=1).stream("POST", f"{server.base_url}/s", max_bytes=1024, timeout_seconds=0.1)
+
+
+async def test_the_bound_covers_the_body_not_only_the_head() -> None:
+    """A stream that stops sending is ended by the caller's bound, in real time, typed as a timeout."""
+    gate = asyncio.Semaphore(0)
+    async with LocalHttpServer((Reply(chunks=(b"one", b"never"), gate=gate),)) as server:
+        started = time.monotonic()
+        response = await _transport(max_attempts=1).stream(
+            "POST", f"{server.base_url}/s", max_bytes=1024, timeout_seconds=0.3
+        )
+        gate.release()
+        received: list[bytes] = []
+        with pytest.raises(TimedOut, match="deadline") as raised:
+            async with response:
+                async for chunk in response:
+                    received.append(chunk)
+        elapsed = time.monotonic() - started
+
+    assert received == [b"one"]
+    assert elapsed < 2.0, f"a 0.3s bound held the caller for {elapsed:.2f}s"
+    assert raised.value.spend.bytes_transferred == 3
+
+
+async def test_a_deadline_passed_while_the_caller_held_the_stream_ends_it() -> None:
+    """The deadline is the transport's clock, so a stream held past it fails on the next read, without waiting."""
+    clock = _ManualClock()
+    gate = asyncio.Semaphore(0)
+    async with LocalHttpServer((Reply(chunks=(b"never",), gate=gate),)) as server:
+        response = await _transport(max_attempts=1, clock=clock.read, sleep=clock.sleep).stream(
+            "POST", f"{server.base_url}/s", max_bytes=1024, timeout_seconds=10.0
+        )
+        clock.advance(11.0)
+        with pytest.raises(TimedOut):
+            async with response:
+                await anext(aiter(response))
+
+
+async def test_elapsed_is_final_once_the_stream_is_closed() -> None:
+    """Spend reads elapsed after close, and a figure still moving would be a figure nobody can bill."""
+    clock = _ManualClock()
+    async with LocalHttpServer((Reply(chunks=(b"one",)),)) as server:
+        response = await _transport(clock=clock.read, sleep=clock.sleep).stream(
+            "GET", f"{server.base_url}/s", max_bytes=1024
+        )
+        clock.advance(2.0)
+        assert response.elapsed_seconds == 2.0, "while open, the time so far"
+        await response.aclose()
+        clock.advance(5.0)
+        assert response.elapsed_seconds == 2.0
+
+
+async def test_a_permitted_redirect_is_followed_and_the_stream_reports_where_it_landed() -> None:
+    """The redirect policy is the one request and fetch follow, hop by guarded hop."""
+    async with LocalHttpServer(
+        (Reply(status=302, body=b"", headers={"Location": "/next"}), Reply(chunks=(b"ok",)))
+    ) as server:
+        async with await _transport(max_redirects=1).stream("GET", f"{server.base_url}/s", max_bytes=1024) as response:
+            assert response.final_url == f"{server.base_url}/next"
+            assert await _body(response) == b"ok"
+
+
+async def test_a_stream_inside_a_scope_leaves_the_scope_s_client_open() -> None:
+    """Closing a stream releases its connection, never the pool a scope lent it."""
+    transport = _transport()
+    async with LocalHttpServer((Reply(chunks=(b"one",)), Reply(body=TWO_RESULTS_BODY))) as server:
+        async with transport.connection_scope():
+            async with await transport.stream("GET", f"{server.base_url}/s", max_bytes=1024) as response:
+                assert await _body(response) == b"one"
+            after = await transport.request("GET", f"{server.base_url}/search")
+
+    assert after.body == TWO_RESULTS_BODY
+
+
+async def test_loopback_is_refused_to_a_stream_by_default() -> None:
+    """The address guard is the one request and fetch use; a stream opens no socket it would refuse."""
+    async with LocalHttpServer((Reply(chunks=(b"one",)),)) as server:
+        with pytest.raises(TransportFailed, match="non-public address") as raised:
+            await StandaloneTransport(max_attempts=1, egress_name="warp").stream(
+                "POST", f"{server.base_url}/s", max_bytes=1024
+            )
+
+    assert server.requests == [], "the refusal happens before a socket is opened"
+    assert raised.value.egress == "warp", "a guard refusal leaves stamped, like any other"
+
+
+async def test_a_stream_connects_to_the_address_the_guard_checked(no_proxy_env: pytest.MonkeyPatch) -> None:
+    """DNS rebinding cannot steer a stream either: the socket goes where the guard looked."""
+    asked: list[str] = []
+    async with LocalHttpServer((Reply(chunks=(b"checked",)),)) as checked, LocalHttpServer() as internal:
+        network = _Network(no_proxy_env, {_PUBLIC: _port(checked), "rebind.example": _port(internal)})
+        transport = _guarded(_resolver({"rebind.example": (_PUBLIC,)}, asked))
+        async with await transport.stream("POST", "http://rebind.example/s", max_bytes=1024) as response:
+            assert await _body(response) == b"checked"
+
+    assert internal.requests == [], "the connect resolved the name again and reached the rebound address"
+    assert network.connected == [_PUBLIC]
+    assert asked == ["rebind.example"]
+
+
+async def test_a_stream_to_a_name_that_resolves_internally_is_refused(no_proxy_env: pytest.MonkeyPatch) -> None:
+    """A private answer from the resolver is refused before the stream opens."""
+    transport = _guarded(_resolver({"internal.example": ("10.0.0.5",)}))
+    with pytest.raises(TransportFailed, match="non-public"):
+        await transport.stream("POST", "http://internal.example/s", max_bytes=1024)
+
+
+async def _hung_up(server: LocalHttpServer, count: int = 1) -> None:
+    """Wait until ``server`` has seen ``count`` clients hang up, failing after five seconds.
+
+    :param server: the server to watch
+    :ptype server: LocalHttpServer
+    :param count: hang-ups to wait for
+    :ptype count: int
+    """
+    async with asyncio.timeout(5.0):
+        while server.hangups < count:
+            await asyncio.sleep(0.01)
+
+
+async def test_a_retried_5xx_stream_hands_its_connection_back_to_a_one_connection_pool() -> None:
+    """Inside a scope the pool outlives the attempt, so a 5xx head not released would hold its only slot.
+
+    With one connection allowed, the retry can only connect if the 5xx's
+    connection was released first; held, it would wait out the bound on a full
+    pool instead.
+    """
+    gate = asyncio.Semaphore(0)
+    transport = _transport(max_attempts=2, max_connections=1)
+    async with LocalHttpServer((Reply(status=503, chunks=(b"busy",), gate=gate), Reply(chunks=(b"ok",)))) as server:
+        async with transport.connection_scope():
+            response = await transport.stream("POST", f"{server.base_url}/s", max_bytes=1024, timeout_seconds=2.0)
+            async with response:
+                assert response.status_code == 200
+                assert await _body(response) == b"ok"
+
+
+async def test_a_read_after_a_failure_raises_that_failure_again() -> None:
+    """A caller that catches the cap refusal and reads on cannot mistake the rest for a clean end."""
+    async with LocalHttpServer((Reply(chunks=(b"a" * 40, b"b" * 40, b"c" * 40)),)) as server:
+        response = await _transport().stream("GET", f"{server.base_url}/s", max_bytes=64)
+        iterator = aiter(response)
+        assert await anext(iterator) == b"a" * 40
+        with pytest.raises(LocalCapExceeded) as first:
+            await anext(iterator)
+        with pytest.raises(LocalCapExceeded) as again:
+            await anext(iterator)
+
+    assert again.value is first.value
+
+
+async def test_a_read_after_an_early_close_raises_rather_than_ending() -> None:
+    """A stream closed before its body ended is not a complete body, so iteration never just stops."""
+    async with LocalHttpServer((Reply(chunks=(b"one", b"two")),)) as server:
+        response = await _transport().stream("GET", f"{server.base_url}/s", max_bytes=1024)
+        assert await anext(aiter(response)) == b"one"
+        await response.aclose()
+        with pytest.raises(TransportFailed, match="before its body ended"):
+            await anext(aiter(response))
+
+
+async def test_a_close_from_another_task_fails_the_read_it_interrupts() -> None:
+    """A reader waiting on the next chunk when another task closes the stream sees a failure, not an end."""
+    gate = asyncio.Semaphore(0)
+    async with LocalHttpServer((Reply(chunks=(b"one", b"never"), gate=gate),)) as server:
+        response = await _transport().stream("GET", f"{server.base_url}/s", max_bytes=1024)
+        gate.release()
+        assert await anext(aiter(response)) == b"one"
+        reader = asyncio.create_task(anext(aiter(response)))
+        await asyncio.sleep(0.05)
+        await response.aclose()
+        with pytest.raises(TransportFailed, match="before its body ended"):
+            await reader
+        await _hung_up(server)
+
+
+@pytest.mark.parametrize("yields", range(6))
+async def test_a_close_cancelled_part_way_is_finished_by_the_next_close(yields: int) -> None:
+    """A cancellation landing anywhere inside a release cannot leave the connection's pool slot taken.
+
+    The release is cancelled after ``yields`` turns of the loop, which walks
+    the cancellation through every point the release can be suspended at. One
+    connection is allowed, so the stream opened afterwards can only connect if
+    the first one's slot was handed back -- held, it would time out on a full
+    pool.
+    """
+    gate = asyncio.Semaphore(0)
+    transport = _transport(max_connections=1)
+    replies = (Reply(chunks=(b"one", b"two"), gate=gate), Reply(chunks=(b"after",)))
+    async with LocalHttpServer(replies) as server:
+        async with transport.connection_scope():
+            response = await transport.stream("GET", f"{server.base_url}/s", max_bytes=1024)
+            gate.release()
+            assert await anext(aiter(response)) == b"one"
+            closing = asyncio.create_task(response.aclose())
+            for _ in range(yields):
+                await asyncio.sleep(0)
+            closing.cancel()
+            await asyncio.wait([closing])
+            await response.aclose()
+            after = await transport.stream("GET", f"{server.base_url}/s", max_bytes=1024, timeout_seconds=2.0)
+            async with after:
+                assert await _body(after) == b"after"
+        gate.release()
+
+
+async def test_a_dropped_stream_warns_that_its_connection_leaked() -> None:
+    """A caller who neither exhausts nor closes a stream is told, as httpx and asyncio tell it."""
+    async with LocalHttpServer((Reply(chunks=(b"one", b"two")),)) as server:
+        response = await _transport().stream("GET", f"{server.base_url}/s", max_bytes=1024)
+        with pytest.warns(ResourceWarning, match="unclosed stream"):
+            del response
+            gc.collect()
+
+
+# --- the circuit breaker (SR-D3) -------------------------------------------
+
+
+@pytest.mark.parametrize(("field", "value"), [("breaker_failure_threshold", 0), ("breaker_cooldown_seconds", 0.0)])
+def test_a_breaker_that_cannot_work_is_refused_at_construction(field: str, value: float) -> None:
+    """A threshold of no failures, or a cooldown of no time, is a misconfiguration, refused where it is written."""
+    with pytest.raises(ValueError, match=field):
+        _transport(**{field: value})
+
+
+async def test_repeated_failed_calls_open_the_breaker_and_it_refuses_before_connecting() -> None:
+    """Provider exhaustion short-circuits: once open, a call costs no socket, and says why."""
+    async with LocalHttpServer((Reply(status=503, body=b""),)) as server:
+        transport = _transport(max_attempts=1, breaker_failure_threshold=2, egress_name="warp")
+        for _ in range(2):
+            assert (await transport.request("GET", f"{server.base_url}/search")).status_code == 503
+        with pytest.raises(TransportFailed, match="circuit") as raised:
+            await transport.request("GET", f"{server.base_url}/search")
+        assert len(server.requests) == 2, "an open breaker still reached the upstream"
+
+    assert raised.value.spend.calls == 0 and raised.value.spend.bytes_transferred == 0
+    assert raised.value.egress == "warp", "the refusal leaves stamped, like any other"
+    assert "breaker_failure_threshold" in (raised.value.remediation or "")
+
+
+async def test_connect_failures_that_outlast_the_attempts_count_against_the_breaker() -> None:
+    """An upstream that never answers is failing as surely as one that answers 5xx."""
+    async with LocalHttpServer((Reply(close_early=True),)) as server:
+        transport = _transport(max_attempts=2, breaker_failure_threshold=1)
+        with pytest.raises(TransportFailed, match="attempt"):
+            await transport.request("GET", f"{server.base_url}/search")
+        with pytest.raises(TransportFailed, match="circuit"):
+            await transport.request("GET", f"{server.base_url}/search")
+        assert len(server.requests) == 2, "one call's two attempts, and nothing after the breaker opened"
+
+
+async def test_a_call_that_recovered_on_retry_is_a_success_to_the_breaker() -> None:
+    """The breaker counts calls, not attempts, so a retry that worked resets it."""
+    async with LocalHttpServer((Reply(status=503, body=b""), Reply(body=TWO_RESULTS_BODY))) as server:
+        transport = _transport(max_attempts=2, breaker_failure_threshold=1)
+        assert (await transport.request("GET", f"{server.base_url}/search")).status_code == 200
+        assert (await transport.request("GET", f"{server.base_url}/search")).status_code == 200
+
+
+async def test_a_4xx_is_the_upstream_answering_and_never_trips_the_breaker() -> None:
+    """A rate limit or a bad request is an answer, for the adapter to type; it is not an outage."""
+    async with LocalHttpServer((Reply(status=429, body=b""),)) as server:
+        transport = _transport(max_attempts=1, breaker_failure_threshold=1)
+        for _ in range(3):
+            assert (await transport.request("GET", f"{server.base_url}/search")).status_code == 429
+
+
+async def test_a_refusal_of_the_transport_s_own_never_trips_the_breaker() -> None:
+    """A byte-cap refusal says nothing about the upstream's health."""
+    async with LocalHttpServer((Reply(body=b"x" * 4096), Reply(body=TWO_RESULTS_BODY))) as server:
+        transport = _transport(max_attempts=1, breaker_failure_threshold=1, max_response_bytes=1024)
+        with pytest.raises(LocalCapExceeded):
+            await transport.request("GET", f"{server.base_url}/search")
+        assert (await transport.request("GET", f"{server.base_url}/search")).status_code == 200
+
+
+async def test_healthy_upstreams_leave_no_breaker_state_and_a_failing_one_keeps_its_count(
+    no_proxy_env: pytest.MonkeyPatch,
+) -> None:
+    """Only an upstream with failures behind it is remembered, and many healthy ones displace nothing.
+
+    A breaker that kept an entry for every host ever called would grow with
+    every page a long-lived fetch transport reads. So the one host that failed,
+    below its threshold, must still have that failure counted after a hundred
+    healthy hosts are called -- its next failure opens the circuit -- while the
+    healthy hosts, each now closed and clean, are held by nothing.
+    """
+    healthy = [f"h{index}.example" for index in range(100)]
+    async with LocalHttpServer((Reply(status=503, body=b""),)) as failing, LocalHttpServer() as fine:
+        _Network(no_proxy_env, {_PUBLIC: _port(fine), _OTHER_PUBLIC: _port(failing)})
+        answers = {name: (_PUBLIC,) for name in healthy} | {"flaky.example": (_OTHER_PUBLIC,)}
+        transport = _guarded(_resolver(answers), breaker_failure_threshold=2)
+        assert (await transport.request("GET", "http://flaky.example/x")).status_code == 503
+        for name in healthy:
+            assert (await transport.request("GET", f"http://{name}/x")).status_code == 200
+        assert (await transport.request("GET", "http://flaky.example/x")).status_code == 503
+        with pytest.raises(TransportFailed, match="circuit"):
+            await transport.request("GET", "http://flaky.example/x")
+
+
+async def test_the_breaker_is_per_upstream() -> None:
+    """One failing upstream does not refuse calls to another."""
+    async with LocalHttpServer((Reply(status=503, body=b""),)) as failing, LocalHttpServer() as healthy:
+        transport = _transport(max_attempts=1, breaker_failure_threshold=1)
+        await transport.request("GET", f"{failing.base_url}/search")
+        with pytest.raises(TransportFailed, match="circuit"):
+            await transport.request("GET", f"{failing.base_url}/search")
+        assert (await transport.request("GET", f"{healthy.base_url}/search")).status_code == 200
+
+
+async def test_after_the_cooldown_one_probe_is_admitted_and_its_success_closes_the_breaker() -> None:
+    """Half-open admits one call; an answer closes the breaker for everyone after it."""
+    clock = _ManualClock()
+    async with LocalHttpServer((Reply(status=503, body=b""), Reply(body=TWO_RESULTS_BODY))) as server:
+        transport = _transport(
+            max_attempts=1,
+            breaker_failure_threshold=1,
+            breaker_cooldown_seconds=30.0,
+            clock=clock.read,
+            sleep=clock.sleep,
+        )
+        await transport.request("GET", f"{server.base_url}/search")
+        clock.advance(29.0)
+        with pytest.raises(TransportFailed, match="probe is admitted in 1.0s"):
+            await transport.request("GET", f"{server.base_url}/search")
+        clock.advance(2.0)
+        assert (await transport.request("GET", f"{server.base_url}/search")).status_code == 200
+        assert (await transport.request("GET", f"{server.base_url}/search")).status_code == 200
+
+
+async def test_a_failed_probe_opens_the_breaker_again() -> None:
+    """A probe that fails restarts the cooldown rather than letting the next call through."""
+    clock = _ManualClock()
+    async with LocalHttpServer((Reply(status=503, body=b""),)) as server:
+        transport = _transport(
+            max_attempts=1,
+            breaker_failure_threshold=1,
+            breaker_cooldown_seconds=30.0,
+            clock=clock.read,
+            sleep=clock.sleep,
+        )
+        await transport.request("GET", f"{server.base_url}/search")
+        clock.advance(31.0)
+        assert (await transport.request("GET", f"{server.base_url}/search")).status_code == 503
+        with pytest.raises(TransportFailed, match="circuit"):
+            await transport.request("GET", f"{server.base_url}/search")
+        assert len(server.requests) == 2
+
+
+async def test_one_breaker_guards_all_three_protocols() -> None:
+    """Search calls, fetches and streams to one upstream share its breaker."""
+    async with LocalHttpServer((Reply(status=503, body=b""),)) as server:
+        transport = _transport(max_attempts=1, breaker_failure_threshold=1)
+        await transport.request("GET", f"{server.base_url}/search")
+        with pytest.raises(TransportFailed, match="circuit"):
+            await transport.fetch("GET", f"{server.base_url}/page", max_bytes=1024)
+        with pytest.raises(TransportFailed, match="circuit"):
+            await transport.stream("POST", f"{server.base_url}/s", max_bytes=1024)
+        assert len(server.requests) == 1
+
+
+# --- the per-call span (SR-I1) ---------------------------------------------
+
+
+@pytest.fixture
+def spans(monkeypatch: pytest.MonkeyPatch) -> InMemorySpanExporter:
+    """Route the transport's spans to an in-memory exporter, without touching the global provider.
+
+    :param monkeypatch: pytest's patcher
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: the exporter the spans land in
+    :rtype: InMemorySpanExporter
+    """
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(otel_trace, "get_tracer", lambda name, *args, **kwargs: provider.get_tracer(name))
+    return exporter
+
+
+@pytest.mark.parametrize("protocol", ["request", "fetch", "stream"])
+async def test_every_call_is_one_span_carrying_the_upstream_the_status_and_the_attempts(
+    spans: InMemorySpanExporter, protocol: str
+) -> None:
+    """One span per call, on all three protocols, with what an operator reads first."""
+    async with LocalHttpServer((Reply(status=503, body=b""), Reply(chunks=(b"ok",)))) as server:
+        transport = _transport(max_attempts=2, egress_name="warp")
+        url = f"{server.base_url}/x"
+        upstream = urlparse(server.base_url).netloc
+        if protocol == "request":
+            await transport.request("GET", url)
+        elif protocol == "fetch":
+            await transport.fetch("GET", url, max_bytes=1024)
+        else:
+            async with await transport.stream("GET", url, max_bytes=1024) as response:
+                await _body(response)
+
+    (span,) = spans.get_finished_spans()
+    assert span.name == f"threetears.search.transport.{protocol}"
+    attributes = dict(span.attributes or {})
+    assert attributes["server.address"] == upstream
+    assert attributes["transport.egress"] == "warp"
+    assert attributes["http.response.status_code"] == 200
+    assert attributes["transport.attempts"] == 2
+
+
+async def test_a_refused_call_s_span_says_the_circuit_was_open(spans: InMemorySpanExporter) -> None:
+    """The span of a short-circuited call names why it never left."""
+    async with LocalHttpServer((Reply(status=503, body=b""),)) as server:
+        transport = _transport(max_attempts=1, breaker_failure_threshold=1)
+        await transport.request("GET", f"{server.base_url}/search")
+        with pytest.raises(TransportFailed):
+            await transport.request("GET", f"{server.base_url}/search")
+
+    refused = spans.get_finished_spans()[-1]
+    assert dict(refused.attributes or {}).get("transport.circuit_open") is True
+    assert refused.status.status_code == StatusCode.ERROR

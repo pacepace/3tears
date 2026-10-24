@@ -14,6 +14,10 @@ groups intentionally model the way platform users think about tools:
   no API keys.
 * ``web`` -- web_search, web_fetch. opt-in because they hit the network
   and may not be wanted for every agent.
+* ``answers`` -- web_answer. opt-in by its own alias and never inside
+  ``web``: every call is a paid, cited answer from a provider, and an agent
+  granted ``web`` for a free SearXNG search must not acquire a paid tool
+  silently (answers-requirements-design.md AD13).
 * ``media`` -- media_analyze, parse_document, image_prep. opt-in
   because they need a vision model (media_analyze) or heavy optional
   deps (parse_document needs PyMuPDF + OCR stack) and incur cost.
@@ -71,6 +75,10 @@ WEB_TOOLS: frozenset[str] = frozenset(
         "threetears.web_fetch",
     }
 )
+
+# the paid answer tool, alone in its own group (AD13): never a member of
+# WEB_TOOLS, whose grant is free search and fetch.
+ANSWER_TOOLS: frozenset[str] = frozenset({"threetears.web_answer"})
 
 # media tool names all use the uniform dotted ``threetears.X`` form:
 # * ``threetears.media_analyze`` -- TearsTool subclass under ``builtin/``
@@ -155,6 +163,7 @@ WORKSPACE_TOOLS: frozenset[str] = WORKSPACE_FS_TOOLS | WORKSPACE_DOC_TOOLS | WOR
 GROUP_ALIASES: dict[str, frozenset[str]] = {
     "standard": STANDARD_TOOLS,
     "web": WEB_TOOLS,
+    "answers": ANSWER_TOOLS,
     "media": MEDIA_TOOLS,
     "workspace": WORKSPACE_TOOLS,
     "workspace.fs": WORKSPACE_FS_TOOLS,
