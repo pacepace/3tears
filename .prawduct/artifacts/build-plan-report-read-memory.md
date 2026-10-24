@@ -37,7 +37,14 @@ Decisions (each with what settled it):
 - [DECISION] Step 4: the fastmcp transport leaves out of the structured content a top-level string field whose
   value IS the text block (`report_read`'s `body`, rendered verbatim). No other action renders a field verbatim
   (every other render is `render_model` or a composed text), so no other action's structured content changes.
-- Step 5 (cache): decided after re-measuring; see Results.
+- [DECISION] Step 5 (cache): not built; written up as a follow-up below. Settled by the after-numbers: the default
+  html read is 0.71 MB (target under 1 MB), a read's peak no longer grows with history, and a json-then-html pair
+  costs 0.85 s of CPU on the toy where it cost 2.9 s. A cache would hold serialized pages resident in the very
+  process that ran out of memory, and its key has to carry the live call's version, so it is built only if a measured
+  repeat-read pattern needs it.
+- [INFERENCE, for the boundary review] Every campaign-page door (report_read, the CLI's report, the quick path's
+  Result.page, CampaignReport.write) defaults to "table"; the issue named report_read only. Settled by the
+  one-page-every-door contract the doors tests hold.
 
 ## Baseline (before), toy 8-aspect campaign
 
@@ -77,4 +84,37 @@ serializer's time is `_links_in_sight` parsing the page it wrote, so it scales w
 
 ## Results
 
-(filled in as each chunk lands)
+Same toy campaign, 11 analyses (10 archived) unless stated. tracemalloc on (times read high):
+
+| phase | before | after steps 1-3 |
+|---|---|---|
+| choosing the analysis | list_analyses 2.51 s, 65.9 MB | load_reported_analysis 0.18 s, 6.9 MB |
+| analysis_campaign_bundle | 0.33 s, 8.1 MB | 0.30 s, 8.1 MB |
+| _campaign_page | 0.65 s, 9.6 MB | 0.50 s, 8.7 MB |
+| campaign_report peak | 65.7 MB (20.2 MB with no archived) | 19.3 MB, whatever is archived |
+| serialize html | 2.48 s, 11.6 MB | 1.22 s, 8.9 MB |
+| serialize markdown | 0.16 s, 3.6 MB | 0.04 s, 1.8 MB |
+| html body | 1.09 MB | 0.71 MB (1.09 MB with trials="all") |
+| markdown body | 0.62 MB | 0.33 MB (0.62 MB with trials="all") |
+| json body | 0.02 MB | 0.02 MB |
+
+No tracemalloc, one read each, 10 archived:
+
+| read | before (33d17e405) | after |
+|---|---|---|
+| json | 1.12 s | 0.33 s |
+| html | 1.27 s + 0.47 s serialize | 0.24 s + 0.28 s serialize |
+| markdown | 1.53 s + 0.03 s | 0.32 s + 0.01 s |
+
+Step 4 removes the second copy of the body from each MCP reply (an html read sent 2 × 0.71 MB, now 0.71 MB).
+
+### Follow-ups
+
+- Cache the serialized page (step 5), only if a measured repeat-read pattern needs it: keyed by analysis id, format,
+  the live call's version and the trials option; a code-only page by its bundle fingerprint; bounded.
+- `analyses_list` and `analyses_undescribable` still hydrate every analysis of a campaign (or a scope) to list them:
+  the same growth with history, on listing reads. A projection read would fix both.
+- The issue's third "done when" (a test showing a read beside a live sweep keeps the loop's tick under a limit) is
+  not built here; the brief did not include it.
+- MIGRATIONS' unreleased section is since v0.78.0, which is not tagged yet: test_api_surface's labelling check and the
+  snapshot generator refuse until it is.
