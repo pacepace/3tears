@@ -50,6 +50,17 @@ the redshift extra installed, importing `threetears.datasources` loads `redshift
 package imports and a Redshift config raises the ImportError naming the extra. The Snowflake and BigQuery drivers
 are stubs and load no backend library.
 
+### nats: a tool pod tells the hub that a CDN-cached index it serves moved
+
+**Added:** `Subjects.hub_cache_index_moved()` (`{ns}.hub.cache.index.moved`), published by a tool pod (its grant) and
+answered by the hub, and `threetears.nats.cache_index_requests`: `report_cache_index_moved(nats_client, *,
+identity_token, customer_id, conversion, version, scope="", timeout_seconds=5.0)` sends a `CacheIndexMovedRequest`
+(`identity_token`, `correlation_id`, `customer_id: UUID`, `conversion`, `version`, `scope`) through `ask_hub` and
+returns the `CacheIndexMovedReply` (`success` means the purge was accepted and queued). Codes
+(`CACHE_INDEX_REQUEST_ERROR_CODES`): `INVALID_REQUEST`, `IDENTITY_REFUSED` and `INDEX_NOT_OWNED` raise
+`CacheIndexRequestRefusedError`; `PURGE_FAILED`, a timeout or a hub without the responder raise
+`CacheIndexRequestUnavailableError` (both `CacheIndexRequestError`). Nothing in it is per viewer.
+
 ### datasources: a paged read of a Postgres relation keyed by a timestamp reads its second page
 
 **Fixed:** The datasource rail carries a timestamp (and a date, a time, a UUID, a decimal) as its text, and a paged
