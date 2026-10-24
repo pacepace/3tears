@@ -132,7 +132,7 @@ def _answers(report: Report) -> list[TextBlock]:
 
 
 # =============================================================================
-# 1. The answer line: the memo's own, under the warning a broken floor opens the page with
+# 1. The answer line: the memo's own, beside the warning a broken floor gives on the first screen
 # =============================================================================
 
 

@@ -55,7 +55,7 @@ async def g2_ruled() -> tuple[Result, Report]:
 async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
     lines = report_markdown(report).splitlines()
-    # The title is the campaign's name (no floor is broken on four cases, so none opens the page above it); the
+    # The title is the campaign's name (no floor is broken on four cases, so none warns under the verdict); the
     # question declared before the run is quoted whole on its own line under it, the contract the verdict reads; then
     # the subhead says what the question need not: each arm with its version. Then the verdict, which no floor decides.
     assert lines[0] == "# G2: can the cheaper model replace production?"

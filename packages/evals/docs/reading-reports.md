@@ -35,50 +35,66 @@ wants its own pictures reads the bundles. `report_read(format="json")` and the c
 ### The campaign's first screen
 
 What a campaign can decide depends on its arms ([the three kinds](concepts.md#campaign-kind)), and so does its
-first screen. Top to bottom:
+first screen, which is the decision. Top to bottom, nothing above the title:
 
 | | A change (control and candidates) | A choice (arms, no control) | A measurement (one arm) |
 |---|---|---|---|
 | 1 | title and question | title and question | title and question |
 | 2 | the writer's summary | the writer's summary | the writer's summary |
-| 3 | the writer's recommendation | the writer's recommendation, or no clear winner | |
+| 3 | the writer's recommendation and its whys | the writer's recommendation and its whys, or no clear winner | |
 | 4 | what warns: each arm missing a bar, each candidate breaking a floor, each arm a guardrail leaves unsafe | each arm missing a bar or left unsafe by a guardrail | the arm missing a bar |
 | 5 | each report-wide caveat, once | each report-wide caveat, once | each report-wide caveat, once |
-| 6 | code's readings, then the call | code's readings, then the call | code's readings |
+| 6 | the call | the call | the call, once one is recorded |
 
-Code's readings follow the first screen, under **Scorecard** ([below](#the-campaigns-scorecard)).
+Then, each under its heading: code's readings, under **Scorecard** ([below](#the-campaigns-scorecard)); the
+memo's **Findings** and **Next steps**; **Design & provenance**; then one fold per aspect.
+
+A campaign that asks no question says so in the question's place, once: `No question was declared, so every reading
+is a lead.` The summary is the memo's one sentence across every aspect, written for every kind, so a measurement and
+a choice with no clear winner open on what they found too. A page with no memo has no summary, and says where the
+recommendation goes that none was written (a measurement, which recommends nothing, says nothing there).
 
 What warns is one bold line per arm and kind, under the answer and never above the title (in HTML each a
-`<p class="warning">`, never announced with `role="alert"`), saying what it means for the arm (`Adopting candidate
+`<p class="warning">`, never announced with `role="alert"`), saying what it means for the arm (`Adopting v2
 overrides the 10-point floor it breaks on billing.`) and naming the aspects, never a rate, an expression or an
-interval: the tables print those. The writer's why sits right after each line the recommendation answers. A warning
-only warns: nothing on the page picks an arm, and the bars and floors decide nothing.
+interval: the tables print those. Where the memo recommends an arm over a bar it misses or a floor it breaks, the
+writer's why follows that line at once. A warning only warns: nothing on the page picks an arm, and the bars and
+floors decide nothing.
 
 A disclosure that holds across the report (criteria set after their readings were visible, results with no ordered
 time, latency read under concurrency, request settings not confirmed) is one plain line after the warnings, naming
 where it holds, and its detail is a row of **Design & provenance**, stated there once: which criterion was set and
 when, and each aspect's own sentence for the test setup, verbatim. No aspect's fold repeats it, and it never lowers a
-reading or a recommendation. An aspect's own page says the same line under its verdict, its detail in its methods. The summary is the memo's one sentence across every aspect, written for every kind, so a measurement and a
-choice with no clear winner open on what they found too. A page with no memo has no summary, and says where the
-recommendation goes that none was written (a measurement, which recommends nothing, says nothing there).
+reading or a recommendation. An aspect's own page says the same line under its verdict, its detail in its methods.
+
+**The call** closes the first screen: who decided, which arm, when and why (where runs joined after it, the line
+counts them: `…, over 4 runs; 2 added since.`), then each broken floor and missed bar it overrides, and each it
+leaves unnamed. An override the readings no longer support is kept and marked `(no longer broken)`. In a choice,
+each pair where another arm is shown ahead of the decided one is a warning beside the call, never a refusal. With no
+call: `No call is recorded yet: a person decides, over code's readings.`
+([recording one](adopting-a-host.md#recording-the-call)).
 
 `analyses_list` lists each stored analysis by the same warnings, word for word and without the writer's why, then
-the line on when its criteria were set where one holds, then its verdict: the aspect page's verdict line for one aspect, what code read on each aspect for several
-(`billing: candidate shown worse; tone: candidate shown better`). With no missed bar and no broken floor, the line is
-the verdict alone.
+the line on when its criteria were set where one holds, then its verdict: the aspect page's verdict line for one
+aspect, what code read on each aspect for several (`billing: candidate shown worse; tone: candidate shown better`).
+With no missed bar and no broken floor, the line is the verdict alone.
 
 A change of two aspects, one regressing past its floor and one improving, with a memo recommending production,
 opens:
 
 ```markdown
 # support queue
-"Does the candidate answer support requests as well as production?"
+"Does the candidate pass more support requests than production, without losing any aspect?"
 
-The candidate answers in the house tone far more often but fails billing, so it is not yet the better arm.
+v2 wins on tone and loses billing, where refunds are lost, so production stays.
 
 **Recommended:** production (high confidence)
 
-- Billing is where refunds are lost, and the candidate breaks its floor there.
+- The billing floor is broken, and billing is where refunds are lost.
+
+**Adopting v2 overrides the 10-point floor it breaks on billing.**
+
+No call is recorded yet: a person decides, over code's readings.
 ```
 
 ### The campaign's scorecard
@@ -87,15 +103,13 @@ The candidate answers in the house tone far more often but fails billing, so it 
 candidate's change against the control in points, its interval drawn against the aspect's margin in HTML, and what
 it shows; the control's column holds its pass rate. A choice's columns are its arms, each cell the arm's pass rate
 and the arms it is shown ahead of. A measurement's columns are its one arm's measures. The same readings, one row
-per aspect × candidate (or per pair, or per measure) with their counts, are folded under it, and the **Bars** table
-follows for every kind. A change of three candidates on three aspects, one aspect where the control passes nothing:
+per aspect × candidate (or per pair, or per measure) with their counts, are folded under it. Then, in the same
+section: the lines that change how a cell reads, **To settle** (a change's), the frontier's reading (a choice's),
+how deep each arm ran (**Depth**, **Pass^k depth**, **Precision**), and the **Bars** table, for every kind. A change
+of three candidates on three aspects, one aspect where the control passes nothing:
 
 ```markdown
 ## Scorecard
-
-**Adopting candidate overrides the bar it misses on tone.**
-
-**Adopting candidate overrides the 10-point floor it breaks on billing.**
 
 **By aspect**
 
@@ -145,15 +159,15 @@ aspect differ only where the floor reads other rates than the pass rate alone (e
 reads them against other points than the margin. **Decided by** names the rate deciding the floor's as-observed
 count; its no-difference count may be another rate's.
 
-**The call** is the last line: who decided, which arm, when and why (where runs joined after it, the line counts
-them: `…, over 4 runs; 2 added since.`), then each broken floor and missed bar it overrides,
-and each it leaves unnamed. An override the readings no longer support is kept and marked `(no longer broken)`. In a
-choice, each pair where another arm is shown ahead of the decided one is a warning beside the call, never a refusal.
-With no call: `No call is recorded yet: a person decides, over the readings above.`
-([recording one](adopting-a-host.md#recording-the-call)).
+**Findings, Next steps, Design & provenance.** The memo's findings and next steps follow the Scorecard, each its
+own section ([below](#the-rest-of-the-page)). **Design & provenance** states once what holds for the whole report:
+**Criteria set late** (each criterion set after its readings were visible, when, and the aspects whose results
+existed by then) and **Test setup** (each aspect's own sentence, verbatim, for results with no ordered time, latency
+read under concurrency, or request settings not confirmed). Each section appears only where it has something to say.
 
 **The folds.** Each aspect follows as a fold: one line of its reading, then that aspect's page in full, laid out as
-the rest of this guide describes, its arms named by the campaign's labels. A campaign of one aspect has one fold.
+the rest of this guide describes, its arms named by the campaign's labels. A campaign of one aspect has one fold. In
+HTML every aspect a campaign table names links to its fold.
 
 ### An aspect's first screen
 
@@ -253,7 +267,7 @@ heading.
   where every rate's interval keeps the drop within the margin, or the cost interval is wholly below zero (`held:
   v2's drop is shown to stay within 10 points …`), and `unclear` otherwise (`unclear: the pass rate cannot separate
   the arms (both 16 of 16)`; a drop past the margin on its point estimate alone is unclear, and says so with its
-  interval). One line under the table: `A floor warns and never decides: a broken one opens the page. A floor reads
+  interval). One line under the table: `A floor warns and never decides: a broken one warns on the first screen. A floor reads
   its own interval, uncorrected, which can differ from the contrasts table's.` A rate floor reads the bounded
   interval at the nominal 95%, wider than the t interval the Contrasts table prints: it holds its error rate on a
   few coarse cases, where the t interval does not
@@ -659,7 +673,7 @@ written. Code holds the recommendation to the campaign's kind, refusing it throu
 
 Every kind answers its pick's warnings, each once and each with a why: a broken floor in `floors_overridden`, a
 missed bar in `bars_missed`. A switch rests on at least one finding; keeping the control may rest on none. The page
-sets each why beside the warning it answers, and a floor the memo overrides still opens the page.
+sets each why beside the warning it answers, and a floor the memo overrides still warns on the first screen.
 
 **A finding's title never states a null its evidence did not establish, and names only arms its evidence reads.**
 "Halving the budget does not change latency, cost or delivery" decides as surely as a measured result does, and over

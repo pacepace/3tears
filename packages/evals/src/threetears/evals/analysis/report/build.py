@@ -1100,8 +1100,8 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
 #: What the Decision section says once, under the floors: a floor warns and decides nothing, and which interval it
 #: reads, so a floor unclear beside a contrast that is not separated reads as the two rulers it is.
 FLOORS_WARN_ONLY = (
-    "A floor warns and never decides: a broken one opens the page. A floor reads its own interval, uncorrected, which "
-    "can differ from the contrasts table's."
+    "A floor warns and never decides: a broken one warns on the first screen. A floor reads its own interval, "
+    "uncorrected, which can differ from the contrasts table's."
 )
 
 
