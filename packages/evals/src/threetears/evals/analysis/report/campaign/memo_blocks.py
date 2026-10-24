@@ -3,10 +3,11 @@
 **The writer's summary**, its read across every aspect, for every kind that has a memo; a code-only page has none.
 **The writer's recommendation** for a change or a choice: the arm and how sure, then each reason; where the memo
 recommends nothing, one line by the campaign's kind (no clear winner); with no memo, one line saying no
-recommendation was written. For a choice, the writer's why for each aspect its pick is shown behind on. **The
-person's call**, or that none is recorded yet; a call adopting an arm past a broken floor says which floor it
-overrides. Then **the memo's findings**, each with its trace to the folds, and its **next steps**; and, in each
-aspect's fold, **the writer's summary of the aspect** (what changed, how sure, what it means).
+recommendation was written. For a choice, the writer's why for each aspect its pick is shown behind on, under the
+recommendation. All of it is the page's answer. **The person's call**, or that none is recorded yet; a call adopting
+an arm past a broken floor says which floor it overrides. Then **the memo's findings**, each with its trace to the
+folds, in the page's findings section, and its **next steps** in its own; and, in each aspect's fold, **the writer's
+summary of the aspect** (what changed, how sure, what it means).
 """
 
 from __future__ import annotations
@@ -62,7 +63,7 @@ __all__ = [
 NO_RECOMMENDATION = "No recommendation was written: no analysis has been generated over this campaign."
 
 #: The first screen's line while no person has made the call.
-NO_CALL = "No call is recorded yet: a person decides, over the readings above."
+NO_CALL = "No call is recorded yet: a person decides, over code's readings."
 
 
 def memo_summary_blocks(memo: AuthoredCampaignAnalysis | None) -> list[ReportBlock]:
@@ -76,7 +77,7 @@ def memo_summary_blocks(memo: AuthoredCampaignAnalysis | None) -> list[ReportBlo
     """
     if memo is None or not (said := as_written(memo.summary)):
         return []
-    return [TextBlock(section="header", role="summary", body=said)]
+    return [TextBlock(section="answer", role="summary", body=said)]
 
 
 def recommendation_blocks(memo: AuthoredCampaignAnalysis | None, kind: str) -> list[ReportBlock]:
@@ -91,14 +92,14 @@ def recommendation_blocks(memo: AuthoredCampaignAnalysis | None, kind: str) -> l
     :rtype: list[ReportBlock]
     """
     if memo is None:
-        return [DisclosureBlock(section="header", source="memo", text=NO_RECOMMENDATION)]
+        return [DisclosureBlock(section="answer", source="memo", text=NO_RECOMMENDATION)]
     recommendation = memo.recommended()
     if recommendation is None:
-        return [DisclosureBlock(section="header", source="memo", text=NO_RECOMMENDATION_WORDS[kind])]
+        return [DisclosureBlock(section="answer", source="memo", text=NO_RECOMMENDATION_WORDS[kind])]
     reasons = [as_written(reason) for reason in recommendation.reasons]
     return [
         TextBlock(
-            section="header",
+            section="answer",
             role="recommendation",
             body=recommendation.arm,
             rests_on=list(recommendation.rests_on),
@@ -108,7 +109,7 @@ def recommendation_blocks(memo: AuthoredCampaignAnalysis | None, kind: str) -> l
             ],
         ),
         *(
-            TextBlock(section="header", role="reason", body=reason, rests_on=list(recommendation.rests_on))
+            TextBlock(section="answer", role="reason", body=reason, rests_on=list(recommendation.rests_on))
             for reason in reasons
             if reason.strip()
         ),
@@ -116,8 +117,8 @@ def recommendation_blocks(memo: AuthoredCampaignAnalysis | None, kind: str) -> l
 
 
 def behind_on_blocks(memo: AuthoredCampaignAnalysis | None, *, names: AspectNames) -> list[ReportBlock]:
-    """The writer's why for each aspect a choice's recommended arm is shown behind on, set beside the pairs: what the
-    recommendation answers there (``behind_on``), as written.
+    """The writer's why for each aspect a choice's recommended arm is shown behind on, under the recommendation it
+    answers (``behind_on``), as written: part of the answer, wherever the pairs it answers are laid out.
 
     :param memo: The writer's memo; None where none was written.
     :ptype memo: AuthoredCampaignAnalysis | None
@@ -131,7 +132,7 @@ def behind_on_blocks(memo: AuthoredCampaignAnalysis | None, *, names: AspectName
         return []
     return [
         TextBlock(
-            section="scoreboard",
+            section="answer",
             role="override",
             body=why,
             facts=[
@@ -268,14 +269,14 @@ def memo_blocks(
     for position, finding in enumerate(memo.findings):
         title = as_written(finding.title)
         blocks.append(
-            TextBlock(section="memo", role="finding_title", body=title, finding=position, anchor=f"F{position + 1}")
+            TextBlock(section="findings", role="finding_title", body=title, finding=position, anchor=f"F{position + 1}")
         )
         if body := as_written(finding.body):
-            blocks.append(TextBlock(section="memo", role="finding_body", body=body, finding=position))
+            blocks.append(TextBlock(section="findings", role="finding_body", body=body, finding=position))
         blocks += trace.blocks(position, finding)
     for step in memo.next:
         if title := as_written(step.title):
-            blocks.append(TextBlock(section="memo", role="next_step", body=title))
+            blocks.append(TextBlock(section="next", role="next_step", body=title))
     return blocks
 
 
@@ -330,7 +331,7 @@ class _Trace:
             ]
             blocks.append(
                 TableBlock(
-                    section="memo",
+                    section="findings",
                     finding=position,
                     name="trace",
                     title="Cites",
@@ -343,7 +344,7 @@ class _Trace:
             )
         if not any(cell.ref is not None for row in rows for cell in row.values()):
             blocks.append(
-                DisclosureBlock(section="memo", source="memo", text=UNTRACED, finding=position, fold="Evidence")
+                DisclosureBlock(section="findings", source="memo", text=UNTRACED, finding=position, fold="Evidence")
             )
         return blocks
 

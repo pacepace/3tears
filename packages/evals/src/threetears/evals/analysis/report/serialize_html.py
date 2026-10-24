@@ -29,7 +29,7 @@ import html
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from threetears.evals.analysis.report.model import (
     FIRST_SCREEN,
@@ -46,6 +46,8 @@ from threetears.evals.analysis.report.model import (
     TextBlock,
     TrialBlock,
 )
+from threetears.evals.analysis.report.campaign.names import aspect_name
+from threetears.evals.analysis.report.campaign.provenance import stated_for_the_campaign
 from threetears.evals.analysis.report.serialize_md import RESOLUTION_WORDS, SUMMARY_LEADS, trial_summary
 from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg, interval_glyph_svg
 from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
@@ -88,8 +90,9 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; padding: 0 
 header { padding: 0 0 16px; }
 .question { font-size: 1.125rem; line-height: 1.4; margin: 0 0 8px; max-width: 75ch; }
 .arms { margin: 0 0 4px; color: var(--muted); }
-.floor { font-size: 1.125rem; line-height: 1.4; margin: 0 0 12px; padding: 2px 0 2px 14px; max-width: 75ch;
-  border-left: 3px solid var(--tone-failed); }
+.floor, .warning { font-size: 1.125rem; line-height: 1.4; margin: 0 0 12px; padding: 2px 0 2px 14px;
+  max-width: 75ch; border-left: 3px solid var(--tone-failed); }
+.warning { font-size: 1rem; margin: 8px 0; }
 .verdict { font-size: 1.125rem; line-height: 1.4; margin: 16px 0 24px; padding: 2px 0 2px 14px;
   border-left: 3px solid var(--rule-strong); }
 .verdict[data-tone="decided"] { border-left-color: var(--tone-decided); }
@@ -98,7 +101,10 @@ header { padding: 0 0 16px; }
 .verdict[data-tone="summary"] { border-left-color: var(--tone-summary); }
 .facts, .order, .line { color: var(--muted); font-size: 0.875rem; }
 .line { margin: 4px 0; }
-.line[data-source="caveat"] { color: var(--fg); font-size: 0.9375rem; }
+.line[data-source="caveat"], .line.caveat { color: var(--fg); font-size: 0.9375rem; }
+details.expr { display: inline-block; margin: 0; }
+details.expr > summary::before { content: none; }
+details.expr[open] > summary { display: none; }
 nav { position: sticky; top: 0; z-index: 1; display: flex; gap: 20px; overflow-x: auto; white-space: nowrap;
   font-size: 0.875rem; padding: 10px 0; margin: 0 0 8px; background: var(--bg); border-bottom: 1px solid var(--rule); }
 nav a { color: var(--muted); text-decoration: none; }
@@ -233,9 +239,10 @@ def report_html(report: Report) -> str:
 def campaign_report_html(report: CampaignReport) -> str:
     """Render a campaign's page as one standalone HTML page that needs no script.
 
-    The first screen is the page's ``<header>``: every broken floor first, loud and announced (``role="alert"``),
-    then the title and the rest of the first screen in order. The memo's findings follow, open, under ``What it
-    means``; then one closed ``<section>`` per aspect, its summary the aspect's label and what code read there, its
+    The first screen is the page's ``<header>``: the title first, then the rest of the first screen in order (the
+    question, the answer, what warns, set apart but never announced over the title). The sections the page reads
+    before its folds follow, open (the findings, the next steps, Design & provenance); then one closed ``<section>``
+    per aspect, its summary the aspect's label and what code read there, its
     body the writer's summary of the aspect and the aspect's own page laid out as its page lays it out, a heading
     level down. Every id inside an aspect's fold is prefixed with the aspect's, so a link inside it lands inside it
     (``#a-billing-T4``); a glossary link lands on the page's one glossary, which defines every term any fold uses.
@@ -247,6 +254,7 @@ def campaign_report_html(report: CampaignReport) -> str:
     """
     head = [block for block in report.blocks if block.section in FIRST_SCREEN]
     slugs = report.fold_ids
+    places = _fold_places(report)
     parts = [
         "<!doctype html>",
         '<html lang="en">',
@@ -259,9 +267,9 @@ def campaign_report_html(report: CampaignReport) -> str:
         "<body>",
         f'<article data-basis="{_escape(report.basis)}" data-page="campaign">',
         "<header>",
-        *(_block(block, index) for index, block in enumerate(head) if _warns(block)),
+        # The title first, then the decision: the question, the answer, then what warns, as consequences.
         f"<h1>{_escape(_one_line(report.title))}</h1>",
-        *(_block(block, index) for index, block in enumerate(head) if not _warns(block)),
+        *(_block(_linked(block, places), index) for index, block in enumerate(head)),
         "</header>",
     ]
     # What the page reads and the writer says sit before the folds; how the page was made (the methods) after them.
@@ -274,19 +282,19 @@ def campaign_report_html(report: CampaignReport) -> str:
     links += [("glossary", SECTION_TITLES["glossary"])] if report.terms else []
     parts.append("<nav>" + "".join(f'<a href="#{href}">{_escape(text)}</a>' for href, text in links) + "</nav>")
     for section in before:
-        parts += _campaign_section(report, section)
+        parts += _campaign_section(report, section, places)
     for fold, slug in zip(report.aspects, slugs, strict=True):
         parts += _aspect_fold(fold, slug)
     for section in after:
-        parts += _campaign_section(report, section)
+        parts += _campaign_section(report, section, places)
     parts += _glossary(report.terms)
     parts += ["</article>", "</body>", "</html>"]
     return _links_in_sight("\n".join(parts) + "\n")
 
 
-def _campaign_section(report: CampaignReport, section: str) -> list[str]:
+def _campaign_section(report: CampaignReport, section: str, places: Mapping[str, str]) -> list[str]:
     """One section of a campaign's page after its first screen: what it means open, the methods folded."""
-    blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
+    blocks = [(index, _linked(block, places)) for index, block in enumerate(report.blocks) if block.section == section]
     return [
         f'<section id="{section}">',
         *_section(section, report.section_titles[section], _folded(blocks), count=None),
@@ -299,6 +307,33 @@ _ID_ATTRIBUTE = re.compile(r'\b(id|aria-labelledby)="([^"]*)"')
 _LOCAL_LINK = re.compile(r'href="#(?!g-)([^"]*)"')
 
 
+def _fold_places(report: CampaignReport) -> dict[str, str]:
+    """Each aspect as a campaign's page names it in a table, to the id of the section around its fold: by what the
+    page calls it, and by its label."""
+    places: dict[str, str] = {}
+    for fold, slug in zip(report.aspects, report.fold_ids, strict=True):
+        places.setdefault(aspect_name(fold.report.bundle), f"aspect-{slug}")
+        places.setdefault(fold.aspect, f"aspect-{slug}")
+    return places
+
+
+def _linked(block: ReportBlock, places: Mapping[str, str]) -> ReportBlock:
+    """A campaign table with each aspect it names in its aspect column linked to that aspect's fold, where the cell
+    links nowhere else; every other block as it is."""
+    if not isinstance(block, TableBlock) or not any(column.key == "aspect" for column in block.columns):
+        return block
+    rows = [
+        {
+            key: cell.model_copy(update={"ref": places[cell.text]})
+            if key == "aspect" and cell.ref is None and cell.text in places
+            else cell
+            for key, cell in row.items()
+        }
+        for row in block.rows
+    ]
+    return block.model_copy(update={"rows": rows})
+
+
 def _aspect_fold(fold: CampaignAspectFold, slug: str) -> list[str]:
     """One aspect's closed fold: the writer's summary of it, then its page's first screen and sections, a heading level
     down, every id in it prefixed ``a-<slug>-``.
@@ -307,7 +342,10 @@ def _aspect_fold(fold: CampaignAspectFold, slug: str) -> list[str]:
     (:attr:`~threetears.evals.analysis.report.model.CampaignAspectFold.head`): the campaign's first screen carries the
     first three once and reads each aspect itself. Its glossary is the campaign page's.
     """
-    report = fold.report
+    # A disclosure the campaign's page states once for every aspect is not said again in each fold.
+    report = fold.report.model_copy(
+        update={"blocks": [block for block in fold.report.blocks if not stated_for_the_campaign(block, fold.report)]}
+    )
     head = fold.head
     body = [
         *(_block(block, index) for index, block in enumerate(fold.summary)),
@@ -495,7 +533,7 @@ def _table(block: TableBlock) -> str:
 
 def _header(text: str, term: str | None) -> str:
     """A column header, linked to its glossary entry where it is a term of art; a code span (a check) as code."""
-    shown = _code(text)
+    shown = _cell_code(text)
     return _term_link(term, shown) if term else shown
 
 
@@ -508,6 +546,26 @@ def _term_link(term: str, label: str, *, css: str = "") -> str:
 def _code(text: str) -> str:
     """Text escaped, its code spans (a check's expression, a call to copy) set as code."""
     return _CODE.sub(r"<code>\1</code>", _escape(text))
+
+
+#: The longest expression a table cell or header shows whole; a longer one shows this many characters and a visible
+#: ellipsis, the whole expression one click away.
+_EXPRESSION_CHARS = 60
+
+
+def _cell_code(text: str) -> str:
+    """A cell's or a header's text escaped, its code spans set as code, each longer than :data:`_EXPRESSION_CHARS`
+    shown by its start and a visible ellipsis, the whole of it in a fold that opens in place. Never shortened silently:
+    the whole expression is in the page."""
+
+    def span(match: re.Match[str]) -> str:
+        whole = match.group(1)
+        if len(html.unescape(whole)) <= _EXPRESSION_CHARS:
+            return f"<code>{whole}</code>"
+        start = _escape(html.unescape(whole)[:_EXPRESSION_CHARS].rstrip())
+        return f'<details class="expr"><summary><code>{start}…</code></summary><code>{whole}</code></details>'
+
+    return _CODE.sub(span, _escape(text))
 
 
 def _grid(block: TableBlock) -> str:
@@ -534,7 +592,7 @@ def _grid(block: TableBlock) -> str:
         cells = []
         for column in block.columns:
             cell = row[column.key]
-            text = _code(cell.text)
+            text = _cell_code(cell.text)
             if cell.ref is not None:
                 # A finding's figure, linked to a cell printing the same figure, or to the closed fold holding it.
                 text = f'<a href="#{cell.ref}">{text}</a>'
@@ -565,7 +623,9 @@ def _grid(block: TableBlock) -> str:
 
 
 def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], tuple[float, float]]:
-    """The scale each column's glyphs are drawn on, per unit: one for every cell of the column in that unit.
+    """The scale each column's glyphs are drawn on, per unit: one for every cell of the column in that unit, or, in a
+    matrix (:data:`_MATRIX_TABLES`), whose columns are one quantity read for each arm, one for every cell of the table
+    in that unit, so a glyph compares across columns as well as down them.
 
     The scale holds every interval end, every point and every margin band of the group, and zero where any cell is a
     difference, padded a little at either end so no mark sits on the edge.
@@ -584,12 +644,21 @@ def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], tuple[float, float
                 group += [-cell.margin, cell.margin]
             if cell.zero_line:
                 group.append(0.0)
+    if block.name in _MATRIX_TABLES:
+        by_unit: dict[str, list[float]] = {}
+        for (_, unit), figures in ends.items():
+            by_unit.setdefault(unit, []).extend(figures)
+        ends = {(key, unit): by_unit[unit] for key, unit in ends}
     scales = {}
     for group_key, figures in ends.items():
         low, high = min(figures), max(figures)
         pad = (high - low) * 0.05 or abs(high) * 0.05 or 1.0
         scales[group_key] = (low - pad, high + pad)
     return scales
+
+
+#: The tables whose glyph columns share one scale per unit: a matrix, each column the same quantity for another arm.
+_MATRIX_TABLES: frozenset[str] = frozenset({"scorecard"})
 
 
 def _glyph(cell: TableCell, key: str, scales: dict[tuple[str, str], tuple[float, float]]) -> str:
@@ -613,6 +682,10 @@ def _scale_line(block: TableBlock, scales: dict[tuple[str, str], tuple[float, fl
         return ""
     headers = {column.key: column.header for column in block.columns}
     spans: dict[str, list[str]] = {}
+    if block.name in _MATRIX_TABLES:
+        # One scale per unit for every column: written once, not once per column.
+        scales = {("", unit): scale for (_, unit), scale in scales.items()}
+        headers[""] = "Each column"
     for (key, unit), (low, high) in scales.items():
         if unit == PERCENT or is_money(unit):
             ends = f"{with_unit(low, unit)} to {with_unit(high, unit)}"
@@ -712,11 +785,16 @@ def _disclosure(block: DisclosureBlock) -> str:
         text += " " + _term_link(block.term, f"({_escape(block.term)})", css="term")
     if block.source == "arms":
         return f'<p class="arms">{text}</p>'
-    if block.section == "header" and block.source == "basis":
+    if block.section in ("header", "answer") and block.source == "basis":
         return f'<p class="question">{text}</p>'
     if block.section == "header" and block.source in _WARNING_SOURCES:
-        # A broken floor, the page's first line: loud, and announced to a screen reader as it loads.
+        # An aspect's page's broken floor, its first line: loud, and announced to a screen reader as it loads.
         return f'<p class="floor" role="alert"><strong>{text}</strong></p>'
+    if block.section == "warnings":
+        # A campaign's warning, under its answer: set apart, never announced over the title. Its caveats beside it.
+        if block.source in _WARNING_SOURCES:
+            return f'<p class="warning"><strong>{text}</strong></p>'
+        return f'<p class="line caveat" data-source="{_escape(block.source)}">{text}</p>'
     if block.source == "verdict":
         tone = f' data-tone="{_escape(block.tone)}"' if block.tone is not None else ""
         return f'<p class="verdict"{tone}><strong>{text}</strong></p>'

@@ -112,7 +112,7 @@ from threetears.evals.analysis.report.campaign_page import (
     AspectNames,
     campaign_verdict,
     campaign_warnings,
-    late_criteria_lines,
+    timing_caveats,
 )
 from threetears.evals.analysis.report.verdict import (
     MIN_CASES,
@@ -415,11 +415,11 @@ def analysis_verdict(analysis: EvalAnalysis) -> str:
     """The verdict line a stored analysis is listed by, written by code over what was frozen with it — never the
     memo's words.
 
-    It opens as the analysis's page opens: every bar an arm misses, then every floor a candidate breaks, each in the
-    page's own words (:func:`~threetears.evals.analysis.report.campaign_page.campaign_warnings`) over the readings and
-    floors frozen with it, without the writer's why beside them; then the line for each criterion set after the
-    readings it judges were visible (:func:`~threetears.evals.analysis.report.campaign_page.late_criteria_lines`).
-    Then the verdict. An analysis
+    It opens with what warns on the analysis's page: each arm missing a bar, then each candidate breaking a floor, in the
+    page's own words (:func:`~threetears.evals.analysis.report.campaign_page.campaign_warnings`) over the readings
+    frozen with it, without the writer's why beside them; then the page's one caveat line on when its criteria were
+    set, where one holds (:func:`~threetears.evals.analysis.report.campaign_page.timing_caveats`), never a line per
+    criterion. Then the verdict. An analysis
     of one aspect is listed by the verdict line that aspect's page opens with, over its frozen bundle. An analysis of several aspects is listed
     by its campaign's verdict, as the campaign's page reads it: what code read on each aspect, in the campaign's order
     (:func:`~threetears.evals.analysis.report.campaign_page.campaign_verdict`). With no bar missed and no floor
@@ -434,8 +434,8 @@ def analysis_verdict(analysis: EvalAnalysis) -> str:
     campaign = analysis_campaign_bundle(analysis)
     readings = campaign.readings
     names = AspectNames.of(campaign.aspects)
-    warnings = campaign_warnings(analysis.design_snapshot.floors, readings, names)
-    warnings += late_criteria_lines(campaign.aspects)
+    warnings = campaign_warnings(readings, names)
+    warnings += timing_caveats(campaign.aspects)
     if len(analysis.aspects) > 1:
         verdict = campaign_verdict(readings, [aspect.label for aspect in analysis.aspects], names)
     else:
@@ -699,13 +699,14 @@ def _heading_blocks(
 ) -> list[ReportBlock]:
     """The first screen's lines between the title and the verdict.
 
-    With a question declared, the question quoted on its own line. Then the line for each criterion set after the
-    readings it judges were visible, then the subhead carrying what the question need not: the arms line, each arm
-    with its version.
+    With a question declared, the question quoted on its own line. Then the page's one caveat line on when its
+    criteria were set, where one holds (:func:`~threetears.evals.analysis.report.campaign_page.timing_caveats`), never
+    a line per criterion; then the subhead carrying what the question need not: the arms line, each arm with its
+    version.
     """
     arms = DisclosureBlock(section="header", source="arms", text=_arms_line(bundle, names, source))
     asked = _question_line(bundle)
-    timing = [DisclosureBlock(section="header", source="timing", text=line) for line in late_criteria_lines([bundle])]
+    timing = [DisclosureBlock(section="header", source="timing", text=line) for line in timing_caveats([bundle])]
     basis = [] if asked is None else [DisclosureBlock(section="header", source="basis", text=asked)]
     return [*basis, *timing, arms]
 

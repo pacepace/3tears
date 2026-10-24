@@ -435,8 +435,9 @@ async def test_two_aspects_that_regress_and_improve_are_both_on_the_first_screen
     readings = {row.aspect: row.reading for row in page.readings.readings}
     assert readings == {"billing": "worse", "tone": "better"}
     first = _first_screen(page)
-    assert first.index("**Floor broken on billing") < first.index("# support queue") < first.index("**By aspect**")
-    assert "Bar missed on tone" in first
+    floor = first.index("**Adopting candidate overrides the 10-point floor it breaks on billing.**")
+    assert first.index("# support queue") < floor < first.index("**By aspect**")
+    assert "**Adopting candidate overrides the bar it misses on tone.**" in first
 
 
 def _record(held: Store, two: EvalCampaign, **call: Any) -> Any:
@@ -493,7 +494,7 @@ def _warnings(page: CampaignReport) -> list[str]:
     return [
         block.text
         for block in page.blocks
-        if isinstance(block, DisclosureBlock) and block.section == "header" and block.source in ("bar", "floor")
+        if isinstance(block, DisclosureBlock) and block.section == "warnings" and block.source in ("bar", "floor")
     ]
 
 
@@ -508,7 +509,10 @@ async def test_an_analysis_of_two_aspects_is_listed_archived_and_restored_by_its
     verdict = "; ".join(f"{fold.aspect}: {fold.shows}" for fold in page.aspects)
     assert verdict.startswith("billing: ") and "shown worse; tone: " in verdict and verdict.endswith("shown better")
     bar, floor = _warnings(page)
-    assert bar.startswith("Bar missed on tone: ") and floor.startswith("Floor broken on billing: ")
+    assert (bar, floor) == (
+        "Adopting candidate overrides the bar it misses on tone.",
+        "Adopting candidate overrides the 10-point floor it breaks on billing.",
+    )
     expected = f"{bar} {floor} {verdict}"
 
     (line,) = off_loop(analyses_list, held.host, two.id, SCOPE).analyses
@@ -530,17 +534,19 @@ def _timing(page: CampaignReport) -> list[str]:
     return [
         block.text
         for block in page.blocks
-        if isinstance(block, DisclosureBlock) and block.section == "header" and block.source == "timing"
+        if isinstance(block, DisclosureBlock) and block.section == "warnings" and block.source == "timing"
     ]
 
 
-#: What :func:`_build_two` says when its aspects are asked after their readings, its margins and control set before:
-#: each aspect, billing's floor and tone's bar, all declared with the aspect.
-_SET_LATE = [
-    "Every aspect was declared on 1 Jan 2099, after its readings were visible.",
-    "The floor that no pass rate drops by more than 10 points on billing was set on 1 Jan 2099, after its readings "
-    "were visible.",
-]
+#: What :func:`_build_two` says once when its aspects are asked after their readings, its margins and control set
+#: before.
+_SET_LATE = "Criteria on every aspect were set after the results there existed, so they were not fixed in advance."
+
+
+def _criteria(page: CampaignReport) -> list[tuple[str, str, str]]:
+    """Design & provenance's rows of criteria set late: criterion, when, and the aspects whose results existed."""
+    (table,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "criteria_set"]
+    return [(row["criterion"].text, row["set_on"].text, row["aspects"].text) for row in table.rows]
 
 
 async def test_a_campaign_asked_after_its_readings_reads_as_asked_and_names_each_late_criterion_once() -> None:
@@ -587,8 +593,12 @@ async def test_a_campaign_asked_after_its_readings_reads_as_asked_and_names_each
         ["aspect", "bar"],
     ]
     said = _timing(page)
-    assert said[:2] == _SET_LATE and len(said) == 3, "each late criterion once; the aspects share theirs"
-    assert said[2].endswith(" bar on tone was set on 1 Jan 2099, after its readings were visible.")
+    assert said == [_SET_LATE], "one line for the whole report"
+    # Each aspect, billing's floor and tone's bar, all declared with the aspect, each dated once.
+    (aspect, floor, bar) = _criteria(page)
+    assert aspect == ("aspect", "1 Jan 2099", "every aspect")
+    assert floor == ("floor that no pass rate drops by more than 10 points", "1 Jan 2099", "billing")
+    assert bar[0].startswith("bar on ") and bar[1:] == ("1 Jan 2099", "tone")
     first = _first_screen(page)
     assert all(first.index(QUESTION) < first.index(line) for line in said), "under the question"
     assert "a lead" not in first and "began" not in first and "The question" not in " ".join(said)
@@ -597,7 +607,7 @@ async def test_a_campaign_asked_after_its_readings_reads_as_asked_and_names_each
         assert not [
             line for line in said if line in [block.text for block in fold.head if isinstance(block, DisclosureBlock)]
         ], "the campaign's first screen carries them once"
-        assert any(f"on {fold.aspect}" in line or "aspect" in line for line in own if line.endswith("visible."))
+        assert any(line.startswith(f"Criteria on {fold.aspect} were set after") for line in own), "its own page"
     bar, floor = _warnings(page)
     verdict = "; ".join(f"{fold.aspect}: {fold.shows}" for fold in page.aspects)
     (line,) = off_loop(analyses_list, held.host, two.id, SCOPE).analyses
@@ -693,8 +703,8 @@ async def test_the_listing_names_what_was_frozen_with_the_analysis_not_the_campa
     off_loop(held.host.storage.save_campaign, EvalCampaign.model_validate({**two.model_dump(), "floors": []}))
     (line,) = off_loop(analyses_list, held.host, two.id, SCOPE).analyses
     assert line.id == analysis_id
-    (floor,) = [text for text in _warnings(off_loop(campaign_report, held.host, two.id, SCOPE)) if "Floor" in text]
-    assert floor.startswith("Floor broken on billing: candidate's pass rate falls past the 10-point margin")
+    (floor,) = [text for text in _warnings(off_loop(campaign_report, held.host, two.id, SCOPE)) if "floor" in text]
+    assert floor == "Adopting candidate overrides the 10-point floor it breaks on billing."
     assert floor in line.verdict
 
 
@@ -714,7 +724,7 @@ async def test_an_analysis_of_one_aspect_is_listed_by_its_page_s_broken_floor_th
     analysis_id = await _generated(held, one)
     page = off_loop(campaign_report, held.host, one.id, SCOPE)
     (floor,) = _warnings(page)
-    assert floor.startswith("Floor broken on billing: ")
+    assert floor == "Adopting candidate overrides the 10-point floor it breaks on billing."
     (fold,) = page.aspects
     (verdict,) = [
         block.text for block in fold.report.blocks if isinstance(block, DisclosureBlock) and block.source == "verdict"

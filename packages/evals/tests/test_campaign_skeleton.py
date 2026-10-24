@@ -1,8 +1,8 @@
 """The campaign page's skeleton: its own sections and their headings, a cell's flag, the cost/quality chart, and what
 the page calls an aspect.
 
-None of it changes a page laid out today: no block sits in a campaign's own sections yet, no cell is flagged and no
-cost/quality chart is drawn. These hold the shapes the page's parts are built into, over the shared campaign shapes.
+These hold the shapes the page's parts are built into, over the shared campaign shapes: a section no part fills yet
+holds no block, no cell is flagged yet and no cost/quality chart is drawn yet.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from threetears.evals.analysis import campaign_report_html, campaign_report_mark
 from threetears.evals.analysis.report.campaign.aggregate import aggregate_blocks, equal_weight_cells
 from threetears.evals.analysis.report.campaign.depth_blocks import depth_provenance_blocks
 from threetears.evals.analysis.report.campaign.names import AspectNames, aspect_name
-from threetears.evals.analysis.report.campaign.provenance import provenance_blocks
 from threetears.evals.analysis.report.model import (
     CAMPAIGN_JSON_SHAPE,
     FIRST_SCREEN,
@@ -61,12 +60,7 @@ def test_a_campaign_page_heads_every_section_in_reading_order_its_own_among_an_a
 #: Each campaign section no part fills yet, by the chunk of the senior-report plan that fills it. A chunk that fills
 #: its section deletes its own row here and tests what the section holds in its own test module.
 _UNFILLED: dict[str, str] = {
-    "answer": "03",
-    "warnings": "03",
     "scorecard": "04",
-    "findings": "03",
-    "next": "03",
-    "provenance": "03",
 }
 
 
@@ -215,7 +209,6 @@ def test_the_seams_later_parts_fill_are_empty_today(build: Callable[[], Shape]) 
     shape = build()
     assert equal_weight_cells(shape.campaign, shape.readings, shape.reports) == {}
     assert aggregate_blocks(shape.campaign, shape.readings, shape.reports) == []
-    assert provenance_blocks(shape.campaign, list(shape.bundles.values())) == []
     assert depth_provenance_blocks(shape.readings) == []
 
 

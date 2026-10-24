@@ -23,7 +23,9 @@ from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.bundle.schema import NO_QUESTION_EXPLORATORY, LateCriterion, late_criteria
 from threetears.evals.kernel.declaration import GuardrailMargin
 from threetears.evals.analysis.campaigns import set_campaign_control, update_campaign
-from threetears.evals.analysis.report.campaign_page import late_criteria_lines
+from threetears.evals.analysis.report.campaign.provenance import provenance_blocks
+from threetears.evals.analysis.report.campaign_page import timing_caveats
+from threetears.evals.analysis.report.model import TableBlock
 from threetears.evals.kernel.errors import ConflictError
 from packages.evals.tests.fixtures.toyhost.campaign import (
     TOYHOST_QUESTION,
@@ -316,7 +318,7 @@ def test_one_result_whose_time_cannot_be_ordered_hides_no_late_criterion_and_is_
     assert bundle.reading_scope.late_criteria == _late(_LATER)
     assert bundle.reading_scope.untimed_results == 1
     assert bundle.first_result_at is not None and bundle.first_result_at.endswith("+00:00")
-    assert late_criteria_lines([bundle])[-1] == (
+    assert timing_caveats([bundle])[-1] == (
         "1 result carries no time that can be ordered, so whether a criterion was set after it was visible is not known."
     )
 
@@ -351,7 +353,10 @@ def test_a_guardrail_s_margin_is_timed_whatever_is_asked_and_said_once() -> None
             "reading_scope": bundle.reading_scope.model_copy(update={"late_criteria": late}),
         }
     )
-    guard_lines = [line for line in late_criteria_lines([page]) if "guardrail" in line]
-    assert guard_lines == [
-        f"The tone guardrail's margin on {bundle.aspect} was set on 15 Mar 2026, after its readings were visible."
+    # The page says it once, in the one caveat line on when its criteria were set, and Design & provenance dates it.
+    assert timing_caveats([page]) == [
+        f"Criteria on {bundle.aspect} were set after the results there existed, so they were not fixed in advance."
     ]
+    (table,) = [block for block in provenance_blocks(fixture.campaign, [page]) if isinstance(block, TableBlock)]
+    guard_rows = [row for row in table.values() if "guardrail" in str(row["criterion"])]
+    assert guard_rows == [{"criterion": "guardrail margin on tone", "set_on": "15 Mar 2026", "aspects": bundle.aspect}]

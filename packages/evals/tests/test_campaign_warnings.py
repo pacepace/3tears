@@ -1,16 +1,19 @@
-"""A campaign's page opens with its loud lines: every bar an arm misses, every floor broken, each followed by the
-writer's why where the memo recommends the arm over it."""
+"""What warns on a campaign's page, under its question and answer: one plain line per arm for the bars it misses, one
+per arm for the floors it breaks, one per arm and decision for the guardrails it is not shown safe on, each saying
+what it means for the arm, each followed by the writer's why where the memo recommends the arm over it."""
 
 from __future__ import annotations
 
 import json
 
+import pytest
 
 from threetears.evals.analysis import (
     CampaignReadings,
     serialize_report,
 )
-from threetears.evals.analysis.report.campaign_page import NO_CALL
+from threetears.evals.analysis.report.campaign.names import AspectNames
+from threetears.evals.analysis.report.campaign_page import NO_CALL, campaign_warnings
 from threetears.evals.analysis.report.model import (
     DisclosureBlock,
     TableBlock,
@@ -33,32 +36,64 @@ from packages.evals.tests.campaign_page_support import (
     page_of,
     two_aspect_memo,
 )
+from packages.evals.tests.report_shapes_support import SHAPES
 
 
-async def test_many_broken_floors_are_warned_of_one_line_per_arm() -> None:
+def _warned(blocks: list[object], source: str) -> list[str]:
+    return [block.text for block in blocks if isinstance(block, DisclosureBlock) and block.source == source]
+
+
+async def test_floors_an_arm_breaks_on_many_aspects_are_one_line_naming_them() -> None:
     def four(readings: CampaignReadings) -> CampaignReadings:
         (status,) = readings.floors
         statuses = [
             status.model_copy(update={"aspect": aspect, "floor": f"{aspect}/rate_drop/*"})
             for aspect in ("billing", "tone", "refunds", "returns")
         ]
-        return readings.model_copy(update={"floors": statuses})
+        return readings.model_copy(update={"floors": statuses, "aspects": [status.aspect for status in statuses]})
 
     page = await page_of("billing", "tone", readings=four)
-    alerts = [block for block in page.blocks if isinstance(block, DisclosureBlock) and block.source == "floor"]
-    assert [alert.text for alert in alerts] == [
-        "Floors broken for v2: its pass rate on billing; its pass rate on tone; its pass rate on refunds; its pass "
-        "rate on returns."
+    assert _warned(page.blocks, "floor") == [
+        "Adopting v2 overrides the 10-point floors it breaks on 4 of 4 aspects (billing, tone, refunds and returns)."
     ]
 
 
-async def test_a_measurement_s_missed_bar_is_first_on_the_page_and_no_arm_is_recommended() -> None:
+def test_each_arm_breaking_a_floor_has_its_own_line_and_floors_of_two_margins_are_not_sized() -> None:
+    page = SHAPES["s1"]().page()
+    assert _warned(page.blocks, "floor") == [
+        "Adopting v2 overrides the 10-point floor it breaks on billing.",
+        "Adopting v4 overrides the 15-point floor it breaks on tone.",
+    ]
+    readings = page.readings
+    v2 = next(status for status in readings.broken_floors() if status.arm_label == "v2")
+    moved = v2.model_copy(update={"aspect": "tone", "floor": "tone/rate_drop/x", "margin": 15.0})
+    both = readings.model_copy(update={"floors": [*readings.floors, moved]})
+    names = AspectNames.of(fold.report.bundle for fold in page.aspects)
+    assert campaign_warnings(both, names)[0] == (
+        "Adopting v2 overrides the floors it breaks on 2 of 3 aspects (billing and tone)."
+    )
+
+
+@pytest.mark.parametrize(("name", "line"), [("s2", "Adopting alpha overrides the 2 bars it misses on answers.")])
+def test_an_arm_missing_several_bars_has_one_line_counting_them(name: str, line: str) -> None:
+    page = SHAPES[name]().page()
+    assert _warned(page.blocks, "bar") == [line]
+    # The listing line says what the page says, word for word.
+    assert campaign_warnings(page.readings, AspectNames.of(fold.report.bundle for fold in page.aspects)) == [line]
+
+
+def test_a_measurement_s_missed_bar_says_it_falls_short_never_that_adopting_it_overrides_it() -> None:
+    page = SHAPES["s3"]().page()
+    assert _warned(page.blocks, "bar") == ["solo falls short of the bar on clarity."]
+
+
+async def test_a_measurement_s_missed_bar_warns_under_its_title_and_no_arm_is_recommended() -> None:
     page = await kind_page_of("solo", memo=choice_memo("alpha"))
     assert page.readings.kind == "measurement"
     first = first_screen_markdown(page)
-    assert first.startswith("**Bar missed on solo: alpha misses the bar on ")
+    assert first.startswith("# ") and "**alpha falls short of the bar on solo.**" in first
     header = header_html(page)
-    assert header.index('role="alert"') < header.index("<h1>")
+    assert header.index("<h1>") < header.index('<p class="warning">') and 'role="alert"' not in header
     assert "Recommended" not in first and page.recommendation is None
     assert json.loads(serialize_report(page, "json"))["recommendation"] is None
     measures = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "measures")
@@ -68,9 +103,9 @@ async def test_a_measurement_s_missed_bar_is_first_on_the_page_and_no_arm_is_rec
     assert NO_CALL not in first
 
 
-async def test_a_missed_bar_warns_first_on_a_choice_too() -> None:
+async def test_a_missed_bar_warns_on_a_choice_too() -> None:
     first = first_screen_markdown(await kind_page_of("tone"))
-    assert first.startswith("**Bar missed on tone: alpha misses the bar on ")
+    assert "**Adopting alpha overrides the bar it misses on tone.**" in first
 
 
 async def test_the_writer_s_why_for_an_overridden_floor_sits_beside_its_warning() -> None:
@@ -81,11 +116,11 @@ async def test_the_writer_s_why_for_an_overridden_floor_sits_beside_its_warning(
     recommendation = recommended.model_copy(update={"arm": CANDIDATE_LABEL, "floors_overridden": [over]})
     page = await page_of("billing", "tone", memo=memo.model_copy(update={"recommendation": [recommendation]}))
     first = first_screen_markdown(page)
-    warning = first.index("**Floor broken on billing")
+    warning = first.index("**Adopting v2 overrides the 10-point floor it breaks on billing.**")
     why = first.index("**The memo recommends v2 over it:** Billing refunds are rare this quarter.")
-    assert warning < why < first.index("# support queue")
+    assert first.index("# support queue") < warning < why
     header = header_html(page)
-    assert header.index('role="alert"') < header.index('data-role="override"') < header.index("<h1>")
+    assert header.index("<h1>") < header.index('<p class="warning">') < header.index('data-role="override"')
 
 
 async def test_a_why_for_a_missed_bar_sits_beside_its_warning() -> None:
@@ -96,9 +131,9 @@ async def test_a_why_for_a_missed_bar_sits_beside_its_warning() -> None:
     recommendation = recommended.model_copy(update={"bars_missed": [missed]})
     page = await kind_page_of("tone", memo=memo.model_copy(update={"recommendation": [recommendation]}))
     first = first_screen_markdown(page)
-    warning = first.index("**Bar missed on tone: alpha")
+    warning = first.index("**Adopting alpha overrides the bar it misses on tone.**")
     why = first.index("**The memo recommends alpha over it:** A cent a reply is affordable at this volume.")
-    assert warning < why < first.index("# support queue")
+    assert first.index("# support queue") < warning < why
 
 
 async def test_a_why_for_an_overridden_floor_answers_only_the_arm_the_memo_recommends() -> None:
@@ -115,17 +150,18 @@ async def test_a_why_for_an_overridden_floor_answers_only_the_arm_the_memo_recom
     page = await page_of(
         "billing", "tone", memo=memo.model_copy(update={"recommendation": [recommendation]}), readings=both
     )
-    header = [block for block in page.blocks if block.section == "header"]
+    warned = [block for block in page.blocks if block.section == "warnings"]
     kinds = [
-        "why" if isinstance(block, TextBlock) and block.role == "override" else block.text
-        for block in header
+        "why" if isinstance(block, TextBlock) else block.text
+        for block in warned
         if isinstance(block, TextBlock)
         and block.role == "override"
         or isinstance(block, DisclosureBlock)
         and block.source == "floor"
     ]
     # v2's warning, its why, then v3's warning with none: the why answers v2 breaking the floor, not v3.
-    assert len(kinds) == 3 and kinds[1] == "why"
-    assert kinds[0].startswith(f"Floor broken on billing: {CANDIDATE_LABEL}'s") and kinds[2].startswith(
-        "Floor broken on billing: v3's"
-    )
+    assert kinds == [
+        f"Adopting {CANDIDATE_LABEL} overrides the 10-point floor it breaks on billing.",
+        "why",
+        "Adopting v3 overrides the 10-point floor it breaks on billing.",
+    ]

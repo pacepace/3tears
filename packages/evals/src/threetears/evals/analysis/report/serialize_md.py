@@ -39,6 +39,7 @@ from threetears.evals.analysis.report.model import (
     TextBlock,
     TrialBlock,
 )
+from threetears.evals.analysis.report.campaign.provenance import stated_for_the_campaign
 from threetears.evals.analysis.report.verdict import cause_short
 from threetears.evals.analysis.style import GLOSSARY
 
@@ -76,20 +77,21 @@ def report_markdown(report: Report) -> str:
 
 
 def campaign_report_markdown(report: CampaignReport) -> str:
-    """Render a campaign's page as Markdown, in the page's order: every broken floor, the title, the first screen, the
-    memo's findings, then each aspect under its own heading with what code read there, its writer's summary and its
-    own page in one ``<details>`` (its title, question, broken floors and verdict line left out, its headings a level down, its
-    trials' ids prefixed with the aspect's), then the one glossary.
+    """Render a campaign's page as Markdown, in the page's order: the title, then the first screen (the question, the
+    answer, what warns and each report-wide caveat), the sections the page reads before its folds (the findings, the
+    next steps, Design & provenance), then each aspect under its own heading with what code read there, its writer's
+    summary and its own page in one ``<details>`` (its title, question, broken floors and verdict line left out, and
+    any disclosure the campaign states once for every aspect; its headings a level down, its trials' ids prefixed with
+    the aspect's), then how the page was made, then the one glossary.
 
     :param report: The campaign's page.
     :ptype report: CampaignReport
     :return: The Markdown text, ending in a newline.
     :rtype: str
     """
-    warnings = [block for block in report.blocks if _warns(block)]
-    lines = [line for block in warnings for line in (*_block(block), "")]
-    lines.append(f"# {_one_line(report.title)}")
-    head = [block for block in report.blocks if block.section in FIRST_SCREEN and not _warns(block)]
+    # The title first, then the decision: the question, the answer, then what warns, as consequences.
+    lines = [f"# {_one_line(report.title)}"]
+    head = [block for block in report.blocks if block.section in FIRST_SCREEN]
     for index, block in enumerate(head):
         lines += [*([] if index == 0 else [""]), *_block(block)]
     # What the page reads and the writer says sit before the folds; how the page was made (the methods) after them.
@@ -102,7 +104,10 @@ def campaign_report_markdown(report: CampaignReport) -> str:
         lines += ["", f"## {_inert(_one_line(fold.aspect))}", "", f"{_inert(_one_line(fold.shows))}.", ""]
         lines += [f"<details><summary>{html.escape(_one_line(fold.aspect), quote=False)} in full</summary>"]
         lines += _folded(fold.summary, prefix=prefix)
-        aspect = fold.report
+        # A disclosure the campaign's page states once for every aspect is not said again in each fold.
+        aspect = fold.report.model_copy(
+            update={"blocks": [b for b in fold.report.blocks if not stated_for_the_campaign(b, fold.report)]}
+        )
         own = [block for block in fold.head if not _repeats_scoreboard(block)]
         for block in own:
             lines += ["", *_block(block, prefix=prefix)]
@@ -240,8 +245,8 @@ def _text(block: TextBlock) -> list[str]:
 
 
 def _disclosure(block: DisclosureBlock) -> list[str]:
-    """Something code had to say: the verdict and a broken floor's warning in bold, every other line plain."""
-    if block.source == "verdict" or (block.section == "header" and block.source in _WARNING_SOURCES):
+    """Something code had to say: the verdict and what warns in bold, every other line plain."""
+    if block.source == "verdict" or (block.section in ("header", "warnings") and block.source in _WARNING_SOURCES):
         return [f"**{_one_line(block.text)}**"]
     return [_inert(_one_line(block.text))]
 
