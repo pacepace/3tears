@@ -1110,6 +1110,7 @@
 "threetears.evals.analysis.LabelDirection": "provisional",
 "threetears.evals.analysis.LabelReading": "provisional",
 "threetears.evals.analysis.LabelStatistics": "provisional",
+"threetears.evals.analysis.LabelVerdict": "provisional",
 "threetears.evals.analysis.LateCriterion": "provisional",
 "threetears.evals.analysis.LatencyPartition": "provisional",
 "threetears.evals.analysis.LensStore": "provisional",

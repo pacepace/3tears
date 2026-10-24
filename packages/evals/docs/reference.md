@@ -205,7 +205,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`DURABLE_DOC_TYPES`** · constant (frozenset) · What people author, by `doc_type`: the `durable` entries of `DOC_TYPE_FACTS`, derived as `CORE_DOC_TYPES` is.
 - **`DURABLE_SCHEMA_MINOR`** · *host contract* · constant (int) · The durable minor this build writes within `DURABLE_SCHEMA_VERSION`, under the core's minor rules.
-  <br>`= 1`
+  <br>`= 2`
 - **`DURABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The durable version this build writes.
   <br>`= 16`
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
@@ -1686,7 +1686,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `judges` | `boolean` | Name its judged dims whose judging failed; this action never asks a judge. |
 | `k_runs` | `integer` | Repeats of every case, for pass^k. |
 | `label` | `string` or `null` | List only runs carrying this label (run_label sets them); every run if unset. |
-| `labels` | array of `object` | Reader verdicts on the recorded memo, each {dimension, direction, quote, note?, reader?}: a dimension the template scores, a direction of low\|low_mid\|mid\|mid_high\|high, the reader's words verbatim, and who the reader is (omitted, you). They need recorded_analysis_id; the freeze stamps each with the template's criterion for its dimension. The host must vouch that you relay each reader's verdict. |
+| `labels` | array of `object` | Reader verdicts on the recorded memo, each {dimension, direction\|verdict, quote, memo_excerpt?, note?, reader?}: a dimension the template scores; a direction of low\|low_mid\|mid\|mid_high\|high on an ordinal dimension, or a verdict of pass\|fail on a pass_fail one (exactly one, matching the scale); the reader's words verbatim; optionally the memo passage the verdict is about, verbatim (it must be in the recorded memo, whitespace runs collapsed); and who the reader is (omitted, you). They need recorded_analysis_id; the freeze stamps each with the template's criterion for its dimension. The host must vouch that you relay each reader's verdict. |
 | `launch_group_filter` | `string` or `null` | Only the calls one launch's case generation made; its runs carry this id. |
 | `launched_run_ids` | array of `string` or `null` | The runs the estimated launch made (the run ids its launch job names, as run_ids), with predicted_cost: each predicted cell then says how many of its observations came from other runs. |
 | `limit` | `integer` | The most rows to return, up to 200. |
