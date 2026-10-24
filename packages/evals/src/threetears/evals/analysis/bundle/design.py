@@ -885,11 +885,7 @@ def _apparatus_levels(
     # Only the rig's dimensions. An apparatus input carrying `no_rig_coordinate` (the spend ceiling) is read by the
     # bisection and disclosed on each run's summary, and is left out here, so it reaches neither the apparatus class
     # nor any confound scan, lever cohort, divergence or factor-aliasing read that takes these levels.
-    apparatus = [
-        declared
-        for declared in sweepables.declarations
-        if declared.role == "apparatus" and declared.no_rig_coordinate is None
-    ]
+    apparatus = list(sweepables.rig_dimensions)
     # ONE decision per dimension, taken over EVERY arm's value before any of them is stored.
     #
     # A dimension this host does not HAVE is omitted rather than read, so it reaches neither the

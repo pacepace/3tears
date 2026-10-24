@@ -3130,7 +3130,8 @@ class AnalysisContextBundle(EvalDocumentModel):
     host_declarations_digest: str = Field(
         min_length=1,
         description=(
-            "sha256 of the host's declared sweepables (each one's name, role and blank rule) and world dimension "
+            "sha256 of the host's declared sweepables (each one's name, role, blank rule and whether it is a "
+            "dimension of the rig, `Sweepable.rig_dimension`) and world dimension "
             "names — the declarations that partition observations into apparatus classes and arms "
             "(:func:`host_declarations_digest`). Derived from the declarations at assembly, never kept by hand, "
             "so a host that adds, removes or renames one moves it without bumping anything. Two bundles whose "
@@ -3614,7 +3615,8 @@ def host_declarations_digest(profile: HostProfile) -> str:
     cannot say so — they are the package's. This digest is computed from the registry the bundle was assembled
     under, so it moves exactly when those declarations do: each sweepable's name, role, blank rule (whether
     a blank means "never recorded", which decides whether a level can be compared at all) and whether it is a
-    dimension of the rig at all (an apparatus input carrying ``no_rig_coordinate`` splits no cell), and each world
+    dimension of the rig at all (:attr:`~threetears.evals.kernel.host.sweepables.Sweepable.rig_dimension`: an
+    apparatus input carrying ``no_rig_coordinate`` splits no cell), and each world
     dimension's name. The core's declarations are in it too, because the registry a host extends carries them;
     a core change also moves :attr:`AnalysisContextBundle.schema_version`, which is read first.
 
@@ -3627,14 +3629,14 @@ def host_declarations_digest(profile: HostProfile) -> str:
     :rtype: str
     """
     sweepables = sorted(
-        (declared.name, declared.role, declared.indeterminate_when_blank, declared.no_rig_coordinate is None)
+        (declared.name, declared.role, declared.indeterminate_when_blank, declared.rig_dimension)
         for declared in profile.sweepables.declarations
     )
     world = sorted(profile.world.names) if profile.world is not None else []
     return canonical_digest(
         {
             "sweepables": [
-                {"name": name, "role": role, "indeterminate_when_blank": blank, "rig_coordinate": rig}
+                {"name": name, "role": role, "indeterminate_when_blank": blank, "rig_dimension": rig}
                 for name, role, blank, rig in sweepables
             ],
             "world": world,

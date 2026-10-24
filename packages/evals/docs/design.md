@@ -198,8 +198,9 @@ this concept? Every product has a model, a judge, a simulator and a cost ceiling
 shared; the shape is the host's.
 
 **Rejected: opaque inputs.** An engine whose inputs are bare hashes writes analyses saying "component 3
-moved". So a registration carries prose, and apparatus without `confounds` prose is refused: "a bare name
-is a label". The same rule applies one level out: an engine-owned field meaning repeats to one consumer
+moved". So a registration carries prose, and apparatus that is a dimension of the rig without `confounds` prose
+is refused: "a bare name is a label". An apparatus input taken out of the rig (`no_rig_coordinate`, the spend
+ceiling) states why instead, and splits no cell. The same rule applies one level out: an engine-owned field meaning repeats to one consumer
 and a retrieval window to another became `intended_repetitions`, and the engine's caveat kinds are open
 to host additions.
 

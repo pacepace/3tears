@@ -383,6 +383,17 @@ class Sweepable:
     refused at registration. Declaration metadata like :attr:`acts_on`: it enters no key.
     """
 
+    @property
+    def rig_dimension(self) -> bool:
+        """Whether this input is a dimension of the rig: apparatus, and not taken out of it by
+        :attr:`no_rig_coordinate`. The one rule the apparatus class, the confound scans and the host declarations
+        digest read, so none can disagree about which inputs split a cell.
+
+        :return: True for a rig dimension.
+        :rtype: bool
+        """
+        return self.role == "apparatus" and self.no_rig_coordinate is None
+
 
 @dataclass(frozen=True)
 class RolePins:
@@ -566,7 +577,7 @@ class SweepableRegistry(HostAttributed):
             seen.add(name)
             if not declared.reader_prose.strip():
                 defects.append(f"{name} states no reader prose — a bare dimension name cannot be rendered to a reader")
-            if declared.role == "apparatus" and not declared.confounds and declared.no_rig_coordinate is None:
+            if declared.rig_dimension and not declared.confounds:
                 defects.append(f"{name} is apparatus but states no reason it confounds — a bare name is a label")
             if declared.role != "apparatus" and declared.confounds:
                 defects.append(f"{name} states a confound reason but is not apparatus — no scan would ever read it")
@@ -588,6 +599,11 @@ class SweepableRegistry(HostAttributed):
             elif pinned.role != "apparatus":
                 defects.append(
                     f"{name} is named as a role pin but is not apparatus — a role pin is the rig, and only apparatus states why it confounds"
+                )
+            elif pinned.no_rig_coordinate is not None:
+                defects.append(
+                    f"{name} is named as a role pin but declares no_rig_coordinate — a role pin identifies who filled a "
+                    "seat in the rig, so it is a dimension of the rig"
                 )
         defects.extend(self._role_defects())
         defects.extend(self._resolution_defects())
@@ -883,6 +899,16 @@ class SweepableRegistry(HostAttributed):
     def declarations(self) -> tuple[Sweepable, ...]:
         """Every declaration, in reporting order."""
         return self._declarations
+
+    @property
+    def rig_dimensions(self) -> tuple[Sweepable, ...]:
+        """Every declaration that is a dimension of the rig (:attr:`Sweepable.rig_dimension`), in reporting order:
+        what an apparatus class is keyed by and the confound scans read.
+
+        :return: The rig's dimensions.
+        :rtype: tuple[Sweepable, ...]
+        """
+        return tuple(declared for declared in self._declarations if declared.rig_dimension)
 
     @property
     def names(self) -> tuple[str, ...]:

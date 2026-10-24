@@ -1286,7 +1286,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `arm_served_models` | `list[ArmServedModel]` | `[]` | Which model the provider's responses named as having answered each arm's candidate calls, sorted by arm. |
 | `arm_production_footings` | `dict[str, PooledProductionFooting]` | `{}` | Arm (variant key) -> what each of its runs set away from the subject's production configuration, read off the host's sweepable declarations: `runs` maps run id -> that run's footing (`moved` with levels, `unchecked`, `held`; null for a run nobody could check). |
 | `cell_model_version` | `int` | `14` | Which definition of a cell produced `cells`. |
-| `host_declarations_digest` | `str` | required | sha256 of the host's declared sweepables (each one's name, role and blank rule) and world dimension names — the declarations that partition observations into apparatus classes and arms (`host_declarations_digest`). |
+| `host_declarations_digest` | `str` | required | sha256 of the host's declared sweepables (each one's name, role, blank rule and whether it is a dimension of the rig, `Sweepable.rig_dimension`) and world dimension names — the declarations that partition observations into apparatus classes and arms (`host_declarations_digest`). |
 | `cells` | `list[Cell]` | `[]` | Every (variant, apparatus class) that any observation landed in, with how many observations pooled there and over how many cases and repeats per case. |
 | `variant_index` | `list[VariantIndexEntry]` | `[]` | One entry per keyed variant — the variant key and the resolved lever map it was digested from. |
 | `refused_merges` | `list[RefusedMerge]` | `[]` | Same-variant cells that did NOT pool, and which rule kept them apart. |

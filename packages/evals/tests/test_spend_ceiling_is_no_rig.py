@@ -25,12 +25,19 @@ from threetears.evals.analysis import (
     campaign_readings,
     get_campaign,
 )
+from threetears.evals.analysis.depth import Depth
 from threetears.evals.analysis.reads import bisect_runs
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.kernel.host.sweepables import CORE_SWEEPABLES, RegistrationError, Sweepable, SweepableRegistry
+from threetears.evals.kernel.host.sweepables import (
+    CORE_SWEEPABLES,
+    RegistrationError,
+    RolePins,
+    Sweepable,
+    SweepableRegistry,
+)
 from threetears.evals.run import get_run
 from threetears.evals.schema.models import EvalRun
 from threetears.evals.storage import InMemoryDocumentStore
@@ -249,3 +256,44 @@ class TestNoRigCoordinateIsRegisteredOnApparatusOnly:
     def test_a_lever_or_a_label_declaring_it_is_refused(self, role: str) -> None:
         with pytest.raises(RegistrationError, match=f"is a {role} and declares no_rig_coordinate"):
             SweepableRegistry([_apparatus(role=role, no_rig_coordinate="never the scan")])
+
+    def test_a_role_pin_declaring_it_is_refused(self) -> None:
+        """A role pin names who filled a seat in the rig, so taking it out of the rig contradicts the pin."""
+        lamp = _apparatus(no_rig_coordinate="the lamp lights the bench, never the scan")
+        with pytest.raises(RegistrationError, match="is named as a role pin but declares no_rig_coordinate"):
+            SweepableRegistry([lamp], roles=[RolePins(name="bench", pins=("bench_lamp",))])
+
+    def test_only_a_rig_dimension_is_one(self) -> None:
+        inside = _apparatus()
+        outside = _apparatus(no_rig_coordinate="the lamp lights the bench, never the scan")
+
+        assert inside.rig_dimension and not outside.rig_dimension
+        assert SweepableRegistry([outside]).rig_dimensions == ()
+
+
+class TestALowCapStopsItsArmShortAndTheReadingsDepthShowsIt:
+    async def test_a_budget_stopped_arm_pools_with_a_higher_cap_arm_and_states_its_truncated_depth(self) -> None:
+        store = InMemoryDocumentStore()
+        # Each trial costs 0.2 cents, so a whole arm of 20 cases at 3 repeats costs 12 cents. The low launch gives each
+        # arm 5 cents, which stops it part-way; the high launch gives each arm 3 dollars, which never binds.
+        low = await _launch(store, {"production": CASES, "candidate": 6}, max_cost_usd=2 * 0.05)
+        high = await _launch(store, {"production": CASES, "candidate": 6}, max_cost_usd=2 * _HIGH_CAP)
+        host = low.host
+        control_run, candidate_run = high.arms["production"].run_id, low.arms["candidate"].run_id
+        stopped = off_loop(get_run, host.storage, candidate_run, low.scope_id)
+        assert stopped.status == "budget_stopped"
+        campaign = off_loop(_campaign, host, low, [control_run, candidate_run])
+        bundle = off_loop(_bundle, host, campaign)
+
+        assert len({cell.apparatus_class_id for cell in bundle.cells}) == 1, "the two caps are one rig"
+        assert campaign.control is not None
+        arms = [campaign.control, CampaignArm(label="v2", role="candidate", variant_key=_key(bundle, "candidate"))]
+        (row,) = campaign_readings(campaign, {"support": bundle}, arms=arms).readings
+        assert row.control_depth == Depth(
+            cases=CASES, trials=CASES * REPEATS, repeats_min=REPEATS, repeats_median=float(REPEATS), repeats_max=REPEATS
+        )
+        depth = row.arm_depth
+        assert depth is not None
+        # The cap stopped the candidate short of its matrix: fewer trials, so some case ran short or not at all.
+        assert depth.trials < CASES * REPEATS
+        assert depth.cases < CASES or depth.repeats_min < REPEATS

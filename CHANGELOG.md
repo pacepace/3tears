@@ -19,6 +19,10 @@ part-way is still marked by its status and completeness. The bundle shape moves 
 (`AnalysisLine.needs_regeneration`) and its report is refused until it is generated again; nothing else is dropped.
 See `packages/evals/MIGRATIONS.toml`.
 
+**Changed (rig):** `Sweepable.rig_dimension` and `SweepableRegistry.rig_dimensions` are the one rule for which inputs
+split a cell, read by the apparatus class, registration and the host declarations digest, whose per-input flag is
+now `rig_dimension`, so every such digest moves once. A role pin declaring `no_rig_coordinate` is refused.
+
 ### evals: each arm's depth is stated beside every reading, and a comparison of pass^k names the depth every arm reached
 
 **Added:** Runs pooled forward leave arms measured to different depths, across arms and across the cases of one arm,
