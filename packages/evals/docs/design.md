@@ -465,15 +465,15 @@ trials, while the word "truncated" appeared nowhere a reader would look. Most of
 the report's first screen — the basis, the verdict and each arm's census of passed, failed and lost trials, by cause
 — is written by code from the bundle, and the memo authors findings and recommendations only, each recommendation
 pinned to its findings and each finding to its trials. (The campaign page later gave the writer one sentence on its
-first screen, the summary across the aspects, below every warning code raised; see below.) The null check moved onto
-finding titles: a title in one of a short list of null phrasings (`analysis/null_claims.py`) is refused when its
-finding cites no reading the bundle established alike. Only "does this title say the arms are alike" is read off the
-words; nothing is parsed, so a reworded null passes, and the judge measures the rest.
+first screen, the summary across the aspects, below every warning code raised; see below.) The null rule moved onto
+finding titles, where a phrase list once refused a title saying arms are alike over no established null. Code reads
+no prose now (owner, 2026-10-24: "Bad judgment is fixed by improved prompts and/or oversight and calibration, not by
+code"): the rule is the prompt's, and the reporter eval's judge measures it.
 
 **The memo's summary opens the campaign's page, after code's warnings** (2026-10, #864). The owner asked for a
 holistic summary first, then the recommendation, then the aspects. A measurement's memo and a no-clear-winner
 choice's held no prose reading across the aspects at all, so every kind's memo carries one `summary`, held to the
-reference and style rules a finding's body is, and the page reads warnings, question, summary, recommendation, then
+reference rules a finding's body is, and the page reads warnings, question, summary, recommendation, then
 code's readings by aspect. The verdict, the readings and every number stay code's.
 
 The judge's noise exceeds the effects being ranked, so rubric criteria are removed before any are added.

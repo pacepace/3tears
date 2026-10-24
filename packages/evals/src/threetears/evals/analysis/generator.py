@@ -48,14 +48,9 @@ each other by position, which the stored model checks. Confidence is a tier, nev
 Every refusal below reads a structured field of the generator's output — a cell or reading it
 names, a caveat kind, the aspect it summarises, the arm it recommends, a position it links — against the bundle. The model's prose is the
 interpretive layer, and whether it is accurate, insightful and relevant is measured by evaluating the reporter as a
-candidate, not by code here. Two checks on finding titles also read a few words, and
-:func:`_reject_unsound_titles` raises one refusal joining both, so a title breaking each is told of each in its one
-repair. :func:`_unestablished_null_titles` refuses a finding title in a common null phrasing ("does not change", "no
-difference") when the finding cites no null the bundle established. The join is structural; only "does this title
-say arms are alike" is read off the words, by a curated phrase list (:mod:`threetears.evals.analysis.null_claims`),
-so a reworded null passes it and nothing is parsed. :func:`_stray_arm_titles` refuses a finding title naming an arm
-none of the finding's readings or trials is taken at; only "which arms does this title name" is read off the words,
-by the names the bundle gives each arm (:mod:`threetears.evals.analysis.arm_mentions`).
+candidate, not by code here. No check reads the prose's words: a title stating a null nothing established, or naming
+an arm its finding cites nothing of, is the prompt's rule 9 to prevent and the reporter eval's to measure, in any
+language the writer writes.
 
 **The recommendation is pinned, and it answers to code's readings.** It names the findings it rests on and an arm
 the campaign holds; a finding names only trials the campaign holds. A candidate is recommended only where the campaign
@@ -92,7 +87,6 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError
 
-from threetears.evals.analysis.arm_mentions import arm_mentions, arm_vocabulary, label_vocabulary
 from threetears.evals.analysis.bundle.insights import insight_restatement_key
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
@@ -101,10 +95,8 @@ from threetears.evals.analysis.bundle.schema import (
     RunSummary,
 )
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_user_message
-from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal, UnresolvableReference
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
-from threetears.evals.analysis.null_claims import null_claims
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.prose_refs import reference_grammar, render_prose_figures
 from threetears.evals.analysis.references import (
@@ -428,8 +420,7 @@ async def generate_analysis(
         the post-generation validators. The causes are deliberately not re-enumerated here, because an
         enumeration drifts every time one is added and this list already had; read the
         chain in :func:`_assemble_and_validate`, where each ``_reject_*`` function
-        documents its own. Every one reads a structured field; the null-claim check on a
-        finding's title also matches a short phrase list (:func:`_unestablished_null_titles`).
+        documents its own. Every one reads a structured field, never the prose.
     """
     tally = tally if tally is not None else GenerationTally()
     if not measuring_writers:
@@ -804,9 +795,7 @@ def _assemble_and_validate(
     are rendered into its prose (:mod:`threetears.evals.analysis.prose_refs`); otherwise it is kept as
     written. What else code fills — every number an evidence reading resolves to — sits beside it on
     ``resolutions``, and every aspect's bundle it was written over is stored with it. Every check here reads a
-    structured field or a reference's grammar; the null-claim check on a finding's title also matches a short phrase
-    list (:func:`_unestablished_null_titles`), and the arm check matches the names the bundle gives each arm
-    (:func:`_stray_arm_titles`).
+    structured field or a reference's grammar, never the prose.
 
     :raises GenerationError: The provider cut the call short (not repaired).
     :raises SoundnessRefusal: The output does not match the contract (an empty summary among it), a position, reading
@@ -814,8 +803,7 @@ def _assemble_and_validate(
         kind cannot make (a measurement's; none in a change; a choice's unseparated pick above ``low`` confidence),
         rests on no finding, names no arm the campaign holds, recommends a candidate in an exploratory campaign or one
         no reading separated from the control, leaves a warning on its arm unaddressed (a broken floor, another arm
-        ahead, a missed bar) or names one code never raised, or a finding's title states a null it established nowhere
-        or names an arm it cites nothing of (repaired once).
+        ahead, a missed bar) or names one code never raised (repaired once).
     """
     _reject_incomplete_generation(result)
     payload = _parse_payload(result)
@@ -849,12 +837,10 @@ def _resolved_analysis(
     :ptype generation: GenerationProvenance
     :return: The stored analysis and the insights it mints.
     :rtype: tuple[EvalAnalysis, list[EvalInsight]]
-    :raises SoundnessRefusal: A cell, reading or position points nowhere, or a finding's title states a null it
-        established nowhere or names an arm it cites nothing of (repaired once).
+    :raises SoundnessRefusal: A cell, reading or position points nowhere (repaired once).
     """
     surfaces = bundle.surfaces()
     document, aspects_of = _with_cell_refs(document, bundle)
-    _reject_unsound_titles(document, bundle, aspects_of)
     catalogs = {aspect.aspect: aspect.measure_catalog for aspect in bundle.aspects}
 
     def lookup(alias: str) -> tuple[DecisionSurface, str, Mapping[str, MetricDescriptor] | None]:
@@ -1396,201 +1382,6 @@ def _addressed(
             f"{sorted(raised) or 'none'}); name only what code raised there"
         )
     return faults
-
-
-#: How many established nulls a refusal names before counting the rest.
-_NAMED_NULLS = 5
-
-
-def _reject_unsound_titles(
-    document: AuthoredCampaignAnalysis, bundle: CampaignBundle, aspects_of: Sequence[Sequence[str]]
-) -> None:
-    """Refuse finding titles that state a null established nowhere or name an arm their finding cites nothing of.
-
-    Both checks run before either refuses, and one refusal carries both accounts: a title breaking each, told only
-    of the first, would be repaired into the second and the analysis lost on the one repair round.
-
-    :raises SoundnessRefusal: Either check found a title at fault; the message is each check's account, in turn.
-    """
-    faults = [
-        fault
-        for fault in (
-            _unestablished_null_titles(document, bundle, aspects_of),
-            _stray_arm_titles(document, bundle),
-        )
-        if fault
-    ]
-    if faults:
-        raise SoundnessRefusal(" Separately: ".join(faults))
-
-
-def _unestablished_null_titles(
-    document: AuthoredCampaignAnalysis, bundle: CampaignBundle, aspects_of: Sequence[Sequence[str]]
-) -> str | None:
-    """Account for each finding title saying arms are alike when the finding cites no null the bundle established.
-
-    A title is what a skimming reader takes away, and a null stated there decides as surely as a measured one:
-    "halving the budget does not change latency, cost or delivery" stops anyone measuring it again. An aspect's
-    bundle establishes a null in two places only: a ``multiple_comparisons`` comparison reading ``equivalent`` (the
-    equivalence test, against a declared margin), and a guardrail check reading ``held`` (shown no worse than its
-    margin). A contrast reading ``not_separated`` says nothing about whether the arms differ.
-
-    **Structural, with one question read off the words.** A finding established a null when it cites a reading an
-    aspect established alike — an evidence row, joined on its aspect and the contrast's cell, reading and name. The
-    contrast's cell, never the control's: nearly every finding cites the control, so a null keyed on it would credit a
-    finding about some other arm. Whether the title SAYS arms are alike is the only thing read off its words, by a
-    curated phrase list (:func:`~threetears.evals.analysis.null_claims.null_claims`); a reworded null passes, and the
-    reporter eval measures the rest. A title is checked against its own finding only.
-
-    Runs after cells are translated from aliases, so it joins on full refs; the refusal names them, and the repair
-    round renders them back into the writer's aliases.
-
-    :return: The refusal's account when a finding's title makes a null claim and the finding cites no reading the
-        bundle established alike, otherwise ``None``; :func:`_reject_unsound_titles` raises it.
-    :rtype: str | None
-    """
-    established = _established_nulls(bundle)
-    cited = [_cited(finding, aspects) for finding, aspects in zip(document.findings, aspects_of, strict=True)]
-    said = [
-        f'findings[{position}].title says "{claim}"'
-        for position, finding in enumerate(document.findings)
-        if not cited[position] & established.keys()
-        for claim in null_claims(finding.title)
-    ]
-    if not said:
-        return None
-    named = []
-    for (aspect, cell, reading, name), how in sorted(established.items()):
-        citing = [position for position, rows in enumerate(cited) if (aspect, cell, reading, name) in rows]
-        named.append(
-            f"{name} at cell {cell} on aspect {aspect} ({how}; cited by finding position(s) {citing or 'none'})"
-        )
-    more = f" and {len(named) - _NAMED_NULLS} more" if len(named) > _NAMED_NULLS else ""
-    offered = (
-        f" The bundle does establish {', '.join(named[:_NAMED_NULLS])}{more}: if the title is about one of those, "
-        "cite that reading in the finding's evidence."
-        if named
-        else ""
-    )
-    return (
-        f"{'; '.join(said)}, which states that arms are alike, but that finding cites no reading the bundle "
-        "established alike (a comparison reading `equivalent` in an aspect's `contrasts`, or a guardrail reading "
-        "`held`). A contrast that did not separate is unresolved, not unchanged (rule 4). Say what you judge most "
-        "likely true (for example, too close to call on this evidence) and what would settle it; a reworded null is "
-        f"the same claim.{offered}"
-    )
-
-
-#: Labels that name an arm's role, not the arm: read in a title as the role in ordinary prose, never as an arm name.
-_ROLE_WORDS: frozenset[str] = frozenset({"control", "candidate"})
-
-
-def _stray_arm_titles(document: AuthoredCampaignAnalysis, bundle: CampaignBundle) -> str | None:
-    """Account for each finding title naming an arm none of that finding's readings or trials is taken at.
-
-    The reader is shown a finding's title over the readings it cites, so a title naming an arm the finding cites
-    nothing of states a result the reader cannot see: a production memo (2026-10) titled a finding "GPT-6 Luna Pro
-    and Ling 3.1 Flash quadrupled evaluation cost" over readings at two other arms, and Ling's cost was shown nowhere.
-
-    **Structural, with one question read off the words.** The arms a finding cites are the variants of its evidence
-    rows' cells and the arms of the trials it names. Which arms its title names is read off the words by the names the
-    campaign's variant indexes give each arm (:func:`~threetears.evals.analysis.arm_mentions.arm_vocabulary`) and the
-    labels the writer is told to call them by (:func:`~threetears.evals.analysis.arm_mentions.label_vocabulary`), which
-    miss a name the writer shortened rather than refuse a sound title; the reporter eval measures the rest. A title is
-    checked against its own finding only.
-
-    **A contrast cites both its arms.** A row at an arm's cell whose measure the bundle compared against the control
-    (a contrast, or a guardrail check) reads that arm against the control, so a finding citing it cites the control
-    too: "Fast cuts cost per reply against the control" over fast's contrast is sound. A label that is only a role's
-    name (an upgraded campaign's control is labelled ``control``) is no arm name at all: the word reads as the role in
-    ordinary prose ("keep the control"), so it is not matched.
-
-    Runs after cells are translated from aliases, so it joins on full refs; the refusal names the arm's cells by them,
-    and the repair round renders them back into the writer's aliases.
-
-    :return: The refusal's account when a finding's title names an arm that none of its evidence rows or trials is
-        taken at, otherwise ``None``; :func:`_reject_unsound_titles` raises it.
-    :rtype: str | None
-    """
-    entries = {entry.variant_key: entry for aspect in bundle.aspects for entry in aspect.variant_index}
-    # The levels an arm ran, and the labels the writer is told to name arms by.
-    vocabulary = arm_vocabulary(list(entries.values())) + label_vocabulary(
-        {arm.label: bundle.arm_keys(arm) for arm in bundle.arms if arm.label.strip().lower() not in _ROLE_WORDS}
-    )
-    if not vocabulary:
-        return None
-    # Each (cell, reading, name) read against the control, with the control's variants it was read against.
-    against: dict[tuple[str, str, str], set[str]] = {}
-    for aspect in bundle.aspects:
-        for family in aspect.multiple_comparisons.families:
-            for comparison in family.comparisons:
-                ref = cell_ref(comparison.contrast.variant_key, comparison.contrast.apparatus_class_id)
-                against.setdefault((ref, comparison.reading, comparison.name), set()).add(
-                    comparison.control.variant_key
-                )
-        for check in aspect.guardrails.checks:
-            ref = cell_ref(check.contrast.variant_key, check.contrast.apparatus_class_id)
-            against.setdefault((ref, check.reading, check.name), set()).add(check.control.variant_key)
-    trials = {(aspect.aspect, trial.trial_id): trial.arm for aspect in bundle.aspects for trial in aspect.trials}
-    arm_of_trial = {campaign_id: trials[where] for campaign_id, where in bundle.trial_ids().items()}
-    cells_of: dict[str, list[str]] = {}
-    for aspect in bundle.aspects:
-        for cell in aspect.cell_measures:
-            ref = cell_ref(cell.variant_key, cell.apparatus_class_id)
-            if ref not in cells_of.setdefault(cell.variant_key, []):
-                cells_of[cell.variant_key].append(ref)
-    stray: list[str] = []
-    for position, finding in enumerate(document.findings):
-        cited = {variant for row in finding.evidence if (variant := variant_of_cell_ref(row.cell)) is not None} | {
-            arm_of_trial[trial] for trial in finding.trials if trial in arm_of_trial
-        }
-        for row in finding.evidence:
-            cited |= against.get((row.cell, row.reading, row.measure_id), set())
-        for mention in arm_mentions(finding.title, vocabulary):
-            if mention.name.variants & cited:
-                continue
-            arms = "; ".join(
-                f"{bundle.label_of(variant)} at cell(s) {', '.join(cells_of.get(variant, [])) or 'none'}"
-                for variant in sorted(mention.name.variants, key=bundle.label_of)
-            )
-            stray.append(f'findings[{position}].title names "{mention.written}" (the arm {arms})')
-    if not stray:
-        return None
-    return (
-        f"{'; '.join(stray)}, but none of that finding's evidence rows or trials is taken at that arm, so the "
-        "reader is shown nothing of it. A title claims no more than its evidence (rule 9): drop that arm from the "
-        "title, cite that arm's reading in the finding's evidence, or, if what the title says of it is a second "
-        "claim, give that claim a finding of its own."
-    )
-
-
-def _cited(finding: AuthoredFinding, aspects: Sequence[str]) -> set[tuple[str, str, str, str]]:
-    """Every ``(aspect, cell_ref, reading, name)`` a finding cites in its evidence rows."""
-    return {
-        (aspect, row.cell, row.reading, row.measure_id) for row, aspect in zip(finding.evidence, aspects, strict=True)
-    }
-
-
-def _established_nulls(bundle: CampaignBundle) -> dict[tuple[str, str, str, str], str]:
-    """Each ``(aspect, cell_ref, reading, name)`` an aspect established alike, keyed on the contrast's cell, with how."""
-    established: dict[tuple[str, str, str, str], str] = {}
-    for aspect in bundle.aspects:
-        for family in aspect.multiple_comparisons.families:
-            for comparison in family.comparisons:
-                if comparison.verdict == "equivalent":
-                    arm = comparison.contrast
-                    key = (
-                        aspect.aspect,
-                        cell_ref(arm.variant_key, arm.apparatus_class_id),
-                        comparison.reading,
-                        comparison.name,
-                    )
-                    established.setdefault(key, "equivalent to the control")
-        for check in aspect.guardrails.checks:
-            if check.decision == "held":
-                ref = cell_ref(check.contrast.variant_key, check.contrast.apparatus_class_id)
-                established.setdefault((aspect.aspect, ref, check.reading, check.name), "guardrail held")
-    return established
 
 
 def _no_separation(against: list[FamilyComparison], *, withheld: str | None) -> str:

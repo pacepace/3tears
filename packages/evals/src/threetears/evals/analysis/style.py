@@ -1,7 +1,6 @@
 """How a report speaks: one place for the names, the glossary and the rules every rendered sentence is held to.
 
-The renderer (:mod:`threetears.evals.analysis.report`) and the memo path both read this module, so a page and the
-memo on it cannot drift into two styles.
+The renderer (:mod:`threetears.evals.analysis.report`) reads this module for every sentence code writes on a page.
 
 - :func:`humanize` is the one seam an identifier passes through on its way to a reader: a model id, an arm, a judged
   dimension, a case, a provider. :data:`HUMANIZE_OVERRIDES` names exceptions by hand. A check expression is code and
@@ -9,14 +8,15 @@ memo on it cannot drift into two styles.
 - :class:`ArmName` names an arm twice: in full on its first mention (``deepseek-v4.1-flash (production, control)``)
   and by its given label after that (``production``).
 - :data:`GLOSSARY` defines every term of art a page uses, once, in one plain sentence.
-- :func:`lint_prose` holds a sentence to the rules; :func:`lint_page` holds a whole ``report.md`` to them;
-  :func:`fix_prose` drops what can be dropped deterministically and returns what is left to disclose.
+- :func:`lint_prose` holds a sentence to the rules, and :func:`lint_page` a whole ``report.md``: the rules hold the
+  text code writes. Nothing here reads, rewrites or drops what a model wrote; the writer's prompt states the same
+  rules, and the reporter eval measures whether a memo keeps them.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Iterable
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Literal
 
@@ -240,114 +240,6 @@ BANNED_PHRASES: tuple[str, ...] = (
     "no measurable",
 )
 
-#: The timing half of a sentence that discounts a reading by data age or time apart: data called old, earlier or
-#: pre-existing, runs that predate the question or the campaign, readings taken "post hoc", or arms measured at
-#: different times. Alone it is no fault: "older runs used the v1 prompt" or "the judge was re-pinned after the runs
-#: started" names a real change, and "the margin was set after the results were in" is the late-criterion line the
-#: writer is asked for.
-_AGED = re.compile(
-    r"\bpost[- ]hoc\b"
-    r"|\bretrospective(?:ly)?\b"
-    r"|\bafter the (?:runs?|data|results?|readings?|measurements?|evidence)\b"
-    r"|\b(?:collected|taken|measured|run|ran|scored|gathered) before the (?:question|campaign|criteria|criterion|margin)\b"
-    r"|\b(?:runs?|data|results?|readings?|evidence|measurements?) (?:pre-?dat(?:e|es|ed|ing)|came before|were taken before)\b"
-    r"|\b(?:old|older|earlier|stale|outdated|pre-?existing|aging|ageing|past) (?:runs?|data|results?|readings?|evidence|measurements?)\b",
-    re.I,
-)
-
-#: Arms or runs measured apart in time, which read as one experiment while nothing that decides their result changed.
-_APART = re.compile(
-    r"\b(?:measured|run|ran|launched|collected|taken|scored) (?:at different times|on different days|at another time|"
-    r"(?:\w+ )?(?:minutes|hours|days|weeks) apart|apart)\b",
-    re.I,
-)
-
-#: The discounting half: a reading's standing lowered for it, as weaker, provisional, a lead only, owed a rerun, or
-#: not one experiment. A sentence carrying both halves discounts data for when it ran, which code never does (owner,
-#: 2026-10-23: "Post hoc should not matter"): a run whose measurement context is unchanged reads exactly like a fresh
-#: one, and arms measured apart are one experiment while nothing that decides their result changed.
-_DISCOUNTED = re.compile(
-    r"\b(?:weaker|less (?:reliable|trustworthy|certain|conclusive|authoritative|valid|attributable|comparable)|"
-    r"provisional|tentative|preliminary|(?:only|just|merely) (?:a )?leads?|exploratory|"
-    r"(?:lower|less|reduced|limited) (?:confidence|certainty)|"
-    r"(?:not|never) (?:one|a single|the same) experiment|not (?:directly )?comparable|cannot be compared|"
-    r"discount\w*|counts? for less|less weight|with caution|cautiously|"
-    r"(?:should|must|needs? to) be (?:re-?run|repeated|re-?measured|confirmed|re-?validated)|"
-    r"(?:confirm|re-?confirm|validate)\w* (?:with|by|on|in) (?:fresh|new|newer|a new)|re-?run\w* to (?:confirm|validate))",
-    re.I,
-)
-
-
-#: Time apart read as a confound: only beside :data:`_APART`, since a config change that moved between the arms is a
-#: confound a writer is right to name.
-_CONFOUNDED = re.compile(r"\b(?:confound\w*|not attributable|cannot be attributed)\b", re.I)
-
-#: What decides a result, named as changed: a prompt, a judge, a model, a template or a setting within 40 characters of
-#: a word saying it changed. Such a sentence says what changed between the readings, a config statement a writer is
-#: right to make, never an age discount. Neither the noun nor a word that can name an arm is enough on its own, since
-#: in an eval memo those are what the arms are called: "since" counts only before a change ("a judge since replaced",
-#: never the causal "since it rests on older runs"), "another" and "a different" only after a word that says what used
-#: it ("judged by a different model", never "the candidate, a different model"), and a version only after one too
-#: ("used the v1 prompt", "moved to v2", never "the prompt v2 arm"). The arms' own names are taken out of the sentence
-#: before it is read (:func:`discounts_by_age`), so a label holding a change word keeps nothing. Compiled inline, as
-#: one literal per order, because a pattern held in a module-level string reads to the GIN-operator guard as SQL.
-_CHANGED = re.compile(
-    r"\b(?:prompts?|judge[sd]?|judging|models?|templates?|settings?|rubrics?|graders?|simulators?|temperatures?|"
-    r"configs?|configurations?|tools?|cassettes?)\b[^.;]{0,40}?"
-    r"(?:\b(?:since )?(?:chang(?:e|ed|es|ing)|replac(?:e|ed|es|ing)|re-?pinned|re-?pinning|re-?pin|swapped|swapping|"
-    r"swap|differs|differed|differ|mov(?:e|ed|es)|upgraded|updated|switched|edited|revised)\b"
-    r"|\b(?:by|with|on|under|to|from|using|used|uses|ran|run) (?:another|a different)\b"
-    r"|\b(?:used|uses|using|ran|run|on|to|from|with|under) (?:the )?v\d+(?:\.\d+)*\b)"
-    r"|(?:\b(?:since )?(?:chang(?:e|ed|es|ing)|replac(?:e|ed|es|ing)|re-?pinned|re-?pinning|re-?pin|swapped|swapping|"
-    r"swap|differs|differed|differ|mov(?:e|ed|es)|upgraded|updated|switched|edited|revised)\b"
-    r"|\b(?:by|with|on|under|to|from|using|used|uses|ran|run) (?:another|a different)\b"
-    r"|\b(?:used|uses|using|ran|run|on|to|from|with|under) (?:the )?v\d+(?:\.\d+)*\b)"
-    r"[^.;]{0,40}?\b(?:prompts?|judge[sd]?|judging|models?|templates?|settings?|rubrics?|graders?|simulators?|"
-    r"temperatures?|configs?|configurations?|tools?|cassettes?)\b",
-    re.I,
-)
-
-
-def discounts_by_age(sentence: str, *, names: Iterable[str] = ()) -> bool:
-    """Whether ``sentence`` lowers a reading's standing for when its data was measured: a timing framing (:data:`_AGED`)
-    beside a discount (:data:`_DISCOUNTED`), or arms measured apart (:data:`_APART`) beside a discount or a confound
-    (:data:`_CONFOUNDED`), in a sentence naming nothing that decides a result (:data:`_CHANGED`): one that names what
-    changed is a config statement. The memo's style pass drops such a sentence, wherever it stands, and lists it in
-    the methods.
-
-    :param sentence: One sentence of the memo.
-    :ptype sentence: str
-    :param names: The arms' labels and model ids, taken out of the sentence before it is read, so a name that holds a
-        change word or a version ("prompt v2", "judge swap") is never read as a change.
-    :ptype names: Iterable[str]
-    :return: True when it discounts data by age or time apart.
-    :rtype: bool
-    """
-    read = sentence
-    for name in sorted({name for name in names if name}, key=len, reverse=True):
-        read = re.sub(rf"(?<![\w-]){re.escape(name)}(?![\w-])", "the arm", read, flags=re.I)
-    if _CHANGED.search(read):
-        return False
-    if _APART.search(read):
-        return bool(_DISCOUNTED.search(read) or _CONFOUNDED.search(read))
-    return bool(_AGED.search(read)) and bool(_DISCOUNTED.search(read))
-
-
-#: Comparative words an arm's label may carry, each with what it claims against the control: ``cost`` read on cost per
-#: reply, ``speed`` on latency, and which way, ``lower`` (cheaper, faster) or ``higher``. Narrow on purpose: a label
-#: is a name, and only a word that plainly claims a direction is read against the arm's own row.
-LABEL_CLAIMS: tuple[tuple[str, Literal["cost", "speed"], Literal["lower", "higher"]], ...] = (
-    ("cheaper", "cost", "lower"),
-    ("cheap", "cost", "lower"),
-    ("lower-cost", "cost", "lower"),
-    ("costlier", "cost", "higher"),
-    ("pricier", "cost", "higher"),
-    ("more expensive", "cost", "higher"),
-    ("faster", "speed", "lower"),
-    ("quicker", "speed", "lower"),
-    ("slower", "speed", "higher"),
-)
-
 #: The most words a sentence may carry, and the most numerals before it should be a table.
 MAX_WORDS = 28
 MAX_NUMERALS = 3
@@ -420,27 +312,6 @@ def lint_prose(text: str, *, question: str | None = None, header: bool = False) 
     return found
 
 
-def fix_prose(text: str, *, question: str | None = None) -> tuple[str, list[StyleViolation]]:
-    """Drop every sentence breaking a rule that dropping fixes, and return what is left with what it still breaks.
-
-    A sentence carrying a banned phrase or repeating the declared question is meta-prose or a hedge: it goes.
-
-    :param text: Prose a model wrote.
-    :ptype text: str
-    :param question: The declared question.
-    :ptype question: str | None
-    :return: ``(fixed, remaining)``: the kept sentences, and the violations they still carry.
-    :rtype: tuple[str, list[StyleViolation]]
-    """
-    kept = [
-        sentence
-        for sentence in sentences(text)
-        if not any(v.rule in ("banned", "question") for v in lint_prose(sentence, question=question))
-    ]
-    fixed = " ".join(kept)
-    return fixed, lint_prose(fixed, question=question)
-
-
 def lint_page(markdown: str, *, question: str | None = None, names: Collection[str] = ()) -> list[StyleViolation]:
     """Every rule a rendered ``report.md`` breaks, outside the data it quotes.
 
@@ -496,7 +367,6 @@ __all__ = [
     "CASE_LABEL_CHARS",
     "GLOSSARY",
     "HUMANIZE_OVERRIDES",
-    "LABEL_CLAIMS",
     "MAX_HEADER_WORDS",
     "MAX_NUMERALS",
     "MAX_WORDS",
@@ -505,7 +375,6 @@ __all__ = [
     "StyleViolation",
     "arm_name",
     "code",
-    "fix_prose",
     "humanize",
     "is_dump",
     "lint_page",

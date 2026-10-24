@@ -9,7 +9,6 @@ suite renders here passes :func:`~threetears.evals.analysis.style.lint_page`.
 from __future__ import annotations
 
 import html
-import json
 import re
 from collections import Counter
 from collections.abc import Mapping
@@ -19,29 +18,19 @@ import pytest
 
 from threetears.evals import Answer, Eval, Result
 from threetears.evals.analysis import (
-    AnalysisContextBundle,
     ArmServedModel,
     Report,
     build_code_only_report,
-    build_report,
-    generate_analysis,
     report_html,
     report_markdown,
 )
-from threetears.evals.analysis.references import cell_aliases
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TextBlock, TrialBlock
-from threetears.evals.analysis.report.decision import FloorReadings, RateReading, read_floor
-from threetears.evals.kernel.declaration import Floor
-from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
 from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement
-from threetears.evals.analysis.style import GLOSSARY, arm_name, lint_page
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
-from packages.evals.tests.campaign_bundle_support import memo as authored_memo
+from threetears.evals.analysis.style import GLOSSARY, lint_page
 from packages.evals.tests.g2_support import (
     CANDIDATE,
     CASES,
     G2_QUESTION,
-    G2_FLOORS,
     PRODUCTION,
     answering,
     declaring,
@@ -49,7 +38,6 @@ from packages.evals.tests.g2_support import (
     g2_report,
     g2_ruled_report,
 )
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient
 
 
 @pytest.fixture
@@ -87,20 +75,16 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
     ]
     assert lines[11] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.092 |"
     first = report_markdown(report).split("\n## ", 1)[0]
-    # The case floor's caveat says what is withheld under four cases and why, in the reader's terms; then the one
-    # other fact that changes how the verdict reads, the label its row contradicts. Nothing else is under the
-    # scoreboard: the design is on the arms line.
+    # The case floor's caveat says what is withheld under four cases and why, in the reader's terms. Nothing else is
+    # under the scoreboard: the design is on the arms line.
     caveat = (
         "Usable cases: production 4, cheaper candidate 4. Under 5 independent cases a rate is shown as a count, and "
         "whether the arms' gap holds on more cases is not estimated."
     )
-    label = "'cheaper candidate' is not cheaper: it cost more per reply than production."
     assert caveat in first.splitlines(), "the case floor, in normal weight"
     assert "Too few" not in first and "needs 5" not in first
     assert first.index("**cheaper candidate passed") < first.index("**Scoreboard**") < first.index(caveat)
-    assert first.index(caveat) < first.index(label)
-    assert first.rstrip().endswith(label), "nothing under the scoreboard but the caveat and the label's claim"
-    assert "The label" not in report_markdown(report)
+    assert first.rstrip().endswith(caveat), "nothing under the scoreboard but the caveat"
 
 
 async def test_the_subhead_names_each_arm_by_the_version_that_answered_it(g2_ruled: tuple[Result, Report]) -> None:
@@ -569,133 +553,3 @@ async def test_every_colour_is_a_variable_both_schemes_define() -> None:
         assert f"{variable}:" in light and f"{variable}:" in dark, variable
     svg = "".join(re.findall(r"<svg\b.*?</svg>", page, re.S))
     assert not re.search(r'(fill|stroke|color|style)="[^"]*(#|rgb)', svg), "a colour drawn inline"
-
-
-# =============================================================================
-# The memo: fixed where code can fix it, listed where it cannot; a floor never rewrites its decision words
-# =============================================================================
-
-
-def test_a_memo_sentence_a_broken_floor_warns_against_is_printed_as_written() -> None:
-    """Until floors, a settled rule replaced a memo sentence whose decision word disagreed with it. A floor warns and
-    never decides, so the writer's decision words stand; the broken floor is the page's first line instead."""
-    readings = FloorReadings(
-        rates=(RateReading("the pass rate", 10, 12, 2, 12),),
-        control_cost=0.003092,
-        candidate_cost=0.003301,
-        control_cases=20,
-        candidate_cases=20,
-        cost_interval=(0.0001, 0.0003),
-        cost_compared=True,
-    )
-    floors = tuple(
-        read_floor(Floor(aspect="queue", clause=clause), readings, control="production", candidate="cheaper candidate")
-        for clause in G2_FLOORS
-    )
-    assert [floor.outcome for floor in floors] == ["unclear", "broken"]
-    style = MemoStyle(
-        bundle=AnalysisContextBundle.model_construct(scoreboard=[], cell_measures=[]),
-        names={"p": arm_name(f"model={PRODUCTION}", control=True), "c": arm_name(f"model={CANDIDATE}")},
-        floors=floors,
-    )
-    switch = "Switch to the cheaper candidate: it holds the queue well enough."
-    assert style.sentence(switch) == switch
-    assert decision_disclosures(style) == []
-    # A raw model id an arm carries reads as the arm's label.
-    assert style.names_arms("deepseek-v4-flash queued fewer tracks than deepseek-v4.1-flash.") == (
-        "cheaper candidate queued fewer tracks than production."
-    )
-    # A role word already beside the id collapses with it into the label once: never "production production".
-    assert style.names_arms(
-        "On the proven check requiring at least two queued tracks, deepseek-v4-flash passed 6 of 12 of runs "
-        "compared to 11 of 12 for production deepseek-v4.1-flash."
-    ) == (
-        "On the proven check requiring at least two queued tracks, cheaper candidate passed 6 of 12 of runs "
-        "compared to 11 of 12 for production."
-    )
-    assert (
-        style.names_arms("deepseek-v4.1-flash (production) kept the queue full.") == "production kept the queue full."
-    )
-
-
-async def test_a_scripted_memo_is_cleaned_and_what_cannot_be_fixed_is_listed(g2_ruled: tuple[Result, Report]) -> None:
-    comparison, coded = g2_ruled
-    bundle = coded.bundle
-    aliases = {ref.split(":")[0]: alias for alias, ref in cell_aliases(bundle.cell_measures).items()}
-    production, candidate = (comparison.arm_variants[name] for name in (PRODUCTION, CANDIDATE))
-    long_caveat = " ".join(["Only four cases were measured"] + ["and"] * 30) + " so the interval is wide."
-    memo = {
-        "findings": [
-            {
-                "title": "Candidate model showed no measurable cost reduction over production",
-                "body": (
-                    "Findings are numbered F1 onward, and each recommendation names the findings it rests on. "
-                    "deepseek-v4-flash answered 2 of 12 trials right. The candidate skipped the queue."
-                ),
-                "confidence": "low",
-                "axes": [],
-                "evidence": [
-                    {"cell": aliases[production], "measure_id": "accuracy", "reading": "measure"},
-                    {"cell": aliases[candidate], "measure_id": "accuracy", "reading": "measure"},
-                ],
-                "trials": [],
-                "caveats": [{"kind": "sampling", "text": long_caveat}],
-                "invalidates": [],
-                "durable": "",
-            },
-            {
-                "title": "Candidate model showed no measurable cost reduction over production",
-                "body": "The candidate searched the catalog more.",
-                "confidence": "low",
-                "axes": [],
-                "evidence": [
-                    {"cell": aliases[production], "measure_id": "production_replicating_cost", "reading": "measure"},
-                    {"cell": aliases[candidate], "measure_id": "production_replicating_cost", "reading": "measure"},
-                ],
-                "trials": [],
-                "caveats": [],
-                "invalidates": [],
-                "durable": "",
-            },
-        ],
-        **{
-            key: value
-            for key, value in authored_memo(
-                bundle,
-                [{}],
-                means="Unanswerable because four cases leave the pass rates statistically unresolved.",
-            ).items()
-            if key != "findings"
-        },
-    }
-    client = FixturedClient(json.dumps(memo))
-    analysis, _ = await generate_analysis(
-        campaign_bundle(bundle),
-        prompt=PROMPT,
-        model=MODEL,
-        client=client,
-        prompt_id=PROMPT_ID,
-        bundle_assembled_at="2026-10-14T19:23:41+00:00",
-        profile=comparison.host.profile,
-    )
-    report = build_report(analysis, campaign_name="G2: can the cheaper model replace production?")
-    markdown = report_markdown(report)
-
-    # The hedge on a measured fact is code's row instead; the meta-prose and the restated count are gone.
-    assert "no measurable" not in markdown and "**Accuracy: cheaper candidate " in markdown
-    assert "**F1." not in markdown
-    # A title restating its one reading is code's plain sentence, the candidate first, money in dollars on the
-    # scale the scoreboard states it.
-    assert "**Cheaper candidate cost $3.301 per 1,000 replies to production's $3.092" in markdown
-    assert " usd" not in markdown
-    assert "numbered F1 onward" not in markdown and "2 of 12 trials right" not in markdown
-    assert "The candidate skipped the queue." in markdown
-    # A floor decides nothing, so the memo's summary is printed as written (until floors, a settled rule replaced it).
-    assert "Unanswerable because four cases leave the pass rates statistically unresolved." in markdown
-    assert "See the decision rule above." not in markdown and "Keep production: " not in markdown
-    assert not any("“Unanswerable because" in b.text for b in report.blocks if isinstance(b, DisclosureBlock))
-    # What code could not fix is kept, counted in the methods table and listed in a fold.
-    assert "| Memo style | style: 1 violations |" in markdown
-    (listed,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.fold == "Style"]
-    assert listed.text.startswith("long_sentence: Only four cases were measured")
-    assert lint_page(markdown, question=G2_QUESTION) == []

@@ -356,54 +356,6 @@ async def test_an_aspect_with_no_margin_is_said_never_shown_worse_and_has_no_row
     assert "To show no worse than the margin" not in first
 
 
-async def test_a_memo_sentence_discounting_readings_by_age_or_time_apart_never_reaches_the_page() -> None:
-    """The reporter's guard (#919): the writer's prose passes the page's style, which drops a sentence discounting a
-    reading for when its runs ran or how far apart its arms were measured, and keeps the rest of the finding."""
-    memo = _memo()
-    (finding,) = memo.findings
-    aged = finding.model_copy(
-        update={
-            "body": (
-                "It passes far more tone requests and far fewer billing ones. The runs predate the campaign, so read "
-                "the tone gain as provisional. The arms ran on different days, so they are not one experiment."
-            )
-        }
-    )
-    page = await _page("billing", "tone", memo=memo.model_copy(update={"findings": [aged]}))
-    (body,) = [block.body for block in page.blocks if isinstance(block, TextBlock) and block.role == "finding_body"]
-    assert body == "It passes far more tone requests and far fewer billing ones."
-    methods = [block.text for block in page.blocks if isinstance(block, DisclosureBlock) and block.section == "methods"]
-    assert (
-        sum(
-            "which discounts a reading for when its runs ran, so the page does not print it" in line for line in methods
-        )
-        == 2
-    )
-
-
-async def test_a_summary_or_title_discounting_readings_by_age_is_dropped_never_printed_as_written() -> None:
-    """A summary or a finding's title the style pass leaves nothing of is otherwise kept as written; one discounting a
-    reading for when its runs ran falls back as a sentence proposing an uncomputed sample does: not printed, and listed
-    in the methods."""
-    memo = _memo()
-    (finding,) = memo.findings
-    aged_title = "The tone gain rests on older runs, so it is only a lead."
-    aged_summary = "v2 wins on tone, though its readings predate the campaign and are provisional."
-    page = await _page(
-        "billing",
-        "tone",
-        memo=memo.model_copy(
-            update={"summary": aged_summary, "findings": [finding.model_copy(update={"title": aged_title})]}
-        ),
-    )
-    assert "predate" not in _first_screen_markdown(page)
-    assert not [block for block in page.blocks if isinstance(block, TextBlock) and block.role == "summary"]
-    titles = [block.body for block in page.blocks if isinstance(block, TextBlock) and block.role == "finding_title"]
-    assert not any("older runs" in title for title in titles)
-    methods = [block.text for block in page.blocks if isinstance(block, DisclosureBlock) and block.section == "methods"]
-    assert sum("discounts a reading for when its runs ran" in line for line in methods) == 2
-
-
 async def test_an_unclear_row_with_a_margin_is_still_to_settle_beside_one_without() -> None:
     def tone_unclear(readings: CampaignReadings) -> CampaignReadings:
         rows = [
@@ -919,60 +871,22 @@ async def test_a_measurement_opens_after_its_warning_on_its_summary_then_its_mea
     assert header.index('data-role="summary"') < header.index('data-table="measures"')
 
 
-#: A summary sentence the style pass keeps.
-_KEPT = "Production stays, since billing is where refunds are lost."
-
-
-async def test_the_summary_is_held_to_the_style_pass_like_any_of_the_memo_s_words() -> None:
-    """A sentence restating a measured number is dropped from the summary as from a finding's body."""
-    page = await _page(
-        "billing",
-        "tone",
-        memo=_memo().model_copy(update={"summary": f"Production passed 54 of 60 billing trials. {_KEPT}"}),
-    )
-    (summary,) = [block for block in page.blocks if isinstance(block, TextBlock) and block.role == "summary"]
-    assert summary.body == _KEPT
-    methods = [block.text for block in page.blocks if block.section == "methods"]
-    assert any("restated a measured number" in text for text in methods)
-
-
-async def test_a_summary_the_style_pass_would_drop_whole_is_kept_as_written() -> None:
-    """The summary is one sentence, so a pass that would leave none of it keeps it as written, as a finding's title is:
-    the page still opens on the writer's read across the aspects."""
-    restated = "Production passed 54 of 60 billing trials, so it stays."
-    page = await _page("billing", "tone", memo=_memo().model_copy(update={"summary": restated}))
-    (summary,) = [block for block in page.blocks if isinstance(block, TextBlock) and block.role == "summary"]
-    assert summary.body == restated
-    assert _opening(page)[0] == ("text", "summary")
-    # The page prints it, so the methods never say it was left to the tables.
-    methods = [block.text for block in page.blocks if block.section == "methods"]
-    assert not any("restated a measured number" in text for text in methods)
-
-
-async def test_a_title_the_style_pass_would_drop_whole_is_printed_listed_as_breaking_a_rule_and_not_counted_dropped() -> (
-    None
-):
-    """A finding keeps its headline as written where the pass would leave none of it, so the methods list the rule it
-    breaks and never say the tables said it instead."""
+async def test_the_memo_s_words_are_printed_as_written_in_any_language() -> None:
+    """Code checks code, and a model's prose is a model's to check (owner, 2026-10-24): the page reads none of the memo's
+    words. A sentence an English word list once dropped (a restated count, a discount by data age, a proposed sample)
+    and a sentence in French reach the page as written, and the methods list nothing the memo said."""
     memo = _memo()
-    banned = "The verdict rests on billing."
-    finding = memo.findings[0].model_copy(update={"title": banned})
-    page = await _page("billing", "tone", memo=memo.model_copy(update={"findings": [finding]}))
-    (title,) = [block for block in page.blocks if isinstance(block, TextBlock) and block.role == "finding_title"]
-    assert title.body == banned
-    methods = [block.text for block in page.blocks if block.section == "methods"]
-    assert not any("restated a measured number" in text for text in methods)
-    assert any("banned" in text and banned in text for text in methods)
-
-
-async def test_a_summary_proposing_a_sample_no_code_computed_is_dropped_and_listed() -> None:
-    """Kept as written never reaches a sample size or cost no projection states: that summary is dropped, as any such
-    sentence is, and the methods list it."""
-    proposing = "Run 200 more billing cases for about $40 to settle it."
-    page = await _page("billing", "tone", memo=_memo().model_copy(update={"summary": proposing}))
-    assert not [block for block in page.blocks if isinstance(block, TextBlock) and block.role == "summary"]
-    methods = [block.text for block in page.blocks if block.section == "methods"]
-    assert any("a sample size or cost no code computed" in text and "200 more" in text for text in methods)
+    summary = "La production reste : la facturation perd des remboursements. Run 200 more billing cases for $40."
+    body = "Production passed 54 of 60 billing trials. The runs predate the campaign, so read the tone gain as provisional."
+    finding = memo.findings[0].model_copy(update={"title": "Le ton progresse sur v2", "body": body})
+    page = await _page("billing", "tone", memo=memo.model_copy(update={"summary": summary, "findings": [finding]}))
+    said = {block.role: block.body for block in page.blocks if isinstance(block, TextBlock)}
+    assert (said["summary"], said["finding_title"], said["finding_body"]) == (summary, "Le ton progresse sur v2", body)
+    assert not [
+        block
+        for block in page.blocks
+        if isinstance(block, DisclosureBlock) and block.section == "methods" and block.source == "memo"
+    ]
 
 
 async def test_a_choice_with_nothing_separated_says_so_on_every_pair() -> None:
@@ -1016,18 +930,6 @@ async def test_the_writer_s_why_for_an_overridden_floor_sits_beside_its_warning(
     assert warning < why < first.index("# support queue")
     header = _header_html(page)
     assert header.index('role="alert"') < header.index('data-role="override"') < header.index("<h1>")
-
-
-async def test_the_writer_s_words_go_through_the_style_pass_and_what_it_drops_is_counted_in_methods() -> None:
-    memo = _memo()
-    # 54 of 60 is billing's measured count for production: a sentence restating it is dropped, the tables say it.
-    finding = memo.findings[0].model_copy(update={"body": "Production passed 54 of 60 billing trials. Tone gains."})
-    page = await _page("billing", "tone", memo=memo.model_copy(update={"findings": [finding]}))
-    body = next(block for block in page.blocks if isinstance(block, TextBlock) and block.role == "finding_body")
-    assert body.body == "Tone gains."
-    methods = [block.text for block in page.blocks if block.section == "methods"]
-    assert any("restated a measured number" in text for text in methods)
-    assert "## Methods" in campaign_report_markdown(page)
 
 
 _UNREAD = (
