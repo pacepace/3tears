@@ -5,7 +5,7 @@ scope: evals-senior-report
 branch: evals/senior-report
 depends_on: []
 governed_by: []
-partition: "delegated in waves, isolated worktrees, at most 3 at once: A = 00 || 02; B = 01 || 03 || 04; C = 05 || 06; D = 07 then 08. Chunk 02 splits campaign_page.py and test_campaign_page.py so 03/04/05/06 own disjoint modules"
+partition: "delegated in waves, isolated worktrees, at most 3 at once: A = 00 || 02; B = 01 || 03 || 04; C = 05 || 06; D = 07 then 08. Chunk 02 splits packages/evals/src/threetears/evals/analysis/report/campaign_page.py and packages/evals/tests/test_campaign_page.py so 03/04/05/06 own disjoint modules, meeting only at named seams; packages/evals/src/threetears/evals/analysis/report/campaign/common.py and packages/evals/src/threetears/evals/analysis/report/model.py are frozen after 02"
 last_validated: 2026-10-24
 ---
 
@@ -72,6 +72,43 @@ this to High. The cheapest step is the owner answering them before Wave C.
 - [DECISION: a re-freeze whose excerpts differ from the stored case's is refused, naming both, and a correction goes through `supersedes` | Critic R-10: a silent drop with a success receipt is a lie to the caller; case identity still excludes the excerpt]
 - [DECISION: the 14 drafted labels ran as a scratch check (all 14 validate once reshaped to verdicts; the draft's direction-plus-verdict shape is refused), not a committed fixture | the drafts are campaign-specific owner text, which this plan keeps out of tests; script kept at the main session's scratchpad `s/draft_labels.py`]
 - [DECISION: `schema/versioning.py`'s general additivity rule (L181-185, L335-336) gains the opaque-payload exception in Chunk 01, which edits the same ledger | Critic R-6 half-fixed in 00; rides 01 rather than buying a round]
+- 02: `packages/evals/src/threetears/evals/analysis/report/campaign/common.py` is a ninth module, holding what several parts share (`as_written`, `named_arms`,
+  `floor_of`, `rate_name`, `points`). The underscore rule bars binding another module's private name, and a module
+  owned by one chunk should not hold helpers four chunks call. **Frozen after 02:** no chunk edits it; a chunk that
+  needs a new shared helper keeps it in its own module, or asks the main session. Settled by: the underscore contract
+  (CLAUDE.md) and the partition.
+- 02: `late_criteria_lines` and `AspectNames` join `campaign_page.__all__`. `packages/evals/src/threetears/evals/analysis/report/build.py` imports both, and strict mypy
+  needs a re-exported name listed. Settled by: mypy `implicit_reexport`.
+- 02: `FIRST_SCREEN` gains `answer` and `warnings`, so the first screen's membership is set in 02 rather than 03,
+  because `packages/evals/src/threetears/evals/analysis/report/model.py` is frozen after 02 and R1 puts both on the first screen. Settled by: R1, and `packages/evals/src/threetears/evals/analysis/report/model.py` being
+  frozen.
+- 02: `ReportSection` lists every section in reading order, with the campaign's own interleaved. The new
+  `CampaignReport.section_titles` reads that order. `SECTION_TITLES`, and with it every aspect page's headings, is
+  unchanged, because `test_one_memo_per_decision` and `packages/evals/tests/test_report.py` pin those headings and their order. Settled
+  by: those tests.
+- 02: `CostQualityPoint` and `ChartBlock.points` are modelled in 02, ahead of 06, because 06 does not own
+  `packages/evals/src/threetears/evals/analysis/report/model.py`. `test_public_api_has_a_caller` stays red for `CostQualityPoint` until 06 constructs points: an
+  **accepted red**, closed by 06. Settled by: the ownership table.
+- 02: `test_api_growth_requires_a_minor_bump` is red because the unreleased surface grew since v0.77.0 with no bump.
+  This chunk's new public names add to that growth: the campaign/* part functions, `AspectNames`, `CostQualityPoint`.
+  It is an **accepted red**, and nobody bumps the version in this PR. Settled by: the no-version-bumps-in-PRs ruling.
+- 02: S1-S4 are fabricated runs written case by case and assembled with `ToyhostStorage`. They reuse only
+  `campaign_support`'s constants. Its real runs give every arm one k, judge nothing without a model call, and draw
+  new ids on each run, so pages could not be diffed byte for byte. Settled by: the plan's shapes (per-arm k, judged
+  dimensions) and its byte-identity acceptance.
+- 02: every aspect name a part prints goes through `packages/evals/src/threetears/evals/analysis/report/campaign/names.py`: `aspect_name(bundle)`, and `AspectNames`, built once
+  per page from the bundles. `campaign_warnings` and `campaign_verdict` take the names, and so does `aspect_depth` for
+  its sentences (`name=`). Identifiers (floor keys, fold ids, links) keep the label. That way 01 edits only
+  `packages/evals/src/threetears/evals/analysis/report/campaign/names.py` and the declaration files. Settled by: the partition.
+- 02: both serializers lay sections out in the page's own order, a campaign's up to `provenance` before the folds
+  (`CampaignReport.headed_sections`). An aspect's `Report` refuses a campaign-only section, and both pages refuse a
+  `glossary` block. A block is never silently dropped, and 04/05/06 need not wait on 03 for their sections to render.
+  Settled by: the Critic's dropped-section finding.
+- 02: the seams between parallel chunks are named stubs, each with one filler and one placer.
+  `aggregate.equal_weight_cells` (06 fills) gives the row `scorecard` places (04) under `EQUAL_WEIGHT_ROW`.
+  `aggregate.aggregate_blocks` (06) has its slot in `packages/evals/src/threetears/evals/analysis/report/campaign/page.py`. `provenance.provenance_blocks` (03 fills) and
+  `depth_blocks.depth_provenance_blocks` (05 fills) both have slots in `packages/evals/src/threetears/evals/analysis/report/campaign/page.py`'s provenance part. Settled by: the
+  partition.
 
 ## Advisory: what I would do differently
 
@@ -79,7 +116,7 @@ this to High. The cheapest step is the owner answering them before Wave C.
   schema work. Wave C-D (aggregates, writer view, prompt) needs a re-recording and an owner answer on Q1 and Q3. Nine
   chunks will not ship in three sessions, and the planning guide calls that a program. I kept them in one file so the
   owner sees the whole item map once. *Recommendation:* when Wave B lands, archive this plan and draw
-  `build-plan-senior-report-writer.md` for chunks 05-08.
+  `.prawduct/artifacts/build-plan-senior-report-writer.md` for chunks 05-08.
 - **Cut the review's named-set mechanism and its Markdown casing rule** (see Rejected). Both would add machinery to
   fix what consolidation (rule 3) already removes, and the casing rule is English-only.
 - **The biggest risk the review does not price** is that two of its "writer" failures are the package's own bugs.
@@ -160,7 +197,7 @@ rulings and review findings.
 
 | Item | Review said | Code says | Result |
 |---|---|---|---|
-| A6 | RENDERER, `prose_refs` printed 53.33 | `prose_number` spells ≥10 whole, so a figure reference renders 53, and no figure reference resolves a campaign reading's change. The view carries `change` through `_figure` at 4 significant figures (`campaign_bundle.py`, `pass_rate_verdicts` and `readings`) | **Wrong source.** The writer typed a figure from the view. Fix is WRITER-VIEW (R3: view spells as the page), chunk 07 |
+| A6 | RENDERER, `prose_refs` printed 53.33 | `prose_number` spells ≥10 whole, so a figure reference renders 53, and no figure reference resolves a campaign reading's change. The view carries `change` through `_figure` at 4 significant figures (`packages/evals/src/threetears/evals/analysis/campaign_bundle.py`, `pass_rate_verdicts` and `readings`) | **Wrong source.** The writer typed a figure from the view. Fix is WRITER-VIEW (R3: view spells as the page), chunk 07 |
 | A12 | WRITER invented 115 and 60 | `readings[].cases_to_settle` is `reading.projection.cases`, the usable cases the interval was read over (115 and 60 for qwen), not `if_none`/`if_observed` | **Wrong source.** The view handed the writer those exact numbers under a sizing name. WRITER-VIEW bug, chunk 07 |
 | A2 | WRITER-VIEW, medium: no rollup | Confirmed: `writer_view` carries per-aspect `scoreboard` cost only. No per-arm or campaign figure exists | Confirmed |
 | A16 | `_which` returns "pass rate" | Confirmed: `_floor_beside_lines` first loop prints "reads its pass rate … while its row reads only the pass rate" when `status.reading is None` | Confirmed |
@@ -169,10 +206,10 @@ rulings and review findings.
 | A19 | medium on cause | Confirmed in `report.html`, 63.3%→78.3% on the same 60 paired cases. The row is a bounded interval, Holm across the arm's aspects (99.2%): [3.1, 37.6], shown better. The fold contrast is a t interval within the aspect's family (99.8%): [−7.7, 37.7], not separated | Confirmed |
 | §4 rewrite of "Nothing corrects across arms" | "the floors and the recommendation do not rest on it" | The generator refuses a candidate with no confirmatory `better` reading unless every floor held, so a recommendation **can** rest on a corrected gain | **Rewrite is wrong in one clause.** Use the rest and drop that clause, chunk 04 |
 | A14 | view hands latency once per aspect | Confirmed: `_DISCLOSURES` (incl. `latency_contended`, `request_settings_disclosure`) are read per aspect in `_untrimmed` | Confirmed |
-| A10 dup | page prints timing four times plus memo | Confirmed: `late_criteria_lines` in the campaign header, the aspect header (`build.py` `_heading_blocks`) and the listing line (`analysis_verdict`), plus rule 11 asking the summary to say it | Confirmed. Superseded by R4b |
+| A10 dup | page prints timing four times plus memo | Confirmed: `late_criteria_lines` in the campaign header, the aspect header (`packages/evals/src/threetears/evals/analysis/report/build.py` `_heading_blocks`) and the listing line (`analysis_verdict`), plus rule 11 asking the summary to say it | Confirmed. Superseded by R4b |
 | Chart count | 8 figures and glyphs | Only `ChartKind = outcome_bar \| interval_rows` exist. Glyphs are table cells | Consistent with review |
 | §3.2 humanize path exists | yes | `style.measure_name` returns `code(expression)` for any goal check, never a reader name. The catalog's `reader_name` exists but is ignored for checks | Path exists for measures, not for checks. Chunk 01 adds it |
-| `lenses/frontier.py` | (owner asked) | It ranks one subject's contestants per aspect bundle on pass^k × production cost × latency, with dominance decided by test, and draws no chart. The campaign page prints one line per aspect (`_frontier_blocks`, choice kind only). Nothing aggregates across aspects | The aggregate and chart are new (chunk 06). Reuse `lenses/aggregation.WEIGHTING_EQUAL_PER_SCENARIO` vocabulary |
+| `packages/evals/src/threetears/evals/analysis/lenses/frontier.py` | (owner asked) | It ranks one subject's contestants per aspect bundle on pass^k × production cost × latency, with dominance decided by test, and draws no chart. The campaign page prints one line per aspect (`_frontier_blocks`, choice kind only). Nothing aggregates across aspects | The aggregate and chart are new (chunk 06). Reuse the `WEIGHTING_EQUAL_PER_SCENARIO` vocabulary of `packages/evals/src/threetears/evals/analysis/lenses/aggregation.py` |
 
 ## Item → chunk map
 
@@ -245,7 +282,7 @@ Chunks: 00 reporter labels · 01 names · 02 split and scaffold · 03 first scre
 | §2 lessons from Claude artifact generation | R1, R2, R6 | 02-05 (conditional sections, form by content, legend) |
 | Page weight (7 MB trials, 1,775 folds) | R6 | **Not in this plan, flagged**: no review item asks for it. It belongs in the backlog |
 | Owner: equal-weight aggregates incl. cost | R10 | 06 (computed in readings), 04 consumes (scorecard aggregate row), 07 (view) |
-| Owner: aggregate cost/quality frontier chart | R2, R10 | 06 (new chart kind with hidden table). Per-aspect `lenses/frontier.py` verdicts unchanged |
+| Owner: aggregate cost/quality frontier chart | R2, R10 | 06 (new chart kind with hidden table). Per-aspect `packages/evals/src/threetears/evals/analysis/lenses/frontier.py` verdicts unchanged |
 | Owner 2026-10-24: caveats once (R4b) | R4b | 03 (page), 07 (view), 08 (prompt). Mapped above under A10, A11, A14, 2, 11c, 12 |
 | Owner 2026-10-24: reporter label form | - | 00 |
 | Owner 2026-10-24: `memo_excerpt` | - | 00 |
@@ -254,13 +291,13 @@ Chunks: 00 reporter labels · 01 names · 02 split and scaffold · 03 first scre
 
 | Constant | Where | Moves in | To |
 |---|---|---|---|
-| `DURABLE_SCHEMA_MINOR` (+ v16.2 ledger line) | `schema/versioning.py` | 00 (reporter labels), extended by 01 (`Aspect.short_name`, `EvalTemplate.goal_check_names`) | 2. v16.1 shipped in 0.75.0, so this is a new minor |
-| Aspect bundle `schema_version` (+ `CORE_PINNED` row, shape-only) | `bundle/schema.py` `AnalysisContextBundle.schema_version`; `tests/test_hostneutral_sweepables.py` | 01 (declared short name, check reader names in `measure_catalog`) | 65/14 |
-| `CAMPAIGN_JSON_SHAPE` | `report/model.py` | 02 (section ids, cell fields, chart kind), extended by 03-06 within the same unreleased shape | 5 |
-| `CAMPAIGN_BUNDLE_SHAPE` | `campaign_bundle.py` | 06 (`readings.aggregate`) | 3 |
-| `EVAL_ANALYSIS_GEN_DEFAULT` (seed; hosts `eval_prompt_reset`) | `gen_prompt.py`; ledger `GEN_PROMPT_RULES.md` | 08 | moves; `PROMPT_CHAR_BUDGET` only falls |
-| Writer recording `tests/fixtures/generate_analysis/recordings/` (`llm_analysis.jsonl`, `.bundle.json`, `.prompt.txt`) | replayed by `test_generate_analysis_fixture.py` | stale after 01 (bundle), 06 (readings), 07 (view), 08 (prompt) | **re-recorded once, by the main session, after 08** |
-| `api/surface.json`, `docs/reference.md` | regenerated | 00 (`ReporterLabel` is host-contract), 01, 06 | the main session regenerates at integration, never a builder |
+| `DURABLE_SCHEMA_MINOR` (+ v16.2 ledger line) | `packages/evals/src/threetears/evals/schema/versioning.py` | 00 (reporter labels), extended by 01 (`Aspect.short_name`, `EvalTemplate.goal_check_names`) | 2. v16.1 shipped in 0.75.0, so this is a new minor |
+| Aspect bundle `schema_version` (+ `CORE_PINNED` row, shape-only) | `packages/evals/src/threetears/evals/analysis/bundle/schema.py` `AnalysisContextBundle.schema_version`; `packages/evals/tests/test_hostneutral_sweepables.py` | 01 (declared short name, check reader names in `measure_catalog`) | 65/14 |
+| `CAMPAIGN_JSON_SHAPE` | `packages/evals/src/threetears/evals/analysis/report/model.py` | 02 (section ids, cell fields, chart kind), extended by 03-06 within the same unreleased shape | 5 |
+| `CAMPAIGN_BUNDLE_SHAPE` | `packages/evals/src/threetears/evals/analysis/campaign_bundle.py` | 06 (`readings.aggregate`) | 3 |
+| `EVAL_ANALYSIS_GEN_DEFAULT` (seed; hosts `eval_prompt_reset`) | `packages/evals/src/threetears/evals/analysis/gen_prompt.py`; ledger `packages/evals/src/threetears/evals/analysis/GEN_PROMPT_RULES.md` | 08 | moves; `PROMPT_CHAR_BUDGET` only falls |
+| Writer recording `packages/evals/tests/fixtures/generate_analysis/recordings/` (`llm_analysis.jsonl`, `.bundle.json`, `.prompt.txt`) | replayed by `packages/evals/tests/test_generate_analysis_fixture.py` | stale after 01 (bundle), 06 (readings), 07 (view), 08 (prompt) | **re-recorded once, by the main session, after 08** |
+| `packages/evals/api/surface.json`, `packages/evals/docs/reference.md` | regenerated | 00 (`ReporterLabel` is host-contract), 01, 06 | the main session regenerates at integration, never a builder |
 
 No other `*_SHAPE` constant exists in the package (`ASPECT_BUNDLE_SHAPE = 59` is a floor for refusal, not the current
 shape).
@@ -271,13 +308,13 @@ Builder brief, every chunk:
 - Read `/prawduct:methodology building`; work in an isolated worktree off this branch; evals-only.
 - Tight single-file or `-k` test selections, one at a time, never a suite or `check-all.sh` (memory:
   subagents-no-heavy-tests). Lint and typecheck by reading.
-- Never touch `.prawduct/`, `api/surface.json` or `docs/reference.md`.
+- Never touch `.prawduct/`, `packages/evals/api/surface.json` or `packages/evals/docs/reference.md`.
 - Append to `CHANGELOG.md` and the `unreleased` MIGRATIONS notes. The main session reconciles them.
 - No version bumps. No agent attribution anywhere.
 - A sentence a test pins may change only where this plan changes that behaviour, with the reason in the commit.
   Tests are contracts.
 
-**Shared fixtures.** Chunk 02 creates new `tests/report_shapes_support.py`, built on `campaign_support.py`. It provides
+**Shared fixtures.** Chunk 02 creates new `packages/evals/tests/report_shapes_support.py`, using `packages/evals/tests/campaign_support.py`'s constants. It provides
 four campaign shapes that every later chunk's tests run against. A behaviour test passes on at least two of them:
 
 - **S1 change.** A control and three candidates, three aspects, k=1 with one arm at k=2 on one aspect. Floors include
@@ -291,14 +328,14 @@ four campaign shapes that every later chunk's tests run against. A behaviour tes
 Landed first: Discodon holds a label freeze on it. Independent of every report file.
 
 **Owns:**
-- `analysis/reporter_kind.py` (`ReporterLabel`, `LabelDirection`, `LABEL_BANDS`, `reporter_case_payload`)
-- `analysis/reporter_bank.py` (`label_agrees`, `LabelReading`, the calibration read)
-- `analysis/service.py`: only `freeze_reporter_case` and `_label_set`
-- `ops/reporter.py`
-- the label description in `actions/engine.py`
-- `schema/versioning.py` (v16.2)
-- tests: `test_hostneutral_reporter_bank.py`, `test_reporter_case_actions.py`, `test_reporter_case_freeze_attested.py`,
-  `reporter_case_support.py`, and new `test_reporter_label_form.py`
+- `packages/evals/src/threetears/evals/analysis/reporter_kind.py` (`ReporterLabel`, `LabelDirection`, `LABEL_BANDS`, `reporter_case_payload`)
+- `packages/evals/src/threetears/evals/analysis/reporter_bank.py` (`label_agrees`, `LabelReading`, the calibration read)
+- `packages/evals/src/threetears/evals/analysis/service.py`: only `freeze_reporter_case` and `_label_set`
+- `packages/evals/src/threetears/evals/ops/reporter.py`
+- the label description in `packages/evals/src/threetears/evals/actions/engine.py`
+- `packages/evals/src/threetears/evals/schema/versioning.py` (v16.2)
+- tests: `packages/evals/tests/test_hostneutral_reporter_bank.py`, `packages/evals/tests/test_reporter_case_actions.py`, `packages/evals/tests/test_reporter_case_freeze_attested.py`,
+  `packages/evals/tests/reporter_case_support.py`, and new `packages/evals/tests/test_reporter_label_form.py`
 
 **Deliverables.**
 - `ReporterLabel` gains `verdict: Literal["pass", "fail"] | None`. `direction` becomes optional.
@@ -331,7 +368,7 @@ Landed first: Discodon holds a label freeze on it. Independent of every report f
 - The ordinal path is unchanged.
 - The freeze refuses: a direction on pass/fail, a verdict on ordinal, both, neither, an excerpt not in the memo, an
   excerpt with no memo.
-- `labelled_case_v16_0.json` still reads, and re-stores byte-identically.
+- `packages/evals/tests/fixtures/reporter_cases/labelled_case_v16_0.json` still reads, and re-stores byte-identically.
 - Re-freezing the same verdicts with a different excerpt names the stored case.
 - Run against the 14 labels in `reporter-labels-draft.json` reshaped. Note: in that draft `quote` holds memo text; the
   memo passage belongs in `memo_excerpt` and the reader's words in `quote`. Tell Discodon.
@@ -340,20 +377,22 @@ Landed first: Discodon holds a label freeze on it. Independent of every report f
 
 ### Chunk 01: Declared names (aspect short name, check display name)
 
-Depends on 00 (`schema/versioning.py`, v16.2 entry).
+Depends on 00 (`packages/evals/src/threetears/evals/schema/versioning.py`, v16.2 entry).
 
 **Owns:**
-- `kernel/declaration.py` (`Aspect`)
-- `schema/models.py` (`EvalTemplate`)
-- `run/definition_digests.py` (`_UNMEASURED_TEMPLATE_FIELDS`)
-- `analysis/aspects.py`
-- `analysis/bundle/schema.py` (shape 65), plus the bundle assembly that fills `measure_catalog` for goal checks (the
-  builder finds it, from `bundle/surface.py` and `bundle/trials.py`)
-- `analysis/style.py` (`measure_name`)
-- new `report/campaign/names.py`, the one naming helper; 02 creates it as a pass-through
+- `packages/evals/src/threetears/evals/kernel/declaration.py` (`Aspect`)
+- `packages/evals/src/threetears/evals/schema/models.py` (`EvalTemplate`)
+- `packages/evals/src/threetears/evals/run/definition_digests.py` (`_UNMEASURED_TEMPLATE_FIELDS`)
+- `packages/evals/src/threetears/evals/analysis/aspects.py`
+- `packages/evals/src/threetears/evals/analysis/bundle/schema.py` (shape 65), plus the bundle assembly that fills `measure_catalog` for goal checks (the
+  builder finds it, from `packages/evals/src/threetears/evals/analysis/bundle/surface.py` and `packages/evals/src/threetears/evals/analysis/bundle/trials.py`)
+- `packages/evals/src/threetears/evals/analysis/style.py` (`measure_name`)
+- `packages/evals/src/threetears/evals/analysis/report/campaign/names.py`, the one naming helper (02 created it as a pass-through, and every part already names
+  aspects through it). 01 fills `aspect_name` from the declared short name and adds `legend`. It edits no other
+  part's module
 - the campaign declare/adopt actions' argument descriptions
-- `tests/test_hostneutral_sweepables.py` (CORE_PINNED row)
-- new `tests/test_declared_names.py`
+- `packages/evals/tests/test_hostneutral_sweepables.py` (CORE_PINNED row)
+- new `packages/evals/tests/test_declared_names.py`
 
 **Deliverables.**
 - `Aspect.short_name: str | None`.
@@ -368,8 +407,9 @@ Depends on 00 (`schema/versioning.py`, v16.2 entry).
   - It flows into the goal check's `MetricDescriptor.reader_name`. `measure_name` uses it when set, and otherwise
     `code(expression)` in full.
 - `AspectDeclaration.short_name` carried into the bundle. Shape 65, `CORE_PINNED` (65, 14), shape-only.
-- `names.py`: `aspect_name(bundle)` returns the short name or the full label, and `legend(...)` gives the pairs for
-  one legend row.
+- `packages/evals/src/threetears/evals/analysis/report/campaign/names.py`: `aspect_name(bundle)` returns the short name or the full label. `AspectNames.of` reads it for every
+  part, so every table cell and sentence follows without other edits, depth's sentences included (via
+  `aspect_depth(name=)`). `legend(...)` gives the pairs for one legend row, and 03 places it.
 
 **Tests.**
 - S1 with and without names: the page uses short names in every table cell, and the full label appears once in the
@@ -385,29 +425,47 @@ Depends on 00 (`schema/versioning.py`, v16.2 entry).
 A cleanup plus a small schema change. No behaviour change except the JSON shape.
 
 **Owns:**
-- `report/campaign_page.py`, which becomes a facade re-exporting today's `__all__`
-- new `report/campaign/` package. Each module is owned by one later chunk:
+- `packages/evals/src/threetears/evals/analysis/report/campaign_page.py`, which becomes a facade re-exporting today's `__all__` (plus `late_criteria_lines` and
+  `AspectNames`)
+- new `packages/evals/src/threetears/evals/analysis/report/campaign/` package. Each module is owned by one later chunk:
 
   | Module | Holds | Owner |
   |---|---|---|
-  | `page.py` | `build_campaign_report`, section order, one call per section | 02 |
-  | `warnings.py` | warning lines | 03 |
-  | `provenance.py` | late criteria and design | 03 |
-  | `scorecard.py` | table, pair, measure and bar blocks; notes; settle | 04 |
-  | `depth_blocks.py` | depth, pass^k, model, precision | 05 |
-  | `aggregate.py` | stub returning `[]` | 06 |
-  | `memo_blocks.py` | memo, trace, summaries, recommendation | unowned after 02 |
-  | `names.py` | pass-through | 01 |
+  | `packages/evals/src/threetears/evals/analysis/report/campaign/page.py` | `build_campaign_report`, section order, one call per part, the provenance slot | 02 (03 patches the slot list only) |
+  | `packages/evals/src/threetears/evals/analysis/report/campaign/warnings.py` | warning lines | 03 |
+  | `packages/evals/src/threetears/evals/analysis/report/campaign/provenance.py` | question, late criteria, `provenance_blocks` (Design & provenance, empty today) | 03 |
+  | `packages/evals/src/threetears/evals/analysis/report/campaign/memo_blocks.py` | memo, trace, summaries, recommendation, call; the `findings` and `next` sections' blocks | 03 |
+  | `packages/evals/src/threetears/evals/analysis/report/campaign/scorecard.py` | table, pair, measure and bar blocks; notes; settle; places `EQUAL_WEIGHT_ROW` | 04 |
+  | `packages/evals/src/threetears/evals/analysis/report/campaign/depth_blocks.py` | depth, pass^k, model, precision; `depth_provenance_blocks` (empty today) | 05 |
+  | `packages/evals/src/threetears/evals/analysis/report/campaign/aggregate.py` | `equal_weight_cells` and `aggregate_blocks` stubs, `EQUAL_WEIGHT_ROW` | 06 |
+  | `packages/evals/src/threetears/evals/analysis/report/campaign/names.py` | `aspect_name`, `AspectNames`: every aspect name a part prints | 01 |
+  | `packages/evals/src/threetears/evals/analysis/report/campaign/common.py` | `as_written`, `named_arms`, `floor_of`, `rate_name`, `points` | **frozen after 02** |
 
-- `report/model.py`:
-  - section ids `answer`, `warnings`, `scorecard`, `findings`, `next`, `provenance` beside today's, with titles of at
-    most 3 words;
-  - `TableCell.flag` (a short code-authored marker such as the floor status or "cannot show a drop", rendered beside
-    the value);
-  - `ChartKind` gains `cost_quality`;
+- `packages/evals/src/threetears/evals/analysis/report/model.py` (**frozen after 02**):
+  - section ids `answer`, `warnings`, `scorecard`, `findings`, `next`, `provenance` in `ReportSection`, headed by
+    `CampaignReport.section_titles` (titles of at most 3 words; `answer` and `warnings` sit on the first screen);
+  - an aspect page refuses them, and every page refuses a block in `glossary`;
+  - `CampaignReport.headed_sections`, the order both serializers lay sections out in;
+  - `TableCell.flag` (a short code-authored marker, such as the floor status or "cannot show a drop", rendered
+    after the value);
+  - `ChartKind` gains `cost_quality` (`ChartBlock.points`, `CostQualityPoint`);
   - `CAMPAIGN_JSON_SHAPE` 5.
-- split `tests/test_campaign_page.py` along the same modules, tests moved verbatim
-- new `tests/report_shapes_support.py` (S1-S4)
+- `packages/evals/src/threetears/evals/analysis/report/serialize_html.py` and `packages/evals/src/threetears/evals/analysis/report/serialize_md.py`: only the section loops, which read the page's own section
+  order. The rest of both stays 03's.
+- `packages/evals/src/threetears/evals/analysis/report/svg.py`: only the `cost_quality` refusal in `chart_svg`. The file is 06's.
+- `packages/evals/src/threetears/evals/analysis/depth_reading.py`: only `aspect_depth(name=)`. The file is 05's.
+- `packages/evals/src/threetears/evals/analysis/report/build.py`: only `analysis_verdict`'s `AspectNames` argument. The function is 03's.
+- split `packages/evals/tests/test_campaign_page.py` along the same modules, tests moved verbatim:
+  - `packages/evals/tests/test_campaign_warnings.py`, `packages/evals/tests/test_campaign_provenance.py`, `packages/evals/tests/test_campaign_memo_blocks.py`
+    (03);
+  - `packages/evals/tests/test_campaign_scorecard.py` (04);
+  - `packages/evals/tests/test_campaign_first_screen.py`, the first-screen order, owned by 03. Each part's marker sits in a row tagged
+    by its chunk, so 04 edits only its `_SCORECARD` rows;
+  - `packages/evals/tests/test_campaign_page.py`, the page's folds, JSON and invariants (02).
+  Their shared fixtures are in `packages/evals/tests/campaign_page_support.py`.
+- new `packages/evals/tests/report_shapes_support.py` (S1-S4) and `packages/evals/tests/test_report_shapes.py`
+- new `packages/evals/tests/test_campaign_skeleton.py`. Its `_UNFILLED` table names, per section, the chunk that fills it. Each
+  chunk deletes only its own row.
 
 **Acceptance.**
 - Every moved test passes unchanged, apart from `CAMPAIGN_JSON_SHAPE == 5`.
@@ -420,11 +478,16 @@ Verification: render S1-S4 to HTML and Markdown and diff.
 Depends on 01, 02.
 
 **Owns:**
-- `report/campaign/warnings.py`, `report/campaign/provenance.py`
-- `report/serialize_html.py`, `report/serialize_md.py`
-- `report/build.py`: only `_heading_blocks`, `_floor_warning_blocks` and `analysis_verdict`
-- the `answer`/`warnings`/`provenance` order in `page.py`, by patch to the slot list only
-- the moved warnings and provenance test files
+- `packages/evals/src/threetears/evals/analysis/report/campaign/warnings.py`, `packages/evals/src/threetears/evals/analysis/report/campaign/provenance.py` (fills `provenance_blocks`)
+- `packages/evals/src/threetears/evals/analysis/report/campaign/memo_blocks.py`: moves the memo's findings and next steps into the `findings` and `next` sections.
+  The writer's words in them are still `memo_blocks`'s, as written
+- `packages/evals/src/threetears/evals/analysis/report/serialize_html.py`, `packages/evals/src/threetears/evals/analysis/report/serialize_md.py`: the layout. They already lay out every section the page
+  declares, in its order
+- `packages/evals/src/threetears/evals/analysis/report/build.py`: only `_heading_blocks`, `_floor_warning_blocks` and `analysis_verdict`
+- the `answer`/`warnings`/`findings`/`next`/`provenance` order in `packages/evals/src/threetears/evals/analysis/report/campaign/page.py`, by patch to the slot list only
+- `packages/evals/tests/test_campaign_warnings.py`, `packages/evals/tests/test_campaign_provenance.py`, `packages/evals/tests/test_campaign_memo_blocks.py`,
+  `packages/evals/tests/test_campaign_first_screen.py` (the order; 04 edits only its `_SCORECARD` rows), and the `answer`,
+  `warnings`, `findings`, `next` and `provenance` rows of `_UNFILLED` in `packages/evals/tests/test_campaign_skeleton.py`
 
 **Deliverables.**
 - The title comes first. `role="alert"` and the above-title placement go.
@@ -456,10 +519,15 @@ Depends on 01, 02.
 Depends on 01, 02.
 
 **Owns:**
-- `report/campaign/scorecard.py`
-- `report/decision.py` (projection kinds and `projected_cell` only)
-- `report/svg.py`: only if the matrix glyph needs it; the cost chart is 06's
-- the moved scorecard test files, `tests/test_report_projected_sample.py`
+- `packages/evals/src/threetears/evals/analysis/report/campaign/scorecard.py`, including where the `EQUAL_WEIGHT_ROW` sits in the matrix. Its cells come from
+  `aggregate.equal_weight_cells` (06), and 04 does not edit `packages/evals/src/threetears/evals/analysis/report/campaign/aggregate.py`
+- `packages/evals/src/threetears/evals/analysis/report/decision.py` (projection kinds and `projected_cell` only)
+- not `packages/evals/src/threetears/evals/analysis/report/svg.py`, which is 06's. A matrix cell's glyph is the existing cell glyph (`TableCell` `low`/`high`/
+  `margin`, drawn by the HTML serializer). A glyph that needs more is a new function in a new module of 04's, never
+  an edit to `packages/evals/src/threetears/evals/analysis/report/svg.py`
+- `packages/evals/tests/test_campaign_scorecard.py`, `packages/evals/tests/test_report_projected_sample.py`, the `_SCORECARD` rows of
+  `packages/evals/tests/test_campaign_first_screen.py`, and the `scorecard` row of `_UNFILLED` in
+  `packages/evals/tests/test_campaign_skeleton.py`
 
 **Deliverables.**
 - The matrix per kind (R2):
@@ -492,9 +560,10 @@ Depends on 01, 02.
 Depends on 02.
 
 **Owns:**
-- `report/campaign/depth_blocks.py`
-- `analysis/depth.py` (sentence templates), `analysis/depth_reading.py`
-- `tests/test_depth_surfaces.py`, `test_depth_disclosure.py`, `test_depth_review.py`, `depth_support.py`
+- `packages/evals/src/threetears/evals/analysis/report/campaign/depth_blocks.py`, including `depth_provenance_blocks`, whose blocks `packages/evals/src/threetears/evals/analysis/report/campaign/page.py` places in Design &
+  provenance; 05 does not edit `packages/evals/src/threetears/evals/analysis/report/campaign/provenance.py`
+- `packages/evals/src/threetears/evals/analysis/depth.py` (sentence templates), `packages/evals/src/threetears/evals/analysis/depth_reading.py` (keeping `aspect_depth(name=)`)
+- `packages/evals/tests/test_depth_surfaces.py`, `packages/evals/tests/test_depth_disclosure.py`, `packages/evals/tests/test_depth_review.py`, `packages/evals/tests/depth_support.py`
 
 **Deliverables:**
 - The Depth table collapses to one sentence where every arm's repeats are equal on every aspect but a few, which the
@@ -502,7 +571,8 @@ Depends on 02.
 - No Pass^k table at a common depth of 1 on every aspect: one campaign-level sentence instead of one per aspect.
 - A Precision column empty on every row is dropped.
 - Precision at k=1 on every arm moves under Methods.
-- `REPEATS_FLOOR` is said once, in Design & provenance.
+- `REPEATS_FLOOR` is said once, in Design & provenance, as a block `depth_provenance_blocks` returns in the
+  `provenance` section.
 
 **Tests:**
 - S1 (mostly k=1): one sentence and no table.
@@ -514,11 +584,13 @@ Depends on 02.
 Depends on 02. Answers to Q3 shape the reading.
 
 **Owns:**
-- `analysis/campaign_readings.py` (new `ArmAggregate` / `CampaignAggregate` on `CampaignReadings`)
-- `report/campaign/aggregate.py`
-- `report/svg.py` (`cost_quality` chart)
-- `campaign_bundle.py`: only `CAMPAIGN_BUNDLE_SHAPE`
-- new `tests/test_campaign_aggregate.py`
+- `packages/evals/src/threetears/evals/analysis/campaign_readings.py` (new `ArmAggregate` / `CampaignAggregate` on `CampaignReadings`)
+- `packages/evals/src/threetears/evals/analysis/report/campaign/aggregate.py`: fills `equal_weight_cells` (each arm's cell in the scorecard's `EQUAL_WEIGHT_ROW`,
+  by variant key) and `aggregate_blocks` (the chart, in its slot in `packages/evals/src/threetears/evals/analysis/report/campaign/page.py`)
+- `packages/evals/src/threetears/evals/analysis/report/svg.py`, sole owner: replaces the `cost_quality` refusal in `chart_svg` with the drawing. A
+  `CostQualityPoint` construction closes the accepted `test_public_api_has_a_caller` red
+- `packages/evals/src/threetears/evals/analysis/campaign_bundle.py`: only `CAMPAIGN_BUNDLE_SHAPE`
+- new `packages/evals/tests/test_campaign_aggregate.py`
 
 **Deliverables.**
 - Per arm, over aspects, with `weighting: {"basis": "equal", "weights": {aspect: w}}`:
@@ -532,7 +604,7 @@ Depends on 02. Answers to Q3 shape the reading.
   - Drawn for 2+ arms.
   - On one aspect it is that aspect's values, with no aggregate row.
   - Never for a measurement.
-- The scorecard's "All aspects (equal weight)" row is emitted from here (consumed by 04's slot) once 2+ aspects exist.
+- The scorecard's `EQUAL_WEIGHT_ROW` cells come from `equal_weight_cells`, once 2+ aspects exist. 04 places the row.
 
 **Shape:** `CAMPAIGN_BUNDLE_SHAPE` 3.
 
@@ -548,9 +620,9 @@ Depends on 02. Answers to Q3 shape the reading.
 Depends on 01 and 06.
 
 **Owns:**
-- `analysis/campaign_bundle.py` (`writer_view`, `_untrimmed`, `_DISCLOSURES` handling)
-- `tests/test_campaign_bundle_budget.py`, `tests/test_bundle_growing_lists.py`
-- new `tests/test_writer_view_rollups.py`
+- `packages/evals/src/threetears/evals/analysis/campaign_bundle.py` (`writer_view`, `_untrimmed`, `_DISCLOSURES` handling)
+- `packages/evals/tests/test_campaign_bundle_budget.py`, `packages/evals/tests/test_bundle_growing_lists.py`
+- new `packages/evals/tests/test_writer_view_rollups.py`
 
 **Deliverables:**
 - `aggregate` per arm (from 06), with the weighting.
@@ -575,7 +647,7 @@ Depends on 01 and 06.
 
 Depends on 07.
 
-**Owns:** `analysis/gen_prompt.py`, `GEN_PROMPT_RULES.md`, `tests/test_gen_prompt_budget.py`.
+**Owns:** `packages/evals/src/threetears/evals/analysis/gen_prompt.py`, `packages/evals/src/threetears/evals/analysis/GEN_PROMPT_RULES.md`, `packages/evals/tests/test_gen_prompt_budget.py`.
 
 **Deliverables**, within `PROMPT_CHAR_BUDGET` (it only falls):
 - **Remove** rule 11's "`summary` also says once that each `late_criteria` entry was set after…" clause and its
@@ -593,7 +665,7 @@ Depends on 07.
 **Tests:** the budget test and ledger match.
 
 **Main-session step, not a builder's:** re-record the writer fixture once, here, with `RECORD=1`.
-- `llm_analysis.py` is wired to `claude-haiku-5-5` via `ANTHROPIC_API_KEY` from env. That is the ceiling the memory
+- `packages/evals/tests/fixtures/generate_analysis/llm_analysis.py` is wired to `claude-haiku-5-5` via `ANTHROPIC_API_KEY` from env. That is the ceiling the memory
   rule allows for a Claude-specific path: provider anthropic, no temperature.
 - If the fixture is not meant to prove a Claude path, record on a cheaper OpenRouter model (GLM / DeepSeek / Gemini
   flash-lite) instead.
@@ -608,7 +680,7 @@ Each builder:
 
 The main session:
 - integrates;
-- regenerates `api/surface.json` and `docs/reference.md`;
+- regenerates `packages/evals/api/surface.json` and `packages/evals/docs/reference.md`;
 - runs `check-all.sh` once per integration head, in the background, telling Discodon first;
 - runs `test-integration.sh -rs` before any PR;
 - re-records the writer fixture after 08;
@@ -645,7 +717,7 @@ The main session:
 
 - [x] Chunk 00: reporter label form and memo excerpt
 - [ ] Chunk 01: declared names
-- [ ] Chunk 02: split and scaffold
+- [x] Chunk 02: split and scaffold
 - [ ] Chunk 03: first screen, caveats once, provenance
 - [ ] Chunk 04: scorecard and reconciliation
 - [ ] Chunk 05: degenerate collapse

@@ -264,18 +264,13 @@ def campaign_report_html(report: CampaignReport) -> str:
         *(_block(block, index) for index, block in enumerate(head) if not _warns(block)),
         "</header>",
     ]
-    present = [
-        section
-        for section in SECTION_TITLES
-        if section not in FIRST_SCREEN and section != "glossary" and any(b.section == section for b in report.blocks)
-    ]
-    # What the memo says reads before the folds; how the page was made (the methods) after them.
-    before = [section for section in present if section == "memo"]
-    after = [section for section in present if section != "memo"]
+    # What the page reads and the writer says sit before the folds; how the page was made (the methods) after them.
+    before, after = report.headed_sections
+    titles = report.section_titles
     # Each nav link names the section itself, whose heading every browser shows, a closed one's included.
-    links = [(section, SECTION_TITLES[section]) for section in before]
+    links = [(section, titles[section]) for section in before]
     links += [(f"aspect-{slug}", fold.aspect) for fold, slug in zip(report.aspects, slugs, strict=True)]
-    links += [(section, SECTION_TITLES[section]) for section in after]
+    links += [(section, titles[section]) for section in after]
     links += [("glossary", SECTION_TITLES["glossary"])] if report.terms else []
     parts.append("<nav>" + "".join(f'<a href="#{href}">{_escape(text)}</a>' for href, text in links) + "</nav>")
     for section in before:
@@ -294,7 +289,7 @@ def _campaign_section(report: CampaignReport, section: str) -> list[str]:
     blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
     return [
         f'<section id="{section}">',
-        *_section(section, SECTION_TITLES[section], _folded(blocks), count=None),
+        *_section(section, report.section_titles[section], _folded(blocks), count=None),
         "</section>",
     ]
 
@@ -351,7 +346,7 @@ def _prefixed(markup: str, prefix: str) -> str:
 
 def _present_sections(report: Report) -> list[str]:
     """The sections after the first screen that hold a block, in reading order; never the glossary."""
-    sections = [section for section in SECTION_TITLES if section not in FIRST_SCREEN and section != "glossary"]
+    sections = [section for section in report.section_titles if section not in FIRST_SCREEN and section != "glossary"]
     return [section for section in sections if any(block.section == section for block in report.blocks)]
 
 
