@@ -31,7 +31,7 @@ from threetears.evals.analysis.campaigns import (
     update_campaign,
 )
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.report import ReportBasis, analysis_verdict
+from threetears.evals.analysis.report import ReportBasis, TrialDetail, analysis_verdict
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
 from threetears.evals.analysis.service import (
     AnalysisGenerationEstimate,
@@ -1081,12 +1081,19 @@ def _claim_generation_slot(host: EvalHost, campaign_id: str, scope_id: str, atte
     )
 
 
-def report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat) -> ReportDocument:
+def report_read(
+    host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat, trials: TrialDetail = "table"
+) -> ReportDocument:
     """The campaign's report, serialized in one form — the same report the command line's ``report`` prints.
 
     What "the campaign's report" is has one answer,
     :func:`~threetears.evals.analysis.campaign_report`: its newest analysis that is not archived, else a
     code-only report of its evidence. ``basis`` on the result says which.
+
+    **The trials.** By default each aspect's trials section is the census line, the table of its failed and lost
+    trials, each row naming its stored result (read one with ``result_get``), and the table of its passed trials;
+    ``trials="all"`` adds each failed or lost trial's full record (what it asked, what the judge saw and said, and
+    why), which is most of a large campaign's page. The JSON form carries no trial records either way.
 
     :param host: The host whose store holds the campaign.
     :ptype host: EvalHost
@@ -1098,11 +1105,13 @@ def report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: Repo
         readings across the campaign's aspects, the recommendation, the call, and each aspect's bundle by its
         fingerprint, as ``campaign.json`` beside a written page holds it).
     :ptype format: ReportFormat
+    :param trials: ``table`` (the default) or ``all``, which adds each failed or lost trial's full record.
+    :ptype trials: TrialDetail
     :return: The report in that form.
     :rtype: ReportDocument
     :raises NotFoundError: No campaign with that id in the scope.
     """
-    report = campaign_report(host, campaign_id, scope_id)
+    report = campaign_report(host, campaign_id, scope_id, trials=trials)
     return ReportDocument(
         campaign_id=campaign_id,
         basis=report.basis,

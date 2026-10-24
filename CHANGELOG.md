@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: reading a campaign's report holds one analysis, and lays out its failed trials as a table by default (#951)
+
+**Fixed:** `campaign_report` (and `report_read`, the CLI `report`, the quick path's `Result.page`) hydrated every
+analysis of the campaign, archived ones included, each holding every aspect's frozen bundle, to lay out the newest
+live one: one read of an eight-aspect campaign cost 400-500 MB in production, and a json-then-html pair took a 2 GB
+container past its limit. The store now picks the reported analysis (`AnalysisStore.load_reported_analysis`, new on
+the port and on `EvalStorage`: one `by_doc_type` read filtered on the archived flag, newest first, limit one), so a
+read's memory no longer grows with the analyses archived. A stored analysis's page also hashes each aspect's bundle
+once instead of twice.
+
+**Changed:** each aspect's trials section on a campaign's page is, by default, the census line, one row per failed
+or lost trial naming its stored result (read it with `result_get`), and the passed trials' table. The full record of
+each failed or lost trial is opt-in: `report_read`'s new `trials` parameter (`table`, the default, or `all`), the
+same keyword on `campaign_report` and `analysis_report`, and the CLI's `report --trials all`. `TrialDetail` is the
+new literal. The one-aspect builders (`build_report`, `build_code_only_report`) keep laying out every record unless
+asked. The JSON form carries no records either way. A host implementing `AnalysisStore` itself adds
+`load_reported_analysis`.
+
 ## v0.78.0 -- 2026-10-24
 
 ### evals: a reporter label's form follows its dimension's scale, and may quote the memo passage it is about

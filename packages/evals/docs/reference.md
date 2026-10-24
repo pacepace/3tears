@@ -601,7 +601,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`assemble_context_bundle`** · function · Assemble the closed context bundle for a campaign's runs.
   <br>`assemble_context_bundle(campaign: EvalCampaign, *, aspect: str | None = None, storage: CampaignReadStore, insights_as_of: str | None = None, profile: HostProfile) -> AnalysisContextBundle`
 - **`campaign_report`** · function · The campaign's page — THE answer to "what is this campaign's report", for every caller and every campaign.
-  <br>`campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignReport`
+  <br>`campaign_report(host: EvalHost, campaign_id: str, scope_id: str, *, trials: TrialDetail = 'table') -> CampaignReport`
 - **`create_campaign`** · function · Create and persist a campaign: one question, its arms, its aspects and its floors.
   <br>`create_campaign(storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile, exploratory: bool = False, aspects_from: Sequence[str | Mapping[str, Any]] = (), declared_at: str | None = None) -> EvalCampaign`
 - **`dollars_text`** · function · Spend as a person reads it: dollars and cents from ten cents up, three significant figures below.
@@ -861,7 +861,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`price_largest_reporter_call`** · async function · A reporter arm's largest generator call, priced before launch, for its `LaunchableKind.price_largest_call`.
   <br>`price_largest_reporter_call(host: EvalHost, request: LaunchRequest, *, prompts: ReporterPrompts, resolve_model: ReporterModelResolver) -> CallCeiling | None`
 - **`report_read`** · function · The campaign's report, serialized in one form — the same report the command line's `report` prints.
-  <br>`report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat) -> ReportDocument`
+  <br>`report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat, trials: TrialDetail = 'table') -> ReportDocument`
 - **`reporter_case_archive`** · function · Retire a reporter case, or restore one: a retired case is never launched again and stays readable.
   <br>`reporter_case_archive(host: EvalHost, test_case_id: str, scope_id: str, *, archived: bool, reason: str | None = None) -> FrozenReporterCase`
 - **`run_get`** · function · One run, summarised from its stored results.
@@ -1580,7 +1580,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `insights_list` | `read` | `subject_filter?`, `campaign_filter?` | List the scope's insights — the durable claims analyses minted — newest first. |
 | `insight_get` | `read` | `insight_id` | Read one insight in full: its statement, evidence runs, provenance and standing. |
 | `analyses_undescribable` | `read` | — | List the scope's analyses holding an arm whose levels this build cannot describe. |
-| `report_read` | `read` | `campaign_id`, `format?` | Read a campaign's report — its analysis, else its evidence alone — as Markdown, JSON or HTML. |
+| `report_read` | `read` | `campaign_id`, `format?`, `trials?` | Read a campaign's report — its analysis, else its evidence alone — as Markdown, JSON or HTML. |
 | `bars_propose` | `read` | `campaign_id` | Propose bars from a single-cell baseline campaign's measured incumbent; registers nothing. |
 | `reporter_case_freeze` | `write` | `template_id`, `campaign_id`, `recorded_analysis_id?`, `labels?`, `supersedes?` | Freeze a campaign's analysis bundle, and the memo it got, into a case of a reporter template. |
 | `reporter_cases_list` | `read` | `template_id`, `include_archived?` | List a reporter template's cases: which each campaign and memo launches, superseded or retired. |
@@ -1748,6 +1748,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `test_case_id` | `string` | A test case's id, as judge_cases_list or results_list names it. |
 | `test_case_ids` | array of `string` | The cases, in order, each a stored case of the template; a list the latest version already holds is refused. |
 | `tracked` | `boolean` | Whether the set is a standing suite followed over time, or made for one launch. |
+| `trials` | `'table'` \| `'all'` | How much of each failed or lost trial the report lays out: table (the default) is the census line and one row per such trial naming its stored result, read with result_get; all adds each one's full record (what it asked, what the judge saw and said, and why). JSON carries no records either way. |
 | `variation_model` | `string` or `null` | The model that writes the template's llm variation axes' values; required when n_variations generates for such an axis, refused otherwise. |
 | `weighting` | `string` or `null` | How a cell averages its observations; omitted takes equal per scenario. |
 
@@ -1825,7 +1826,8 @@ options:
 
 ```text
 usage: python -m threetears.evals report [-h] --host MODULE:FACTORY --scope SCOPE
-                                         [--format {markdown,json,html}] [--out DIR]
+                                         [--format {markdown,json,html}] [--trials {table,all}]
+                                         [--out DIR]
                                          campaign
 
 Print a campaign's report — its analysis, else its evidence alone — without calling a model.
@@ -1841,6 +1843,8 @@ options:
   --format {markdown,json,html}
                         markdown (default), html (one page, needs no script) or json (the bundle
                         the report was computed from)
+  --trials {table,all}  table (default): each failed or lost trial's row and stored result; all:
+                        each one's full record too
   --out DIR             write report.html, report.md and bundle.json into DIR instead of printing
                         one form
 ```

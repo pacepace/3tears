@@ -4758,7 +4758,7 @@
     },
     "threetears.evals.analysis.campaign_report": {
       "kind": "function",
-      "signature": "campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignReport",
+      "signature": "campaign_report(host: EvalHost, campaign_id: str, scope_id: str, *, trials: TrialDetail = 'table') -> CampaignReport",
       "tier": "stable"
     },
     "threetears.evals.analysis.campaign_report_html": {
@@ -6296,6 +6296,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.TrialDetail": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.TrialJudgement": {
       "kind": "model",
       "signature": "",
@@ -7333,7 +7338,7 @@
     },
     "threetears.evals.ops.report_read": {
       "kind": "function",
-      "signature": "report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat) -> ReportDocument",
+      "signature": "report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat, trials: TrialDetail = 'table') -> ReportDocument",
       "tier": "stable"
     },
     "threetears.evals.ops.ReportDocument": {

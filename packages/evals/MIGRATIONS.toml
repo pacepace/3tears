@@ -58,6 +58,18 @@
 # callers.
 
 [[release]]
+version = "unreleased"
+since = "v0.78.0"
+summary = """
+A campaign's report reads one analysis, whatever it has archived, and lays out its failed trials as a table by
+default. No public name has moved or been removed.
+"""
+notes = [
+    "`report_read`'s default output is smaller (#951): each aspect's trials section is the census line, one row per failed or lost trial naming its stored result (a new `Stored result` column, read with `result_get`), and the passed trials' table, with no per-trial records. `trials=\"all\"` (new on the `report_read` action and operation, on `campaign_report` and `analysis_report`, and `--trials all` on the CLI's `report`) lays out every record exactly as before. The same default reaches every door to the campaign's page: the CLI's `report`, `CampaignReport.write` through it, and the quick path's `Result.page`; `Result.report` and the one-aspect builders keep every record. In HTML a link to a failed trial lands on its row; in the JSON form nothing changes.",
+    "`AnalysisStore` gains `load_reported_analysis(campaign_id, scope_id)`, the campaign's newest analysis that is not archived, read alone; `campaign_report` and `record_campaign_call` call it. `EvalStorage` implements it over any `DocumentStore` (no change to that port), so only a host implementing `AnalysisStore` itself adds it.",
+]
+
+[[release]]
 version = "0.78.0"
 since = "v0.77.0"
 summary = """

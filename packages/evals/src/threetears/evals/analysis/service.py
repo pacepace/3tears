@@ -61,6 +61,7 @@ from threetears.evals.analysis.reporter_kind import (
 )
 from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleInspection
 from threetears.evals.analysis.report import CampaignReport, Verdict, build_campaign_report, build_code_only_report
+from threetears.evals.analysis.report.model import TrialDetail
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalCampaign
@@ -1500,6 +1501,7 @@ def _campaign_page(
     assembled_at: str,
     analysis: EvalAnalysis | None = None,
     fingerprints: Mapping[str, str] | None = None,
+    trials: TrialDetail = "table",
 ) -> CampaignReport:
     """Lay a campaign bundle out as the campaign's page: code's readings, the memo where there is one, the call.
 
@@ -1517,6 +1519,8 @@ def _campaign_page(
     :param fingerprints: Each aspect's bundle fingerprint in the current version, by label, where it was just checked
         against the bundle; an aspect not named is hashed.
     :ptype fingerprints: Mapping[str, str] | None
+    :param trials: How much of each failed or lost trial each fold lays out (:data:`TrialDetail`).
+    :ptype trials: TrialDetail
     :return: The page.
     :rtype: CampaignReport
     """
@@ -1531,6 +1535,7 @@ def _campaign_page(
             arm_labels=labels,
             writer=writer,
             bundle_fingerprint=checked.get(aspect.aspect),
+            trials=trials,
         )
         for aspect in bundle.aspects
     }
@@ -1578,7 +1583,7 @@ def _as_analysed(analysis: EvalAnalysis, campaign: EvalCampaign | None) -> EvalC
     )
 
 
-def _analysis_page(analysis: EvalAnalysis, campaign: EvalCampaign | None) -> CampaignReport:
+def _analysis_page(analysis: EvalAnalysis, campaign: EvalCampaign | None, *, trials: TrialDetail) -> CampaignReport:
     """A stored analysis laid out as its campaign's page, over everything frozen with it."""
     bundle = analysis_campaign_bundle(analysis)
     # Putting the bundle back together refused it unless each aspect's entry in the frame is that aspect's bundle
@@ -1595,10 +1600,13 @@ def _analysis_page(analysis: EvalAnalysis, campaign: EvalCampaign | None) -> Cam
         assembled_at=analysis.generation.bundle_assembled_at,
         analysis=analysis,
         fingerprints=fingerprints,
+        trials=trials,
     )
 
 
-def analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> CampaignReport:
+def analysis_report(
+    storage: AnalysisStore, analysis_id: str, scope_id: str, *, trials: TrialDetail = "table"
+) -> CampaignReport:
     """Read one stored analysis as its campaign's page — the one page every door renders.
 
     Laid out over the bundles and code's readings frozen with the analysis at generation, so it reads as it was
@@ -1612,6 +1620,9 @@ def analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> 
     :ptype analysis_id: str
     :param scope_id: The scope it lives in.
     :ptype scope_id: str
+    :param trials: How much of each failed or lost trial the page lays out (:data:`TrialDetail`): by default their
+        table alone, each row naming its stored result; ``all`` adds each one's full record.
+    :ptype trials: TrialDetail
     :return: The page, ``basis="analysis"``; :meth:`~threetears.evals.analysis.report.CampaignReport.write` puts it
         in a directory, and :func:`~threetears.evals.analysis.report.serialize_report` serializes it.
     :rtype: CampaignReport
@@ -1619,10 +1630,12 @@ def analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> 
     :raises RefusedInput: The analysis was written over a bundle of another shape.
     """
     analysis = get_analysis(storage, analysis_id, scope_id)
-    return _analysis_page(analysis, storage.load_campaign(analysis.campaign_id, scope_id))
+    return _analysis_page(analysis, storage.load_campaign(analysis.campaign_id, scope_id), trials=trials)
 
 
-def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignReport:
+def campaign_report(
+    host: EvalHost, campaign_id: str, scope_id: str, *, trials: TrialDetail = "table"
+) -> CampaignReport:
     """The campaign's page — THE answer to "what is this campaign's report", for every caller and every campaign.
 
     **The rule.** The campaign's newest analysis that is not archived, laid out over what was frozen with it
@@ -1645,6 +1658,10 @@ def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Campaign
     :ptype campaign_id: str
     :param scope_id: The scope it lives in.
     :ptype scope_id: str
+    :param trials: How much of each failed or lost trial the page lays out (:data:`TrialDetail`): by default their
+        table alone, each row naming its stored result (``result_get`` reads it); ``all`` adds each one's full
+        record, which is most of a large campaign's page.
+    :ptype trials: TrialDetail
     :return: The page; its ``basis`` says which it is.
     :rtype: CampaignReport
     :raises NotFoundError: No campaign with that id in the scope.
@@ -1652,23 +1669,25 @@ def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Campaign
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
     reported = host.storage.load_reported_analysis(campaign_id, scope_id)
     if reported is not None:
-        return _analysis_page(reported, campaign)
-    return _code_only_page(host, campaign)
+        return _analysis_page(reported, campaign, trials=trials)
+    return _code_only_page(host, campaign, trials=trials)
 
 
-def _code_only_page(host: EvalHost, campaign: EvalCampaign) -> CampaignReport:
+def _code_only_page(host: EvalHost, campaign: EvalCampaign, *, trials: TrialDetail = "table") -> CampaignReport:
     """The campaign's code-only page over its evidence assembled now, whatever analyses it holds.
 
     :param host: The host: where the campaign's runs, results and insights are read, and its vocabulary.
     :ptype host: EvalHost
     :param campaign: The campaign.
     :ptype campaign: EvalCampaign
+    :param trials: How much of each failed or lost trial each fold lays out.
+    :ptype trials: TrialDetail
     :return: The page, ``basis="code_only"``.
     :rtype: CampaignReport
     """
     assembled_at = utc_now_iso()
     bundle = _assembled_campaign_bundle(campaign, storage=host.storage, profile=host.profile)
-    return _campaign_page(campaign, bundle, assembled_at=assembled_at)
+    return _campaign_page(campaign, bundle, assembled_at=assembled_at, trials=trials)
 
 
 def campaign_verdicts(host: EvalHost, campaign_id: str, scope_id: str) -> list[Verdict]:

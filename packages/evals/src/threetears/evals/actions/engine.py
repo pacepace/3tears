@@ -213,6 +213,16 @@ Format = Annotated[
     Literal["markdown", "json", "html"],
     Field(description="The report's form: markdown (the memo), json (the schema's form), html (script-free)."),
 ]
+Trials = Annotated[
+    Literal["table", "all"],
+    Field(
+        description=(
+            "How much of each failed or lost trial the report lays out: table (the default) is the census line and "
+            "one row per such trial naming its stored result, read with result_get; all adds each one's full record "
+            "(what it asked, what the judge saw and said, and why). JSON carries no records either way."
+        )
+    ),
+]
 RowFactor = Annotated[
     str,
     Field(
@@ -540,6 +550,7 @@ class ReportReadParams(EvalBaseModel):
 
     campaign_id: CampaignId
     format: Format = "markdown"
+    trials: Trials = "table"
 
 
 class JudgeTemplateCreateParams(JudgeTemplateCreate):
@@ -1137,6 +1148,7 @@ async def _report_read(host: OpsHost, caller: Caller, params: ReportReadParams) 
         params.campaign_id,
         caller.scope_id,
         format=params.format,
+        trials=params.trials,
     )
 
 
@@ -2224,6 +2236,12 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_report_read,
             render=render.render_report,
             example={"campaign_id": campaign_id, "format": "markdown"},
+            detail=(
+                "Each aspect's trials section lists its failed and lost trials, one row each naming its stored result "
+                "(read it with result_get), then its passed trials. trials='all' adds each failed or lost trial's full "
+                "record (what it asked, what the judge saw and said, and why): most of a large campaign's page, so "
+                "read it when you need the records, or read one trial with result_get."
+            ),
         ),
         Action(
             name="bars_propose",

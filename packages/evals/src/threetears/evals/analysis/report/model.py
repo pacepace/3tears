@@ -100,6 +100,11 @@ def fold_ids(labels: Sequence[str]) -> list[str]:
 #: What a report is of: a generated analysis, or the campaign's evidence alone with no analysis.
 ReportBasis = Literal["analysis", "code_only"]
 
+#: How much of each failed or lost trial a page lays out. ``table``: the census line, then one row per such trial
+#: naming its stored result (read it with ``result_get``), then the passed trials' table. ``all``: each one's full
+#: record as well — what it asked, what the judge saw and said, and why — which is most of a large campaign's page.
+TrialDetail = Literal["table", "all"]
+
 #: Where a block sits, in reading order. ``header`` is the first screen's title, arms and verdict lines, and
 #: ``scoreboard`` the rest of the first screen; ``decision`` is the floors section: each declared floor read clause by clause;
 #: ``memo`` and ``contrasts`` are what it means; ``cases`` and ``trials`` the cases and their drill-down;
@@ -1209,6 +1214,7 @@ def _cells(blocks: Sequence[ReportBlock]) -> list[TableCell]:
 
 
 __all__ = [
+    "TrialDetail",
     "CAMPAIGN_JSON_SHAPE",
     "FINDING_ROLES",
     "FIRST_SCREEN",

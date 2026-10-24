@@ -91,6 +91,7 @@ from threetears.evals.analysis.report.model import (
     TextBlock,
     TextRole,
     TrialBlock,
+    TrialDetail,
     Verdict,
     VerdictReason,
     reading_anchor,
@@ -219,7 +220,7 @@ _GUARDRAILS_DISCLOSURE = (
 # =============================================================================
 
 
-def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) -> Report:
+def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None, trials: TrialDetail = "all") -> Report:
     """Lay one stored analysis of a campaign of one aspect out as the campaign's page, over the bundle frozen with it.
 
     A campaign of several aspects reads through its campaign page, which this page is one fold of; it is refused here.
@@ -229,6 +230,9 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) ->
     :param campaign_name: The campaign's name, which the title reads when no question is declared; ``None`` names the
         campaign by its id.
     :ptype campaign_name: str | None
+    :param trials: How much of each failed or lost trial the page lays out (:data:`TrialDetail`): every record by
+        default, or ``table`` for their table alone.
+    :ptype trials: TrialDetail
     :return: The report, ``basis="analysis"``.
     :rtype: Report
     :raises RefusedInput: The analysis covers several aspects, or its bundle predates one aspect per bundle.
@@ -253,6 +257,7 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) ->
         memo=lambda charts, names: _memo_blocks(analysis, bundle, charts, names),
         finding_count=len(analysis.document.findings),
         writer=analysis_writer(analysis),
+        trials=trials,
     )
 
 
@@ -312,6 +317,7 @@ def build_code_only_report(
     arm_labels: Mapping[str, str] | None = None,
     writer: str | None = None,
     bundle_fingerprint: str | None = None,
+    trials: TrialDetail = "all",
 ) -> Report:
     """Lay a campaign's evidence out as its page, when no analysis exists to report through.
 
@@ -338,6 +344,9 @@ def build_code_only_report(
         just checked it against the bundle — a stored analysis's page, whose frame names it — so the bundle is not
         hashed a second time; None hashes it.
     :ptype bundle_fingerprint: str | None
+    :param trials: How much of each failed or lost trial the page lays out (:data:`TrialDetail`): every record by
+        default, or ``table`` for their table alone.
+    :ptype trials: TrialDetail
     :return: The report, ``basis="code_only"``.
     :rtype: Report
     """
@@ -358,6 +367,7 @@ def build_code_only_report(
         finding_count=0,
         writer=writer,
         arm_labels=arm_labels,
+        trials=trials,
     )
 
 
@@ -457,11 +467,12 @@ def _page(
     finding_count: int,
     writer: str | None,
     arm_labels: Mapping[str, str] | None = None,
+    trials: TrialDetail = "all",
 ) -> Report:
     """The page every door renders: the same screens, from one bundle, whatever wrote the memo.
 
     ``arm_labels`` are a campaign's own labels for its arms, by variant key, which name those arms everywhere on the
-    page in place of their variants' names.
+    page in place of their variants' names. ``trials`` says whether each failed or lost trial's record is laid out.
 
     The memo and the contrasts are laid out before the scoreboard, though they print after it: each chart they leave
     out is counted on the way, for the scoreboard's one line about what was not charted.
@@ -511,7 +522,7 @@ def _page(
         *written,
         *contrasts,
         *_case_blocks(bundle, arm),
-        *_trial_blocks(bundle, arm),
+        *_trial_blocks(bundle, arm, records=trials == "all"),
         *_not_tested_blocks(bundle, surface, arm, also=noted),
         *_method_blocks(
             bundle,
@@ -3232,14 +3243,16 @@ def _census_line(bundle: AnalysisContextBundle) -> str:
     return f"{opened} Of them {', '.join(counts[:-1])} and {counts[-1]}."
 
 
-def _trial_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
+def _trial_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], *, records: bool) -> list[ReportBlock]:
     """The census in one line, then only what went wrong, then the passed trials folded away in one place.
 
     A campaign that ran hundreds of trials and failed one is read for that one: the table lists the failed trials
-    first and the lost ones after, each by trial id, and each has a record (what it asked, what the judge saw and
-    said, and why) in the same order, the first :data:`_OPEN_TRIALS` shown open. A passed trial has nothing to
-    read, so it is one row of a closed table, there so its stored result stays reachable with ``result_get``.
-    When every trial passed the line stands alone.
+    first and the lost ones after, each by trial id, and with ``records`` each has a record (what it asked, what the
+    judge saw and said, and why) in the same order, the first :data:`_OPEN_TRIALS` shown open. Without them each
+    row names its stored result instead, read with ``result_get``, and carries the trial's id, so a link to the trial
+    lands on its row: the records are most of a large campaign's page. A passed trial has nothing to read, so it is
+    one row of a closed table, there so its stored result stays reachable with ``result_get``. When every trial
+    passed the line stands alone.
     """
     if not bundle.trials:
         return []
@@ -3249,9 +3262,30 @@ def _trial_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> l
     statuses = arm_run_statuses(bundle)
     case_name = _case_namer(bundle)
     wrong = [trial for trial in _wrong_first(bundle.trials) if trial.state != "passed"]
-    rows: list[dict[str, CellValue]] = []
-    records: list[ReportBlock] = []
+    rows: list[dict[str, TableCell]] = []
+    held: list[ReportBlock] = []
     for position, trial in enumerate(wrong):
+        why = _trial_why(trial)
+        row = table_row(
+            {
+                "trial": trial.trial_id,
+                "case": case_name(trial.case_id),
+                "arm": arm(trial.arm),
+                "outcome": trial.state,
+                "why": why,
+            }
+        )
+        if not records:
+            # No record carries the trial's id, so its row does: a link to the trial lands here, beside its result.
+            rows.append(
+                {
+                    **row,
+                    "trial": TableCell(value=trial.trial_id, anchor=trial.trial_id),
+                    "result": TableCell(value=code(trial.result_id)),
+                }
+            )
+            continue
+        rows.append(row)
         words: CauseWords
         if trial.state == "lost":
             words = loss_words(
@@ -3262,17 +3296,7 @@ def _trial_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> l
             )
         else:
             words = fail_words(trial.cause or "unknown")
-        why = _trial_why(trial)
-        rows.append(
-            {
-                "trial": trial.trial_id,
-                "case": case_name(trial.case_id),
-                "arm": arm(trial.arm),
-                "outcome": trial.state,
-                "why": why,
-            }
-        )
-        records.append(
+        held.append(
             TrialBlock(
                 section="trials",
                 anchor=trial.trial_id,
@@ -3293,24 +3317,27 @@ def _trial_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> l
             )
         )
     if rows:
+        columns = [
+            TableColumn(key="trial", header="Trial", term="trial"),
+            TableColumn(key="case", header="Case", term="case"),
+            TableColumn(key="arm", header="Arm"),
+            TableColumn(key="outcome", header="Outcome", term="outcome"),
+            TableColumn(key="why", header="Why", term="why"),
+        ]
+        if not records:
+            columns.append(TableColumn(key="result", header="Stored result"))
         blocks.append(
             TableBlock(
                 section="trials",
                 name="trials",
                 title="Trials",
-                columns=[
-                    TableColumn(key="trial", header="Trial", term="trial"),
-                    TableColumn(key="case", header="Case", term="case"),
-                    TableColumn(key="arm", header="Arm"),
-                    TableColumn(key="outcome", header="Outcome", term="outcome"),
-                    TableColumn(key="why", header="Why", term="why"),
-                ],
-                rows=[table_row(row) for row in rows],
+                columns=columns,
+                rows=rows,
                 order="the failed first, then the lost, each by trial id",
                 total_rows=len(rows),
             )
         )
-    blocks += records
+    blocks += held
     passed = [
         {
             "trial": trial.trial_id,
