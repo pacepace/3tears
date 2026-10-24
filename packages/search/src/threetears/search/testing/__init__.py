@@ -3,7 +3,9 @@
 Provider conformance is one suite every adapter passes, not a per-adapter
 test file that happens to check similar things: the second adapter is where
 "similar things" starts meaning "a different set of things", and the whole
-point is that a consumer can swap providers and keep its guarantees.
+point is that a consumer can swap providers and keep its guarantees. The
+answers seam has its own suite, :class:`AnswerConformanceSuite`, run against
+a provider's recorded streams.
 
 Shipped in ``src`` rather than under ``tests`` deliberately. It has to be
 importable by a *consumer's* test suite -- a host injecting its own transport
@@ -18,6 +20,7 @@ whose install weight is a requirement (SR-L6).
 
 from __future__ import annotations
 
+from threetears.search.testing.answer_conformance import AnswerConformanceCase, AnswerConformanceSuite
 from threetears.search.testing.conformance import ProviderConformanceCase, ProviderConformanceSuite
 from threetears.search.testing.fakes import (
     FakeBudgetPort,
@@ -26,9 +29,17 @@ from threetears.search.testing.fakes import (
     TransportScript,
 )
 from threetears.search.testing.http_server import LocalHttpServer, Reply
-from threetears.search.testing.recorded import RecordedFetchTransport, RecordedPage
+from threetears.search.testing.recorded import (
+    RecordedFetchTransport,
+    RecordedPage,
+    RecordedStream,
+    RecordedStreamingTransport,
+    recording,
+)
 
 __all__ = [
+    "AnswerConformanceCase",
+    "AnswerConformanceSuite",
     "FakeBudgetPort",
     "FakeRateLimiterPort",
     "LocalHttpServer",
@@ -36,7 +47,10 @@ __all__ = [
     "ProviderConformanceSuite",
     "RecordedFetchTransport",
     "RecordedPage",
+    "RecordedStream",
+    "RecordedStreamingTransport",
     "Reply",
     "ScriptedTransport",
     "TransportScript",
+    "recording",
 ]

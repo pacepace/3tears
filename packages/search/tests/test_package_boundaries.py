@@ -161,13 +161,15 @@ def test_nothing_imports_standalone_at_module_level() -> None:
 def test_importing_the_working_layers_pulls_no_http_library() -> None:
     """The proof the source check cannot give: nothing transitively drags httpx.
 
-    Adapters, Call and Bind are the whole embedded path, and a host injecting
-    its own transport must be able to import all three without httpx or
-    trafilatura installed at all.
+    Adapters, Call and Bind are the whole embedded path -- for answers as for
+    searches, the SSE reader included, which is the adapter's and not the
+    transport's (AR-F2, AR-H1) -- and a host injecting its own transport must
+    be able to import them without httpx or trafilatura installed at all.
     """
     probe = (
         "import sys; "
         "import threetears.search.adapters.searxng, threetears.search.call, threetears.search.bind; "
+        "import threetears.search.adapters.brave_answers, threetears.search.answer, threetears.search.bind_answer; "
         "banned = [m for m in sys.modules if m.startswith(('httpx', 'trafilatura', 'threetears.core', "
         "'threetears.agent', 'langchain', 'nats'))]; "
         "sys.exit(repr(banned) if banned else 0)"

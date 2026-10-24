@@ -95,15 +95,19 @@ threetears/search/
   adapters/
     searxng.py      # Adapter: SearXNG
     tavily.py       # Adapter: Tavily (ported from discodon -- extract, don't invent)
+    brave_answers.py # Adapter: Brave Answers -- SSE reader, tag parser, spend reader (answers design §10.2)
   call.py           # Call
+  answer.py         # Call for answers: one question, one provider, one grounded answer (§10.3)
   aggregate.py      # Aggregate  (Phase 3)
   extract.py        # Extract    (web path Phase 2; carrier dispatch Phase 3)
   select.py         # Select     (Phase 3)
   bind.py           # Bind helpers: prose render + metadata projection
+  bind_answer.py    # Bind for answers: prose + the ANSWER_METADATA_KEY projection, its one construction site (§10.4)
   standalone.py     # bare-httpx transport impl   [standalone] -- the sanctioned path (D19)
   limiter.py        # in-process pacing (D8; the port is contract vocabulary, §3.1)
   replay.py         # record/replay over the store port (Phase 3)
-  testing/          # provider-conformance suite + parity-declared fakes (SR-O5)
+  testing/          # provider- and answer-conformance suites, parity-declared fakes, recorded
+                    # pages and streams; recordings/ holds the live Brave captures (SR-O5, AR-I2)
 ```
 
 Layer names (Adapter, Call, Aggregate, Extract, Select, Bind) are **module
