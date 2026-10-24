@@ -26,8 +26,8 @@ check by a name, so no reading moves with one. Each name is written only when
 set and is no part of any identity, key, digest or fingerprint, and a `template_update` of `goal_check_names` alone
 leaves the template's `updated_at`: a run, a cell, a pool, a pairing, an analysis and a reporter case all key as
 before, no run loses its template's criteria, rejudging or take-up, and a template or campaign naming nothing is
-stored byte for byte as before. Two templates naming one check differently print it whole, logged. Durable v16.2:
-declare no name until every pod reading the store runs this build. See `packages/evals/MIGRATIONS.toml`.
+stored byte for byte as before. Two templates naming one check differently print it whole, logged. Durable v16.3:
+declare no name until every pod reading the store runs 16.3. See `packages/evals/MIGRATIONS.toml`.
 
 ### evals: a campaign's Scorecard is one matrix per kind, with each floor and each control that cannot move marked in place
 

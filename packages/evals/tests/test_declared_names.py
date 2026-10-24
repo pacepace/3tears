@@ -228,13 +228,25 @@ def identities(*, named: bool) -> dict[str, str]:
     return found
 
 
+#: The durable minor ``00107a5b7`` stamped on what it wrote. The names are durable v16.3, since 0.78.0 shipped v16.2
+#: without them, so a document this build writes carries the minor 3; every other byte of it is as before.
+_MINOR_AT_00107A5B7 = 2
+
+
+def _as_00107a5b7_stamped(document: dict[str, Any]) -> dict[str, Any]:
+    """``document`` with the durable minor ``00107a5b7`` stamped in place of this build's: what it wrote, byte for byte,
+    where nothing but the minor moved."""
+    assert document["schema_minor"] == DURABLE_SCHEMA_MINOR
+    return {**document, "schema_minor": _MINOR_AT_00107A5B7}
+
+
 def documents() -> dict[str, str]:
     """The stored documents of the fixture as written, named nothing: the template and the campaign byte for byte,
     and each bundle in its identity form (:func:`~threetears.evals.schema.hashing.identity_json`)."""
     built = _fixture(named=False)
     return {
-        "template": _sha(built["template"].to_dict()),
-        "campaign": _sha(built["campaign"].to_dict()),
+        "template": _sha(_as_00107a5b7_stamped(built["template"].to_dict())),
+        "campaign": _sha(_as_00107a5b7_stamped(built["campaign"].to_dict())),
         # Less the build that assembled it, which is no part of the bundle's shape.
         **{
             f"{label} bundle": hashlib.sha256(
@@ -281,7 +293,9 @@ PINNED: dict[str, str] = {
     "campaign fingerprint": "v2:1896767143a9454239aebb4a33710a0d4167bd4fced79c5fd236c217a8f1834b",
     "campaign_evidence_digest": "v2:1896767143a9454239aebb4a33710a0d4167bd4fced79c5fd236c217a8f1834b",
     "case content hash": "2427afda4a091bccfdeffbdc0ef058b06862b1c310f68df406edf30604604ae2",
-    "durable version": "16.2",
+    # The one entry that moves with the durable minor: ``00107a5b7`` was at 16.2, and the names are 16.3. It is no part
+    # of what a run, cell, pool, pairing, analysis or reporter case keys on.
+    "durable version": "16.3",
     "measured_template_digest": "16e80e0cbd36ae4d39ca180c5f08bcb9d165afaab0e7e014ff42464f11e4f3df",
     "readings": "29f0e8ce68005f27cfc8ff7c76ef3623a174125af4a46b8e587bb7af7d88ebc9",
     "run-0-candidate case_set_fingerprint": "89df90840e5dc430494c9d36ab9ae0dff05c199d54ddf7027f3f339c44bcfe56",
