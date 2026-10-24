@@ -804,9 +804,8 @@ class SubjectFrontier(EvalBaseModel):
     #: different quantities, and ranking one contestant on each ranks the depths. A contestant
     #: measured deeper keeps its extra depth as precision (and on its curve), not as a harder bar.
     k: int = 1
-    #: The depth every point can be compared at, decided per case: the shallowest of the points' deepest cases,
-    #: a case counting there only where every point measured it that deep (:func:`~threetears.evals.analysis.depth.
-    #: common_depth`). A deeper point is read there over all its attempts (``FrontierPoint.common_pass_hat_k``). At
+    #: The depth every point can be compared at: the fewest runs any point gave a case every point shares, over
+    #: those cases (:func:`~threetears.evals.analysis.depth.common_depth`). A deeper point is read there over all its attempts (``FrontierPoint.common_pass_hat_k``). At
     #: 1 a comparison is of pass rates, not reliability. ``None`` when no point scored an attempt. Disclosed beside
     #: ``k``, which the ranking still reads.
     common_depth: int | None = None

@@ -11,7 +11,8 @@ packages (bumped in lock-step).
 **Added:** Runs pooled forward leave arms measured to different depths, across arms and across the cases of one arm,
 and nothing said so. Every arm's scoreboard, every pass-rate reading (both arms) and every frontier point now carry a
 `Depth`: its cases, trials and repeats per case, fewest, median and most. A frontier subject names its common depth,
-the deepest every arm reached, counted per case (a case counts only where every arm measured it that deep), and reads
+the fewest runs any arm gave a case every arm shares, over every shared case (a case some arm never ran is left out
+and counted), and reads
 each point there over all its runs (`C(c, k) / C(n, k)`, exact, no model); a depth an arm never reached is
 `unmeasured_for` it, and the pass^k row counts the cases short of `k`. A pass-rate reading's `precision` states each
 side's own half-width, which side limits the interval, and the share of the difference's variance that lies between

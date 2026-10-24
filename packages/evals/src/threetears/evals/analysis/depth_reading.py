@@ -40,7 +40,7 @@ class AspectDepth:
     said: str | None
     #: The frontier's planned depth, which pass^k is ranked at; None with no frontier subject.
     k: int | None = None
-    #: The deepest depth every arm reached, decided per case; None with no frontier subject or no scored attempt.
+    #: The fewest runs any arm gave a case every arm shares; None with no frontier subject or no scored attempt.
     common_depth: int | None = None
     #: The arms, by label, that scored no case ``k`` times.
     unmeasured_for: list[str] = field(default_factory=list)

@@ -324,8 +324,8 @@ How many times an arm actually ran each case: its cases, its usable trials, and 
 median and most (`Depth`, on `ArmScoreboard.depth`, each reading's `control_depth` / `arm_depth` and each
 `FrontierPoint.depth`). `k` is what a run planned; depth is what the arm delivered, pooled over every run of it.
 Arms differ in depth when old runs pool forward or a run stops part-way. A comparison of pass^k reads the
-**common depth** (`SubjectFrontier.common_depth`): the deepest every arm reached, a case counting only where every
-arm ran it that deep, each arm read there over all its runs by `C(c, k) / C(n, k)`, exactly. A depth some arm never
+**common depth** (`SubjectFrontier.common_depth`): the fewest runs any arm gave a case every arm shares, over
+every shared case, each arm read there over all its runs by `C(c, k) / C(n, k)`, exactly. A depth some arm never
 reached is unmeasured for it (`unmeasured_for`), and at depth 1 the comparison is of pass rates, not reliability.
 Extra repeats tighten an arm's own estimate, not a comparison much: they shrink the noise within cases, and the
 spread between cases is a floor only more cases lower (a reading's `precision`). The pass-rate interval weighs each

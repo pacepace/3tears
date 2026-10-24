@@ -5,8 +5,9 @@ most). Arms pooled from runs of different ``k``, or a run stopped part-way, diff
 cases of one arm, so every reading states each arm's (:class:`Depth`).
 
 **The common depth.** pass^k at depth ``k`` asks that ``k`` attempts at a case all pass, so two arms are compared at
-one ``k``: the deepest every arm reached (each arm's deepest case), counted per case, a case counting only where every
-arm measured it at least ``k`` times (:func:`common_depth`). A deeper arm is read at that ``k`` over all its runs,
+one ``k``: the fewest times any arm ran any case they all share (owner, 2026-10-24: compare at the minimum depth),
+over every shared case, so no shared case is left out for depth and a case some arm never ran is left out and counted
+(:func:`common_depth`). A deeper arm is read at that ``k`` over all its runs,
 ``C(c, k) / C(n, k)`` per case, the exact mean over every ``k``-subset of its attempts, so its extra runs tighten its
 own estimate with no model. A depth some arm never reached is unmeasured for that arm, and said so. At depth 1 the
 comparison is of pass rates, not of reliability.
@@ -176,8 +177,7 @@ class CommonDepth(NamedTuple):
 
 
 def common_depth(attempts: Mapping[str, Mapping[str, Sequence[bool]]]) -> CommonDepth:
-    """The depth arms are compared at, decided per case: the deepest every arm reached, counting a case only where
-    every arm measured it that deep.
+    """The depth arms are compared at: the fewest times any arm ran any case every arm shares, over those cases.
 
     :param attempts: Each arm's scored attempts per case, by arm then case; an arm with none is not compared.
     :ptype attempts: Mapping[str, Mapping[str, Sequence[bool]]]
@@ -188,11 +188,9 @@ def common_depth(attempts: Mapping[str, Mapping[str, Sequence[bool]]]) -> Common
     measured = {arm: cases for arm, cases in measured.items() if cases}
     if not measured:
         return CommonDepth(k=None, cases=frozenset(), left_out={})
-    k = min(max(cases.values()) for cases in measured.values())
-    every = set.intersection(*(set(cases) for cases in measured.values()))
-    counted = frozenset(case for case in every if all(cases[case] >= k for cases in measured.values()))
+    counted = frozenset(set.intersection(*(set(cases) for cases in measured.values())))
     return CommonDepth(
-        k=k,
+        k=min((cases[case] for cases in measured.values() for case in counted), default=None),
         cases=counted,
         left_out={arm: sum(1 for case in cases if case not in counted) for arm, cases in measured.items()},
     )
@@ -230,14 +228,12 @@ def common_depth_sentence(k: int | None, *, left_out: int) -> str | None:
     if k is None:
         return None
     if k == 1:
-        said = (
-            "pass^k is compared at depth 1, the deepest every arm reached, so it compares pass rates, not reliability"
-        )
+        said = "pass^k is compared at depth 1, the fewest runs any arm gave a case, so it compares pass rates, not reliability"
     else:
-        said = f"pass^k is compared at depth {k}, the deepest every arm reached, each arm read over all its runs"
+        said = f"pass^k is compared at depth {k}, the fewest runs any arm gave a case, over each arm's runs"
     if left_out:
         cases = "1 case" if left_out == 1 else f"{left_out} cases"
-        said += f"; {cases} some arm measured fewer times {'is' if left_out == 1 else 'are'} left out"
+        said += f"; {cases} some arm never ran {'is' if left_out == 1 else 'are'} left out"
     return said + "."
 
 

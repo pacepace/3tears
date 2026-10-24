@@ -47,17 +47,20 @@ def test_an_arm_s_depth_is_its_cases_trials_and_repeats_per_case() -> None:
     assert depth_of([]) is None and depth_of([0]) is None
 
 
-def test_the_common_depth_is_the_deepest_every_arm_reached_counted_per_case() -> None:
-    # A reached 3 on tc1 and 1 on tc2; B 2 on both. Every arm reached 2 (B's deepest), and only tc1 is 2 deep on both.
+def test_the_common_depth_is_the_fewest_runs_any_arm_gave_a_shared_case() -> None:
+    # A ran tc1 3 times and tc2 once; B ran both twice. The fewest is A's once on tc2, so both cases count at 1.
     common = common_depth(
         {"A": {"tc1": [True, True, False], "tc2": [True]}, "B": {"tc1": [True, True], "tc2": [False, True]}}
     )
 
-    assert common.k == 2
-    assert common.cases == frozenset({"tc1"})
-    assert common.left_out == {"A": 1, "B": 1}
-    # A deeper arm is read at the common depth over all its runs: C(2, 2) / C(3, 2) = 1/3 on tc1.
-    assert pass_hat_k_over({"tc1": [True, True, False], "tc2": [True]}, common.cases, 2) == pytest.approx(1 / 3)
+    assert common.k == 1
+    assert common.cases == frozenset({"tc1", "tc2"})
+    assert common.left_out == {"A": 0, "B": 0}
+    # A deeper arm is read at the common depth over all its runs: tc1 2/3, tc2 1, so 5/6.
+    assert pass_hat_k_over({"tc1": [True, True, False], "tc2": [True]}, common.cases, 1) == pytest.approx(5 / 6)
+    # Every shared case run twice by both: the common depth is 2. C(2, 2) / C(3, 2) = 1/3 on tc1.
+    assert common_depth({"A": {"tc1": [True, True, False]}, "B": {"tc1": [True, False]}}).k == 2
+    assert pass_hat_k_over({"tc1": [True, True, False]}, ["tc1"], 2) == pytest.approx(1 / 3)
     # A case one arm never ran is left out of a comparison that needs both.
     assert common_depth({"A": {"tc1": [True], "tc2": [True]}, "B": {"tc1": [False]}}).left_out == {"A": 1, "B": 0}
     assert common_depth({}).k is None
@@ -76,11 +79,11 @@ def test_the_sentences_say_the_depths_in_plain_words() -> None:
     assert depth_sentence("character", {"1017": once, "1016": once}) is None
     assert not depths_differ([once, once, None]) and depths_differ([once, twice])
     assert common_depth_sentence(1, left_out=0) == (
-        "pass^k is compared at depth 1, the deepest every arm reached, so it compares pass rates, not reliability."
+        "pass^k is compared at depth 1, the fewest runs any arm gave a case, so it compares pass rates, not reliability."
     )
     assert common_depth_sentence(2, left_out=1) == (
-        "pass^k is compared at depth 2, the deepest every arm reached, each arm read over all its runs; 1 case some "
-        "arm measured fewer times is left out."
+        "pass^k is compared at depth 2, the fewest runs any arm gave a case, over each arm's runs; 1 case some "
+        "arm never ran is left out."
     )
     assert unmeasured_sentence(2, ["B"]) == "pass^2 is unmeasured for B, which ran no case twice."
     assert unmeasured_sentence(2, []) is None
@@ -153,7 +156,7 @@ def test_a_frontier_point_states_the_depth_it_delivered_and_its_subject_the_comm
 
     assert a.depth == Depth(cases=4, trials=8, repeats_min=2, repeats_median=2.0, repeats_max=2)
     assert b.depth == Depth(cases=4, trials=4, repeats_min=1, repeats_median=1.0, repeats_max=1)
-    # The planned depth is the shallowest k_runs (1), and B's deepest case (1) is the deepest every arm reached.
+    # The planned depth is the shallowest k_runs (1), and B's once is the fewest runs any arm gave a case.
     assert (subject.k, subject.common_depth, subject.unmeasured_for) == (1, 1, [])
     # A at depth 1 over all its runs: the mean of its shares, (1 + 1/2 + 0 + 1) / 4.
     assert (a.common_pass_hat_k, a.n_common_cases, a.n_cases_left_out) == (pytest.approx(0.625), 4, 0)
@@ -184,11 +187,11 @@ def test_depths_mixed_within_one_arm_are_stated_and_its_short_case_is_counted() 
 
     assert a.depth == Depth(cases=4, trials=7, repeats_min=1, repeats_median=2.0, repeats_max=2)
     assert (a.n_pass_cases, a.n_cases_short_of_k) == (3, 1)
-    # Both reached 2, so 2 is the common depth, and tc3 counts there for neither arm: A ran it once.
-    assert subject.common_depth == 2
-    assert (a.n_common_cases, a.n_cases_left_out, b.n_cases_left_out) == (3, 1, 1)
-    # Over tc1, tc2, tc4 at depth 2 each arm reads 1, 0, 1.
-    assert a.common_pass_hat_k == pytest.approx(2 / 3) and b.common_pass_hat_k == pytest.approx(2 / 3)
+    # A ran tc3 once, so the common depth is 1, and every case counts there for both arms.
+    assert subject.common_depth == 1
+    assert (a.n_common_cases, a.n_cases_left_out, b.n_cases_left_out) == (4, 0, 0)
+    # At depth 1 each arm reads its pass rate per case: A 1, 1/2, 0, 1; B 1, 1/2, 0, 1.
+    assert a.common_pass_hat_k == pytest.approx(5 / 8) and b.common_pass_hat_k == pytest.approx(5 / 8)
     [row] = arms.readings().readings
     assert row.depth_differs == 1  # tc3: once on A, twice on B.
 
