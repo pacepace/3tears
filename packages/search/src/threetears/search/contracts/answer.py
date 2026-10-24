@@ -176,12 +176,13 @@ class GroundedAnswer(ContractModel):
 
     @model_validator(mode="after")
     def _the_answer_accounts_for_its_sources(self) -> GroundedAnswer:
-        """Refuse an uncited answer that says nothing, and an anchor citing nothing.
+        """Refuse an uncited answer that says nothing, and an anchor citing nothing or nowhere.
 
         :return: the validated answer
         :rtype: GroundedAnswer
-        :raises ValueError: when there are no sources and no notice, or an
-            anchor's ``source_index`` names no source
+        :raises ValueError: when there are no sources and no notice, an
+            anchor's ``source_index`` names no source, or an anchor's span
+            runs past the end of ``text``
         """
         if not self.sources and not self.notices:
             raise ValueError(
@@ -192,6 +193,13 @@ class GroundedAnswer(ContractModel):
             if anchor.source_index >= len(self.sources):
                 raise ValueError(
                     f"an anchor cites source {anchor.source_index}, but the answer has {len(self.sources)} source(s)"
+                )
+            if anchor.end > len(self.text):
+                # an offset past the text points at nothing a reader can see:
+                # the units were wrong (bytes, or the text before its tags were
+                # removed), and an anchor that lands nowhere is not an anchor.
+                raise ValueError(
+                    f"an anchor ends at {anchor.end}, past the answer text's {len(self.text)} code point(s)"
                 )
         return self
 
@@ -283,7 +291,7 @@ class AnswerProvider(Protocol):
     """One answers provider's API, behind one method (§10.1).
 
     What an implementation owes, as :class:`~threetears.search.contracts.provider.SearchProvider`
-    owes it: capabilities before contact, one disposition per criterion, spend
+    owes it: capabilities before contact, an estimate before the call, one disposition per criterion, spend
     on every outcome, the :class:`~threetears.search.contracts.errors.SearchFailure`
     taxonomy and nothing else (AD9), and host-supplied configuration only
     (D21, SR-K1). And one obligation of its own: zero sources is a success
@@ -314,6 +322,23 @@ class AnswerProvider(Protocol):
 
         :return: the provider's own declaration (SR-B4)
         :rtype: AnswerCapabilities
+        """
+        ...
+
+    def estimate(self, request: AnswerRequest) -> Spend:
+        """State what answering ``request`` is expected to cost, before it is sent (AR-C3).
+
+        The figure a budget's ``check`` is handed. Stated by the provider
+        rather than derived from its declaration, because an answers
+        provider's money rate is a deployment fact the configured instance
+        holds and no declaration carries; a provider whose host stated no
+        rate estimates no money, since unpriced is not free. A floor, never a
+        quote: the bill itself is the provider's own report (AD10).
+
+        :param request: what the caller is about to ask
+        :ptype request: AnswerRequest
+        :return: the expected spend, in the dimensions the bill will use
+        :rtype: Spend
         """
         ...
 

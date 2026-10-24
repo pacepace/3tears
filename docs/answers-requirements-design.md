@@ -570,7 +570,12 @@ Layer names stay module vocabulary (`search-spec.md` §2): no type is called
   `get_capabilities(provider, kind)` stays one call, its default `kind` the
   search one every existing caller means).
 - `AnswerProvider(Protocol)`: `provider`, `provider_instance`,
-  `capabilities`, `async answer(request, *, timeout_seconds) -> GroundedAnswer`.
+  `capabilities`, `estimate(request) -> Spend`,
+  `async answer(request, *, timeout_seconds) -> GroundedAnswer`. `estimate` is
+  the pre-call figure `answer.py` hands `BudgetPort.check` (AR-C3): the money
+  rates are the configured instance's (§10.2), which no capability declaration
+  carries, so the provider states its own estimate rather than the call layer
+  deriving one.
 
 ### 10.2 `adapters/brave_answers.py`
 

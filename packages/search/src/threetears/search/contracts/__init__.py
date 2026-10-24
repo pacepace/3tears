@@ -86,8 +86,11 @@ from threetears.search.contracts.fidelity import (
 )
 from threetears.search.contracts.limiter import RateLimitDecision, RateLimiterPort
 from threetears.search.contracts.metadata import (
+    ANSWER_METADATA_KEY,
+    ANSWER_SCHEMA_VERSION,
     SEARCH_RESULTS_METADATA_KEY,
     SEARCH_RESULTS_SCHEMA_VERSION,
+    AnswerMetadata,
     SearchResultsMetadata,
 )
 from threetears.search.contracts.provenance import (
@@ -116,6 +119,8 @@ from threetears.search.contracts.transport import (
 )
 
 __all__ = [
+    "ANSWER_METADATA_KEY",
+    "ANSWER_SCHEMA_VERSION",
     "CANONICAL_FORM_VERSION",
     "CRITERION_CARRIER",
     "CRITERION_DOMAINS_EXCLUDE",
@@ -150,6 +155,7 @@ __all__ = [
     "WELL_KNOWN_CRITERIA",
     "Anchor",
     "AnswerCapabilities",
+    "AnswerMetadata",
     "AnswerProvider",
     "AnswerRequest",
     "AuthFailed",

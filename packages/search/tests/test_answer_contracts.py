@@ -22,6 +22,7 @@ from threetears.search.contracts import (
     ProviderCapabilities,
     SearchProvider,
     SearchRequest,
+    Spend,
     get_capabilities,
     list_capabilities,
     register_capabilities,
@@ -148,6 +149,30 @@ def test_an_anchor_must_cite_a_source_the_answer_has() -> None:
         )
 
 
+def test_an_anchor_past_the_end_of_the_text_is_refused() -> None:
+    """An offset past the text points at nothing a reader can see: wrong units, not an anchor."""
+    text = "Schrödinger won in 1933."
+    point = len(text)
+    assert (
+        GroundedAnswer(
+            text=text,
+            sources=(CITED,),
+            anchors=(Anchor(start=point, end=point, source_index=0),),
+            provenance=ANSWER_PROVENANCE,
+        )
+        .anchors[0]
+        .end
+        == point
+    ), "a point at the very end of the text is the last claim's"
+    with pytest.raises(ValidationError, match="past the answer text"):
+        GroundedAnswer(
+            text=text,
+            sources=(CITED,),
+            anchors=(Anchor(start=point, end=len(text.encode()), source_index=0),),
+            provenance=ANSWER_PROVENANCE,
+        )
+
+
 def test_an_anchor_span_cannot_run_backwards_or_negative() -> None:
     """A half-open span that ends before it begins, or before zero, is no span."""
     with pytest.raises(ValidationError, match="before it starts"):
@@ -260,6 +285,16 @@ class FakeAnswerProvider(AnswerProvider):  # parity-with: threetears.search.cont
         :rtype: AnswerCapabilities
         """
         return ANSWER_CAPABILITIES
+
+    def estimate(self, request: AnswerRequest) -> Spend:
+        """One call, unpriced.
+
+        :param request: ignored
+        :ptype request: AnswerRequest
+        :return: the floor estimate
+        :rtype: Spend
+        """
+        return Spend(calls=1)
 
     async def answer(self, request: AnswerRequest, *, timeout_seconds: float | None = None) -> GroundedAnswer:
         """Answer every question with the shared fixture.

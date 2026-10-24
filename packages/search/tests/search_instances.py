@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from threetears.search.contracts import (
+    AnswerMetadata,
     FACET_EXTRACTION_STATUS,
     FACET_HAS_DOWNLOADABLE_DATA,
     FACET_HEIGHT,
@@ -248,6 +249,14 @@ ANSWER_CAPABILITIES = AnswerCapabilities(
     minimum_timeout_seconds=30.0,
 )
 
+ANSWER_METADATA = AnswerMetadata(
+    question="where do capybaras live?", answer=GROUNDED_ANSWER, spend=GROUNDED_ANSWER.spend
+)
+
+FAILED_ANSWER_METADATA = AnswerMetadata(
+    question="where do capybaras live?", spend=FAILURE_RECORD.spend, failure=FAILURE_RECORD
+)
+
 #: one fully-populated instance per exported wire type. The round-trip
 #: suite asserts this list covers every exported ContractModel subclass.
 ALL_INSTANCES = [
@@ -271,4 +280,5 @@ ALL_INSTANCES = [
     ANCHOR,
     GROUNDED_ANSWER,
     ANSWER_CAPABILITIES,
+    ANSWER_METADATA,
 ]
