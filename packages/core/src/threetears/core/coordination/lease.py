@@ -907,6 +907,7 @@ class KVLease:
         key_scope: str | None = None,
         bucket: "KvBucketLike | None" = None,
         expire_entries: bool = False,
+        released_marker_ttl: timedelta = _RELEASED_MARKER_TTL,
     ) -> None:
         """configure factory; defer bucket creation until first acquire.
 
@@ -950,6 +951,10 @@ class KVLease:
             whose readers test whether a key exists rather than decode it. The bucket must allow
             per-key TTLs
         :ptype expire_entries: bool
+        :param released_marker_ttl: how long the marker a release leaves stays before the server removes
+            it, so a released key leaves nothing in the bucket. A marker's lifetime, never a cache freshness
+            bound: the release has already landed when it starts
+        :ptype released_marker_ttl: timedelta
         :return: None
         :rtype: None
         :raises ValueError: when ``key_scope`` is not one literal subject token, or not exactly one of
@@ -967,6 +972,7 @@ class KVLease:
         self._bucket: "KvBucketLike | None" = bucket
         self._bucket_lock = asyncio.Lock()
         self._expire_entries = expire_entries
+        self._released_marker_ttl = released_marker_ttl
         self._holds = _Holds()
 
     @property
@@ -1586,7 +1592,7 @@ class KVLease:
         # effectively gone from our view" -- diagnostic-only here. its
         # marker lapses (_RELEASED_MARKER_TTL), so a released key leaves
         # nothing in the bucket.
-        deleted = await bucket.delete(key=handle.key, revision=revision, marker_ttl=_RELEASED_MARKER_TTL)
+        deleted = await bucket.delete(key=handle.key, revision=revision, marker_ttl=self._released_marker_ttl)
         if not deleted:
             # a write landed after the read: another holder's, or a renewal of this one's that is not
             # recognisably its own -- either way not provably this holder's to delete

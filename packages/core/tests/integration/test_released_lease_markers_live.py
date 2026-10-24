@@ -16,7 +16,6 @@ from datetime import timedelta
 import pytest
 
 from threetears.core.coordination import KVLease
-from threetears.core.coordination import lease as lease_module
 from threetears.nats import NatsClient, set_default_namespace
 from threetears.nats.subject_permissions import kv_stream_name
 
@@ -31,16 +30,16 @@ async def _messages(nc: NatsClient, bucket: str) -> int:
 
 
 async def test_released_unique_keys_leave_no_marker_and_live_leases_stay(
-    nats_container: str, monkeypatch: pytest.MonkeyPatch
+    nats_container: str,
 ) -> None:
-    monkeypatch.setattr(lease_module, "_RELEASED_MARKER_TTL", timedelta(seconds=1))
     namespace = f"marks{uuid.uuid4().hex[:8]}"
     set_default_namespace(namespace)
     async with (
         await NatsClient.connect(nats_url=nats_container, nats_subject_namespace=namespace, client_name="pod-a") as a,
         await NatsClient.connect(nats_url=nats_container, nats_subject_namespace=namespace, client_name="pod-b") as b,
     ):
-        pod_a, pod_b = KVLease(a, pod_id="pod-a"), KVLease(b, pod_id="pod-b")
+        pod_a = KVLease(a, pod_id="pod-a", released_marker_ttl=timedelta(seconds=1))
+        pod_b = KVLease(b, pod_id="pod-b", released_marker_ttl=timedelta(seconds=1))
         held = await pod_a.acquire("refresh.enr", ttl_seconds=60, max_wait_seconds=0)
         for n in range(_CYCLES):
             handle = await pod_a.acquire(f"enr_answers.answer-{n}", ttl_seconds=60, max_wait_seconds=0)
