@@ -109,6 +109,16 @@ this to High. The cheapest step is the owner answering them before Wave C.
   `aggregate.aggregate_blocks` (06) has its slot in `packages/evals/src/threetears/evals/analysis/report/campaign/page.py`. `provenance.provenance_blocks` (03 fills) and
   `depth_blocks.depth_provenance_blocks` (05 fills) both have slots in `packages/evals/src/threetears/evals/analysis/report/campaign/page.py`'s provenance part. Settled by: the
   partition.
+- 03: the first screen runs title, question (`answer`), summary, recommendation and its whys (`answer`, a choice's `behind_on` why included), warnings then report caveats (`warnings`); the call stays `header`, worded "over code's readings" so it holds wherever 04's scorecard sits. Settled by: R1 and the owner's "title, question, answer, warnings".
+- 03: warnings are one line per arm per kind, led by the consequence ("Adopting <arm> overrides the <m>-point floor(s) it breaks on <where>"; a measurement's bar "falls short of"), naming aspects but never the rate, check or interval, which the tables print once. Settled by: R1, R3, R5 (no expression above the fold).
+- 03: the plan's "S2 has no warnings section" is false for S2 as built (alpha misses both bars); the test holds it on S4, which nothing warns on. Settled by: the shapes.
+- 03: the aspect page keeps its own above-title floor warning and `role="alert"`; only the campaign page changed. Its tests (test_floors, test_report, test_report_decision_rule) pin that layout and the plan's item 1 names the campaign builder. Open for the owner.
+- 03: an aspect page's late-criteria detail is now one caveat line with no dates (its bundle JSON keeps `reading_scope.late_criteria`); a standalone aspect page has no Design & provenance to date them in. Settled by: R4b ("never a line per criterion") over the frozen model.
+- 03: Design & provenance holds `criteria_set` and `test_setup` only; margins, floors and bars stay where they are printed once (scorecard, folds, Bars table). Settled by: R3.
+- 03: the aspect folds drop their latency and request-settings disclosures in the Markdown and HTML (matched to the fold's own bundle fields, `stated_for_the_campaign`); the JSON keeps each aspect page whole. Settled by: R4b "never repeated per aspect".
+- 03: aspect links cover a campaign table's `aspect` column only; a sentence names aspects unlinked, since a disclosure carries no span structure (model frozen) and scanning code's text for names would be a derivation. Settled by: R5, the frozen model.
+- 03: long expressions (>60 chars) collapse to a visible ellipsis in HTML table cells and headers only; sentences keep them whole, since `<details>` cannot sit inside `<p>`, and none remains above the fold. Settled by: Q4, HTML content rules.
+- 03: a `scorecard` matrix's glyph columns share one scale per unit (04's request). Settled by: R2 comparability.
 
 ## Advisory: what I would do differently
 
