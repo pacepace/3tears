@@ -612,8 +612,24 @@ class CollectionRegistry:
         :rtype: GenerationVerdict
         :raises KeyError: when ``table_name`` is not followed
         """
+        recorded = self._generation_marks.recorded(table_name)
+        pending = self._generation_marks.pending(table_name)
         verdict = self._generation_marks.settle(table_name, token)
         if verdict.drops:
+            # what the judgement saw, so a drop names its own cause: an advance never heard (read beyond recorded,
+            # nothing pending), heard out of order (pending past a gap), or this registry's own write unaccounted
+            log.info(
+                "write generation judged: the table is dropped",
+                extra={
+                    "extra_data": {
+                        "table": table_name,
+                        "verdict": verdict.value,
+                        "read": token,
+                        "recorded": recorded,
+                        "pending": list(pending),
+                    }
+                },
+            )
             self.drop_table(table_name, reason=verdict.value)
         return verdict
 

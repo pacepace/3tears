@@ -231,8 +231,8 @@ class LaunchArguments(EvalBaseModel):
         default=None,
         description=(
             "How the arms share time and provider capacity. interleaved (the default): every arm at once, their "
-            "cases taken in turn case by case under one width shared by the launch, so a provider's bad minute lands "
-            "on every arm alike. sequential: one arm after another. concurrent: every arm side by side at its own "
+            "cases taken in turn case by case under one width shared by the launch, which costs nothing and absorbs a "
+            "provider's bad minute across every arm. sequential: one arm after another. concurrent: every arm side by side at its own "
             "width, the fastest, loading the providers with every arm at once, so one arm can take a provider's "
             "rationing. Latency under test runs the arms sequential and takes no other. Recorded on every run."
         ),

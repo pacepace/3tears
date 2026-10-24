@@ -311,8 +311,9 @@ def toyhost_run(
     )
     return run.model_copy(
         update={
-            # Derived from the arm, so two arms are two batches and a rebuild is the same two.
-            "id": str(uuid.uuid5(_RUN_ID_NAMESPACE, f"run|{label}")),
+            # Derived from the template's content and the arm, so two arms are two batches, a drive of another
+            # template on the same host is other batches again, and a rebuild is the same ones.
+            "id": str(uuid.uuid5(_RUN_ID_NAMESPACE, f"run|{template.model_dump_json()}|{label}")),
             "created_at": TOYHOST_INSTANT,
             "scope_id": TOYHOST_SCOPE,
             # NAMED, unlike the corpus's batches. The toy host commissions nothing in its

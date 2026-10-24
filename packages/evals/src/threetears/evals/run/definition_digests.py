@@ -54,6 +54,41 @@ def template_digest(template: EvalTemplate) -> str:
     return canonical_digest({"eval_template": _content(template)})
 
 
+#: The fields of a template that cannot change what a run of it measures, each for its reason; every other field —
+#: one a later build adds included — is measured content (:func:`measured_template_digest`).
+_UNMEASURED_TEMPLATE_FIELDS: frozenset[str] = RECORD_FIELDS | {
+    # The record's own bookkeeping (:data:`RECORD_FIELDS`): which document it is, its scope, its revision number,
+    # what it was seeded from and when it was written. A run names its template by id already.
+    # Its name: what an operator finds it by, never shown to a judge, a simulator or a candidate.
+    "name",
+    # Its description: prose for a reader of the catalogue, read by no judge, simulator or candidate.
+    "description",
+    # Whether it is archived: curation, deciding only whether a new launch is offered.
+    "archived",
+}
+
+
+def measured_template_digest(template: EvalTemplate) -> str:
+    """The digest of what a template says that a run of it measures: every field but
+    :data:`_UNMEASURED_TEMPLATE_FIELDS`, each left out at its default.
+
+    Named by exclusion, so a field a later build adds is measured content unless it is excluded on purpose: the
+    intent every judge call states, the rubric whose descriptions and scoring guides are the judge's prompt, the
+    conversation that drives the simulator, the preconditions, the goal checks and their controls, the world seed,
+    the tool bounds and the kind spec. A run freezes it at launch (``EvalRun.template_digest``), so a take-up can tell
+    an edit that changed the measurement from one that did not.
+
+    :param template: The template as a launch grades it.
+    :ptype template: EvalTemplate
+    :return: A sha256 hex digest.
+    :rtype: str
+    """
+    declared = set(type(template).model_fields) - _UNMEASURED_TEMPLATE_FIELDS
+    return canonical_digest(
+        {"measured_template": template.model_dump(mode="json", include=declared, exclude_defaults=True)}
+    )
+
+
 def rubric_dim_digest(dim: CatalogRubricDim) -> str:
     """The digest of a catalogue rubric dim's content."""
     return canonical_digest({"rubric_dim": _content(dim)})
@@ -138,6 +173,7 @@ __all__ = [
     "case_set_digest",
     "current_revisions",
     "judge_config_digest",
+    "measured_template_digest",
     "rubric_dim_digest",
     "template_case_content_digest",
     "template_case_digest",

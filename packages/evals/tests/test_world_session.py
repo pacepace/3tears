@@ -547,11 +547,12 @@ async def test_each_toy_cell_seeds_a_world_of_its_own_so_one_cell_s_firing_never
         trace = await armed.trace(result)
         assert trace is not None and trace.end_state is not None and trace.end_state[PAYMENT_HOLD] == "held"
 
-    # A toy run's id derives from its arm, so the plain drive's runs are the armed drive's: its own cells are
-    # the ones the armed drive did not produce.
+    # A toy run's id derives from its template as well as its arm, so the plain drive's runs are runs of their own
+    # on the same host, and none of their cells is one the armed drive produced.
     plain = await execute_toyhost_run(host=host, template=toyhost_template())
-    later = [result for result in (await plain.results()) if result.id not in armed_ids]
+    later = await plain.results()
     assert later
+    assert not armed_ids & {result.id for result in later}
     for result in later:
         trace = await plain.trace(result)
         assert trace is not None and trace.end_state is not None

@@ -287,7 +287,7 @@ def t_critical_two_sided(confidence: float, df: float) -> float:
 INTERVAL_LEVEL = 0.95
 
 
-@functools.cache
+@functools.lru_cache(maxsize=1024)
 def _cached_t_critical(confidence: float, df: int) -> float:
     return t_critical_two_sided(confidence, df)
 
@@ -2345,7 +2345,9 @@ def _lower_incomplete_gamma(a: float, x: float) -> float:
 _SPREAD_NODES = 128
 
 
-@functools.cache
+# Bounded: the key is a cell's observation count less one, so it grows with a template's history, and each entry
+# is _SPREAD_NODES floats (about 4 KB); 512 keeps it near 2 MB without re-running the bisection within one read.
+@functools.lru_cache(maxsize=512)
 def _chi_square_nodes(df: int) -> tuple[float, ...]:
     """The chi-square law on ``df`` degrees of freedom as :data:`_SPREAD_NODES` equal-probability points."""
     nodes = []

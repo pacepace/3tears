@@ -38,7 +38,12 @@ from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, TypeVar
 
 from threetears.evals.kernel.errors import AdmissionRefusedError, ConflictError, JobFenced, StorageError
-from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, BudgetStop, EvalRun, KnownFailedBecause
+from threetears.evals.schema.models import (
+    TERMINAL_RUN_STATUSES,
+    BudgetStop,
+    EvalRun,
+    KnownFailedBecause,
+)
 from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import JobStore
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
@@ -208,8 +213,8 @@ async def _finish_even_if_cancelled(write: Coroutine[Any, Any, _T]) -> _T:
 class _GroupSlot:
     """One concurrency slot a launch group holds from its first member's start to its last member's end.
 
-    The arms of one campaign launch are one experiment: measured apart in time, a difference between
-    them can be the provider's afternoon rather than the setting. Admitting them one semaphore slot
+    The arms of one campaign launch are interleaved by default, which absorbs a provider's bad minute
+    across every arm and needs them to run together. Admitting them one semaphore slot
     each would park all but ``max_concurrent`` of them, so the group takes ONE slot and every member
     runs inside it. The slot is released when every member has ended, including a member cancelled
     before it started — which is why release is counted on :meth:`leave`, called when each member's
@@ -722,6 +727,7 @@ class EvalJobManager:
         key: str | None = None,
         record: tuple[LeasedJobKind[Any], str] | None = None,
         discard: Callable[[], Awaitable[None]] | None = None,
+        epoch: int = 0,
     ) -> str:
         """Run ``work`` in the background under a timeout, tracked until it ends.
 
@@ -761,6 +767,9 @@ class EvalJobManager:
             having begun — cancelled before its first step, which runs none of its body. ``None`` when
             ``work`` holds nothing it must release.
         :ptype discard: Callable[[], Awaitable[None]] | None
+        :param epoch: The epoch of the lease ``record`` was written carrying: 0 for a job starting fresh, the next one
+            for a job taken up again, which this process then holds at that epoch alone.
+        :ptype epoch: int
         :return: ``job_id``.
         :rtype: str
         :raises ConflictError: A live task already holds ``key``.
@@ -792,6 +801,7 @@ class EvalJobManager:
                 scope_id,
                 cancel=lambda _reason: self.cancel_task(job_id),
                 stop=lambda: self.cancel_task(job_id),
+                epoch=epoch,
             )
         return job_id
 
@@ -1003,6 +1013,7 @@ class EvalJobManager:
                         run.scope_id,
                         cancel=functools.partial(self.cancel_job, run.id),
                         stop=functools.partial(self._fence, run.id),
+                        epoch=run.lease.epoch if run.lease is not None else 0,
                     )
                 task = asyncio.create_task(
                     self._run_job(run.id, run.scope_id, work, job_timeout_s, slot=slot),
@@ -1064,7 +1075,9 @@ class EvalJobManager:
         try:
             for run in runs:
                 if self._leases is not None:
-                    run.lease = self._leases.grant()
+                    # A run taken up again was reopened under its next epoch, and is held at that epoch; any other
+                    # run is new, at the first.
+                    run.lease = self._leases.grant(run.lease.epoch if run.lease is not None else 0)
                 self._storage.save_eval_run(run)
                 saved.append(run)
         # prawduct:allow prawduct/broad-except -- cleanup-then-reraise: whatever stopped a sibling's save, the runs already saved must not be left pending
@@ -1085,8 +1098,10 @@ class EvalJobManager:
         :ptype reason: str
         """
         for run in runs:
-            run.status = "cancelled"
+            # A run taken up again ends the holding its take-up opened with it, which its model derives from these.
             run.cancellation_reason = reason
+            run.completed_at = datetime.now(UTC).isoformat()
+            run.status = "cancelled"
             try:
                 self._storage.save_eval_run(run)
             except ConflictError, StorageError:
@@ -1156,6 +1171,14 @@ class EvalJobManager:
                 cancellation_reason=self._cancel_reasons.get(run_id),
             )
             raise
+        except JobFenced as fenced:
+            # A cell's write found the run's record no longer this holding's: written lost by another reader, or
+            # taken up at a later epoch. The run's work stopped there, as a fenced renewal stops it, and nothing more
+            # is written of it — its record answers how it ended.
+            # NOSILENT: the record carries the run's ending (its loss, or the later holding's); this holding has none.
+            log.warning("Job %s: %s — stopping it; nothing more is written", run_id, fenced)
+            if self._leases is not None:
+                self._leases.let_go(run_id)
         except BudgetStoppedError as stop:
             # Graceful mid-run cost-cap stop: already-delivered results
             # are persisted. This is an honest terminal outcome, NOT an infra
@@ -1364,6 +1387,9 @@ class EvalJobManager:
             # that no longer held it. A declined write is neither broadcast nor handed to the hook.
             if run.lost is not None:
                 return None
+            ended_at = datetime.now(UTC).isoformat()
+            # A run taken up again ends its current holding with it: the run's model derives the holding's ending
+            # from the fields written here (``EvalRun.lifetimes``).
             data = run.to_dict()
             data["status"] = status
             if error is not None:
@@ -1381,7 +1407,7 @@ class EvalJobManager:
             if record_empty_matrix and run.completeness is None:
                 data["completeness"] = summarize_completeness(run, []).to_dict()
             if status in TERMINAL_RUN_STATUSES:
-                data["completed_at"] = datetime.now(UTC).isoformat()
+                data["completed_at"] = ended_at
             return data
 
         # Off the event loop: this is a conditional read-modify-write retried up to
@@ -1498,8 +1524,8 @@ class EvalJobManager:
             failed — a tick is not retried, since the next one supersedes it; ``None`` when there is no
             document to write to — one deleted from under the live job; ``"declined"`` when the run has
             already reached a terminal status, which no progress tick may reopen; or ``"fenced"`` when that
-            status is a loss another writer recorded, so this job no longer holds the run. None of the last
-            three is a refusal and none is logged as one.
+            status is a loss another writer recorded, or the run's lease has passed to another holding of it, so
+            this job no longer holds the run. None of the last three is a refusal and none is logged as one.
         :rtype: Literal['saved', 'refused', 'declined', 'fenced'] | None
         """
         run, etag = self._storage.load_eval_run_with_etag(run_id, scope_id)

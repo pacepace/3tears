@@ -101,6 +101,8 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "launch_estimate": "read",
         "job_poll": "read",
         "job_cancel": "write",
+        "job_resume": "spend",
+        "jobs_resumable": "read",
         "run_get": "read",
         "results_list": "read",
         "result_get": "read",
@@ -153,6 +155,7 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
     assert {action.name for action in engine_actions() if action.long_running} == {
         "run_launch",
         "sweep_launch",
+        "job_resume",
         "analysis_generate",
         "judge_second",
         "judge_drift_check",

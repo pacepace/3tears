@@ -39,6 +39,7 @@ from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel import GuardrailMargin
 from threetears.evals.kernel.host import CompletionClients, EvalHost
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, DocumentStore
+from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.quick.graders import GraderPlan, expected_label, plan_graders
 from threetears.evals.quick.levers import refuse_unusable_lever_names
 from threetears.evals.quick.logged import Log
@@ -401,6 +402,9 @@ class Eval:
         judge = self.plan.judge
         # Said before the run, which may make the recording it names.
         disclosures = tuple(self._disclosures())
+        # The design and the control are fixed here, in the call, before any arm runs: the campaign, filed once they
+        # have, is dated now.
+        declared_at = utc_now_iso()
         summaries = await run_arms(
             self.cases,
             arms,
@@ -451,6 +455,7 @@ class Eval:
                     for dimension, margin in (judge.guard_margins if judge is not None else {}).items()
                 ],
                 measure_latency=self.measure_latency,
+                declared_at=declared_at,
             )
             return replace(
                 result,

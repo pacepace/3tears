@@ -1118,8 +1118,8 @@ def _reject_exploratory_adoption(document: AuthoredCampaignAnalysis, bundle: Cam
     With no question asked, every pattern in the evidence is a lead, and switching on a lead is a decision nothing
     was designed to make. Keeping the control is what such a campaign recommends: it changes nothing, and the next
     steps say what declared question would settle the rest. The structural fact is each aspect's
-    ``question_declared``; nothing is read off prose. A question asked after the runs counts as asked: it is disclosed
-    (``reading_scope.question_after_runs``), never enforced. A switch in a campaign some of whose aspects are asked
+    ``question_declared``; nothing is read off prose. A criterion set after its readings were visible counts as set
+    before them: it is disclosed (``reading_scope.late_criteria``), never enforced. A switch in a campaign some of whose aspects are asked
     rests only on those aspects (:func:`_reject_unseparated_adoption`).
 
     :raises SoundnessRefusal: Every aspect is exploratory and a change's recommendation names a candidate.

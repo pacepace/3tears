@@ -15,7 +15,7 @@ from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Final, Literal
 
-from pydantic import Field, ValidationInfo, computed_field, field_validator, model_validator
+from pydantic import Field, computed_field, field_validator, model_validator
 
 from threetears.evals.analysis.agreement import (
     JudgeAgreement,
@@ -1917,63 +1917,63 @@ class MultipleComparisons(EvalDocumentModel):
     )
 
 
-class QuestionAfterRuns(EvalDocumentModel):
-    """That the aspect's question, or the control it is read against, was set after its runs began, and when:
+#: What a criterion is: ``aspect``, the aspect put to the campaign's question; ``control``, the arm every other arm is
+#: read against; ``margin``; ``bar``, one of the aspect's absolute bars; ``guardrail``, the margin of one of its judged
+#: guardrails; ``floor``, one of its floors.
+CriterionKind = Literal["aspect", "control", "margin", "bar", "guardrail", "floor"]
+
+
+class LateCriterion(EvalDocumentModel):
+    """A criterion the aspect's readings are judged by, set after those readings were visible or carrying no time:
     disclosed, never a demotion.
 
-    A question set once results existed may have been set with them in view, and so may a control named once its
-    first result landed. Its readings read as any asked question's do, since the operator is trusted to have acted in
-    good faith; this says what was set late and when, so a reader can judge.
+    Criterion-selection risk is what pre-registration guards against: a margin, floor, bar, control or aspect chosen
+    once the readings it judges could be seen may have been chosen with them in view. The readings read as any others
+    do, since the operator is trusted to act in good faith; this names the criterion and when, so a reader can judge.
+    When the runs ran, or when the campaign was declared, is no part of it: a run whose measurement context is
+    unchanged reads exactly like a fresh one.
     """
 
-    late: Literal["question", "control"] = Field(
+    # Spelled out rather than through `CriterionKind`, which is this module's shorthand and no public name.
+    criterion: Literal["aspect", "control", "margin", "bar", "guardrail", "floor"] = Field(
         description=(
-            "What was set late: `question`, asked after the aspect's first run (or carrying no time), or `control`, "
-            "named after the aspect's first result while the question itself came before the runs."
+            "Which kind of criterion: `aspect` (the aspect put to the campaign's question), `control`, `margin`, "
+            "`bar`, `guardrail` (a judged guardrail's margin) or `floor`."
         )
     )
-    at: str | None = Field(
+    name: str | None = Field(
+        default=None,
         description=(
-            "When it was set (ISO-8601): the question's `asked_at`, or the control's `named_at`. None when no time "
-            "that can be ordered is recorded, so it cannot be shown to come before the runs."
+            "Which one: a bar's measure, a guardrail's dimension, a floor's key (`Floor.key`). None for the aspect, the "
+            "control and the margin."
+        ),
+    )
+    set_at: str | None = Field(
+        description=(
+            "When it was set (ISO-8601), later than the aspect's first stored result (`first_result_at`). None when "
+            "no time that can be ordered is recorded, as for a criterion stored by an older build: whether its "
+            "readings were visible then is not known, and nothing guesses."
         )
     )
-    first_run_at: str = Field(description="When the aspect's first member run was created (ISO-8601).")
 
-    @field_validator("at", "first_run_at")
+    @field_validator("set_at")
     @classmethod
-    def _an_ordered_time(cls, stamp: str | None, info: ValidationInfo) -> str | None:
-        """Each time is one that can be ordered, an ISO-8601 time with an offset, as :func:`question_after_runs`
-        compared it: a stamp that cannot be dated is refused here rather than printed raw on a page."""
+    def _an_ordered_time(cls, stamp: str | None) -> str | None:
+        """A time is one that can be ordered, an ISO-8601 time with an offset, as :func:`late_criteria` compared it:
+        a stamp that cannot be dated is refused here rather than printed raw on a page."""
         if stamp is not None:
-            _instant(stamp, f"the late-question flag's {info.field_name}")
+            _instant(stamp, "a late criterion's set_at")
         return stamp
 
-    def page_dates(self) -> tuple[str | None, str]:
-        """``at`` and ``first_run_at`` as a page and the writer word them: ``14 Oct 2026``, each in its own offset as
-        every other date on the page is, and each with its time of day (``14 Oct 2026 at 09:30 UTC``) where the
-        later does not fall on a later day than the earlier, so it never reads as on or before the runs' day.
-
-        :return: When it was set (None where ``at`` is), and when the runs began.
-        :rtype: tuple[str | None, str]
-        """
-        began = _instant(self.first_run_at, "the first run")
-        set_at = None if self.at is None else _instant(self.at, "the late-question flag")
-        timed = set_at is not None and set_at.date() <= began.date()
-        words = _page_time if timed else _page_date
-        return None if set_at is None else words(set_at), words(began)
+    def page_date(self) -> str | None:
+        """``set_at`` as a page and the writer word it, ``14 Oct 2026``, in its own offset as every other date on the
+        page is; None where it is not recorded."""
+        return None if self.set_at is None else _page_date(_instant(self.set_at, "a late criterion"))
 
 
 def _page_date(instant: datetime) -> str:
     """An instant as a page dates it, in its own offset: ``14 Oct 2026``."""
     return f"{instant.day} {instant:%b %Y}"
-
-
-def _page_time(instant: datetime) -> str:
-    """An instant with its time of day and offset: ``14 Oct 2026 at 09:30 UTC``, or ``at 09:30 UTC+02:00``."""
-    offset = instant.utcoffset()
-    zone = "UTC" if not offset else f"UTC{instant:%:z}"
-    return f"{_page_date(instant)} at {instant:%H:%M} {zone}"
 
 
 class ReadingScope(EvalDocumentModel):
@@ -1989,16 +1989,27 @@ class ReadingScope(EvalDocumentModel):
         default=False,
         description=(
             "Whether the campaign asks this aspect a question (`asks_a_question`), whenever it was asked: only an "
-            "asked question makes a reading confirmatory. One asked after the first run sets `question_after_runs`."
+            "asked question makes a reading confirmatory."
         ),
     )
-    question_after_runs: QuestionAfterRuns | None = Field(
-        default=None,
+    late_criteria: list[LateCriterion] = Field(
+        default_factory=list,
         description=(
-            "Set when the question was asked after the aspect's first member run was created (or carries no time "
-            "while a run does), or its control was named after the aspect's first result: what was late and both "
-            "times, which every page, listing and page JSON reading this aspect says. It changes no reading. None "
-            "when both came first, or no question is asked."
+            "Each criterion this aspect's readings are judged by that was set after its first result was stored "
+            "(`first_result_at`), or carries no time: the aspect itself and its control where a question asks it, "
+            "then its margin and bars, its guardrails' margins where no question does (under one they carry the "
+            "aspect's time, which its entry names), and its floors. Every page, listing and page JSON reading this "
+            "aspect names each once. It changes no reading. Empty when every criterion came first, or no result with "
+            "an orderable time is stored yet."
+        ),
+    )
+    untimed_results: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "How many of the aspect's results carry a `scored_at` that cannot be ordered: left out of "
+            "`first_result_at`, so a criterion is read against the results that can be, and the page says that "
+            "whether one came after these is not known. 0 when every result's time can be ordered."
         ),
     )
     exploratory_measures: list[str] = Field(
@@ -2053,11 +2064,13 @@ NO_AXIS_EXPLORATORY = (
 ASPECT_BUNDLE_SHAPE = 59
 
 
-def refuse_a_bundle_before_aspects(data: Mapping[str, Any], *, what: str, remedy: str) -> None:
-    """Refuse a stored bundle of a shape from before a bundle read one aspect, naming what holds it and the remedy.
+def refuse_a_bundle_of_another_shape(data: Mapping[str, Any], *, what: str, remedy: str) -> None:
+    """Refuse a stored bundle of any shape but this build's, naming what holds it and the remedy.
 
-    A stored read is strict, so such a bundle would otherwise fail on the first field it lacks, in pydantic's words; it
-    is refused here, before it is read, in the reader's.
+    A stored read is strict, so a bundle of another shape would otherwise fail on the first field it lacks or the
+    first it carries that this shape dropped, in pydantic's words, and fail every read that holds it — a listing of
+    analyses among them. It is refused here, before it is read, in the reader's words, so a caller can refuse the one
+    document that holds it and read the rest. A bundle is regenerated across a shape change, never migrated.
 
     :param data: The stored bundle, as a mapping.
     :ptype data: Mapping[str, Any]
@@ -2065,13 +2078,21 @@ def refuse_a_bundle_before_aspects(data: Mapping[str, Any], *, what: str, remedy
     :ptype what: str
     :param remedy: What to do instead: regenerate what holds it, or freeze it again.
     :ptype remedy: str
-    :raises RefusedInput: The bundle's ``schema_version`` is missing or earlier than :data:`ASPECT_BUNDLE_SHAPE`.
+    :raises RefusedInput: The bundle's ``schema_version`` is missing or is not this build's
+        (``AnalysisContextBundle.schema_version``'s default).
     """
     shape = data.get("schema_version")
+    current = AnalysisContextBundle.model_fields["schema_version"].default
     if not isinstance(shape, int) or shape < ASPECT_BUNDLE_SHAPE:
         raise RefusedInput(
             f"{what} holds an evidence bundle of shape {shape}, from before a bundle read one aspect of its campaign "
             f"(shape {ASPECT_BUNDLE_SHAPE}), so this build cannot read it",
+            remedy=remedy,
+        )
+    if shape != current:
+        raise RefusedInput(
+            f"{what} holds an evidence bundle of shape {shape}, and this build reads shape {current} only, so it "
+            "cannot read it: a bundle is regenerated across a shape change, never migrated",
             remedy=remedy,
         )
 
@@ -2087,44 +2108,69 @@ def asks_a_question(declared: AspectDeclaration | None) -> bool:
     return declared is not None and bool(declared.question.strip()) and declared.design.merit_axes is not None
 
 
-def question_after_runs(
-    declared: AspectDeclaration | None,
-    first_run_at: str | None,
-    *,
-    dated: AspectDeclaration | None = None,
-) -> QuestionAfterRuns | None:
-    """That the aspect's question was asked after its first run, or its control named after its first result, with
-    the times; None where both came first.
+def late_criteria(declared: AspectDeclaration | None, first_result_at: str | None) -> list[LateCriterion]:
+    """Each criterion ``declared`` judges the aspect's readings by that was set after the first of them was stored,
+    or carries no time, in the order a page names them: the aspect and its control (where a question asks it), its
+    margin, its bars, its guardrails' margins (where no question asks it: under one they carry the aspect's time, which
+    its line names), its floors.
 
-    **Disclosed, never enforced** (owner, 2026-10-21): a question asked once results existed reads as one asked
-    before them, since the operator is trusted to act in good faith, and this flag is what lets a reader judge. Read
-    off the declaration's ``asked_at`` against the earliest member run's ``created_at``, so a design written by an
-    older build, or edited after every run was removed and re-added, is still dated by when its question was asked.
+    **Disclosed, never enforced** (owner, 2026-10-21 and 2026-10-23): a criterion set once its readings were visible
+    reads as one set before them, and this is what lets a reader judge. Each is read on its own time: the aspect's
+    (its ``asked_at``, kept from its source when a campaign adopts it, and the time of its bars, its guardrails'
+    margins and a margin or floor declared with it), the control's ``named_at``, and a margin's or floor's own where it was added later. It is
+    compared with the first stored result of the cells it judges, the aspect's: when the runs ran, or when the
+    campaign holding them was declared, never counts, so a campaign adopting runs that are still valid reads as one
+    declared before them. A time that cannot be ordered is no recorded time.
 
-    :param declared: What the campaign declared, as the aspect reads it, its question dated as it was asked; None when
-        the aspect declared no design.
+    :param declared: What the campaign declared, as the aspect reads it; None when the aspect declared no design.
     :ptype declared: AspectDeclaration | None
-    :param first_run_at: The earliest ``created_at`` among the aspect's member runs (ISO-8601), or None when no run's
-        time is to hand, where nothing can have been asked after one.
-    :ptype first_run_at: str | None
-    :param dated: The same declaration with its question dated by its control where that was named after the first
-        result (``asked_at`` the control's ``named_at``, or None where that cannot be ordered); None or ``declared``
-        where the control dates nothing.
-    :ptype dated: AspectDeclaration | None
-    :return: ``late="question"`` where a question is asked, ``first_run_at`` is known and the question was asked
-        after it or carries no time; else ``late="control"`` where ``dated`` re-dated it; None otherwise.
-    :rtype: QuestionAfterRuns | None
-    :raises ValueError: ``first_run_at`` or ``asked_at`` is not an ISO-8601 time with an offset, so which came first
-        cannot be said.
+    :param first_result_at: The earliest ``scored_at`` among the aspect's member results (ISO-8601); None while none
+        is stored, when no criterion can have come after its readings.
+    :ptype first_result_at: str | None
+    :return: The criteria set after the first result or carrying no time; empty when every one came first.
+    :rtype: list[LateCriterion]
+    :raises ValueError: ``first_result_at`` is not an ISO-8601 time with an offset.
     """
-    if declared is None or not asks_a_question(declared) or first_run_at is None:
-        return None
+    if declared is None or first_result_at is None:
+        return []
+    visible = _instant(first_result_at, "the aspect's first result")
     asked = declared.asked_at
-    if asked is None or _instant(asked, "the campaign's question") > _instant(first_run_at, "the first run"):
-        return QuestionAfterRuns(late="question", at=asked, first_run_at=first_run_at)
-    if dated is not None and dated.asked_at != asked:
-        return QuestionAfterRuns(late="control", at=dated.asked_at, first_run_at=first_run_at)
-    return None
+    timed: list[tuple[CriterionKind, str | None, str | None]] = []
+    # The aspect and its control bear only on what a question confirms and on recommending a candidate, which needs an
+    # asked aspect: where none is asked every reading is a lead and the control is kept whenever they were chosen, so
+    # they are timed only under a question. An eval's campaign asks none, so one filed once its arms had run (as every
+    # eval before #919 was) never reads late for its control. A margin, a bar, a guardrail's margin and a floor each
+    # read or warn on the page whatever is asked (a guardrail breached or not yet shown safe opens the first screen),
+    # so each is timed always. Under a question a guardrail's margin carries the aspect's own time, which the aspect's
+    # line already names, so it is not listed again.
+    asked_aspect = asks_a_question(declared)
+    if asked_aspect:
+        timed.append(("aspect", None, asked))
+        if declared.control is not None:
+            timed.append(("control", None, declared.control.named_at))
+    if declared.margin is not None:
+        timed.append(("margin", None, declared.margin_declared_at))
+    timed += [("bar", bar.measure_id, asked) for bar in declared.design.bars]
+    if not asked_aspect:
+        timed += [("guardrail", guard.dimension, asked) for guard in declared.design.guardrail_margins]
+    timed += [("floor", floor.key, floor.declared_at or asked) for floor in declared.floors]
+    late: list[LateCriterion] = []
+    for kind, name, stamp in timed:
+        instant = _ordered(stamp)
+        if instant is None or instant > visible:
+            late.append(LateCriterion(criterion=kind, name=name, set_at=stamp if instant is not None else None))
+    return late
+
+
+def _ordered(stamp: str | None) -> datetime | None:
+    """``stamp`` as an aware instant; None where it is unrecorded or cannot be ordered against another time."""
+    if stamp is None:
+        return None
+    try:
+        return _instant(stamp, "a criterion")
+    except ValueError:
+        # NOSILENT: a stamp that cannot be ordered dates nothing, so the criterion reads as carrying no time
+        return None
 
 
 def question_axes(declared: AspectDeclaration | None) -> list[MeritAxis] | None:
@@ -2158,7 +2204,7 @@ def exploratory_disclosure(declared: AspectDeclaration | None) -> str | None:
     cannot word it differently. An aspect with no design (``declared is None``) is exploratory by definition — that
     is derived here, never stored as a flag of its own — and says so as such; one whose campaign asks no question
     gets the no-question line; and one whose campaign asks a question naming no axis of this aspect (its
-    ``merit_axes`` None) the no-axis line. When a question was asked is no part of it (:func:`question_after_runs`).
+    ``merit_axes`` None) the no-axis line. When anything was set is no part of it (:func:`late_criteria`).
 
     :param declared: What the campaign declared, as the aspect reads it, or None when it declared no design.
     :ptype declared: AspectDeclaration | None
@@ -2428,8 +2474,18 @@ class AnalysisContextBundle(EvalDocumentModel):
     # not enforced), so it builds its family, scopes the reading scope and the verdict order, and confirms its
     # readings over unchanged runs; `reading_scope.question_post_hoc` is replaced by `reading_scope.question_after_runs`
     # (both times), which every page and listing says.
+    # 61: `reading_scope.question_after_runs` is replaced by `reading_scope.late_criteria`, each criterion (the aspect,
+    # its control, margin, bars and floors) set after the aspect's first stored result or carrying no time; when the
+    # runs began no longer counts, and `declared.question_declared_at` is gone. Time apart is no confound either (owner,
+    # 2026-10-23): `measurement_window_disclosure` is gone, and `launch_disclosure` says only that a launch's arms
+    # co-loaded their providers, never that runs started apart or arms ran one after another.
+    # 62: the case set leaves the pass^k cell, which is read at this build's identity version and splits on the
+    # model that answered and the template revision (`IDENTITY_VERSION` 25), a run silent on either being a cell of its
+    # own; a frontier point's pass^k reads its headline cell alone and lists every cell with its own reading and
+    # reason (`pass_hat_k_cells`), so pass^k and its curve move over unchanged runs; a comparison set's case-set fingerprint digests the run's frozen case ids
+    # and is never None.
     schema_version: int = Field(
-        default=60, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=62, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -2837,18 +2893,16 @@ class AnalysisContextBundle(EvalDocumentModel):
         default=None,
         description=(
             "When the campaign's design froze (ISO-8601): its first member run's `created_at`, archived runs "
-            "included, after which a design edit is refused and a question asked is disclosed as set after the runs "
-            "(`reading_scope.question_after_runs`). None when the campaign holds no run yet."
+            "included, after which a design edit is refused. None when the campaign holds no run yet."
         ),
     )
     first_result_at: str | None = Field(
         default=None,
         description=(
-            "When the aspect's evidence could first be seen (ISO-8601): the earliest `scored_at` among its member "
-            "runs' results, the instant a control named later is read against. A margin, a floor or the question's "
-            "wording declared later than it is declared after the evidence, and the campaign's page says so. None "
-            "when no result has landed, or a bundle assembled before it was carried. Left out of `fingerprint()`: "
-            "when a result was written is not what it measured."
+            "When the aspect's readings could first be seen (ISO-8601): the earliest `scored_at` among the results "
+            "of the runs it reads. A criterion set later than it is named in `reading_scope.late_criteria`. None "
+            "when no result has landed. Left out of `fingerprint()`: when a result was written is not what it "
+            "measured."
         ),
     )
     package_version: str | None = Field(
@@ -2863,7 +2917,7 @@ class AnalysisContextBundle(EvalDocumentModel):
         description=(
             "Which readings no declared question asked about: exploratory, reportable as leads and never as "
             "confirmed answers. Where no question is declared, or no design, one sentence says every finding is "
-            "exploratory. Whether the question was asked after the first run (`question_after_runs`)."
+            "exploratory. Each criterion set after the aspect's readings were visible (`late_criteria`)."
         ),
     )
     exclusions: list[ArmExclusions] = Field(
@@ -2895,26 +2949,21 @@ class AnalysisContextBundle(EvalDocumentModel):
         default_factory=list,
         description=(
             "Each resolved member run's wall-clock measurement span, derived from that run's own "
-            "scored_at stamps. The structured half of measurement_window_disclosure below, which "
-            "states the same fact as the sentence a reader quotes — and the only form of it that "
-            "answers for ONE PAIR, since which pairs overlapped is a question about these spans and "
-            "the sentence names at most a capped few. A run that produced no result "
+            "scored_at stamps: when it was measured, never a reason to read it apart from the others, since arms "
+            "measured at different times are one experiment while nothing that decides their result changed. A "
+            "run that produced no result "
             "has no span and is simply absent: an honest gap, never a zero-length point at some "
             "arbitrary instant, which would compare against the others as though the run had been "
-            "measured. Ordered by start, then end — the order the disclosure lists them in."
+            "measured. Ordered by start, then end."
         ),
     )
     launch_disclosure: str | None = Field(
         default=None,
         description=(
-            "Set when the member runs were NOT all started by one campaign launch — some came from "
-            "different launches, or were started on their own. Arms started together share one "
-            "concurrency slot, so their measurement windows overlap by construction; arms started apart "
-            "overlap only by the scheduler's chance, and a difference between them can be when they ran "
-            "as well as what they ran. Also set when they were started as one launch whose arms ran one after "
-            "another, or side by side each at its own width, co-loading their providers (the runs' "
-            "arm_schedule). None when every run shares one launch group whose arms took their turns case by "
-            "case (or record no schedule), or there are fewer than two runs."
+            "Set when a launch ran its arms side by side, each at its own width, co-loading their providers (the "
+            "runs' arm_schedule `concurrent`), so a provider rationing one arm more than another could shrink its "
+            "sample. Never set for when the runs ran: runs started apart, or arms run one after another, are one "
+            "experiment while nothing that decides their result changed. None otherwise."
         ),
     )
     model_identity_disclosure: str | None = Field(
@@ -2939,23 +2988,6 @@ class AnalysisContextBundle(EvalDocumentModel):
             "runs sent differently, or one reported and one not, are separate apparatus and are not pooled. Never "
             "about the candidate, whose client the engine does not ask. None when every call of both roles reported "
             "being sent, enforced, as asked."
-        ),
-    )
-    measurement_window_disclosure: str | None = Field(
-        default=None,
-        description=(
-            "Set when AT LEAST ONE PAIR of member runs was measured over spans of wall-clock time that "
-            "do not overlap — so anything that moved between those spans (a model revision, a provider's "
-            "load, a rate limit) moved with the runs, and a difference between the two runs of such a "
-            "pair is not attributable to the runs alone. The condition is existential and the sentence "
-            "says which quantifier it earned: it reads as a universal only when every pair really is "
-            "disjoint, and otherwise counts the disjoint pairs against the total and names the "
-            "overlapping remainder. It also names each disjoint pair's gap magnitude, widest first. "
-            "None when every pair overlaps or too few runs resolved a span. Built by the same helper "
-            "runs_compare discloses from, on the same predicate, and listing every span rather than "
-            "collapsing above the inline cap: the reader here cannot go and fetch the omitted ones. "
-            "The PAIR list can still truncate — pairs grow quadratically where spans grow linearly — "
-            "and says how many it did not name."
         ),
     )
     apparatus_confounds: list[Confound] = Field(
@@ -3574,11 +3606,12 @@ __all__ = [
     "DesignArm",
     "exploratory_disclosure",
     "ASPECT_BUNDLE_SHAPE",
-    "refuse_a_bundle_before_aspects",
+    "refuse_a_bundle_of_another_shape",
     "asks_a_question",
-    "question_after_runs",
+    "CriterionKind",
+    "late_criteria",
+    "LateCriterion",
     "question_axes",
-    "QuestionAfterRuns",
     "FactorPairCell",
     "FactorPairPivot",
     "FactorPairScan",

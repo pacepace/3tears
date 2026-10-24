@@ -249,10 +249,6 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
     #: which raises on its own
     l2_is_the_store: bool = False
 
-    #: how long a replica waits for a peer computing the same answer before computing it too: an
-    #: answer takes up to a few seconds on a large read
-    peer_wait_seconds: ClassVar[float] = 15.0
-
     def __init__(
         self,
         registry: CollectionRegistry,

@@ -131,19 +131,24 @@ class LeaseBuildLock:
 
     What a tool pod's derived collection takes: the pod binds the hub-declared ``leases`` bucket
     (``create_if_missing=False``) under its own key scope, so replicas of one pod contend for one key
-    and no other pod can see or release it. The lease is never renewed: a build outliving
-    ``ttl_seconds`` lets one more pod derive the same value, which is what the lock exists to make
-    rare, not impossible. A key outside the KV grammar is hashed.
+    and no other pod can see or release it. The lease is renewed in the background for as long as the
+    build runs (:meth:`KVLease.hold`, every third of ``ttl_seconds``), so a held lock means a live
+    builder: a peer waits for it however long the build takes, and a builder that dies stops renewing
+    and hands the lock on within ``ttl_seconds``. Renewal stops past ``max_hold_seconds``, the lease's
+    own rule for a holder wedged while its process lives. A key outside the KV grammar is hashed.
 
     :param lease: the lease factory, bound to its bucket and key scope
     :ptype lease: KVLease
     :param ttl_seconds: how long a holder that died keeps the others waiting
     :ptype ttl_seconds: int
+    :param max_hold_seconds: the longest one build keeps the lock renewed
+    :ptype max_hold_seconds: float
     """
 
-    def __init__(self, lease: KVLease, *, ttl_seconds: int = 60) -> None:
+    def __init__(self, lease: KVLease, *, ttl_seconds: int = 60, max_hold_seconds: float = 600.0) -> None:
         self._lease = lease
         self._ttl_seconds = ttl_seconds
+        self._max_hold_seconds = max_hold_seconds
 
     @asynccontextmanager
     async def holding(self, key: str) -> AsyncIterator[None]:
@@ -159,10 +164,17 @@ class LeaseBuildLock:
 
         name = key if _KV_KEY_GRAMMAR.match(key) else hashlib.sha256(key.encode("utf-8")).hexdigest()
         try:
-            handle = await self._lease.acquire(name, ttl_seconds=self._ttl_seconds, max_wait_seconds=0)
+            held = await self._lease.hold(
+                name,
+                ttl=self._ttl_seconds,
+                renew_every=self._ttl_seconds / 3,
+                max_wait_seconds=0,
+                name="a derived value's build lock",
+                max_hold=self._max_hold_seconds,
+            )
         except LeaseUnavailable as exc:
             raise BuildLockHeld(key) from exc
-        async with handle:
+        async with held:
             yield
 
 
@@ -179,15 +191,21 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
     #: rather than passing a different ttl into the shared one.
     build_lock_bucket: ClassVar[str] = "derived-build-locks"
 
-    #: total time a pod that lost the build lock waits for the winner's result
-    #: before deriving locally. must be on the scale of a derivation, since a
-    #: budget shorter than one guarantees every loser duplicates the winner's
-    #: work -- see :meth:`_await_peer_derivation`.
-    peer_wait_seconds: ClassVar[float] = 5.0
-
-    #: how often the loser re-reads the durable tier while waiting. short, so
-    #: a fast peer releases the waiter promptly.
+    #: how soon the loser first re-reads the durable tier while waiting. short, so
+    #: a fast peer releases the waiter promptly; each later re-read waits twice
+    #: as long as the last, up to :data:`peer_poll_max_interval`.
     peer_poll_interval: ClassVar[float] = 0.1
+
+    #: the longest the loser waits between re-reads of the durable tier, so a
+    #: long derivation costs the store a read every few seconds, not ten a second
+    peer_poll_max_interval: ClassVar[float] = 2.0
+
+    #: how often a wait still under way is logged, after the line that says it began
+    peer_wait_log_seconds: ClassVar[float] = 30.0
+
+    #: how often the loser tries to take the build lock while waiting: taking it means the peer has
+    #: let go -- finished, or died and lost its lease -- so the loser derives under it
+    peer_retake_seconds: ClassVar[float] = 1.0
 
     def __init__(self, *args: Any, build_lock: BuildLock | None = None, **kwargs: Any) -> None:
         """build the collection as :class:`BaseCollection` does, with the cross-pod build lock.
@@ -350,7 +368,7 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 # a peer POD may have derived it while we queued.
                 return await self._derive_and_save(key)
         except BuildLockHeld:
-            return await self._await_peer_derivation(key)
+            return await self._await_peer_derivation(key, self._build_lock)
 
     async def _derive_and_save(self, key: tuple[Any, ...]) -> dict[str, Any] | None:
         """derive the value unless it has landed meanwhile, and persist it."""
@@ -362,41 +380,69 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
             await self.save_to_store(derived)
         return derived
 
-    async def _await_peer_derivation(self, key: tuple[Any, ...]) -> dict[str, Any] | None:
-        """wait for a peer pod's in-progress derivation, then derive if it never lands.
+    async def _await_peer_derivation(self, key: tuple[Any, ...], build_lock: BuildLock) -> dict[str, Any] | None:
+        """wait for a peer pod's derivation for as long as the peer holds the build lock, then take it over.
 
-        a **bounded retry**, not a background pump: it re-reads the durable
-        tier at :data:`peer_poll_interval` until either the value appears or
-        :data:`peer_wait_seconds` is spent. the budget has to be on the scale
-        of a derivation, because a derivation is expensive by definition -- if
-        it were cheap there would be nothing to cache and no lock to contend
-        for. an earlier revision waited a single sub-second grace, which meant
-        every loser duplicated the winner's work: the exact stampede the
-        cross-pod lock exists to prevent, reintroduced underneath it. that bug
-        was invisible to unit tests, which pass ``nats_client=None`` and never
-        take the lock at all.
+        the peer holds the build lock for the whole derivation, renewed while it runs, so a held lock
+        means a live derivation. the loser re-reads the durable tier, first after
+        :data:`peer_poll_interval` and then twice as long each time up to :data:`peer_poll_max_interval`,
+        and returns the value as soon as a re-read finds it, however long the derivation takes. every
+        :data:`peer_retake_seconds` it tries the lock; taking it means the peer let go without the value
+        landing -- it finished and the value is about to land, or it died and its lease ran out -- so the
+        loser derives under the lock (:meth:`_derive_and_save` re-reads first). the wait has no budget of
+        its own: it ends when the value lands or the lock is taken. it is logged when it begins and every
+        :data:`peer_wait_log_seconds` while it lasts.
 
-        deriving locally after the budget expires is the deliberate trade. a
-        peer that died mid-build holds its lock until the KV TTL expires
-        (60s by default), and no caller should inherit that latency. one
-        duplicated compute costs CPU; waiting on a dead peer stalls a request.
+        :param key: the normalized key being derived
+        :ptype key: tuple[Any, ...]
+        :param build_lock: the cross-pod build lock the peer holds
+        :ptype build_lock: BuildLock
+        :return: the derived value, or ``None`` when the derivation found none
+        :rtype: dict[str, Any] | None
         """
-        attempts = max(1, int(self.peer_wait_seconds / self.peer_poll_interval))
-        for _ in range(attempts):
-            await asyncio.sleep(self.peer_poll_interval)
+        lock_key = self.build_lock_key(key)
+        loop = asyncio.get_running_loop()
+        began = loop.time()
+        next_try = began + self.peer_retake_seconds
+        next_log = began + self.peer_wait_log_seconds
+        interval = self.peer_poll_interval
+        log.info(
+            "waiting for a peer's derivation",
+            extra={"extra_data": {"table": self.table_name, "key": str(key)}},
+        )
+        while True:
+            await asyncio.sleep(interval)
+            interval = min(interval * 2, self.peer_poll_max_interval)
             existing = await self.load_derived(key)
             if existing is not None:
                 return existing
-        log.warning(
-            "derived value did not land from peer pod within %.2fs, deriving locally: table=%s key=%s",
-            self.peer_wait_seconds,
-            self.table_name,
-            key,
-        )
-        derived = await self.compute(key)
-        if derived is not None:
-            await self.save_to_store(derived)
-        return derived
+            now = loop.time()
+            if now >= next_log:
+                next_log = now + self.peer_wait_log_seconds
+                log.info(
+                    "still waiting for a peer's derivation",
+                    extra={
+                        "extra_data": {
+                            "table": self.table_name,
+                            "key": str(key),
+                            "waited_seconds": round(now - began, 1),
+                        }
+                    },
+                )
+            if now < next_try:
+                continue
+            next_try = now + self.peer_retake_seconds
+            try:
+                async with build_lock.holding(lock_key):
+                    log.info(
+                        "took over a derivation its peer let go of without the value landing: table=%s key=%s",
+                        self.table_name,
+                        key,
+                    )
+                    return await self._derive_and_save(key)
+            except BuildLockHeld:
+                # NOSILENT: the peer still holds the build lock, renewed while it derives: it is alive, so keep waiting
+                continue
 
     @asynccontextmanager
     async def derivation_paused(self, entity_id: Any) -> AsyncIterator[None]:

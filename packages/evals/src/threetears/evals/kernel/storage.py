@@ -54,7 +54,13 @@ from threetears.evals.kernel.campaign import (
     generation_slot_id,
 )
 from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
-from threetears.evals.kernel.errors import ConflictError, EvalServiceError, StorageError, ValidationFailedError
+from threetears.evals.kernel.errors import (
+    ConflictError,
+    EvalServiceError,
+    JobFenced,
+    StorageError,
+    ValidationFailedError,
+)
 from threetears.evals.kernel.remedies import (
     FIND_UNREADABLE_RUNS,
     REREAD_AND_RETRY,
@@ -99,6 +105,11 @@ from threetears.evals.schema.logs import get_logger
 RUN_LOST_STATUS: Final = "cancelled"
 
 log = get_logger(__name__)
+
+#: How many times a run cell's row write re-reads and decides again after another writer reached the row between its
+#: read and its write (:meth:`EvalStorage.save_eval_result`). A cell has at most two writers — a holding of the run and
+#: the later one that took it up — so a third lost race is a store fault, not contention.
+CELL_WRITE_ATTEMPTS: Final[int] = 3
 
 #: The fields a batch read of judge evidence keeps of each trace (:meth:`EvalStorage.load_judge_evidence`): those that
 #: locate and version an :class:`EvalTrace`, and the judge evidence with the declaration it is stored beside, so the
@@ -1259,6 +1270,38 @@ class EvalStorage:
         """Load a sweep's record by id within a scope."""
         return self._load(EvalSweep, sweep_id, scope_id)
 
+    def query_job_records_in_outcome[R: EvalDocumentModel](
+        self, model: type[R], scope_id: str, outcomes: Iterable[str], /
+    ) -> tuple[list[R], int]:
+        """The scope's job records of ``model``'s type whose ``outcome`` is any of ``outcomes``, in one read, settled
+        as every read settles one, each row the model refuses left out and counted.
+
+        For any job record that ends with an ``outcome`` (a sweep's, a launch's). When ``outcomes`` holds
+        ``cancelled``, a record still stored ``running`` whose lease has lapsed is read too, written lost
+        (``cancelled``), and matched. The rows are matched by the store's ``field_in``, which every backend answers.
+
+        :param model: The records' model; its ``doc_type`` selects the rows.
+        :ptype model: type[R]
+        :param scope_id: The scope whose records to read.
+        :ptype scope_id: str
+        :param outcomes: The outcomes to match.
+        :ptype outcomes: Iterable[str]
+        :return: The matching records that read, settled; and how many rows stored with a matching outcome this
+            build's model refused.
+        :rtype: tuple[list[R], int]
+        """
+        wanted = set(outcomes)
+        asked = wanted | ({"running"} if "cancelled" in wanted else set())
+        doc_type = str(model.model_fields["doc_type"].default)
+        rows = self._store.by_doc_type(doc_type, scope_id, field_in={"outcome": sorted(asked)}) if asked else []
+        read, refused = self._hydrate_isolating(model, rows)
+        stored_matching = {row.get("id") for row in rows if row.get("outcome") in wanted}
+        settled = self._settled(model, read)
+        return (
+            [record for record in settled if getattr(record, "outcome") in wanted],
+            sum(1 for row in refused if row.row_id in stored_matching),
+        )
+
     # =========================================================================
     # EvalCampaign — the analysis hub
     # =========================================================================
@@ -1810,6 +1853,32 @@ class EvalStorage:
             unreadable=[row for row in refused if not status or row.status == status],
         )
 
+    def query_eval_runs_in_status(self, scope_id: str, statuses: Iterable[EvalRunStatus], /) -> RunsRead:
+        """The scope's runs whose status is any of ``statuses``, in one read, leaving out each row the model refuses
+        and naming it instead (as :meth:`query_eval_runs_isolating` does).
+
+        Settled as every read settles a run, so the status matched is the settled one: when ``statuses`` holds
+        ``cancelled``, a run still stored ``pending`` or ``running`` whose lease has lapsed is read too, written lost
+        (``cancelled``), and matched. The rows are matched by the store's ``field_in``, which every backend answers.
+
+        :param scope_id: The scope whose runs to read.
+        :ptype scope_id: str
+        :param statuses: The statuses to match.
+        :ptype statuses: Iterable[EvalRunStatus]
+        :return: The matching runs that read, settled, and each matched row that did not.
+        :rtype: RunsRead
+        :raises UnreadableRunError: A run read, but writing it lost was refused by a model.
+        """
+        wanted: set[str] = set(statuses)
+        asked = wanted | (NON_TERMINAL_RUN_STATUSES if RUN_LOST_STATUS in wanted else set())
+        rows = self._store.by_doc_type("eval_run", scope_id, field_in={"status": sorted(asked)}) if asked else []
+        read, refused = self._hydrate_isolating(EvalRun, rows)
+        runs = self._settled_runs(read, frozenset(), scope_id)
+        return RunsRead(
+            runs=[run for run in runs if run.status in wanted],
+            unreadable=[row for row in refused if row.status in wanted],
+        )
+
     def _run_rows(self, scope_id: str, status: str | None, elide_payload: frozenset[str]) -> list[dict[str, Any]]:
         """The stored run rows a listing by ``status`` matches, before they are read (:meth:`query_eval_runs`)."""
         field_eq: dict[str, Any] = {}
@@ -1858,6 +1927,23 @@ class EvalStorage:
         exclude = _payload_exclusions(elide_payload) if elide_payload else ()
         items = self._store.get_many("eval_run", list(run_ids), scope_id, exclude=exclude)
         return self._hydrate_runs(items, elide_payload, scope_id)
+
+    def launch_group_run_ids(self, launch_group_id: str, scope_id: str, /) -> list[str]:
+        """The ids of the runs one launch started together (``EvalRun.launch_group_id``), in no order.
+
+        Read off the stored rows without reading them as runs: a caller asking how many arms shared a launch needs
+        their ids alone.
+
+        :param launch_group_id: The launch's group.
+        :ptype launch_group_id: str
+        :param scope_id: The scope its runs live in.
+        :ptype scope_id: str
+        :return: The runs' ids.
+        :rtype: list[str]
+        """
+        return [
+            str(item["id"]) for item in self._store.by_doc_type("eval_run", scope_id, launch_group_id=launch_group_id)
+        ]
 
     def load_eval_run_stamps(self, run_ids: Sequence[str], scope_id: str, /) -> list[EvalRunStamp]:
         """Load the id, archived flag and start time of the named runs, in one batch read.
@@ -2060,11 +2146,47 @@ class EvalStorage:
     # =========================================================================
 
     def save_eval_result(self, result: EvalResult, trace: EvalTrace | None = None) -> None:
-        """Persist an eval result, and its trace payload as a sibling document.
+        """Persist an eval result, and its trace payload as a sibling document: an upsert by id.
 
-        **Trace first, then the result, and ``has_trace`` records that the cell produced one.**
-        Writing the result first would leave a window where a reader sees ``has_trace=True``
-        and no document to fetch, so the payload is written first.
+        For a host recording a witnessed cell, a fixture, and any other write that is not a run's own cell, which
+        :meth:`save_run_cell` writes. The trace is written first, then the result, and ``has_trace`` records that the
+        cell produced one. Writing the result first would leave a window where a reader sees ``has_trace=True`` and no
+        document to fetch, so the payload is written first. Recording the same result id again replaces both documents.
+
+        A failed trace write does not fail the result (:meth:`save_run_cell` says why).
+
+        :param result: The result to persist. Never mutated — the marker is applied to a copy.
+        :ptype result: EvalResult
+        :param trace: The sibling payload, or ``None`` for a cell that produced none; an entirely empty trace writes no
+            document.
+        :ptype trace: EvalTrace | None
+        :raises StorageError: The RESULT was not persisted. A trace-write failure is logged and reads as ``missing``
+            through ``has_trace``, not raised.
+        """
+        document = self._marked(result, trace)
+        if trace is not None and document["has_trace"]:
+            self._save_trace(result, trace)
+        self._save(document)
+
+    def save_run_cell(self, result: EvalResult, trace: EvalTrace | None = None) -> None:
+        """Persist a run's own cell, fenced by the run's lease, and its trace payload as a sibling document.
+
+        **A run's own cell is written once per holding of the run.** Its id is derived from the cell
+        (:func:`~threetears.evals.schema.models.cell_result_id`), so the cell has one row, and the row is written by
+        this rule rather than over whatever is stored:
+
+        - refused, with nothing written, when the run's record was written lost, or is held at a later lease epoch
+          than the one the result was written under (``EvalResult.lease_epoch``): that holding of the run is over,
+          and a cell finishing after it — the cancelled cells a shutdown or a fence unwinds included — is not the
+          run's;
+        - created when no row is stored for the cell (create-only, so two writers racing it cannot both land);
+        - replacing the stored row only when that row was written at a lower epoch, conditionally on the row as
+          read, so a later holding of the run writes over an earlier one's cell and never the reverse;
+        - refused otherwise: the cell's row is another writer's at the same epoch or a later one.
+
+        The result lands first and its trace after it, so a refused result writes no trace either, and a trace never
+        replaces the payload of a row its result did not replace. Between the two writes the row reads as a cell
+        whose trace is ``missing``, the same reading a failed trace write leaves.
 
         **A failed trace write does not fail the result, and is not hidden either.**
         :func:`~threetears.evals.run.runner.execute_run` treats a raise here as a lost cell
@@ -2086,8 +2208,25 @@ class EvalStorage:
             fetch, and a row per empty payload is the row count this split
             exists to keep down.
         :ptype trace: EvalTrace | None
-        :raises StorageError: The RESULT was not persisted. A trace-write failure is logged
-            by :meth:`_save` and reads as ``missing`` through ``has_trace``, not raised.
+        :raises JobFenced: The rule above refused the write; nothing was written.
+        :raises StorageError: The RESULT was not persisted — a cell's row included, when every attempt lost its race.
+            A trace-write failure is logged and reads as ``missing`` through ``has_trace``, not raised.
+        """
+        document = self._marked(result, trace)
+        self._write_cell_row(result, document)
+        if trace is not None and document["has_trace"]:
+            self._save_trace(result, trace)
+
+    @staticmethod
+    def _marked(result: EvalResult, trace: EvalTrace | None) -> dict[str, Any]:
+        """A result as it is written: ``has_trace`` set to whether its cell produced a trace with anything in it.
+
+        :param result: The result; not mutated.
+        :ptype result: EvalResult
+        :param trace: Its trace, or ``None``.
+        :ptype trace: EvalTrace | None
+        :return: The document to write.
+        :rtype: dict[str, Any]
         """
         produced = trace is not None and bool(
             trace.trace
@@ -2096,21 +2235,71 @@ class EvalStorage:
             or trace.call_ledger is not None
             or trace.end_state is not None
         )
-        if trace is not None and produced:
+        return result.model_copy(update={"has_trace": produced}).to_dict()
+
+    def _write_cell_row(self, result: EvalResult, document: dict[str, Any]) -> None:
+        """Write a run cell's result row by :meth:`save_run_cell`'s rule.
+
+        :raises JobFenced: The run's record was written lost or is held at a later epoch, or the cell's stored row was
+            written at the result's epoch or a later one.
+        :raises StorageError: Every attempt lost its race, or a write failed.
+        """
+        # The rule reads two fields of the run's record, so it reads them off the stored document rather than
+        # validating the whole run on every cell: a large run's record is costly to hydrate, and a record this build's
+        # model would refuse still says whether it was lost and at which epoch it is held.
+        run = self._of_type(EvalRun, self._store.get(result.eval_run_id, result.scope_id)) or {}
+        if run.get("lost") is not None:
+            raise JobFenced(
+                f"eval run '{result.eval_run_id}' was written lost; its cell (case {result.test_case_id}, model "
+                f"{result.model}, k {result.k_iteration}) is not written"
+            )
+        lease = run.get("lease")
+        held_at = int(lease.get("epoch", 0)) if isinstance(lease, dict) else None
+        if held_at is not None and held_at > result.lease_epoch:
+            raise JobFenced(
+                f"eval run '{result.eval_run_id}' is held at lease epoch {held_at}; a cell written under epoch "
+                f"{result.lease_epoch} (case {result.test_case_id}, model {result.model}, k {result.k_iteration}) "
+                "is not written"
+            )
+        for _ in range(CELL_WRITE_ATTEMPTS):
+            data, etag = self._store.get_with_etag(result.id, result.scope_id)
+            stored = self._of_type(EvalResult, data)
             try:
-                self._save(trace.to_dict())
-            except StorageError as unstored:
-                # NOSILENT: the result below is written with has_trace=True and no document backs it, which reads
-                # ``missing`` on every surface and is refused by a re-judge — the fault it is, never "no trace".
-                log.error(
-                    "eval_result %s (run %s, scope %s) is stored with has_trace=True and its trace was NOT: it reads "
-                    "missing on every surface — %s",
-                    result.id,
-                    result.eval_run_id,
-                    result.scope_id,
-                    unstored,
-                )
-        self._save(result.model_copy(update={"has_trace": produced}).to_dict())
+                if stored is None:
+                    self._save(document, create_only=True)
+                    return
+                stored_epoch = int(stored.get("lease_epoch", 0))
+                if stored_epoch >= result.lease_epoch:
+                    raise JobFenced(
+                        f"eval result '{result.id}' (run {result.eval_run_id}, case {result.test_case_id}, model "
+                        f"{result.model}, k {result.k_iteration}) is already stored under lease epoch {stored_epoch}; "
+                        f"a writer at epoch {result.lease_epoch} does not replace it"
+                    )
+                self._save(document, if_match=etag)
+                return
+            except ConflictError:
+                # NOSILENT: another writer reached the cell's row between the read and the write; re-read and decide
+                # again from what it wrote. Exhausting the attempts raises below.
+                continue
+        raise StorageError(
+            f"eval result '{result.id}' (run {result.eval_run_id}) kept changing while its cell was being written"
+        )
+
+    def _save_trace(self, result: EvalResult, trace: EvalTrace) -> None:
+        """Write a result's trace payload; a failure is logged, never raised (see :meth:`save_eval_result`)."""
+        try:
+            self._save(trace.to_dict())
+        except StorageError as unstored:
+            # NOSILENT: the result is written with has_trace=True and no document backs it, which reads
+            # ``missing`` on every surface and is refused by a re-judge — the fault it is, never "no trace".
+            log.error(
+                "eval_result %s (run %s, scope %s) is stored with has_trace=True and its trace was NOT: it reads "
+                "missing on every surface — %s",
+                result.id,
+                result.eval_run_id,
+                result.scope_id,
+                unstored,
+            )
 
     def load_eval_result(self, result_id: str, scope_id: str) -> EvalResult | None:
         """Load an eval result by id + scope. Never carries the trace — see :meth:`load_eval_trace`.
