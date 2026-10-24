@@ -15,7 +15,9 @@ sources:``. A model handed the provider's synthesis must not mistake it for
 retrieved text, so the attribution leads rather than trailing as a footnote --
 and an answer citing nothing says so in that same first line (AR-A3), because
 an uncited paragraph that reads as complete is the defect P8 exists for. The
-text follows unchanged, then the sources, numbered in citation order, each
+note naming any notice or unhonoured criterion follows that line, before the
+answer it qualifies, so a reader keeping only the head keeps it; then the
+text, unchanged, then the sources, numbered in citation order, each
 with :func:`~threetears.search.bind.result_facts`' line, so a reader can go
 and read the pages rather than trust the paragraph (AR-G1).
 
@@ -102,11 +104,11 @@ def render_answer_prose(result: GroundedAnswer, *, provider: str, zone: str | No
     :ptype provider: str
     :param zone: the IANA zone a source's time of day is shown in
     :ptype zone: str | None
-    :return: the first line, the answer text, the numbered sources, and a
-        closing note naming any notice or unhonoured criterion
+    :return: the head -- the first line, then a note naming any notice or
+        unhonoured criterion -- then the answer text and the numbered sources
     :rtype: str
     """
-    sections = [_first_line(result, provider), result.text.strip()]
+    sections = [_head(result, provider), result.text.strip()]
     if result.sources:
         lines = ["Sources:"]
         for position, source in enumerate(result.sources, 1):
@@ -115,13 +117,29 @@ def render_answer_prose(result: GroundedAnswer, *, provider: str, zone: str | No
             if source.snippet:
                 lines.extend(under(source.snippet, "   "))
         sections.append("\n".join(lines))
-    notes = _footnotes(result)
-    if notes:
-        sections.append(notes)
     return "\n\n".join(section for section in sections if section)
 
 
-def _footnotes(result: GroundedAnswer) -> str:
+def _head(result: GroundedAnswer, provider: str) -> str:
+    """The attribution line, then what the answer could not do, before any of the answer.
+
+    A reader that keeps only the head of a long result keeps what comes first,
+    so the sentence saying the answer is uncited, unbilled or unscoped comes
+    before the text it qualifies, never after its sources.
+
+    :param result: the answer
+    :ptype result: GroundedAnswer
+    :param provider: the product name that wrote it
+    :ptype provider: str
+    :return: the first line, and the note under it when there is one
+    :rtype: str
+    """
+    first = _first_line(result, provider)
+    notes = _notes(result)
+    return f"{first}\n\n{notes}" if notes else first
+
+
+def _notes(result: GroundedAnswer) -> str:
     """State what the answer could not do, for a reader who only gets prose.
 
     :param result: the answer

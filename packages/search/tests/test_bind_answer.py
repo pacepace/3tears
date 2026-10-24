@@ -58,7 +58,7 @@ async def test_the_first_line_says_whose_synthesis_follows_and_how_many_sources_
     assert rendered.success and rendered.error is None
     lines = rendered.content.splitlines()
     assert lines[0] == f"Answer from brave, {SINGLE_CITATIONS} sources:"
-    assert lines[2].startswith("The **capybara**"), "the text follows the first line, unchanged"
+    assert lines[2].startswith("The **capybara**"), "with nothing to note, the text follows the first line"
     assert "Sources:" in lines
     sources = lines[lines.index("Sources:") + 1 :]
     assert sources[0] == "1. https://grokipedia.com/page/List_of_largest_rodents"
@@ -73,10 +73,11 @@ async def test_an_uncited_answer_says_so_in_its_first_line_not_a_footnote() -> N
         AnswerRequest(question=QUESTION), provider=_brave(RecordedStream.of(stream("Capybaras graze.", usage_tag())))
     )
 
-    first = rendered.content.splitlines()[0]
-    assert first.startswith("Answer from brave, citing no sources")
+    lines = rendered.content.splitlines()
+    assert lines[0].startswith("Answer from brave, citing no sources")
     assert "Sources:" not in rendered.content
-    assert "What this answer could not do:" in rendered.content
+    assert lines[2] == "What this answer could not do:", "the note sits under the first line, before the answer"
+    assert rendered.content.index("cited no sources") < rendered.content.index("Capybaras graze.")
 
 
 async def test_an_unhonoured_criterion_and_a_notice_are_named_for_the_prose_reader() -> None:
@@ -84,9 +85,12 @@ async def test_an_unhonoured_criterion_and_a_notice_are_named_for_the_prose_read
     body = stream("Capybaras graze.", '<entities>{"x": 1}</entities>', usage_tag())
     rendered = await bind_answer(request, provider=_brave(RecordedStream.of(body)))
 
-    note = rendered.content.split("What this answer could not do:\n", 1)[1]
+    head, rest = rendered.content.split("What this answer could not do:\n", 1)
+    assert head.splitlines()[0] == "Answer from brave, citing no sources -- nothing here is checked against a page:"
+    note, after = rest.split("\n\n", 1)
     assert "- the domains-include constraint was not applied:" in note
     assert "<entities>" in note
+    assert after.startswith("Capybaras graze."), "the notes come before the answer text, never after its sources"
 
 
 async def test_the_metadata_round_trips_the_whole_answer_under_its_own_key() -> None:

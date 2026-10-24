@@ -262,6 +262,46 @@ async def test_an_unknown_tag_leaves_the_text_and_is_kept_verbatim_with_a_notice
     assert any("<entities>" in notice for notice in result.notices)
 
 
+async def test_an_unknown_tag_whose_body_is_not_json_is_the_answer_s_own_text() -> None:
+    """An answer quoting markup keeps it verbatim, and an anchor after it lands on the right code point."""
+    quoted = "Write <div>{x}</div> for a box. "
+    claim = "Schrödinger won."
+    text = quoted + claim
+    split = citation(1, len(text))
+    body = stream("Write <di", "v>{x}</d", "iv> for a box. ", claim, split[:20], split[20:], usage_tag())
+    result, _ = await _answer(body, chunk_size=5)
+
+    assert result.text == text, "the quoted markup stays where it stood"
+    assert [anchor.start for anchor in result.anchors] == [len(text)]
+    assert result.text[: result.anchors[0].start].endswith(claim)
+    assert not any("<div>" in notice for notice in result.notices), "quoted text is not provider machinery"
+    assert not any(key.startswith("unknown-tag") for key in result.provenance.provider_ids)
+
+
+async def test_an_unknown_tag_never_closed_is_text_too() -> None:
+    result, _ = await _answer(stream("Use <span>{ as an opener.", usage_tag()))
+
+    assert result.text == "Use <span>{ as an opener."
+
+
+async def test_an_unclosed_unknown_tag_never_swallows_a_citation_or_the_bill() -> None:
+    """A stray ``<span>{`` before a citation hands itself back as text, so the source and bill still read."""
+    text = "Use <span>{ as an opener."
+    result, _ = await _answer(stream(text, citation(1, len(text)), usage_tag()), chunk_size=4)
+
+    assert result.text == text
+    assert [anchor.start for anchor in result.anchors] == [len(text)]
+    assert result.spend.money == Decimal("0.01567"), "the bill after the stray opener was read"
+
+
+async def test_a_known_tag_with_a_body_that_is_not_json_still_fails_closed() -> None:
+    """AR-E2 holds for the two tags the adapter reads, whatever the rule for unknown names."""
+    failure = await _failure(RecordedStream.of(stream("Capybaras graze.", "<usage>{oops}</usage>")))
+
+    assert isinstance(failure, MalformedResponse)
+    assert "<usage>{oops}</usage>" in failure.message
+
+
 async def test_a_stream_without_a_usage_report_records_the_call_and_says_the_bill_is_unknown() -> None:
     """AR-C1: never an estimate wearing an observation's clothes."""
     result, _ = await _answer(stream("Capybaras graze.", citation(1, 16), final_usage=False))
@@ -382,6 +422,19 @@ async def test_a_stream_broken_after_the_bill_arrived_carries_the_bill() -> None
     assert failure.spend.money == Decimal("0.01567")
     assert failure.spend.provider_unit == "brave:searches"
     assert "bill is unknown" not in failure.message
+
+
+async def test_a_raw_timeout_mid_body_is_timed_out_counting_the_call_and_never_retried() -> None:
+    transport = RecordedStreamingTransport(
+        (RecordedStream.of(stream("Capybaras", done=False), broken=TimeoutError()), RecordedStream.of(SINGLE))
+    )
+    with pytest.raises(TimedOut) as caught:
+        await _adapter(transport).answer(AnswerRequest(question=QUESTION))
+
+    assert caught.value.spend.calls == 1
+    assert caught.value.spend.bytes_transferred > 0
+    assert "bill is unknown" in caught.value.message
+    assert len(transport.calls) == 1
 
 
 async def test_an_untyped_failure_mid_body_is_a_transport_failure() -> None:

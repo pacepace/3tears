@@ -36,9 +36,14 @@ one event; the provider promises nothing, so the parser assumes nothing.
 **A tag is ``<name>`` followed by ``{``.** Answer prose can hold a ``<`` --
 ``x < y``, a Markdown ``<br>`` -- and treating every one as a tag would hold
 the rest of the answer hostage to a closer that never comes. A tag name this
-module does not read is removed from the text, kept verbatim on the answer's
-provenance, and named in a notice (AR-A5): provider machinery is not answer
-text, and dropping it silently would lose what the provider said (P2).
+module does not read is provider machinery only when its body is a JSON
+object: then it is removed from the text, kept verbatim on the answer's
+provenance, and named in a notice (AR-A5), because it is not answer text and
+dropping it silently would lose what the provider said (P2). An unknown name
+whose body is not a JSON object -- an answer quoting ``<div>{x}</div>`` -- is
+the answer's own text and stays in it verbatim, where the provider's offsets
+count it; only the two tags this module reads fail closed on a bad body
+(AR-E2).
 
 **Spend is the provider's report, never a computation** (AD10, AR-C1, AR-C2):
 ``money`` is ``X-Request-Total-Cost``, parsed as :class:`~decimal.Decimal` at
@@ -167,6 +172,7 @@ _USAGE_TOKENS_OUT: Final[str] = "X-Request-Tokens-Out"
 #: the tag names this adapter reads; any other is an unknown tag (AR-A5).
 _CITATION_TAG: Final[str] = "citation"
 _USAGE_TAG: Final[str] = "usage"
+_KNOWN_TAGS: Final[frozenset[str]] = frozenset({_CITATION_TAG, _USAGE_TAG})
 
 #: the SSE data line that ends the stream.
 _DONE: Final[str] = "[DONE]"
@@ -266,6 +272,21 @@ def _as_cost(value: object) -> Decimal | None:
     return amount if amount >= 0 else None
 
 
+def _is_json_object(body: str) -> bool:
+    """Whether a tag's body is a JSON object -- what makes an unknown tag provider machinery.
+
+    :param body: what lay between a tag's opener and its closer
+    :ptype body: str
+    :return: whether the body parses as a JSON object
+    :rtype: bool
+    """
+    try:
+        return isinstance(json.loads(body), dict)
+    # NOSILENT: a body that is not JSON is the answer's own text, which the caller keeps verbatim
+    except ValueError:
+        return False
+
+
 def _provider_fact(value: object) -> str:
     """Render one provider value for :attr:`Provenance.provider_ids`, which holds strings.
 
@@ -361,6 +382,11 @@ class _TagReader:
     can tell whether ``<name>{`` follows. Inside a tag it buffers until the
     matching closer. Nothing is decided on a chunk or event boundary, because
     neither means anything to the content.
+
+    A closed tag of a name this adapter does not read, whose body is not a
+    JSON object, goes back into the text where it stood, verbatim: it was the
+    answer quoting markup, not the provider speaking. Deciding at the closer
+    rather than later keeps it in place, so the provider's offsets still land.
     """
 
     def __init__(self) -> None:
@@ -396,14 +422,17 @@ class _TagReader:
         return closed
 
     def finish(self) -> str | None:
-        """End the content: anything held outside a tag is text.
+        """End the content: anything held outside a tag is text, and so is an unknown tag never closed.
 
         :return: the unterminated tag's raw content when the content ended
-            inside one; None when it ended cleanly
+            inside a tag this adapter reads; None when it ended cleanly
         :rtype: str | None
         """
         if self._open is not None:
-            return f"<{self._open}>{self._pending}"
+            if self._open in _KNOWN_TAGS:
+                return f"<{self._open}>{self._pending}"
+            self._text.append(f"<{self._open}>")
+            self._open = None
         self._text.append(self._pending)
         self._pending = ""
         return None
@@ -448,14 +477,32 @@ class _TagReader:
         :ptype name: str
         :param closed: where a closed tag is appended
         :ptype closed: list[_Tag]
-        :return: whether the tag closed; False when more content is needed
+        :return: whether progress was made -- the tag closed, or an unknown
+            opener was handed back as text; False when more content is needed
         :rtype: bool
         """
         closer = f"</{name}>"
         at = self._pending.find(closer)
+        if name not in _KNOWN_TAGS:
+            # a tag this adapter reads, opening inside an unknown one, means the
+            # unknown opener was the answer's own text: hand it back, and read on
+            # from its body, so a stray ``<div>{`` never swallows a citation or the bill.
+            known = [
+                found
+                for found in (self._pending.find(f"<{tag}>{{") for tag in sorted(_KNOWN_TAGS))
+                if found >= 0 and (at < 0 or found < at)
+            ]
+            if known:
+                self._text.append(f"<{name}>")
+                self._open = None
+                return True
         if at < 0:
             return False
-        closed.append(_Tag(name=name, body=self._pending[:at]))
+        tag = _Tag(name=name, body=self._pending[:at])
+        if name in _KNOWN_TAGS or _is_json_object(tag.body):
+            closed.append(tag)
+        else:
+            self._text.append(tag.raw)
         self._pending = self._pending[at + len(closer) :]
         self._open = None
         return True
@@ -1001,6 +1048,17 @@ class BraveAnswersAdapter:
                 break
             except SearchFailure as failure:
                 raise self._broken(failure, reading, response) from failure
+            except TimeoutError as exc:
+                # a non-taxonomy transport's deadline passing mid-body: the bound
+                # ran out after the provider began answering, which is TimedOut,
+                # with the call counted and never retried (AR-E1).
+                raise TimedOut(
+                    f"stream from brave instance {self._provider_instance} passed its bound after "
+                    f"{reading.received} byte(s){self._unbilled(reading)}",
+                    spend=self._spend(reading, response),
+                    provider_instance=self._provider_instance,
+                    remediation="raise this call's timeout -- it bounds the whole answer, body included",
+                ) from exc
             except Exception as exc:
                 # a non-taxonomy transport's mid-body failure: the stream broke
                 # after it began, which is what TransportFailed says (SR-J1).
@@ -1106,7 +1164,7 @@ class BraveAnswersAdapter:
                     self._tag(reading, response, tag)
 
     def _tag(self, reading: _Reading, response: StreamedResponse, tag: _Tag) -> None:
-        """Read one closed tag: a citation, the usage report, or an unknown tag.
+        """Read one closed tag: a citation, the usage report, or an unknown tag whose body is JSON.
 
         :param reading: the reading so far
         :ptype reading: _Reading
