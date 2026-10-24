@@ -806,7 +806,7 @@ class SubjectFrontier(EvalBaseModel):
     k: int = 1
     #: The depth every point can be compared at: the fewest runs any point gave a case every point shares, over
     #: those cases (:func:`~threetears.evals.analysis.depth.common_depth`). A deeper point is read there over all its attempts (``FrontierPoint.common_pass_hat_k``). At
-    #: 1 a comparison is of pass rates, not reliability. ``None`` when no point scored an attempt. Disclosed beside
+    #: 1 a comparison is of pass rates, not reliability. ``None`` where :attr:`~threetears.evals.analysis.depth.CommonDepth.k` is: no point scored an attempt, or they share no case (``shares_no_case``). Disclosed beside
     #: ``k``, which the ranking still reads.
     common_depth: int | None = None
     #: True where two or more points scored an attempt and they share no case: pass^k compares nothing between them,
@@ -1497,18 +1497,19 @@ def _place_common_depth(points: Sequence[FrontierPoint], cases: Sequence[_Contes
     point's pass^k there over the cases every point ran, and what it leaves out. Nothing ranked reads
     it; it is the comparison every point can enter, stated beside the headline.
 
-    :return: The common depth; None when no point scored an attempt.
+    :return: The common depth; None where :attr:`~threetears.evals.analysis.depth.CommonDepth.k` is: no point scored
+        an attempt, or the points share no case (then every measured case is left out of every point).
     """
     keyed = {str(index): contestant.scored for index, contestant in enumerate(cases)}
     common: CommonDepth = common_depth(keyed)
-    if common.k is None:
-        return None
     for index, point in enumerate(points):
         if not cases[index].scored:
             continue
+        point.n_cases_left_out = common.left_out.get(str(index), 0)
+        if common.k is None:
+            continue
         point.common_pass_hat_k = pass_hat_k_over(cases[index].scored, common.cases, common.k)
         point.n_common_cases = len(common.cases)
-        point.n_cases_left_out = common.left_out.get(str(index), 0)
     return common.k
 
 

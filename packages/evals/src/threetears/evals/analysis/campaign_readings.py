@@ -306,9 +306,11 @@ class FloorStatus(EvalDocumentModel):
     short_by: float | None = Field(
         default=None,
         description=(
-            "How far the worst case lies past the margin, in points (`worst_drop` less `margin`), where it does: how "
-            "far an unclear floor is from being shown held, or a broken one past it. None where the worst case lies "
-            "within the margin, or for a cost floor. A floor speaks for the one rate it read, never its whole aspect."
+            "For an unclear floor only: how far the worst case lies past the margin, in points (`worst_drop` less "
+            "`margin`), which is how far the floor is from being shown held. None for a held floor, for a broken one "
+            "(its breach is the interval and reason it carries, not this figure: `worst_drop` is the far end of the "
+            "interval, not how far the floor is broken), where the worst case lies within the margin, and for a cost "
+            "floor. A floor speaks for the one rate it read, never its whole aspect."
         ),
     )
 

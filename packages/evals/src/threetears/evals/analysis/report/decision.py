@@ -318,7 +318,11 @@ def evaluate_floor(
     return FloorStatus(
         margin=margin,
         worst_drop=worst,
-        short_by=worst - margin if worst is not None and margin is not None and worst > margin else None,
+        short_by=(
+            worst - margin
+            if verdict.outcome == "unclear" and worst is not None and margin is not None and worst > margin
+            else None
+        ),
         floor=floor.key,
         aspect=floor.aspect,
         arm=arm,

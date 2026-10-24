@@ -1,10 +1,8 @@
-"""Depth on every surface: the campaign page's tables and lines, the Methods' pairing line, the writer's view, the
-frontier's text, and the memo check that drops a comparison above the depth the arms share.
+"""Depth on every surface: the campaign page's tables and lines, the Methods' pairing line, the writer's view and the
+frontier's text.
 
 The page states depth in tables, each with one plain sentence under it; the writer reads the same depths as fields
-and the sentence to say once; and code, not the writer, holds the memo to them: a sentence comparing arms on pass^k
-above the common depth is dropped and listed, and a memo that never says its arms ran to different depths is named
-in the Methods, where the page says it instead.
+and the sentence to say once. Code reads none of the memo's prose for them.
 """
 
 from __future__ import annotations
@@ -17,9 +15,9 @@ from threetears.evals.analysis.depth_reading import PAIRING_METHOD
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.lens_text import frontier_text
 from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, TableBlock
-from threetears.evals.analysis.style import lint_page, lint_prose
-from threetears.evals.kernel.authored import AuthoredCampaignAnalysis
-from packages.evals.tests.campaign_bundle_support import campaign_bundle, memo
+from threetears.evals.analysis.style import lint_prose
+from packages.evals.tests.style_support import lint_page
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.depth_support import ONCE, TWICE, TwoArms
 
 #: When each aspect's own page was assembled.
@@ -29,21 +27,14 @@ _ASSEMBLED_AT = "2026-10-24T00:00:00+00:00"
 _SAID = "A was run twice on character, B once; that tightens A's own estimate, not the comparison much."
 
 
-def _page(arms: TwoArms, written: AuthoredCampaignAnalysis | None = None) -> CampaignReport:
+def _page(arms: TwoArms) -> CampaignReport:
     read = arms.readings()
     reports = {
         "character": build_code_only_report(
             arms.bundle, assembled_at=_ASSEMBLED_AT, campaign_name="depth", arm_labels=read.arm_labels()
         )
     }
-    recommended = written.recommended() if written is not None else None
-    key = {label: key for key, label in read.arm_labels().items()}.get(recommended.arm) if recommended else None
-    return build_campaign_report(arms.campaign, read, reports, written, recommended_variant_key=key)
-
-
-def _memo(arms: TwoArms, summary: str) -> AuthoredCampaignAnalysis:
-    bundle = campaign_bundle(arms.bundle, arms=arms.arms, readings=arms.readings().readings)
-    return AuthoredCampaignAnalysis.model_validate(memo(bundle, summary=summary))
+    return build_campaign_report(arms.campaign, read, reports, None)
 
 
 def _table(page: CampaignReport, name: str) -> list[dict[str, object]]:
@@ -146,10 +137,11 @@ def test_the_writer_reads_each_arm_s_depth_the_common_depth_and_what_limits_each
     assert reading["precision"]["means"] == REPEATS_FLOOR
 
 
-def test_the_writer_prompt_tells_the_rule_the_page_enforces() -> None:
+def test_the_writer_prompt_states_the_depth_rule() -> None:
     assert "`depth.said`" in EVAL_ANALYSIS_GEN_DEFAULT
     assert (
-        "never compare arms on pass^k above a `depth.pass_k` `common_depth`, or a null one" in EVAL_ANALYSIS_GEN_DEFAULT
+        "never compare arms on pass^k above a `depth.pass_k` `common_depth`, or at all where null (`shares_no_case`)"
+        in EVAL_ANALYSIS_GEN_DEFAULT
     )
 
 

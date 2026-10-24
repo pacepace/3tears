@@ -8,15 +8,15 @@ The renderer (:mod:`threetears.evals.analysis.report`) reads this module for eve
 - :class:`ArmName` names an arm twice: in full on its first mention (``deepseek-v4.1-flash (production, control)``)
   and by its given label after that (``production``).
 - :data:`GLOSSARY` defines every term of art a page uses, once, in one plain sentence.
-- :func:`lint_prose` holds a sentence to the rules, and :func:`lint_page` a whole ``report.md``: the rules hold the
-  text code writes. Nothing here reads, rewrites or drops what a model wrote; the writer's prompt states the same
-  rules, and the reporter eval measures whether a memo keeps them.
+- :func:`lint_prose` holds a sentence to the rules. The package's own tests apply them to the text code writes (the
+  page, whole); a host may apply them to its own. Nothing here reads, rewrites or drops what a model wrote; the
+  writer's prompt states the same rules, and a host's reporter eval can measure whether a memo keeps them, on the
+  dimensions its rubric declares.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Literal
 
@@ -252,9 +252,6 @@ _KEY_VALUE = re.compile(r"\b[a-z_][a-z0-9_]*=[^\s,;)}=]+")
 _FACT_LINE = re.compile(r"^[A-Z][a-z ]+: .* · [A-Z][a-z ]+: ")
 _CODE_SPAN = re.compile(r"`[^`]*`")
 _CASE_NUMBER = re.compile(r"\bcase \d+\b")
-#: A line quoting something whole, alone (the first screen's declared question, ``"…"``) or after a lead
-#: (``Asked: "…"``): the quotation is the page's data, held to no prose rule.
-_QUOTED_LINE = re.compile(r'^(?:[A-Z][a-z]+(?: [a-z]+)*: )?".+"$')
 
 
 @dataclass(frozen=True)
@@ -312,56 +309,6 @@ def lint_prose(text: str, *, question: str | None = None, header: bool = False) 
     return found
 
 
-def lint_page(markdown: str, *, question: str | None = None, names: Collection[str] = ()) -> list[StyleViolation]:
-    """Every rule a rendered ``report.md`` breaks, outside the data it quotes.
-
-    Headings and table headers are held to the header rule; prose lines to every rule. Table body cells, fenced
-    blocks, folded trial details, the methods' disclosures fold and a line quoting something whole (the declared
-    question under the title) are data and quoted text, not prose.
-
-    :param markdown: The page.
-    :ptype markdown: str
-    :param question: The declared question, which only its own quoted line may carry.
-    :ptype question: str | None
-    :param names: The arms' names, which head a column as a name, not a header's words.
-    :ptype names: Collection[str]
-    :return: The violations, in page order.
-    :rtype: list[StyleViolation]
-    """
-    found: list[StyleViolation] = []
-    fenced = False
-    folded = 0
-    header_row = False
-    titled = False
-    for line in markdown.splitlines():
-        if line.startswith("```"):
-            fenced = not fenced
-            continue
-        folded += line.count("<details") - line.count("</details>")
-        if fenced or folded > 0 or line.startswith("</details>") or not line.strip():
-            header_row = False
-            continue
-        if line.startswith("|"):
-            cells = [cell.strip() for cell in line.strip("|").split(" | ")]
-            if not header_row and not line.startswith("|---"):
-                headers = [cell for cell in cells if cell.removeprefix("▸ ") not in names]
-                found += [v for cell in headers for v in lint_prose(cell, header=True) if v.rule == "header"]
-            header_row = True
-            continue
-        header_row = False
-        if line.startswith("#"):
-            heading = line.lstrip("#").strip()
-            # The page's own title, its first level-one heading, is a name: held to no header length. Any other heading is.
-            title = not titled and line.startswith("# ")
-            titled = titled or title
-            found += lint_prose(heading, header=not title)
-            continue
-        if _QUOTED_LINE.match(line):
-            continue
-        found += lint_prose(line.lstrip("-> *").strip(), question=question)
-    return found
-
-
 __all__ = [
     "BANNED_PHRASES",
     "CASE_LABEL_CHARS",
@@ -377,7 +324,6 @@ __all__ = [
     "code",
     "humanize",
     "is_dump",
-    "lint_page",
     "lint_prose",
     "measure_name",
     "sentences",

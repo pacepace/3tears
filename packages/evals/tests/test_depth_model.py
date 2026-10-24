@@ -2,8 +2,7 @@
 
 Off unless the host asks for it (``HostProfile.model_pass_hat_k``). When on, each frontier point that scored no case
 at the subject's ``k`` carries a model's pass^k there, ``basis: "model"`` with what it assumes; nothing ranks, gates
-or bars on it, the page puts it in a table of its own with its assumption, the writer reads it labelled, and a memo
-comparing arms on it is dropped, as any comparison at an unreached depth is.
+or bars on it, the page puts it in a table of its own with its assumption, and the writer reads it labelled.
 
 Arm A ran each of four cases twice, passing 2, 1, 0 and 2 of them: shares 1, 1/2, 0, 1, so mean 5/8, sample variance
 11/48, and a mean ``1/n`` of 1/2. The per-case chance's variance is ``(11/48 - (5/8)(3/8)(1/2)) / (1 - 1/2) = 43/192``;
@@ -123,6 +122,42 @@ def test_the_writer_reads_the_model_labelled_and_the_text_says_it_is_one() -> No
     [aspect] = writer_view(bundle)["aspects"]
 
     assert aspect["depth"]["pass_k_model"] == {
-        "A": {"k": 3, "pass_hat_k": pytest.approx(_A_PASS_3, rel=1e-3), "basis": "model", "assumes": MODEL_ASSUMES}
+        "character": {
+            "A": {"k": 3, "pass_hat_k": pytest.approx(_A_PASS_3, rel=1e-3), "basis": "model", "assumes": MODEL_ASSUMES}
+        }
     }
     assert MODEL_ASSUMES in frontier_text(arms.bundle.frontier)
+
+
+def test_an_arm_modelled_on_two_subjects_keeps_each_subject_s_figure_in_the_view_and_on_the_page() -> None:
+    arms = TwoArms(TWICE, ONCE, k_a=3, k_b=3, profile=_MODELLED)
+    [first] = arms.bundle.frontier.subjects
+    # The second subject's A is modelled at another depth, so its figure differs from the first's.
+    other = [
+        point.model_copy(update={"model_pass_hat_k": point.model_pass_hat_k.model_copy(update={"k": 2})})
+        if point.model_pass_hat_k is not None
+        else point
+        for point in first.points
+    ]
+    second = first.model_copy(update={"subject_id": "subject-2", "subject_label": "second", "points": other})
+    bundle = arms.bundle.model_copy(
+        update={"frontier": arms.bundle.frontier.model_copy(update={"subjects": [first, second]})}
+    )
+    read = arms.readings(bundle)
+
+    [aspect] = writer_view(campaign_bundle(bundle, arms=arms.arms, readings=read.readings))["aspects"]
+    modelled = aspect["depth"]["pass_k_model"]
+    assert list(modelled) == ["character (Test subject)", "character (second)"]
+    assert [modelled[where]["A"]["k"] for where in modelled] == [3, 2]
+
+    reports = {
+        "character": build_code_only_report(
+            bundle, assembled_at="2026-10-24T00:00:00+00:00", campaign_name="depth", arm_labels=read.arm_labels()
+        )
+    }
+    page = build_campaign_report(arms.campaign, read, reports, None)
+    (table,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "model_pass_k"]
+    assert [(row["aspect"].value, row["arm"].value, row["depth"].value) for row in table.rows] == [
+        ("character (Test subject)", "A", 3),
+        ("character (second)", "A", 2),
+    ]

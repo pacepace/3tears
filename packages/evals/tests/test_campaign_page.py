@@ -41,7 +41,7 @@ from threetears.evals.analysis.report.model import (
     TextBlock,
 )
 from threetears.evals.analysis.report.words import FIRST_SCREEN_BANNED, NO_RECOMMENDATION_WORDS
-from threetears.evals.analysis.style import lint_page
+from packages.evals.tests.style_support import lint_page
 from threetears.evals.kernel.authored import (
     AspectSummary,
     AuthoredCampaignAnalysis,

@@ -49,8 +49,8 @@ Every refusal below reads a structured field of the generator's output — a cel
 names, a caveat kind, the aspect it summarises, the arm it recommends, a position it links — against the bundle. The model's prose is the
 interpretive layer, and whether it is accurate, insightful and relevant is measured by evaluating the reporter as a
 candidate, not by code here. No check reads the prose's words: a title stating a null nothing established, or naming
-an arm its finding cites nothing of, is the prompt's rule 9 to prevent and the reporter eval's to measure, in any
-language the writer writes.
+an arm its finding cites nothing of, is the prompt's rule 9 to prevent, and a host's reporter eval can measure on the
+dimensions its rubric declares, in any language the writer writes.
 
 **The recommendation is pinned, and it answers to code's readings.** It names the findings it rests on and an arm
 the campaign holds; a finding names only trials the campaign holds. A candidate is recommended only where the campaign
@@ -1249,7 +1249,7 @@ def _reject_unaddressed_warnings(document: AuthoredCampaignAnalysis, bundle: Cam
     shows. Structurally, per warning kind: every warning code raised on the recommended arm is named, once, in its
     field with a reason; and nothing is named there that code did not raise, since a reason for overriding a warning
     that never fired argues against nothing. Which warnings fired is code's (``CampaignReadings``); whether the reason
-    is good is the reader's, and the reporter eval measures it.
+    is good is the reader's, and a host's reporter eval can measure it.
 
     - ``floors_overridden``: every floor code read ``broken`` on the arm, by its ``floor`` key.
     - ``behind_on``: every aspect a choice's pair readings show another arm ahead of the arm on, by aspect and that

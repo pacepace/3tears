@@ -16,11 +16,10 @@ from threetears.evals.analysis.campaign_bundle import CampaignBundle, writer_vie
 from threetears.evals.analysis.depth import Depth
 from threetears.evals.analysis.depth_reading import aspect_depth
 from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, TableBlock
-from threetears.evals.kernel.authored import AuthoredCampaignAnalysis
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, bounded_difference_interval
-from threetears.evals.kernel.declaration import RateDrop
+from threetears.evals.kernel.declaration import CostLower, RateDrop
 from threetears.evals.kernel.errors import RefusedInput
-from packages.evals.tests.campaign_bundle_support import campaign_bundle, memo
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.depth_support import ONCE, PROFILE, TWICE, TwoArms
 
 _ASSEMBLED_AT = "2026-10-24T00:00:00+00:00"
@@ -33,26 +32,15 @@ _THRICE = {
     "tc4": (True, True, True),
 }
 
-#: The page's line on a memo that never says its arms ran to different depths, on character.
-_UNSAID = (
-    "The memo does not say the arms ran to different depths on character; the Depth table and the sentence under it "
-    "say so."
-)
 
-
-def _page(arms: TwoArms, summary: str | None = None) -> CampaignReport:
+def _page(arms: TwoArms) -> CampaignReport:
     read = arms.readings()
     reports = {
         "character": build_code_only_report(
             arms.bundle, assembled_at=_ASSEMBLED_AT, campaign_name="depth", arm_labels=read.arm_labels()
         )
     }
-    written = None
-    if summary is not None:
-        bundle = campaign_bundle(arms.bundle, arms=arms.arms, readings=read.readings)
-        written = AuthoredCampaignAnalysis.model_validate(memo(bundle, summary=summary))
-    key = arms.key_a if written is not None else None
-    return build_campaign_report(arms.campaign, read, reports, written, recommended_variant_key=key)
+    return build_campaign_report(arms.campaign, read, reports, None)
 
 
 def _lines(page: CampaignReport, section: str) -> list[str]:
@@ -71,6 +59,8 @@ def test_arms_that_share_no_case_are_said_to_compare_nothing_in_the_bundle_the_w
 
     assert subject.common_depth is None and subject.unmeasured_for == [arms.key_b]
     assert subject.shares_no_case
+    # Every case each arm measured is left out of the comparison, so the page's "Cases left out" says two apiece.
+    assert [(point.n_common_cases, point.n_cases_left_out) for point in subject.points] == [(0, 2), (0, 2)]
     view = writer_view(campaign_bundle(arms.bundle, arms=arms.arms, readings=arms.readings().readings))
     [entry] = view["aspects"][0]["depth"]["pass_k"]
     assert (entry["common_depth"], entry["shares_no_case"], entry["unmeasured_for"]) == (None, True, ["B"])
@@ -106,11 +96,6 @@ def test_one_arm_short_on_one_case_sets_the_common_depth_and_the_planned_depth_i
         "On character, pass^k is compared at depth 2, the fewest runs any arm gave a shared case, over all runs."
         in _lines(page, "scoreboard")
     )
-
-
-# =============================================================================
-# The comparison, however it is worded
-# =============================================================================
 
 
 # =============================================================================
@@ -203,10 +188,77 @@ def test_a_floor_states_its_worst_case_its_margin_and_how_far_it_is_short_after_
     assert floor["short_by"] == pytest.approx(-100 * low - 10.0, rel=1e-3)
 
 
-def test_a_floor_whose_worst_case_lies_within_its_margin_is_short_by_nothing() -> None:
-    # Identical shares: the 95% interval on the paired difference is about ±74 points, inside a 90-point margin.
-    arms = TwoArms(TWICE, TWICE, k_a=2, k_b=2, floors=[RateDrop(max_points=90.0)])
+#: Twenty cases, for a floor to be read over enough of them (5 at least) to be held or broken.
+_MANY = [f"tc{index}" for index in range(20)]
+
+
+def _passing(count: int) -> dict[str, tuple[bool, ...]]:
+    """One run of every one of the twenty cases, the first ``count`` passed."""
+    return {case: (index < count,) for index, case in enumerate(_MANY)}
+
+
+def _floor_arms(control: int, candidate: int, margin: float = 10.0) -> TwoArms:
+    return TwoArms(
+        _passing(control), _passing(candidate), k_a=1, k_b=1, floors=[RateDrop(max_points=margin)], cases=_MANY
+    )
+
+
+def _written(arms: TwoArms) -> dict[str, object]:
+    read = arms.readings()
+    [floor] = writer_view(campaign_bundle(arms.bundle, arms=arms.arms, readings=read.readings, floors=read.floors))[
+        "floors"
+    ]
+    return floor
+
+
+def test_a_held_floor_states_its_margin_and_worst_case_and_is_short_by_nothing() -> None:
+    # B passes exactly the cases A does: every paired difference is zero, and over twenty cases the interval on them
+    # stays inside a 60-point margin.
+    arms = _floor_arms(15, 15, margin=60.0)
     [status] = arms.readings().floors
 
-    assert status.margin == 90.0 and status.worst_drop == pytest.approx(73.96, abs=0.01)
+    assert status.status == "held"
+    assert status.margin == 60.0 and status.worst_drop is not None and 0.0 <= status.worst_drop <= 60.0
     assert status.short_by is None
+    floor = _written(arms)
+    assert (floor["status"], floor["margin"], floor["speaks_for"], floor["short_by"]) == (
+        "held",
+        60.0,
+        "the pass rate",
+        None,
+    )
+    assert floor["worst_drop"] == pytest.approx(status.worst_drop, rel=1e-3)
+
+
+def test_a_broken_floor_is_short_by_nothing_because_its_worst_case_is_not_how_far_it_is_broken() -> None:
+    # A passes all twenty, B five: the whole interval of the drop lies past the 10-point margin, and its far end is far
+    # past it, which would overstate a breach that begins at its near end.
+    arms = _floor_arms(20, 5)
+    [status] = arms.readings().floors
+
+    assert status.status == "broken"
+    assert status.margin == 10.0 and status.worst_drop is not None and status.worst_drop > 10.0
+    assert status.short_by is None
+    floor = _written(arms)
+    assert (floor["status"], floor["margin"], floor["short_by"]) == ("broken", 10.0, None)
+    assert floor["worst_drop"] == pytest.approx(status.worst_drop, rel=1e-3)
+
+
+def test_an_unclear_floor_is_short_by_what_its_worst_case_lies_past_the_margin() -> None:
+    arms = _floor_arms(15, 14)
+    [status] = arms.readings().floors
+
+    assert status.status == "unclear"
+    assert status.worst_drop is not None and status.worst_drop > 10.0
+    assert status.short_by == pytest.approx(status.worst_drop - 10.0)
+    assert _written(arms)["short_by"] == pytest.approx(status.short_by, rel=1e-3)
+
+
+def test_a_cost_floor_has_no_margin_worst_case_or_shortfall() -> None:
+    arms = TwoArms(TWICE, ONCE, k_a=2, k_b=1, floors=[CostLower()])
+    [status] = arms.readings().floors
+
+    assert (status.margin, status.worst_drop, status.short_by) == (None, None, None)
+    floor = _written(arms)
+    assert (floor["margin"], floor["worst_drop"], floor["short_by"]) == (None, None, None)
+    assert floor["speaks_for"] == "the cost per reply"

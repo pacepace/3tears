@@ -14,8 +14,8 @@ a reading for when its runs ran (#919) or proposing a sample size or cost of its
 sentence disputing a floor's reading or a title restating a measured number with code's words, no longer drops
 meta-prose or the repeated question, and no longer rewrites a raw model id into its arm's label. The generator no
 longer refuses a finding title in an English null phrasing or one naming an arm its finding cites nothing of. Every
-such rule stays in the seeded writer prompt, the facts behind them stay in the writer view, and the reporter eval
-measures them, in whatever language a memo is written. Gone from Methods: the lines `The memo said "…", which
+such rule stays in the seeded writer prompt and the facts behind them stay in the writer view. A host's reporter eval can
+measure them, on the dimensions its rubric declares (the package ships none), in whatever language a memo is written. Gone from Methods: the lines `The memo said "…", which
 discounts a reading for when its runs ran, so the page does not print it.`, `…, a sample size or cost no code
 computed, …`, `…, which disputes a difference a floor read either way; …` and `N memo sentence(s) restated a measured
 number, …`; the `Style` fold; and the `Memo style` row. Gone from the first screen: the line for an arm whose label a

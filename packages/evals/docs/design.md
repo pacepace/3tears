@@ -59,8 +59,8 @@ recorded as witnessed rather than left to chance. See [the world model](evaluati
 **Code checks facts, a judge assesses judgment, and people check the judge; the three never swap.**
 Code never grades a model's prose: a deterministic gate over free text never converges, because each
 generation finds a phrasing it does not parse. The verdict and every count on a report are code's, a recommendation
-names the findings it rests on, and a null claim in a finding's title is checked against that finding's evidence
-structurally; only whether a title uses one of a few null phrasings is read off its words
+names the findings it rests on, and code reads no word of a finding's title: a title stating a null its evidence did not
+establish is the prompt's rule to prevent
 ([Having a model write the analysis](reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence)).
 A judge never grades a count or order code can check, and a prompt never coaches toward a grader's words, which
 measures obedience.
@@ -468,7 +468,7 @@ pinned to its findings and each finding to its trials. (The campaign page later 
 first screen, the summary across the aspects, below every warning code raised; see below.) The null rule moved onto
 finding titles, where a phrase list once refused a title saying arms are alike over no established null. Code reads
 no prose now (owner, 2026-10-24: "Bad judgment is fixed by improved prompts and/or oversight and calibration, not by
-code"): the rule is the prompt's, and the reporter eval's judge measures it.
+code"): the rule is the prompt's, and a host's reporter eval can measure it on the rubric dimensions it declares.
 
 **The memo's summary opens the campaign's page, after code's warnings** (2026-10, #864). The owner asked for a
 holistic summary first, then the recommendation, then the aspects. A measurement's memo and a no-clear-winner

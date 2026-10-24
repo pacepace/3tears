@@ -1600,7 +1600,7 @@ def _finding_blocks(
 
 def _as_written(text: str) -> str:
     """The writer's words as the page prints them: as written, on one line. Code reads none of them: whether they
-    keep the prompt's rules is the reporter eval's to measure, in whatever language they are written."""
+    keep the prompt's rules is for a host's reporter eval to measure, in whatever language they are written."""
     return " ".join(text.split())
 
 

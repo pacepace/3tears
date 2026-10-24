@@ -34,10 +34,15 @@ PROFILE = toyhost_profile()
 CASES = ["tc1", "tc2", "tc3", "tc4"]
 
 
-def _launched(run_id: str, model: str, k: int) -> EvalRun:
+def _launched(run_id: str, model: str, k: int, cases: Sequence[str] = CASES) -> EvalRun:
     """A run of one arm (its candidate model) at planned depth ``k``, stamped as the launch stamps it."""
     run = make_eval_run(
-        id=run_id, status="completed", template_digest="digest-1", candidate_model=model, k_runs=k, test_case_ids=CASES
+        id=run_id,
+        status="completed",
+        template_digest="digest-1",
+        candidate_model=model,
+        k_runs=k,
+        test_case_ids=list(cases),
     )
     context = derive_context_identity(run, PROFILE)
     variant = derive_variant_identity(run=run, profile=PROFILE)
@@ -90,8 +95,9 @@ class TwoArms:
         k_b: int,
         profile: HostProfile = PROFILE,
         floors: Sequence[DecisionClause] = (),
+        cases: Sequence[str] = CASES,
     ) -> None:
-        self.run_a, self.run_b = _launched("run-a", "sonnet", k_a), _launched("run-b", "haiku", k_b)
+        self.run_a, self.run_b = _launched("run-a", "sonnet", k_a, cases), _launched("run-b", "haiku", k_b, cases)
         self.key_a, self.key_b = _key(self.run_a), _key(self.run_b)
         self.results = {self.run_a.id: _results(self.run_a, a), self.run_b.id: _results(self.run_b, b)}
         self.arms = [

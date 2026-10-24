@@ -15,8 +15,6 @@ through the operations and through :meth:`MountedTool.call`, the one path every 
 - **A reporter run counts the turns it delivered**: each generator call that returned. A memo that failed
   validation after its billed calls returned keeps their cost; one whose first call was refused delivered
   none, and its cell reads as one where no result took a turn.
-- **A memo titling an arm its readings omit fails its case** (#829): the generator refuses it, naming the arm, and
-  the cell records that refusal as the candidate's own failure.
 """
 
 from __future__ import annotations

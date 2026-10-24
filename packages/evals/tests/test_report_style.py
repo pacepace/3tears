@@ -12,10 +12,10 @@ from threetears.evals.analysis.style import (
     GLOSSARY,
     arm_name,
     humanize,
-    lint_page,
     lint_prose,
     measure_name,
 )
+from packages.evals.tests.style_support import lint_page
 
 
 def _rules(text: str, **kwargs: object) -> list[str]:

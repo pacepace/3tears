@@ -1366,14 +1366,14 @@ def _model_blocks(
     rows = [
         table_row(
             {
-                "aspect": depth.aspect,
+                "aspect": said.where,
                 "arm": _label_of(bundle, labels)(point.variant_key),
                 "depth": point.model_pass_hat_k.k,
                 "model": round(100 * point.model_pass_hat_k.pass_hat_k, 1),
             }
         )
         for bundle, depth in depths
-        for subject in bundle.frontier.subjects
+        for subject, said in zip([sub for sub in bundle.frontier.subjects if sub.points], depth.subjects, strict=True)
         for point in subject.points
         if point.model_pass_hat_k is not None
     ]
@@ -1628,7 +1628,7 @@ def _unread_without_control_lines(campaign: EvalCampaign, reports: Mapping[str, 
 
 def _as_written(text: str) -> str:
     """The writer's words as the page prints them: as written, on one line. Code reads none of them: whether they
-    keep the prompt's rules is the reporter eval's to measure, in whatever language they are written."""
+    keep the prompt's rules is for a host's reporter eval to measure, in whatever language they are written."""
     return " ".join(text.split())
 
 

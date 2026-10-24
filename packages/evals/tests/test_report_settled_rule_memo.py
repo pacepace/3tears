@@ -30,7 +30,8 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.references import cell_aliases
 from threetears.evals.analysis.report import DisclosureBlock, TextBlock
-from threetears.evals.analysis.style import lint_page, lint_prose
+from threetears.evals.analysis.style import lint_prose
+from packages.evals.tests.style_support import lint_page
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.campaign_bundle_support import memo as authored_memo
 from packages.evals.tests.aspect_support import redeclared

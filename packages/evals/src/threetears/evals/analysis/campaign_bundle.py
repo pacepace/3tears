@@ -640,7 +640,8 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
                 "arm": status.arm_label,
                 "status": status.status,
                 "reading": status.reading,
-                "speaks_for": status.reading or "the pass rate",
+                "speaks_for": status.reading
+                or ("the pass rate" if status.margin is not None else "the cost per reply"),
                 "interval": _figures(status.interval),
                 "worst_drop": _figure(status.worst_drop),
                 "margin": status.margin,
@@ -950,17 +951,22 @@ def _depth(aspect: AnalysisContextBundle, namer: _Namer) -> dict[str, Any]:
             for subject in depth.subjects
             if subject.compared
         ]
+    # Keyed by subject (`where`, as each `pass_k` entry is) then arm: an aspect with two subjects holds an arm modelled
+    # on both, and a figure with no subject would be one the writer cannot place.
     modelled = {
-        namer.arm(point.variant_key): {
-            "k": point.model_pass_hat_k.k,
-            "pass_hat_k": _figure(point.model_pass_hat_k.pass_hat_k),
-            "basis": point.model_pass_hat_k.basis,
-            "assumes": point.model_pass_hat_k.assumes,
+        said.where: {
+            namer.arm(point.variant_key): {
+                "k": point.model_pass_hat_k.k,
+                "pass_hat_k": _figure(point.model_pass_hat_k.pass_hat_k),
+                "basis": point.model_pass_hat_k.basis,
+                "assumes": point.model_pass_hat_k.assumes,
+            }
+            for point in subject.points
+            if point.model_pass_hat_k is not None
         }
-        for subject in aspect.frontier.subjects
-        for point in subject.points
-        if point.model_pass_hat_k is not None
+        for subject, said in zip([sub for sub in aspect.frontier.subjects if sub.points], depth.subjects, strict=True)
     }
+    modelled = {where: arms for where, arms in modelled.items() if arms}
     if modelled:
         # A model, never a measurement: carried labelled, and no comparison may rank on it.
         view["pass_k_model"] = modelled

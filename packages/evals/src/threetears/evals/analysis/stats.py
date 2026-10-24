@@ -1520,14 +1520,15 @@ def bounded_mean_interval(
     :ptype value_range: tuple[float, float]
     :param confidence: The two-sided coverage.
     :ptype confidence: float
-    :return: ``(low, high)``, or None below two values or with a value outside the range.
+    :return: ``(low, high)``, or None below two values: too few to bound a mean.
     :rtype: tuple[float, float] | None
+    :raises ValueError: A value lies outside ``value_range``: a defect in the caller's data, never an absent interval.
     """
-    if len(values) < 2:
-        return None
     low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
     exact = [exact_decimal(v) for v in values]
     if any(not low <= v <= high for v in exact):
+        raise ValueError(f"a value lies outside the declared range {value_range}: {list(values)}")
+    if len(values) < 2:
         return None
     return _bounded_mean_interval(exact, (float(low), float(high)), alpha=(1.0 - confidence) / 2.0)
 

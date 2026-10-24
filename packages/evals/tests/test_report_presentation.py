@@ -3,7 +3,7 @@
 The G2 campaign's numbers (4 cases × 3 repeats; production passed 10 of 12, the cheaper candidate 2 of 12; cost per
 reply 0.003092 against 0.003301) are replayed here through the quick path with arms named as a host names them —
 ``deepseek-v4.1-flash (production)`` — and the campaign's own floors declared before the run. Every page the
-suite renders here passes :func:`~threetears.evals.analysis.style.lint_page`.
+suite renders here passes :func:`~packages.evals.tests.style_support.lint_page`.
 """
 
 from __future__ import annotations
@@ -26,7 +26,8 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TextBlock, TrialBlock
 from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement
-from threetears.evals.analysis.style import GLOSSARY, lint_page
+from threetears.evals.analysis.style import GLOSSARY
+from packages.evals.tests.style_support import lint_page
 from packages.evals.tests.g2_support import (
     CANDIDATE,
     CASES,

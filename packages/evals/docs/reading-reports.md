@@ -287,7 +287,7 @@ about the page ("rests on", "written by", "a count, not a ranking"), no hedge on
 no `key=value`, no chain of dashes, no sentence over 28 words or with more than three numbers (that is a table), no
 header over three words, and the declared question only on its own quoted line. `humanize` is the one seam an
 identifier passes on its way to a reader. Those rules hold the text code writes. The memo's words are printed as
-written, whitespace aside: code checks code, and a model's prose is measured by a model, the reporter eval, calibrated
+written, whitespace aside: code checks code, and a model's prose is measured by a model, a host's reporter eval on the dimensions its rubric declares, calibrated
 by people, in whatever language the memo is written. The writer's prompt states the same rules (no restated numbers,
 no sample size or cost of its own, no dispute of a floor code settled, no discount of a reading for when its runs
 ran), and the writer view carries the facts they rest on (`cases_to_settle`, each run's `k_runs`, `late_criteria`).
@@ -624,8 +624,8 @@ sets each why beside the warning it answers, and a floor the memo overrides stil
 **A finding's title never states a null its evidence did not establish, and names only arms its evidence reads.**
 "Halving the budget does not change latency, cost or delivery" decides as surely as a measured result does, and over
 a contrast that did not separate it asserts a result the campaign never measured; a title naming an arm none of its
-finding's readings is taken at states a result the reader is shown nothing of. Both are the prompt's rule 9 and the
-reporter eval's to measure. The generator once refused such titles by an English phrase list and by matching arm
+finding's readings is taken at states a result the reader is shown nothing of. Both are the prompt's rule 9, and a host's
+reporter eval can measure them on the dimensions its rubric declares. The generator once refused such titles by an English phrase list and by matching arm
 names in the title; it reads no prose now (owner, 2026-10-24).
 
 **The analysis keeps its evidence.** A stored analysis carries the bundle it was written over (`EvalAnalysis.bundle`),
