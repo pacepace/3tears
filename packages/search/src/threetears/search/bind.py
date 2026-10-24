@@ -14,8 +14,9 @@ with one line added under each ``URL:``: the result's date and the engines
 that found it (:func:`result_facts`), because a model handed undated results
 reported a two-year-old page as this week's news. The lines are rendered
 from typed candidates, which is what lets the structure ride alongside
-instead of being re-parsed out of the text, and a closing note names any
-criterion that could not be honoured.
+instead of being re-parsed out of the text, and a note ahead of the results
+names any criterion that could not be honoured, so a reader keeping only the
+head of a long result still has it.
 
 **Nothing raises past here** (D10). Every typed failure becomes a failed
 result carrying its spend, because the far side of the tool envelope has no
@@ -192,7 +193,8 @@ def render_prose(
     :ptype zone: str | None
     :return: the numbered list, or :data:`NO_RESULTS_PROSE` when the search
         found nothing. Unhonoured criteria and provider degradations are
-        named in a closing note rather than left for the caller to notice
+        named in a note before the results rather than left for the caller
+        to notice
     :rtype: str
     """
     lines: list[str] = []
@@ -205,11 +207,13 @@ def render_prose(
             lines.extend(under(candidate.snippet, "   "))
         lines.append("")
     body = "\n".join(lines).strip() if lines else NO_RESULTS_PROSE
-    footnotes = _footnotes(candidate_set)
-    return f"{body}\n\n{footnotes}" if footnotes else body
+    # the note leads: a reader keeping only the head of a long result keeps
+    # the sentence saying what the search could not do, not just the results.
+    notes = _notes(candidate_set)
+    return f"{notes}\n\n{body}" if notes else body
 
 
-def _footnotes(candidate_set: CandidateSet) -> str:
+def _notes(candidate_set: CandidateSet) -> str:
     """State what the search could not do, for a reader who only gets prose.
 
     A model handed ten results has no way to know the domain filter was
