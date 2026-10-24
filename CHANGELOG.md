@@ -24,6 +24,11 @@ new literal. The one-aspect builders (`build_report`, `build_code_only_report`) 
 asked. The JSON form carries no records either way. A host implementing `AnalysisStore` itself adds
 `load_reported_analysis`.
 
+**Changed:** over MCP, `report_read`'s structured content no longer repeats its body: the text block is the body, and
+the structured content holds `campaign_id`, `basis`, `analysis_id` and `format`. The transport leaves out any
+top-level string field whose value is the text itself; no other action renders a field verbatim, so no other
+action's structured content changes.
+
 ## v0.78.0 -- 2026-10-24
 
 ### evals: a reporter label's form follows its dimension's scale, and may quote the memo passage it is about
