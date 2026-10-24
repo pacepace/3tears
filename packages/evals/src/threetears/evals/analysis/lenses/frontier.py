@@ -63,7 +63,15 @@ from threetears.evals.kernel.scoring import (
     result_composite,
 )
 from threetears.evals.analysis.completeness import completeness_disclosure
-from threetears.evals.analysis.depth import Depth, common_depth, depth_of, pass_hat_k_over
+from threetears.evals.analysis.depth import (
+    CommonDepth,
+    Depth,
+    ModelPassHatK,
+    common_depth,
+    depth_of,
+    model_pass_hat_k,
+    pass_hat_k_over,
+)
 from threetears.evals.analysis.reporting import (
     place_results,
     served_reading,
@@ -543,6 +551,11 @@ class FrontierPoint(EvalBaseModel):
     #: This point's scored cases the common-depth reading leaves out: some point measured them fewer times, or not
     #: at all.
     n_cases_left_out: int = 0
+    #: A MODEL's pass^k at the subject's ``k``, for a point that scored no case that deep: a beta-binomial over the
+    #: per-case pass chance (:func:`~threetears.evals.analysis.depth.model_pass_hat_k`), ``basis: "model"`` with what
+    #: it assumes. Read only where the host asks for it (``HostProfile.model_pass_hat_k``), and never ranked on, held
+    #: to the bar or tested for dominance: it is no measurement. ``None`` otherwise, or where the cases cannot fit it.
+    model_pass_hat_k: ModelPassHatK | None = None
     #: How this point's pass^k reads against the bar, decided by its interval the way every campaign bar is
     #: (:func:`~threetears.evals.analysis.stats.interval_clears`): ``cleared``, ``missed``, ``undecided`` (the
     #: interval straddles the bar — neither a pass nor a failure), ``no_interval`` (fewer than two cases, not
@@ -1405,7 +1418,7 @@ def _place_common_depth(points: Sequence[FrontierPoint], cases: Sequence[_Contes
     :return: The common depth; None when no point scored an attempt.
     """
     keyed = {str(index): contestant.scored for index, contestant in enumerate(cases)}
-    common = common_depth(keyed)
+    common: CommonDepth = common_depth(keyed)
     if common.k is None:
         return None
     for index, point in enumerate(points):
@@ -2034,6 +2047,11 @@ def compute_frontier(
                     point.earlier_control = earlier_control_mark(earlier_control)
         _decide_dominance(points, point_cases)
         common = _place_common_depth(points, point_cases)
+        if profile is not None and profile.model_pass_hat_k:
+            # Opt-in, and after dominance: nothing ranked reads it.
+            for point, cases_of in zip(points, point_cases, strict=True):
+                if point.depth is not None and point.depth.repeats_max < subject_k:
+                    point.model_pass_hat_k = model_pass_hat_k(cases_of.scored, subject_k)
         boundary_dimensions, boundary_pillar = _decide_boundary_pillar(
             points,
             [members for _, _, members in built],

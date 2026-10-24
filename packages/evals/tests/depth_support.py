@@ -12,6 +12,7 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.lenses.frontier import FrontierPoint
 from threetears.evals.kernel.declaration import CampaignArm
+from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.identity import IDENTITY_VERSION, derive_context_identity, derive_variant_identity
 from threetears.evals.schema.models import EvalResult, EvalRun, RoleUsage
 from packages.evals.tests.factories import (
@@ -85,6 +86,7 @@ class TwoArms:
         *,
         k_a: int,
         k_b: int,
+        profile: HostProfile = PROFILE,
     ) -> None:
         self.run_a, self.run_b = _launched("run-a", "sonnet", k_a), _launched("run-b", "haiku", k_b)
         self.key_a, self.key_b = _key(self.run_a), _key(self.run_b)
@@ -105,7 +107,7 @@ class TwoArms:
             behavior="b",
         )
         self.bundle = assemble_context_bundle(
-            self.campaign, storage=ToyhostStorage([self.run_a, self.run_b], self.results), profile=PROFILE
+            self.campaign, storage=ToyhostStorage([self.run_a, self.run_b], self.results), profile=profile
         )
 
     def readings(self, bundle: AnalysisContextBundle | None = None) -> CampaignReadings:

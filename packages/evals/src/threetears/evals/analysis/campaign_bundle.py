@@ -932,6 +932,20 @@ def _depth(aspect: AnalysisContextBundle, namer: _Namer) -> dict[str, Any]:
             "unmeasured_for": depth.unmeasured_for,
             "said": depth.pass_k_lines(),
         }
+        modelled = {
+            namer.arm(point.variant_key): {
+                "k": point.model_pass_hat_k.k,
+                "pass_hat_k": _figure(point.model_pass_hat_k.pass_hat_k),
+                "basis": point.model_pass_hat_k.basis,
+                "assumes": point.model_pass_hat_k.assumes,
+            }
+            for subject in aspect.frontier.subjects
+            for point in subject.points
+            if point.model_pass_hat_k is not None
+        }
+        if modelled:
+            # A model, never a measurement: carried labelled, and no comparison may rank on it.
+            view["pass_k"]["model"] = modelled
     return view
 
 

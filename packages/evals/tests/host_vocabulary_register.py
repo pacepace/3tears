@@ -51,6 +51,8 @@ CEILINGS: dict[str, dict[str, int]] = {
     "analysis/bundle/time_axis.py": {},
     "analysis/bundle/surface.py": {},
     "analysis/completeness.py": {},
+    "analysis/depth.py": {},
+    "analysis/depth_reading.py": {},
     "analysis/significance.py": {},
     "analysis/lenses/__init__.py": {},
     "analysis/lenses/export.py": {},

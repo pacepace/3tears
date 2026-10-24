@@ -76,6 +76,8 @@ def _point_depth(point: FrontierPoint, subject: SubjectFrontier) -> str | None:
     said = f"ran each case {times(point.depth)} over {point.depth.cases} case(s)"
     if point.n_cases_short_of_k:
         said += f", {point.n_cases_short_of_k} short of k={subject.k}"
+    if (model := point.model_pass_hat_k) is not None:
+        said += f"; pass^{model.k} {format_number(model.pass_hat_k)} {model.assumes}"
     if subject.common_depth is not None and subject.common_depth != subject.k and point.common_pass_hat_k is not None:
         said += (
             f"; pass^{subject.common_depth} {format_number(point.common_pass_hat_k)} over {point.n_common_cases} "

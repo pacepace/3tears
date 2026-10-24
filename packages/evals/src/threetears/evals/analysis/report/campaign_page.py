@@ -44,7 +44,7 @@ from dataclasses import dataclass, replace
 
 from threetears.evals.analysis.arms import arm_names, short_digest
 from threetears.evals.analysis.cells import variant_of_cell_ref
-from threetears.evals.analysis.depth import REPEATS_FLOOR, Precision
+from threetears.evals.analysis.depth import MODEL_ASSUMES, REPEATS_FLOOR, Precision
 from threetears.evals.analysis.depth_reading import PAIRING_METHOD, AspectDepth, aspect_depth
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, CriterionKind, LateCriterion
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
@@ -1359,7 +1359,55 @@ def _pass_k_depth_blocks(
         for _, depth in depths
         for line in depth.pass_k_lines()
     ]
-    return blocks
+    return blocks + _model_blocks(depths, labels)
+
+
+#: What the page says under the model's table: what the figures are, and that nothing ranks on them.
+_MODEL_SAID = f"These pass^k figures are {MODEL_ASSUMES}. No arm ran a case that deep, so nothing ranks on them."
+
+
+def _model_blocks(
+    depths: Sequence[tuple[AnalysisContextBundle, AspectDepth]], labels: Mapping[str, str]
+) -> list[ReportBlock]:
+    """The opt-in model-based pass^k of each point at a depth it never reached, in a table of its own, labelled a
+    model with what it assumes: never beside a measured figure as one."""
+    rows = [
+        table_row(
+            {
+                "aspect": depth.aspect,
+                "arm": _label_of(bundle, labels)(point.variant_key),
+                "depth": point.model_pass_hat_k.k,
+                "model": round(100 * point.model_pass_hat_k.pass_hat_k, 1),
+            }
+        )
+        for bundle, depth in depths
+        for subject in bundle.frontier.subjects
+        for point in subject.points
+        if point.model_pass_hat_k is not None
+    ]
+    if not rows:
+        return []
+    return [
+        TableBlock(
+            section="scoreboard",
+            name="model_pass_k",
+            title="Model-based pass^k",
+            columns=[
+                TableColumn(key="aspect", header="Aspect", term="aspect"),
+                TableColumn(key="arm", header="Arm"),
+                TableColumn(key="depth", header="Depth", term="depth"),
+                TableColumn(key="model", header="Model pass^k (%)"),
+            ],
+            rows=rows,
+            order="aspect by aspect, each arm the depth is unreached for",
+            total_rows=len(rows),
+        ),
+        DisclosureBlock(
+            section="scoreboard",
+            source="comparisons",
+            text=_MODEL_SAID,
+        ),
+    ]
 
 
 def _precision_blocks(readings: CampaignReadings) -> list[ReportBlock]:

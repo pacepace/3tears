@@ -329,7 +329,10 @@ arm ran it that deep, each arm read there over all its runs by `C(c, k) / C(n, k
 reached is unmeasured for it (`unmeasured_for`), and at depth 1 the comparison is of pass rates, not reliability.
 Extra repeats tighten an arm's own estimate, not a comparison much: they shrink the noise within cases, and the
 spread between cases is a floor only more cases lower (a reading's `precision`). The pass-rate interval weighs each
-shared case's share equally whatever its depth, while the passed-of-measured counts pool every trial.
+shared case's share equally whatever its depth, while the passed-of-measured counts pool every trial. Above an
+arm's depth nothing is measured; a host may ask for a **model-based** pass^k there (`HostProfile.model_pass_hat_k`,
+off by default): a beta-binomial over the per-case pass chance, labelled as a model with what it assumes, never
+ranked or gated on.
 
 #### Cell
 The docs use this word in two senses. **While running**, a cell is one trial: one case at one repeat,

@@ -26,6 +26,10 @@ the memo to them: a sentence comparing arms on pass^k at a depth some arm never 
 memo that never says its arms ran to different depths is named in the Methods. The seeded writer prompt's rule 5
 says so, so hosts push the new seed. Page JSON shape 4; campaign bundle shape 2.
 
+**Added (opt-in):** `HostProfile.model_pass_hat_k` asks the frontier for a model-based pass^k at a depth a contestant
+never reached: a beta-binomial over the per-case pass chance, carried as `basis: "model"` with what it assumes, shown
+in its own table and never ranked, barred or gated on. Off by default.
+
 ### evals: runs that record their template revision and served model pool across case sets and an identity bump; a run kept out of a pool is named (#919)
 
 **Changed:** `IDENTITY_VERSION` 25: the case set leaves the context key. `ContextComponents.case_basis` digests the

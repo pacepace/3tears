@@ -11,6 +11,10 @@ arm measured it at least ``k`` times (:func:`common_depth`). A deeper arm is rea
 own estimate with no model. A depth some arm never reached is unmeasured for that arm, and said so. At depth 1 the
 comparison is of pass rates, not of reliability.
 
+**One opt-in model.** Above an arm's depth nothing is measured. :func:`model_pass_hat_k` fits a beta-binomial over
+the per-case pass chance and reads pass^k off it at any depth; it is a model, labelled as one with what it assumes
+(:data:`MODEL_ASSUMES`), off unless a host asks for it (``HostProfile.model_pass_hat_k``), and never ranked or gated on.
+
 **Precision.** A comparison's interval is no tighter than its noisier side allows, and extra repeats of a case shrink
 only the noise within cases: the spread between cases is a floor that only more cases lower. :func:`precision` states
 both: each side's own half-width, which side limits the comparison, and the between-case share of the difference's
@@ -23,7 +27,7 @@ from __future__ import annotations
 import math
 import statistics
 from collections.abc import Iterable, Mapping, Sequence
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 from pydantic import Field
 
@@ -37,6 +41,9 @@ from threetears.evals.kernel.scoring import case_pass_hat_k
 from threetears.evals.schema.base import EvalDocumentModel
 
 __all__ = [
+    "MODEL_ASSUMES",
+    "ModelPassHatK",
+    "model_pass_hat_k",
     "CommonDepth",
     "Depth",
     "Precision",
@@ -56,6 +63,11 @@ __all__ = [
 REPEATS_FLOOR = (
     "Extra repeats of a case shrink only the noise within cases; the spread between cases is a floor that only "
     "more cases lower."
+)
+
+#: What the opt-in model-based pass^k assumes, carried with every value it reads.
+MODEL_ASSUMES = (
+    "model-based, assumes one beta distribution of pass chance across cases, each case's attempts independent"
 )
 
 #: The share range a pass rate's per-case values lie in.
@@ -354,3 +366,63 @@ def precision(
             "between_share": signal / total if total > 0 else None,
         }
     )
+
+
+# =============================================================================
+# The opt-in model: pass^k above an arm's depth
+# =============================================================================
+
+
+class ModelPassHatK(EvalDocumentModel):
+    """pass^k read off a beta-binomial fit over the per-case pass chance: a model, never a measurement."""
+
+    basis: Literal["model"] = Field(default="model", description="Always `model`: never an unbiased reading.")
+    k: int = Field(ge=1, description="The depth read.")
+    pass_hat_k: float = Field(ge=0, le=1, description="The model's pass^k at `k`.")
+    alpha: float | None = Field(
+        description="The fitted beta's first shape; None where the cases show no spread beyond their repeats' noise, "
+        "and every case is read at the mean chance."
+    )
+    beta: float | None = Field(description="The fitted beta's second shape; None with `alpha`.")
+    cases: int = Field(ge=2, description="The cases the fit read.")
+    assumes: str = Field(default=MODEL_ASSUMES, description="What the model assumes, carried with every value.")
+
+
+def model_pass_hat_k(attempts: Mapping[str, Sequence[bool]], k: int) -> ModelPassHatK | None:
+    """pass^k at ``k`` from a beta-binomial over the per-case pass chance, fitted by the method of moments.
+
+    Each case's share passed ``c / n`` has mean ``μ`` and variance ``v + (μ(1 − μ) − v) · h`` over cases, ``v`` the
+    variance of the per-case chance and ``h`` the mean of ``1 / n``: the spread between cases plus each case's
+    binomial noise. Solving for ``v`` gives the beta's shapes, ``α + β = μ(1 − μ) / v − 1``, and pass^k is the beta's
+    ``k``-th moment, ``Π_{i<k} (α + i) / (α + β + i)``. Where the shares spread no more than their noise (``v <= 0``),
+    every case is read at ``μ`` and pass^k is ``μ^k``; a ``v`` past the beta's limit is held just inside it.
+
+    :param attempts: One arm's scored attempts per case.
+    :ptype attempts: Mapping[str, Sequence[bool]]
+    :param k: The depth, at least 1.
+    :ptype k: int
+    :return: The model's reading, or None below two cases, or where every case ran once (the spread between cases
+        cannot be told from each case's noise then), or where every case's share is 0 or 1 everywhere alike.
+    :rtype: ModelPassHatK | None
+    :raises ValueError: ``k`` is below 1.
+    """
+    if k < 1:
+        raise ValueError(f"pass^k needs k >= 1, got {k}")
+    cases = [(len(tries), sum(tries)) for tries in attempts.values() if tries]
+    if len(cases) < 2 or all(n == 1 for n, _ in cases):
+        return None
+    shares = [c / n for n, c in cases]
+    mean = math.fsum(shares) / len(shares)
+    if mean in (0.0, 1.0):
+        return ModelPassHatK(k=k, pass_hat_k=mean, alpha=None, beta=None, cases=len(cases))
+    spread = statistics.variance(shares)
+    h = math.fsum(1 / n for n, _ in cases) / len(cases)
+    chance = (spread - mean * (1 - mean) * h) / (1 - h)
+    if chance <= 0:
+        return ModelPassHatK(k=k, pass_hat_k=mean**k, alpha=None, beta=None, cases=len(cases))
+    # The beta's variance is below μ(1 − μ); one at or past it is held just inside, the most spread a beta can have.
+    chance = min(chance, mean * (1 - mean) * (1 - 1e-9))
+    total = mean * (1 - mean) / chance - 1
+    alpha, beta = mean * total, (1 - mean) * total
+    value = math.prod((alpha + i) / (total + i) for i in range(k))
+    return ModelPassHatK(k=k, pass_hat_k=value, alpha=alpha, beta=beta, cases=len(cases))

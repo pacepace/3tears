@@ -3178,7 +3178,7 @@
     },
     "threetears.evals.kernel.host.HostProfile": {
       "kind": "dataclass",
-      "signature": "HostProfile(host_id: str, host_sweepables: SweepableRegistry, measures: MeasureRegistry, bars: BarRegistry = BarRegistry(), style: StyleProfile = StyleProfile(), world: WorldRegistry | None = None, caveat_kinds: frozenset[str] = frozenset(), variant_levers: VariantLeverReader | None = None, observed_model_levers: Mapping[str, str] = dict(), action_parameters: ActionParameterReader | None = None, tool_actions: ToolActionReader | None = None, kinds: tuple[KindContract, ...] = (), listing_elisions: frozenset[str] = frozenset(), release_label: str | None = None, analysis_writer_models: tuple[str, ...] = (), sweepables: SweepableRegistry (derived))",
+      "signature": "HostProfile(host_id: str, host_sweepables: SweepableRegistry, measures: MeasureRegistry, bars: BarRegistry = BarRegistry(), style: StyleProfile = StyleProfile(), world: WorldRegistry | None = None, caveat_kinds: frozenset[str] = frozenset(), variant_levers: VariantLeverReader | None = None, observed_model_levers: Mapping[str, str] = dict(), action_parameters: ActionParameterReader | None = None, tool_actions: ToolActionReader | None = None, kinds: tuple[KindContract, ...] = (), listing_elisions: frozenset[str] = frozenset(), release_label: str | None = None, analysis_writer_models: tuple[str, ...] = (), model_pass_hat_k: bool = False, sweepables: SweepableRegistry (derived))",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.host.IgnoresTemplateFields": {

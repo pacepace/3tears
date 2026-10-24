@@ -2517,7 +2517,8 @@ class AnalysisContextBundle(EvalDocumentModel):
     # 63: depth is stated, nothing read changes: each arm's `scoreboard[].depth` (usable cases, trials, and trials per
     # case fewest, median and most), each overall pass-rate floor contrast's `case_trials` beside its shares, and each
     # frontier point's delivered `depth`, `n_cases_short_of_k`, common-depth reading (`common_pass_hat_k`,
-    # `n_common_cases`, `n_cases_left_out`) and each subject's `common_depth` and `unmeasured_for`.
+    # `n_common_cases`, `n_cases_left_out`) and each subject's `common_depth` and `unmeasured_for`; a point's opt-in
+    # `model_pass_hat_k` (`basis: "model"`), None unless the host asks for it.
     schema_version: int = Field(
         default=63, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
