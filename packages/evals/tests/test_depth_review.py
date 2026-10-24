@@ -65,8 +65,8 @@ def test_arms_that_share_no_case_are_said_to_compare_nothing_in_the_bundle_the_w
     [entry] = view["aspects"][0]["depth"]["pass_k"]
     assert (entry["common_depth"], entry["shares_no_case"], entry["unmeasured_for"]) == (None, True, ["B"])
     page = _page(arms)
-    assert "On character the arms share no case, so pass^k compares nothing between them." in _lines(page, "scoreboard")
-    assert "On character, pass^2 is unmeasured for B, which ran no case twice." in _lines(page, "scoreboard")
+    assert "On character the arms share no case, so pass^k compares nothing between them." in _lines(page, "scorecard")
+    assert "On character, pass^2 is unmeasured for B, which ran no case twice." in _lines(page, "scorecard")
 
 
 # =============================================================================
@@ -94,7 +94,7 @@ def test_one_arm_short_on_one_case_sets_the_common_depth_and_the_planned_depth_i
     page = _page(arms)
     assert (
         "On character, pass^k is compared at depth 2, the fewest runs any arm gave a shared case, over all runs."
-        in _lines(page, "scoreboard")
+        in _lines(page, "scorecard")
     )
 
 
@@ -143,7 +143,7 @@ def test_the_model_s_line_is_true_when_only_one_arm_falls_short() -> None:
     (table,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "model_pass_k"]
     assert [row["arm"].value for row in table.rows] == ["B"]
     assert arms.point(arms.key_a).pass_hat_k is not None
-    said = [line for line in _lines(page, "scoreboard") if line.startswith("Each figure here is model-based")]
+    said = [line for line in _lines(page, "scorecard") if line.startswith("Each figure here is model-based")]
     assert said and said[0].endswith("Its arm ran no case that deep, so nothing ranks on it.")
 
 

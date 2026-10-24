@@ -81,7 +81,7 @@ def depth_blocks(
         return []
     blocks: list[ReportBlock] = [
         TableBlock(
-            section="scoreboard",
+            section="scorecard",
             name="depth",
             title="Depth",
             columns=[
@@ -99,7 +99,7 @@ def depth_blocks(
         )
     ]
     blocks += [
-        DisclosureBlock(section="scoreboard", source="comparisons", text=depth.said)
+        DisclosureBlock(section="scorecard", source="comparisons", text=depth.said)
         for _, depth in depths
         if depth.said is not None
     ]
@@ -141,7 +141,7 @@ def _pass_k_depth_blocks(
         return []
     blocks: list[ReportBlock] = [
         TableBlock(
-            section="scoreboard",
+            section="scorecard",
             name="pass_k_depth",
             title="Pass^k depth",
             columns=[
@@ -159,7 +159,7 @@ def _pass_k_depth_blocks(
         )
     ]
     blocks += [
-        DisclosureBlock(section="scoreboard", source="comparisons", text=line)
+        DisclosureBlock(section="scorecard", source="comparisons", text=line)
         for _, depth in depths
         for line in depth.pass_k_lines()
     ]
@@ -196,7 +196,7 @@ def _model_blocks(
         return []
     return [
         TableBlock(
-            section="scoreboard",
+            section="scorecard",
             name="model_pass_k",
             title="Model-based pass^k",
             columns=[
@@ -210,7 +210,7 @@ def _model_blocks(
             total_rows=len(rows),
         ),
         DisclosureBlock(
-            section="scoreboard",
+            section="scorecard",
             source="comparisons",
             text=_MODEL_SAID,
         ),
@@ -248,7 +248,7 @@ def _precision_blocks(readings: CampaignReadings, names: AspectNames) -> list[Re
         )
     return [
         TableBlock(
-            section="scoreboard",
+            section="scorecard",
             name="precision",
             title="Precision",
             columns=[
@@ -264,7 +264,7 @@ def _precision_blocks(readings: CampaignReadings, names: AspectNames) -> list[Re
             order="aspect by aspect, each comparison as the readings list it",
             total_rows=len(rows),
         ),
-        DisclosureBlock(section="scoreboard", source="comparisons", text=REPEATS_FLOOR),
+        DisclosureBlock(section="scorecard", source="comparisons", text=REPEATS_FLOOR),
     ]
 
 

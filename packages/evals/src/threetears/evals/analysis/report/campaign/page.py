@@ -1,19 +1,20 @@
-"""Build a campaign's page: the writer's summary across its aspects, the recommendation, what code read on each
-aspect, the person's call, then one fold per aspect.
+"""Build a campaign's page: the decision first, then what code read across its aspects, the writer's findings and
+next steps, how the campaign was set up, then one fold per aspect.
 
 Code reports, the writer recommends, a person decides, and the page keeps the three apart. The first screen is the
-decision. Under the title, for every kind: **the question** (:mod:`.provenance`); **the writer's summary** and, for a
-change or a choice, **the writer's recommendation** and its whys (:mod:`.memo_blocks`); then **what warns**, one line
-per arm for the bars it misses, the floors it breaks and the guardrails it is not shown safe on (:mod:`.warnings`),
-and each report-wide caveat once (:mod:`.provenance`). Then code's readings by the campaign's kind
-(:mod:`.scorecard`), the figures across aspects (:mod:`.aggregate`), how deep each arm ran (:mod:`.depth_blocks`),
-every kind's bars, and the person's call (a measurement's only once one is recorded).
+decision. Under the title, for every kind: **the question**, or that none was asked (:mod:`.provenance`); **the
+writer's summary** and, for a change or a choice, **the writer's recommendation** and its whys (:mod:`.memo_blocks`);
+then **what warns**, one line per arm for the bars it misses, the floors it breaks and the guardrails it is not shown
+safe on (:mod:`.warnings`), and each report-wide caveat once (:mod:`.provenance`); then the person's call (a
+measurement's only once one is recorded).
 
-Then the memo's findings and next steps, Design & provenance, and one closed fold per aspect: the writer's summary of
-the aspect (what
-changed, how sure, what it means) when there is one, then the aspect's own page as
+Then, under **Scorecard**, code's readings by the campaign's kind (:mod:`.scorecard`), the figures across aspects
+(:mod:`.aggregate`), how deep each arm ran (:mod:`.depth_blocks`) and every kind's bars; then the memo's
+**Findings** and **Next steps**; then **Design & provenance**; then one closed fold per aspect: the writer's summary
+of the aspect (what changed, how sure, what it means) when there is one, then the aspect's own page as
 :func:`~threetears.evals.analysis.report.build.build_code_only_report` built it, which the serializers lay out in the
-fold without its title, its question, its late criteria, its broken floors or its verdict line.
+fold without its title, its question, its broken floors or its verdict line, and without what the campaign states
+once for every aspect (:func:`~.provenance.for_the_campaign`).
 
 Every arm is named by its label, never by its role; every line code writes is held to
 :mod:`~threetears.evals.analysis.style`, and the memo's words are printed as written.
@@ -78,8 +79,9 @@ def build_campaign_report(
     resolutions: Sequence[FindingResolution] = (),
     trial_ids: Mapping[str, tuple[str, str]] | None = None,
 ) -> CampaignReport:
-    """Lay a campaign out as its page: code's warnings first, the writer's summary and recommendation, code's readings
-    on each aspect, the person's call, the findings, then one fold per aspect.
+    """Lay a campaign out as its page: under the title the question, the writer's summary and recommendation, what
+    warns and the person's call; then the Scorecard, the findings and next steps, Design & provenance, then one fold
+    per aspect.
 
     :param campaign: The campaign.
     :ptype campaign: EvalCampaign

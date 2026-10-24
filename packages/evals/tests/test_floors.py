@@ -5,7 +5,8 @@ failing its last ``failed`` cases outright; one
 10-point floor on every pass rate and one cost floor, both on the campaign's one aspect, declared before the run. A
 floor is broken exactly where its clause, read as a rule, would settle keep, at the nominal 95% with no correction: its
 interval is computed again from the family comparison's per-case values, never read at the family's level. A broken
-floor is the page's first line, above the title; a held one reads quietly in the Decision section, and decides nothing.
+floor warns in one line under the page's verdict, never above its title; a held one reads quietly in the Floors
+section, and decides nothing.
 """
 
 from __future__ import annotations

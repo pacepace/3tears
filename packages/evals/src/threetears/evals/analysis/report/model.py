@@ -1111,16 +1111,20 @@ class CampaignAspectFold(EvalDocumentModel):
 
 
 class CampaignReport(EvalDocumentModel):
-    """A campaign's page: the writer's summary and recommendation, what code read across its aspects, the person's
-    call, then one fold per aspect.
+    """A campaign's page: the decision first, then what code read across its aspects, the writer's findings and next
+    steps, how the campaign was set up, then one fold per aspect.
 
-    **The first screen, in order** (:attr:`blocks`, in the ``header`` and ``scoreboard`` sections): every missed bar,
-    broken floor and guardrail an arm is not shown safe on, one loud line each, above the title; the question; the
-    writer's summary across every aspect; the writer's recommendation, or a line saying none was written; code's
-    table of every aspect × candidate (its change against the control, the interval it was read on, the margin and
-    what it shows); the cases that would settle each unclear row; the person's call, or that none is recorded, and
-    any broken floor it overrides. :attr:`blocks` may also hold the memo's findings and next steps (``memo``), which
-    the recommendation rests on. Then :attr:`aspects`, one fold each, in the campaign's order.
+    **The first screen, in order** (:data:`FIRST_SCREEN`: the ``header``, ``answer``, ``warnings`` and ``scoreboard``
+    sections), under the title: the question, or the line saying none was asked; the writer's summary across every
+    aspect; the writer's recommendation and its whys, or a line saying none was written; what warns, one plain line
+    per arm for the bars it misses, the floors it breaks and the guardrails it is not shown safe on; each report-wide
+    caveat once; the person's call, or that none is recorded, and any broken floor it overrides. Nothing stands above
+    the title.
+
+    **Then, each under its heading** (:attr:`headed_sections`): the Scorecard, code's matrix of every aspect by the
+    campaign's kind with its folded rows, To settle, its lines and the bars; the memo's Findings and Next steps; and
+    Design & provenance, when each criterion was set and how the test was set up. Then :attr:`aspects`, one fold each,
+    in the campaign's order, and after them how the page was made.
 
     **Who wrote what is part of the shape**, as on an aspect's page: a ``text`` block holds what the writer wrote and
     nothing else, and a code-only campaign page (no memo) holds none.
@@ -1135,7 +1139,9 @@ class CampaignReport(EvalDocumentModel):
         default=None, description="The stored analysis whose memo the page lays out; None on a code-only page."
     )
     finding_count: int = Field(ge=0, description="How many findings the memo holds.")
-    blocks: list[ReportBlock] = Field(description="The first screen, then the memo's findings, in reading order.")
+    blocks: list[ReportBlock] = Field(
+        description="Every block but the folds': the first screen, then each headed section's, in reading order."
+    )
     aspects: list[CampaignAspectFold] = Field(description="One fold per aspect, in the campaign's order.")
     readings: CampaignReadings = Field(description="What code read off the campaign: every row and every floor.")
     call: CampaignCall | None = Field(default=None, description="The person's call; None while none is recorded.")

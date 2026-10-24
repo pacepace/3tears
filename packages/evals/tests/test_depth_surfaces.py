@@ -53,7 +53,7 @@ def test_the_page_states_each_arm_s_depth_in_a_table_and_says_once_that_they_dif
         {"aspect": "character", "arm": "A", "cases": 4, "trials": 8, "fewest": 2, "median": 2.0, "most": 2},
         {"aspect": "character", "arm": "B", "cases": 4, "trials": 4, "fewest": 1, "median": 1.0, "most": 1},
     ]
-    assert _SAID in _lines(page, "scoreboard")
+    assert _SAID in _lines(page, "scorecard")
 
 
 def test_each_frontier_point_s_depth_sits_beside_it_and_the_common_depth_is_named() -> None:
@@ -64,13 +64,13 @@ def test_each_frontier_point_s_depth_sits_beside_it_and_the_common_depth_is_name
         {"aspect": "character", "arm": "B", "planned": 1, "short": 0, "common": 1, "reading": 75.0, "left_out": 0},
         {"aspect": "character", "arm": "A", "planned": 1, "short": 0, "common": 1, "reading": 62.5, "left_out": 0},
     ]
-    assert common_depth_sentence("character", 1, left_out=0) in _lines(page, "scoreboard")
+    assert common_depth_sentence("character", 1, left_out=0) in _lines(page, "scorecard")
 
 
 def test_a_depth_some_arm_never_reached_is_said_to_be_unmeasured_for_it() -> None:
     page = _page(TwoArms(TWICE, ONCE, k_a=2, k_b=2))
 
-    assert unmeasured_sentence("character", 2, ["B"]) in _lines(page, "scoreboard")
+    assert unmeasured_sentence("character", 2, ["B"]) in _lines(page, "scorecard")
     rows = {row["arm"]: row for row in _table(page, "pass_k_depth")}
     assert (rows["B"]["planned"], rows["B"]["short"], rows["B"]["common"]) == (2, 4, 1)
 
@@ -92,7 +92,7 @@ def test_the_precision_table_names_the_limiting_side_and_the_between_case_share(
     assert shown["limited_by"] == {arms.key_a: "A", arms.key_b: "B"}[row.precision.limited_by or ""]
     # 10/19 of the difference's variance lies between cases.
     assert shown["between"] == 53
-    assert REPEATS_FLOOR in _lines(page, "scoreboard")
+    assert REPEATS_FLOOR in _lines(page, "scorecard")
 
 
 def test_the_methods_say_how_a_pass_rate_comparison_weighs_its_cases() -> None:
