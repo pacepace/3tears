@@ -180,8 +180,8 @@ SUMMARY = "v2 wins on tone and loses billing, where refunds are lost, so product
 
 
 def opening(page: CampaignReport) -> list[tuple[str, str]]:
-    """What the page says after its warnings and its question, up to the first table: each text block by its role,
-    each line by its source and text."""
+    """What the page says up to its first table, less its warnings and its question: each text block by its role, and
+    each other line by its source and text."""
     said: list[tuple[str, str]] = []
     for block in page.blocks:
         if isinstance(block, TableBlock):

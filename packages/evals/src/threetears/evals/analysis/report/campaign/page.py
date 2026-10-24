@@ -144,10 +144,10 @@ def build_campaign_report(
     blocks += depth_blocks(campaign, readings, reports, names=names)
     blocks += bar_blocks(readings, reports, names=names)
     if kind != "measurement" or call is not None:
-        blocks += call_blocks(campaign, readings, call, names=names)
+        blocks += call_blocks(campaign, readings, call, names=names, reports=reports)
     blocks += memo_blocks(memo, campaign, readings, reports, resolutions, trial_ids or {}, names=names)
     # Design & provenance: the design and when each criterion was set, then what depth says once.
-    blocks += provenance_blocks(campaign, bundles, readings.arm_labels())
+    blocks += provenance_blocks(bundles, readings.arm_labels(), names=names)
     blocks += depth_provenance_blocks(readings)
     summaries = {summary.aspect: summary for summary in (memo.aspect_summaries if memo is not None else [])}
     folds = [

@@ -408,6 +408,21 @@ class BarStatus(EvalDocumentModel):
     margin: float | None = Field(description="The measure's declared margin the bar was read with; None with none.")
     reason: str = Field(default="", description="Why, in one plain sentence naming the arm.")
 
+    def missed_reason(self, measure: str) -> str:
+        """:attr:`reason` for a missed bar, with the measure called ``measure``: what a page says where it names the
+        measure by a name the readings do not carry (a goal check's declared display name), since a reading's words
+        never move with a name.
+
+        :param measure: What the page calls the bar's measure.
+        :ptype measure: str
+        :return: The sentence.
+        :rtype: str
+        :raises ValueError: The bar is not missed; only a missed bar's why follows from its status alone.
+        """
+        if self.status != "missed":
+            raise ValueError(f"the bar on {self.measure} is {self.status}, not missed, so its why is not its status's")
+        return _bar_reason(self.arm_label, "missed", measure, _BAR_STATES["missed"][1])
+
 
 class MeasureReading(EvalDocumentModel):
     """One arm's value on one measure on one aspect, with its interval: what a measurement reports."""
@@ -1174,6 +1189,11 @@ _BAR_STATES: dict[str, tuple[BarState, str]] = {
 _BAR_VERBS: dict[BarState, str] = {"met": "meets", "missed": "misses", "unclear": "is unclear on"}
 
 
+def _bar_reason(arm: str, status: BarState, measure: str, why: str) -> str:
+    """One arm against one bar, in one plain sentence: ``v2 misses the bar on cost: its whole interval …``."""
+    return f"{arm} {_BAR_VERBS[status]} the bar on {measure}: {why}"
+
+
 def _bar_statuses(
     campaign: EvalCampaign, bundles: Mapping[str, AnalysisContextBundle], arms: Sequence[CampaignArm]
 ) -> list[BarStatus]:
@@ -1220,7 +1240,7 @@ def _bar_statuses(
                         if shown.ci_low is not None and shown.ci_high is not None
                         else None,
                         margin=shown.margin,
-                        reason=f"{label} {_BAR_VERBS[status]} the bar on {heading}: {why}",
+                        reason=_bar_reason(label, status, heading, why),
                     )
                 )
     return statuses

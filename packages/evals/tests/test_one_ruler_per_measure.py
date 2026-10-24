@@ -29,6 +29,8 @@ from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
 from threetears.evals.schema.values import SweepableValue
 
+from packages.evals.tests.report_shapes_support import s4_change
+
 AXIS = "candidate_model"
 CANDIDATE = "model-b-rev2"
 INCUMBENT = "model-b"
@@ -183,8 +185,9 @@ class TestWordsAndEvidenceReadOnTheRuler:
     def test_a_goal_check_its_template_names_is_stated_by_its_name(self) -> None:
         surface = _surface(threshold=1500.0)
         check = 'call_count("music.queue_track") >= 2'
-        # The frozen bundle carries the names the aspect's template declared (``goal_check_names``).
-        held = SimpleNamespace(decision_surface=surface, bundle={"goal_check_names": {check: "Two queued"}})
+        # The frozen bundle is a real one's stored form, naming the check as its template declared it.
+        named = s4_change().bundles["billing"].model_copy(update={"goal_check_names": {check: "Two queued"}})
+        held = SimpleNamespace(decision_surface=surface, bundle=named.to_dict())
         subject = SimpleNamespace(aspect=lambda label: held, aspects=[held])
         cell = surface.cells[0]
         row = EvidenceRow(

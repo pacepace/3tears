@@ -14,9 +14,21 @@ import pytest
 import re
 from html import escape
 
-from threetears.evals.analysis import campaign_report_html, campaign_report_markdown
+from threetears.evals.analysis import (
+    build_campaign_report,
+    build_code_only_report,
+    campaign_report_html,
+    campaign_report_markdown,
+)
 from threetears.evals.analysis.report.campaign_page import NO_CALL, NO_RECOMMENDATION
-from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, TableBlock, TableCell, TableColumn
+from threetears.evals.analysis.report.model import (
+    CampaignReport,
+    DisclosureBlock,
+    TableBlock,
+    TableCell,
+    TableColumn,
+    fold_anchor,
+)
 
 from packages.evals.tests.campaign_page_support import (
     SUMMARY,
@@ -28,8 +40,8 @@ from packages.evals.tests.campaign_page_support import (
     recommending_nothing,
     two_aspect_memo,
 )
-from packages.evals.tests.campaign_support import CANDIDATE_LABEL, CONTROL_LABEL, QUESTION
-from packages.evals.tests.report_shapes_support import SHAPES, s1_change, s4_change
+from packages.evals.tests.campaign_support import ASSEMBLED_AT, CANDIDATE_LABEL, CONTROL_LABEL, QUESTION
+from packages.evals.tests.report_shapes_support import SHAPES, s1_change, s2_choice, s4_change
 
 #: Where code's readings are found, under the Scorecard after the first screen, by the campaign's kind (chunk 04's
 #: rows): the table's name, its caption in Markdown, and its mark in HTML.
@@ -238,6 +250,29 @@ def test_every_aspect_a_campaign_table_names_links_its_fold_from_the_cell_built_
     html = campaign_report_html(page)
     assert all(f'<a href="#{folds[aspect]}">{aspect}</a>' in html for aspect, _ in linked)
     assert "](#aspect-" not in campaign_report_markdown(page), "Markdown links no fold"
+
+
+def test_a_depth_row_of_one_subject_among_several_links_its_aspect_s_fold() -> None:
+    shape = s2_choice()
+    (label,) = shape.bundles
+    bundle = shape.bundles[label]
+    (subject,) = [subject for subject in bundle.frontier.subjects if subject.points]
+    other = subject.model_copy(update={"subject_id": "other-subject", "subject_label": "other"})
+    frontier = bundle.frontier.model_copy(update={"subjects": [*bundle.frontier.subjects, other]})
+    two = bundle.model_copy(update={"frontier": frontier})
+    report = build_code_only_report(
+        two, assembled_at=ASSEMBLED_AT, campaign_name=shape.name, arm_labels=shape.readings.arm_labels()
+    )
+    page = build_campaign_report(shape.campaign, shape.readings, {label: report}, None)
+    (table,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "pass_k_depth"]
+    said = {(row["aspect"].text, row["aspect"].ref) for row in table.rows}
+    # Each subject's rows say where they are by the aspect and the subject, and link the aspect's own fold.
+    anchor = fold_anchor(page.fold_ids[0])
+    assert {where for where, _ in said} == {
+        f"{label} ({subject.subject_label or subject.subject_id})",
+        f"{label} (other)",
+    }
+    assert {ref for _, ref in said} == {anchor}
 
 
 def test_the_html_links_a_cell_where_the_cell_says_and_reads_no_aspect_from_its_text() -> None:

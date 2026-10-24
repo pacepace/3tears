@@ -214,33 +214,31 @@ def _setup_detail(
 
 
 def provenance_blocks(
-    campaign: EvalCampaign, bundles: Sequence[AnalysisContextBundle], labels: Mapping[str, str]
+    bundles: Sequence[AnalysisContextBundle], labels: Mapping[str, str], *, names: AspectNames
 ) -> list[ReportBlock]:
     """A campaign's Design & provenance section: each criterion set after its readings were visible, with when and on
     which aspects, then each test-setup disclosure in full with the aspects it holds on; nothing where neither holds.
 
-    :param campaign: The campaign, whose folds an aspect's cell links.
-    :ptype campaign: EvalCampaign
     :param bundles: Each aspect's evidence, in the campaign's order.
     :ptype bundles: Sequence[AnalysisContextBundle]
     :param labels: The campaign's label for each arm, by variant key, which the detail names arms by.
     :ptype labels: Mapping[str, str]
+    :param names: What the page calls each aspect, and where each one's fold is, which a cell of one aspect links.
+    :ptype names: AspectNames
     :return: The tables, each only where it has a row.
     :rtype: list[ReportBlock]
     """
-    folds = AspectNames.of(bundles).folds
-    by_name = {aspect_name(bundle): bundle.aspect for bundle in bundles}
 
-    def aspects(names: Sequence[str]) -> TableCell:
+    def aspects(held: Sequence[str]) -> TableCell:
         # One aspect's cell links its fold; a list of several links none, since a cell links one place.
-        one = by_name.get(names[0]) if len(names) == 1 else None
-        return TableCell(value=_aspects_cell(names, len(bundles)), ref=folds.get(one) if one is not None else None)
+        ref = names.folds.get(held[0]) if len(held) == 1 else None
+        return TableCell(value=_aspects_cell([names(label) for label in held], len(bundles)), ref=ref)
 
     blocks = _criteria_table(bundles, section="provenance", cell=aspects)
     setup: dict[tuple[str, str | int], list[str]] = {}
     if untimed := [bundle for bundle in bundles if bundle.reading_scope.untimed_results]:
         count = sum(bundle.reading_scope.untimed_results for bundle in untimed)
-        setup[("results with no ordered time", count)] = [aspect_name(bundle) for bundle in untimed]
+        setup[("results with no ordered time", count)] = [bundle.aspect for bundle in untimed]
     kinds: tuple[tuple[Literal["latency", "settings"], str], ...] = (
         ("latency", "latency read under concurrency"),
         ("settings", "request settings not confirmed"),
@@ -248,11 +246,11 @@ def provenance_blocks(
     for kind, what in kinds:
         for bundle in bundles:
             if (detail := _setup_detail(kind, bundle, _namer(named_arms(bundle, labels)))) is not None:
-                setup.setdefault((what, detail), []).append(aspect_name(bundle))
+                setup.setdefault((what, detail), []).append(bundle.aspect)
     if setup:
         rows = [
-            {"setup": TableCell(value=what), "detail": TableCell(value=detail), "aspects": aspects(names)}
-            for (what, detail), names in setup.items()
+            {"setup": TableCell(value=what), "detail": TableCell(value=detail), "aspects": aspects(held)}
+            for (what, detail), held in setup.items()
         ]
         blocks.append(
             TableBlock(
@@ -286,27 +284,33 @@ def aspect_provenance_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]
     :return: The table, or nothing where every criterion came before its readings.
     :rtype: list[ReportBlock]
     """
-    return _criteria_table([bundle], section="methods", cell=lambda names: TableCell(value=_aspects_cell(names, 1)))
+    names = AspectNames.of([bundle])
+    return _criteria_table(
+        [bundle],
+        section="methods",
+        cell=lambda held: TableCell(value=_aspects_cell([names(label) for label in held], 1)),
+    )
 
 
 def _criteria_table(
     bundles: Sequence[AnalysisContextBundle], *, section: ReportSection, cell: Callable[[Sequence[str]], TableCell]
 ) -> list[ReportBlock]:
-    """Each criterion set late, one row per criterion and time with the aspects whose results existed then."""
+    """Each criterion set late, one row per criterion and time with the aspects whose results existed then, the
+    aspects by label for ``cell`` to name and link."""
     groups: dict[tuple[CriterionKind, str, str | None], list[str]] = {}
     for bundle in bundles:
         for late in bundle.reading_scope.late_criteria:
             key = (late.criterion, _criterion_words(bundle, late), late.page_date())
-            groups.setdefault(key, []).append(aspect_name(bundle))
+            groups.setdefault(key, []).append(bundle.aspect)
     if not groups:
         return []
     rows = [
         {
             "criterion": TableCell(value=_criterion_noun(kind, what)),
             "set_on": TableCell(value=at or "not recorded"),
-            "aspects": cell(names),
+            "aspects": cell(held),
         }
-        for (kind, what, at), names in groups.items()
+        for (kind, what, at), held in groups.items()
     ]
     return [
         TableBlock(

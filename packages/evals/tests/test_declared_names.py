@@ -52,6 +52,7 @@ from threetears.evals.run import SeedCorpus, definition_drift, seed_eval_definit
 from threetears.evals.run.authoring import update_template
 from threetears.evals.run.definition_digests import measured_template_digest, template_digest
 from threetears.evals.run.rejudge import judged_template
+from threetears.evals.schema.hashing import identity_json
 from threetears.evals.schema.models import EvalTemplate, GoalStateOutcome, RoleUsage
 from threetears.evals.schema.versioning import DURABLE_SCHEMA_MINOR, DURABLE_SCHEMA_VERSION
 from packages.evals.tests.campaign_support import ASKED_AT, ASSEMBLED_AT, QUESTION
@@ -228,14 +229,17 @@ def identities(*, named: bool) -> dict[str, str]:
 
 
 def documents() -> dict[str, str]:
-    """The stored documents of the fixture as written, named nothing: the template, the campaign and each bundle."""
+    """The stored documents of the fixture as written, named nothing: the template and the campaign byte for byte,
+    and each bundle in its identity form (:func:`~threetears.evals.schema.hashing.identity_json`)."""
     built = _fixture(named=False)
     return {
         "template": _sha(built["template"].to_dict()),
         "campaign": _sha(built["campaign"].to_dict()),
         # Less the build that assembled it, which is no part of the bundle's shape.
         **{
-            f"{label} bundle": _sha({k: v for k, v in bundle.to_dict().items() if k != "package_version"})
+            f"{label} bundle": hashlib.sha256(
+                identity_json({k: v for k, v in bundle.to_dict().items() if k != "package_version"}).encode()
+            ).hexdigest()
             for label, bundle in built["bundles"].items()
         },
     }
@@ -297,9 +301,15 @@ PINNED: dict[str, str] = {
 }
 
 #: The fixture's stored documents naming nothing, as the tree at ``00107a5b7`` wrote them (:func:`documents`).
+#:
+#: A bundle is pinned in its identity form, every float to twelve figures, as its fingerprint reads it: it stores the
+#: statistics it computed with every bit, and the last bits of those come from C maths that two Python builds compute
+#: differently, so its raw bytes differ between hosts while its identity does not. Its two values were computed by
+#: building this fixture on a checkout of ``00107a5b7``. The template and the campaign hold no computed figure and
+#: are pinned byte for byte.
 PINNED_DOCUMENTS: dict[str, str] = {
-    "Queue discipline under a full queue bundle": "299bc62becdd7b685e6ff99a22b9d53c5d6fb935e9f124bc327f79d0714335ef",
-    "Queue discipline under an empty queue bundle": "d15688c9ff1aac1a11302e5ff35368cdeedf8f6f5a697bea95deae05f667ca4d",
+    "Queue discipline under a full queue bundle": "288ea2bcd8e5712056b228e0b9d9f2ec7a06142980e05bbe7c3031ba3dbabe8e",
+    "Queue discipline under an empty queue bundle": "afacd41e1d17fed851434d220fede231de4dd800d96556371bf427585a490f20",
     "campaign": "6c2b383b36fc2664a2457021aac7d61d330ed17119760d15694105bb2a99c215",
     "template": "ebdd07699d7ce094a952d8f66505439368260a790589e08f69ae10ad3c10c755",
 }

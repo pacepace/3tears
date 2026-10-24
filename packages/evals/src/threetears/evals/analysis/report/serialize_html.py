@@ -46,6 +46,7 @@ from threetears.evals.analysis.report.model import (
     TableCell,
     TextBlock,
     TrialBlock,
+    fold_anchor,
 )
 from threetears.evals.analysis.report.serialize_md import RESOLUTION_WORDS, SUMMARY_LEADS, trial_summary
 from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg, interval_glyph_svg
@@ -274,7 +275,7 @@ def campaign_report_html(report: CampaignReport) -> str:
     titles = report.section_titles
     # Each nav link names the section itself, whose heading every browser shows, a closed one's included.
     links = [(section, titles[section]) for section in before]
-    links += [(f"aspect-{slug}", fold.aspect) for fold, slug in zip(report.aspects, slugs, strict=True)]
+    links += [(fold_anchor(slug), fold.aspect) for fold, slug in zip(report.aspects, slugs, strict=True)]
     links += [(section, titles[section]) for section in after]
     links += [("glossary", SECTION_TITLES["glossary"])] if report.terms else []
     parts.append("<nav>" + "".join(f'<a href="#{href}">{_escape(text)}</a>' for href, text in links) + "</nav>")
@@ -322,10 +323,10 @@ def _aspect_fold(fold: CampaignAspectFold, slug: str) -> list[str]:
     prefix = f"a-{slug}-"
     inner = _prefixed("\n".join(body), prefix)
     return [
-        f'<section id="aspect-{slug}">',
+        f'<section id="{fold_anchor(slug)}">',
         f'<details class="section"><summary><h2>{_escape(fold.aspect)}</h2> '
         f'<span class="count">· {_escape(fold.shows)}</span></summary>',
-        f'<div class="section-body" id="aspect-{slug}-body">',
+        f'<div class="section-body" id="{fold_anchor(slug)}-body">',
         inner,
         "</div></details>",
         "</section>",

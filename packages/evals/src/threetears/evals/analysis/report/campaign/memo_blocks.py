@@ -20,7 +20,7 @@ from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.campaign_readings import CampaignReadings, FloorStatus
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.report.campaign.common import as_written, floor_of, named_arms
-from threetears.evals.analysis.report.campaign.names import AspectNames
+from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
 from threetears.evals.analysis.report.decision import floor_statement
 from threetears.evals.analysis.report.figures import report_rulers
 from threetears.evals.analysis.report.model import (
@@ -33,7 +33,6 @@ from threetears.evals.analysis.report.model import (
     TableColumn,
     TextBlock,
     TextRole,
-    fold_ids,
     reading_anchor,
 )
 from threetears.evals.analysis.report.words import (
@@ -47,6 +46,7 @@ from threetears.evals.analysis.style import code
 from threetears.evals.kernel.authored import AspectSummary, AuthoredCampaignAnalysis, Finding
 from threetears.evals.kernel.campaign import EvalCampaign, FindingResolution
 from threetears.evals.kernel.declaration import CampaignCall, Floor, aware_instant, resolve_control_arm
+from threetears.evals.kernel.metrics import goal_check_of
 
 __all__ = [
     "NO_CALL",
@@ -155,7 +155,12 @@ def _floor_words(floor: Floor | None, status: FloorStatus, names: AspectNames) -
 
 
 def call_blocks(
-    campaign: EvalCampaign, readings: CampaignReadings, call: CampaignCall | None, *, names: AspectNames
+    campaign: EvalCampaign,
+    readings: CampaignReadings,
+    call: CampaignCall | None,
+    *,
+    names: AspectNames,
+    reports: Mapping[str, Report],
 ) -> list[ReportBlock]:
     """The person's call, who made it and when, their reason quoted, and every floor and bar it overrides; a line
     saying none is recorded while none is.
@@ -174,6 +179,8 @@ def call_blocks(
     :ptype call: CampaignCall | None
     :param names: What the page calls each aspect.
     :ptype names: AspectNames
+    :param reports: Each aspect's own page, by its label, whose evidence names a bar's measure.
+    :ptype reports: Mapping[str, Report]
     :return: The call's lines.
     :rtype: list[ReportBlock]
     """
@@ -207,16 +214,28 @@ def call_blocks(
         lines.append(f"The call does not name the broken floor as overridden: {said}.")
     missed = {(bar.aspect, bar.measure): bar for bar in readings.missed_bars() if bar.arm in keys}
     overridden = {(bar.aspect, bar.measure) for bar in call.bars_overridden}
+
+    def measure(aspect: str, key: str) -> str:
+        # The bar's measure as the aspect's page names it: a goal check by its declared name, else as the readings do.
+        report = reports.get(aspect)
+        return measure_name_of(report.bundle, key) if report is not None else code(key)
+
+    def stored(aspect: str, key: str) -> str:
+        # A bar the readings no longer hold missed, by the key the call stored, unless it is a goal check's, which is
+        # named as the aspect's page names it.
+        return measure(aspect, key) if goal_check_of(key) is not None else code(key)
+
     for bar in call.bars_overridden:
         if (still := missed.get((bar.aspect, bar.measure))) is not None:
-            lines.append(f"The call overrides a missed bar on {names(bar.aspect)}: {still.reason}.")
+            said = still.missed_reason(measure(bar.aspect, bar.measure))
+            lines.append(f"The call overrides a missed bar on {names(bar.aspect)}: {said}.")
         else:
             on = names(bar.aspect)
-            lines.append(f"The call overrides the bar on {code(bar.measure)} on {on} (no longer missed).")
-    for (aspect, measure), unnamed in missed.items():
-        if (aspect, measure) not in overridden:
-            on = names(aspect)
-            lines.append(f"The call does not name the missed bar on {on} as overridden: {unnamed.reason}.")
+            lines.append(f"The call overrides the bar on {stored(bar.aspect, bar.measure)} on {on} (no longer missed).")
+    for (aspect, key), unnamed in missed.items():
+        if (aspect, key) not in overridden:
+            said = unnamed.missed_reason(measure(aspect, key))
+            lines.append(f"The call does not name the missed bar on {names(aspect)} as overridden: {said}.")
     for pair in readings.pairs:
         if pair.ahead is not None and pair.ahead not in keys and keys & {pair.first, pair.second}:
             lines.append(f"{pair.ahead_label or pair.ahead} is shown ahead of {call.arm} on {names(pair.aspect)}.")
@@ -415,8 +434,7 @@ class _Trace:
 
     def _fold(self, aspect: str) -> str:
         """The id of the section around ``aspect``'s fold, outside its closed ``<details>``."""
-        labels = [held.label for held in self.campaign.aspects]
-        return f"aspect-{fold_ids(labels)[labels.index(aspect)]}"
+        return self.names.folds[aspect]
 
 
 def aspect_summary_blocks(summary: AspectSummary | None) -> list[ReportBlock]:

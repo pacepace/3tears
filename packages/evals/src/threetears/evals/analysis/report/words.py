@@ -19,7 +19,7 @@ from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
 from threetears.evals.analysis.arms import arm_label, arm_names, multi_rig_variants, short_digest
-from threetears.evals.analysis.bundle.schema import ComparisonVerdict
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ComparisonVerdict
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import cell_index, resolve_reading, restated_dispersion
@@ -311,6 +311,11 @@ def evidence_columns(analysis: EvalAnalysis) -> tuple[tuple[str, str], ...]:
     return (("aspect", "Aspect"), *EVIDENCE_COLUMNS) if len(analysis.aspects) > 1 else EVIDENCE_COLUMNS
 
 
+#: The key a stored bundle holds its declared check names under: the field's own serialized name, so a rename or an
+#: alias of the field is followed here.
+_CHECK_NAMES_KEY = AnalysisContextBundle.model_fields["goal_check_names"].serialization_alias or "goal_check_names"
+
+
 def _frozen_check_names(held: AspectAnalysis) -> dict[str, str]:
     """The display names an aspect's frozen bundle declares for its goal checks (``goal_check_names``), by check
     expression, read without parsing the bundle; none where the bundle was frozen naming none.
@@ -320,7 +325,7 @@ def _frozen_check_names(held: AspectAnalysis) -> dict[str, str]:
     :return: Each named check's display name, by its expression.
     :rtype: dict[str, str]
     """
-    names = held.bundle.get("goal_check_names")
+    names = held.bundle.get(_CHECK_NAMES_KEY)
     if not isinstance(names, dict):
         return {}
     return {check: name for check, name in names.items() if isinstance(check, str) and isinstance(name, str)}

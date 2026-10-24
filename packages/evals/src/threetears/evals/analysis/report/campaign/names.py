@@ -19,7 +19,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.report.model import TableCell, fold_ids
+from threetears.evals.analysis.report.model import TableCell, fold_anchor, fold_ids
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.declaration import printed_aspect_name
 
@@ -45,8 +45,7 @@ class AspectNames:
     :ivar by_label: Each aspect's name, by its label, in the campaign's order.
     :ivar checks: Each aspect's declared check display names (``AnalysisContextBundle.goal_check_names``: a check's
         expression to its name), by the aspect's label.
-    :ivar folds: The id of the section around each aspect's fold on the campaign's page (``aspect-<fold id>``,
-        :func:`~threetears.evals.analysis.report.model.fold_ids`), by the aspect's label: where a cell naming the
+    :ivar folds: The id of the section around each aspect's fold on the campaign's page (:func:`~threetears.evals.analysis.report.model.fold_anchor`), by the aspect's label: where a cell naming the
         aspect links.
     """
 
@@ -68,7 +67,7 @@ class AspectNames:
         return cls(
             {bundle.aspect: aspect_name(bundle) for bundle in held},
             {bundle.aspect: dict(bundle.goal_check_names) for bundle in held},
-            {label: f"aspect-{slug}" for label, slug in zip(labels, fold_ids(labels), strict=True)},
+            {label: fold_anchor(slug) for label, slug in zip(labels, fold_ids(labels), strict=True)},
         )
 
     def __call__(self, label: str) -> str:

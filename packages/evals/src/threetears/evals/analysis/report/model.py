@@ -97,6 +97,18 @@ def fold_ids(labels: Sequence[str]) -> list[str]:
     return ids
 
 
+def fold_anchor(fold_id: str) -> str:
+    """The id of the section around an aspect's fold on a campaign's page, outside its closed ``<details>``: what every
+    link to the fold lands on, and the one place that id is spelled.
+
+    :param fold_id: The fold's id (:func:`fold_ids`).
+    :ptype fold_id: str
+    :return: ``aspect-<fold id>``.
+    :rtype: str
+    """
+    return f"aspect-{fold_id}"
+
+
 #: What a report is of: a generated analysis, or the campaign's evidence alone with no analysis.
 ReportBasis = Literal["analysis", "code_only"]
 
@@ -105,8 +117,8 @@ ReportBasis = Literal["analysis", "code_only"]
 #: ``memo`` and ``contrasts`` are what it means; ``cases`` and ``trials`` the cases and their drill-down;
 #: ``not_tested`` what the campaign could not speak to; ``methods`` how everything was measured; ``glossary`` every
 #: term of art the page used. A campaign's page has six more (:attr:`CampaignReport.section_titles`): ``answer``, the
-#: question and what it was answered; ``warnings``, what warns, as consequences; ``scorecard``, every aspect's reading
-#: in one table; ``findings`` and ``next``, the writer's; and ``provenance``, the design and when each criterion was set.
+#: question and what it was answered; ``warnings``, what warns, as consequences; ``scorecard``, what code read across
+#: the aspects; ``findings`` and ``next``, the writer's; and ``provenance``, the design and when each criterion was set.
 ReportSection = Literal[
     "header",
     "answer",
@@ -587,8 +599,8 @@ class TableBlock(_Block):
     shared_scale: bool = Field(
         default=False,
         description=(
-            "Whether HTML draws every glyph in one unit on one scale across the table's columns, as a matrix's are, "
-            "each column the same quantity for another arm; otherwise each column has its own."
+            "Whether HTML draws every glyph in one unit on one scale across all the table's columns, as a matrix's "
+            "are; otherwise each column has its own."
         ),
     )
 
@@ -1121,10 +1133,10 @@ class CampaignReport(EvalDocumentModel):
     caveat once; the person's call, or that none is recorded, and any broken floor it overrides. Nothing stands above
     the title.
 
-    **Then, each under its heading** (:attr:`headed_sections`): the Scorecard, code's matrix of every aspect by the
-    campaign's kind with its folded rows, To settle, its lines and the bars; the memo's Findings and Next steps; and
-    Design & provenance, when each criterion was set and how the test was set up. Then :attr:`aspects`, one fold each,
-    in the campaign's order, and after them how the page was made.
+    **Then, each under its heading** (:attr:`headed_sections`), in the order
+    :func:`~threetears.evals.analysis.report.campaign.page.build_campaign_report` describes: the Scorecard, the memo's
+    Findings and Next steps, and Design & provenance. Then :attr:`aspects`, one fold each, in the campaign's order,
+    and after them how the page was made.
 
     **Who wrote what is part of the shape**, as on an aspect's page: a ``text`` block holds what the writer wrote and
     nothing else, and a code-only campaign page (no memo) holds none.
@@ -1179,7 +1191,7 @@ class CampaignReport(EvalDocumentModel):
 
         :raises ValueError: A link names something other than a fold.
         """
-        places = {f"aspect-{fold_id}" for fold_id in self.fold_ids}
+        places = {fold_anchor(fold_id) for fold_id in self.fold_ids}
         if stray := sorted({cell.ref for cell in _cells(self.blocks) if cell.ref is not None} - places):
             raise ValueError(f"cells link to {stray}, which is no aspect's fold")
         return self
@@ -1410,6 +1422,7 @@ __all__ = [
     "Verdict",
     "VerdictKind",
     "VerdictReason",
+    "fold_anchor",
     "fold_ids",
     "interval_text",
     "interval_value_text",

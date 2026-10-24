@@ -25,8 +25,8 @@ from threetears.evals.analysis import (
     campaign_report_markdown,
 )
 from threetears.evals.analysis.campaign_readings import campaign_readings
-from threetears.evals.analysis.report.model import CampaignReport
-from threetears.evals.kernel.declaration import BarOverride, CampaignCall
+from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, TableBlock
+from threetears.evals.kernel.declaration import BarOverride, CampaignCall, OverriddenBar
 from threetears.evals.kernel.metrics import goal_check_measure
 
 from packages.evals.tests.campaign_support import ASSEMBLED_AT
@@ -40,6 +40,9 @@ from packages.evals.tests.report_shapes_support import (
     s4_change,
     shape_of,
 )
+
+#: When every call here was made.
+_CALLED_AT = "2026-10-18T09:00:00+00:00"
 
 #: The display name each check is declared by.
 NAMES = {CHECKS[0]: "Total right", CHECKS[1]: "Cites policy"}
@@ -62,8 +65,14 @@ def _measurement() -> Shape:
 def _named(shape: Shape, names: Mapping[str, str]) -> Shape:
     """``shape`` with every aspect's template naming its checks ``names``: each bundle carries them, and each aspect's
     own page and the readings are built again over the named bundles."""
+    return _named_by(shape, {label: names for label in shape.bundles})
+
+
+def _named_by(shape: Shape, by_aspect: Mapping[str, Mapping[str, str]]) -> Shape:
+    """``shape`` with each aspect's template naming its checks as ``by_aspect`` says for it."""
     bundles = {
-        label: bundle.model_copy(update={"goal_check_names": dict(names)}) for label, bundle in shape.bundles.items()
+        label: bundle.model_copy(update={"goal_check_names": dict(by_aspect.get(label, {}))})
+        for label, bundle in shape.bundles.items()
     }
     readings = campaign_readings(shape.campaign, bundles, arms=shape.arms)
     reports = {
@@ -76,9 +85,14 @@ def _named(shape: Shape, names: Mapping[str, str]) -> Shape:
 
 
 def _page(build: str, names: Mapping[str, str]) -> CampaignReport:
-    """The shape's page with its checks named ``names``; S1's with a call adopting v4 over the floor it breaks on a
-    check, so the call's line names that floor."""
+    """The shape's page with its checks named ``names``. S1's carries a call adopting v4 over the floor it breaks on a
+    check, so the call's line names that floor; the measurement's a call keeping solo that names none of the bars on
+    a check it misses, so the call's lines name each of those."""
     shape = _named({"s1": s1_change, "s2": s2_choice, "s4": s4_change, "measurement": _measurement}[build](), names)
+    if build == "measurement":
+        assert shape.readings.missed_bars(), "solo misses the bar on a check"
+        kept = CampaignCall(arm="solo", variant_key=shape.key("solo"), called_at=_CALLED_AT, called_by="op")
+        return build_campaign_report(shape.campaign, shape.readings, shape.reports, None, call=kept)
     if build != "s1":
         return build_campaign_report(shape.campaign, shape.readings, shape.reports, None)
     broken = [status.floor for status in shape.readings.broken_floors() if status.reading == CHECKS[1]]
@@ -86,7 +100,7 @@ def _page(build: str, names: Mapping[str, str]) -> CampaignReport:
     call = CampaignCall(
         arm="v4",
         variant_key=shape.key("v4"),
-        called_at="2026-10-18T09:00:00+00:00",
+        called_at=_CALLED_AT,
         called_by="op",
         reason="Cheaper.",
         floors_overridden=broken,
@@ -132,3 +146,73 @@ def test_the_call_names_the_check_floor_it_overrides_by_the_check_s_name() -> No
 def test_naming_a_check_moves_no_reading() -> None:
     shape = s1_change()
     assert _named(shape, NAMES).readings == shape.readings
+
+
+def test_the_call_names_a_check_bar_by_the_check_s_name_whether_it_overrides_it_or_not() -> None:
+    shape = _named(_measurement(), NAMES)
+    (missed, *_) = shape.readings.missed_bars()
+    call = CampaignCall(
+        arm="solo",
+        variant_key=shape.key("solo"),
+        called_at=_CALLED_AT,
+        called_by="op",
+        bars_overridden=[OverriddenBar(aspect=missed.aspect, measure=missed.measure)],
+    )
+    page = build_campaign_report(shape.campaign, shape.readings, shape.reports, None, call=call)
+    calls = [block.text for block in page.blocks if isinstance(block, DisclosureBlock) and block.source == "call"]
+    assert (
+        f"The call overrides a missed bar on {missed.aspect}: solo misses the bar on {NAMES[CHECKS[0]]}: its whole "
+        "interval is on the bad side of the bar."
+    ) in calls
+    assert not any(CHECKS[0] in line for line in calls)
+
+
+def _measure_column(page: CampaignReport) -> str:
+    (matrix,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "scorecard"]
+    (column,) = [column for column in matrix.columns if column.key == f"measure:{goal_check_measure(CHECKS[0])}"]
+    return column.header
+
+
+def _fold_names(page: CampaignReport) -> dict[str, str]:
+    (fold,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "measures"]
+    measure = goal_check_measure(CHECKS[0])
+    return {
+        row["aspect"].text: row["measure"].text
+        for row, reading in zip(fold.rows, page.readings.measures, strict=True)
+        if reading.measure == measure
+    }
+
+
+@pytest.mark.parametrize("returns", [{CHECKS[0]: "Sum right"}, {}], ids=["named otherwise", "unnamed"])
+def test_a_column_spanning_aspects_that_name_its_check_apart_is_headed_by_the_whole_expression(
+    returns: dict[str, str],
+) -> None:
+    shape = _named_by(_measurement(), {"orders": {CHECKS[0]: "Total right"}, "returns": returns})
+    page = build_campaign_report(shape.campaign, shape.readings, shape.reports, None)
+    assert _measure_column(page) == f"`{CHECKS[0]}`"
+    # Each folded row still names the check as its own aspect does.
+    assert _fold_names(page) == {"orders": "Total right", "returns": returns.get(CHECKS[0], f"`{CHECKS[0]}`")}
+
+
+def test_a_column_whose_aspects_name_its_check_alike_is_headed_by_the_name() -> None:
+    shape = _named_by(_measurement(), {"orders": {CHECKS[0]: "Total right"}, "returns": {CHECKS[0]: "Total right"}})
+    assert _measure_column(build_campaign_report(shape.campaign, shape.readings, shape.reports, None)) == (
+        "Total right"
+    )
+
+
+def test_a_call_over_a_check_bar_no_longer_missed_names_the_check_by_its_name() -> None:
+    shape = _named(_measurement(), NAMES)
+    measure = goal_check_measure(CHECKS[0])
+    missed = {bar.aspect for bar in shape.readings.missed_bars()}
+    (held,) = [aspect.label for aspect in shape.campaign.aspects if aspect.label not in missed]
+    call = CampaignCall(
+        arm="solo",
+        variant_key=shape.key("solo"),
+        called_at=_CALLED_AT,
+        called_by="op",
+        bars_overridden=[OverriddenBar(aspect=held, measure=measure)],
+    )
+    page = build_campaign_report(shape.campaign, shape.readings, shape.reports, None, call=call)
+    calls = [block.text for block in page.blocks if isinstance(block, DisclosureBlock) and block.source == "call"]
+    assert f"The call overrides the bar on {NAMES[CHECKS[0]]} on {held} (no longer missed)." in calls

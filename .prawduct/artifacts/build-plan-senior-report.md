@@ -200,6 +200,7 @@ decision line below, prefixed `B:`.
 - B: [DECISION: `_UNFILLED` and its parametrised guard are deleted | 03 and 04 fill every campaign section, and a guard over an empty table runs nothing]
 - B: page.py merged textually clean (04's `settle_blocks` call kept, 03's move of `behind_on_blocks` into the answer kept); verified by reading the merged builder and the first-screen tests.
 - B: `FLOORS_WARN_ONLY` said "a broken one opens the page", false since 03; it says "warns on the first screen". Settled by: 03's first-screen ruling.
+- B: [DECISION: Q7 is deferred: one plan through 08, since the chunks share seams (names, the Scorecard, the provenance and aggregate slots); archive it at the end, when 08 lands | the plan's Q7 recommendation, the Advisory and the after-Wave-B checkpoint said to archive and redraw here; Wave C's to-dos and Status already continue in this file, and splitting now would leave the seams described in two plans. This line overrides those three for now]
 
 ## Advisory: what I would do differently
 
