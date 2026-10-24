@@ -100,9 +100,6 @@ from itertools import islice
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final
 
-import duckdb
-import pyarrow as pa
-import pyarrow.ipc as ipc
 from threetears.nats import ObjectExistsError, ObjectNotFoundError, ObjectStoreError, ObjectStoreFullError
 from threetears.nats.object_store_requests import MAX_RETIRED_OBJECTS, WRITE_CLAIM_SEGMENT, bind_pod_object_store
 from threetears.observe import contain, get_logger
@@ -135,6 +132,27 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+try:
+    import duckdb
+    import pyarrow as pa
+    import pyarrow.ipc as ipc
+
+    _SNAPSHOT_EXTRA: ImportError | None = None
+except ImportError as exc:  # NOSILENT: the snapshot extra is optional; using a snapshot says so
+    _SNAPSHOT_EXTRA = exc
+
+
+def _require_snapshot_extra() -> None:
+    """raise, naming the extra, when duckdb or pyarrow could not be imported.
+
+    :return: nothing
+    :rtype: None
+    :raises ImportError: when the snapshot extra is not installed
+    """
+    if _SNAPSHOT_EXTRA is not None:
+        raise ImportError(f"a scoped snapshot needs duckdb and pyarrow: install 3tears[snapshot] ({_SNAPSHOT_EXTRA})")
+
 
 #: the snapshot name's grammar: one KV subject token and one object-name segment
 _NAME_GRAMMAR: Final = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
@@ -553,6 +571,7 @@ def encode_chunk(table: Any) -> bytes:
     :return: the chunk's bytes
     :rtype: bytes
     """
+    _require_snapshot_extra()
     sink = pa.BufferOutputStream()
     with ipc.new_stream(sink, table.schema, options=ipc.IpcWriteOptions(compression="zstd")) as writer:
         writer.write_table(table)
@@ -567,6 +586,7 @@ def decode_chunk(data: bytes) -> Any:
     :return: the rows
     :rtype: pyarrow.Table
     """
+    _require_snapshot_extra()
     return ipc.open_stream(data).read_all()
 
 
@@ -578,6 +598,7 @@ def _concatenated(parts: Sequence[Any]) -> Any:
     :return: their rows, in order
     :rtype: pyarrow.Table
     """
+    _require_snapshot_extra()
     return parts[0] if len(parts) == 1 else pa.concat_tables(parts)
 
 
@@ -1330,6 +1351,7 @@ class ScopedSnapshot:
         compact_pieces: int = _DEFAULT_COMPACT_PIECES,
         compact_bytes: int = _DEFAULT_COMPACT_BYTES,
     ) -> None:
+        _require_snapshot_extra()
         if not name or any(ch not in _NAME_GRAMMAR for ch in name):
             raise ValueError(f"snapshot name {name!r} must be letters, digits, '-' and '_'")
         if not tables:

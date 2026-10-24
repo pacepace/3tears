@@ -9,6 +9,7 @@ the follower missed.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import pytest
 from sqlalchemy import MetaData
@@ -84,3 +85,22 @@ class TestTheCatchUpPassReadsL2KeptTablesFromL2:
         assert await generation_catchup_tick(registry, reader) == 2
         given = await follower.answer_with_outcome("v1", "page", _text, order=1)
         assert given.outcome is AnswerOutcome.RETIRED, "the follower answered a retired version from its L1"
+
+
+class TestAnUnexpectedErrorInTheL2Pass:
+    async def test_it_reaches_the_caller_after_the_pass(self) -> None:
+        bus = FakeNatsClient()
+        answers = await _replica(bus)
+        registry = answers.registry
+        assert registry is not None
+        bucket = await bus.kv_bucket(name="collections")
+        original = bucket.get
+
+        async def broken(*args: Any, **kwargs: Any) -> Any:
+            if str(kwargs.get("key")).endswith("-generation"):
+                raise RuntimeError("a bug in the read")
+            return await original(*args, **kwargs)
+
+        bucket.get = broken  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="a bug in the read"):
+            await generation_catchup_tick(registry, _ReadsRecorded(bus))

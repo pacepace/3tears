@@ -19,7 +19,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, TYPE_CHECKING
 
 from threetears.core.collections.generation import WriteGeneration
-from threetears.core.data.migrations.errors import DuplicateVersionError
+from threetears.core.ddl.errors import DuplicateVersionError
 from threetears.core.data.migrations.scope import MigrationScope
 
 __all__ = [

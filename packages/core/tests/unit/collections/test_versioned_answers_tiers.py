@@ -14,8 +14,11 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sqlalchemy import MetaData
+import pytest
+from sqlalchemy import Column as SaColumn
+from sqlalchemy import MetaData, Table, Text
 
+from threetears.core.cache.duckdb import DuckDBBackend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import tier_reads_total
 from threetears.core.collections.registry import CollectionRegistry
@@ -37,7 +40,7 @@ def _l1() -> SQLiteBackend:
     return l1
 
 
-async def _replica(bus: FakeNatsClient, *, l1: SQLiteBackend | None = None) -> VersionedAnswers:
+async def _replica(bus: FakeNatsClient, *, l1: Any = None) -> VersionedAnswers:
     """one replica: its own L1, the shared L2, and the invalidation listener a pod starts."""
     registry = CollectionRegistry()
     registry.configure(l1_backend=l1 or _l1(), l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
@@ -168,18 +171,25 @@ class TestTheIndexIsReadFromL1BetweenMoves:
     async def test_an_index_read_between_moves_is_l1_and_a_peers_change_is_read_once_from_l2(self) -> None:
         bus = FakeNatsClient()
         a, b = await _replica(bus), await _replica(bus)
+        await a.announce("v1", 1, scope="all")
+
+        between = await _moved(lambda: a.announced("all"))
+        assert between == {_INDEX: {"l1": 1}}, f"the index was read past L1 between moves: {between}"
+
+        # a peer announces a newer version: the index row changes, and its broadcast evicts A's copy
+        await b.announce("v2", 2, scope="all")
+        after_peer = await _moved(lambda: a.announced("all"))
+        assert after_peer == {_INDEX: {"l2": 1}}, f"A did not read the index the peer changed: {after_peer}"
+
+        settled = await _moved(lambda: a.announced("all"))
+        assert settled == {_INDEX: {"l1": 1}}, settled
+
+    async def test_an_answer_read_reads_no_index_past_l1(self) -> None:
+        bus = FakeNatsClient()
+        a = await _replica(bus)
         await a.answer("v1", "first", _Computer(), order=1)
-
         between = await _moved(lambda: a.answer("v1", "second", _Computer(), order=1))
-        assert between.get(_INDEX) == {"l1": 1}, f"the index was read past L1 between moves: {between}"
-
-        # a peer records a newer version: the index row changes, and its broadcast evicts A's copy
-        await b.answer("v2", "first", _Computer(), order=2)
-        after_peer = await _moved(lambda: a.answer("v1", "third", _Computer(), order=1))
-        assert after_peer.get(_INDEX) == {"l2": 1}, f"A did not read the index the peer changed: {after_peer}"
-
-        settled = await _moved(lambda: a.answer("v1", "fourth", _Computer(), order=1))
-        assert settled.get(_INDEX) == {"l1": 1}, settled
+        assert _INDEX not in between, f"an answer between moves counted an index read: {between}"
 
     async def test_a_retired_answer_leaves_every_replicas_l1(self) -> None:
         bus = FakeNatsClient()
@@ -342,3 +352,101 @@ class TestTheAnnouncedVersionNeverStepsBack:
         bucket.get_entry = unreachable  # type: ignore[method-assign]
         announced, record = await answers.announce("v7", 7)
         assert (announced.version, record) == ("v7", None)
+
+
+class TestScopesRetireOnTheirOwn:
+    async def test_one_scopes_move_retires_none_of_anothers_answers(self) -> None:
+        bus = FakeNatsClient()
+        answers = await _replica(bus)
+        bucket = await _bucket(bus)
+        await answers.answer("va3", "page", _Computer(), order=3, scope="VA")
+        await answers.announce("va3", 3, scope="VA")
+        for order in (7, 8, 9):
+            await answers.answer(f"all{order}", "page", _Computer(), order=order, scope="all")
+            await answers.announce(f"all{order}", order, scope="all")
+        for _ in range(100):
+            if not _entry_keys(bucket, "all7"):
+                break
+            await asyncio.sleep(0.01)
+        assert _entry_keys(bucket, "all7") == [], "the scope's own older version was kept"
+        assert _entry_keys(bucket, "va3") != [], "another scope's move retired VA's current answers"
+        fresh = await answers.answer_with_outcome("va3", "another page", _Computer(), order=3, scope="VA")
+        assert fresh.outcome is AnswerOutcome.COMPUTED, "VA's version was refused below another scope's floor"
+        assert fresh.outcome.stored
+
+    async def test_retiring_one_scope_leaves_the_other(self) -> None:
+        bus = FakeNatsClient()
+        answers = await _replica(bus)
+        bucket = await _bucket(bus)
+        await answers.answer("a1", "page", _Computer(), order=1, scope="a")
+        await answers.answer("b1", "page", _Computer(), order=1, scope="b")
+        assert await answers.retire_older_than(5, scope="a") == 1
+        assert (_entry_keys(bucket, "a1"), len(_entry_keys(bucket, "b1"))) == ([], 1)
+
+
+class TestAWriterReadsTheFloorPastItsL1:
+    async def test_an_answer_landing_on_a_version_retired_while_its_l1_missed_the_floor_is_taken_back(self) -> None:
+        bus = FakeNatsClient()
+        writer, retirer = await _replica(bus), await _replica(bus)
+        await writer.answer("v1", "first", _Computer(), order=1)  # the writer's L1 holds the versions row
+        writer_registry = writer.registry
+        assert writer_registry is not None
+        await writer_registry.stop_invalidation_listener()  # the floor's broadcast will not reach its L1
+        release = asyncio.Event()
+        slow = _Computer(hold=release)
+        computing = asyncio.create_task(writer.answer_with_outcome("v1", "second", slow, order=1))
+        await slow.started.wait()
+        await retirer.retire_older_than(2)
+        release.set()
+        given = await computing
+        assert given.outcome is AnswerOutcome.RETIRED, "the writer kept an answer on a retired version"
+        assert _entry_keys(await _bucket(bus), "v1") == []
+
+
+def _preinitialized(kind: str) -> Any:
+    """an L1 backend a host has already initialized with tables of its own, as a pod's registry is."""
+    held = MetaData()
+    Table("host_rows", held, SaColumn("id", Text, primary_key=True))
+    backend: Any = SQLiteBackend(db_name=f"answers-l1-{uuid.uuid4().hex}") if kind == "sqlite" else DuckDBBackend()
+    backend.initialize(held)
+    return backend
+
+
+class TestTheTablesAreMadeOnAnyL1:
+    @pytest.mark.parametrize("kind", ["sqlite", "duckdb"])
+    async def test_an_answer_is_given_and_read_from_an_l1_initialized_before_the_cache(self, kind: str) -> None:
+        l1 = _preinitialized(kind)
+        answers = await _replica(FakeNatsClient(), l1=l1)
+        first = await answers.answer_with_outcome("v1", "page", _Computer("x"), order=1)
+        again = await answers.answer_with_outcome("v1", "page", _Computer("x"), order=1)
+        assert (first.outcome, again.outcome) == (AnswerOutcome.COMPUTED, AnswerOutcome.READ)
+        assert gzip.decompress(again.body) == b"x"
+        assert l1.has_table(_TABLE) and l1.has_table(_INDEX) and l1.has_table("host_rows")
+
+
+class TestASwapNeverCachesARowAPeerReplacedWhileItAdvanced:
+    async def test_a_peers_newer_row_landing_during_the_generation_advance_is_not_overwritten_in_l1(self) -> None:
+        bus = FakeNatsClient()
+        a, b = await _replica(bus), await _replica(bus)
+        bucket = await _bucket(bus)
+        held = asyncio.Event()
+        release = asyncio.Event()
+        gated: list[bool] = []
+        for name in ("create", "update"):
+            original = getattr(bucket, name)
+
+            async def gate(*args: Any, _original: Any = original, **kwargs: Any) -> Any:
+                if str(kwargs.get("key")).endswith(f"{_INDEX}-generation") and not gated:
+                    gated.append(True)
+                    held.set()
+                    await release.wait()
+                return await _original(*args, **kwargs)
+
+            setattr(bucket, name, gate)
+        announcing = asyncio.create_task(a.announce("v1", 1, scope="all"))
+        await held.wait()  # A's swap won; it is advancing the table's generation
+        await b.announce("v2", 2, scope="all")  # B replaces the row, and its broadcast reaches A
+        release.set()
+        await announcing
+        recorded = await a.announced("all")
+        assert recorded is not None and recorded.latest.version == "v2", "A cached its older row over B's newer one"

@@ -50,7 +50,10 @@ never landed), or not stored, `retired` or `index_unwritable` (`GivenAnswer`). `
 detail=)` keeps one record per scope of the newest version any replica announced, by compare-and-set so it only rises,
 with the version it replaced (`Announced`, `AnnouncedVersion`; read back with `announced(scope)`); a replica behind
 names the recorded version, and retirement goes below the version replaced. A host that announces leaves retirement to
-`announce` rather than calling `current_version` with its own version.
+`announce` rather than calling `current_version` with its own version. Each scope is its own line of versions:
+`answer`, `answer_with_outcome`, `current_version` and `retire_older_than` take `scope=` (default `""`), and each
+scope's versions and floor are an index row of their own, so one scope's move never retires another's answers. A
+version belongs to one scope. A writer reads the floor from L2 when it confirms its answer, as retirement does.
 
 **Added:** `L2_WRITE_GENERATION` (`threetears.core.collections.generation`), a write-generation declaration for a table
 kept in L2 alone: its generation is a key beside its rows (`{scope}.{table}-generation`), advanced by every write that
@@ -58,7 +61,14 @@ changes a row (a won compare-and-set, a delete, an eviction), with no generation
 follows every such table it holds, and `CollectionRegistry.catch_up_l2_generations()` judges the marks from L2, so a
 replica that missed a broadcast drops its L1 copy at the next pass. `threetears.epoch.generation_catchup_tick` runs that
 pass too and no longer reads these tables from the epoch bucket. `VersionedAnswers` and its index declare it; a host
-schedules the pass. The collection census and the declaration walker accept it.
+schedules the pass, and a registry following such a table warns each `l2_catch_up_overdue` (two minutes by default)
+while no pass has judged it within that time; `CollectionRegistry.l2_catch_up_age` says when one last ran. A won
+compare-and-set on such a table re-reads its key before caching the row in L1, since advancing the generation awaited
+L2: a peer's newer row landing in between is never overwritten in L1. The collection census and the declaration walker
+accept it.
+
+**Fixed:** `DuckDBBackend.initialize` is additive across calls, as `SQLiteBackend`'s is: a collection that declares its
+own table on a DuckDB L1 another collection already initialized gets it.
 
 **Fixed:** `VersionedAnswers` compresses an answer on a worker thread (`asyncio.to_thread`), where it stores one and
 where it answers one uncached, never on the event loop: a large answer held the loop for tens of milliseconds.

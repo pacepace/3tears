@@ -4231,15 +4231,18 @@ class BaseCollection(ABC, Generic[EntityT]):
                 assert new_row is not None  # narrow: "upsert" always carries a row
                 if self._l1 is not None:
                     # an ordered swap reaches this line only after the persist's round trip, and a
-                    # later swap can complete inside it: this replica's own, or a peer's whose
+                    # swap whose table keeps its generation in L2 only after advancing it there; a
+                    # later swap can complete inside either: this replica's own, or a peer's whose
                     # broadcast already evicted this L1. Caching this row then would leave L1 behind
-                    # L2 with nothing left to evict it, so it is cached only while L2 still holds
-                    # it; otherwise the key is dropped and the next read takes the newer value from
-                    # L2. No await separates the check from the write, so nothing lands between.
+                    # L2 with nothing left to evict it, and no missed broadcast for a catch-up to
+                    # find, so it is cached only while L2 still holds it; otherwise the key is dropped
+                    # and the next read takes the newer value from L2. No await separates the check
+                    # from the write, so nothing lands between.
                     assert won_revision is not None  # narrow: an upsert that won
                     # a read of the key in flight here read it before this swap, so it must not
                     # cache what it read: the swap is recorded on the fence as it lands in L1.
-                    if not ordered or await self._swap_still_current(entity_id, key, won_revision, payload):
+                    awaited_since_won = ordered or self.keeps_write_generation_in_l2
+                    if not awaited_since_won or await self._swap_still_current(entity_id, key, won_revision, payload):
                         self._l1_fence.changed(self._fence_key(entity_id))
                         self._l1_upsert(new_row, self.primary_key_columns)
                     else:

@@ -68,9 +68,10 @@ from threetears.observe import BuildOnce, contain, get_logger
 try:
     from opentelemetry import metrics as _otel_metrics
 
-    _otel_metrics_available = True
+    #: whether ``opentelemetry.metrics`` was importable when this module was: the one probe every driver reads
+    _OTEL_METRICS = True
 except ImportError:  # NOSILENT: the tracing extra is optional; the drivers record no metric without it
-    _otel_metrics_available = False
+    _OTEL_METRICS = False
 
 from threetears.core.sql_fragments import FilterValue, quote_identifier
 
@@ -259,18 +260,19 @@ def _build_coverage_by_dimension_sql(
 # ---------------------------------------------------------------------------
 
 
-# OTel metrics availability is probed once, when this module is imported -- a zero-cost path when
-# ``opentelemetry`` is not installed, matching the ``@traced`` decorator's discipline in
-# :mod:`threetears.observe.tracing`: a driver pays no import and no lookup beyond a single bool check.
+# OTel metrics availability is probed once, when this module is imported (``_OTEL_METRICS``) -- a zero-cost
+# path when ``opentelemetry`` is not installed, matching the ``@traced`` decorator's discipline in
+# :mod:`threetears.observe.tracing`: a driver pays no import and no lookup beyond a single bool check. This module
+# is the one place that imports ``opentelemetry.metrics``; a driver reaches the meter through ``_drivers_meter``.
 
 
-def _check_otel_metrics() -> bool:
-    """whether ``opentelemetry.metrics`` was importable when this module was.
+def _drivers_meter() -> Any:
+    """the drivers' OTel meter; call only when ``_OTEL_METRICS`` is true.
 
-    :return: True iff ``opentelemetry.metrics`` is importable
-    :rtype: bool
+    :return: the ``threetears.datasources.drivers`` meter
+    :rtype: Any
     """
-    return _otel_metrics_available
+    return _otel_metrics.get_meter("threetears.datasources.drivers")
 
 
 # instrument cache so we don't recreate Histogram / Counter objects on
@@ -290,7 +292,7 @@ def _get_query_duration_histogram(driver_type: str) -> Any:
     :rtype: Any
     """
     result: Any = None
-    if _check_otel_metrics():
+    if _OTEL_METRICS:
         key = (driver_type, "datasource.driver.query.duration")
 
         def _build() -> Any:
@@ -300,7 +302,7 @@ def _get_query_duration_histogram(driver_type: str) -> Any:
             :return: the new OTel instrument
             :rtype: Any
             """
-            meter = _otel_metrics.get_meter("threetears.datasources.drivers")
+            meter = _drivers_meter()
             instrument = meter.create_histogram(
                 name="datasource.driver.query.duration",
                 description="datasource driver query duration in seconds",
@@ -321,7 +323,7 @@ def _get_error_counter(driver_type: str) -> Any:
     :rtype: Any
     """
     result: Any = None
-    if _check_otel_metrics():
+    if _OTEL_METRICS:
         key = (driver_type, "datasource.driver.error")
 
         def _build() -> Any:
@@ -331,7 +333,7 @@ def _get_error_counter(driver_type: str) -> Any:
             :return: the new OTel instrument
             :rtype: Any
             """
-            meter = _otel_metrics.get_meter("threetears.datasources.drivers")
+            meter = _drivers_meter()
             instrument = meter.create_counter(
                 name="datasource.driver.error",
                 description="datasource driver error count by error kind",
@@ -373,7 +375,7 @@ def observed(driver_type: str) -> Callable[[F], F]:
 
         @functools.wraps(fn)
         async def async_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-            if not _check_otel_metrics():
+            if not _OTEL_METRICS:
                 return await fn(self, *args, **kwargs)
             histogram = _get_query_duration_histogram(driver_type)
             error_counter = _get_error_counter(driver_type)

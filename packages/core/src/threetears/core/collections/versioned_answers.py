@@ -24,7 +24,10 @@ each replica's L1.
   epoch system, never by a TTL). Each version comes with an ``order`` that grows with the data (the
   caller's: for a copy of epochs, their sum), because versions are digests and say nothing of which
   is newer. :meth:`current_version` retires every version of a LOWER order, never a higher one, so a
-  replica still on an older copy cannot delete the answers the rest have moved on to.
+  replica still on an older copy cannot delete the answers the rest have moved on to. Each scope
+  (``scope=``, for data whose versions are ordered on scales of their own: one state's copy and
+  another's) is its own line of versions with its own floor, so one scope's move retires nothing of
+  another's; a version belongs to one scope.
 - **Retirement reads an index, never a listing.** A pod's grant on the shared bucket is key-addressed
   (get, put, compare-and-set, delete under its own scope; no consumer), so the entries cannot be
   listed. The owner keeps an index as rows of a small L2-only collection beside the answers, changed
@@ -118,8 +121,21 @@ log = get_logger(__name__)
 #: parts with it) or ``.`` (a shard's name is ``{version}.{digit}``)
 _VERSION: Final = re.compile(r"^[-=a-zA-Z0-9]+$")
 
-#: the name of the index row holding each version's order and the floor
+#: the name of the index row holding each version's order and the floor, for the default scope; another
+#: scope's row is ``versions_{scope}`` (a version holds no ``_``, so no shard and no other row is named so)
 _VERSIONS: Final = "versions"
+
+
+def _versions_row(scope: str) -> str:
+    """the index row holding ``scope``'s versions and floor.
+
+    :param scope: the scope, ``""`` for the default
+    :ptype scope: str
+    :return: the row's name
+    :rtype: str
+    """
+    return _VERSIONS if not scope else f"{_VERSIONS}_{scope}"
+
 
 #: what a write to the index can raise: transport, a grant refusal, the retry budget spent, or a write
 #: that landed and could not advance its table's write generation
@@ -270,6 +286,20 @@ def _announced_from(row: dict[str, Any] | None, table: str) -> Announced | None:
         # NOSILENT: an unreadable record is replaced by the next announcement
         log.warning("an announced-version record could not be read; it is replaced: table=%s error=%s", table, exc)
         return None
+
+
+@dataclass
+class _Retirement:
+    """one scope's background retirement on this replica.
+
+    :ivar retired_below: the highest order this replica has retired below, or ``None``
+    :ivar wanted: the highest order it has been asked to retire below, or ``None``
+    :ivar task: the retirement running, or ``None``
+    """
+
+    retired_below: int | None = None
+    wanted: int | None = None
+    task: asyncio.Task[None] | None = None
 
 
 @dataclass
@@ -515,7 +545,7 @@ class _AnswerIndex(BaseCollection[_IndexRow]):
 class VersionedAnswers(DerivedCollection[VersionedAnswer]):
     """gzip answers keyed by ``(version, request digest)``, in L2 and L1, retired when the version moves.
 
-    Without an L1 backend on the registry the answers and index are kept in L2 alone, as before.
+    Without an L1 backend on the registry the answers and index are kept in L2 alone.
 
     :param registry: the owner's registry, carrying its L2 client and key scope, and the L1 backend each
         table binds, when it keeps one
@@ -565,10 +595,8 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         if self._l1 is not None:
             self._l1.initialize(_l1_metadata(_answers_schema(table_name)))
         self._index = _AnswerIndex(registry, config, nats_client, table_name=f"{table_name}_index")
-        #: the highest order this replica has retired below, and the highest it has been asked to
-        self._retired_below: int | None = None
-        self._wanted: int | None = None
-        self._retiring: asyncio.Task[None] | None = None
+        #: per scope, this replica's background retirement
+        self._retirements: dict[str, _Retirement] = {}
 
     @property
     def table_name(self) -> str:
@@ -592,7 +620,9 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
     # the public surface
     # ------------------------------------------------------------------
 
-    async def answer(self, version: str, request: str, compute: Callable[[], Awaitable[str]], *, order: int) -> bytes:
+    async def answer(
+        self, version: str, request: str, compute: Callable[[], Awaitable[str]], *, order: int, scope: str = ""
+    ) -> bytes:
         """the answer to ``request`` at ``version``, gzip-compressed: cached, or computed once and cached.
 
         :meth:`answer_with_outcome`, without the outcome.
@@ -607,14 +637,17 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         :ptype compute: Callable[[], Awaitable[str]]
         :param order: where ``version`` stands among the data's versions: higher is newer
         :ptype order: int
+        :param scope: the line of versions ``version`` belongs to: each scope's orders are compared and
+            retired on their own, so one scope's move never retires another's answers
+        :ptype scope: str
         :return: the answer, gzip bytes
         :rtype: bytes
         :raises ValueError: when ``version`` cannot be a key segment
         """
-        return (await self.answer_with_outcome(version, request, compute, order=order)).body
+        return (await self.answer_with_outcome(version, request, compute, order=order, scope=scope)).body
 
     async def answer_with_outcome(
-        self, version: str, request: str, compute: Callable[[], Awaitable[str]], *, order: int
+        self, version: str, request: str, compute: Callable[[], Awaitable[str]], *, order: int, scope: str = ""
     ) -> GivenAnswer:
         """the answer to ``request`` at ``version``, gzip-compressed, and how it was given.
 
@@ -632,6 +665,9 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         :ptype compute: Callable[[], Awaitable[str]]
         :param order: where ``version`` stands among the data's versions: higher is newer
         :ptype order: int
+        :param scope: the line of versions ``version`` belongs to: each scope's orders are compared and
+            retired on their own, so one scope's move never retires another's answers
+        :ptype scope: str
         :return: the answer, gzip bytes, and its :class:`AnswerOutcome`
         :rtype: GivenAnswer
         :raises ValueError: when ``version`` cannot be a key segment
@@ -642,7 +678,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         if held is not None:
             record_tier_read(self.table_name, ReadTier.L1)
             return GivenAnswer(base64.b64decode(held["body"]), AnswerOutcome.READ)
-        refused = await self._recorded(version, key[1], order)
+        refused = await self._recorded(version, key[1], order, scope)
         if refused is not None:
             # retired, older than what was retired, or the index unreachable: answered, not stored
             return GivenAnswer(await asyncio.to_thread(_gzipped, await compute()), refused)
@@ -656,7 +692,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             raise RuntimeError(f"{self.table_name}: no answer for {key}; compute returned nothing")
         outcome = AnswerOutcome.READ
         if pending.ran:
-            if await self._confirm(version, key[1]):
+            if await self._confirm(version, key[1], scope):
                 outcome = AnswerOutcome.RETIRED
             else:
                 outcome = AnswerOutcome.PEER_FALLBACK if pending.after_peer else AnswerOutcome.COMPUTED
@@ -702,26 +738,30 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             raise ValueError(f"{version!r} cannot be a version key segment: KV-grammar characters, no '_' or '.'")
         return version, hashlib.sha256(request.encode("utf-8")).hexdigest()
 
-    def current_version(self, version: str, order: int) -> None:
-        """note the data's current version; when it is newer than any seen, retire the older ones.
+    def current_version(self, version: str, order: int, *, scope: str = "") -> None:
+        """note the data's current version; when it is newer than any seen, retire the scope's older ones.
 
         Cheap to call on every read that learns the version: it does nothing for an order this
-        replica has already retired below or asked to, and otherwise starts (or extends) the one
-        background retirement. A retirement that fails is tried again on the next call.
+        replica has already retired below or asked to in the scope, and otherwise starts (or extends)
+        the scope's one background retirement. A retirement that fails is tried again on the next call.
 
         :param version: the version the caller's read is at
         :ptype version: str
         :param order: its order: higher is newer
         :ptype order: int
+        :param scope: the line of versions ``version`` belongs to: each scope's orders are compared and
+            retired on their own, so one scope's move never retires another's answers
+        :ptype scope: str
         :return: nothing
         :rtype: None
         """
         del version
-        if self._wanted is not None and order <= self._wanted:
+        retirement = self._retirements.setdefault(scope, _Retirement())
+        if retirement.wanted is not None and order <= retirement.wanted:
             return
-        self._wanted = order
-        if self._retiring is None or self._retiring.done():
-            self._retiring = asyncio.get_running_loop().create_task(self._retire_until_current())
+        retirement.wanted = order
+        if retirement.task is None or retirement.task.done():
+            retirement.task = asyncio.get_running_loop().create_task(self._retire_until_current(retirement, scope))
 
     async def announce(
         self, version: str, order: int, *, scope: str = "", detail: Mapping[str, Any] | None = None
@@ -732,9 +772,10 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         replaced. This replica's version is recorded when it is newer than the record's, by
         compare-and-set, so the record only rises; otherwise the recorded one is followed. Retirement
         then goes below the version the record replaced (:meth:`current_version`), so a page still
-        reading at it is answered; a host that announces leaves retirement to this call. Anything that
-        makes two versions incomparable -- another conversion of the same data -- belongs in the
-        scope, so each line of versions keeps its own record.
+        reading at it is answered; a host that announces leaves retirement to this call. Each scope is
+        its own line of versions, recorded and retired on its own (pass the same ``scope`` to
+        :meth:`answer`); anything that makes two versions incomparable -- another conversion of the
+        same data -- belongs in the scope.
 
         A record that cannot be read or written is logged, and this replica's own version is announced.
 
@@ -779,7 +820,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         record = proposed if proposed is not None else found
         assert record is not None  # narrow: a noop needs a record found
         if record.previous is not None:
-            self.current_version(record.previous.version, record.previous.order)
+            self.current_version(record.previous.version, record.previous.order, scope=scope)
         announced = record.latest if record.latest.order > order else own
         return announced, record
 
@@ -793,11 +834,14 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         """
         return _announced_from(await self._index.ensure(f"{_ANNOUNCED}{scope}"), self._index.table_name)
 
-    async def retire_older_than(self, order: int) -> int:
-        """delete every answer this owner holds at a version of a lower order.
+    async def retire_older_than(self, order: int, *, scope: str = "") -> int:
+        """delete every answer this owner holds at a version of the scope of a lower order.
 
         :param order: the order of the version now current
         :ptype order: int
+        :param scope: the line of versions ``version`` belongs to: each scope's orders are compared and
+            retired on their own, so one scope's move never retires another's answers
+        :ptype scope: str
         :return: how many answers were deleted
         :rtype: int
         :raises KvError: when the index or an entry could not be read or changed
@@ -806,6 +850,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             every retired version is cleared
         """
         taken: dict[str, int] = {}
+        row_name = _versions_row(scope)
 
         def raise_floor(row: dict[str, Any] | None) -> _Action:
             nonlocal taken
@@ -815,16 +860,16 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             new_floor = order - 1 if floor is None else max(floor, order - 1)
             if row is not None and new_floor == floor:
                 return ("noop", None)
-            return ("upsert", {"name": _VERSIONS, "members": members, "floor": new_floor})
+            return ("upsert", {"name": row_name, "members": members, "floor": new_floor})
 
         # first the floor: from here no replica records a version below it, so what is listed is final
-        await self._index.l2_cas_mutate(_VERSIONS, raise_floor)
+        await self._index.l2_cas_mutate(row_name, raise_floor)
         # the purge runs once every version is cleared, so a purger that fails outside its contract
         # cannot leave a version's answers behind; keys already deleted are purged even when a later
         # version fails, since a forgotten version is never visited again
         touched: list[str] = []
         try:
-            deleted = await self._clear_versions(taken, touched)
+            deleted = await self._clear_versions(taken, touched, row_name)
         except Exception:
             await self._purge(touched)
             raise
@@ -833,13 +878,15 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             log.info("retired old answers: table=%s below=%d deleted=%d", self.table_name, order, deleted)
         return deleted
 
-    async def _clear_versions(self, taken: dict[str, int], touched: list[str]) -> int:
+    async def _clear_versions(self, taken: dict[str, int], touched: list[str], row_name: str) -> int:
         """delete every answer of the versions taken below the floor, forgetting each one emptied.
 
         :param taken: each version below the floor, with its order
         :ptype taken: dict[str, int]
         :param touched: the keys deleted, relative to the owner's scope, to purge
         :ptype touched: list[str]
+        :param row_name: the index row holding the versions and the floor
+        :ptype row_name: str
         :return: how many answers were deleted
         :rtype: int
         """
@@ -853,14 +900,14 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             if emptied:
                 # every digest is accounted for: the version is forgotten; otherwise the next retirement
                 # finishes it, once the writers still at work have written or gone
-                await self._index.l2_cas_mutate(_VERSIONS, _forget(version, older))
+                await self._index.l2_cas_mutate(row_name, _forget(row_name, version, older))
         return deleted
 
     # ------------------------------------------------------------------
     # the index
     # ------------------------------------------------------------------
 
-    async def _recorded(self, version: str, digest: str, order: int) -> AnswerOutcome | None:
+    async def _recorded(self, version: str, digest: str, order: int, scope: str) -> AnswerOutcome | None:
         """record ``version`` and the digest in the index before computing, unless it is retired.
 
         :param version: the version
@@ -869,12 +916,15 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         :ptype digest: str
         :param order: the version's order
         :ptype order: int
+        :param scope: the version's scope
+        :ptype scope: str
         :return: ``None`` when the answer may be stored; why not, when its version is at or below the
             floor (:attr:`AnswerOutcome.RETIRED`) or the index could not be written (logged,
             :attr:`AnswerOutcome.INDEX_UNWRITABLE`)
         :rtype: AnswerOutcome | None
         """
         refused = False
+        row_name = _versions_row(scope)
 
         def add_version(row: dict[str, Any] | None) -> _Action:
             nonlocal refused
@@ -884,10 +934,10 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             if refused or members.get(version) == order:
                 return ("noop", None)
             members[version] = order
-            return ("upsert", {"name": _VERSIONS, "members": members, "floor": floor})
+            return ("upsert", {"name": row_name, "members": members, "floor": floor})
 
         try:
-            await self._index.l2_cas_mutate(_VERSIONS, add_version)
+            await self._index.l2_cas_mutate(row_name, add_version)
             if not refused:
                 shard = f"{version}.{digest[0]}"
                 await self._index.l2_cas_mutate(shard, _add_member(shard, digest))
@@ -897,23 +947,27 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             return AnswerOutcome.INDEX_UNWRITABLE
         return AnswerOutcome.RETIRED if refused else None
 
-    async def _confirm(self, version: str, digest: str) -> bool:
+    async def _confirm(self, version: str, digest: str, scope: str) -> bool:
         """after this replica's answer landed: if its version was retired meanwhile, take the answer back.
 
-        A floor that cannot be read counts as retired: the answer was already returned to its caller,
-        and taking back an answer still wanted costs one recompute, while keeping one retired would
-        outlive its version. The purge of what was taken back runs off the read path.
+        The floor is read from L2, past this replica's L1, as retirement reads it: a copy a broadcast
+        has not yet evicted could hide the retirement. A floor that cannot be read counts as retired:
+        the answer was already returned to its caller, and taking back an answer still wanted costs
+        one recompute, while keeping one retired would outlive its version. The purge of what was
+        taken back runs off the read path.
 
         :param version: the version
         :ptype version: str
         :param digest: the request's digest
         :ptype digest: str
+        :param scope: the version's scope
+        :ptype scope: str
         :return: whether the answer was taken back
         :rtype: bool
         """
         retired = False
         try:
-            versions = await self._index.ensure(_VERSIONS)
+            versions = await self._index.read_l2(_versions_row(scope))
             floor = versions.get("floor") if versions else None
             retired = versions is None or floor is not None and versions["members"].get(version, floor) <= floor
             if retired:
@@ -1034,26 +1088,31 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
                     what=f"retired answers' keys could not be purged; their delete markers stay: table={self.table_name} error={exc}",
                 )
 
-    async def _retire_until_current(self) -> None:
-        """retire below the highest order asked for, until it is reached or a retirement fails.
+    async def _retire_until_current(self, retirement: _Retirement, scope: str) -> None:
+        """retire ``scope`` below the highest order asked for, until it is reached or a retirement fails.
 
+        :param retirement: the scope's retirement state
+        :ptype retirement: _Retirement
+        :param scope: the scope
+        :ptype scope: str
         :return: nothing
         :rtype: None
         """
-        while self._wanted is not None and (self._retired_below is None or self._wanted > self._retired_below):
-            target = self._wanted
+        while (target := retirement.wanted) is not None and (
+            retirement.retired_below is None or target > retirement.retired_below
+        ):
             try:
-                await self.retire_older_than(target)
+                await self.retire_older_than(target, scope=scope)
             except Exception as exc:  # noqa: BLE001 -- a retirement that fails for any reason must be tried again, not wedge the next ones
                 # NOSILENT: the old answers wait for the next call, which tries again
                 contain(
                     exc,
                     log=log,
-                    what=f"retiring old answers failed: table={self.table_name} below={target} error={exc}",
+                    what=f"retiring old answers failed: table={self.table_name} scope={scope} below={target} error={exc}",
                 )
-                self._wanted = self._retired_below
+                retirement.wanted = retirement.retired_below
                 return
-            self._retired_below = target
+            retirement.retired_below = target
 
     # ------------------------------------------------------------------
     # DerivedCollection's contract
@@ -1104,7 +1163,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
     async def save_to_store(self, data: dict[str, Any], original_timestamp: Any = None, *, conn: Any = None) -> int:
         """write the answer to L2 while the computing replica still holds the key's build lock.
 
-        L2 is the only tier. Written here, under the lock, rather than by the read's seed after it, so
+        Written here, under the lock, rather than by the read's seed after it, so
         a retirement that finds no answer and can take the lock knows none is still coming.
 
         :param data: the row
@@ -1209,9 +1268,11 @@ def _remove_member(name: str, member: str) -> Callable[[dict[str, Any] | None], 
     return change
 
 
-def _forget(version: str, order: int) -> Callable[[dict[str, Any] | None], _Action]:
-    """a ``versions`` change taking ``version`` off, once its shards are empty.
+def _forget(row_name: str, version: str, order: int) -> Callable[[dict[str, Any] | None], _Action]:
+    """a versions-row change taking ``version`` off, once its shards are empty.
 
+    :param row_name: the versions row
+    :ptype row_name: str
     :param version: the version retired
     :ptype version: str
     :param order: its order, as retirement read it
@@ -1225,6 +1286,6 @@ def _forget(version: str, order: int) -> Callable[[dict[str, Any] | None], _Acti
         if members.get(version) != order or row is None:
             return ("noop", None)
         del members[version]
-        return ("upsert", {"name": _VERSIONS, "members": members, "floor": row.get("floor")})
+        return ("upsert", {"name": row_name, "members": members, "floor": row.get("floor")})
 
     return change

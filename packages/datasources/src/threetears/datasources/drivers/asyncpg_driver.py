@@ -177,11 +177,6 @@ from threetears.datasources.drivers.sql_fragments import (
     build_set_local_statement_timeout_sql,
 )
 
-try:
-    from opentelemetry import metrics as _otel_metrics
-except ImportError:  # NOSILENT: the tracing extra is optional; base's probe keeps every meter unreached without it
-    pass
-
 from threetears.datasources.drivers.base import (
     CallbackTransaction,
     ColumnRow,
@@ -189,7 +184,8 @@ from threetears.datasources.drivers.base import (
     RelationFingerprint,
     TableRow,
     Transaction,
-    _check_otel_metrics,
+    _OTEL_METRICS,
+    _drivers_meter,
     _instrument_cache,
     check_max_rows,
     log_unselectable_relations,
@@ -423,7 +419,7 @@ def _get_cancellation_fired_counter() -> Any:
     :rtype: Any
     """
     result: Any = None
-    if _check_otel_metrics():
+    if _OTEL_METRICS:
         key = ("asyncpg", "datasource.driver.cancellation.fired")
 
         def _build() -> Any:
@@ -433,7 +429,7 @@ def _get_cancellation_fired_counter() -> Any:
             :return: the new OTel instrument
             :rtype: Any
             """
-            meter = _otel_metrics.get_meter("threetears.datasources.drivers")
+            meter = _drivers_meter()
             instrument = meter.create_counter(
                 name="datasource.driver.cancellation.fired",
                 description="datasource driver cancellation fired count",

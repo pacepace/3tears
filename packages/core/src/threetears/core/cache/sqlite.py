@@ -24,7 +24,7 @@ from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, TSVECTOR, UUID
 from sqlalchemy.sql.sqltypes import ARRAY
 from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
 
-from threetears.core.backends.schema_sql import json_default
+from threetears.core.backends.schema_sql import PGVECTOR_TYPES, json_default
 from threetears.core.cache.base import (
     build_select_clause,
     bulk_columns,
@@ -51,13 +51,6 @@ try:
 except ImportError:  # NOSILENT: the uuid-utils extra is optional; its values never reach L1 without it
     _UUID_UTILS_TYPES = ()
 
-try:
-    from pgvector.sqlalchemy import Vector
-
-    #: pgvector's column type, when the pgvector extra is installed; core works without it
-    _VECTOR_TYPES: tuple[type, ...] = (Vector,)
-except ImportError:  # NOSILENT: the pgvector extra is optional; no column is a vector without it
-    _VECTOR_TYPES = ()
 
 log = get_logger(__name__)
 
@@ -614,7 +607,7 @@ class SQLiteBackend:
     @staticmethod
     def _map_sqlalchemy_type(sa_type: Any) -> str:
         """Map SQLAlchemy type to SQLite equivalent with serialization hints."""
-        if isinstance(sa_type, _VECTOR_TYPES):
+        if isinstance(sa_type, PGVECTOR_TYPES):
             return "TEXT_VECTOR"
 
         if isinstance(sa_type, (UUID, UuidType)):

@@ -28,7 +28,7 @@ nothing. Redshift's module is imported under ``try/except ImportError``,
 so without the redshift extra the package still imports and a Redshift
 config raises the ImportError naming it; the Snowflake and BigQuery
 drivers are stubs that load no backend library. a runtime audit
-(``test_lazy_imports.py``) verifies both in clean subprocesses.
+(``test_driver_imports.py``) verifies both in clean subprocesses.
 """
 
 from __future__ import annotations

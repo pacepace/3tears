@@ -60,6 +60,7 @@ from threetears.core.backends.protocol import (
     load_requests,
 )
 from threetears.core.backends.schema_sql import (
+    PGVECTOR_TYPES,
     coerce_row as _coerce_row_fn,
     decode_l2_value as _decode_l2_value,
     decode_vector as _decode_vector,
@@ -74,13 +75,6 @@ from threetears.core.collections.flush import FlushStrategy
 from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUMNS, L2_REVISION_COLUMN
 from threetears.core.entities.base import BaseEntity
 from threetears.observe import contain, get_logger
-
-try:
-    from pgvector.sqlalchemy import Vector as _PgVector
-
-    _PGVECTOR = True
-except ImportError:  # NOSILENT: the pgvector extra is optional; a VECTOR_TYPE column says so without it
-    _PGVECTOR = False
 
 __all__ = [
     "BIGINT_TYPE",
@@ -1288,13 +1282,13 @@ def require_pgvector() -> Any:
     :rtype: type
     :raises ImportError: when pgvector is not installed
     """
-    if not _PGVECTOR:
+    if not PGVECTOR_TYPES:
         raise ImportError(
             "pgvector is required to materialise VECTOR_TYPE columns; "
             "install ``pgvector`` or remove the column from the "
             "TableSchema",
         )
-    return _PgVector
+    return PGVECTOR_TYPES[0]
 
 
 class PartitionEnforcementError(TypeError):

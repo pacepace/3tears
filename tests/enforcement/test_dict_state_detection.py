@@ -53,6 +53,16 @@ _SRC_ROOTS = (
 #: Genuinely ephemeral, non-serializable, or the infrastructure itself -- never migrating.
 _ALLOWLIST = (
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/versioned_answers.py",
+        class_name="VersionedAnswers",
+        attr_name="_retirements",
+        rationale=(
+            "one background retirement task per scope this replica has been told the current version of; "
+            "the floors it drives are in L2 (the index's versions rows), and a restart that forgets the tasks "
+            "is asked again by the next read"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/security/door_proof.py",
         class_name="DoorProofModes",
         attr_name="_switches",

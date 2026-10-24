@@ -48,16 +48,6 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 
 # ---------------------------------------------------------------------------
-# prometheus_client availability, probed once when this module is imported
-# ---------------------------------------------------------------------------
-
-
-def _check_prometheus() -> bool:
-    """whether prometheus_client was importable when this module was."""
-    return _prometheus_available
-
-
-# ---------------------------------------------------------------------------
 # metric name sanitization
 # ---------------------------------------------------------------------------
 
@@ -190,7 +180,7 @@ def _get_or_create_instrument(
         prometheus_client is unavailable
     :rtype: Any
     """
-    if not _check_prometheus():
+    if not _prometheus_available:
         return _NOOP_METRIC
 
     sanitized = _sanitize_metric_name(name)
@@ -334,7 +324,7 @@ def metered(
 
             @functools.wraps(fn)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-                if not _check_prometheus():
+                if not _prometheus_available:
                     return await fn(*args, **kwargs)
 
                 start = time.monotonic()
@@ -355,7 +345,7 @@ def metered(
 
             @functools.wraps(fn)
             def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-                if not _check_prometheus():
+                if not _prometheus_available:
                     return fn(*args, **kwargs)
 
                 start = time.monotonic()

@@ -15,8 +15,10 @@ Each case runs in a clean subprocess, so it audits a fresh interpreter rather th
 
 from __future__ import annotations
 
+import ast
 import subprocess
 import sys
+from pathlib import Path
 
 
 def _run(script: str) -> subprocess.CompletedProcess[str]:
@@ -68,3 +70,16 @@ sys.exit(1)
     )
     assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
     assert "3tears-datasources[redshift]" in result.stdout
+
+
+def test_one_module_imports_opentelemetry_for_the_drivers() -> None:
+    """``drivers/base.py`` owns the probe; a driver that imported it too could reach a name its host lacks."""
+    drivers = Path(__file__).resolve().parents[2] / "src" / "threetears" / "datasources" / "drivers"
+    importers = sorted(
+        path.name
+        for path in drivers.glob("*.py")
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Import | ast.ImportFrom)
+        and any((getattr(node, "module", None) or alias.name).startswith("opentelemetry") for alias in node.names)
+    )
+    assert importers == ["base.py"], importers

@@ -178,11 +178,6 @@ from threetears.datasources.drivers.sql_fragments import (
     build_set_statement_timeout_sql,
 )
 
-try:
-    from opentelemetry import metrics as _otel_metrics
-except ImportError:  # NOSILENT: the tracing extra is optional; base's probe keeps every meter unreached without it
-    pass
-
 from threetears.datasources.drivers.base import (
     CallbackTransaction,
     ColumnRow,
@@ -190,7 +185,8 @@ from threetears.datasources.drivers.base import (
     RelationFingerprint,
     TableRow,
     Transaction,
-    _check_otel_metrics,
+    _OTEL_METRICS,
+    _drivers_meter,
     _instrument_cache,
     check_max_rows,
     log_unselectable_relations,
@@ -682,7 +678,7 @@ def _get_cancellation_fired_counter() -> Any:
     :rtype: Any
     """
     result: Any = None
-    if _check_otel_metrics():
+    if _OTEL_METRICS:
         key = ("redshift", "datasource.driver.cancellation.fired")
 
         def _build() -> Any:
@@ -692,7 +688,7 @@ def _get_cancellation_fired_counter() -> Any:
             :return: the new OTel instrument
             :rtype: Any
             """
-            meter = _otel_metrics.get_meter("threetears.datasources.drivers")
+            meter = _drivers_meter()
             instrument = meter.create_counter(
                 name="datasource.driver.cancellation.fired",
                 description="datasource driver cancellation fired count",
@@ -714,7 +710,7 @@ def _get_cancellation_failed_counter() -> Any:
     :rtype: Any
     """
     result: Any = None
-    if _check_otel_metrics():
+    if _OTEL_METRICS:
         key = ("redshift", "datasource.driver.cancellation.failed")
 
         def _build() -> Any:
@@ -724,7 +720,7 @@ def _get_cancellation_failed_counter() -> Any:
             :return: the new OTel instrument
             :rtype: Any
             """
-            meter = _otel_metrics.get_meter("threetears.datasources.drivers")
+            meter = _drivers_meter()
             instrument = meter.create_counter(
                 name="datasource.driver.cancellation.failed",
                 description="datasource driver cancellation failed count",
@@ -745,7 +741,7 @@ def _get_cache_hit_counter() -> Any:
     :rtype: Any
     """
     result: Any = None
-    if _check_otel_metrics():
+    if _OTEL_METRICS:
         key = ("redshift", "datasource.driver.cache.hit")
 
         def _build() -> Any:
@@ -755,7 +751,7 @@ def _get_cache_hit_counter() -> Any:
             :return: the new OTel instrument
             :rtype: Any
             """
-            meter = _otel_metrics.get_meter("threetears.datasources.drivers")
+            meter = _drivers_meter()
             instrument = meter.create_counter(
                 name="datasource.driver.cache.hit",
                 description="datasource driver connection-cache hit count",
@@ -776,7 +772,7 @@ def _get_cache_miss_counter() -> Any:
     :rtype: Any
     """
     result: Any = None
-    if _check_otel_metrics():
+    if _OTEL_METRICS:
         key = ("redshift", "datasource.driver.cache.miss")
 
         def _build() -> Any:
@@ -786,7 +782,7 @@ def _get_cache_miss_counter() -> Any:
             :return: the new OTel instrument
             :rtype: Any
             """
-            meter = _otel_metrics.get_meter("threetears.datasources.drivers")
+            meter = _drivers_meter()
             instrument = meter.create_counter(
                 name="datasource.driver.cache.miss",
                 description="datasource driver connection-cache miss count",
@@ -809,7 +805,7 @@ def _get_executor_saturation_gauge() -> Any:
     :rtype: Any
     """
     result: Any = None
-    if _check_otel_metrics():
+    if _OTEL_METRICS:
         key = ("redshift", "datasource.driver.executor.saturation")
 
         def _build() -> Any:
@@ -819,7 +815,7 @@ def _get_executor_saturation_gauge() -> Any:
             :return: the new OTel instrument
             :rtype: Any
             """
-            meter = _otel_metrics.get_meter("threetears.datasources.drivers")
+            meter = _drivers_meter()
             # use UpDownCounter rather than Gauge for portability --
             # OTel's sync Gauge API is comparatively new and the
             # UpDownCounter accepts an arbitrary delta which we

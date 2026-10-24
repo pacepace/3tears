@@ -45,16 +45,6 @@ _MAX_ATTR_LENGTH = 256
 
 
 # ---------------------------------------------------------------------------
-# OTel availability, probed once when this module is imported
-# ---------------------------------------------------------------------------
-
-
-def _check_otel() -> bool:
-    """whether the OpenTelemetry API was importable when this module was."""
-    return _otel_available
-
-
-# ---------------------------------------------------------------------------
 # Span attribute helpers
 # ---------------------------------------------------------------------------
 
@@ -149,7 +139,7 @@ def set_span_attribute(key: str, value: Any) -> None:
     :return: none
     :rtype: None
     """
-    if not _check_otel():
+    if not _otel_available:
         return
 
     span = trace.get_current_span()
@@ -204,7 +194,7 @@ def traced(
 
             @functools.wraps(fn)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-                if not _check_otel():
+                if not _otel_available:
                     return await fn(*args, **kwargs)
 
                 tracer = trace.get_tracer(fn.__module__)
@@ -238,7 +228,7 @@ def traced(
 
             @functools.wraps(fn)
             def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-                if not _check_otel():
+                if not _otel_available:
                     return fn(*args, **kwargs)
 
                 tracer = trace.get_tracer(fn.__module__)
