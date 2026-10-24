@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "campaign_id": "01a16a8f-dd38-75cd-b950-f22d388376a7",
+  "schema_version": 2,
+  "campaign_id": "01a16be0-d137-743e-ad56-44690409b5f8",
   "scope_id": "llm-analysis",
   "name": "baseline vs candidate",
   "subject_id": "baseline vs candidate",
@@ -8,7 +8,7 @@
   "behavior": "classify",
   "declaration": {
     "question": "",
-    "declared_at": "2026-10-23T20:59:35.522103+00:00",
+    "declared_at": "2026-10-24T03:07:38.093705+00:00",
     "declared_by": "eval",
     "arms": [
       {
@@ -42,7 +42,7 @@
           }
         },
         "identity_version": 25,
-        "named_at": "2026-10-23T20:59:35.522103+00:00"
+        "named_at": "2026-10-24T03:07:38.093705+00:00"
       }
     ],
     "aspects": [
@@ -91,11 +91,11 @@
           "measure_latency": false
         },
         "run_ids": [
-          "01a16a8f-dce5-76a8-91b4-5cbc34a8ba04",
-          "01a16a8f-dce8-70db-ba7f-d61b5e475c61"
+          "01a16be0-d0f0-7194-acbd-b94089fc448b",
+          "01a16be0-d0f2-72e1-aa0a-e7afd31da746"
         ],
-        "declared_at": "2026-10-23T20:59:35.522103+00:00",
-        "asked_at": "2026-10-23T20:59:35.522103+00:00",
+        "declared_at": "2026-10-24T03:07:38.093705+00:00",
+        "asked_at": "2026-10-24T03:07:38.093705+00:00",
         "margin_declared_at": null
       }
     ],
@@ -133,7 +133,7 @@
         }
       },
       "identity_version": 25,
-      "named_at": "2026-10-23T20:59:35.522103+00:00"
+      "named_at": "2026-10-24T03:07:38.093705+00:00"
     },
     {
       "label": "candidate",
@@ -170,7 +170,7 @@
     }
   ],
   "readings": {
-    "campaign_id": "01a16a8f-dd38-75cd-b950-f22d388376a7",
+    "campaign_id": "01a16be0-d137-743e-ad56-44690409b5f8",
     "alpha": 0.05,
     "control": "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6",
     "control_label": "baseline",
@@ -206,7 +206,33 @@
         "arm_trials": 24,
         "projection": null,
         "reason": "its interval reaches zero, and no margin was declared to show a drop against",
-        "confirmatory": false
+        "confirmatory": false,
+        "control_depth": {
+          "cases": 12,
+          "trials": 24,
+          "repeats_min": 2,
+          "repeats_median": 2.0,
+          "repeats_max": 2
+        },
+        "arm_depth": {
+          "cases": 12,
+          "trials": 24,
+          "repeats_min": 2,
+          "repeats_median": 2.0,
+          "repeats_max": 2
+        },
+        "depth_differs": 0,
+        "precision": {
+          "half_width": 42.694166488945484,
+          "half_widths": {
+            "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6": 30.54230707930401,
+            "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b": 21.79603691911325
+          },
+          "limited_by": "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6",
+          "within_case": 0.0,
+          "between_case": 0.42424242424242425,
+          "between_share": 1.0
+        }
       }
     ],
     "floors": [],
@@ -217,8 +243,8 @@
   },
   "aspects": [
     {
-      "schema_version": 62,
-      "campaign_id": "01a16a8f-dd38-75cd-b950-f22d388376a7",
+      "schema_version": 63,
+      "campaign_id": "01a16be0-d137-743e-ad56-44690409b5f8",
       "subject_id": "baseline vs candidate",
       "subject_kind": "",
       "behavior": "classify",
@@ -226,8 +252,8 @@
       "template_id": "eval-4feedbcc275d466e",
       "scope_id": "llm-analysis",
       "run_ids": [
-        "01a16a8f-dce5-76a8-91b4-5cbc34a8ba04",
-        "01a16a8f-dce8-70db-ba7f-d61b5e475c61"
+        "01a16be0-d0f0-7194-acbd-b94089fc448b",
+        "01a16be0-d0f2-72e1-aa0a-e7afd31da746"
       ],
       "unresolved_run_ids": [],
       "archived_run_ids": [],
@@ -235,14 +261,14 @@
         "candidate": "callable"
       },
       "window": {
-        "start": "2026-10-23T20:59:35.525901+00:00",
-        "end": "2026-10-23T20:59:35.528538+00:00"
+        "start": "2026-10-24T03:07:38.096513+00:00",
+        "end": "2026-10-24T03:07:38.098334+00:00"
       },
       "run_summaries": [
         {
-          "run_id": "01a16a8f-dce5-76a8-91b4-5cbc34a8ba04",
+          "run_id": "01a16be0-d0f0-7194-acbd-b94089fc448b",
           "status": "completed",
-          "created_at": "2026-10-23T20:59:35.525901+00:00",
+          "created_at": "2026-10-24T03:07:38.096513+00:00",
           "candidate_model": "callable",
           "k_runs": 2,
           "config": {
@@ -529,13 +555,13 @@
                 "ci_high": null,
                 "case_means": null,
                 "categories": {
-                  "feature_request → billing": 2,
-                  "account → account": 4,
                   "billing → billing": 6,
-                  "bug → account": 2,
-                  "billing → account": 2,
+                  "account → account": 4,
+                  "bug → bug": 4,
                   "feature_request → bug": 4,
-                  "bug → bug": 4
+                  "billing → account": 2,
+                  "feature_request → billing": 2,
+                  "bug → account": 2
                 },
                 "rate": null,
                 "n_true": null,
@@ -596,9 +622,9 @@
           "judge_shares_candidate_model": []
         },
         {
-          "run_id": "01a16a8f-dce8-70db-ba7f-d61b5e475c61",
+          "run_id": "01a16be0-d0f2-72e1-aa0a-e7afd31da746",
           "status": "completed",
-          "created_at": "2026-10-23T20:59:35.528538+00:00",
+          "created_at": "2026-10-24T03:07:38.098334+00:00",
           "candidate_model": "callable",
           "k_runs": 2,
           "config": {
@@ -930,10 +956,10 @@
                 "case_means": null,
                 "categories": {
                   "billing → billing": 6,
-                  "feature_request → feature_request": 6,
                   "bug → bug": 6,
                   "account → account": 4,
-                  "billing → bug": 2
+                  "billing → bug": 2,
+                  "feature_request → feature_request": 6
                 },
                 "rate": null,
                 "n_true": null,
@@ -1001,8 +1027,8 @@
             "subject_label": "baseline vs candidate",
             "template_id": "eval-4feedbcc275d466e",
             "run_ids": [
-              "01a16a8f-dce5-76a8-91b4-5cbc34a8ba04",
-              "01a16a8f-dce8-70db-ba7f-d61b5e475c61"
+              "01a16be0-d0f0-7194-acbd-b94089fc448b",
+              "01a16be0-d0f2-72e1-aa0a-e7afd31da746"
             ],
             "shared_test_case_ids": [
               "eval-4feedbcc275d466e-0",
@@ -1023,8 +1049,8 @@
                 "fingerprint": "6cd82961453a6fd392c76b68602a69985e50e008b29e9cec971e411be04eef36",
                 "n_cases": 12,
                 "run_ids": [
-                  "01a16a8f-dce5-76a8-91b4-5cbc34a8ba04",
-                  "01a16a8f-dce8-70db-ba7f-d61b5e475c61"
+                  "01a16be0-d0f0-7194-acbd-b94089fc448b",
+                  "01a16be0-d0f2-72e1-aa0a-e7afd31da746"
                 ]
               }
             ],
@@ -1045,6 +1071,8 @@
             "subject_id": "baseline vs candidate",
             "subject_label": "baseline vs candidate",
             "k": 2,
+            "common_depth": null,
+            "unmeasured_for": [],
             "points": [
               {
                 "variant_key": "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b",
@@ -1059,6 +1087,12 @@
                 "pass_hat_k_ci_high": null,
                 "n_pass_no_criterion": 24,
                 "pass_hat_k_unmeasured_reason": "no attempt carried a pass criterion — no goal-state check and no judge — so there is nothing for pass^k to conjoin: it is unmeasured, not 0; read the arm's own grade (its host measures, e.g. accuracy) instead",
+                "depth": null,
+                "n_cases_short_of_k": 0,
+                "common_pass_hat_k": null,
+                "n_common_cases": 0,
+                "n_cases_left_out": 0,
+                "model_pass_hat_k": null,
                 "bar_decision": null,
                 "boundary_checks": [],
                 "disqualified_by": [],
@@ -1080,7 +1114,7 @@
                 "cost_per_acceptable_outcome": null,
                 "production_footing": {
                   "runs": {
-                    "01a16a8f-dce8-70db-ba7f-d61b5e475c61": {
+                    "01a16be0-d0f2-72e1-aa0a-e7afd31da746": {
                       "moved": {},
                       "unchecked": {},
                       "held": [
@@ -1103,7 +1137,7 @@
                 "pass_hat_k_cells": [
                   {
                     "run_ids": [
-                      "01a16a8f-dce8-70db-ba7f-d61b5e475c61"
+                      "01a16be0-d0f2-72e1-aa0a-e7afd31da746"
                     ],
                     "headline": true,
                     "reason": null,
@@ -1132,6 +1166,12 @@
                 "pass_hat_k_ci_high": null,
                 "n_pass_no_criterion": 24,
                 "pass_hat_k_unmeasured_reason": "no attempt carried a pass criterion — no goal-state check and no judge — so there is nothing for pass^k to conjoin: it is unmeasured, not 0; read the arm's own grade (its host measures, e.g. accuracy) instead",
+                "depth": null,
+                "n_cases_short_of_k": 0,
+                "common_pass_hat_k": null,
+                "n_common_cases": 0,
+                "n_cases_left_out": 0,
+                "model_pass_hat_k": null,
                 "bar_decision": null,
                 "boundary_checks": [],
                 "disqualified_by": [],
@@ -1153,7 +1193,7 @@
                 "cost_per_acceptable_outcome": null,
                 "production_footing": {
                   "runs": {
-                    "01a16a8f-dce5-76a8-91b4-5cbc34a8ba04": {
+                    "01a16be0-d0f0-7194-acbd-b94089fc448b": {
                       "moved": {},
                       "unchecked": {},
                       "held": [
@@ -1176,7 +1216,7 @@
                 "pass_hat_k_cells": [
                   {
                     "run_ids": [
-                      "01a16a8f-dce5-76a8-91b4-5cbc34a8ba04"
+                      "01a16be0-d0f0-7194-acbd-b94089fc448b"
                     ],
                     "headline": true,
                     "reason": null,
@@ -1531,15 +1571,15 @@
               "ci_high": null,
               "case_means": null,
               "categories": {
-                "feature_request → billing": 2,
-                "account → account": 8,
                 "billing → billing": 12,
-                "bug → account": 2,
-                "billing → account": 2,
-                "feature_request → bug": 4,
+                "account → account": 8,
                 "bug → bug": 10,
-                "feature_request → feature_request": 6,
-                "billing → bug": 2
+                "feature_request → bug": 4,
+                "billing → account": 2,
+                "feature_request → billing": 2,
+                "bug → account": 2,
+                "billing → bug": 2,
+                "feature_request → feature_request": 6
               },
               "rate": null,
               "n_true": null,
@@ -1643,7 +1683,7 @@
       "divergences_untested": 0,
       "declared": {
         "question": "",
-        "asked_at": "2026-10-23T20:59:35.522103+00:00",
+        "asked_at": "2026-10-24T03:07:38.093705+00:00",
         "margin_declared_at": null,
         "design": {
           "axes": [
@@ -1715,11 +1755,11 @@
             }
           },
           "identity_version": 25,
-          "named_at": "2026-10-23T20:59:35.522103+00:00"
+          "named_at": "2026-10-24T03:07:38.093705+00:00"
         },
         "margin": null,
         "floors": [],
-        "declared_at": "2026-10-23T20:59:35.522103+00:00",
+        "declared_at": "2026-10-24T03:07:38.093705+00:00",
         "declared_by": "eval",
         "unread_without_control": null
       },
@@ -1727,7 +1767,7 @@
         "control_arm": {
           "variant_key": "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6",
           "run_ids": [
-            "01a16a8f-dce5-76a8-91b4-5cbc34a8ba04"
+            "01a16be0-d0f0-7194-acbd-b94089fc448b"
           ],
           "k": 2,
           "moved": {},
@@ -1740,7 +1780,7 @@
           {
             "variant_key": "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b",
             "run_ids": [
-              "01a16a8f-dce8-70db-ba7f-d61b5e475c61"
+              "01a16be0-d0f2-72e1-aa0a-e7afd31da746"
             ],
             "k": 2,
             "moved": {
@@ -1776,8 +1816,8 @@
         "stimulus_reason": "",
         "declared_apparatus": "commissioned",
         "run_provenance": {
-          "01a16a8f-dce5-76a8-91b4-5cbc34a8ba04": "commissioned",
-          "01a16a8f-dce8-70db-ba7f-d61b5e475c61": "commissioned"
+          "01a16be0-d0f0-7194-acbd-b94089fc448b": "commissioned",
+          "01a16be0-d0f2-72e1-aa0a-e7afd31da746": "commissioned"
         },
         "contradicting_run_ids": [],
         "disclosure": null
@@ -1856,6 +1896,36 @@
               1.0,
               1.0,
               1.0
+            ]
+          ],
+          "case_trials": [
+            [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            [
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2,
+              2
             ]
           ]
         }
@@ -1979,7 +2049,14 @@
           "no_criterion": 0,
           "test_cost_usd": 0.0,
           "n_cost_unpriced": 0,
-          "reply_cost_usd": null
+          "reply_cost_usd": null,
+          "depth": {
+            "cases": 12,
+            "trials": 24,
+            "repeats_min": 2,
+            "repeats_median": 2.0,
+            "repeats_max": 2
+          }
         },
         {
           "variant_key": "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b",
@@ -1995,7 +2072,14 @@
           "no_criterion": 0,
           "test_cost_usd": 0.0,
           "n_cost_unpriced": 0,
-          "reply_cost_usd": null
+          "reply_cost_usd": null,
+          "depth": {
+            "cases": 12,
+            "trials": 24,
+            "repeats_min": 2,
+            "repeats_median": 2.0,
+            "repeats_max": 2
+          }
         }
       ],
       "trials": [
@@ -2014,7 +2098,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "1b3c0aba-62e7-59e5-9b3a-fc8566f5042f"
+          "result_id": "af825c34-a31e-559f-a1eb-0dee3dd94320"
         },
         {
           "trial_id": "T2",
@@ -2031,7 +2115,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "1b85a6d9-864e-5e9b-a9df-3d027e497b83"
+          "result_id": "f9ec2f9d-5297-5bd9-a3a3-fbb632f072d0"
         },
         {
           "trial_id": "T3",
@@ -2048,7 +2132,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "28f9e6f0-7197-56e7-822a-83efd70a25e6"
+          "result_id": "403ded0d-79a4-59dc-84db-d78ef24b670a"
         },
         {
           "trial_id": "T4",
@@ -2065,7 +2149,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "74856551-96a2-5ab3-b8a3-35f0143c8fdc"
+          "result_id": "3039e483-150a-5c7b-8587-7663a458551e"
         },
         {
           "trial_id": "T5",
@@ -2082,7 +2166,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "59f9ea01-0e97-5084-9273-36c68aab52b7"
+          "result_id": "ab91d341-79a1-5429-8584-f11522045c40"
         },
         {
           "trial_id": "T6",
@@ -2099,7 +2183,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "2b23df6d-b697-5b92-8cfa-23d33632a12b"
+          "result_id": "74e94663-e22e-5d40-b20f-ea360b7918a0"
         },
         {
           "trial_id": "T7",
@@ -2121,7 +2205,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "b0b74b0f-a229-533a-8d0e-0d47971d2843"
+          "result_id": "1c2cf40a-2f94-5368-8147-9824cb3c3ff3"
         },
         {
           "trial_id": "T8",
@@ -2143,7 +2227,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "90540acd-f8b1-5e95-aac7-1b3f1a890a9d"
+          "result_id": "f81b0316-4d61-58ad-96b7-4f33e7ac144e"
         },
         {
           "trial_id": "T9",
@@ -2160,7 +2244,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "f2372f19-c11c-5d17-8c66-996ae8f2bfaa"
+          "result_id": "874084c6-5e01-5c30-9e2a-214e6706cf82"
         },
         {
           "trial_id": "T10",
@@ -2177,7 +2261,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "113ce9bd-4cf3-548c-b85c-41a03d21bac6"
+          "result_id": "1aac7c91-a881-50de-80de-6d1c854598a8"
         },
         {
           "trial_id": "T11",
@@ -2194,7 +2278,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "98ca5ad3-c1c7-57cd-8516-aae9f7a297a5"
+          "result_id": "9a3041a7-a3fc-5322-90e2-0bf53f7b994c"
         },
         {
           "trial_id": "T12",
@@ -2211,7 +2295,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "85c33f1a-2bad-5b30-9bb3-be479a2bb632"
+          "result_id": "a73dbf52-307e-5ade-9c66-7d2b72e639fd"
         },
         {
           "trial_id": "T13",
@@ -2233,7 +2317,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "86c1e60c-477f-5026-9afe-21b6f9448c85"
+          "result_id": "a11a04d7-2c44-564a-afd8-9ebc73cce4e0"
         },
         {
           "trial_id": "T14",
@@ -2255,7 +2339,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "38fa245e-9b10-5419-a800-703d7dc25daf"
+          "result_id": "575113da-31bc-5c91-b37f-52319aa87683"
         },
         {
           "trial_id": "T15",
@@ -2272,7 +2356,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "10e78d5c-c7ab-5b0f-8783-020e1018abbb"
+          "result_id": "89c010cb-7002-5061-b1db-3477e268d861"
         },
         {
           "trial_id": "T16",
@@ -2289,7 +2373,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "68eb0ef3-0559-5b2e-965a-c9e97c9abcda"
+          "result_id": "0061efc2-24ad-57b6-a085-2f2fd5d570b4"
         },
         {
           "trial_id": "T17",
@@ -2306,7 +2390,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "5bee4612-8456-510c-a0ce-4842459240a0"
+          "result_id": "43f2d6fb-7d18-58ae-beb3-206575ddab06"
         },
         {
           "trial_id": "T18",
@@ -2323,7 +2407,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "702ca6bf-2427-5595-a341-dcce9605458d"
+          "result_id": "482ce2e1-6168-5580-a338-558cafe205a5"
         },
         {
           "trial_id": "T19",
@@ -2340,7 +2424,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "a84e9d24-f85a-53c2-9b5b-dbd95907fc5c"
+          "result_id": "8799b661-23a5-5507-b69b-d99de787958b"
         },
         {
           "trial_id": "T20",
@@ -2357,7 +2441,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "4eff4c53-75dd-5443-ab59-6f6b6f107bbc"
+          "result_id": "71cd94b0-dc70-5acb-ae65-619672d04de6"
         },
         {
           "trial_id": "T21",
@@ -2374,7 +2458,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "a772e304-675b-52ab-b74d-63874c7668fd"
+          "result_id": "c16674bc-e89a-591d-8341-b6a527e07ad1"
         },
         {
           "trial_id": "T22",
@@ -2391,7 +2475,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "d358f110-9764-556e-8e4f-719d82f5cca4"
+          "result_id": "437dcda0-d178-5bd1-89cd-8d75b6e374ab"
         },
         {
           "trial_id": "T23",
@@ -2408,7 +2492,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "8f7dee65-1a82-5b4a-8194-e1dec56485ff"
+          "result_id": "063212e1-f243-5b96-b35c-5f6eae6dc78e"
         },
         {
           "trial_id": "T24",
@@ -2425,7 +2509,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "5de59313-d1dd-58cf-812e-9f8fa0a9727b"
+          "result_id": "24cd1d54-ebc1-570d-a7f9-afcb94283ce0"
         },
         {
           "trial_id": "T25",
@@ -2447,7 +2531,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "2d9552cd-68fd-5647-855b-809d3a80bf9a"
+          "result_id": "fd9a210a-c106-5fc0-ad43-982720a7a0e4"
         },
         {
           "trial_id": "T26",
@@ -2469,7 +2553,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "8b1082d1-f0d8-5263-a5d6-3530a628c3f3"
+          "result_id": "a2d2ec5a-68fe-5a9f-870c-d0a7494a8c47"
         },
         {
           "trial_id": "T27",
@@ -2486,7 +2570,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "83317d20-035e-5e84-a382-377b859ed5f3"
+          "result_id": "7b4158ce-ae68-5f69-8396-5303c3b88e97"
         },
         {
           "trial_id": "T28",
@@ -2503,7 +2587,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "e9502638-fe96-58f0-a949-80dba4e2d774"
+          "result_id": "6043124a-dc1f-55af-94fc-e4acda9aeafa"
         },
         {
           "trial_id": "T29",
@@ -2520,7 +2604,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "a3041218-546a-5260-9961-2de1476f4153"
+          "result_id": "a68c9ec2-fe08-563e-af91-3a11de056bc5"
         },
         {
           "trial_id": "T30",
@@ -2537,7 +2621,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "7a15e772-8334-5e27-a638-4e17342b26dd"
+          "result_id": "8aa19a36-63d1-5ec9-82e8-943b4ac678ac"
         },
         {
           "trial_id": "T31",
@@ -2554,7 +2638,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "5bfc2655-7469-54f5-8b76-f0e5d23f8b15"
+          "result_id": "06b4a440-dba3-5fc3-848f-bdb0c84131a9"
         },
         {
           "trial_id": "T32",
@@ -2571,7 +2655,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "59334ace-dfee-5c27-9544-e2c85686f4d6"
+          "result_id": "f063acee-dfa5-5ac4-ac0a-1035bb915434"
         },
         {
           "trial_id": "T33",
@@ -2588,7 +2672,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "0c6a8b92-e05f-5fe8-9f8d-93da31a7ea1e"
+          "result_id": "3388863c-90f4-5121-a253-7834b4a58781"
         },
         {
           "trial_id": "T34",
@@ -2605,7 +2689,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "721cf154-0f0e-5676-967c-401296ba8d49"
+          "result_id": "5df93ab7-5fb0-5201-b7f8-08d68778a854"
         },
         {
           "trial_id": "T35",
@@ -2622,7 +2706,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "b9f3abda-853c-5662-9e73-d1d1cad2365e"
+          "result_id": "1d0c1bb6-fd57-5229-a0f2-1016a9abf360"
         },
         {
           "trial_id": "T36",
@@ -2639,7 +2723,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "7221a98c-8c88-5afb-b913-c89604c07927"
+          "result_id": "6378a422-6428-531a-976b-2b6bdb8f4422"
         },
         {
           "trial_id": "T37",
@@ -2661,7 +2745,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "78aff9e4-19fc-5a0e-96fc-c31b4fe8a71e"
+          "result_id": "f1ad7f10-12ae-5523-99e3-edaef757ba43"
         },
         {
           "trial_id": "T38",
@@ -2683,7 +2767,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "45b09a84-e9d5-56e2-80dc-e8caca77c15e"
+          "result_id": "c493f1ed-f54d-57ea-b8e9-0c4d53ac2b9f"
         },
         {
           "trial_id": "T39",
@@ -2700,7 +2784,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "3c8d468a-358b-5b00-a214-3ffdceaadef1"
+          "result_id": "23305116-fccd-563a-ba4a-0023192b7d73"
         },
         {
           "trial_id": "T40",
@@ -2717,7 +2801,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "7e9d36ca-3c00-5e0b-a9d6-305049cc0f61"
+          "result_id": "7c7f9b26-405d-5bae-99a5-597c13bc6e08"
         },
         {
           "trial_id": "T41",
@@ -2739,7 +2823,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "aa45224e-55a3-5ca9-9221-d13f082cffa4"
+          "result_id": "48833903-f088-58cc-bdfb-f75f948ccf7b"
         },
         {
           "trial_id": "T42",
@@ -2761,7 +2845,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "e225835e-f2bf-5c9b-853f-d78a1c436044"
+          "result_id": "d80ee73d-376c-5611-945e-8c6c64f9e799"
         },
         {
           "trial_id": "T43",
@@ -2778,7 +2862,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "cc5df0d8-fc2a-5808-8692-89223b06e08f"
+          "result_id": "abdb86d7-93b6-56c6-b377-f83067ddceb0"
         },
         {
           "trial_id": "T44",
@@ -2795,7 +2879,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "897275d0-0693-5636-80f0-7d64e0887881"
+          "result_id": "82bc89db-a64c-5bbf-90cc-8a494263502e"
         },
         {
           "trial_id": "T45",
@@ -2817,7 +2901,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "07a73c4c-db5a-5735-b5c0-2c69d53eeb57"
+          "result_id": "5822b4a3-2958-550d-ad0c-c4a37ceb5e74"
         },
         {
           "trial_id": "T46",
@@ -2839,7 +2923,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "a067287e-02b5-543b-8767-1de98c613744"
+          "result_id": "f99da212-bc35-591d-90da-5f408d97cffc"
         },
         {
           "trial_id": "T47",
@@ -2856,7 +2940,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "628afeb3-9887-5717-be58-483ff957c59e"
+          "result_id": "b9e9a1eb-0932-526b-a852-7f4fc5825d32"
         },
         {
           "trial_id": "T48",
@@ -2873,13 +2957,13 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "9db3c7b6-c6fa-5553-9a65-bd74c581a2c7"
+          "result_id": "572a05cd-4360-584f-a780-b628c2652d37"
         }
       ],
       "trials_omitted": 0,
       "case_sets": [],
-      "design_frozen_at": "2026-10-23T20:59:35.525901+00:00",
-      "first_result_at": "2026-10-23T20:59:35.534324+00:00",
+      "design_frozen_at": "2026-10-24T03:07:38.096513+00:00",
+      "first_result_at": "2026-10-24T03:07:38.106679+00:00",
       "package_version": "0.76.0",
       "reading_scope": {
         "questions_declared": false,
@@ -2918,14 +3002,14 @@
       },
       "measurement_windows": [
         {
-          "run_id": "01a16a8f-dce5-76a8-91b4-5cbc34a8ba04",
-          "start": "2026-10-23T20:59:35.534324+00:00",
-          "end": "2026-10-23T20:59:35.593821+00:00"
+          "run_id": "01a16be0-d0f0-7194-acbd-b94089fc448b",
+          "start": "2026-10-24T03:07:38.106679+00:00",
+          "end": "2026-10-24T03:07:38.151412+00:00"
         },
         {
-          "run_id": "01a16a8f-dce8-70db-ba7f-d61b5e475c61",
-          "start": "2026-10-23T20:59:35.534777+00:00",
-          "end": "2026-10-23T20:59:35.594033+00:00"
+          "run_id": "01a16be0-d0f2-72e1-aa0a-e7afd31da746",
+          "start": "2026-10-24T03:07:38.107080+00:00",
+          "end": "2026-10-24T03:07:38.153060+00:00"
         }
       ],
       "launch_disclosure": null,
@@ -2966,7 +3050,7 @@
       "arm_production_footings": {
         "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b": {
           "runs": {
-            "01a16a8f-dce8-70db-ba7f-d61b5e475c61": {
+            "01a16be0-d0f2-72e1-aa0a-e7afd31da746": {
               "moved": {},
               "unchecked": {},
               "held": [
@@ -2979,7 +3063,7 @@
         },
         "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6": {
           "runs": {
-            "01a16a8f-dce5-76a8-91b4-5cbc34a8ba04": {
+            "01a16be0-d0f0-7194-acbd-b94089fc448b": {
               "moved": {},
               "unchecked": {},
               "held": [
@@ -3003,30 +3087,30 @@
           "repeats_per_case_min": 2,
           "repeats_per_case_max": 2,
           "observation_ids": [
-            "10e78d5c-c7ab-5b0f-8783-020e1018abbb",
-            "28f9e6f0-7197-56e7-822a-83efd70a25e6",
-            "3c8d468a-358b-5b00-a214-3ffdceaadef1",
-            "4eff4c53-75dd-5443-ab59-6f6b6f107bbc",
-            "59334ace-dfee-5c27-9544-e2c85686f4d6",
-            "5bfc2655-7469-54f5-8b76-f0e5d23f8b15",
-            "5de59313-d1dd-58cf-812e-9f8fa0a9727b",
-            "628afeb3-9887-5717-be58-483ff957c59e",
-            "68eb0ef3-0559-5b2e-965a-c9e97c9abcda",
-            "7221a98c-8c88-5afb-b913-c89604c07927",
-            "74856551-96a2-5ab3-b8a3-35f0143c8fdc",
-            "7e9d36ca-3c00-5e0b-a9d6-305049cc0f61",
-            "83317d20-035e-5e84-a382-377b859ed5f3",
-            "85c33f1a-2bad-5b30-9bb3-be479a2bb632",
-            "897275d0-0693-5636-80f0-7d64e0887881",
-            "8f7dee65-1a82-5b4a-8194-e1dec56485ff",
-            "90540acd-f8b1-5e95-aac7-1b3f1a890a9d",
-            "98ca5ad3-c1c7-57cd-8516-aae9f7a297a5",
-            "9db3c7b6-c6fa-5553-9a65-bd74c581a2c7",
-            "a84e9d24-f85a-53c2-9b5b-dbd95907fc5c",
-            "b0b74b0f-a229-533a-8d0e-0d47971d2843",
-            "b9f3abda-853c-5662-9e73-d1d1cad2365e",
-            "cc5df0d8-fc2a-5808-8692-89223b06e08f",
-            "e9502638-fe96-58f0-a949-80dba4e2d774"
+            "0061efc2-24ad-57b6-a085-2f2fd5d570b4",
+            "063212e1-f243-5b96-b35c-5f6eae6dc78e",
+            "06b4a440-dba3-5fc3-848f-bdb0c84131a9",
+            "1c2cf40a-2f94-5368-8147-9824cb3c3ff3",
+            "1d0c1bb6-fd57-5229-a0f2-1016a9abf360",
+            "23305116-fccd-563a-ba4a-0023192b7d73",
+            "24cd1d54-ebc1-570d-a7f9-afcb94283ce0",
+            "3039e483-150a-5c7b-8587-7663a458551e",
+            "403ded0d-79a4-59dc-84db-d78ef24b670a",
+            "572a05cd-4360-584f-a780-b628c2652d37",
+            "6043124a-dc1f-55af-94fc-e4acda9aeafa",
+            "6378a422-6428-531a-976b-2b6bdb8f4422",
+            "71cd94b0-dc70-5acb-ae65-619672d04de6",
+            "7b4158ce-ae68-5f69-8396-5303c3b88e97",
+            "7c7f9b26-405d-5bae-99a5-597c13bc6e08",
+            "82bc89db-a64c-5bbf-90cc-8a494263502e",
+            "8799b661-23a5-5507-b69b-d99de787958b",
+            "89c010cb-7002-5061-b1db-3477e268d861",
+            "9a3041a7-a3fc-5322-90e2-0bf53f7b994c",
+            "a73dbf52-307e-5ade-9c66-7d2b72e639fd",
+            "abdb86d7-93b6-56c6-b377-f83067ddceb0",
+            "b9e9a1eb-0932-526b-a852-7f4fc5825d32",
+            "f063acee-dfa5-5ac4-ac0a-1035bb915434",
+            "f81b0316-4d61-58ad-96b7-4f33e7ac144e"
           ],
           "unknown_dimensions": []
         },
@@ -3039,30 +3123,30 @@
           "repeats_per_case_min": 2,
           "repeats_per_case_max": 2,
           "observation_ids": [
-            "07a73c4c-db5a-5735-b5c0-2c69d53eeb57",
-            "0c6a8b92-e05f-5fe8-9f8d-93da31a7ea1e",
-            "113ce9bd-4cf3-548c-b85c-41a03d21bac6",
-            "1b3c0aba-62e7-59e5-9b3a-fc8566f5042f",
-            "1b85a6d9-864e-5e9b-a9df-3d027e497b83",
-            "2b23df6d-b697-5b92-8cfa-23d33632a12b",
-            "2d9552cd-68fd-5647-855b-809d3a80bf9a",
-            "38fa245e-9b10-5419-a800-703d7dc25daf",
-            "45b09a84-e9d5-56e2-80dc-e8caca77c15e",
-            "59f9ea01-0e97-5084-9273-36c68aab52b7",
-            "5bee4612-8456-510c-a0ce-4842459240a0",
-            "702ca6bf-2427-5595-a341-dcce9605458d",
-            "721cf154-0f0e-5676-967c-401296ba8d49",
-            "78aff9e4-19fc-5a0e-96fc-c31b4fe8a71e",
-            "7a15e772-8334-5e27-a638-4e17342b26dd",
-            "86c1e60c-477f-5026-9afe-21b6f9448c85",
-            "8b1082d1-f0d8-5263-a5d6-3530a628c3f3",
-            "a067287e-02b5-543b-8767-1de98c613744",
-            "a3041218-546a-5260-9961-2de1476f4153",
-            "a772e304-675b-52ab-b74d-63874c7668fd",
-            "aa45224e-55a3-5ca9-9221-d13f082cffa4",
-            "d358f110-9764-556e-8e4f-719d82f5cca4",
-            "e225835e-f2bf-5c9b-853f-d78a1c436044",
-            "f2372f19-c11c-5d17-8c66-996ae8f2bfaa"
+            "1aac7c91-a881-50de-80de-6d1c854598a8",
+            "3388863c-90f4-5121-a253-7834b4a58781",
+            "437dcda0-d178-5bd1-89cd-8d75b6e374ab",
+            "43f2d6fb-7d18-58ae-beb3-206575ddab06",
+            "482ce2e1-6168-5580-a338-558cafe205a5",
+            "48833903-f088-58cc-bdfb-f75f948ccf7b",
+            "575113da-31bc-5c91-b37f-52319aa87683",
+            "5822b4a3-2958-550d-ad0c-c4a37ceb5e74",
+            "5df93ab7-5fb0-5201-b7f8-08d68778a854",
+            "74e94663-e22e-5d40-b20f-ea360b7918a0",
+            "874084c6-5e01-5c30-9e2a-214e6706cf82",
+            "8aa19a36-63d1-5ec9-82e8-943b4ac678ac",
+            "a11a04d7-2c44-564a-afd8-9ebc73cce4e0",
+            "a2d2ec5a-68fe-5a9f-870c-d0a7494a8c47",
+            "a68c9ec2-fe08-563e-af91-3a11de056bc5",
+            "ab91d341-79a1-5429-8584-f11522045c40",
+            "af825c34-a31e-559f-a1eb-0dee3dd94320",
+            "c16674bc-e89a-591d-8341-b6a527e07ad1",
+            "c493f1ed-f54d-57ea-b8e9-0c4d53ac2b9f",
+            "d80ee73d-376c-5611-945e-8c6c64f9e799",
+            "f1ad7f10-12ae-5523-99e3-edaef757ba43",
+            "f99da212-bc35-591d-90da-5f408d97cffc",
+            "f9ec2f9d-5297-5bd9-a3a3-fbb632f072d0",
+            "fd9a210a-c106-5fc0-ad43-982720a7a0e4"
           ],
           "unknown_dimensions": []
         }
@@ -3573,7 +3657,7 @@
           "variant_key": "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6",
           "apparatus_class_id": "baa7449f304b814aebfc03744a092b5e603697a09def6dd14cb48b2aa9df1e15",
           "run_ids": [
-            "01a16a8f-dce5-76a8-91b4-5cbc34a8ba04"
+            "01a16be0-d0f0-7194-acbd-b94089fc448b"
           ],
           "n_observations": 24,
           "n_cases": 12,
@@ -3844,13 +3928,13 @@
                 "ci_high": null,
                 "case_means": null,
                 "categories": {
-                  "feature_request → billing": 2,
-                  "account → account": 4,
                   "billing → billing": 6,
-                  "bug → account": 2,
-                  "billing → account": 2,
+                  "account → account": 4,
+                  "bug → bug": 4,
                   "feature_request → bug": 4,
-                  "bug → bug": 4
+                  "billing → account": 2,
+                  "feature_request → billing": 2,
+                  "bug → account": 2
                 },
                 "rate": null,
                 "n_true": null,
@@ -3917,7 +4001,7 @@
           "variant_key": "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b",
           "apparatus_class_id": "baa7449f304b814aebfc03744a092b5e603697a09def6dd14cb48b2aa9df1e15",
           "run_ids": [
-            "01a16a8f-dce8-70db-ba7f-d61b5e475c61"
+            "01a16be0-d0f2-72e1-aa0a-e7afd31da746"
           ],
           "n_observations": 24,
           "n_cases": 12,
@@ -4233,10 +4317,10 @@
                 "case_means": null,
                 "categories": {
                   "billing → billing": 6,
-                  "feature_request → feature_request": 6,
                   "bug → bug": 6,
                   "account → account": 4,
-                  "billing → bug": 2
+                  "billing → bug": 2,
+                  "feature_request → feature_request": 6
                 },
                 "rate": null,
                 "n_true": null,
@@ -4301,7 +4385,7 @@
         }
       ],
       "time_axis": null,
-      "time_axis_withheld": "every run started on one day (2026-10-23) and the host labels no build",
+      "time_axis_withheld": "every run started on one day (2026-10-24) and the host labels no build",
       "confound_catalog": {},
       "prior_insights": [],
       "prior_insights_omitted": 0,
