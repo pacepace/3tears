@@ -58,6 +58,15 @@
 # callers.
 
 [[release]]
+version = "0.77.1"
+since = "v0.77.0"
+summary = """
+A resume fix only: a resumed run is no longer refused when its candidate kind or its cells' or turns' deadlines moved.
+No public name of 3tears-evals moved or was removed, and no judge wording changed.
+"""
+notes = []
+
+[[release]]
 version = "0.77.0"
 since = "v0.76.0"
 summary = """

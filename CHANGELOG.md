@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.77.1 -- 2026-10-23
+
+### evals: a resumed run is not refused when its candidate kind or deadlines moved
+
+0.77.0 refused a take-up whose `candidate_kind`, `cell_timeout_s` or `turn_budget_s` differed from the stored run.
+A take-up wires those as a launch would now: a deadline the launch named is replayed and one it inherited is
+inherited again, so a take-up runs under the host's current bounds. The three are back in `_UNPINNED_FIELDS`, as
+they were before 0.77.0.
+
 ## v0.77.0 -- 2026-10-23
 
 ### mcp: a host app serves MCP on its own app, with tool metadata, structured tool errors and a live tool set
