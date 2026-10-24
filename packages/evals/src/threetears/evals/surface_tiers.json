@@ -996,6 +996,7 @@
 "threetears.evals.analysis.COST_PREDICTION_METHOD": "provisional",
 "threetears.evals.analysis.CostEstimate": "provisional",
 "threetears.evals.analysis.CostEstimateCell": "provisional",
+"threetears.evals.analysis.CostQualityPoint": "provisional",
 "threetears.evals.analysis.create_campaign": "stable",
 "threetears.evals.analysis.CriterionDrift": "provisional",
 "threetears.evals.analysis.declarable_axes": "provisional",

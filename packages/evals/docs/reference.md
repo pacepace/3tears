@@ -666,7 +666,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`CampaignBundle`** · model · A campaign's whole evidence for its one memo: the question, arms and floors, code's readings, every aspect.
 - **`CampaignReadings`** · model · Everything code reads off a campaign, by its kind: for a change, one row per aspect × candidate and one status per floor × candidate; for a choice, one reading per pair of arms per aspect; for a measurement, each arm's measures; for every kind, each arm against each absolute bar.
 - **`CampaignReport`** · model · A campaign's page: the writer's summary and recommendation, what code read across its aspects, the person's call, then one fold per aspect.
-- **`ChartBlock`** · *host contract* · model · One of the two charts a report draws, with every value it draws, so it prints as a table too.
+- **`ChartBlock`** · *host contract* · model · One of the charts a report draws, with every value it draws, so it prints as a table too.
 - **`EvalSummary`** · *host contract* · model · One run, summarised.
 - **`GateResult`** · dataclass · What a gate read and what it came to.
 - **`Report`** · *host contract* · model · A campaign's report: one page, the bundle it was computed from, and the typed verdicts it states.
@@ -1168,7 +1168,7 @@ A table code laid out — its columns, its rows in their stated order, and how m
 
 #### `ChartBlock`
 
-One of the two charts a report draws, with every value it draws, so it prints as a table too.
+One of the charts a report draws, with every value it draws, so it prints as a table too.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -1178,11 +1178,12 @@ One of the two charts a report draws, with every value it draws, so it prints as
 | `anchor` | `str \| None` | `None` | The id a link to this block names (`F1`, `case-3`, `T7`); None when none does. |
 | `fold` | `str \| None` | `None` | The closed fold the block sits in (`Evidence`, `Disclosures`); consecutive blocks naming one fold share it. None for a block shown open. |
 | `kind` | `Literal['chart']` | `'chart'` | Which kind of block this is. |
-| `chart` | `ChartKind` | required | `outcome_bar` or `interval_rows`. |
+| `chart` | `ChartKind` | required | `outcome_bar`, `interval_rows` or `cost_quality`. |
 | `title` | `str` | required | What the chart shows. |
 | `bars` | `list[OutcomeBar]` | `[]` | An outcome bar's arms, one bar each. |
 | `rows` | `list[IntervalRow]` | `[]` | An interval chart's rows, in drawn order. |
-| `unit` | `str` | `''` | The unit an interval chart's values are stated in; empty for none. |
+| `points` | `list[CostQualityPoint]` | `[]` | A cost/quality chart's arms, one point each, in drawn order. |
+| `unit` | `str` | `''` | The unit an interval chart's values, or a cost/quality chart's costs, are stated in; empty for none. |
 | `zero_line` | `bool` | `False` | Whether the chart draws a line at zero (a difference's). |
 | `margin` | `float \| None` | `None` | A margin band either side of zero, on the chart's ruler; None when none declared. |
 

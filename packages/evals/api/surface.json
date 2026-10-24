@@ -4883,7 +4883,7 @@
     },
     "threetears.evals.analysis.ChartBlock": {
       "kind": "model",
-      "signature": "ChartBlock(section: ReportSection, finding: int | None = None, rests_on: list[int] = list(), anchor: str | None = None, fold: str | None = None, kind: Literal['chart'] = 'chart', chart: ChartKind, title: str, bars: list[OutcomeBar] = list(), rows: list[IntervalRow] = list(), unit: str = '', zero_line: bool = False, margin: float | None = None)",
+      "signature": "ChartBlock(section: ReportSection, finding: int | None = None, rests_on: list[int] = list(), anchor: str | None = None, fold: str | None = None, kind: Literal['chart'] = 'chart', chart: ChartKind, title: str, bars: list[OutcomeBar] = list(), rows: list[IntervalRow] = list(), points: list[CostQualityPoint] = list(), unit: str = '', zero_line: bool = False, margin: float | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.analysis.ChartKind": {
@@ -4972,6 +4972,11 @@
       "tier": "provisional"
     },
     "threetears.evals.analysis.CostEstimateCell": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.CostQualityPoint": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
