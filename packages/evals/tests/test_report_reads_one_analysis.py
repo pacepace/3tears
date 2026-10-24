@@ -27,14 +27,17 @@ _EARLIER = "2000-01-01T00:00:{second:02d}+00:00"
 
 
 class _CountingStore(InMemoryDocumentStore):
-    """The in-memory reference store, counting every analysis document a read hands back."""
+    """The in-memory reference store, counting every whole analysis document — one carrying its aspects' frozen
+    bundles — a read hands back."""
 
     def __init__(self) -> None:
         super().__init__()
         self.analyses_read = 0
 
     def _counted(self, documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        self.analyses_read += sum(document.get("doc_type") == "eval_analysis" for document in documents)
+        self.analyses_read += sum(
+            document.get("doc_type") == "eval_analysis" and "aspects" in document for document in documents
+        )
         return documents
 
     def get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None:
@@ -215,3 +218,21 @@ async def test_each_fold_names_its_bundle_by_the_fingerprint_checked_once(monkey
     assert [fold.report.source.bundle_fingerprint for fold in page.aspects] == [
         fold.report.bundle.fingerprint() for fold in page.aspects
     ]
+
+
+async def test_analyses_written_at_one_instant_are_ordered_by_id_and_the_report_is_the_first() -> None:
+    fixture, analysis = await _generated(InMemoryDocumentStore())
+    storage = fixture.host.eval_host.storage
+    instant = analysis.created_at
+    for name in ("tie-a", "tie-c", "tie-b"):
+        off_loop(storage.save_analysis, analysis.model_copy(update={"id": name, "created_at": instant}))
+    newest = max(["tie-a", "tie-b", "tie-c", analysis.id])
+
+    listed = off_loop(storage.list_analyses_by_campaign, fixture.campaign.id, TOYHOST_SCOPE)
+    reported = off_loop(storage.load_reported_analysis, fixture.campaign.id, TOYHOST_SCOPE)
+
+    assert [one.id for one in listed] == sorted(["tie-a", "tie-b", "tie-c", analysis.id], reverse=True)
+    assert reported is not None and reported.id == newest == listed[0].id
+    off_loop(storage.save_analysis, listed[0].model_copy(update={"archived": True, "archived_reason": "wrong"}))
+    reported = off_loop(storage.load_reported_analysis, fixture.campaign.id, TOYHOST_SCOPE)
+    assert reported is not None and reported.id == listed[1].id

@@ -13,8 +13,10 @@ analysis of the campaign, archived ones included, each holding every aspect's fr
 live one: one read of an eight-aspect campaign cost 400-500 MB in production, and a json-then-html pair took a 2 GB
 container past its limit. The store now picks the reported analysis (`AnalysisStore.load_reported_analysis`, new on
 the port and on `EvalStorage`: one `by_doc_type` read filtered on the archived flag, newest first, limit one), so a
-read's memory no longer grows with the analyses archived. A stored analysis's page also hashes each aspect's bundle
-once instead of twice.
+read's memory no longer grows with the analyses archived. Analyses written at one instant are ordered by id after
+`created_at`, in `list_analyses_by_campaign` (so `analyses_list`) and in the reported one alike. A stored analysis's
+page also hashes each aspect's bundle once instead of twice. The analysis listings (`analyses_list`,
+`analyses_undescribable`) still read every analysis of a campaign; that is #954.
 
 **Changed:** each aspect's trials section on a campaign's page is, by default, the census line, one row per failed
 or lost trial naming its stored result (read it with `result_get`), and the passed trials' table. The full record of
@@ -25,9 +27,10 @@ asked. The JSON form carries no records either way. A host implementing `Analysi
 `load_reported_analysis`.
 
 **Changed:** over MCP, `report_read`'s structured content no longer repeats its body: the text block is the body, and
-the structured content holds `campaign_id`, `basis`, `analysis_id` and `format`. The transport leaves out any
-top-level string field whose value is the text itself; no other action renders a field verbatim, so no other
-action's structured content changes.
+the structured content holds `campaign_id`, `basis`, `analysis_id` and `format`. An action opts in by declaring the
+result field its render returns verbatim (`Action.text_field`, new, default `None`), and the transport leaves that
+one field out; `report_read` is the only action that declares it, so every other action's structured content, a
+host's own actions included, is unchanged.
 
 **Docs:** the host-adoption guide says a CPU-bound read shares the interpreter lock with the eval runs in its process
 whatever executor runs it, beside the guidance on offloading store calls.

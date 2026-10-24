@@ -34,17 +34,22 @@ Decisions (each with what settled it):
   link lands on its row), the passed table; no per-trial records. `"all"`: the records too, as before. The
   one-aspect page builders (`build_report`, `build_code_only_report`) keep laying out every record by default:
   the quick path's `Result.report` and its tests read them. JSON carries no trial records in either mode.
-- [DECISION] Step 4: the fastmcp transport leaves out of the structured content a top-level string field whose
-  value IS the text block (`report_read`'s `body`, rendered verbatim). No other action renders a field verbatim
-  (every other render is `render_model` or a composed text), so no other action's structured content changes.
+- [DECISION] Step 4: opt-in, after review (R-2/R-4): an action declares the result field its render returns
+  verbatim (`Action.text_field`, carried on `ActionOutcome.text_field`), and the fastmcp transport leaves that one
+  field out of the structured content. `report_read` declares `body`; no other action declares one, so every other
+  action's structured content, a host's included, is unchanged. The first build matched any string field equal to
+  the text, which would have reached host actions unasked.
+- [DECISION] Tie-break (R-3): analyses order newest first by `created_at`, then the greatest id, in
+  `list_analyses_by_campaign` (so `analyses_list`) and in `load_reported_analysis`, which reads the newest live
+  `created_at` with the heavy fields excluded, then the live analyses at that instant, and hydrates the greatest id.
 - [DECISION] Step 5 (cache): not built; written up as a follow-up below. Settled by the after-numbers: the default
   html read is 0.71 MB (target under 1 MB), a read's peak no longer grows with history, and a json-then-html pair
   costs 0.85 s of CPU on the toy where it cost 2.9 s. A cache would hold serialized pages resident in the very
   process that ran out of memory, and its key has to carry the live call's version, so it is built only if a measured
   repeat-read pattern needs it.
-- [INFERENCE, for the boundary review] Every campaign-page door (report_read, the CLI's report, the quick path's
-  Result.page, CampaignReport.write) defaults to "table"; the issue named report_read only. Settled by the
-  one-page-every-door contract the doors tests hold.
+- [DECISION, main session, 2026-10-24] Every campaign-page door (report_read, the CLI's report, the quick path's
+  Result.page, CampaignReport.write) defaults to `trials="table"`, so every door shows the same page. The issue
+  named report_read only; the one-page-every-door contract the doors tests hold settled it.
 
 ## Baseline (before), toy 8-aspect campaign
 
@@ -110,11 +115,9 @@ Step 4 removes the second copy of the body from each MCP reply (an html read sen
 
 ### Follow-ups
 
-- Cache the serialized page (step 5), only if a measured repeat-read pattern needs it: keyed by analysis id, format,
-  the live call's version and the trials option; a code-only page by its bundle fingerprint; bounded.
-- `analyses_list` and `analyses_undescribable` still hydrate every analysis of a campaign (or a scope) to list them:
-  the same growth with history, on listing reads. A projection read would fix both.
-- The issue's third "done when" (a test showing a read beside a live sweep keeps the loop's tick under a limit) is
-  not built here; the brief did not include it.
+Filed as #954 (the rest of #951): the analysis listings that still load every analysis (`analyses_list`,
+`analyses_undescribable`), the test of a read beside a live sweep keeping the loop's tick under a limit, and a page
+cache built only if measurement shows a repeat-read pattern needing it.
+
 - MIGRATIONS' unreleased section is since v0.78.0, which is not tagged yet: test_api_surface's labelling check and the
   snapshot generator refuse until it is.

@@ -52,8 +52,8 @@ These hooks are what a multi-tenant host needs, so no host rebuilds :meth:`Catal
   teaching text, and its :class:`~threetears.evals.actions.Refusal` as structured content —
   ``{"ending": "refused", "refusal": {"kind": ..., "status": ...}}``, ``"raised"`` where the engine or host failed
   the call (a 5xx status) — so a client branches on the kind, never on the text. A
-  result carries its text and the result model's JSON as structured content, less any top-level string field
-  that is the text itself: ``report_read``'s body is its text, so the body is sent once.
+  result carries its text and the result model's JSON as structured content, less the one field an action declares
+  its text is (``Action.text_field``): ``report_read``'s body is its text, so the body is sent once.
 
 **One call timeout, never one computed from the call.** No action's call waits on a model — work that calls one
 runs as a job the caller polls — so a call is a few store round-trips, and every call is held to one timeout
@@ -721,8 +721,8 @@ class CatalogueTool(Tool):
         :param arguments: The call's arguments, ``action`` among them.
         :ptype arguments: dict[str, Any]
         :return: The result: text always; as structured content, the result model's JSON when the call
-            succeeded, less any top-level string field whose value is the text itself (``report_read``'s ``body``,
-            which its text is), so a long body is sent once,
+            succeeded, less the field its action declares its text is (``report_read``'s ``body``), so a long body is
+            sent once,
             or ``{"ending": "refused" | "raised", "refusal": {"kind": ..., "status": ...}}`` with the
             error flag when it was refused or raised (:attr:`~threetears.evals.actions.ActionOutcome.ending`); and the
             error flag alone, with text saying so and to read what it may have done before calling it again, when it
@@ -747,7 +747,7 @@ class CatalogueTool(Tool):
         structured = (
             {"ending": outcome.ending, "refusal": asdict(outcome.refusal)}
             if outcome.refusal is not None
-            else _beside(outcome.structured, outcome.text)
+            else _beside(outcome)
         )
         note = (
             await _note(binding.annotate, call, outcome) if binding.annotate is not None and call is not None else None
@@ -758,16 +758,15 @@ class CatalogueTool(Tool):
         return ToolResult(content=content, structured_content=structured, is_error=outcome.is_error)
 
 
-def _beside(structured: dict[str, Any] | None, text: str) -> dict[str, Any] | None:
-    """A result's JSON as it is sent beside its text: every top-level string field whose value is the text left out.
-
-    A result whose rendering is one of its own fields verbatim (a report's body, which can run to megabytes) would
-    otherwise reach the client twice in one reply; every other field is kept, and a result whose text is composed
-    from its fields loses none.
+def _beside(outcome: ActionOutcome) -> dict[str, Any] | None:
+    """A result's JSON as it is sent beside its text: the field its action declares the text is
+    (:attr:`~threetears.evals.actions.Action.text_field`) left out, so a report's body, which can run to megabytes,
+    reaches the client once. Every other result is sent whole.
     """
-    if structured is None:
-        return None
-    return {key: value for key, value in structured.items() if not (text and isinstance(value, str) and value == text)}
+    structured = outcome.structured
+    if structured is None or outcome.text_field is None:
+        return structured
+    return {key: value for key, value in structured.items() if key != outcome.text_field}
 
 
 #: What :func:`mount_fastmcp` names the server it builds around a host it is handed alone.

@@ -20,7 +20,11 @@ from typing import Any
 import pytest
 from fastmcp import Client, FastMCP
 
-from threetears.evals.actions import Caller, eval_catalogue, read_only_tools, standard_tools
+from pydantic import Field
+
+from threetears.evals.actions import Action, Caller, eval_catalogue, read_only_tools, standard_tools
+from threetears.evals.ops import OpsHost
+from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.ops import report_read
 from threetears.evals.transports.fastmcp import CallTimedOut, mount_fastmcp
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
@@ -115,6 +119,53 @@ async def test_a_report_s_body_is_sent_once_as_the_text_and_every_other_field_as
         # A result whose text is composed from its fields keeps every field.
         _, listed, _ = await _text(client, "evals", {"action": "templates_list"})
     assert listed is not None and [template["id"] for template in listed["templates"]] == [toyhost_template().id]
+
+
+class _Note(EvalBaseModel):
+    """A host action's parameters."""
+
+    echoed: str = Field(description="The words to echo.")
+
+
+class _Noted(EvalBaseModel):
+    """A host action's result, whose text is its note verbatim."""
+
+    note: str
+    scope_id: str
+
+
+async def _echo(host: OpsHost, caller: Caller, params: _Note) -> _Noted:
+    return _Noted(note=params.echoed, scope_id=caller.scope_id)
+
+
+def _echo_action(**declared: Any) -> Action:
+    return Action(
+        name="note_echo",
+        summary="Echo a note back.",
+        workflow="Host",
+        permission="read",
+        params=_Note,
+        result=_Noted,
+        handler=_echo,
+        render=lambda result: result.note,
+        example={"echoed": "hello"},
+        **declared,
+    )
+
+
+async def test_a_field_the_text_repeats_is_left_out_only_where_its_action_declares_it() -> None:
+    fixture = off_loop(ops_fixture)
+    for declared, sent in (
+        ({}, {"note": "hi", "scope_id": CALLER.scope_id}),
+        ({"text_field": "note"}, {"scope_id": CALLER.scope_id}),
+    ):
+        server = FastMCP("toyhost")
+        mount_fastmcp(server, eval_catalogue((_echo_action(**declared),)), host=fixture.host, caller=lambda: CALLER)
+        async with Client(server) as client:
+            text, structured, is_error = await _text(client, "evals", {"action": "note_echo", "echoed": "hi"})
+        assert (text, structured, is_error) == ("hi", sent, False)
+    with pytest.raises(ValueError, match="text_field 'body' is no field of _Noted"):
+        _echo_action(text_field="body")
 
 
 def _undated(text: str) -> str:

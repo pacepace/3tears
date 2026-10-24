@@ -2235,6 +2235,7 @@ def engine_actions() -> tuple[Action, ...]:
             result=ReportDocument,
             handler=_report_read,
             render=render.render_report,
+            text_field="body",
             example={"campaign_id": campaign_id, "format": "markdown"},
             detail=(
                 "Each aspect's trials section lists its failed and lost trials, one row each naming its stored result "
