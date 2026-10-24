@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: an aspect and a goal check may declare the name a page prints for them
+
+**Added:** `Aspect.short_name` (at most 32 characters; no two aspects of a campaign print alike) is what a campaign's
+page prints for an aspect in table cells and sentences, and `EvalTemplate.goal_check_names` maps a goal check's
+expression to the name a page prints for it (at most 32 characters, one name per check, each key a check the template
+declares). A name is declared, never derived: an aspect with none prints its full label, and a check with none its
+full expression, never shortened. `campaign_create` takes `short_name` on each aspect, adoption (`aspects_from`)
+carries it, and `campaign_update` takes `short_names` (an aspect's label to its name, or null to clear it), which stays
+editable once runs have joined. The bundle carries both (`AnalysisContextBundle.short_name`, `.goal_check_names`), and
+`report.campaign.names` names each aspect and measure from them (`aspect_name`, `AspectNames`, `legend`,
+`measure_name_of`). Each is written only when set and is no part of any identity, key, digest or fingerprint: a run, a
+cell, a pool, a pairing, an analysis and a reporter case all key as before, and a template or campaign naming nothing
+is stored byte for byte as before. Durable v16.2. See `packages/evals/MIGRATIONS.toml`.
+
 ### evals: a reporter label's form follows its dimension's scale, and may quote the memo passage it is about
 
 **Changed:** A reporter label on a pass/fail rubric dimension now takes a `verdict` (`pass` or `fail`), and one on an

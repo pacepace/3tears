@@ -2537,6 +2537,8 @@ class AnalysisContextBundle(EvalDocumentModel):
     # frontier point's delivered `depth`, `n_cases_short_of_k`, common-depth reading (`common_pass_hat_k`,
     # `n_common_cases`, `n_cases_left_out`) and each subject's `common_depth`, `shares_no_case` and `unmeasured_for`; a point's opt-in
     # `model_pass_hat_k` (`basis: "model"`), None unless the host asks for it.
+    # Unmoved by declared names: `short_name` and `goal_check_names` are written only when declared and are no part of
+    # the fingerprint, so a bundle naming nothing is this shape byte for byte and every fingerprint stays put.
     schema_version: int = Field(
         default=64, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
@@ -2557,6 +2559,25 @@ class AnalysisContextBundle(EvalDocumentModel):
         description=(
             "The label of the campaign's aspect this bundle reads: one template's runs, its design and its floors. "
             "A campaign of several aspects is read one bundle per aspect."
+        ),
+    )
+    short_name: str | None = Field(
+        default=None,
+        exclude_if=lambda name: name is None,
+        description=(
+            "What a page prints for this aspect in place of its label, as the campaign declares it. None = the label is "
+            "printed whole. Presentation only: written only when declared and no part of the bundle's fingerprint, so "
+            "naming an aspect leaves every analysis of it reproducing."
+        ),
+    )
+    goal_check_names: dict[str, str] = Field(
+        default_factory=dict,
+        exclude_if=lambda names: not names,
+        description=(
+            "What a page prints for a goal check, by its expression, as the member runs' templates declare it "
+            "(`EvalTemplate.goal_check_names`). A check absent here is printed as its whole expression. Presentation "
+            "only: written only when a name is declared and no part of the bundle's fingerprint, and never in "
+            "`measure_catalog`, whose names every reading is read under."
         ),
     )
     template_id: str | None = Field(default=None, description="Referenced eval_template (the Behavior), or None.")
@@ -3352,9 +3373,9 @@ class AnalysisContextBundle(EvalDocumentModel):
         return evidence_digest(self.to_dict(), like=like)
 
 
-#: The bundle fields :meth:`AnalysisContextBundle.fingerprint` leaves out: what built the bundle, and when its results
-#: were written, not what it read.
-_NOT_EVIDENCE: frozenset[str] = frozenset({"package_version", "first_result_at"})
+#: The bundle fields :meth:`AnalysisContextBundle.fingerprint` leaves out: what built the bundle, when its results
+#: were written, and what a page calls its aspect and its checks, not what it read.
+_NOT_EVIDENCE: frozenset[str] = frozenset({"package_version", "first_result_at", "short_name", "goal_check_names"})
 
 #: What a fingerprint of the current version starts with. Version 1 had no prefix: the bare sha256 of the canonical
 #: JSON, floats at full precision. Version 2 rounds every float to twelve significant figures first, so one

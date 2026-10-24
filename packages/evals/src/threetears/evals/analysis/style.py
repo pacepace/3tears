@@ -4,7 +4,8 @@ The renderer (:mod:`threetears.evals.analysis.report`) reads this module for eve
 
 - :func:`humanize` is the one seam an identifier passes through on its way to a reader: a model id, an arm, a judged
   dimension, a case, a provider. :data:`HUMANIZE_OVERRIDES` names exceptions by hand. A check expression is code and
-  never passes through it: :func:`measure_name` names a check's measure by its expression, verbatim.
+  never passes through it: :func:`measure_name` names a check's measure by the name its template declares for it,
+  else by its expression, verbatim.
 - :class:`ArmName` names an arm twice: in full on its first mention (``deepseek-v4.1-flash (production, control)``)
   and by its given label after that (``production``).
 - :data:`GLOSSARY` defines every term of art a page uses, once, in one plain sentence.
@@ -20,7 +21,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from threetears.evals.kernel.metrics import goal_check_of
+from threetears.evals.kernel.metrics import describe_goal_check_rate, goal_check_of
 
 #: What :func:`humanize` names.
 HumanizeKind = Literal["model", "arm", "dimension", "case", "provider"]
@@ -81,8 +82,10 @@ def code(text: str) -> str:
 def measure_name(name: str, reader_name: str | None = None) -> str:
     """A measure as a page names it.
 
-    A goal check's measure is named by its expression, verbatim, as a code span: never humanized and never "Pass rate
-    of", since a single trial's failure has no rate. Any other measure by its reader name, else its key humanized.
+    A goal check's measure is named by the display name its template declares (``EvalTemplate.goal_check_names``,
+    which a bundle's catalog carries as the check's reader name), else by its expression, verbatim and whole, as a
+    code span: never humanized, never shortened, and never by the rate name the engine gives every check ("Pass rate
+    of …"), since a single trial's failure has no rate. Any other measure by its reader name, else its key humanized.
 
     :param name: The measure's key.
     :ptype name: str
@@ -92,6 +95,8 @@ def measure_name(name: str, reader_name: str | None = None) -> str:
     :rtype: str
     """
     if (check := goal_check_of(name)) is not None:
+        if reader_name is not None and reader_name != describe_goal_check_rate(check).reader_name:
+            return reader_name
         return code(check)
     return reader_name or humanize("dimension", name)
 

@@ -97,6 +97,10 @@ class AspectView(EvalDocumentModel):
     subject_kind: str = Field(description="What kind of thing the subject is; blank when the campaign declared none.")
     behavior: str = Field(description="The campaign's behavior.")
     aspect: str = Field(description="The aspect's label, unique within its campaign.")
+    short_name: str | None = Field(
+        default=None,
+        description="What a page prints for the aspect in place of its label, as declared; None prints the label.",
+    )
     template_id: str | None = Field(
         description="The eval_template the aspect's runs were gathered on; None names none."
     )
@@ -193,6 +197,7 @@ def _view(campaign: EvalCampaign, aspect: Aspect) -> AspectView:
         subject_kind=campaign.subject_kind,
         behavior=campaign.behavior,
         aspect=aspect.label,
+        short_name=aspect.short_name,
         template_id=aspect.template_id,
         run_ids=list(aspect.run_ids),
         declared=declared,

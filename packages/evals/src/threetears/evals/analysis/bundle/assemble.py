@@ -588,6 +588,8 @@ def assemble_context_bundle(
     bundle = AnalysisContextBundle(
         campaign_id=view.campaign_id,
         aspect=view.aspect,
+        short_name=view.short_name,
+        goal_check_names=_check_names(runs, templates),
         subject_id=view.subject_id,
         subject_kind=view.subject_kind,
         behavior=view.behavior,
@@ -879,6 +881,23 @@ def _criteria(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) ->
         for dimension in template.rubric:
             criteria.setdefault(dimension.name, dimension.description)
     return criteria
+
+
+def _check_names(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) -> dict[str, str]:
+    """Each goal check's display name as the member runs' templates declare it, by the check's expression.
+
+    Read as :func:`_criteria` reads a criterion: a template that no longer resolves names nothing, and a check two
+    templates name differently keeps the first template's name, by id. A check no template names is absent, and is
+    printed as its expression.
+    """
+    names: dict[str, str] = {}
+    for template_id in sorted({run.template_id for run in runs if run.template_id}):
+        template = templates.get(template_id)
+        if template is None:
+            continue
+        for check, name in template.goal_check_names.items():
+            names.setdefault(check, name)
+    return names
 
 
 def _package_version() -> str | None:
