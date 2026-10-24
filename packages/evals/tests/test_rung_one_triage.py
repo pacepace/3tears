@@ -17,7 +17,7 @@ from types import ModuleType
 
 import pytest
 
-from threetears.evals.analysis.style import lint_page
+from packages.evals.tests.style_support import lint_page
 
 from threetears.evals.kernel import strict_response_format
 from threetears.evals.quick.files import main

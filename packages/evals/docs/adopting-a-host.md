@@ -792,7 +792,12 @@ or the other, an added optional field included:
 - **A minor is additive only**: a new optional field with a default, a new optional sub-object, a new value of an
   open vocabulary, a new doc type. Its ledger entry says, in words, that an older build that ignores the change
   reads the document correctly and its writes leave it true (`MINOR_ADDITIVITY_SENTENCE`); when that is false, the
-  change is a major. **A minor rolls with no stop, in either direction.** A build reads any newer minor of its own
+  change is a major. **A minor rolls with no stop, in either direction,** with one exception the ledger states
+  where it applies: a minor that adds a field inside an opaque payload a kind reads. The durable v16.1 and v16.2
+  minors added fields to a reporter case's labels, inside `EvalTestCase.host_payload`. An older build keeps that
+  payload verbatim, so the document still rolls, but its reporter kind cannot read a case carrying the new fields,
+  and one such case stops that reporter template on the older pods (its launches, prices, freezes, calibration reads
+  and restores) until they upgrade. Freeze none until every pod runs the newer build. Otherwise, a build reads any newer minor of its own
   major: every field it does not declare, at every depth, is kept on the model, out of every attribute, dump and
   digest, and written back where it was the next time the engine writes that document, stamped with the newer
   minor. So while a fleet is half upgraded, an older process reads what a newer one wrote as if the new fields
@@ -852,9 +857,9 @@ when the cassette itself changes, because re-capturing a corpus calls your third
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
-**Each version space moves on its own.** Core documents (v15.7), durable documents (v16.1), regenerable documents
-(v13), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 62), the cell model
-(`CELL_MODEL_VERSION`, 13) and the identity keys (`IDENTITY_VERSION`, 25) carry separate versions. The report has none: it is a page rendered from the bundle, which is the versioned machine
+**Each version space moves on its own.** Core documents (v15.7), durable documents (v16.2), regenerable documents
+(v13), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`), the cell model
+(`CELL_MODEL_VERSION`) and the identity keys (`IDENTITY_VERSION`, 25) carry separate versions. The report has none: it is a page rendered from the bundle, which is the versioned machine
 form.
 **A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked
 each dim (`EvalResult.judge_config_ids`): `builtin:<sha12>`, a fingerprint of the engine's own judge prompt, or

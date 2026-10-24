@@ -48,7 +48,8 @@ from threetears.evals.analysis.report.decision import (
     project_rate,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, bounded_difference_interval, difference_interval
-from threetears.evals.analysis.style import lint_page, lint_prose
+from threetears.evals.analysis.style import lint_prose
+from packages.evals.tests.style_support import lint_page
 from threetears.evals.kernel import RefusedInput
 from threetears.evals.kernel.declaration import CostLower, DecisionClause, Floor, RateDrop
 

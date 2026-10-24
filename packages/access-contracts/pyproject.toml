@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-access-contracts"
-version = "0.77.1"
+version = "0.78.0"
 description = "Dependency-free identity and authorization vocabulary shared by 3tears-iam and 3tears-agent-acl"
 readme = "README.md"
 requires-python = ">=3.14"

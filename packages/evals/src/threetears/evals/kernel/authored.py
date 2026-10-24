@@ -182,7 +182,7 @@ class AuthoredCampaignAnalysis(_Authored):
     opens on after code's warnings, before the recommendation, so a memo that recommends nothing still says what the
     campaign found. It is written after the aspect summaries, the order a writer reaches a read across them in; the
     page's order is the page's. It is prose like a finding's body, held to the same rules: a number in it is a figure
-    reference code renders, and the page holds each sentence to the style pass.
+    reference code renders, and the page prints the rest as written.
     """
 
     findings: list[Finding] = Field(description="The findings, across every aspect, in reading order.")

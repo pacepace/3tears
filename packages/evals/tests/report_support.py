@@ -17,7 +17,8 @@ from threetears.evals.analysis import (
     report_markdown,
     run_analysis_generation,
 )
-from threetears.evals.analysis.style import StyleViolation, lint_page
+from threetears.evals.analysis.style import StyleViolation
+from packages.evals.tests.style_support import lint_page
 from threetears.evals.kernel.campaign import EvalAnalysis, EvalCampaign
 from threetears.evals.kernel.host import EvalHost
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign

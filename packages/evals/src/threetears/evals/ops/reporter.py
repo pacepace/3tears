@@ -39,6 +39,7 @@ from threetears.evals.analysis.reporter_kind import (
     AS_RECORDED_MODEL,
     REPORTER_KIND,
     LabelDirection,
+    LabelVerdict,
     ReporterCase,
     ReporterKind,
     reporter_case_of,
@@ -83,10 +84,14 @@ class ReporterCaseFreeze(EvalBaseModel):
     )
     labels: list[dict[str, Any]] = Field(
         default_factory=list,
-        description="Reader verdicts on the recorded memo, each {dimension, direction, quote, note?, reader?}: a "
-        f"dimension the template scores, a direction of {'|'.join(get_args(LabelDirection))}, the reader's words "
-        "verbatim, and who the reader is (omitted, you). They need recorded_analysis_id; the freeze stamps each with the "
-        "template's criterion for its dimension. The host must vouch that you relay each reader's verdict.",
+        description="Reader verdicts on the recorded memo, each {dimension, direction|verdict, quote, memo_excerpt?, "
+        "note?, reader?}: a dimension the template scores; a direction of "
+        f"{'|'.join(get_args(LabelDirection))} on an ordinal dimension, or a verdict of "
+        f"{'|'.join(get_args(LabelVerdict))} on a pass_fail one (exactly one, matching the scale); the reader's words "
+        "verbatim; optionally the memo passage the verdict is about, verbatim (it must be in the recorded memo, "
+        "whitespace runs collapsed); and who the reader is (omitted, you). They need recorded_analysis_id; the freeze "
+        "stamps each with the template's criterion for its dimension. The host must vouch that you relay each "
+        "reader's verdict.",
     )
     supersedes: list[str] = Field(
         default_factory=list,

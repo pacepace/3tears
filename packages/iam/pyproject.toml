@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-iam"
-version = "0.77.1"
+version = "0.78.0"
 description = "Identity and access primitives: OAuth2/OIDC, SAML, passwords, JWT sessions, DPoP, TOTP, WebAuthn, and the anti-automation controls that guard them"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -24,11 +24,11 @@ classifiers = [
 # The base is protocol, crypto and policy: what a consumer doing sign-in, OIDC and sessions needs, with
 # no Postgres or NATS stack behind it. The floor is pinned in tests/enforcement/test_dependency_alignment.py.
 dependencies = [
-    "3tears-observe>=0.77.0,<0.78.0",
+    "3tears-observe>=0.78.0,<0.79.0",
     # the sensitive-action taxonomy stepup names (ImpersonationCategory), in the dependency-free
     # leaf agent-acl's impersonation deny-list reads too. One class for both checks, without
     # installing the authorization layer to name it.
-    "3tears-access-contracts>=0.77.0,<0.78.0",
+    "3tears-access-contracts>=0.78.0,<0.79.0",
     # argon2id for password hashing, bcrypt for verify-then-upgrade of hashes
     # migrated in from an older system. bcrypt is verify-only here: nothing in
     # this package ever WRITES a bcrypt hash.
@@ -64,7 +64,7 @@ dependencies = [
 # implementation that wrote them). Each raises an ImportError naming this extra without it.
 # Behind an extra because core brings sqlalchemy, asyncpg and pyyaml, which nothing else here uses.
 core = [
-    "3tears[security]>=0.77.0,<0.78.0",
+    "3tears[security]>=0.78.0,<0.79.0",
 ]
 # The switch for the KV stores in threetears.iam.stores.nats_kv: auth codes, OAuth state and
 # single-use tickets, each short-lived and TTL'd, which is a KV bucket's job. The module itself
@@ -72,7 +72,7 @@ core = [
 # installs the client a caller opens that bucket with. It brings nats-py and nkeys, which has no
 # wheels for every target, so a consumer with its own stores does not carry it.
 nats = [
-    "3tears-nats[client]>=0.77.0,<0.78.0",
+    "3tears-nats[client]>=0.78.0,<0.79.0",
 ]
 # SAML drags pysaml2 AND the xmlsec1 SYSTEM binary in with it. A consumer that
 # only needs OAuth/OIDC should not inherit an apt-get line, so the SAML service

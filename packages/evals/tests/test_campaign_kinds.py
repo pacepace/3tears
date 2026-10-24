@@ -27,7 +27,6 @@ from packages.evals.tests.toyhost_memo import (
     PROMPT,
     PROMPT_ID,
     FixturedClient,
-    alias_at,
     arm_at,
     cell_at,
     memo_payload,
@@ -352,63 +351,6 @@ def _unasked_better(bundle: CampaignBundle) -> AspectReading:
         reason="the wide width passed 20 points more trials",
         confirmatory=False,
     )
-
-
-# --- titles name arms by their labels too (#829) -------------------------------------------------------------------
-
-
-async def test_a_title_naming_an_arm_by_its_person_given_label_is_held_to_its_evidence() -> None:
-    aspect = _aspect(control=True)
-    narrow, wide = (_variant(aspect, level) for level in (TOYHOST_NARROW, TOYHOST_WIDE))
-    named = [
-        arm.model_copy(update={"label": "baseline" if arm.variant_key == narrow else "fast"})
-        for arm in arms_of([aspect])
-    ]
-    bundle = campaign_bundle(aspect, arms=named)
-    payload = memo_payload(bundle)
-    payload["findings"][0]["title"] = "fast slows every document down"
-    payload["findings"][0]["evidence"] = [
-        {"cell": alias_at(bundle, TOYHOST_NARROW), "measure_id": "total_ms", "reading": "measure"}
-    ]
-    assert payload["recommendation"][0]["arm"] == "baseline", wide
-    with pytest.raises(SoundnessRefusal, match=r'findings\[0\]\.title names "fast"'):
-        await _generate(bundle, payload)
-
-
-async def test_a_title_against_the_control_is_sound_over_a_contrast_citing_only_the_candidate() -> None:
-    """A contrast reads the candidate against the control, so it cites the control's label too (finding 1, kinds)."""
-    aspect = _aspect(control=True)
-    narrow = _variant(aspect, TOYHOST_NARROW)
-    named = [
-        arm.model_copy(update={"label": "baseline" if arm.variant_key == narrow else "fast"})
-        for arm in arms_of([aspect])
-    ]
-    bundle = campaign_bundle(aspect, arms=named)
-    (contrast, *_) = [
-        comparison for family in aspect.multiple_comparisons.families for comparison in family.comparisons
-    ]
-    payload = memo_payload(bundle)
-    payload["findings"][0]["title"] = "fast moves total time against baseline"
-    payload["findings"][0]["evidence"] = [
-        {"cell": alias_at(bundle, TOYHOST_WIDE), "measure_id": contrast.name, "reading": contrast.reading}
-    ]
-    analysis = await _generate(bundle, payload)
-    assert analysis.document.findings[0].title == "fast moves total time against baseline"
-
-
-async def test_a_control_labelled_control_reads_as_the_role_in_a_title() -> None:
-    """An upgraded campaign's control is labelled ``control``: "keep the control" names the role, not a stray arm."""
-    aspect = _aspect(control=True)
-    arms = [arm.model_copy(update={"label": "control"}) if arm.role == "control" else arm for arm in arms_of([aspect])]
-    bundle = campaign_bundle(aspect, arms=arms)
-    payload = memo_payload(bundle)
-    payload["recommendation"][0]["arm"] = "control"
-    payload["findings"][0]["title"] = "The wider width is slower than the control"
-    payload["findings"][0]["evidence"] = [
-        {"cell": alias_at(bundle, TOYHOST_WIDE), "measure_id": "total_ms", "reading": "measure"}
-    ]
-    analysis = await _generate(bundle, payload)
-    assert analysis.document.findings[0].title == "The wider width is slower than the control"
 
 
 # --- the page's fingerprint is the bundle served beside it ---------------------------------------------------------

@@ -950,8 +950,9 @@ class Report(EvalDocumentModel):
 
 
 #: The shape of a campaign page's JSON (:meth:`CampaignReport.json_document`), raised whenever a reader of the old
-#: shape would misread the new one. 3: each aspect's `question_after_runs` is replaced by `late_criteria`.
-CAMPAIGN_JSON_SHAPE = 3
+#: shape would misread the new one. 3: each aspect's `question_after_runs` is replaced by `late_criteria`. 4: each
+#: reading and pair in `readings` states both arms' depth and what limits its interval.
+CAMPAIGN_JSON_SHAPE = 4
 
 
 class CampaignAspectFold(EvalDocumentModel):

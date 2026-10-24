@@ -17,6 +17,8 @@ from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture, ops_fixt
 
 GROUNDED = "reporter.groundedness"
 USEFUL = "reporter.usefulness"
+#: A pass/fail dimension of :func:`scaled_reporter_template`, beside its ordinal :data:`GROUNDED`.
+ANSWERS = "reporter.answers_the_question"
 
 
 def reporter_template(scope_id: str = TOYHOST_SCOPE) -> EvalTemplate:
@@ -30,6 +32,23 @@ def reporter_template(scope_id: str = TOYHOST_SCOPE) -> EvalTemplate:
         rubric=[
             RubricDim(name=GROUNDED, description="Every claim traces to the evidence.", scale="ordinal"),
             RubricDim(name=USEFUL, description="A reader can act on it.", scale="ordinal"),
+        ],
+        created_at=TOYHOST_INSTANT,
+        updated_at=TOYHOST_INSTANT,
+    )
+
+
+def scaled_reporter_template(scope_id: str = TOYHOST_SCOPE) -> EvalTemplate:
+    """A reporter template scoring one ordinal dimension and one pass/fail one, so a label's form can follow either."""
+    return EvalTemplate(
+        id="toyhost-reporter-scaled",
+        scope_id=scope_id,
+        name="Memo reporter, two scales",
+        intent="Judge the analysis memo a campaign got against the evidence its writer read.",
+        candidate_kind=REPORTER_KIND,
+        rubric=[
+            RubricDim(name=GROUNDED, description="Every claim traces to the evidence.", scale="ordinal"),
+            RubricDim(name=ANSWERS, description="The summary answers the question asked.", scale="pass_fail"),
         ],
         created_at=TOYHOST_INSTANT,
         updated_at=TOYHOST_INSTANT,
