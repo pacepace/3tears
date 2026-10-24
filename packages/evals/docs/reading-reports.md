@@ -120,6 +120,13 @@ of three candidates on three aspects, one aspect where the control passes nothin
 | refunds | 20 | 0 (cannot show a drop) | 25 (no worse than the margin) | 0 (unclear) | 10 (unclear) |
 ```
 
+The **Depth** tables say how much each reading stands on, before the bars read it. **Depth** gives each arm's usable
+cases and trials per aspect, and its fewest, median and most repeats of a case. **Pass^k depth** gives each frontier
+point's planned depth, the cases short of it, the common depth every point reached and its pass^k there.
+**Precision** gives each comparison's half-width, each arm's own, the arm limiting it and the share of spread between
+cases. **Model-based pass^k** appears only when the host asks for it (`HostProfile.model_pass_hat_k`), labelled a
+model. Each table has one sentence under it where it applies; [concepts.md](concepts.md#depth) defines the terms.
+
 **Marks beside a value.** A cell names its floor's status where the floor reads otherwise than the cell: a floor reads
 every rate its clause names at 95%, the cell the pass rate alone, so v4 above breaks tone's floor on a check while
 its pass rate is unclear. A control that cannot move says so: at or below the margin no drop past it can show, and

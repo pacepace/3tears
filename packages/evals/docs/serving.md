@@ -323,8 +323,9 @@ host to offer at boot ([Adopting the engine](adopting-a-host.md#at-boot-settle-t
 **A resume refuses only what would change the result.** In the call, before anything is spent, the run's launch is
 replayed from what it recorded, through its kind's launcher, and compared with the stored run. Any difference in
 what is measured refuses the resume, and the refusal names every one: a context component (the subject's state
-included), a variant lever, a judge or simulator pin, the apparatus, the candidate kind, the deadline its cells or its
-candidate's turns run under (`cell_timeout_s`, `turn_budget_s`), or what the run froze of its template. For a
+included), a variant lever, a judge or simulator pin, the apparatus, or what the run froze of its template. The
+candidate kind and the deadlines its cells and turns run under (`cell_timeout_s`, `turn_budget_s`) are wired as a
+launch would wire them now: a deadline the launch named is replayed, one it inherited is inherited again. For a
 sweep or a launch, it names every arm's every difference. A different measurement pooled under one run would be two
 measurements reported as one, so this refusal stays. Two things do not refuse, because they change nothing
 measured, and each is disclosed instead:
