@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, AsyncIterator, Mapping
+from typing import Any, AsyncIterator, Mapping
 
 from threetears.core.data.migrations.ddl_lock import DdlLockPolicy
 from threetears.core.data.migrations.errors import (
@@ -48,14 +48,12 @@ from threetears.core.data.migrations.registry import MigrationFunc, PackageMigra
 from threetears.core.data.migrations.scope import MigrationScope
 from threetears.core.data.migrations.session import MigrationSession
 from threetears.core.data.migrations.write_marks import give_switched_tables_their_trigger
+from threetears.core.data.store import DataStore
 from threetears.observe import contain, get_logger, traced
 
 __all__ = [
     "MigrationRunner",
 ]
-
-if TYPE_CHECKING:
-    from threetears.core.data.store import DataStore
 
 log = get_logger(__name__)
 
@@ -932,10 +930,6 @@ def _preview_data_store(preview: PreviewStore) -> DataStore:
     :return: a DataStore over the preview
     :rtype: DataStore
     """
-    # imported here: store.py imports this package's modules at import time,
-    # so a module-level import would be circular
-    from threetears.core.data.store import DataStore  # noqa: PLC0415
-
     result = DataStore.over_session(preview, holds_ddl_lock=True)
     return result
 
@@ -953,9 +947,5 @@ def _as_data_store(store: DataStore | MigrationSession) -> DataStore:
     :return: the store, as a DataStore
     :rtype: DataStore
     """
-    # imported here: store.py imports this package's modules at import time,
-    # so a module-level import would be circular
-    from threetears.core.data.store import DataStore  # noqa: PLC0415
-
     result = store if isinstance(store, DataStore) else DataStore.over_session(store)
     return result

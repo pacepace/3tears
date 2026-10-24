@@ -20,6 +20,11 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from sqlalchemy import Boolean, DateTime, Float, Integer, LargeBinary, Numeric, String, Text
+from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, TSVECTOR, UUID
+from sqlalchemy.sql.sqltypes import ARRAY
+from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
+
 from threetears.core.backends.schema_sql import json_default
 from threetears.core.cache.base import build_select_clause, bulk_columns
 from threetears.core.sql_fragments import quote_identifier
@@ -44,6 +49,21 @@ try:
     _UUID_TYPES: tuple[type, ...] = (uuid.UUID, _UuidUtilsUUID)
 except ImportError:
     _UUID_TYPES = (uuid.UUID,)
+
+try:
+    import pyarrow as pa
+
+    _PYARROW = True
+except ImportError:  # NOSILENT: the snapshot extra is optional; bulk writes bind value by value without it, said once
+    _PYARROW = False
+
+try:
+    from pgvector.sqlalchemy import Vector
+
+    #: pgvector's column type, when the pgvector extra is installed; core works without it
+    _VECTOR_TYPES: tuple[type, ...] = (Vector,)
+except ImportError:  # NOSILENT: the pgvector extra is optional; no column is a vector without it
+    _VECTOR_TYPES = ()
 
 log = get_logger(__name__)
 
@@ -145,17 +165,14 @@ def _as_arrow(target: str, lists: Sequence[list[Any]]) -> Any:
     """
     global _ARROW_MISSING_SAID  # noqa: PLW0603 -- said once per process, not per write
     arrow: Any = None
-    try:
-        import pyarrow as pa  # noqa: PLC0415 -- optional: the snapshot extra
-    except ImportError:
-        pa = None
+    if not _PYARROW:
         if not _ARROW_MISSING_SAID:
             _ARROW_MISSING_SAID = True
             log.warning(
                 "pyarrow is not installed: DuckDB bulk writes bind every value through DuckDB's Python "
                 "layer, which is slow (install 3tears[snapshot])"
             )
-    if pa is not None:
+    if _PYARROW:
         try:
             arrow = pa.table({f"c{i}": values for i, values in enumerate(lists)})
         except (pa.ArrowInvalid, pa.ArrowTypeError, OverflowError) as exc:
@@ -978,28 +995,8 @@ class DuckDBBackend:
     @staticmethod
     def _map_sqlalchemy_type(sa_type: Any) -> str:
         """Map SQLAlchemy type to DuckDB equivalent with serialization hints."""
-        from sqlalchemy import (
-            Boolean,
-            DateTime,
-            Float,
-            Integer,
-            LargeBinary,
-            Numeric,
-            String,
-            Text,
-        )
-        from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
-        from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
-
-        # Check for pgvector Vector type
-        try:
-            from pgvector.sqlalchemy import Vector
-
-            if isinstance(sa_type, Vector):
-                return "VARCHAR_VECTOR"
-        # NOSILENT: optional dependency probe; absence is a supported configuration
-        except ImportError:
-            pass
+        if isinstance(sa_type, _VECTOR_TYPES):
+            return "VARCHAR_VECTOR"
 
         if isinstance(sa_type, (UUID, UuidType)):
             return "VARCHAR_UUID"
@@ -1021,8 +1018,6 @@ class DuckDBBackend:
             return "VARCHAR_BYTEA"
 
         # PostgreSQL-only types
-        from sqlalchemy.dialects.postgresql import TSVECTOR
-        from sqlalchemy.sql.sqltypes import ARRAY
 
         if isinstance(sa_type, TSVECTOR):
             return "VARCHAR"

@@ -176,6 +176,12 @@ from threetears.datasources.drivers.sql_fragments import (
     build_search_path_value,
     build_set_local_statement_timeout_sql,
 )
+
+try:
+    from opentelemetry import metrics as _otel_metrics
+except ImportError:  # NOSILENT: the tracing extra is optional; base's probe keeps every meter unreached without it
+    pass
+
 from threetears.datasources.drivers.base import (
     CallbackTransaction,
     ColumnRow,
@@ -427,9 +433,7 @@ def _get_cancellation_fired_counter() -> Any:
             :return: the new OTel instrument
             :rtype: Any
             """
-            from opentelemetry import metrics
-
-            meter = metrics.get_meter("threetears.datasources.drivers")
+            meter = _otel_metrics.get_meter("threetears.datasources.drivers")
             instrument = meter.create_counter(
                 name="datasource.driver.cancellation.fired",
                 description="datasource driver cancellation fired count",
@@ -456,7 +460,7 @@ class AsyncpgDriver(Driver):
 
     construct via :func:`threetears.datasources.drivers.create_driver`
     rather than directly -- the factory wires the borrowed-pool kwarg
-    for the agent-internal case and enforces the lazy-import contract.
+    for the agent-internal case.
 
     pool lifecycle:
 

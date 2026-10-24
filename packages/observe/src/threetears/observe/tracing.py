@@ -13,6 +13,16 @@ import inspect
 import time
 from typing import Any, Callable, TypeVar, overload
 
+from threetears.observe.logging import get_context
+
+try:
+    from opentelemetry import trace
+    from opentelemetry.trace import StatusCode
+
+    _otel_available = True
+except ImportError:  # NOSILENT: the tracing extra is optional; every span is a no-op without it
+    _otel_available = False
+
 __all__ = ["set_span_attribute", "traced"]
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -35,22 +45,12 @@ _MAX_ATTR_LENGTH = 256
 
 
 # ---------------------------------------------------------------------------
-# OTel availability check (cached after first probe)
+# OTel availability, probed once when this module is imported
 # ---------------------------------------------------------------------------
-
-_otel_available: bool | None = None
 
 
 def _check_otel() -> bool:
-    """Check if OpenTelemetry API is importable (cached after first check)."""
-    global _otel_available  # noqa: PLW0603
-    if _otel_available is None:
-        try:
-            import opentelemetry.trace  # noqa: F401
-
-            _otel_available = True
-        except ImportError:
-            _otel_available = False
+    """whether the OpenTelemetry API was importable when this module was."""
     return _otel_available
 
 
@@ -115,8 +115,6 @@ def _record_safe_result(span: Any, result: Any) -> None:
 
 def _inject_context_attrs(span: Any) -> None:
     """Inject all log context values as span attributes with ``ctx.`` prefix."""
-    from threetears.observe.logging import get_context
-
     for key, value in get_context().items():
         span.set_attribute(f"ctx.{key}", value)
 
@@ -153,8 +151,6 @@ def set_span_attribute(key: str, value: Any) -> None:
     """
     if not _check_otel():
         return
-
-    from opentelemetry import trace
 
     span = trace.get_current_span()
     if not span.is_recording():
@@ -211,9 +207,6 @@ def traced(
                 if not _check_otel():
                     return await fn(*args, **kwargs)
 
-                from opentelemetry import trace
-                from opentelemetry.trace import StatusCode
-
                 tracer = trace.get_tracer(fn.__module__)
                 with tracer.start_as_current_span(span_name) as span:
                     _inject_context_attrs(span)
@@ -247,9 +240,6 @@ def traced(
             def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
                 if not _check_otel():
                     return fn(*args, **kwargs)
-
-                from opentelemetry import trace
-                from opentelemetry.trace import StatusCode
 
                 tracer = trace.get_tracer(fn.__module__)
                 with tracer.start_as_current_span(span_name) as span:

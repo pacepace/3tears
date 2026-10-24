@@ -25,9 +25,11 @@ implementation over its epoch bucket, and the pass that judges a mark against it
 
 from __future__ import annotations
 
+import inspect
+import weakref
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, Final, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from threetears.core.exceptions import GenerationUnavailableError
 
@@ -48,8 +50,11 @@ __all__ = [
     "WriteGeneration",
     "WriteGenerationDeclaration",
     "announce_unheard_writes",
+    "note_generation_class",
     "source_reads",
     "split_generation_token",
+    "table_named_by_class",
+    "tables_with_write_generation",
 ]
 
 
@@ -566,3 +571,70 @@ class GenerationMarks:
             return None, 0
         parts = split_generation_token(token)
         return parts if parts is not None else (token, 0)
+
+
+#: every collection class defined in this process whose committed writes advance its table's write
+#: generation: switched on (``write_generation = WRITE_GENERATION``), or caching absences. Appended
+#: by :meth:`BaseCollection.__init_subclass__` (:func:`note_generation_class`), read by :func:`tables_with_write_generation`.
+_GENERATION_CLASSES: weakref.WeakSet[type] = weakref.WeakSet()
+
+
+def note_generation_class(cls: type) -> None:
+    """record a collection class whose committed writes advance its table's write generation.
+
+    Called by ``BaseCollection.__init_subclass__`` for each such class it defines; read by
+    :func:`tables_with_write_generation`.
+
+    :param cls: the collection class
+    :ptype cls: type
+    :return: nothing
+    :rtype: None
+    """
+    _GENERATION_CLASSES.add(cls)
+
+
+def table_named_by_class(cls: type) -> str | None:
+    """the table a collection class names without being built, or ``None``.
+
+    The one derivation of "which table does this class name": the hub's broker reads it, through
+    :func:`tables_with_write_generation`, to decide which tables to advance, and the
+    one-class-per-table census (``threetears.enforcement.collection_census``) reads it to prove
+    there is one class per table. Two copies could disagree on a class, and the census would then
+    pass a layout the broker reads differently.
+
+    :param cls: a collection class
+    :ptype cls: type
+    :return: a ``schema``'s ``name``, or what a ``table_name`` property answers with the class
+        standing in for an instance; ``None`` when the table is named per instance
+    :rtype: str | None
+    """
+    name = getattr(getattr(cls, "schema", None), "name", None)
+    if isinstance(name, str):
+        return name
+    prop = inspect.getattr_static(cls, "table_name", None)
+    if isinstance(prop, property) and prop.fget is not None:
+        try:
+            answer: Any = prop.fget(cls)
+        except AttributeError, TypeError:
+            # NOSILENT: the class standing in for an instance has no instance attributes, and that is the answer: a
+            # getter that needs an instance names its table per instance. Anything else it raises is a bug, and propagates.
+            return None
+        return answer if isinstance(answer, str) else None
+    return None
+
+
+def tables_with_write_generation() -> frozenset[str]:
+    """every table whose committed writes advance its write generation, by the classes defined here.
+
+    What the hub's L3 broker reads to decide which tables to advance after committing a pod's
+    write: the pod's collection and the broker's answer come from the same class, so they agree
+    exactly when one class names the table. A table is in the set when a collection class this
+    process has imported declares ``write_generation = WRITE_GENERATION`` or caches absences
+    (``negative_cache_max_age``), and names its table on the class. A class whose table is named
+    per instance is not readable here, and its table is not in the set: a pod switching such a
+    table on is told by its own advance, which raises, that the broker advanced nothing.
+
+    :return: the table names
+    :rtype: frozenset[str]
+    """
+    return frozenset(name for name in map(table_named_by_class, list(_GENERATION_CLASSES)) if name is not None)

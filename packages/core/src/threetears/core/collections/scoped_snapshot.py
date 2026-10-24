@@ -100,7 +100,11 @@ from itertools import islice
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final
 
-from threetears.nats.object_store_requests import MAX_RETIRED_OBJECTS, WRITE_CLAIM_SEGMENT
+import duckdb
+import pyarrow as pa
+import pyarrow.ipc as ipc
+from threetears.nats import ObjectExistsError, ObjectNotFoundError, ObjectStoreError, ObjectStoreFullError
+from threetears.nats.object_store_requests import MAX_RETIRED_OBJECTS, WRITE_CLAIM_SEGMENT, bind_pod_object_store
 from threetears.observe import contain, get_logger
 
 from threetears.core.sql_fragments import quote_identifier
@@ -549,9 +553,6 @@ def encode_chunk(table: Any) -> bytes:
     :return: the chunk's bytes
     :rtype: bytes
     """
-    import pyarrow as pa  # noqa: PLC0415 -- the snapshot extra
-    import pyarrow.ipc as ipc  # noqa: PLC0415
-
     sink = pa.BufferOutputStream()
     with ipc.new_stream(sink, table.schema, options=ipc.IpcWriteOptions(compression="zstd")) as writer:
         writer.write_table(table)
@@ -566,8 +567,6 @@ def decode_chunk(data: bytes) -> Any:
     :return: the rows
     :rtype: pyarrow.Table
     """
-    import pyarrow.ipc as ipc  # noqa: PLC0415 -- the snapshot extra
-
     return ipc.open_stream(data).read_all()
 
 
@@ -579,8 +578,6 @@ def _concatenated(parts: Sequence[Any]) -> Any:
     :return: their rows, in order
     :rtype: pyarrow.Table
     """
-    import pyarrow as pa  # noqa: PLC0415 -- the snapshot extra
-
     return parts[0] if len(parts) == 1 else pa.concat_tables(parts)
 
 
@@ -2043,8 +2040,6 @@ class ScopedSnapshot:
         :rtype: pyarrow.Table
         :raises _Lost: when it is gone, unreadable, or holds another count
         """
-        from threetears.nats import ObjectNotFoundError, ObjectStoreError  # noqa: PLC0415
-
         try:
             data = await self._store.get(name)
         except ObjectNotFoundError as exc:
@@ -2090,8 +2085,6 @@ class ScopedSnapshot:
 
         :raises _Lost: when the L1 refuses the rows
         """
-        import duckdb  # noqa: PLC0415 -- the L1's own driver, present wherever a DuckDB backend is
-
         try:
             await self._commit(replacements, current, epochs=epochs)
         except duckdb.ConstraintException as exc:
@@ -2793,8 +2786,6 @@ class ScopedSnapshot:
         :return: the chunk's name and its bytes
         :rtype: tuple[str, int]
         """
-        from threetears.nats import ObjectExistsError, ObjectStoreFullError  # noqa: PLC0415
-
         data = await asyncio.to_thread(encode_chunk, arrow)
         name = (self._layout.piece_name if piece else self._layout.object_name)(scope, epoch, table.name)
         try:
@@ -3754,8 +3745,6 @@ async def open_tool_pod_snapshot(
     :raises ObjectStoreRequestError: when the hub refuses or does not answer the declare
     :raises ValueError: when ``options`` names what this wires; nothing is asked of the hub
     """
-    from threetears.nats.object_store_requests import bind_pod_object_store  # noqa: PLC0415
-
     wired = sorted(set(options) & _POD_WIRED_OPTIONS)
     if wired:
         raise ValueError(

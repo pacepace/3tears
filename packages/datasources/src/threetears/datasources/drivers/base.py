@@ -65,6 +65,13 @@ from typing import Any, TypeAlias, TypedDict, TypeVar
 
 from threetears.observe import BuildOnce, contain, get_logger
 
+try:
+    from opentelemetry import metrics as _otel_metrics
+
+    _otel_metrics_available = True
+except ImportError:  # NOSILENT: the tracing extra is optional; the drivers record no metric without it
+    _otel_metrics_available = False
+
 from threetears.core.sql_fragments import FilterValue, quote_identifier
 
 from threetears.datasources.export import DriverExportUnsupportedError, ExportConfig, ExportResult
@@ -252,28 +259,17 @@ def _build_coverage_by_dimension_sql(
 # ---------------------------------------------------------------------------
 
 
-# OTel metrics availability is cached after first probe -- zero-cost path
-# when ``opentelemetry`` is not installed, matching the ``@traced``
-# decorator's discipline in :mod:`threetears.observe.tracing`. drivers
-# don't pay an import cost or a per-call attribute lookup beyond a single
-# bool check.
-_otel_metrics_available: bool | None = None
+# OTel metrics availability is probed once, when this module is imported -- a zero-cost path when
+# ``opentelemetry`` is not installed, matching the ``@traced`` decorator's discipline in
+# :mod:`threetears.observe.tracing`: a driver pays no import and no lookup beyond a single bool check.
 
 
 def _check_otel_metrics() -> bool:
-    """probe for ``opentelemetry.metrics``; cache the result.
+    """whether ``opentelemetry.metrics`` was importable when this module was.
 
     :return: True iff ``opentelemetry.metrics`` is importable
     :rtype: bool
     """
-    global _otel_metrics_available  # noqa: PLW0603
-    if _otel_metrics_available is None:
-        try:
-            import opentelemetry.metrics  # noqa: F401
-
-            _otel_metrics_available = True
-        except ImportError:
-            _otel_metrics_available = False
     return _otel_metrics_available
 
 
@@ -304,9 +300,7 @@ def _get_query_duration_histogram(driver_type: str) -> Any:
             :return: the new OTel instrument
             :rtype: Any
             """
-            from opentelemetry import metrics
-
-            meter = metrics.get_meter("threetears.datasources.drivers")
+            meter = _otel_metrics.get_meter("threetears.datasources.drivers")
             instrument = meter.create_histogram(
                 name="datasource.driver.query.duration",
                 description="datasource driver query duration in seconds",
@@ -337,9 +331,7 @@ def _get_error_counter(driver_type: str) -> Any:
             :return: the new OTel instrument
             :rtype: Any
             """
-            from opentelemetry import metrics
-
-            meter = metrics.get_meter("threetears.datasources.drivers")
+            meter = _otel_metrics.get_meter("threetears.datasources.drivers")
             instrument = meter.create_counter(
                 name="datasource.driver.error",
                 description="datasource driver error count by error kind",
@@ -776,9 +768,8 @@ class Driver(ABC):
     :mod:`threetears.datasources.drivers` subclasses this ABC and
     implements the documented method surface. instances are created
     via :func:`threetears.datasources.drivers.create_driver` rather
-    than direct instantiation -- the factory enforces lazy import of
-    the backend library and provides the AGENT_INTERNAL pool-borrow
-    plumbing.
+    than direct instantiation -- the factory dispatches on the config's
+    type and provides the AGENT_INTERNAL pool-borrow plumbing.
 
     placeholder convention (DS-09-04):
         callers always pass ``$1``-style positional placeholders. each

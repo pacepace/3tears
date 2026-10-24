@@ -63,8 +63,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Final
 
-from threetears.core.data.migrations.errors import DdlLockError, DdlLockReleaseError, DdlLockTimeoutError
-from threetears.core.data.migrations.session import MigrationSession
+from threetears.core.ddl.errors import DdlLockError, DdlLockReleaseError, DdlLockTimeoutError
+from threetears.core.ddl.session import MigrationSession
 from threetears.observe import contain, get_logger
 
 __all__ = [
@@ -75,7 +75,8 @@ __all__ = [
     "ddl_lock_key",
 ]
 
-log = get_logger(__name__)
+#: named where the lock lived before it moved below the packages that take it, so operators' log filters hold
+log = get_logger("threetears.core.data.migrations.ddl_lock")
 
 #: first key of the two-int4 advisory lock every DDL job in a database takes.
 #: partitions this lock from every other advisory lock the platform uses; the

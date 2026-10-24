@@ -3,8 +3,8 @@
 shard-09 lands only the ABC + factory; concrete driver modules don't
 exist yet (shards 10 / 11 / 12). the dispatch test pattern:
 
-- inject stub driver modules into ``sys.modules`` for each backend so
-  the factory's ``case`` arm finds the expected class on import
+- stand a stub class in for each driver class the factory imported, so
+  the factory's ``case`` arm builds the expected class
 - call :func:`create_driver` with a real ConnectionConfig
 - assert the right stub class was returned
 
@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import logging
 import sys
-import types
 from typing import Any
 
 import pytest
@@ -38,6 +37,7 @@ from threetears.datasources.config import (
     SnowflakeConnectionConfig,
     YugabyteConnectionConfig,
 )
+from threetears.datasources.drivers import factory
 from threetears.datasources.drivers.base import Driver
 from threetears.datasources.drivers.factory import create_driver
 from threetears.datasources.entities import DataSourceType
@@ -124,7 +124,7 @@ _DRIVER_MODULES = (
 
 @pytest.fixture
 def stub_driver_modules(monkeypatch: pytest.MonkeyPatch) -> dict[str, type[_StubDriver]]:
-    """install stub driver modules in sys.modules so factory imports succeed.
+    """stand a stub class in for each driver class the factory imported, so a dispatch builds a stub.
 
     returns the map of {class_name: subclass} so individual tests can
     assert which class their config dispatched to.
@@ -133,14 +133,12 @@ def stub_driver_modules(monkeypatch: pytest.MonkeyPatch) -> dict[str, type[_Stub
     :rtype: dict[str, type[_StubDriver]]
     """
     classes: dict[str, type[_StubDriver]] = {}
-    for module_name, class_name in _DRIVER_MODULES:
+    for _, class_name in _DRIVER_MODULES:
         # one subclass per slot so identity checks distinguish dispatch
         # arms.
         cls = type(class_name, (_StubDriver,), {})
         classes[class_name] = cls
-        module = types.ModuleType(module_name)
-        setattr(module, class_name, cls)
-        monkeypatch.setitem(sys.modules, module_name, module)
+        monkeypatch.setattr(factory, class_name, cls)
     return classes
 
 

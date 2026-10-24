@@ -14,9 +14,8 @@ implementation:
 Backend library
     `google-cloud-bigquery <https://pypi.org/project/google-cloud-bigquery/>`_
     (Apache-2.0, Google-maintained). minimum version 3.0. installed
-    via the ``[bigquery]`` extras key on this package; the factory
-    lazy-imports this module only when a
-    :class:`BigQueryConnectionConfig` actually dispatches.
+    via the ``[bigquery]`` extras key on this package. this stub imports
+    no backend library, so the factory imports it with every other driver.
 
 Connection lifecycle
     stateless. one :class:`google.cloud.bigquery.Client` instance

@@ -17,11 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import inspect
 import random
 import re
 import time
-import weakref
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
@@ -52,8 +50,11 @@ from threetears.core.collections.generation import (
     UndeclaredWriteGeneration,
     WriteGeneration,
     WriteGenerationDeclaration,
+    note_generation_class,
     source_reads,
     split_generation_token,
+    table_named_by_class,
+    tables_with_write_generation,
 )
 from threetears.core.collections.l2_order import (
     L2_ORDER_COLUMNS,
@@ -75,7 +76,7 @@ from threetears.core.exceptions import (
     L2WriteRefusedError,
 )
 from threetears.nats.errors import KvError
-from threetears.observe import contain, get_logger, traced
+from threetears.observe import contain, get_logger, set_span_attribute, traced
 
 if TYPE_CHECKING:
     # annotation-only: importing these eagerly would load the NATS client into
@@ -226,59 +227,6 @@ def _unadvanced_absence_error(table_name: str) -> GenerationUnavailableError:
         f"the write generation of {table_name!r} was not advanced after a committed write (the broker "
         f"advanced nothing for it); absences recorded under the unmoved generation would stay trusted"
     )
-
-
-#: every collection class defined in this process whose committed writes advance its table's write
-#: generation: switched on (``write_generation = WRITE_GENERATION``), or caching absences. Appended
-#: by :meth:`BaseCollection.__init_subclass__`, read by :func:`tables_with_write_generation`.
-_GENERATION_CLASSES: weakref.WeakSet[type[BaseCollection[Any]]] = weakref.WeakSet()
-
-
-def table_named_by_class(cls: type) -> str | None:
-    """the table a collection class names without being built, or ``None``.
-
-    The one derivation of "which table does this class name": the hub's broker reads it, through
-    :func:`tables_with_write_generation`, to decide which tables to advance, and the
-    one-class-per-table census (``threetears.enforcement.collection_census``) reads it to prove
-    there is one class per table. Two copies could disagree on a class, and the census would then
-    pass a layout the broker reads differently.
-
-    :param cls: a collection class
-    :ptype cls: type
-    :return: a ``schema``'s ``name``, or what a ``table_name`` property answers with the class
-        standing in for an instance; ``None`` when the table is named per instance
-    :rtype: str | None
-    """
-    name = getattr(getattr(cls, "schema", None), "name", None)
-    if isinstance(name, str):
-        return name
-    prop = inspect.getattr_static(cls, "table_name", None)
-    if isinstance(prop, property) and prop.fget is not None:
-        try:
-            answer: Any = prop.fget(cls)
-        except AttributeError, TypeError:
-            # NOSILENT: the class standing in for an instance has no instance attributes, and that is the answer: a
-            # getter that needs an instance names its table per instance. Anything else it raises is a bug, and propagates.
-            return None
-        return answer if isinstance(answer, str) else None
-    return None
-
-
-def tables_with_write_generation() -> frozenset[str]:
-    """every table whose committed writes advance its write generation, by the classes defined here.
-
-    What the hub's L3 broker reads to decide which tables to advance after committing a pod's
-    write: the pod's collection and the broker's answer come from the same class, so they agree
-    exactly when one class names the table. A table is in the set when a collection class this
-    process has imported declares ``write_generation = WRITE_GENERATION`` or caches absences
-    (``negative_cache_max_age``), and names its table on the class. A class whose table is named
-    per instance is not readable here, and its table is not in the set: a pod switching such a
-    table on is told by its own advance, which raises, that the broker advanced nothing.
-
-    :return: the table names
-    :rtype: frozenset[str]
-    """
-    return frozenset(name for name in map(table_named_by_class, list(_GENERATION_CLASSES)) if name is not None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -755,7 +703,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 f"recorded; got {cls.negative_cache_max_entries}"
             )
         if isinstance(cls.write_generation, WriteGeneration) or cls.negative_cache_max_age is not None:
-            _GENERATION_CLASSES.add(cls)
+            note_generation_class(cls)
 
     # datasource-task-06 DS-06-04: per-concrete-class memo of table
     # names that have already emitted the "nats_client missing"
@@ -3370,15 +3318,8 @@ class BaseCollection(ABC, Generic[EntityT]):
 
     @staticmethod
     def _set_span_attr(key: str, value: Any) -> None:
-        """Set an attribute on the current OTel span, if available."""
-        try:
-            from opentelemetry import trace as _trace
-
-            span = _trace.get_current_span()
-            span.set_attribute(key, value)
-        # NOSILENT: optional dependency probe; absence is a supported configuration
-        except ImportError:
-            pass
+        """Set an attribute on the current OTel span, if available (a no-op without the tracing extra)."""
+        set_span_attribute(key, value)
 
     def _set_span_table(self) -> None:
         """Set ``cache.table`` on the current span."""

@@ -8,6 +8,37 @@ packages (bumped in lock-step).
 
 ## v0.78.0 -- 2026-10-24
 
+### core, nats, observe, datasources: nothing is imported inside a function on a serving path
+
+**Changed:** Owner ruling, 2026-10-24: lazy imports are banned in serving code. An import inside a function ran
+the first time it was called, mid-request, holding the event loop (a first collection read loaded OpenTelemetry's
+modules there). Every such import in `core`, `nats`, `observe` and `datasources` moved to its module's top. An
+optional extra's library is imported there under `try/except ImportError`, and the code that needs it raises an
+`ImportError` naming the extra when it is absent: httpx (`http`), pyarrow (`snapshot`, `export`), pgvector,
+uuid-utils, prometheus-client (`prometheus`), OpenTelemetry (`tracing`), redshift-connector (`redshift`). Import
+cycles were fixed by moving modules, not by deferring: the DDL lock, the migration session and the migration
+errors live in `threetears.core.ddl` (`threetears.core.data.migrations.ddl_lock`, `.session` and `.errors`
+re-export every name, and the lock logs under its old logger name), the write-mark queue's SQL in
+`threetears.core.ddl.write_marks` (re-exported by `threetears.core.collections.write_marks`), and
+`table_named_by_class`, `tables_with_write_generation` and `note_generation_class` in
+`threetears.core.collections.generation` (`threetears.core.collections.base` re-exports the first two).
+`schema_backed.require_pgvector` is public (was `_require_pgvector`). `tests/enforcement/test_no_function_level_imports.py`
+holds it: a function-level import in those packages fails unless `_function_level_import_exemptions.txt` gives
+the reason it runs on no serving path (the testing extra's fixtures; telemetry start-up and shutdown in
+`observe.setup`).
+
+**Changed:** `threetears.datasources.drivers.factory` imports every driver module with itself, so building a
+driver loads nothing; this replaces DS-09-09's contract that importing the package roots loads no driver. With
+the redshift extra installed, importing `threetears.datasources` loads `redshift_connector`; without it the
+package imports and a Redshift config raises the ImportError naming the extra. The Snowflake and BigQuery drivers
+are stubs and load no backend library.
+
+### agent-acl: a caller cache of any answer type binds to the access tables
+
+**Fixed:** `bind_caller_cache_to_access_tables` takes a `CallerAccessCache[V]` of any answer type; it was typed
+`CallerAccessCache[object]`, which an invariant generic refuses for a `CallerAccessCache[frozenset[str]]`, so a host
+had to cast.
+
 ### core: versioned answers read from L1, say how each was given, and announce versions that only rise
 
 **Added:** `VersionedAnswers` keeps its answers and its index in the process's L1 as well as L2 (when its registry

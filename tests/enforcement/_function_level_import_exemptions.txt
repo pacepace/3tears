@@ -1,0 +1,10 @@
+# Function-level imports in the serving packages, each with why it runs on no serving path, for
+# tests/enforcement/test_no_function_level_imports.py. One `<path>::<function>  # <reason>` per line; a path
+# ending in `/*` covers a directory. An entry the scan no longer needs fails as stale.
+packages/core/src/threetears/core/testing/*  # the testing extra's test harness (containers, fixtures): imported by test suites only, never by a serving process, and each fixture's container library is the testing extra's
+packages/observe/src/threetears/observe/setup.py::init_telemetry  # telemetry start-up, once per process before it serves; the OTel SDK is the otel extra's, loaded only by a process that configures tracing
+packages/observe/src/threetears/observe/setup.py::_span_exporter  # telemetry start-up: the one exporter the configured protocol names, gRPC or HTTP, each an extra a process may lack
+packages/observe/src/threetears/observe/setup.py::_init_log_export  # telemetry start-up: log export through the OTel SDK's private logs modules, the otel extra's
+packages/observe/src/threetears/observe/setup.py::_BoundedFlush.__init__  # telemetry flush at shutdown or an explicit force flush, only after init_telemetry loaded the SDK
+packages/observe/src/threetears/observe/setup.py::force_flush_telemetry  # an explicit flush of telemetry the process configured; no serving path calls it
+packages/observe/src/threetears/observe/setup.py::shutdown_telemetry  # telemetry shutdown, once at process stop, after it has stopped serving

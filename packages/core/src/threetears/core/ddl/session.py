@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from threetears.core.data.migrations.errors import SessionRequiredError
+from threetears.core.ddl.errors import SessionRequiredError
 
 __all__ = [
     "ConnectionSession",

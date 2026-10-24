@@ -53,6 +53,14 @@ from uuid_utils import uuid7
 
 from threetears.observe.logging import set_context
 
+try:
+    from opentelemetry import trace
+    from opentelemetry.trace import SpanKind, StatusCode
+
+    _OTEL = True
+except ImportError:  # NOSILENT: the tracing extra is optional; requests pass through unspanned without it
+    _OTEL = False
+
 __all__ = ["ASGIApp", "CorrelationMiddleware", "Message", "OTelMiddleware", "Receive", "Scope", "Send"]
 
 
@@ -238,13 +246,7 @@ class OTelMiddleware:
             await self._app(scope, receive, send)
             return
 
-        try:
-            from opentelemetry import trace  # noqa: PLC0415
-            from opentelemetry.trace import (  # noqa: PLC0415
-                SpanKind,
-                StatusCode,
-            )
-        except ImportError:
+        if not _OTEL:
             await self._app(scope, receive, send)
             return
 

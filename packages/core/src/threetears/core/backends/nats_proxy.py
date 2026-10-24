@@ -22,6 +22,7 @@ none changes nothing.
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import UTC, datetime, timedelta
 from collections.abc import Callable, Mapping, Sequence
@@ -742,8 +743,6 @@ class NatsProxyL3Backend:
         if timeout_ms is not None:
             self.timeout_ms = timeout_ms
         else:
-            import os
-
             raw = os.environ.get("THREETEARS_NATS_PROXY_TIMEOUT_MS")
             self.timeout_ms = int(raw) if raw is not None else 5000
 

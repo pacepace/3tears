@@ -56,6 +56,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Protocol
 
 from threetears.core.collections.base import BaseCollection, EntityT
 from threetears.core.collections.tier_reads import ReadTier
+from threetears.core.coordination.distributed_lock import LockHeld, nats_distributed_lock
+from threetears.core.coordination.lease import LeaseUnavailable
 from threetears.observe import get_logger, traced
 
 if TYPE_CHECKING:
@@ -128,8 +130,6 @@ class NatsBuildLock:
         :rtype: AsyncIterator[None]
         :raises BuildLockHeld: when another holder has it
         """
-        from threetears.core.coordination import LockHeld, nats_distributed_lock
-
         try:
             # cancel_on_loss=False: the build lock only stops a stampede of identical
             # derivations; losing it mid-build costs one duplicate compute, and interrupting
@@ -175,8 +175,6 @@ class LeaseBuildLock:
         :rtype: AsyncIterator[None]
         :raises BuildLockHeld: when another holder has it
         """
-        from threetears.core.coordination.lease import LeaseUnavailable
-
         name = key if _KV_KEY_GRAMMAR.match(key) else hashlib.sha256(key.encode("utf-8")).hexdigest()
         try:
             held = await self._lease.hold(

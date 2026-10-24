@@ -19,6 +19,11 @@ from decimal import Decimal
 from types import MappingProxyType
 from typing import Any
 
+from sqlalchemy import Boolean, DateTime, Float, Integer, LargeBinary, Numeric, String, Text
+from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, TSVECTOR, UUID
+from sqlalchemy.sql.sqltypes import ARRAY
+from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
+
 from threetears.core.backends.schema_sql import json_default
 from threetears.core.cache.base import (
     build_select_clause,
@@ -37,6 +42,22 @@ try:
     _UUID_TYPES: tuple[type, ...] = (uuid.UUID, _UuidUtilsUUID)
 except ImportError:
     _UUID_TYPES = (uuid.UUID,)
+
+try:
+    from uuid_utils import UUID as UuidUtilsUUID
+
+    #: uuid_utils' UUID, when the uuid-utils extra is installed; core works without it
+    _UUID_UTILS_TYPES: tuple[type, ...] = (UuidUtilsUUID,)
+except ImportError:  # NOSILENT: the uuid-utils extra is optional; its values never reach L1 without it
+    _UUID_UTILS_TYPES = ()
+
+try:
+    from pgvector.sqlalchemy import Vector
+
+    #: pgvector's column type, when the pgvector extra is installed; core works without it
+    _VECTOR_TYPES: tuple[type, ...] = (Vector,)
+except ImportError:  # NOSILENT: the pgvector extra is optional; no column is a vector without it
+    _VECTOR_TYPES = ()
 
 log = get_logger(__name__)
 
@@ -151,13 +172,8 @@ class SQLiteBackend:
             # serialized at the SQLite boundary.
             sqlite3.register_adapter(uuid.UUID, str)
             sqlite3.register_adapter(datetime, lambda dt: dt.isoformat())
-            try:
-                from uuid_utils import UUID as UuidUtilsUUID
-
-                sqlite3.register_adapter(UuidUtilsUUID, str)
-            # NOSILENT: optional dependency probe; absence is a supported configuration
-            except ImportError:
-                pass
+            for uuid_type in _UUID_UTILS_TYPES:
+                sqlite3.register_adapter(uuid_type, str)
             self._initialized = True
 
         log.debug(
@@ -598,28 +614,8 @@ class SQLiteBackend:
     @staticmethod
     def _map_sqlalchemy_type(sa_type: Any) -> str:
         """Map SQLAlchemy type to SQLite equivalent with serialization hints."""
-        from sqlalchemy import (
-            Boolean,
-            DateTime,
-            Float,
-            Integer,
-            LargeBinary,
-            Numeric,
-            String,
-            Text,
-        )
-        from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
-        from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
-
-        # Check for pgvector Vector type
-        try:
-            from pgvector.sqlalchemy import Vector
-
-            if isinstance(sa_type, Vector):
-                return "TEXT_VECTOR"
-        # NOSILENT: optional dependency probe; absence is a supported configuration
-        except ImportError:
-            pass
+        if isinstance(sa_type, _VECTOR_TYPES):
+            return "TEXT_VECTOR"
 
         if isinstance(sa_type, (UUID, UuidType)):
             return "TEXT_UUID"
@@ -641,8 +637,6 @@ class SQLiteBackend:
             return "TEXT_BYTEA"
 
         # PostgreSQL-only types that map cleanly to TEXT in SQLite
-        from sqlalchemy.dialects.postgresql import TSVECTOR
-        from sqlalchemy.sql.sqltypes import ARRAY
 
         if isinstance(sa_type, TSVECTOR):
             return "TEXT"

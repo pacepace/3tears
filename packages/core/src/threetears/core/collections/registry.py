@@ -18,6 +18,8 @@ from threetears.core.collections.generation import (
     WriteGeneration,
     source_reads,
 )
+from threetears.core.backends.protocol import DurableStore
+from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.scan_cache import ScanCache
 from threetears.core.exceptions import GenerationUnavailableError, InvalidL2ScopeError, L2ScopeNotConfiguredError
 from threetears.observe import contain, get_logger
@@ -51,9 +53,6 @@ def _as_l3_backend(l3_pool: Any) -> Any:
     ``NatsProxyL3Backend``) is wrapped in a ``SqlL3Backend`` so it gains the
     structured ops (which generate SQL). ``None`` passes through.
 
-    Imported lazily to keep this module free of an import-time dependency on the
-    backends package.
-
     :param l3_pool: a raw transport, a ``DurableStore`` backend, or ``None``.
     :ptype l3_pool: Any
     :return: a ``DurableStore``-capable backend, or ``None``.
@@ -61,9 +60,6 @@ def _as_l3_backend(l3_pool: Any) -> Any:
     """
     if l3_pool is None:
         return None
-    from threetears.core.backends.protocol import DurableStore
-    from threetears.core.backends.sql import SqlL3Backend
-
     if isinstance(l3_pool, DurableStore):
         return l3_pool
     return SqlL3Backend(l3_pool)

@@ -19,7 +19,7 @@ Provides two layers:
 unlike :func:`traced` (OpenTelemetry spans, push/export-based), this
 module's backend is ``prometheus_client`` (pull/scrape-based), matching
 :class:`threetears.observe.inflight.InflightRequestsGauge`'s existing
-"prometheus is OPTIONAL, lazy import, silent no-op when absent" contract
+"prometheus is OPTIONAL, probed at import, silent no-op when absent" contract
 -- the two telemetry backends in this package are deliberately different
 tools for different jobs (traces answer "what happened on this one
 request," metrics answer "what's the aggregate rate/latency/error-count
@@ -35,28 +35,25 @@ from typing import Any, Callable, TypeVar, overload
 
 from threetears.observe.build_once import BuildOnce
 
+try:
+    from prometheus_client import Counter, Gauge, Histogram
+
+    _prometheus_available = True
+except ImportError:  # NOSILENT: the prometheus extra is optional; every instrument is a no-op without it
+    _prometheus_available = False
+
 __all__ = ["counter", "gauge", "histogram", "metered"]
 
 F = TypeVar("F", bound=Callable[..., Any])
 
 
 # ---------------------------------------------------------------------------
-# prometheus_client availability check (cached after first probe)
+# prometheus_client availability, probed once when this module is imported
 # ---------------------------------------------------------------------------
-
-_prometheus_available: bool | None = None
 
 
 def _check_prometheus() -> bool:
-    """Check if prometheus_client is importable (cached after first check)."""
-    global _prometheus_available  # noqa: PLW0603
-    if _prometheus_available is None:
-        try:
-            import prometheus_client  # noqa: F401
-
-            _prometheus_available = True
-        except ImportError:
-            _prometheus_available = False
+    """whether prometheus_client was importable when this module was."""
     return _prometheus_available
 
 
@@ -205,8 +202,6 @@ def _get_or_create_instrument(
         :return: the new prometheus instrument
         :rtype: Any
         """
-        from prometheus_client import Counter, Gauge, Histogram
-
         instrument_classes = {"counter": Counter, "histogram": Histogram, "gauge": Gauge}
         return instrument_classes[kind](sanitized, description or f"{sanitized} {kind}", list(label_names))
 
