@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.78.0 -- 2026-10-24
+
 ### evals: code no longer reads the memo writer's prose; the page prints it as written
 
 **Changed:** Code checks code, and a model's prose is a model's to check: the page prints every memo sentence as
