@@ -109,6 +109,13 @@ this to High. The cheapest step is the owner answering them before Wave C.
   `aggregate.aggregate_blocks` (06) has its slot in `packages/evals/src/threetears/evals/analysis/report/campaign/page.py`. `provenance.provenance_blocks` (03 fills) and
   `depth_blocks.depth_provenance_blocks` (05 fills) both have slots in `packages/evals/src/threetears/evals/analysis/report/campaign/page.py`'s provenance part. Settled by: the
   partition.
+- 01: [DECISION: no identity, digest or fingerprint moves with a declared name, and the bundle shape stays 64 (not 65), so `CORE_PINNED` gains no row | coordinator 2026-10-24: runs made at 00107a5b7 must stay poolable; `test_declared_names.py` pins every key to its 00107a5b7 value with and without names. A shape bump moves every fingerprint, and a name field written only when set leaves an unnamed bundle byte-identical to shape 64]
+- 01: [DECISION: a check's display name rides on the bundle (`goal_check_names`), never in `measure_catalog` | names in the catalog flow into `campaign_readings`' baked text and move the campaign fingerprint; `report.campaign.names.measure_name_of` is the door 03/04 call, since the readings keep printing a check as its expression until a part names it]
+- 01: [DECISION: `template_digest` (seed drift) leaves `goal_check_names` out as well as `measured_template_digest` | a drift in names alone would read a seeded template stale and a reset would write a new revision, whose results never pool with the old; a stored template is named in place with `template_update`]
+- 01: [DECISION: the short name sits on `AspectView` and the bundle's top level, not on `AspectDeclaration` | an exploratory aspect has no declaration and still has a name]
+- 01: [DECISION: `campaign_update` gains `short_names` (label to name or null), outside `_DECLARATION_FIELDS`, so a campaign holding runs can be named | otherwise naming an existing campaign means re-creating it; a name asks nothing of the runs, like `name`]
+- 01: [DECISION: printed names are unique per campaign (a short name may not equal another aspect's short name or label), refused on `EvalCampaign`; check names are unique per template; both under one 32-character cap (`DECLARED_NAME_CHARS`) | two aspects printing alike cannot be told apart in a table; Q5's cap applied to both names, as the brief asks for a length cap]
+- 01: [DECISION: the campaign fingerprint and `campaign_evidence_digest` drop `declaration.aspects[].short_name` from their pre-image (`campaign_bundle._evidence_of`) | the frame carries the declaration snapshot, and a reporter case or inspection must not read a rename as moved evidence]
 
 ## Advisory: what I would do differently
 
