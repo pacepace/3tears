@@ -45,8 +45,8 @@ Every sentence here names the arms by the names the page gives them, never by th
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from functools import reduce
 from typing import TYPE_CHECKING, Literal
 
@@ -69,7 +69,7 @@ from threetears.evals.analysis.stats import (
     cases_to_clear,
     difference_interval,
 )
-from threetears.evals.analysis.style import code, humanize, measure_name
+from threetears.evals.analysis.style import code, declared_check_name, humanize, measure_name
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.declaration import CostLower, DecisionClause, Floor, RateDrop
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of, rule_rates
@@ -175,6 +175,8 @@ class FloorReadings:
     is the t interval on the arm's cost per reply minus the control's at ``confidence``, computed from the per-case
     costs the bundle carries (``floor_contrasts``), uncorrected; None when none exists. ``cost_compared`` says whether
     any per-case costs were carried for the pair at all, so an absent interval reads as not compared or as no spread.
+    ``check_names`` is each goal check's declared display name by its expression
+    (``AnalysisContextBundle.goal_check_names``), which a floor naming a check no rate here carries is said by.
     """
 
     rates: tuple[RateReading, ...]
@@ -185,6 +187,7 @@ class FloorReadings:
     cost_interval: tuple[float, float] | None = None
     cost_compared: bool = False
     confidence: float = INTERVAL_LEVEL
+    check_names: Mapping[str, str] = field(default_factory=dict)
 
     def fewest_cases(self) -> int | None:
         """The fewer usable cases of the two arms; None when either was not counted."""
@@ -235,16 +238,25 @@ class FloorVerdict:
         return 100 * low, 100 * high
 
 
-def _reading_words(reading: str, readings: FloorReadings | None) -> str:
-    """A reading a floor names, as the page names it: the rate's own name where the arms carry it, else a key in
-    words, else a check's text as code."""
+def _reading_words(reading: str, readings: FloorReadings | None, check_names: Mapping[str, str] | None = None) -> str:
+    """A reading a floor names, as the page names it: the rate's own name where the arms carry it, else a check by its
+    declared display name (``check_names``, else the readings'), else a key in words, else a check's text as code."""
     rates = readings.rates if readings is not None else ()
     if (rate := next((rate for rate in rates if rate.answers(reading)), None)) is not None:
         return rate.name
+    names = check_names if check_names is not None else readings.check_names if readings is not None else {}
+    if (named := names.get(reading)) is not None:
+        return named
     return humanize("dimension", reading) if reading.isidentifier() else code(reading)
 
 
-def floor_statement(clause: DecisionClause, *, candidate: str, readings: FloorReadings | None = None) -> str:
+def floor_statement(
+    clause: DecisionClause,
+    *,
+    candidate: str,
+    readings: FloorReadings | None = None,
+    check_names: Mapping[str, str] | None = None,
+) -> str:
     """One floor as the page says it, naming the arm: ``no pass rate drops by more than 2 points``,
     ``no tone rate drops by more than 2 points``, ``v2 costs less per reply``.
 
@@ -255,12 +267,16 @@ def floor_statement(clause: DecisionClause, *, candidate: str, readings: FloorRe
     :param readings: What the floor is read against, whose rate names a named reading is said by; None to say it
         from its key.
     :ptype readings: FloorReadings | None
+    :param check_names: Each goal check's declared display name by its expression
+        (``AnalysisContextBundle.goal_check_names``), for a floor on a check said without ``readings``; None reads
+        the names ``readings`` carries.
+    :ptype check_names: Mapping[str, str] | None
     :return: The floor, lower case, with no closing stop.
     :rtype: str
     """
     if isinstance(clause, CostLower):
         return f"{candidate} costs less per reply"
-    which = "pass" if clause.reading is None else _reading_words(clause.reading, readings)
+    which = "pass" if clause.reading is None else _reading_words(clause.reading, readings, check_names)
     return f"no {which} rate drops by more than {format_number(clause.max_points)} points"
 
 
@@ -584,7 +600,12 @@ def _read_on(
 
 
 def floor_readings(
-    bundle: AnalysisContextBundle, control: str, candidate: str, *, confidence: float = INTERVAL_LEVEL
+    bundle: AnalysisContextBundle,
+    control: str,
+    candidate: str,
+    *,
+    confidence: float = INTERVAL_LEVEL,
+    check_names: Mapping[str, str] | None = None,
 ) -> FloorReadings:
     """The figures a floor is read against for one candidate on the bundle's aspect, from the bundle alone.
 
@@ -598,6 +619,11 @@ def floor_readings(
     comparison, where the family compared it. Cost is each arm's cost per reply, with the t interval on the per-case
     costs ``floor_contrasts`` carries, at ``confidence``. Each arm carries its usable cases.
 
+    A check's rate is named by its expression, as code, unless ``check_names`` is passed: a page passes the names its
+    aspect's template declares (``AnalysisContextBundle.goal_check_names``) and names each check by them. The
+    campaign's readings pass none, since their words are baked into what a campaign is fingerprinted by, which a name
+    must never move.
+
     :param bundle: The aspect's evidence.
     :ptype bundle: AnalysisContextBundle
     :param control: The control's variant key.
@@ -607,12 +633,15 @@ def floor_readings(
     :param confidence: The two-sided level every interval is read at: the nominal one for a floor; a campaign's
         readings pass the level their Holm step tests at.
     :ptype confidence: float
+    :param check_names: Each goal check's display name by its expression, which every rate, reason and floor sentence
+        on a check names it by; None names each by its expression.
+    :ptype check_names: Mapping[str, str] | None
     :return: The readings; no rate where either arm is off the scoreboard.
     :rtype: FloorReadings
     """
     boards = {board.variant_key: board for board in bundle.scoreboard}
     if control not in boards or candidate not in boards:
-        return FloorReadings(rates=())
+        return FloorReadings(rates=(), check_names=dict(check_names or {}))
     ours, theirs = boards[control], boards[candidate]
     lost_control, lost_candidate = sum(ours.lost.values()), sum(theirs.lost.values())
     rates = [
@@ -636,7 +665,11 @@ def floor_readings(
     for name, by_arm in sorted(measures.items()):
         if control in by_arm and candidate in by_arm:
             descriptor = bundle.measure_catalog.get(name)
-            heading = measure_name(name, descriptor.reader_name if descriptor is not None else None)
+            heading = measure_name(
+                name,
+                descriptor.reader_name if descriptor is not None else None,
+                declared=declared_check_name(check_names or {}, name),
+            )
             rates.append(
                 _read_on(
                     RateReading(
@@ -689,6 +722,7 @@ def floor_readings(
         cost_interval=cost_interval,
         cost_compared=cost is not None,
         confidence=confidence,
+        check_names=dict(check_names or {}),
     )
 
 

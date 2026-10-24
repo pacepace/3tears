@@ -59,6 +59,7 @@ __all__ = [
     "s2_choice",
     "s3_measurement",
     "s4_change",
+    "shape_of",
 ]
 
 #: The two goal-state checks every trial of a change is graded on; a trial passes where both hold.
@@ -258,8 +259,9 @@ def _assembled(
     return campaign, bundles, arms
 
 
-def _shape(name: str, aspects: Sequence[AspectTrials], *, control: bool, question: str = QUESTION) -> Shape:
-    """One shape assembled, its readings read and each aspect's own page built with the campaign's labels."""
+def shape_of(name: str, aspects: Sequence[AspectTrials], *, control: bool, question: str = QUESTION) -> Shape:
+    """One shape assembled, its readings read and each aspect's own page built with the campaign's labels: the four
+    shapes below, or a test's own of the same parts."""
     campaign, bundles, arms = _assembled(name, aspects, control=control, question=question)
     readings = campaign_readings(campaign, bundles, arms=arms)
     reports = {
@@ -280,7 +282,7 @@ def s1_change() -> Shape:
       floor read on that check alone.
     - ``refunds``: production passes no case, so no drop past the margin can show; v2 passes five.
     """
-    return _shape(
+    return shape_of(
         "s1 change",
         [
             AspectTrials(
@@ -328,7 +330,7 @@ def s2_choice() -> Shape:
     """A choice: ``alpha``, ``beta`` and ``gamma``, no control, on one aspect, three runs per case, each priced and
     timed apart and held to :data:`COST_BAR` and :data:`LATENCY_BAR`. Alpha passes the most cases and costs the most;
     gamma is the fastest."""
-    return _shape(
+    return shape_of(
         "s2 choice",
         [
             AspectTrials(
@@ -363,7 +365,7 @@ CORRECT_BAR = BarOverride(measure_id="answer.correct", threshold=0.9, direction=
 def s3_measurement() -> Shape:
     """A measurement: ``solo`` alone on two aspects, twice per case, judged on ``answer.correct`` (pass/fail) and
     ``answer.clear`` (ordinal), and held to :data:`CORRECT_BAR` on both."""
-    return _shape(
+    return shape_of(
         "s3 measurement",
         [
             AspectTrials(
@@ -389,7 +391,7 @@ def s3_measurement() -> Shape:
 def s4_change() -> Shape:
     """A change of one aspect: ``production`` the control and ``v2`` its one candidate on ``billing``, with no floor
     and no margin; v2 passes fourteen cases to production's twelve."""
-    return _shape(
+    return shape_of(
         "s4 change",
         [
             AspectTrials(

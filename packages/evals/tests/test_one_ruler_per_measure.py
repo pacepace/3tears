@@ -180,6 +180,26 @@ class TestWordsAndEvidenceReadOnTheRuler:
         assert stated["value"].text == "11 of 12"
         assert stated["measure"].text == '`call_count("music.queue_track") >= 2`'
 
+    def test_a_goal_check_its_template_names_is_stated_by_its_name(self) -> None:
+        surface = _surface(threshold=1500.0)
+        check = 'call_count("music.queue_track") >= 2'
+        # The frozen bundle carries the names the aspect's template declared (``goal_check_names``).
+        held = SimpleNamespace(decision_surface=surface, bundle={"goal_check_names": {check: "Two queued"}})
+        subject = SimpleNamespace(aspect=lambda label: held, aspects=[held])
+        cell = surface.cells[0]
+        row = EvidenceRow(
+            aspect="conversation",
+            cell_ref=cell_ref(cell.variant_key, cell.apparatus_class_id),
+            measure_id=f"goal_state:{check}",
+            reading="measure",
+            value=11 / 12,
+            n=12,
+            n_cases=4,
+            dispersion="sem 0.08",
+        )
+        (stated,) = evidence_rows(subject, [row], lambda ref: ref)  # type: ignore[arg-type]
+        assert (stated["measure"].text, stated["value"].text) == ("Two queued", "11 of 12")
+
 
 class TestARunSummaryStatesAMeasureOnOneRuler:
     def test_its_mean_minimum_and_maximum_read_in_one_unit(self) -> None:

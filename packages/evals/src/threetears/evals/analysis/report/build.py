@@ -298,7 +298,7 @@ def _floor_verdicts(bundle: AnalysisContextBundle, arm: Callable[[str], str]) ->
         return {}
     read: dict[str, tuple[FloorVerdict, ...]] = {}
     for key in _candidates(bundle):
-        readings = floor_readings(bundle, control, key)
+        readings = floor_readings(bundle, control, key, check_names=bundle.goal_check_names)
         read[key] = tuple(
             read_floor(floor, readings, control=arm(control), candidate=arm(key)) for floor in declared.floors
         )

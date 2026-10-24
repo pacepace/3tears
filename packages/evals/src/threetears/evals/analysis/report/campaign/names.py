@@ -16,7 +16,7 @@ reading or fingerprint), else by its whole expression; every other measure as
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.style import measure_name
@@ -38,12 +38,16 @@ def aspect_name(bundle: AnalysisContextBundle) -> str:
 
 @dataclass(frozen=True)
 class AspectNames:
-    """What the page calls each of a campaign's aspects, by its label (:func:`aspect_name` of each one's evidence).
+    """What the page calls each of a campaign's aspects, by its label (:func:`aspect_name` of each one's evidence),
+    and each aspect's goal checks, for a part that holds only an aspect's label.
 
     :ivar by_label: Each aspect's name, by its label, in the campaign's order.
+    :ivar checks: Each aspect's declared check display names (``AnalysisContextBundle.goal_check_names``: a check's
+        expression to its name), by the aspect's label.
     """
 
     by_label: Mapping[str, str]
+    checks: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
     @classmethod
     def of(cls, bundles: Iterable[AnalysisContextBundle]) -> AspectNames:
@@ -54,7 +58,11 @@ class AspectNames:
         :return: Their names.
         :rtype: AspectNames
         """
-        return cls({bundle.aspect: aspect_name(bundle) for bundle in bundles})
+        held = list(bundles)
+        return cls(
+            {bundle.aspect: aspect_name(bundle) for bundle in held},
+            {bundle.aspect: dict(bundle.goal_check_names) for bundle in held},
+        )
 
     def __call__(self, label: str) -> str:
         """What the page calls the aspect labelled ``label``; a label no evidence was given for is printed whole.
@@ -65,6 +73,18 @@ class AspectNames:
         :rtype: str
         """
         return self.by_label.get(label, label)
+
+    def check_names(self, label: str) -> Mapping[str, str]:
+        """The display names the aspect labelled ``label`` declares for its goal checks, by check expression: what a
+        part naming a check on that aspect passes on (``floor_statement``'s ``check_names``); none for an aspect no
+        evidence was given for, whose checks print whole.
+
+        :param label: The aspect's label.
+        :ptype label: str
+        :return: Each named check's display name, by its expression.
+        :rtype: Mapping[str, str]
+        """
+        return self.checks.get(label, {})
 
 
 def legend(names: AspectNames) -> list[tuple[str, str]]:

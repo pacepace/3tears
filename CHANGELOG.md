@@ -17,8 +17,12 @@ none its full expression, never shortened. `campaign_create` takes `short_name` 
 clear it), which stays editable once runs have joined. The bundle carries both (`AnalysisContextBundle.short_name`,
 `.goal_check_names`, read by `.check_name`), and `report.campaign.names` names each aspect and measure from them
 (`aspect_name`, `AspectNames`, `legend`, `measure_name_of`). `style.measure_name` and `report.words.reading_heading`
-take a check's declared name as `declared=`; an aspect's page heads, lists and states each named check by it, and so
-do the campaign page's bars table, its timing lines and a finding's evidence trace. Each name is written only when
+take a check's declared name as `declared=`, and `report.decision.floor_readings` and `floor_statement` take the
+names as `check_names=` (carried on `FloorReadings.check_names`, and on `AspectNames.check_names` for a part holding
+only an aspect's label). Every page names a named check by its name wherever it names one, its folds included: the
+tables and their headers, a floor's sentence and reasons, To settle, the call and a finding's evidence. The one place
+an expression stands beside its name is a trial's failed-check line, which states both. A campaign's readings name no
+check by a name, so no reading moves with one. Each name is written only when
 set and is no part of any identity, key, digest or fingerprint, and a `template_update` of `goal_check_names` alone
 leaves the template's `updated_at`: a run, a cell, a pool, a pairing, an analysis and a reporter case all key as
 before, no run loses its template's criteria, rejudging or take-up, and a template or campaign naming nothing is

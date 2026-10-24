@@ -26,8 +26,15 @@ from threetears.evals.analysis.references import cell_index, resolve_reading, re
 from threetears.evals.analysis.report.figures import MeasureRuler, analysis_rulers
 from threetears.evals.analysis.report.model import CellValue, TableCell
 from threetears.evals.kernel.analysis_measures import BarDecision
-from threetears.evals.analysis.style import measure_name
-from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, EvidenceRow, EvidenceTier, VariantIndexEntry
+from threetears.evals.analysis.style import declared_check_name, measure_name
+from threetears.evals.kernel.campaign import (
+    AspectAnalysis,
+    ConfidenceTier,
+    EvalAnalysis,
+    EvidenceRow,
+    EvidenceTier,
+    VariantIndexEntry,
+)
 from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.kernel.surface import DecisionSurface, GuardrailDecision
 
@@ -304,6 +311,21 @@ def evidence_columns(analysis: EvalAnalysis) -> tuple[tuple[str, str], ...]:
     return (("aspect", "Aspect"), *EVIDENCE_COLUMNS) if len(analysis.aspects) > 1 else EVIDENCE_COLUMNS
 
 
+def _frozen_check_names(held: AspectAnalysis) -> dict[str, str]:
+    """The display names an aspect's frozen bundle declares for its goal checks (``goal_check_names``), by check
+    expression, read without parsing the bundle; none where the bundle was frozen naming none.
+
+    :param held: One aspect of a stored analysis.
+    :ptype held: AspectAnalysis
+    :return: Each named check's display name, by its expression.
+    :rtype: dict[str, str]
+    """
+    names = held.bundle.get("goal_check_names")
+    if not isinstance(names, dict):
+        return {}
+    return {check: name for check, name in names.items() if isinstance(check, str) and isinstance(name, str)}
+
+
 def evidence_rows(
     analysis: EvalAnalysis, evidence: Sequence[EvidenceRow], arm: Callable[[str], str]
 ) -> list[dict[str, TableCell]]:
@@ -325,12 +347,14 @@ def evidence_rows(
     """
     rows: list[dict[str, TableCell]] = []
     for row in evidence:
-        surface = analysis.aspect(row.aspect).decision_surface
+        held = analysis.aspect(row.aspect)
+        surface = held.decision_surface
         ruler = analysis_rulers(analysis, row.aspect).of(row.measure_id, row.reading)
+        declared = declared_check_name(_frozen_check_names(held), row.measure_id)
         values: dict[str, CellValue] = {
             "aspect": row.aspect,
             "arm": arm(row.cell_ref),
-            "measure": ruler.scaled(reading_heading(surface, row.measure_id, row.reading)),
+            "measure": ruler.scaled(reading_heading(surface, row.measure_id, row.reading, declared=declared)),
             # Cases, never trials: the count every interval is read over.
             "cases": row.n_cases,
             "spread": _restated_spread(analysis, row, ruler),

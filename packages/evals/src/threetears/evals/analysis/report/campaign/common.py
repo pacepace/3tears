@@ -1,5 +1,5 @@
 """What several parts of a campaign's page share: the memo's words as the page prints them, each arm's name on one
-aspect, a floor by its key, the rate a floor was decided on, and a change in points."""
+aspect, a floor by its key, and a change in points."""
 
 from __future__ import annotations
 
@@ -8,12 +8,11 @@ from dataclasses import replace
 
 from threetears.evals.analysis.arms import arm_names
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.campaign_readings import FloorStatus
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.style import ArmName, arm_name, code, humanize
+from threetears.evals.analysis.style import ArmName, arm_name
 from threetears.evals.kernel.declaration import Floor
 
-__all__ = ["as_written", "floor_of", "named_arms", "points", "rate_name"]
+__all__ = ["as_written", "floor_of", "named_arms", "points"]
 
 
 def as_written(text: str) -> str:
@@ -53,23 +52,6 @@ def floor_of(floors: Sequence[Floor], key: str) -> Floor | None:
     :rtype: Floor | None
     """
     return next((floor for floor in floors if floor.key == key), None)
-
-
-def rate_name(status: FloorStatus) -> str:
-    """The rate a floor's status was decided on, as the page names it: ``pass rate``, a check's or a dimension's rate,
-    or ``cost per reply``.
-
-    :param status: The floor's status for one arm.
-    :ptype status: FloorStatus
-    :return: The rate's name.
-    :rtype: str
-    """
-    if status.floor.split("/")[1] == "cost_lower":
-        return "cost per reply"
-    if status.reading is None:
-        return "pass rate"
-    named = humanize("dimension", status.reading) if status.reading.isidentifier() else code(status.reading)
-    return f"{named} rate"
 
 
 def points(value: float) -> str:

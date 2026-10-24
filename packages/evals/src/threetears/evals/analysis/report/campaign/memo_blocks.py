@@ -150,7 +150,8 @@ def _floor_words(floor: Floor | None, status: FloorStatus, names: AspectNames) -
     billing``."""
     if floor is None:
         return f"a floor on {names(status.aspect)}"
-    return f"{floor_statement(floor.clause, candidate=status.arm_label)} on {names(status.aspect)}"
+    said = floor_statement(floor.clause, candidate=status.arm_label, check_names=names.check_names(status.aspect))
+    return f"{said} on {names(status.aspect)}"
 
 
 def call_blocks(

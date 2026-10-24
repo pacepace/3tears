@@ -64,6 +64,7 @@ from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.style import humanize
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import RateDrop
+from threetears.evals.kernel.metrics import goal_check_of
 
 __all__ = [
     "BAR_WORDS",
@@ -702,7 +703,7 @@ def _sizings(
     if control is None:
         return found
     bundle = reports[row.aspect].bundle
-    figures = floor_readings(bundle, control, row.arm)
+    figures = floor_readings(bundle, control, row.arm, check_names=bundle.goal_check_names)
     per_case = case_cost_usd(bundle)
     for status in readings.floors:
         floor = floor_of(campaign.floors, status.floor)
@@ -1099,7 +1100,7 @@ def measure_blocks(
         values: dict[str, CellValue] = {
             "aspect": names(reading.aspect),
             "arm": reading.arm_label,
-            "measure": reading.name,
+            "measure": _measure_words(reading, reports),
             "value": _measured(reading.value, reading.passed, reading.trials, reading.cases),
             "interval": _measured_interval(reading.interval, reading.passed is not None),
             "cases": reading.cases,
@@ -1110,7 +1111,7 @@ def measure_blocks(
     _no_equal_weight_row(campaign, readings, reports, "a measurement's matrix holds its one arm's measures")
     blocks: list[ReportBlock] = []
     if readings.measures:
-        blocks.append(_measure_matrix(campaign, readings, names))
+        blocks.append(_measure_matrix(campaign, readings, reports, names))
     blocks += [
         TableBlock(
             section="scorecard",
@@ -1134,7 +1135,26 @@ def measure_blocks(
     return blocks
 
 
-def _measure_matrix(campaign: EvalCampaign, readings: CampaignReadings, names: AspectNames) -> TableBlock:
+def _measure_words(reading: MeasureReading, reports: Mapping[str, Report]) -> str:
+    """A measure as the page names it on its aspect: a goal check through
+    :func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`, by its declared display name else its
+    whole expression; any other measure as the readings name it."""
+    if goal_check_of(reading.measure) is None:
+        return reading.name
+    return measure_name_of(reports[reading.aspect].bundle, reading.measure)
+
+
+def _measure_header(key: str, readings: CampaignReadings, reports: Mapping[str, Report]) -> str:
+    """A measure's name over a column spanning aspects: its name on every aspect reading it where they agree; where
+    two aspects' templates name one check apart, its whole expression, as the readings name it."""
+    held = [reading for reading in readings.measures if reading.measure == key]
+    said = {_measure_words(reading, reports) for reading in held}
+    return said.pop() if len(said) == 1 else held[0].name
+
+
+def _measure_matrix(
+    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], names: AspectNames
+) -> TableBlock:
     """One row per aspect (per aspect and arm, where more than one arm was measured), one column per measure: its value
     with its interval, a pass rate in percent. A measure read under several test setups on one aspect has a cell for
     each in the fold, and none here: the matrix holds one figure per cell."""
@@ -1148,9 +1168,11 @@ def _measure_matrix(campaign: EvalCampaign, readings: CampaignReadings, names: A
         *([TableColumn(key="arm", header="Arm")] if len(arms) > 1 else []),
         *(
             TableColumn(
-                key=f"measure:{key}", header=f"{first.name} ({PERCENT})" if first.passed is not None else first.name
+                key=f"measure:{key}",
+                header=f"{named} ({PERCENT})" if first.passed is not None else named,
             )
             for key, first in measures.items()
+            for named in [_measure_header(key, readings, reports)]
         ),
     ]
     rows: list[dict[str, TableCell]] = []
