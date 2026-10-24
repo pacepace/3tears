@@ -6,18 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: a campaign's first screen is the decision, and each report-wide caveat is said once
+### evals: every page's first screen is the decision, and each report-wide caveat is said once
 
-**Changed:** A campaign's page opens on its title, then the question, the writer's summary and recommendation, then
-what warns: one plain line per arm for the bars it misses, the floors it breaks and the guardrails it is not shown
-safe on, worded as what it means for the arm (`Adopting v2 overrides the 10-point floor it breaks on billing.`), never
-above the title and never announced with `role="alert"`. Criteria set after their readings were visible, results with
-no ordered time, latency not compared and request settings not confirmed are each one caveat line on the first
-screen and rows in the new Design & provenance section, never one line per aspect or per criterion; an aspect's own
-page and an analysis's listing line say the same one line. `late_criteria_lines` is replaced by `timing_caveats`.
-The memo's findings and next steps are their own sections. HTML links aspects in a campaign table to their folds,
-shows a long expression in a table by its start and a visible ellipsis, and draws a scorecard matrix's glyphs on one
-scale.
+**Changed:** A campaign's page and an aspect's own page open on their title, nothing above it and nothing announced
+with `role="alert"`. A campaign's page then reads the question, the writer's summary and recommendation, then what
+warns: one plain line per arm for the bars it misses, the floors it breaks and the guardrails it is not shown safe
+on, worded as what it means for the arm (`Adopting v2 overrides the 10-point floor it breaks on billing.`); an
+aspect's page says the same floor line under its verdict. Criteria set after their readings were visible, results
+with no ordered time, latency read under concurrency and request settings not confirmed are each one caveat line on
+the first screen and their detail stated once (a campaign's Design & provenance, verbatim per aspect; an aspect's
+methods), never one line per aspect or per criterion. `late_criteria_lines` is replaced by `timing_caveats`, and
+`report.decision.floor_warning` is removed. The memo's findings and next steps are their own sections. HTML links
+aspects in a campaign table to their folds, shows a long expression in a table by its start and a visible ellipsis,
+and draws a scorecard matrix's glyphs on one scale.
 
 ### evals: a reporter label's form follows its dimension's scale, and may quote the memo passage it is about
 

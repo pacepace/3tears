@@ -12,7 +12,10 @@ from threetears.evals.analysis import (
     CampaignReadings,
     serialize_report,
 )
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.report.campaign.names import AspectNames
+from threetears.evals.analysis.report.campaign.warnings import guardrail_warnings
+from threetears.evals.kernel.surface import GuardrailCell, GuardrailCheck, GuardrailReadings
 from threetears.evals.analysis.report.campaign_page import NO_CALL, campaign_warnings
 from threetears.evals.analysis.report.model import (
     DisclosureBlock,
@@ -53,9 +56,7 @@ async def test_floors_an_arm_breaks_on_many_aspects_are_one_line_naming_them() -
         return readings.model_copy(update={"floors": statuses, "aspects": [status.aspect for status in statuses]})
 
     page = await page_of("billing", "tone", readings=four)
-    assert _warned(page.blocks, "floor") == [
-        "Adopting v2 overrides the 10-point floors it breaks on 4 of 4 aspects (billing, tone, refunds and returns)."
-    ]
+    assert _warned(page.blocks, "floor") == ["Adopting v2 overrides the 10-point floors it breaks on every aspect."]
 
 
 def test_each_arm_breaking_a_floor_has_its_own_line_and_floors_of_two_margins_are_not_sized() -> None:
@@ -165,3 +166,53 @@ async def test_a_why_for_an_overridden_floor_answers_only_the_arm_the_memo_recom
         "why",
         "Adopting v3 overrides the 10-point floor it breaks on billing.",
     ]
+
+
+def _guardrail(bundle: AnalysisContextBundle, name: str, arm: str) -> GuardrailCheck:
+    """One judged guardrail ``name`` on ``bundle``, left undecided for the arm keyed ``arm`` against the control."""
+    control = bundle.scoreboard[0]
+    return GuardrailCheck(
+        reading="judged",
+        name=name,
+        higher_is_better=True,
+        control=GuardrailCell(variant_key=control.variant_key, apparatus_class_id="a", n_cases=4, mean=1.0),
+        contrast=GuardrailCell(variant_key=arm, apparatus_class_id="a", n_cases=4, mean=0.9),
+        test="paired",
+        delta=-0.1,
+        interval=(-0.9, 0.4),
+        interval_basis="t",
+        margin=0.0,
+        margin_declared=False,
+        decision="undecided",
+        undecided_reason="the interval reaches both sides of 0",
+    )
+
+
+def test_each_guardrail_is_named_with_its_own_aspects_never_another_s() -> None:
+    """v2 is undecided on one guardrail on billing and another on tone: the line pairs each with its own aspect,
+    never both with both."""
+    shape = SHAPES["s1"]()
+    v2 = shape.key("v2")
+    on = {"billing": "reply.polite", "tone": "reply.on_brand"}
+    reports = {
+        label: report.model_copy(
+            update={
+                "bundle": report.bundle.model_copy(
+                    update={
+                        "guardrails": GuardrailReadings(
+                            dimensions=[on[label]], checks=[_guardrail(report.bundle, on[label], v2)]
+                        )
+                    }
+                )
+            }
+        )
+        if label in on
+        else report
+        for label, report in shape.reports.items()
+    }
+    names = AspectNames.of(report.bundle for report in reports.values())
+    (line,) = guardrail_warnings(shape.campaign, shape.readings, reports, names=names)
+    assert isinstance(line, DisclosureBlock) and line.section == "warnings"
+    assert line.text == (
+        "v2 is not yet shown safe on the reply polite guardrail on billing and the reply on brand guardrail on tone."
+    )

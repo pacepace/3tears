@@ -36,7 +36,12 @@ from threetears.evals.analysis.report.campaign.memo_blocks import (
     recommendation_blocks,
 )
 from threetears.evals.analysis.report.campaign.names import AspectNames
-from threetears.evals.analysis.report.campaign.provenance import caveat_blocks, provenance_blocks, question_blocks
+from threetears.evals.analysis.report.campaign.provenance import (
+    caveat_blocks,
+    for_the_campaign,
+    provenance_blocks,
+    question_blocks,
+)
 from threetears.evals.analysis.report.campaign.scorecard import (
     aspect_shows,
     bar_blocks,
@@ -123,7 +128,7 @@ def build_campaign_report(
         *bar_warnings(readings, memo, names=names),
         *floor_warnings(readings, memo, names=names),
         *guardrail_warnings(campaign, readings, reports, names=names),
-        *caveat_blocks(bundles),
+        *caveat_blocks(bundles, section="warnings"),
     ]
     if kind == "change":
         blocks += table_blocks(campaign, readings, reports, names=names)
@@ -140,7 +145,7 @@ def build_campaign_report(
         blocks += call_blocks(campaign, readings, call, names=names)
     blocks += memo_blocks(memo, campaign, readings, reports, resolutions, trial_ids or {}, names=names)
     # Design & provenance: the design and when each criterion was set, then what depth says once.
-    blocks += provenance_blocks(campaign, bundles)
+    blocks += provenance_blocks(campaign, bundles, readings.arm_labels())
     blocks += depth_provenance_blocks(readings)
     summaries = {summary.aspect: summary for summary in (memo.aspect_summaries if memo is not None else [])}
     folds = [
@@ -148,7 +153,8 @@ def build_campaign_report(
             aspect=aspect.label,
             shows=aspect_shows(readings, aspect.label),
             summary=aspect_summary_blocks(summaries.get(aspect.label)),
-            report=reports[aspect.label],
+            # What the campaign states once for every aspect, its fold does not say again.
+            report=for_the_campaign(reports[aspect.label]),
         )
         for aspect in campaign.aspects
     ]

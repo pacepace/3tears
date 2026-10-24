@@ -7,10 +7,11 @@ is ``<details>``; moving between the screens is ``#`` anchors. The outcome bar i
 cell carrying an interval draws it as a small glyph beside its number, on one scale for the column, so a screen
 reader and a page with styles off lose nothing: every figure a glyph draws is in the row's text.
 
-**The first screen is the page's ``<header>``**: a broken floor's warning first, above everything, loud; the title
-(the campaign's name); the declared question quoted whole on its own line where there is one, then the arms line;
-the arms line alone (line 2) where none was; the verdict line, the scoreboard with its outcome bar, and the one
-caveat in normal weight that changes how the verdict is read. Everything a reader needs to decide whether to read on
+**The first screen is the page's ``<header>``**: the title (the campaign's name) first, nothing above it; the
+declared question quoted whole on its own line where there is one, then the arms line; the arms line alone (line 2)
+where none was; the verdict line; what warns (a broken floor's line, set apart, never announced over the title) and
+each report-wide caveat once; the scoreboard with its outcome bar, and the one caveat in normal weight that changes
+how the verdict is read. Everything a reader needs to decide whether to read on
 is there, written by code. Every term of art links to the glossary at the foot of the page.
 
 **Depth on demand, with the least ink.** The result, the floors, what it means and the contrasts are open;
@@ -47,7 +48,6 @@ from threetears.evals.analysis.report.model import (
     TrialBlock,
 )
 from threetears.evals.analysis.report.campaign.names import aspect_name
-from threetears.evals.analysis.report.campaign.provenance import stated_for_the_campaign
 from threetears.evals.analysis.report.serialize_md import RESOLUTION_WORDS, SUMMARY_LEADS, trial_summary
 from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg, interval_glyph_svg
 from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
@@ -218,10 +218,9 @@ def report_html(report: Report) -> str:
         "<body>",
         f'<article data-basis="{_escape(report.basis)}">',
         "<header>",
-        # A broken floor's warning is the page's first line, above the title: the first thing a reader sees.
-        *(_block(block, index) for index, block in enumerate(head) if _warns(block)),
+        # The title first, then the first screen in order: what warns is under the verdict, never above the title.
         f"<h1>{_escape(_one_line(report.title))}</h1>",
-        *(_block(block, index) for index, block in enumerate(head) if not _warns(block)),
+        *(_block(block, index) for index, block in enumerate(head)),
         "</header>",
     ]
     titles = report.section_titles
@@ -342,10 +341,7 @@ def _aspect_fold(fold: CampaignAspectFold, slug: str) -> list[str]:
     (:attr:`~threetears.evals.analysis.report.model.CampaignAspectFold.head`): the campaign's first screen carries the
     first three once and reads each aspect itself. Its glossary is the campaign page's.
     """
-    # A disclosure the campaign's page states once for every aspect is not said again in each fold.
-    report = fold.report.model_copy(
-        update={"blocks": [block for block in fold.report.blocks if not stated_for_the_campaign(block, fold.report)]}
-    )
+    report = fold.report
     head = fold.head
     body = [
         *(_block(block, index) for index, block in enumerate(fold.summary)),
@@ -594,8 +590,13 @@ def _grid(block: TableBlock) -> str:
             cell = row[column.key]
             text = _cell_code(cell.text)
             if cell.ref is not None:
-                # A finding's figure, linked to a cell printing the same figure, or to the closed fold holding it.
-                text = f'<a href="#{cell.ref}">{text}</a>'
+                # A finding's figure, linked to a cell printing the same figure, or to the closed fold holding it. A
+                # link never holds a fold that opens: a long expression's fold sits beside the link, not inside it.
+                text = (
+                    f'<a href="#{cell.ref}">{text}</a>'
+                    if "<details" not in text
+                    else f'{text} <a class="cell-link" href="#{cell.ref}">where it is</a>'
+                )
             if (block.name, column.key) in _TRIAL_COLUMNS:
                 text = _TRIAL_ID.sub(lambda match: f'<a href="#{match.group(0)}">{match.group(0)}</a>', text)
             if block.name == "cases" and column.key == "trials":
@@ -763,19 +764,9 @@ def _trial(block: TrialBlock) -> str:
     )
 
 
-#: The sources of the loud lines that open a page above its title: a missed bar, a broken floor, a guardrail an arm
-#: is not shown safe on.
+#: The sources of what warns, set apart under the title: a missed bar, a broken floor, a guardrail an arm is not
+#: shown safe on.
 _WARNING_SOURCES = frozenset({"bar", "floor", "guardrails"})
-
-
-def _warns(block: ReportBlock) -> bool:
-    """Whether ``block`` opens the page above its title: a missed bar's, a broken floor's or a guardrail's warning, or
-    the writer's why for a floor its recommendation is made over, which sits beside the warning it answers."""
-    if block.section != "header":
-        return False
-    if isinstance(block, TextBlock):
-        return block.role == "override"
-    return isinstance(block, DisclosureBlock) and block.source in _WARNING_SOURCES
 
 
 def _disclosure(block: DisclosureBlock) -> str:
@@ -787,14 +778,13 @@ def _disclosure(block: DisclosureBlock) -> str:
         return f'<p class="arms">{text}</p>'
     if block.section in ("header", "answer") and block.source == "basis":
         return f'<p class="question">{text}</p>'
-    if block.section == "header" and block.source in _WARNING_SOURCES:
-        # An aspect's page's broken floor, its first line: loud, and announced to a screen reader as it loads.
-        return f'<p class="floor" role="alert"><strong>{text}</strong></p>'
-    if block.section == "warnings":
-        # A campaign's warning, under its answer: set apart, never announced over the title. Its caveats beside it.
-        if block.source in _WARNING_SOURCES:
-            return f'<p class="warning"><strong>{text}</strong></p>'
-        return f'<p class="line caveat" data-source="{_escape(block.source)}">{text}</p>'
+    anchor = f' id="{_escape(block.anchor)}"' if block.anchor is not None else ""
+    if block.section in ("header", "warnings") and block.source in _WARNING_SOURCES:
+        # What warns, under the title: set apart, never announced over it.
+        return f'<p class="warning"{anchor}><strong>{text}</strong></p>'
+    if block.section == "warnings" or (block.section == "header" and block.anchor is not None):
+        # A report-wide caveat, once, beside what warns.
+        return f'<p class="line caveat"{anchor} data-source="{_escape(block.source)}">{text}</p>'
     if block.source == "verdict":
         tone = f' data-tone="{_escape(block.tone)}"' if block.tone is not None else ""
         return f'<p class="verdict"{tone}><strong>{text}</strong></p>'

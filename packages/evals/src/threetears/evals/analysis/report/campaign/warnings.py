@@ -18,7 +18,7 @@ from threetears.evals.analysis.style import humanize
 from threetears.evals.kernel.authored import AuthoredCampaignAnalysis
 from threetears.evals.kernel.campaign import EvalCampaign
 
-__all__ = ["bar_warnings", "campaign_warnings", "floor_warnings", "guardrail_warnings"]
+__all__ = ["bar_warnings", "campaign_warnings", "floor_line", "floor_warnings", "guardrail_warnings", "listed", "where"]
 
 
 def bar_warnings(
@@ -58,9 +58,10 @@ _GUARDRAIL_WORDS: dict[str, str] = {"breached": "breaches", "undecided": "is not
 def guardrail_warnings(
     campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames
 ) -> list[ReportBlock]:
-    """One line per arm and decision naming the guardrails it is not shown safe on and the aspects they hold on, after
-    the broken floors: ``v2 is not yet shown safe on the no invented total guardrail on classify.`` A guardrail only
-    warns: no line says an arm is not adopted.
+    """One line per arm and decision naming each guardrail it is not shown safe on with the aspects that guardrail
+    holds on, after the broken floors: ``v2 is not yet shown safe on the no invented total guardrail on classify and
+    the polite guardrail on tone.`` Each guardrail is paired with its own aspects, never with another's. A guardrail
+    only warns: no line says an arm is not adopted.
 
     :param campaign: The campaign.
     :ptype campaign: EvalCampaign
@@ -76,8 +77,8 @@ def guardrail_warnings(
     labels = readings.arm_labels()
     blocks: list[ReportBlock] = []
     for decision, words in _GUARDRAIL_WORDS.items():
-        # Each arm's guardrails, then the aspects they hold on, each in the order first met.
-        by_arm: dict[str, tuple[list[str], list[str]]] = {}
+        # Each arm's guardrails, each with the aspects it holds on, in the order first met.
+        by_arm: dict[str, dict[str, list[str]]] = {}
         for aspect in campaign.aspects:
             bundle = reports[aspect.label].bundle
             arms_named = named_arms(bundle, labels)
@@ -86,20 +87,18 @@ def guardrail_warnings(
                     continue
                 key = check.contrast.variant_key
                 arm = arms_named[key].label if key in arms_named else short_digest(key)
-                dimensions, aspects = by_arm.setdefault(arm, ([], []))
-                if (name := humanize("dimension", check.name)) not in dimensions:
-                    dimensions.append(name)
+                aspects = by_arm.setdefault(arm, {}).setdefault(humanize("dimension", check.name), [])
                 if aspect.label not in aspects:
                     aspects.append(aspect.label)
-        for arm, (dimensions, aspects) in by_arm.items():
-            several = "s" if len(dimensions) > 1 else ""
-            where = _where([names(label) for label in aspects], len(campaign.aspects))
+        total = len(campaign.aspects)
+        for arm, by_dimension in by_arm.items():
+            each = [
+                f"the {dimension} guardrail on {where([names(label) for label in aspects], total)}"
+                for dimension, aspects in by_dimension.items()
+            ]
             blocks.append(
                 DisclosureBlock(
-                    section="warnings",
-                    source="guardrails",
-                    text=f"{arm} {words} the {_listed(dimensions)} guardrail{several} on {where}.",
-                    term="guardrail",
+                    section="warnings", source="guardrails", text=f"{arm} {words} {listed(each)}.", term="guardrail"
                 )
             )
     return blocks
@@ -159,14 +158,54 @@ def _bar_lines(readings: CampaignReadings, names: AspectNames) -> list[tuple[str
     total = len(readings.aspects)
     lines = []
     for arm, statuses in _by_arm(readings.missed_bars()).items():
-        where = _where([names(label) for label in dict.fromkeys(status.aspect for status in statuses)], total)
-        bars = "the bar" if len(statuses) == 1 else f"the {len(statuses)} bars"
-        if readings.kind == "measurement":
-            text = f"{arm} falls short of {bars} on {where}."
-        else:
-            text = f"Adopting {arm} overrides {bars} it misses on {where}."
-        lines.append((arm, statuses, text))
+        on = where([names(label) for label in dict.fromkeys(status.aspect for status in statuses)], total)
+        form = "one" if len(statuses) == 1 else "other"
+        template = (_SHORT_LINE if readings.kind == "measurement" else _MISSED_LINE)[form]
+        lines.append((arm, statuses, template.format(arm=arm, count=len(statuses), where=on)))
     return lines
+
+
+#: A measurement's line for an arm missing bars, whose bars are its standard, by count form.
+_SHORT_LINE = {
+    "one": "{arm} falls short of the bar on {where}.",
+    "other": "{arm} falls short of {count} bars on {where}.",
+}
+
+#: A change's or a choice's line for an arm missing bars, by count form.
+_MISSED_LINE = {
+    "one": "Adopting {arm} overrides the bar it misses on {where}.",
+    "other": "Adopting {arm} overrides the {count} bars it misses on {where}.",
+}
+
+#: The line for a candidate breaking floors, by count form and by whether the floors share one margin.
+_FLOOR_LINE = {
+    ("one", True): "Adopting {arm} overrides the {margin}-point floor it breaks on {where}.",
+    ("other", True): "Adopting {arm} overrides the {margin}-point floors it breaks on {where}.",
+    ("one", False): "Adopting {arm} overrides the floor it breaks on {where}.",
+    ("other", False): "Adopting {arm} overrides the floors it breaks on {where}.",
+}
+
+
+def floor_line(arm: str, margins: Sequence[float | None], where: str) -> str:
+    """The line a page warns of the floors one candidate breaks in, on a campaign's page and an aspect's own alike:
+    ``Adopting v2 overrides the 10-point floor it breaks on billing.``, the floors' margin said where they share one
+    (a cost floor has none). Which rate broke it, and the interval it broke on, are the floors table's.
+
+    :param arm: The candidate, by name.
+    :ptype arm: str
+    :param margins: Each broken floor's margin in points, None for a cost floor; one per floor.
+    :ptype margins: Sequence[float | None]
+    :param where: Where the floors are broken, as :func:`where` says it.
+    :ptype where: str
+    :return: The line.
+    :rtype: str
+    """
+    shared = set(margins)
+    margin = next(iter(shared)) if len(shared) == 1 else None
+    form = "one" if len(margins) == 1 else "other"
+    return _FLOOR_LINE[(form, margin is not None)].format(
+        arm=arm, margin=format_number(margin) if margin is not None else "", where=where
+    )
 
 
 def _floor_lines(readings: CampaignReadings, names: AspectNames) -> list[tuple[str, list[FloorStatus], str]]:
@@ -175,12 +214,8 @@ def _floor_lines(readings: CampaignReadings, names: AspectNames) -> list[tuple[s
     total = len(readings.aspects)
     lines = []
     for arm, statuses in _by_arm(readings.broken_floors()).items():
-        where = _where([names(label) for label in dict.fromkeys(status.aspect for status in statuses)], total)
-        margins = {status.margin for status in statuses}
-        margin = next(iter(margins)) if len(margins) == 1 else None
-        floors = "floor" if len(statuses) == 1 else "floors"
-        sized = f"{format_number(margin)}-point {floors}" if margin is not None else floors
-        lines.append((arm, statuses, f"Adopting {arm} overrides the {sized} it breaks on {where}."))
+        on = where([names(label) for label in dict.fromkeys(status.aspect for status in statuses)], total)
+        lines.append((arm, statuses, floor_line(arm, [status.margin for status in statuses], on)))
     return lines
 
 
@@ -197,14 +232,31 @@ def _why(why: str, arm: str) -> ReportBlock:
     return TextBlock(section="warnings", role="override", body=why, facts=[Fact(name="Arm", value=arm)])
 
 
-def _where(names: Sequence[str], total: int) -> str:
-    """The aspects a warning holds on, as its line names them: one by its name, several by how many of the
-    campaign's and which (``2 of 3 aspects (billing and tone)``)."""
+def where(names: Sequence[str], total: int) -> str:
+    """The aspects a line on the first screen holds on, as every warning and caveat names them: one by its name,
+    ``every aspect`` where it holds on all of several, else how many of the page's and which
+    (``2 of 3 aspects (billing and tone)``).
+
+    :param names: The aspects it holds on, as the page calls them, in the page's order.
+    :ptype names: Sequence[str]
+    :param total: How many aspects the page holds.
+    :ptype total: int
+    :return: Where, as a line says it.
+    :rtype: str
+    """
     if len(names) == 1:
         return names[0]
-    return f"{len(names)} of {total} aspects ({_listed(names)})"
+    if len(names) == total:
+        return "every aspect"
+    return f"{len(names)} of {total} aspects ({listed(names)})"
 
 
-def _listed(items: Sequence[str]) -> str:
-    """Items as a sentence lists them: ``billing``, ``billing and tone``, ``billing, tone and refunds``."""
+def listed(items: Sequence[str]) -> str:
+    """Items as a sentence or a cell lists them: ``billing``, ``billing and tone``, ``billing, tone and refunds``.
+
+    :param items: The items, in order; at least one.
+    :ptype items: Sequence[str]
+    :return: The list.
+    :rtype: str
+    """
     return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"

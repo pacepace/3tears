@@ -334,35 +334,6 @@ def evaluate_floor(
     )
 
 
-def floor_warning(verdict: FloorVerdict, *, candidate: str) -> str:
-    """The line a broken floor puts at the top of the page, the first thing a reader sees: the floor, its aspect, the
-    candidate and the interval it was broken on.
-
-    ``Floor broken on conversation: v2's pass rate falls past the 10-point margin on its whole interval, a drop of
-    12.3 to 35.2 points.`` A cost floor: ``Floor broken on conversation: v2 costs more per reply than v1 on the whole
-    interval.``
-
-    :param verdict: A broken floor, read on ``candidate``.
-    :ptype verdict: FloorVerdict
-    :param candidate: The candidate, by name.
-    :ptype candidate: str
-    :return: One sentence.
-    :rtype: str
-    """
-    lead = f"Floor broken on {verdict.floor.aspect}: "
-    clause = verdict.floor.clause
-    if isinstance(clause, CostLower) or verdict.rate is None:
-        return f"{lead}{verdict.reason}."
-    rate = verdict.rate
-    near, worst = rate.least_drop(), rate.worst_drop()
-    which = "pass rate" if rate.name == "the pass rate" else rate.name
-    span = "" if near is None or worst is None else f", a drop of {_points(near)} to {_points(worst)} points"
-    return (
-        f"{lead}{candidate}'s {which} falls past the {format_number(clause.max_points)}-point margin on its whole "
-        f"interval{span}."
-    )
-
-
 def _points(value: float) -> str:
     """A change in points as the page states one: to one decimal, a whole number whole."""
     return format_number(round(value, 1))
@@ -1077,7 +1048,6 @@ __all__ = [
     "floor_projection",
     "floor_readings",
     "floor_statement",
-    "floor_warning",
     "floors_projection",
     "project_rate",
     "project_sample",

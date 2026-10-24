@@ -1,9 +1,8 @@
 """The report as Markdown — the form an agent reads and a pull request quotes, with the page's values and order.
 
-Every block the page draws is printed here, in the page's order: the title on line 1 (below any broken floor), then the declared question quoted
-whole where there is one and under it the subhead (the arms), else the arms on line 2; a broken floor's warning
-opens the page above the title, in bold; the
-verdict, the scoreboard; a chart is its title and the table of the values
+Every block the page draws is printed here, in the page's order: the title on line 1, then the declared question
+quoted whole where there is one and under it the subhead (the arms), else the arms on line 2; the verdict; what
+warns (a broken floor's line, in bold) and each report-wide caveat once; the scoreboard; a chart is its title and the table of the values
 it draws, so a reader of Markdown can check every
 number a picture would have shown, and a chart the page leaves out is left out here too, by the same block list. An
 outcome bar whose every column is one of the scoreboard's prints nothing here: its table would repeat the scoreboard. What
@@ -39,7 +38,6 @@ from threetears.evals.analysis.report.model import (
     TextBlock,
     TrialBlock,
 )
-from threetears.evals.analysis.report.campaign.provenance import stated_for_the_campaign
 from threetears.evals.analysis.report.verdict import cause_short
 from threetears.evals.analysis.style import GLOSSARY
 
@@ -58,15 +56,9 @@ def report_markdown(report: Report) -> str:
     :return: The Markdown text, ending in a newline.
     :rtype: str
     """
-    # A broken floor's warning is the page's first line, above the title: the first thing a reader sees.
-    warnings = [block for block in report.blocks if _warns(block)]
-    lines = [line for block in warnings for line in (*_block(block), "")]
-    lines.append(f"# {_one_line(report.title)}")
-    head = [
-        block
-        for block in report.blocks
-        if block.section in FIRST_SCREEN and not _repeats_scoreboard(block) and not _warns(block)
-    ]
+    # The title first, then the first screen in order: what warns is under the verdict, never above the title.
+    lines = [f"# {_one_line(report.title)}"]
+    head = [block for block in report.blocks if block.section in FIRST_SCREEN and not _repeats_scoreboard(block)]
     for index, block in enumerate(head):
         # Line 2 (the arms, or a declared question) is directly under the title: every other block is set off by a
         # blank line.
@@ -104,10 +96,7 @@ def campaign_report_markdown(report: CampaignReport) -> str:
         lines += ["", f"## {_inert(_one_line(fold.aspect))}", "", f"{_inert(_one_line(fold.shows))}.", ""]
         lines += [f"<details><summary>{html.escape(_one_line(fold.aspect), quote=False)} in full</summary>"]
         lines += _folded(fold.summary, prefix=prefix)
-        # A disclosure the campaign's page states once for every aspect is not said again in each fold.
-        aspect = fold.report.model_copy(
-            update={"blocks": [b for b in fold.report.blocks if not stated_for_the_campaign(b, fold.report)]}
-        )
+        aspect = fold.report
         own = [block for block in fold.head if not _repeats_scoreboard(block)]
         for block in own:
             lines += ["", *_block(block, prefix=prefix)]
@@ -141,19 +130,9 @@ def _glossary_lines(terms: Sequence[str]) -> list[str]:
     return ["", f"## {SECTION_TITLES['glossary']}", "", *(f"- **{term}**: {GLOSSARY[term]}" for term in terms)]
 
 
-#: The sources of the loud lines that open a page above its title: a missed bar, a broken floor, a guardrail an arm
-#: is not shown safe on.
+#: The sources of what warns, set apart under the title: a missed bar, a broken floor, a guardrail an arm is not
+#: shown safe on.
 _WARNING_SOURCES = frozenset({"bar", "floor", "guardrails"})
-
-
-def _warns(block: ReportBlock) -> bool:
-    """Whether ``block`` opens the page above its title: a missed bar's, a broken floor's or a guardrail's warning, or
-    the writer's why for a floor its recommendation is made over, which sits beside the warning it answers."""
-    if block.section != "header":
-        return False
-    if isinstance(block, TextBlock):
-        return block.role == "override"
-    return isinstance(block, DisclosureBlock) and block.source in _WARNING_SOURCES
 
 
 #: The failure causes the scoreboard gives a column of their own, as an outcome bar labels them.

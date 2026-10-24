@@ -15,7 +15,7 @@ from html import escape
 
 from threetears.evals.analysis import campaign_report_html, campaign_report_markdown
 from threetears.evals.analysis.report.campaign_page import NO_CALL, NO_RECOMMENDATION
-from threetears.evals.analysis.report.model import DisclosureBlock, TableBlock, TableCell, TableColumn
+from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, TableBlock, TableCell, TableColumn
 
 from packages.evals.tests.campaign_page_support import (
     SUMMARY,
@@ -28,7 +28,7 @@ from packages.evals.tests.campaign_page_support import (
     two_aspect_memo,
 )
 from packages.evals.tests.campaign_support import CANDIDATE_LABEL, CONTROL_LABEL, QUESTION
-from packages.evals.tests.report_shapes_support import SHAPES, s4_change
+from packages.evals.tests.report_shapes_support import SHAPES, s1_change, s4_change
 
 #: Where code's readings are found on the first screen, by the campaign's kind (chunk 04's rows): the table's name,
 #: its caption in Markdown, and its mark in HTML.
@@ -188,3 +188,70 @@ def test_a_matrix_draws_every_column_s_glyphs_on_one_scale_so_they_compare_acros
     matrix, other = (axis(table) for table in tables)
     assert matrix.startswith('<p class="axis">Each column drawn from ') and " · " not in matrix
     assert "a drawn from" in other and "b drawn from" in other
+
+
+#: A check's expression longer than a cell shows whole: 64 characters.
+_LONG = "any(item.item_id == 'i3' and item.state == 'queued' for it in q)"
+
+
+def _with_table(page: CampaignReport, table: TableBlock) -> str:
+    """The page's HTML with ``table`` laid out among its blocks, and that table's own markup."""
+    html = campaign_report_html(page.model_copy(update={"blocks": [*page.blocks, table]}))
+    start = html.index(f'data-table="{table.name}"')
+    return html[start : html.index("</table>", start)]
+
+
+def test_an_aspect_a_campaign_table_names_links_its_fold_and_a_cell_linking_elsewhere_keeps_its_link() -> None:
+    page = s1_change().page()
+    columns = [TableColumn(key="aspect", header="Aspect"), TableColumn(key="arm", header="Arm")]
+    rows = [
+        {"aspect": TableCell(value="billing"), "arm": TableCell(value="v2")},
+        {"aspect": TableCell(value="tone", ref="aspect-billing"), "arm": TableCell(value="v3")},
+        {"aspect": TableCell(value="no such aspect"), "arm": TableCell(value="v4")},
+    ]
+    for section in ("findings", "answer"):
+        table = TableBlock(
+            section=section, name="probe", title="Probe", columns=columns, rows=rows, order="o", total_rows=3
+        )
+        markup = _with_table(page, table)
+        assert '<td><a href="#aspect-billing">billing</a></td>' in markup
+        assert '<td><a href="#aspect-billing">tone</a></td>' in markup, "its own link, kept"
+        assert "<td>no such aspect</td>" in markup and "<td>v2</td>" in markup, "nothing else is linked"
+
+
+def test_a_long_expression_in_a_cell_or_a_header_shows_its_start_and_the_whole_one_click_away() -> None:
+    page = s4_change().page()
+    short = _LONG[:60]
+    columns = [TableColumn(key="check", header=f"`{_LONG}`"), TableColumn(key="short", header=f"`{short}`")]
+    rows = [{"check": TableCell(value=f"`{_LONG}`"), "short": TableCell(value=f"`{short}`")}]
+    table = TableBlock(
+        section="findings", name="probe", title="Probe", columns=columns, rows=rows, order="o", total_rows=1
+    )
+    markup = _with_table(page, table)
+    folded = (
+        f'<details class="expr"><summary><code>{escape(_LONG[:60].rstrip())}…</code></summary>'
+        f"<code>{escape(_LONG)}</code></details>"
+    )
+    assert markup.count(folded) == 2, "the header and the cell"
+    assert f"<code>{escape(short)}</code>" in markup and markup.count("<details") == 2, "60 characters show whole"
+    markdown = campaign_report_markdown(page.model_copy(update={"blocks": [*page.blocks, table]}))
+    assert f"`{_LONG}`" in markdown and "…" not in markdown.split("**Probe**")[1].split("\n\n")[1]
+
+
+def test_a_linked_cell_holding_a_long_expression_sets_the_link_beside_its_fold_never_around_it() -> None:
+    page = s1_change().page()
+    columns = [TableColumn(key="aspect", header="Aspect"), TableColumn(key="value", header="Value")]
+    rows = [{"aspect": TableCell(value="billing"), "value": TableCell(value=f"`{_LONG}`", ref="aspect-tone")}]
+    table = TableBlock(
+        section="findings", name="probe", title="Probe", columns=columns, rows=rows, order="o", total_rows=1
+    )
+    markup = _with_table(page, table)
+    cell = re.search(r'<td[^>]*><details class="expr">.*?</td>', markup)
+    assert cell is not None
+    assert re.fullmatch(
+        r'<td[^>]*><details class="expr"><summary>.*?</summary><code>.*?</code></details> '
+        r'<a class="cell-link" href="#aspect-tone">where it is</a></td>',
+        cell.group(0),
+    )
+    # No link anywhere holds an expandable fold.
+    assert not re.search(r"<a [^>]*>(?:(?!</a>).)*<details", markup)

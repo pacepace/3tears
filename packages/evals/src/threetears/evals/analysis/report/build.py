@@ -8,11 +8,11 @@ MCP action — adds, drops or reorders a block.
 
 The page, screen by screen:
 
-1. **The first screen.** A broken floor first, one loud line each, the first thing a reader sees; the title (the
-   campaign's name, and what it compares where no question was declared); the declared question quoted on its own
-   line, and under it the arms line (each arm named in full once by the version that answered it, the control marked,
-   the date); the verdict line
-   (:func:`~threetears.evals.analysis.report.verdict.verdict_line`), result first; the scoreboard, a bare table of
+1. **The first screen.** The title first, nothing above it (the campaign's name, and what it compares where no
+   question was declared); the declared question quoted on its own line, and under it the arms line (each arm named in
+   full once by the version that answered it, the control marked, the date); the verdict line
+   (:func:`~threetears.evals.analysis.report.verdict.verdict_line`), result first; one line per candidate breaking a
+   floor, and each report-wide caveat once; the scoreboard, a bare table of
    counts and the cost per reply, and its outcome bar; then the caveats, in normal weight.
 2. **Decision.** The aspect's floors, each read on each candidate: broken, held or unclear (:mod:`.decision`), and
    for an unclear one the cases that would show it holds.
@@ -102,12 +102,18 @@ from threetears.evals.analysis.report.decision import (
     case_cost_usd,
     floor_projection,
     floor_readings,
-    floor_warning,
     floors_projection,
     projected_cell,
     projection_note,
     read_floor,
 )
+from threetears.evals.analysis.report.campaign.names import aspect_name
+from threetears.evals.analysis.report.campaign.provenance import (
+    aspect_provenance_blocks,
+    caveat_blocks,
+    setup_disclosure,
+)
+from threetears.evals.analysis.report.campaign.warnings import floor_line
 from threetears.evals.analysis.report.campaign_page import (
     AspectNames,
     campaign_verdict,
@@ -169,6 +175,7 @@ from threetears.evals.kernel.declaration import (
     JUDGED_MERIT_AXIS,
     CampaignArm,
     CostLower,
+    RateDrop,
     axis_in_question_scope,
     resolve_control_arm,
 )
@@ -486,8 +493,7 @@ def _page(
     name = source.campaign_name or f"Campaign {source.campaign_id}"
     verdict = verdict_line(bundle, arm, name=name, case_name=_case_namer(bundle))
     blocks: list[ReportBlock] = [
-        # A broken floor is the first thing a reader sees: before the question, the arms and the verdict.
-        *_floor_warning_blocks(bundle, arm),
+        # Under the title: the question and the arms, the verdict, then what warns and each report-wide caveat once.
         *_heading_blocks(bundle, names, source),
         DisclosureBlock(
             section="header",
@@ -502,6 +508,8 @@ def _page(
                 else None
             ),
         ),
+        *_floor_warning_blocks(bundle, arm),
+        *caveat_blocks([bundle], section="header"),
         *_scoreboard_blocks(bundle, arm),
         *_decision_blocks(bundle, arm),
         *written,
@@ -519,6 +527,8 @@ def _page(
             tables=folded,
             memo_disclosures=notes,
         ),
+        # When each criterion set after its readings was set: the detail the first screen's one line points at.
+        *aspect_provenance_blocks(bundle),
     ]
     # In reading order, each section's blocks in the order laid out (a code-only page's unasked readings are said
     # with what was not tested, though they are laid out with the questions).
@@ -699,28 +709,28 @@ def _heading_blocks(
 ) -> list[ReportBlock]:
     """The first screen's lines between the title and the verdict.
 
-    With a question declared, the question quoted on its own line. Then the page's one caveat line on when its
-    criteria were set, where one holds (:func:`~threetears.evals.analysis.report.campaign_page.timing_caveats`), never
-    a line per criterion; then the subhead carrying what the question need not: the arms line, each arm with its
-    version.
+    With a question declared, the question quoted on its own line; then the subhead carrying what the question need
+    not: the arms line, each arm with its version. When its criteria were set is a caveat under the verdict
+    (:func:`~threetears.evals.analysis.report.campaign.provenance.caveat_blocks`), said once.
     """
     arms = DisclosureBlock(section="header", source="arms", text=_arms_line(bundle, names, source))
     asked = _question_line(bundle)
-    timing = [DisclosureBlock(section="header", source="timing", text=line) for line in timing_caveats([bundle])]
     basis = [] if asked is None else [DisclosureBlock(section="header", source="basis", text=asked)]
-    return [*basis, *timing, arms]
+    return [*basis, arms]
 
 
 def _floor_warning_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
-    """One loud line per floor a candidate breaks, the page's first: the floor, its aspect, the candidate and the
-    interval it broke on (:func:`~.decision.floor_warning`). A floor held or unclear says nothing here: the Decision
-    section reads it quietly."""
-    return [
-        DisclosureBlock(section="header", source="floor", text=floor_warning(verdict, candidate=arm(key)))
-        for key, read in _floor_verdicts(bundle, arm).items()
-        for verdict in read
-        if verdict.outcome == "broken"
-    ]
+    """One line per candidate breaking a floor, under the verdict, in the words a campaign's page warns in
+    (:func:`~threetears.evals.analysis.report.campaign.warnings.floor_line`): what it means for the candidate, never the
+    rate or the interval, which the Floors section reads clause by clause. A floor held or unclear says nothing here."""
+    blocks: list[ReportBlock] = []
+    for key, read in _floor_verdicts(bundle, arm).items():
+        broken = [verdict.floor for verdict in read if verdict.outcome == "broken"]
+        if broken:
+            margins = [floor.clause.max_points if isinstance(floor.clause, RateDrop) else None for floor in broken]
+            text = floor_line(arm(key), margins, aspect_name(bundle))
+            blocks.append(DisclosureBlock(section="header", source="floor", text=text))
+    return blocks
 
 
 def _question_line(bundle: AnalysisContextBundle) -> str | None:
@@ -976,7 +986,7 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     Each floor's row opens with the floor as a sentence naming its arm. The control heads its column by name, as does
     a lone other arm; with several, an ``Arm`` column names each row's and its figures are under ``Value``. A rate
     floor has a row per rate it reads, each with that rate's own status and reason, so a status never sits beside a
-    reading it is not about. A broken floor is also the page's first line (:func:`_floor_warning_blocks`); here it
+    reading it is not about. A broken floor is also a line under the verdict (:func:`_floor_warning_blocks`); here it
     reads as plainly as a held one.
 
     A campaign that asks a question and declares no floor says so in one line; an exploratory one, which asks nothing
@@ -3528,7 +3538,8 @@ def _method_blocks(
 
     for tier in bundle.judge_evidence_tiers:
         say("measurement", "Judge: " + tier_sentence(tier))
-    say("measurement", bundle.request_settings_disclosure)
+    if (settings := setup_disclosure("settings", bundle, arm)) is not None:
+        blocks.append(settings)
     for variant_key, cells in arm_exclusions(bundle).items():
         if truncated := sum(cell.by_cause.get("truncated", 0) for cell in cells):
             say(
@@ -3557,9 +3568,8 @@ def _method_blocks(
             )
     say("measurement", bundle.launch_disclosure)
     say("cost", _unpriced_cost_line(bundle, arm))
-    if bundle.latency_contended:
-        contended = _some_arms(bundle, bundle.latency_contended_cells, "Read under concurrency", arm)
-        say("measurement", bundle.latency_contended + contended)
+    if (latency := setup_disclosure("latency", bundle, arm)) is not None:
+        blocks.append(latency)
     for _, sentence in sorted(bundle.short_runs.items()):
         say("runs", sentence)
     _run_disclosures(bundle, say, arm)

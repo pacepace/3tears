@@ -607,7 +607,8 @@ async def test_a_campaign_asked_after_its_readings_reads_as_asked_and_names_each
         assert not [
             line for line in said if line in [block.text for block in fold.head if isinstance(block, DisclosureBlock)]
         ], "the campaign's first screen carries them once"
-        assert any(line.startswith(f"Criteria on {fold.aspect} were set after") for line in own), "its own page"
+        assert not [line for line in own if line.startswith("Criteria on ")], "its fold does not repeat the line"
+        assert not [b for b in fold.report.blocks if isinstance(b, TableBlock) and b.name == "criteria_set"]
     bar, floor = _warnings(page)
     verdict = "; ".join(f"{fold.aspect}: {fold.shows}" for fold in page.aspects)
     (line,) = off_loop(analyses_list, held.host, two.id, SCOPE).analyses

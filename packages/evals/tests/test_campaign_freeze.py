@@ -319,7 +319,8 @@ def test_one_result_whose_time_cannot_be_ordered_hides_no_late_criterion_and_is_
     assert bundle.reading_scope.untimed_results == 1
     assert bundle.first_result_at is not None and bundle.first_result_at.endswith("+00:00")
     assert timing_caveats([bundle])[-1] == (
-        "1 result carries no time that can be ordered, so whether a criterion was set after it was visible is not known."
+        f"1 result on {bundle.aspect} carries no time that can be ordered, so whether a criterion was set after it was "
+        "visible is not known."
     )
 
 
@@ -357,6 +358,6 @@ def test_a_guardrail_s_margin_is_timed_whatever_is_asked_and_said_once() -> None
     assert timing_caveats([page]) == [
         f"Criteria on {bundle.aspect} were set after the results there existed, so they were not fixed in advance."
     ]
-    (table,) = [block for block in provenance_blocks(fixture.campaign, [page]) if isinstance(block, TableBlock)]
+    (table,) = [block for block in provenance_blocks(fixture.campaign, [page], {}) if isinstance(block, TableBlock)]
     guard_rows = [row for row in table.values() if "guardrail" in str(row["criterion"])]
     assert guard_rows == [{"criterion": "guardrail margin on tone", "set_on": "15 Mar 2026", "aspects": bundle.aspect}]
