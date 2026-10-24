@@ -32,8 +32,7 @@ dependencies = [
     "3tears-scheduled-jobs>=0.78.0,<0.79.0",
     "uuid-utils",
     # APScheduler is used as a pure utility by the cron-expression validator
-    # (``tools/validators.py`` -- ``CronTrigger.from_crontab``; lazy local
-    # import so non-cron call paths pay zero import cost). The reschedule
+    # (``tools/validators.py`` -- ``CronTrigger.from_crontab``). The reschedule
     # math's ``cron`` branch moved to ``3tears-scheduled-jobs`` in S-2, but the
     # tools layer still validates cron exprs here. Hard dep rather than an extra
     # so the public ``ScheduleType`` Literal (which includes ``'cron'``) Just

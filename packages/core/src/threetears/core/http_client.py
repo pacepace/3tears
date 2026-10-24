@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import httpx
 from threetears.core.config import DEFAULT_HTTP_TIMEOUT_SECONDS
-from threetears.observe import get_logger, retry_with_backoff, traced
+from threetears.observe import get_logger, retry_with_backoff, set_span_attribute, traced
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping
@@ -896,15 +896,9 @@ class TracedHttpClient:
         :return: nothing
         :rtype: None
         """
-        try:
-            from opentelemetry import trace
-        # NOSILENT: optional dependency probe; absence is a supported configuration
-        except ImportError:
-            return
-        span = trace.get_current_span()
         recorded_host = host or self._host
         if recorded_host is not None:
-            span.set_attribute("http.host", recorded_host)
-        span.set_attribute("http.method", method)
+            set_span_attribute("http.host", recorded_host)
+        set_span_attribute("http.method", method)
         if status_code is not None:
-            span.set_attribute("http.status_code", status_code)
+            set_span_attribute("http.status_code", status_code)

@@ -91,6 +91,7 @@ from threetears.evals.analysis.lenses.contestants import (
     identity_version_span,
     ContestantKey,
 )
+from threetears.evals.kernel.usage_capture import count_substituted_deliveries, production_replicating_cost
 
 if TYPE_CHECKING:
     from threetears.evals.schema.models import (
@@ -949,8 +950,6 @@ def _frontier_point(
         points and the bar to decide them.
     :rtype: tuple[FrontierPoint, _ContestantCases]
     """
-    from threetears.evals.kernel.usage_capture import count_substituted_deliveries, production_replicating_cost
-
     model = results[0].model
     # Unpacked from the group key, never re-derived off a row.
     variant_key, identity_version = contestant

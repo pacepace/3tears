@@ -39,7 +39,7 @@ from threetears.agent.workspace.collections import (
     WorkspaceFileCollection,
     WorkspaceFileVersionCollection,
 )
-from threetears.agent.workspace.factory import register_tool_builder
+from threetears.agent.workspace.tool_registry import register_tool_builder
 from threetears.agent.workspace.sandbox import WorkspaceSandbox
 from threetears.agent.workspace.tools.helpers import (
     NoWorkspacePinned,
@@ -323,7 +323,7 @@ def _build(**kwargs: Any) -> WorkspaceHistoryTool:
 
     consumes workspace, file, and journal collections, ``sandbox``,
     ``context_provider``, and ``agent_id``; ignores the rest. registered
-    with :mod:`threetears.agent.workspace.factory` on import so
+    with :mod:`threetears.agent.workspace.tool_registry` on import so
     :func:`build_workspace_tools` emits this tool.
 
     :param kwargs: full factory dependency bundle

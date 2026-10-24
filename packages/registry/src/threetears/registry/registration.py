@@ -39,6 +39,7 @@ from threetears.nats import IncomingMessage, Subjects
 from threetears.observe import contain, get_logger
 from threetears.registry.auth import ToolPodAuth, ToolPodAuthenticator
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolDefinition, ToolEndpoint
+from threetears.registry.config import get_probe_timeout
 from threetears.registry.ownership import (
     PublisherStanding,
     RefusalCode,
@@ -275,8 +276,6 @@ class RegistrationHandler:
             :class:`~threetears.registry.auth.ToolPodAuthenticator` protocol -- caught where it is
             wired, rather than on the first registration that needs the missing method
         """
-        from threetears.registry.config import get_probe_timeout
-
         missing = [
             name
             for name in ("verify_pod", "verify_agent", "provider_nodes")

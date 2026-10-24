@@ -61,6 +61,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
+import httpx
 from threetears.core.coordination.token_bucket import TokenBucketConflict
 from threetears.nats.errors import KvError
 from threetears.observe import contain, get_logger
@@ -673,8 +674,6 @@ def _default_fetch_via(egress: EgressDriver | None) -> Any:
     """
 
     async def _fetch(url: str) -> tuple[int, str]:
-        import httpx  # noqa: PLC0415 -- deliberate late import; module stays importable without a client
-
         async with httpx.AsyncClient(
             timeout=_FETCH_TIMEOUT_SECONDS,
             follow_redirects=True,

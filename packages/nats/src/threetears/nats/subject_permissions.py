@@ -1923,6 +1923,10 @@ def _tool_pod(
         # verb. The request names keys relative to the pod's scope and the hub composes each subject
         # from the VERIFIED token, so this buys reach and never authority over another pod's keys.
         str(Subjects.hub_collection_keys_purge()),
+        # a CDN-cached index this pod serves moved to a new version: the hub purges that customer's cached
+        # index. The hub verifies the forwarded token and purges only what the verified pod serves, so
+        # this buys reach and never authority.
+        str(Subjects.hub_cache_index_moved()),
         # Path-2 consume: a consuming tool resolves an object id -> its stored
         # key (forwarding the invoking agent's identity token; the hub verifies
         # + tenant-scopes). NOT hub_object_commit -- commit is agent-side.
@@ -2224,6 +2228,8 @@ def _hub(
         str(Subjects.hub_object_store_retire()),
         # a tool pod's retired collection keys: responds to its asks to purge them from its own scope
         str(Subjects.hub_collection_keys_purge()),
+        # a tool pod's CDN-cached index moved: responds by purging that customer's cached index
+        str(Subjects.hub_cache_index_moved()),
         str(Subjects.hub_channel_installs()),
         str(Subjects.namespace_discover()),
         str(Subjects.agent_register()),

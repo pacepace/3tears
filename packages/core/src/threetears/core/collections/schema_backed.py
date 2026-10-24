@@ -41,6 +41,12 @@ from datetime import UTC, datetime
 from functools import wraps
 from typing import Any, ClassVar, Generic, Literal, TypeVar, overload
 
+import sqlalchemy as sa
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, Numeric, Text
+from sqlalchemy import Enum as SAEnum
+from sqlalchemy.dialects.postgresql import BYTEA, JSONB, TSVECTOR
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
+
 from threetears.core.backends.protocol import (
     BulkDeletingStore,
     BulkDurableStore,
@@ -54,12 +60,14 @@ from threetears.core.backends.protocol import (
     load_requests,
 )
 from threetears.core.backends.schema_sql import (
+    PGVECTOR_TYPES,
     coerce_row as _coerce_row_fn,
     decode_l2_value as _decode_l2_value,
     decode_vector as _decode_vector,
     encode_jsonb as encode_jsonb,
     json_default as _json_default,
 )
+from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.base import BaseCollection, EntityT
 from threetears.core.collections.generation import WRITE_GENERATION_UNDECLARED, WriteGenerationDeclaration
 from threetears.core.collections.caller_transaction import CallerTransaction
@@ -1144,27 +1152,6 @@ class TableSchema:
             v0.7.5 factory behaviour -- the failure is legible at
             registration time, not at first INSERT)
         """
-        # import inside the method so callers that never invoke
-        # to_sqlalchemy_table don't import SQLAlchemy at module-import
-        # time. local imports here are tiny -- the global SQLAlchemy
-        # initialisation cost is large.
-        import sqlalchemy as sa
-        from sqlalchemy import (
-            BigInteger,
-            Boolean,
-            DateTime,
-            Enum as SAEnum,
-            Integer,
-            Numeric,
-            Text,
-        )
-        from sqlalchemy.dialects.postgresql import (
-            BYTEA,
-            JSONB,
-            TSVECTOR,
-            UUID as PgUUID,
-        )
-
         if self.name in metadata.tables:
             return metadata.tables[self.name]
 
@@ -1180,7 +1167,7 @@ class TableSchema:
             INT_TYPE: lambda col: Integer(),
             BIGINT_TYPE: lambda col: BigInteger(),
             BOOL_TYPE: lambda col: Boolean(),
-            VECTOR_TYPE: lambda col: _require_pgvector()(col.vector_dim),
+            VECTOR_TYPE: lambda col: require_pgvector()(col.vector_dim),
             NUMERIC_TYPE: lambda col: Numeric(col.precision, col.scale),
             TSVECTOR_TYPE: lambda col: TSVECTOR(),
             ENUM_TYPE: lambda col: SAEnum(
@@ -1284,27 +1271,24 @@ class TableSchema:
         )
 
 
-def _require_pgvector() -> Any:
+def require_pgvector() -> Any:
     """return pgvector's ``Vector`` column class.
 
-    deferred lazy-import: pgvector is pulled in only when a caller
-    declares a VECTOR_TYPE column. import failure raises at call time
-    so the failure is legible at table-registration / collection-init,
-    not deep inside an asyncpg INSERT.
+    pgvector is imported with this module when the pgvector extra is
+    installed; without it this raises, so the failure is legible at
+    table-registration / collection-init, not deep inside an asyncpg INSERT.
 
     :return: the :class:`pgvector.sqlalchemy.Vector` class
     :rtype: type
     :raises ImportError: when pgvector is not installed
     """
-    try:
-        from pgvector.sqlalchemy import Vector
-    except ImportError as exc:
+    if not PGVECTOR_TYPES:
         raise ImportError(
             "pgvector is required to materialise VECTOR_TYPE columns; "
             "install ``pgvector`` or remove the column from the "
             "TableSchema",
-        ) from exc
-    return Vector
+        )
+    return PGVECTOR_TYPES[0]
 
 
 class PartitionEnforcementError(TypeError):
@@ -1838,16 +1822,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     def _register_schema(self) -> None:
         """register :attr:`schema` with the resolved ``SqlL3Backend``, if any.
 
-        imported lazily inside the method to avoid a module-import cycle
-        (``schema_backed`` is imported by ``collections.__init__`` very early;
-        ``backends.sql`` pulls in ``schema_sql`` which type-checks against this
-        module). a non-``SqlL3Backend`` backend (or ``None``) is left untouched.
+        a non-``SqlL3Backend`` backend (or ``None``) is left untouched.
 
         :return: nothing
         :rtype: None
         """
-        from threetears.core.backends.sql import SqlL3Backend
-
         backend = self.l3_pool
         if isinstance(backend, SqlL3Backend):
             backend.register_schema(self.schema.name, self.schema)
@@ -1877,8 +1856,6 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         cached = self._durable_store_cache
         if cached is not None and cached[0] is backend:
             return cached[1]
-        from threetears.core.backends.sql import SqlL3Backend
-
         wrapper = SqlL3Backend(backend)
         wrapper.register_schema(self.schema.name, self.schema)
         self._durable_store_cache = (backend, wrapper)

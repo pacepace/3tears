@@ -26,17 +26,15 @@ json matching this schema". Dispatch across providers lives in
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pydantic import PrivateAttr
 
 from threetears.models.capabilities import ModelCapabilities, register_capabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 from threetears.models.providers._name_translation_mixin import NameTranslatingChatMixin
-from threetears.models.providers.structured_output import ensure_valid_json_schema
-
-if TYPE_CHECKING:
-    from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from threetears.models.providers._structured_output_schema import ensure_valid_json_schema
 
 
 __all__ = [
@@ -114,35 +112,21 @@ def openai_structured_output_kwargs(
     }
 
 
-def _build_translating_chat_class() -> type[ChatOpenAI]:
-    """build the :class:`ChatOpenAI` subclass with name-translation hooks.
+class _NameTranslatingChatOpenAI(NameTranslatingChatMixin, ChatOpenAI):
+    """``ChatOpenAI`` with dot<->underscore tool-name translation at the
+    wire boundary (OpenAI validates names against ``^[a-zA-Z0-9_-]{1,64}$``
+    and rejects the dot).
 
-    Defined inside a function so ``langchain_openai`` stays a lazy
-    import; the openai capability registry can populate without the
-    optional dependency.
+    All translation hooks live in :class:`NameTranslatingChatMixin`
+    (mixed in ahead of ``ChatOpenAI`` so ``super()`` resolves to it); this
+    subclass only supplies the per-instance reverse-map slot.
 
-    :return: name-translating ChatOpenAI subclass
-    :rtype: type[ChatOpenAI]
+    :ivar _name_reverse_map: underscored-wire -> canonical-dotted map,
+        populated at ``bind_tools`` time.
+    :ptype _name_reverse_map: dict[str, str]
     """
-    from langchain_openai import ChatOpenAI
 
-    class _NameTranslatingChatOpenAI(NameTranslatingChatMixin, ChatOpenAI):
-        """``ChatOpenAI`` with dot<->underscore tool-name translation at the
-        wire boundary (OpenAI validates names against ``^[a-zA-Z0-9_-]{1,64}$``
-        and rejects the dot).
-
-        All translation hooks live in :class:`NameTranslatingChatMixin`
-        (mixed in ahead of ``ChatOpenAI`` so ``super()`` resolves to it); this
-        subclass only supplies the per-instance reverse-map slot.
-
-        :ivar _name_reverse_map: underscored-wire -> canonical-dotted map,
-            populated at ``bind_tools`` time.
-        :ptype _name_reverse_map: dict[str, str]
-        """
-
-        _name_reverse_map: dict[str, str] = PrivateAttr(default_factory=dict)
-
-    return _NameTranslatingChatOpenAI
+    _name_reverse_map: dict[str, str] = PrivateAttr(default_factory=dict)
 
 
 def create_openai_chat(
@@ -179,8 +163,6 @@ def create_openai_chat(
     :return: configured ``ChatOpenAI`` (the name-translating subclass)
     :rtype: ChatOpenAI
     """
-    chat_cls = _build_translating_chat_class()
-
     kwargs: dict[str, Any] = {
         "model": model_name,
         "api_key": api_key,
@@ -192,7 +174,7 @@ def create_openai_chat(
         kwargs["base_url"] = base_url
     kwargs.update(extra_kwargs)
 
-    model: ChatOpenAI = chat_cls(**kwargs)
+    model: ChatOpenAI = _NameTranslatingChatOpenAI(**kwargs)
     return model
 
 
@@ -219,8 +201,6 @@ def create_openai_embedding(
     :return: configured ``OpenAIEmbeddings`` instance
     :rtype: OpenAIEmbeddings
     """
-    from langchain_openai import OpenAIEmbeddings
-
     kwargs: dict[str, Any] = {
         "model": model_name,
         "api_key": api_key,

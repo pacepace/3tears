@@ -8,6 +8,168 @@ packages (bumped in lock-step).
 
 ## v0.78.0 -- 2026-10-24
 
+### core, nats: a released lease leaves nothing in its bucket
+
+**Fixed:** `KVLease` release filled the shared `{ns}-leases` bucket until every lease write on the platform was
+refused. A KV delete publishes a marker, and the bucket keeps one revision per key with no expiry, so each released
+key kept its marker forever. A host that takes a lease per unique key (the reports pod's answer build locks, one per
+computed answer) grew the bucket by one marker per answer until it hit its byte bound; from then on every lease
+write failed with "maximum bytes exceeded": refresh leases, load-scope asks, announcements, build locks. A release
+now removes its key with a purge marker that lapses after 5 seconds, still fenced on the holder's revision, so a
+released key leaves nothing. The lifetime is the marker's own message's, not the key's: a lease another holder takes
+over the marker replaces it and lives as long as its own TTL says. This is not a cache TTL and not a safety net; the
+release has already landed when the marker's lifetime starts. A release holding no revision to fence on (0) sends
+no delete at all and leaves the entry to its TTL: one of its holder's other handles may hold the key now. An acquire
+whose create loses while the key holds nothing (it swapped against a released key's marker that lapsed under it)
+creates once more instead of reporting the key held, so `max_wait_seconds=0` never refuses a free key.
+
+**Added:** `NatsKvBucket.delete(marker_ttl=)`: the removal's marker lapses after that lifetime (a `KV-Operation:
+PURGE` marker with a subject rollup and `Nats-TTL`, fenced by the expected-last-subject-sequence header when a
+revision is given, `0` included). A stream that refuses it gets the plain fenced delete and keeps its marker, logged
+at WARNING with the stream's own refusal code and description. `KvBucketLike.delete` and `FakeKvBucket.delete` take the same keyword; the double
+removes a lapsed marker on its own clock (`advance_clock`) and reports `stored_messages` and `stored_bytes`. A test
+double of a bucket that a `KVLease` releases through must accept `marker_ttl`.
+
+**Added:** `NatsKvBucket.purge_removal_markers(apply=True)`: the bucket owner's one-time sweep of the markers a
+bucket already holds. It lists each key's latest message (headers only, through a named consumer) and purges each
+marker's exact subject below its own sequence plus one, so a write that lands on the key after the sweep read the
+marker is kept. A stream purge is a management verb only the owner (the hub) is granted. The hub runs it at startup and on demand
+(hub `scripts/purge-lease-markers.sh`) over `{ns}-leases`, `{ns}-dataset-leases` and every agent's
+`{scope}-workspace-locks`.
+
+### core: the moving-scope burst test is deterministic
+
+**Fixed:** `test_a_scope_that_keeps_moving_never_holds_a_burst_back` failed on CI's slower runner (9 fetches against
+a bound of 8). The writer's own reads of the moved scope were counted with the replica's, and how far the publish had
+got when the replica's pass began varied with scheduling. The replica now reads through a store view of its own, and
+each fetch of the moving scope waits for the whole burst to land.
+
+### every package: nothing is imported inside a function on a serving path
+
+**Changed:** Owner ruling, 2026-10-24: lazy imports are banned in serving code. An import inside a function ran
+the first time it was called, mid-request, holding the event loop (a first collection read loaded OpenTelemetry's
+modules there). Every such import in `core`, `nats`, `observe` and `datasources` moved to its module's top. An
+optional extra's library is imported there under `try/except ImportError`, and the code that needs it raises an
+`ImportError` naming the extra when it is absent: httpx (`http`), pyarrow (`snapshot`, `export`), pgvector,
+uuid-utils, prometheus-client (`prometheus`), OpenTelemetry (`tracing`), redshift-connector (`redshift`). Import
+cycles were fixed by moving modules, not by deferring: the DDL lock, the migration session and the migration
+errors live in `threetears.core.ddl` (`threetears.core.data.migrations.ddl_lock`, `.session` and `.errors`
+re-export every name, and the lock logs under its old logger name), the write-mark queue's SQL in
+`threetears.core.ddl.write_marks` (re-exported by `threetears.core.collections.write_marks`), and
+`table_named_by_class`, `tables_with_write_generation` and `note_generation_class` in
+`threetears.core.collections.generation` (`threetears.core.collections.base` re-exports the first two).
+`schema_backed.require_pgvector` is public (was `_require_pgvector`); pgvector is probed once, in
+`backends.schema_sql.PGVECTOR_TYPES`; `scoped_snapshot` imports the snapshot extra under `try/except ImportError` and
+a snapshot or chunk raises naming it. `tests/enforcement/test_no_function_level_imports.py` holds every package of
+the workspace to it: a function-level import fails unless `_function_level_import_exemptions.txt` gives the reason it
+runs on no serving path (the enforcement package; the testing extra's fixtures; telemetry start-up and shutdown in
+`observe.setup`; the evals FastMCP mount at start-up; five `evals.quick` sites that build a quick eval's provider
+client, which `test_providers_boundary` keeps out of `quick`'s import).
+
+**Changed:** The same move in every other package. Cycles were broken by moving the shared piece down, with the old
+import paths re-exporting it: models' `CircuitOpenError` lives in `errors`, and the structured-output errors and
+`ensure_valid_json_schema` in `providers/_structured_output_schema.py`; agent-workspace's `register_tool_builder` lives
+in `tool_registry` (new, with `registered_tool_builders()`); scrape's operator relay and token parsing in
+`operator_relay` (new); evals' report blocks in `analysis/report/blocks.py`, the carried mechanism measures in
+`kernel/carried_measures.py` (`per_result_measure_names` is public), `job_resume` in `ops/resume.py`, the proposal
+contract in `gen/proposal_contract.py` (`PROPOSAL_RESPONSE_FORMAT` is public), `RUN_LOST_STATUS` in
+`kernel/job_leases`, and `FloorState`/`FloorStatus` in `analysis/report/decision`. Optional extras are imported at the
+top under `try/except ImportError` and name themselves when needed: models' claude-cli and voyageai, search's
+extract, mcp's grants, agent-tools' pdf/docx/xlsx/ocr/vision, scrape's hitl, and prometheus wherever it is optional.
+What loads at import moves accordingly: `import threetears.models` loads every installed provider backend and the
+Claude SDK (the voyageai compatibility shim only where that extra is installed); with the grants extra, `import threetears.mcp` loads the grant store's stack; agent-tools imports PyMuPDF
+as `pymupdf` (its `fitz` alias prints to stdout).
+
+**Changed:** `threetears.datasources.drivers.factory` imports every driver module with itself, so building a
+driver loads nothing; this replaces DS-09-09's contract that importing the package roots loads no driver. With
+the redshift extra installed, importing `threetears.datasources` loads `redshift_connector`; without it the
+package imports and a Redshift config raises the ImportError naming the extra. The Snowflake and BigQuery drivers
+are stubs and load no backend library.
+
+### core: a burst of scopes reaches a scoped snapshot's readers as one move
+
+**Fixed:** A replica applied a burst of moved scopes one at a time (0.2-1.4 s each, a reader's rows rebuilt after
+each), so an every-state write reached a page over half a minute in many index moves. `ScopedSnapshot` now fetches
+the moved scopes' chunks side by side (`l2_concurrency` at once), takes in the scopes whose pointers move while it
+fetches, and commits them to the L1 in one swap with one change notice (`apply_batch` scopes at most, default 64, so
+memory stays bounded; a larger burst is committed in batches). A batch the L1 refuses is committed scope by scope, so
+one scope that cannot be applied goes behind alone, or, in a rebuild, keeps the copy from being declared ready. The
+scopes that move while a batch fetches join it at most twice, so a scope a writer keeps moving never holds a batch
+back; it is caught at the next pass. The writer's `publish_staged` completes, checks and moves its
+staged scopes side by side (`l2_concurrency` at once) and indexes them in one update; every moved pointer is still
+indexed on every way out, and when several scopes fail the first is raised and every other is logged. Epochs, L3 as the truth, `discard_epoch` and `catch_up_from_l3` are unchanged.
+
+### nats: a tool pod tells the hub that a CDN-cached index it serves moved
+
+**Added:** `Subjects.hub_cache_index_moved()` (`{ns}.hub.cache.index.moved`), published by a tool pod (its grant) and
+answered by the hub, and `threetears.nats.cache_index_requests`: `report_cache_index_moved(nats_client, *,
+identity_token, customer_id, conversion, version, scope="", timeout_seconds=5.0)` sends a `CacheIndexMovedRequest`
+(`identity_token`, `correlation_id`, `customer_id: UUID`, `conversion`, `version`, `scope`) through `ask_hub` and
+returns the `CacheIndexMovedReply` (`success` means the purge was accepted and queued). Codes
+(`CACHE_INDEX_REQUEST_ERROR_CODES`): `INVALID_REQUEST`, `IDENTITY_REFUSED` and `INDEX_NOT_OWNED` raise
+`CacheIndexRequestRefusedError`; `PURGE_FAILED`, a timeout or a hub without the responder raise
+`CacheIndexRequestUnavailableError` (both `CacheIndexRequestError`). Nothing in it is per viewer.
+
+### datasources: a paged read of a Postgres relation keyed by a timestamp reads its second page
+
+**Fixed:** The datasource rail carries a timestamp (and a date, a time, a UUID, a decimal) as its text, and a paged
+read hands its last row's key back as the next page's parameters in that form. The asyncpg driver bound by the type
+Postgres declares for each placeholder and refused the text (`DataError`), so a read of a relation whose key held a
+timestamp failed on its second page. When asyncpg itself refuses to encode a text parameter (before the statement is
+sent), the driver reads the statement's declared types, has Postgres cast each text value to its type
+(`$n::text::type`, so the session's time zone and an offset at a plain `timestamp` mean what Postgres's own cast
+makes of them), and runs the statement once more; it logs that once per statement at INFO. A server's own data error
+(SQLSTATE 22) is never retried and reaches the caller as it is, so no statement runs twice. Only a refused bind pays
+the extra round trips, a stream's included. Text that is no value of its type is still refused.
+
+### agent-acl: a caller cache of any answer type binds to the access tables
+
+**Fixed:** `bind_caller_cache_to_access_tables` takes a `CallerAccessCache[V]` of any answer type; it was typed
+`CallerAccessCache[object]`, which an invariant generic refuses for a `CallerAccessCache[frozenset[str]]`, so a host
+had to cast.
+
+### core: versioned answers read from L1, say how each was given, and announce versions that only rise
+
+**Added:** `VersionedAnswers` keeps its answers and its index in the process's L1 as well as L2 (when its registry
+offers an L1 backend), each declaring its own L1 table. `answer` reads L1 before it records the request, so an
+answer L1 holds is given with no L2 round trip and no index compare-and-set; a replica's copies are evicted by the
+compare-and-set broadcasts, and retirement reads the index's shards from L2. `answer_with_outcome` returns the answer
+with its `AnswerOutcome`: `read`, `computed`, `peer_fallback` (computed after a peer held the build lock and its value
+never landed), or not stored, `retired` or `index_unwritable` (`GivenAnswer`). `announce(version, order, scope=,
+detail=)` keeps one record per scope of the newest version any replica announced, by compare-and-set so it only rises,
+with the version it replaced (`Announced`, `AnnouncedVersion`; read back with `announced(scope)`); a replica behind
+names the recorded version, and retirement goes below the version replaced. A host that announces leaves retirement to
+`announce` rather than calling `current_version` with its own version. Each scope is its own line of versions:
+`answer`, `answer_with_outcome`, `current_version` and `retire_older_than` take `scope=` (default `""`), and each
+scope's versions and floor are an index row of their own, so one scope's move never retires another's answers. A
+version belongs to one scope. A writer reads the floor from L2 when it confirms its answer, as retirement does.
+
+**Added:** `L2_WRITE_GENERATION` (`threetears.core.collections.generation`), a write-generation declaration for a table
+kept in L2 alone: its generation is a key beside its rows (`{scope}.{table}-generation`), advanced by every write that
+changes a row (a won compare-and-set, a delete, an eviction), with no generation source on the registry. A registry
+follows every such table it holds, and `CollectionRegistry.catch_up_l2_generations()` judges the marks from L2, so a
+replica that missed a broadcast drops its L1 copy at the next pass. A pass that could read no generation does not count
+as run. `threetears.epoch.generation_catchup_tick` runs that
+pass too and no longer reads these tables from the epoch bucket. `VersionedAnswers` and its index declare it; a host
+schedules the pass, and a registry following such a table warns each `l2_catch_up_overdue` (two minutes by default)
+while no pass has judged it within that time; `CollectionRegistry.l2_catch_up_age` says when one last ran. A won
+compare-and-set on such a table re-reads its key before caching the row in L1, since advancing the generation awaited
+L2: a peer's newer row landing in between is never overwritten in L1. The collection census and the declaration walker
+accept it.
+
+**Fixed:** `DuckDBBackend.initialize` is additive across calls, as `SQLiteBackend`'s is: a collection that declares its
+own table on a DuckDB L1 another collection already initialized gets it.
+
+**Fixed:** `VersionedAnswers` compresses an answer on a worker thread (`asyncio.to_thread`), where it stores one and
+where it answers one uncached, never on the event loop: a large answer held the loop for tens of milliseconds.
+`answer_json(answer)` (new, `threetears.core.collections.versioned_answers`) writes `json.dumps(answer, default=str)`'s
+exact text a mapping value and 256 list items per encoder call, so no one call holds the interpreter lock for a whole
+large answer.
+
+**Fixed:** A derived collection's miss that a value already in its store answers -- a peer's, found while waiting on
+the peer's build lock -- counts against the tier that store is (`DerivedCollection.derived_values_tier`; L2 for
+`VersionedAnswers`), not L3; only a miss that computes counts L3 (`BaseCollection.fetch_from_store_with_tier`).
+
 ### evals: a reporter label's form follows its dimension's scale, and may quote the memo passage it is about
 
 **Changed:** A reporter label on a pass/fail rubric dimension now takes a `verdict` (`pass` or `fail`), and one on an

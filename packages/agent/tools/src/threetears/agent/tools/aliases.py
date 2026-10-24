@@ -32,6 +32,7 @@ wrote). disable patterns from the structured form are merged in
 
 from __future__ import annotations
 
+import fnmatch
 from typing import Any
 
 __all__ = [
@@ -233,8 +234,6 @@ def expand_selectors(
         the access matcher
     :rtype: list[str]
     """
-    import fnmatch
-
     expanded: list[str] = []
     seen: set[str] = set()
 

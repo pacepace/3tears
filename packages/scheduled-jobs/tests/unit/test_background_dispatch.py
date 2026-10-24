@@ -173,7 +173,8 @@ def _patch_lock(monkeypatch: pytest.MonkeyPatch, ctx: Any, keys: list[str] | Non
             keys.append(key)
         return ctx
 
-    monkeypatch.setattr("threetears.core.coordination.nats_distributed_lock", _factory)
+    monkeypatch.setattr("threetears.scheduled_jobs.tick.nats_distributed_lock", _factory)
+    monkeypatch.setattr("threetears.scheduled_jobs.background.nats_distributed_lock", _factory)
 
 
 # ---------------------------------------------------------------------------

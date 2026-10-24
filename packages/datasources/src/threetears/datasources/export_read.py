@@ -57,6 +57,13 @@ from typing import Any, Protocol
 from threetears.core.backends.protocol import LOAD_FILES_MAX_WAIT_SECONDS, LoadFile
 from threetears.observe import get_logger
 
+try:
+    import pyarrow.parquet as pq
+
+    _PARQUET = True
+except ImportError:  # NOSILENT: the export extra is optional; reading an export's files says so without it
+    _PARQUET = False
+
 from threetears.datasources.export import sql_string_literal
 from threetears.datasources.query_client import (
     DatasourceExportResult,
@@ -275,8 +282,8 @@ def _parquet_rows(data: bytes) -> list[dict[str, Any]]:
     :return: its rows
     :rtype: list[dict[str, Any]]
     """
-    import pyarrow.parquet as pq  # noqa: PLC0415 - the export extra, needed only once a file is read
-
+    if not _PARQUET:
+        raise ImportError("reading an export's parquet files needs pyarrow: install 3tears-datasources[export]")
     rows: list[dict[str, Any]] = pq.read_table(io.BytesIO(data)).to_pylist()
     return rows
 

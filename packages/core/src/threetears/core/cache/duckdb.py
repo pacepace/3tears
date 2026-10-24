@@ -20,7 +20,12 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from threetears.core.backends.schema_sql import json_default
+from sqlalchemy import Boolean, DateTime, Float, Integer, LargeBinary, Numeric, String, Text
+from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, TSVECTOR, UUID
+from sqlalchemy.sql.sqltypes import ARRAY
+from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
+
+from threetears.core.backends.schema_sql import PGVECTOR_TYPES, json_default
 from threetears.core.cache.base import build_select_clause, bulk_columns
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import contain, get_logger
@@ -44,6 +49,14 @@ try:
     _UUID_TYPES: tuple[type, ...] = (uuid.UUID, _UuidUtilsUUID)
 except ImportError:
     _UUID_TYPES = (uuid.UUID,)
+
+try:
+    import pyarrow as pa
+
+    _PYARROW = True
+except ImportError:  # NOSILENT: the snapshot extra is optional; bulk writes bind value by value without it, said once
+    _PYARROW = False
+
 
 log = get_logger(__name__)
 
@@ -145,17 +158,14 @@ def _as_arrow(target: str, lists: Sequence[list[Any]]) -> Any:
     """
     global _ARROW_MISSING_SAID  # noqa: PLW0603 -- said once per process, not per write
     arrow: Any = None
-    try:
-        import pyarrow as pa  # noqa: PLC0415 -- optional: the snapshot extra
-    except ImportError:
-        pa = None
+    if not _PYARROW:
         if not _ARROW_MISSING_SAID:
             _ARROW_MISSING_SAID = True
             log.warning(
                 "pyarrow is not installed: DuckDB bulk writes bind every value through DuckDB's Python "
                 "layer, which is slow (install 3tears[snapshot])"
             )
-    if pa is not None:
+    if _PYARROW:
         try:
             arrow = pa.table({f"c{i}": values for i, values in enumerate(lists)})
         except (pa.ArrowInvalid, pa.ArrowTypeError, OverflowError) as exc:
@@ -225,24 +235,31 @@ class DuckDBBackend:
         return conn
 
     def initialize(self, sa_metadata: Any) -> None:
-        """Initialize DuckDB with schema from SQLAlchemy metadata."""
-        if self._initialized:
-            log.debug("DuckDB already initialized, skipping")
-            return
+        """Initialize DuckDB with schema from SQLAlchemy metadata.
 
-        self._db = duckdb.connect(":memory:", config=dict(_DATABASE_CONFIG))
-
-        for table in sa_metadata.tables.values():
-            ddl = self._generate_create_table(table)
-            self._db.execute(ddl)
-            self._schema_info[table.name] = {col.name: self._map_sqlalchemy_type(col.type) for col in table.columns}
-            log.debug(f"Created DuckDB table: {table.name}")
-
-        self._reader = self._db.cursor()
-        self._initialized = True
+        Additive across calls, as :class:`~threetears.core.cache.sqlite.SQLiteBackend`'s is: the first
+        call opens the database, and every call creates the tables in ``sa_metadata`` this backend has
+        not seen yet and leaves the others untouched, so a collection that declares its own table on a
+        shared backend gets it whenever it is built.
+        """
+        new_tables = 0
+        with self._db_lock:
+            if not self._initialized:
+                self._db = duckdb.connect(":memory:", config=dict(_DATABASE_CONFIG))
+            for table in sa_metadata.tables.values():
+                if table.name in self._schema_info:
+                    log.debug(f"DuckDB table already registered, skipping: {table.name}")
+                    continue
+                self._db.execute(self._generate_create_table(table))
+                self._schema_info[table.name] = {col.name: self._map_sqlalchemy_type(col.type) for col in table.columns}
+                new_tables += 1
+                log.debug(f"Created DuckDB table: {table.name}")
+            if not self._initialized:
+                self._reader = self._db.cursor()
+                self._initialized = True
         log.debug(
             "DuckDB L1 cache initialized",
-            extra={"extra_data": {"table_count": len(sa_metadata.tables)}},
+            extra={"extra_data": {"table_count": len(self._schema_info), "new_tables": new_tables}},
         )
 
     def get_connection(self) -> Any:
@@ -978,28 +995,8 @@ class DuckDBBackend:
     @staticmethod
     def _map_sqlalchemy_type(sa_type: Any) -> str:
         """Map SQLAlchemy type to DuckDB equivalent with serialization hints."""
-        from sqlalchemy import (
-            Boolean,
-            DateTime,
-            Float,
-            Integer,
-            LargeBinary,
-            Numeric,
-            String,
-            Text,
-        )
-        from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
-        from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
-
-        # Check for pgvector Vector type
-        try:
-            from pgvector.sqlalchemy import Vector
-
-            if isinstance(sa_type, Vector):
-                return "VARCHAR_VECTOR"
-        # NOSILENT: optional dependency probe; absence is a supported configuration
-        except ImportError:
-            pass
+        if isinstance(sa_type, PGVECTOR_TYPES):
+            return "VARCHAR_VECTOR"
 
         if isinstance(sa_type, (UUID, UuidType)):
             return "VARCHAR_UUID"
@@ -1021,8 +1018,6 @@ class DuckDBBackend:
             return "VARCHAR_BYTEA"
 
         # PostgreSQL-only types
-        from sqlalchemy.dialects.postgresql import TSVECTOR
-        from sqlalchemy.sql.sqltypes import ARRAY
 
         if isinstance(sa_type, TSVECTOR):
             return "VARCHAR"

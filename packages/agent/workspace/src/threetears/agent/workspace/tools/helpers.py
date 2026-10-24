@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid7
 
 from threetears.agent.acl import AclCache
+from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
 from threetears.core.namespaces import PLATFORM_RBAC_READ_NAMESPACE
 
 __all__ = [
@@ -141,8 +142,6 @@ def workspace_audit_identity(workspace: Workspace) -> WorkspaceAuditIdentity:
         enrich), or when ``scope.context`` lacks user_id / agent_id /
         customer_id
     """
-    from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
-
     scope = current_scope()
     if scope is None:
         raise RuntimeError(
@@ -194,6 +193,7 @@ if TYPE_CHECKING:
     from threetears.agent.workspace.entities import Workspace
 
 from threetears.agent.workspace import pin as pin_module
+from threetears.agent.workspace import authorize as authorize_module
 from threetears.agent.workspace.validators import dispatch_validators
 
 
@@ -329,18 +329,12 @@ async def authorize_workspace(
         (the tool was dispatched outside a call-scope context)
     :raises WorkspaceAccessDenied: on any denial path
     """
-    # local imports keep this module cheap when tools only need
-    # resolve_workspace or write_file_atomic.
-    from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
-
-    from threetears.agent.workspace.authorize import authorize_workspace_access
-
     scope = current_scope()
     if scope is None:
         raise RuntimeError(no_call_scope_message("authorize_workspace"))
     if db_pool is not None:
         await enrich_workspace_identity(workspace, db_pool)
-    await authorize_workspace_access(
+    await authorize_module.authorize_workspace_access(
         scope,
         workspace,
         operation,
@@ -395,18 +389,12 @@ async def authorize_workspace_file(
     :raises WorkspaceAccessDenied: on any denial path (missing
         customer, cross-customer, no matching glob)
     """
-    from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
-
-    from threetears.agent.workspace.authorize import (
-        authorize_workspace_file_access,
-    )
-
     scope = current_scope()
     if scope is None:
         raise RuntimeError(no_call_scope_message("authorize_workspace_file"))
     if db_pool is not None:
         await enrich_workspace_identity(workspace, db_pool)
-    await authorize_workspace_file_access(
+    await authorize_module.authorize_workspace_file_access(
         scope,
         workspace,
         relative_path,

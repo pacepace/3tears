@@ -147,6 +147,7 @@ from threetears.evals.run.metering import CellMeter, MeteredCallLedger, MeteredC
 from threetears.evals.run.run_document import fault_entry, record_run_faults
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
 from threetears.evals.schema.logs import contain, get_logger
+from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.world import WorldRegistry
@@ -3624,8 +3625,6 @@ async def execute_run(
     :raises JobFenced: A cell's write found the run no longer this holding's — written lost, or held at a later lease
         epoch — so nothing was written of it, and the run's work stopped there.
     """
-    from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError
-
     # Every result is stamped with ``run.judge_model``, and every read surface takes a blank there
     # to mean "this run was not judged". So a judged run with no judge model would file its scores
     # with their judge lost, and an unjudged run naming one claims a judge that scored nothing. The launch that resolves the judge

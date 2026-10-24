@@ -15,6 +15,7 @@ package and self-registers on module import.
 from __future__ import annotations
 
 import json
+import types
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -191,8 +192,6 @@ def _resolve_base_type(type_hint: Any) -> type | None:
     """
     origin = get_origin(type_hint)
     if origin is not None:
-        import types
-
         if origin is types.UnionType:
             args = get_args(type_hint)
             non_none = [a for a in args if a is not type(None)]

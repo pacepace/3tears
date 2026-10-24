@@ -19,6 +19,7 @@ from threetears.evals.analysis.reporting import (
     METRIC_TRANSCRIPT,
     SCOPED_METRICS,
 )
+from threetears.evals.analysis.stats import clustered_standard_error, standard_error_of_mean
 
 
 # Weighting modes for rolling a cell's observations into one number.
@@ -274,8 +275,6 @@ def _aggregate(values_by_case: dict[str, list[float]], weighting: str) -> tuple[
         a case's repeats are not independent draws.
     :rtype: tuple[float, float | None]
     """
-    from threetears.evals.analysis.stats import clustered_standard_error, standard_error_of_mean
-
     if weighting == WEIGHTING_EQUAL_PER_SCENARIO:
         case_means = [sum(vals) / len(vals) for vals in values_by_case.values()]
         return sum(case_means) / len(case_means), standard_error_of_mean(case_means)

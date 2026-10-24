@@ -22,6 +22,7 @@ from langchain_core.tools import StructuredTool
 from threetears.agent.tools.text_window import window_text
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.langchain_adapter import to_langchain_tool
 from threetears.agent.tools.utils import tool_error
 
 __all__ = [
@@ -169,8 +170,6 @@ def create_dictionary_tool(config: dict[str, Any], description: str) -> Structur
     execution body. ``config["language"]`` (default ``"en"``) feeds
     :class:`DictionaryTool`'s ``language`` ``__init__`` arg.
     """
-    from threetears.agent.tools.langchain_adapter import to_langchain_tool
-
     language = config.get("language", "en")
     return to_langchain_tool(
         DictionaryTool(language=language),

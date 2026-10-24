@@ -30,11 +30,21 @@ from uuid import UUID
 from threetears.core.serialization import json_datetime
 from threetears.core.sql_fragments import as_written, equality_conditions
 
+try:
+    from pgvector.sqlalchemy import Vector
+
+    #: pgvector's SQLAlchemy column type when the pgvector extra is installed, else empty: the one probe the L1
+    #: backends and ``TableSchema`` read
+    PGVECTOR_TYPES: tuple[type, ...] = (Vector,)
+except ImportError:  # NOSILENT: the pgvector extra is optional; no column is a vector without it
+    PGVECTOR_TYPES = ()
+
 if TYPE_CHECKING:
     from threetears.core.collections.schema_backed import Column, TableSchema
 
 __all__ = [
     "MAX_STATEMENT_PARAMS",
+    "PGVECTOR_TYPES",
     "build_bulk_insert_sql",
     "build_cas_params",
     "build_cas_update_sql",

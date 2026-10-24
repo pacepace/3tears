@@ -308,7 +308,7 @@ class CallerAccessCache(Generic[V]):
 
 def bind_caller_cache_to_access_tables(
     registry: CollectionRegistry,
-    cache: CallerAccessCache[object],
+    cache: CallerAccessCache[V],
     *,
     degraded: DegradedEvictions | None = None,
 ) -> Callable[[], None]:

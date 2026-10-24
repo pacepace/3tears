@@ -41,12 +41,11 @@ from mcp.server.stdio import stdio_server as _stdio_server
 from threetears.observe import contain, get_logger
 
 from threetears.mcp.auth import Authorizer, GrantCacheUnavailableError, IdentityProvider
+from threetears.mcp.http_server import McpHttpTransport, build_mcp_http_app, serve_mcp_http
 from threetears.mcp.tool import McpTool, ToolProvider, ToolRegistry
 
 if TYPE_CHECKING:
     from starlette.applications import Starlette
-
-    from threetears.mcp.http_server import McpHttpTransport
 
 __all__ = [
     "McpServer",
@@ -524,8 +523,6 @@ class McpServer:
                 "McpServer.build_http_app called before start; the authorizer "
                 "cache has not been primed. Call McpServer.start() first.",
             )
-        from threetears.mcp.http_server import build_mcp_http_app
-
         return build_mcp_http_app(
             self._sdk_server,
             path=path,
@@ -566,8 +563,6 @@ class McpServer:
                 "McpServer.build_http_transport called before start; the authorizer "
                 "cache has not been primed. Call McpServer.start() first.",
             )
-        from threetears.mcp.http_server import McpHttpTransport
-
         return McpHttpTransport(
             self._sdk_server,
             path=path,
@@ -608,8 +603,6 @@ class McpServer:
         :rtype: None
         :raises RuntimeError: when :meth:`start` has not been called
         """
-        from threetears.mcp.http_server import serve_mcp_http
-
         app = self.build_http_app(
             path=path,
             stateless=stateless,

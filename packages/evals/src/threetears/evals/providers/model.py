@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Final, Self, get_args
+from typing import Any, Final, Self, get_args
 
 import httpx
 from pydantic import BaseModel
@@ -50,9 +50,7 @@ from threetears.evals.providers.wire import (
 from threetears.evals.run import JUDGE_REQUEST_SETTINGS, SIMULATOR_REQUEST_SETTINGS
 from threetears.evals.schema import BoundCompletionClient, ClientRequestSettings, CompletionResult, StopReason
 from threetears.evals.schema.logs import contain, get_logger
-
-if TYPE_CHECKING:
-    from threetears.evals.testing import RecordedCompletions
+from threetears.evals.testing import RecordedCompletions, RecordingRefused
 
 __all__ = ["DEFAULT_MAX_TOKENS", "Clients", "Completion", "Model"]
 
@@ -707,8 +705,6 @@ class Model:
         self._live: _Live | None = None
         self._last_price_refresh: PriceRefresh | None = None
         if replaying:
-            from threetears.evals.testing import RecordedCompletions, RecordingRefused
-
             assert self.recording is not None
             replay = RecordedCompletions.replay(self.recording, settings=self._settings)
             # A recording holds one model's calls, so one of another model's is no answer for this one.
@@ -743,7 +739,6 @@ class Model:
         if self.recording is None:
             self._client = live
             return
-        from threetears.evals.testing import RecordedCompletions
 
         stale = rerecording and self.recording.exists() and self.recording.stat().st_mtime < _IMPORTED_AT
         self._client = RecordedCompletions.record(live, self.recording, settings=self._settings, replace=stale)

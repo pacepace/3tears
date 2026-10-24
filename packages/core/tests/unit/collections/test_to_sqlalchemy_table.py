@@ -32,7 +32,9 @@ the parity tests silently; these guard against that.
 
 from __future__ import annotations
 
-from typing import Any
+import subprocess
+import sys
+
 
 import pytest
 import sqlalchemy as sa
@@ -301,48 +303,36 @@ def test_to_sqla_server_default_propagates() -> None:
     assert str(sd.arg) == "image"
 
 
-def test_to_sqla_pgvector_unavailable_raises_at_call(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_to_sqla_pgvector_unavailable_raises_at_call() -> None:
     """when ``pgvector`` cannot be imported and a schema declares a
     VECTOR_TYPE column, ``to_sqlalchemy_table`` raises ``ImportError``
     at call time (mirrors the v0.7.5 factory behaviour -- the failure
     is legible at registration time, not deep inside INSERT).
+
+    pgvector is probed when ``schema_backed`` is imported, so the absence is a fresh interpreter's in
+    which it cannot be imported.
     """
-    import builtins
-
-    real_import = builtins.__import__
-
-    def _failing_import(
-        name: str,
-        globals: Any = None,
-        locals: Any = None,
-        fromlist: Any = (),
-        level: int = 0,
-    ) -> Any:
-        if name.startswith("pgvector"):
-            raise ImportError(
-                "simulated: pgvector not installed",
-            )
-        return real_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", _failing_import)
-
-    schema = TableSchema(
-        name="t",
-        primary_key="a",
-        columns=[
-            Column("a", UUID_TYPE),
-            Column(
-                "emb",
-                VECTOR_TYPE,
-                vector_dim=8,
-                nullable=True,
-            ),
-        ],
-    )
-    with pytest.raises(ImportError, match="pgvector"):
-        schema.to_sqlalchemy_table(sa.MetaData())
+    script = """
+import sys
+sys.modules["pgvector"] = None
+sys.modules["pgvector.sqlalchemy"] = None
+import sqlalchemy as sa
+from threetears.core.collections.schema_backed import UUID_TYPE, VECTOR_TYPE, Column, TableSchema
+schema = TableSchema(
+    name="t",
+    primary_key="a",
+    columns=[Column("a", UUID_TYPE), Column("emb", VECTOR_TYPE, vector_dim=8, nullable=True)],
+)
+try:
+    schema.to_sqlalchemy_table(sa.MetaData())
+except ImportError as exc:
+    print("refused:", exc)
+    sys.exit(0)
+sys.exit(1)
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "pgvector" in result.stdout
 
 
 def test_to_sqla_numeric_precision_scale() -> None:

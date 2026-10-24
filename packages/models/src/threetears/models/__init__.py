@@ -12,12 +12,12 @@ their import-time :func:`register_capabilities` calls populate the
 shared registry. This makes :func:`create_chat_model` /
 :func:`create_embedding_model` work for every builtin model id without
 the caller manually importing ``threetears.models.providers.<name>``.
-The provider modules themselves keep ``langchain_<provider>`` imports
-inside ``TYPE_CHECKING`` and inside their factory bodies, so the
-eager-load only pulls capability metadata — actually instantiating a
-provider model still imports its langchain backend lazily, preserving
-the "install only the providers you use" property for production
-callers.
+The provider modules import their ``langchain_<provider>`` backends
+at module scope too, so nothing is imported on a model's first build:
+the base providers (anthropic, openai, openrouter) are base dependencies,
+and an optional extra's backend (``voyageai``, ``claude-cli``) is imported
+under a guard, so a package without it still imports and only building
+that provider's model raises an ``ImportError`` naming the extra.
 
 v0.9.0 adds chat-model utility modules used across every consumer:
 :mod:`threetears.models.chunk_merging` (merge streamed AIMessageChunks
@@ -138,10 +138,9 @@ from threetears.models.tracking import (
 from threetears.models.usage import UsageAccumulator, attach_callbacks
 
 # Eager-import builtin provider modules so their import-time
-# `register_capabilities()` calls populate the shared registry. The
-# provider modules themselves do not import their respective
-# `langchain_<provider>` package at module scope (those imports live
-# inside TYPE_CHECKING + factory bodies) so this is metadata-only.
+# `register_capabilities()` calls populate the shared registry. Each
+# imports its backend at module scope (an optional extra's under a guard),
+# so building a model later imports nothing.
 from threetears.models.providers import (  # noqa: E402, F401
     anthropic as _anthropic_caps,
     openai as _openai_caps,
