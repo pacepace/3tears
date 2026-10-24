@@ -612,8 +612,9 @@ class ReporterCalibration(BaseModel):
         default_factory=JudgeAgreement,
         description=(
             "The run's results read against people's calibration ratings of them, per dimension and judge — the "
-            "same read the bundle's `judge_agreement` makes. A label places a memo in a band and a rating gives it "
-            "a score, so the two are read side by side rather than pooled: labels in `cases`, ratings here."
+            "same read the bundle's `judge_agreement` makes. A label places a memo in a band (a direction) or passes "
+            "or fails it (a verdict) and a rating gives it a score, so the two are read side by side rather than "
+            "pooled: labels in `cases`, ratings here."
         ),
     )
 

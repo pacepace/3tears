@@ -9,9 +9,10 @@ five directions; no mapping between them is added. Pinned here:
   ordinal score reads none either; the calibration read carries the verdict and the excerpt beside the quote;
 - the freeze refuses a direction on a pass/fail dimension, a verdict on an ordinal one, both, neither, an excerpt the
   recorded memo does not hold, and an excerpt with no memo, writing nothing; an excerpt differing from the memo only in
-  its runs of whitespace is accepted;
-- the excerpt is not part of what makes two freezes the same case: re-freezing the same verdicts with another excerpt
-  returns the stored case, whose excerpt stands.
+  its runs of whitespace, or carrying a line break at its end, is accepted;
+- the excerpt is no part of the verdict, but it is never dropped: re-freezing the same verdicts with another excerpt
+  is refused, naming the stored excerpt and the case to supersede, and superseding that case stores the correction;
+  re-freezing the same verdicts and excerpts returns the stored case.
 
 Every refusal is structural (a form, a substring), never a reading of what the words say.
 """
@@ -208,8 +209,8 @@ def _stored(fixture: OpsFixture) -> list[EvalTestCase]:
     return fixture.host.eval_host.storage.query_test_cases(TOYHOST_SCOPE, template_id=scaled_reporter_template().id)
 
 
-def _freeze(fixture: OpsFixture, analysis_id: str | None, labels: list[dict[str, Any]]) -> Any:
-    fields: dict[str, Any] = {"template_id": scaled_reporter_template().id, "labels": labels}
+def _freeze(fixture: OpsFixture, analysis_id: str | None, labels: list[dict[str, Any]], **more: Any) -> Any:
+    fields: dict[str, Any] = {"template_id": scaled_reporter_template().id, "labels": labels, **more}
     if analysis_id is not None:
         fields["recorded_analysis_id"] = analysis_id
     return freeze_corpus_campaign(fixture, **fields)
@@ -246,7 +247,10 @@ async def test_a_verdict_on_a_pass_fail_dimension_and_a_direction_on_an_ordinal_
         ([{"dimension": GROUNDED, "verdict": "pass", "quote": "q"}], "ordinal"),
         ([{"dimension": ANSWERS, "direction": "high", "verdict": "pass", "quote": "q"}], "exactly one"),
         ([{"dimension": ANSWERS, "quote": "q"}], "exactly one"),
-        ([{"dimension": ANSWERS, "verdict": "pass", "quote": "q", "memo_excerpt": "no memo holds this ✓"}], "memo"),
+        (
+            [{"dimension": ANSWERS, "verdict": "pass", "quote": "q", "memo_excerpt": "no memo holds this ✓"}],
+            "is not a passage of the recorded memo",
+        ),
     ],
     ids=["direction-on-pass-fail", "verdict-on-ordinal", "both", "neither", "excerpt-not-in-the-memo"],
 )
@@ -271,16 +275,57 @@ def test_an_excerpt_with_no_recorded_memo_is_refused() -> None:
     assert _stored(fixture) == []
 
 
-async def test_re_freezing_the_same_verdicts_with_another_excerpt_returns_the_stored_case() -> None:
+async def test_an_excerpt_carrying_a_line_break_at_either_end_is_found() -> None:
     fixture = off_loop(_scaled_fixture)
     analysis_id, memo = await _memo(fixture)
-    first, other = _passage(memo), memo[:20]
-    label = {"dimension": ANSWERS, "verdict": "pass", "quote": "it answers the question"}
+    excerpt = "\n" + memo[:20].strip() + "\n"
 
-    stored = off_loop(_freeze, fixture, analysis_id, [{**label, "memo_excerpt": first}])
-    again = off_loop(_freeze, fixture, analysis_id, [{**label, "memo_excerpt": other}])
+    receipt = off_loop(
+        _freeze,
+        fixture,
+        analysis_id,
+        [{"dimension": ANSWERS, "verdict": "pass", "quote": "q", "memo_excerpt": excerpt}],
+    )
+
+    assert [label.memo_excerpt for label in receipt.labels] == [excerpt], "the excerpt is stored as given"
+
+
+async def test_re_freezing_the_same_verdicts_and_excerpts_returns_the_stored_case() -> None:
+    fixture = off_loop(_scaled_fixture)
+    analysis_id, memo = await _memo(fixture)
+    labels = [{"dimension": ANSWERS, "verdict": "pass", "quote": "it answers the question", "memo_excerpt": memo[:20]}]
+
+    stored = off_loop(_freeze, fixture, analysis_id, labels)
+    again = off_loop(_freeze, fixture, analysis_id, labels)
 
     assert again.test_case_id == stored.test_case_id
-    (only,) = off_loop(_stored, fixture)
-    case = reporter_case_of(only)
-    assert case is not None and [label.memo_excerpt for label in case.labels] == [first], "the stored record stands"
+    assert len(off_loop(_stored, fixture)) == 1
+
+
+async def test_another_excerpt_on_the_same_verdicts_is_refused_and_superseding_stores_it() -> None:
+    """The excerpt is no part of the verdict, so it leaves case identity alone; but a freeze reporting a case that
+    quotes another passage than it was sent would drop the correction while claiming success."""
+    fixture = off_loop(_scaled_fixture)
+    analysis_id, memo = await _memo(fixture)
+    first, corrected = _passage(memo), memo[:20]
+    label = {"dimension": ANSWERS, "verdict": "pass", "quote": "it answers the question"}
+    stored = off_loop(_freeze, fixture, analysis_id, [{**label, "memo_excerpt": first}])
+
+    with pytest.raises(ValidationFailedError, match="quoting other memo passages") as refused:
+        off_loop(_freeze, fixture, analysis_id, [{**label, "memo_excerpt": corrected}])
+
+    assert repr(first) in str(refused.value), "the refusal names the stored excerpt"
+    assert f"supersedes=[{stored.test_case_id!r}]" in (refused.value.remedy or "")
+    assert len(off_loop(_stored, fixture)) == 1, "a refused freeze writes nothing"
+
+    revised = off_loop(
+        _freeze, fixture, analysis_id, [{**label, "memo_excerpt": corrected}], supersedes=[stored.test_case_id]
+    )
+
+    assert revised.test_case_id != stored.test_case_id and revised.supersedes == [stored.test_case_id]
+    assert [label.memo_excerpt for label in revised.labels] == [corrected]
+    by_id = {case.id: reporter_case_of(case) for case in off_loop(_stored, fixture)}
+    first_case = by_id[stored.test_case_id]
+    assert first_case is not None and [label.memo_excerpt for label in first_case.labels] == [first], (
+        "the superseded case is left as it was"
+    )

@@ -1956,12 +1956,17 @@ def reporter_case_bank(storage: AnalysisStore, template_id: str, scope_id: str) 
     )
 
 
-def _label_set(labels: Sequence[ReporterLabel], *, criterion: bool) -> list[str]:
+def _label_set(labels: Sequence[ReporterLabel], *, criterion: bool, excerpt: bool = False) -> list[str]:
     """Labels as what makes two freezes the same case compares them: their verdicts, with or without the criterion
-    each was written against, and never who gave or relayed them (``reader``, ``collected_by``) or the memo passage
-    each points at (``memo_excerpt``) — provenance, so a re-freeze of the same verdicts names the stored case, whose
-    own record of them stands."""
-    dropped: dict[str, Any] = {"reader": None, "collected_by": None, "memo_excerpt": None}
+    each was written against, and never who gave or relayed them (``reader``, ``collected_by``) — provenance, so a
+    re-freeze of the same verdicts names the stored case, whose own record of them stands.
+
+    The memo passage each points at (``memo_excerpt``) is left out too unless ``excerpt`` asks for it: it is no part
+    of the verdict, but a freeze whose excerpts differ from the stored case's would otherwise report a case that does
+    not hold them, so the freeze compares them apart (:func:`freeze_reporter_case`)."""
+    dropped: dict[str, Any] = {"reader": None, "collected_by": None}
+    if not excerpt:
+        dropped["memo_excerpt"] = None
     if not criterion:
         dropped["criterion"] = None
     return sorted(label.model_copy(update=dropped).model_dump_json() for label in labels)
@@ -1970,6 +1975,12 @@ def _label_set(labels: Sequence[ReporterLabel], *, criterion: bool) -> list[str]
 def _whitespace_collapsed(text: str) -> str:
     """``text`` with every run of whitespace one space: how an excerpt and the memo it quotes are compared."""
     return re.sub(r"\s+", " ", text)
+
+
+def _excerpts(labels: Sequence[ReporterLabel]) -> str:
+    """The memo passages a case's labels quote, by dimension, as a refusal names them."""
+    quoted = [f"{label.dimension}: {label.memo_excerpt!r}" for label in labels if label.memo_excerpt is not None]
+    return "; ".join(quoted) or "none"
 
 
 def _refuse_a_label_of_another_form(labels: Sequence[ReporterLabel], *, template_id: str) -> None:
@@ -1998,9 +2009,10 @@ def _refuse_a_label_of_another_form(labels: Sequence[ReporterLabel], *, template
 def _refuse_an_excerpt_not_in_the_memo(labels: Sequence[ReporterLabel], memo: str) -> None:
     """Refuse a label whose ``memo_excerpt`` is not a passage of the recorded memo the case pins.
 
-    Compared after collapsing each run of whitespace to one space, in the excerpt and the memo alike, and nothing
-    else: a surface prints the memo's text whitespace-collapsed, so a passage copied from one matches, and any other
-    difference is a passage the memo does not hold.
+    Compared after collapsing each run of whitespace to one space, in the excerpt and the memo alike, and trimming
+    the excerpt's ends, and nothing else: a surface prints the memo's text whitespace-collapsed, so a passage copied
+    from one matches, a line break carried at either end included, and any other difference is a passage the memo
+    does not hold.
 
     :raises ValidationFailedError: An excerpt is not found in the memo.
     """
@@ -2008,7 +2020,7 @@ def _refuse_an_excerpt_not_in_the_memo(labels: Sequence[ReporterLabel], memo: st
     if missing := [
         label.dimension
         for label in labels
-        if label.memo_excerpt is not None and _whitespace_collapsed(label.memo_excerpt) not in collapsed
+        if label.memo_excerpt is not None and _whitespace_collapsed(label.memo_excerpt).strip() not in collapsed
     ]:
         raise ValidationFailedError(
             f"the memo_excerpt of the label(s) on {', '.join(missing)} is not a passage of the recorded memo, compared "
@@ -2054,8 +2066,9 @@ def freeze_reporter_case(
     ``pass_fail``, which takes a ``verdict``, or ``ordinal``, which takes a ``direction``; a label in the other form is
     refused, since it could never be compared with the judge's score. A label's ``memo_excerpt``, when given, must be
     a passage of the recorded memo, compared with each run of whitespace collapsed to one space on both sides and
-    nothing else. Both refusals are structural, and neither is applied when a stored case is read. Like the reader,
-    the excerpt is not part of what makes two freezes the same case.
+    nothing else, the excerpt's ends trimmed. Both refusals are structural, and neither is applied when a stored case
+    is read. The excerpt is not part of the verdict, but a freeze quoting other passages than the pair's live case is
+    refused unless ``supersedes`` names it, as a label change is, so a correction is stored rather than dropped.
 
     **Who gave a verdict is taken as the caller names it.** This is the host's own door, trusted as its own
     ``rate_result`` is: a label's ``reader`` and ``collected_by`` are stored as given, or not at all. An action reaches
@@ -2079,7 +2092,7 @@ def freeze_reporter_case(
     it is — a revision of that memo's case — rather than as a second case the launch would
     judge alongside the first.
 
-    **Idempotent, and immutable.** A freeze whose bundle fingerprint, labels (criteria included)
+    **Idempotent, and immutable.** A freeze whose bundle fingerprint, labels (criteria and excerpts included)
     and writer message match the pair's live case RETURNS it rather than minting again, so two
     freezes of one campaign pool onto one case. Stored cases never change: a calibration read
     against labels (or evidence) a case did not carry when it was run would be a comparison
@@ -2293,7 +2306,12 @@ def freeze_reporter_case(
         writer_message,
         recorded_message_digest,
     )
-    if same_labels and same_evidence and same_message:
+    # The passages the labels quote are no part of the verdicts, but a freeze returning a case that quotes others
+    # would report as stored what it is not.
+    same_excerpts = len(live) == 1 and _label_set(live[0][1].labels, criterion=True, excerpt=True) == _label_set(
+        parsed, criterion=True, excerpt=True
+    )
+    if same_labels and same_evidence and same_message and same_excerpts:
         # Idempotent on the LIVE case, whether or not a retried revision repeats its supersedes.
         return live[0][0]
     if live and named != live_ids:
@@ -2319,6 +2337,11 @@ def freeze_reporter_case(
                 differs.append(
                     "with the same verdicts written against criterion text that differs from the live case's (the "
                     "template's rubric was reworded since)"
+                )
+            elif not same_excerpts:
+                differs.append(
+                    f"with the same verdicts quoting other memo passages (stored: {_excerpts(live[0][1].labels)}; "
+                    f"this freeze: {_excerpts(parsed)})"
                 )
             if not same_message and same_evidence:
                 differs.append(
@@ -2395,7 +2418,9 @@ def reporter_calibration(
 
     Pure read, no spend: every score comes from the run's stored results. Per case, each label
     is set beside the judge's score and reasoning on its dimension, with whether the score
-    falls in the label's band; every dimension no label speaks to is listed with its score.
+    agrees with the label: an ordinal score inside its direction's band, a pass/fail score equal to its verdict
+    (:func:`~threetears.evals.analysis.reporter_bank.label_agrees`); every dimension no label speaks to is listed with
+    its score.
     A case whose labels were revised since the run says which stored case superseded it, so a
     reader of an earlier run sees that the labels it is read against were later replaced; a case
     retired since says so too. Each label reading says whether the criterion the label was

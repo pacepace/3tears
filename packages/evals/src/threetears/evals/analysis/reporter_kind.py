@@ -72,7 +72,14 @@ from threetears.evals.kernel.capped_completion import CappedCompletion, call_cei
 from threetears.evals.kernel.cassettes import CellCassettes
 from threetears.evals.kernel.inner_ceilings import generation_ceiling_s, judge_phase_ceiling_s
 from threetears.evals.kernel.host.eval_host import EvalHost
-from threetears.evals.schema.models import DimName, EvalTestCase, JudgedArtifact, JudgeEvidence, RubricDim
+from threetears.evals.schema.models import (
+    DimName,
+    EvalTestCase,
+    JudgedArtifact,
+    JudgeEvidence,
+    RubricDim,
+    RubricScale,
+)
 from threetears.evals.schema.completion import CompletionGenerator, CompletionResult, RequestCeiling
 from threetears.evals.kernel.provider import describe_failure, log_provider_failure
 from threetears.evals.kernel.text_block import one_line, under
@@ -170,7 +177,13 @@ class LabelCriterion(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     description: str = Field(description="The dimension's description, as the template stated it at freeze time.")
-    scale: str = Field(description="How the dimension was answered at freeze time: 'ordinal' (1-5) or 'pass_fail'.")
+    scale: RubricScale = Field(
+        description=(
+            "How the dimension was answered at freeze time: 'ordinal' (1-5) or 'pass_fail'. A stored criterion naming "
+            "any other scale is refused on read, so its case is listed as unreadable by name rather than read as one "
+            "it is not."
+        )
+    )
     scoring_guide: dict[str, str] = Field(
         default_factory=dict,
         description="The scoring guide, level to descriptor, at freeze time. Empty when the dimension had none.",
@@ -223,8 +236,9 @@ class ReporterLabel(BaseModel):
         default=None,
         description=(
             "The passage of the recorded memo the verdict is about, verbatim. The freeze refuses one that is not in "
-            "the case's recorded memo, compared after collapsing each run of whitespace to one space on both sides. "
-            "None = the label quotes no passage. Not part of what makes two freezes the same case."
+            "the case's recorded memo, compared after collapsing each run of whitespace to one space on both sides "
+            "and trimming the excerpt's ends. None = the label quotes no passage. No part of the verdict: a re-freeze "
+            "quoting other passages than the pair's live case is refused unless it supersedes that case."
         ),
     )
     note: str | None = Field(default=None, description="Why the quote maps to this dimension, when not self-evident.")

@@ -597,16 +597,22 @@ DURABLE_SCHEMA_VERSION: int = 16
 #:   each label of the reporter case a reporter template's test case carries (``ReporterLabel``, in
 #:   ``EvalTestCase.host_payload``) holds a ``verdict`` (``pass`` or ``fail``, on a pass/fail dimension) or a
 #:   ``direction`` (on an ordinal one), exactly one, ``direction`` now default None; and a ``memo_excerpt`` (default
-#:   None), a passage of the case's recorded memo, compared with each run of whitespace collapsed. Each is written
-#:   only when set, so a direction label quoting no passage is stored exactly as v16.1 stored it, and every label
-#:   stored before reads as it did: a direction, no verdict. A label's verdict is part of what makes two freezes the
-#:   same case, and its excerpt is not. The freeze refuses a label whose form is not the scale of the
-#:   criterion it stamps, or whose excerpt the recorded memo does not hold; neither check is applied on a read, so a
-#:   stored direction label on a pass/fail dimension keeps reading, its agreement unread. A build at v16.1 cannot
-#:   read a case holding a verdict or excerpt label, and a reporter template's bank is undecidable while any of its
-#:   cases is unreadable: on a v16.1 build, the first such freeze stops that whole template, refusing its launches,
-#:   their prices, its freezes, its calibration reads and its restores, until that build upgrades. A v16.1 build
-#:   keeps the test case's payload verbatim on every write.
+#:   None), a passage of the case's recorded memo, compared with each run of whitespace collapsed and its ends
+#:   trimmed. Each is written only when set, so a direction label quoting no passage is stored exactly as v16.1
+#:   stored it, and every label stored before reads as it did: a direction, no verdict. A label's verdict is part of
+#:   what makes two freezes the same case, and its excerpt is not, though a re-freeze quoting other passages than the
+#:   live case is refused unless it supersedes it. A label's stamped criterion (``LabelCriterion.scale``) now names
+#:   only a scale that exists, as every freeze has stamped one. The freeze refuses a label whose form is not the
+#:   scale of the criterion it stamps, or whose excerpt the recorded memo does not hold; neither check is applied on
+#:   a read, so a stored direction label on a pass/fail dimension keeps reading, its agreement unread.
+#:   **The sentence below is false for the reporter kind's read of these cases, as it was at v16.1.** It holds of the
+#:   ``EvalTestCase`` document the durable space reads, whose ``host_payload`` is opaque to it and which a v16.1 build
+#:   reads, and writes back, verbatim. It does not hold of the reporter case inside that payload: a v16.1 build's
+#:   ``ReporterLabel`` refuses a key it does not declare, so it cannot read a case holding a verdict or excerpt
+#:   label, and a reporter template's bank is undecidable while any of its cases is unreadable. On a v16.1 build, the
+#:   first such freeze stops that whole template, refusing its launches, their prices, its freezes, its calibration
+#:   reads and its restores, until that build upgrades. So during a rolling deploy across 16.1 and 16.2, freeze no
+#:   verdict or excerpt label until every pod runs 16.2.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 DURABLE_SCHEMA_MINOR: int = 2
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
