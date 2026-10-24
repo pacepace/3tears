@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-access-contracts"
+version = "0.77.1"
+description = "Dependency-free identity and authorization vocabulary shared by 3tears-iam and 3tears-agent-acl"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+# contracts package: stays dependency-free by design, enforced by the
+# contract-purity check in tests/enforcement/. iam (authentication) and
+# agent-acl (authorization) both depend on this package; it depends on nothing,
+# so speaking the shared vocabulary never costs either side the other's closure.
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
