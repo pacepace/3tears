@@ -17,7 +17,7 @@ Pure reads of the reporter's case bank, and none calls a model.
   a variant with no per-arm cell) — a judge scoring a memo's claim about that arm is scoring it
   against evidence that no longer says anything about it.
 - **After the run**, :func:`read_calibration` sets each labelled dimension's judge score beside the
-  reader's written verdict and says whether they agree under :data:`LABEL_BANDS`, and whether the
+  reader's written verdict and says whether they agree (:func:`label_agrees`), and whether the
   criterion the verdict was written against still reads as it did. The run's calibration ratings —
   people's scores of its results — are read beside the labels through the same agreement the bundle
   reads (:func:`~threetears.evals.analysis.agreement.judge_agreement`). It is a READ: every number
@@ -41,6 +41,7 @@ from threetears.evals.analysis.reporter_kind import (
     LABEL_BANDS,
     LabelCriterion,
     LabelDirection,
+    LabelVerdict,
     ReporterCase,
     ReporterLabel,
     WriterMessageCheck,
@@ -457,8 +458,17 @@ class LabelReading(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     dimension: str = Field(description="The rubric dimension the label bears on.")
-    direction: LabelDirection = Field(description="Where the reader placed the memo on it.")
+    direction: LabelDirection | None = Field(
+        default=None, description="Where the reader placed the memo on an ordinal dimension; None beside a verdict."
+    )
+    verdict: LabelVerdict | None = Field(
+        default=None,
+        description="Whether the reader passed or failed the memo on a pass/fail dimension; None beside a direction.",
+    )
     quote: str = Field(description="The reader's own words, verbatim.")
+    memo_excerpt: str | None = Field(
+        default=None, description="The passage of the recorded memo the verdict is about, verbatim, when recorded."
+    )
     note: str | None = Field(default=None, description="Why the quote maps to this dimension, when recorded.")
     score: int | None = Field(
         description="The judge's stored score on this dimension (1-5, or 1/0 on pass/fail), or None when it scored none."
@@ -469,8 +479,10 @@ class LabelReading(BaseModel):
     reasoning: str | None = Field(description="The judge's reasoning for that score, or None when it scored none.")
     agrees: bool | None = Field(
         description=(
-            "Whether the score falls inside the label's band (LABEL_BANDS, inclusive). None when there is no "
-            "score to compare, or the dimension is pass/fail and no band applies — never read as disagreement."
+            "Whether the score agrees with the label: an ordinal score inside its direction's band (LABEL_BANDS, "
+            "inclusive), a pass/fail score equal to its verdict. None when there is no score to compare, or the "
+            "label's form is not the score's scale (a direction stored on a pass/fail dimension) — never read as "
+            "disagreement."
         )
     )
     criterion_drift: CriterionDrift = Field(
@@ -600,29 +612,40 @@ class ReporterCalibration(BaseModel):
         default_factory=JudgeAgreement,
         description=(
             "The run's results read against people's calibration ratings of them, per dimension and judge — the "
-            "same read the bundle's `judge_agreement` makes. A label places a memo in a band and a rating gives it "
-            "a score, so the two are read side by side rather than pooled: labels in `cases`, ratings here."
+            "same read the bundle's `judge_agreement` makes. A label places a memo in a band (a direction) or passes "
+            "or fails it (a verdict) and a rating gives it a score, so the two are read side by side rather than "
+            "pooled: labels in `cases`, ratings here."
         ),
     )
 
 
-def label_agrees(direction: LabelDirection, score: RubricScore) -> bool | None:
-    """Whether a judge score falls inside a label direction's band.
+def label_agrees(label: ReporterLabel, score: RubricScore) -> bool | None:
+    """Whether a judge score agrees with a reader's label, read in the form the score's scale takes.
 
-    :param direction: Where the label placed the memo.
-    :ptype direction: LabelDirection
-    :param score: The judge's score.
+    - **An ordinal score** agrees when it falls inside the label direction's inclusive band (:data:`LABEL_BANDS`).
+    - **A pass/fail score** agrees when it reads as the label's verdict (``RubricScore.label``: a pass, 1, reads
+      ``pass``; a fail, 0, reads ``fail``).
+
+    A label whose form is not the score's scale reads ``None``: a direction stored on a pass/fail dimension before
+    verdicts existed, or a verdict on a dimension since made ordinal. Mapping five directions onto two answers, or
+    the reverse, would be a calibration rule nobody ratified, and one such label must not abort the read of the rest,
+    which a raise here would do after the run was paid for.
+
+    :param label: The reader's label.
+    :ptype label: ReporterLabel
+    :param score: The judge's score on the label's dimension.
     :ptype score: RubricScore
-    :return: ``True`` when the score is inside the direction's inclusive band; ``None`` for a pass/fail
-        dimension. The bands are 1-5 levels, and mapping five directions onto two answers would be a
-        calibration rule nobody ratified — and one pass/fail dimension must not abort the read of the
-        rest, which a raise here would do after the run was paid for.
+    :return: Whether they agree; ``None`` when the label's form is not the score's scale.
     :rtype: bool | None
     """
-    if score.scale != "ordinal":
+    if score.scale == "ordinal":
+        if label.direction is None:
+            return None
+        low, high = LABEL_BANDS[label.direction]
+        return low <= score.score <= high
+    if label.verdict is None:
         return None
-    low, high = LABEL_BANDS[direction]
-    return low <= score.score <= high
+    return label.verdict == score.label
 
 
 def read_calibration(
@@ -696,12 +719,14 @@ def read_calibration(
                     LabelReading(
                         dimension=label.dimension,
                         direction=label.direction,
+                        verdict=label.verdict,
                         quote=label.quote,
+                        memo_excerpt=label.memo_excerpt,
                         note=label.note,
                         score=hit.score if hit is not None else None,
                         score_label=hit.label if hit is not None else None,
                         reasoning=hit.reasoning if hit is not None else None,
-                        agrees=label_agrees(label.direction, hit) if hit is not None else None,
+                        agrees=label_agrees(label, hit) if hit is not None else None,
                         criterion_drift=criterion_drift(label, live_criteria),
                     )
                 )
