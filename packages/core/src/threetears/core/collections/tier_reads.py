@@ -140,6 +140,8 @@ class _LoopTimer:
         self.loop: weakref.ref[asyncio.AbstractEventLoop] | None = None
         self.task: asyncio.Task[None] | None = None
         self.holders = 0
+        #: holds on other loops that this timer served, each released as such whatever has become of the timer since
+        self.served_elsewhere = 0
 
     def on(self, loop: asyncio.AbstractEventLoop) -> bool:
         """whether this is ``loop``'s timer.
@@ -178,6 +180,7 @@ def hold_tier_reads_timer(every: float | None = None) -> None:
     loop = asyncio.get_running_loop()
     if _timer.elsewhere(loop):
         # another open loop's timer already logs the process's counts
+        _timer.served_elsewhere += 1
         return
     if not _timer.on(loop):
         # the first holder on this loop: a timer on another loop is that loop's, and goes with it
@@ -196,8 +199,9 @@ async def release_tier_reads_timer() -> dict[str, dict[str, int]]:
     :raises RuntimeError: nothing on the running loop holds the timer
     """
     loop = asyncio.get_running_loop()
-    if _timer.elsewhere(loop):
-        # its hold was served by another open loop's timer, and started nothing to stop
+    if not _timer.on(loop) and _timer.served_elsewhere > 0:
+        # its hold was served by another loop's timer and started nothing to stop, whether that timer still runs or not
+        _timer.served_elsewhere -= 1
         return {}
     if not _timer.on(loop) or _timer.holders == 0:
         raise RuntimeError("the tier-read timer was released more times than it was held")

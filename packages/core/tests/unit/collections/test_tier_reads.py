@@ -112,8 +112,15 @@ def test_a_hold_on_a_second_open_loop_is_served_by_the_first_loops_timer_and_nei
 
         assert asyncio.run(second_loop()) == {}, "the second loop's hold started nothing, and its release logs nothing"
         record_tier_read("two-loops", ReadTier.L2)
-        released = asyncio.run_coroutine_threadsafe(release_tier_reads_timer(), first).result(timeout=5)
-        assert released["two-loops"] == {"l2": 1}, "the first loop's timer was never taken from it"
+
+        # a second loop that holds while the first loop's timer runs and lets go after it stopped
+        async def held_past_the_first() -> dict[str, dict[str, int]]:
+            hold_tier_reads_timer()
+            released = asyncio.run_coroutine_threadsafe(release_tier_reads_timer(), first).result(timeout=5)
+            assert released["two-loops"] == {"l2": 1}, "the first loop's timer was never taken from it"
+            return await release_tier_reads_timer()
+
+        assert asyncio.run(held_past_the_first()) == {}, "its release neither raises nor logs"
     finally:
         first.call_soon_threadsafe(first.stop)
         runner.join(timeout=5)
