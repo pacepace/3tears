@@ -352,6 +352,7 @@ from threetears.evals.analysis.reporter_curation import ReporterCaseStore
 from threetears.evals.analysis.reporter_kind import (
     LabelCriterion,
     LabelDirection,
+    LabelVerdict,
     PreparedReporter,
     ReporterCase,
     WriterMessageCheck,
@@ -634,6 +635,7 @@ __all__ = [
     "JudgedMeasure",
     "LabelCriterion",
     "LabelDirection",
+    "LabelVerdict",
     "LabelReading",
     "LabelStatistics",
     "LensStore",

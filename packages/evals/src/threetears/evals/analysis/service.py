@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
@@ -1957,12 +1958,63 @@ def reporter_case_bank(storage: AnalysisStore, template_id: str, scope_id: str) 
 
 def _label_set(labels: Sequence[ReporterLabel], *, criterion: bool) -> list[str]:
     """Labels as what makes two freezes the same case compares them: their verdicts, with or without the criterion
-    each was written against, and never who gave or relayed them (``reader``, ``collected_by``) — provenance, so a
-    re-freeze of the same verdicts names the stored case, whose own record of them stands."""
-    dropped: dict[str, Any] = {"reader": None, "collected_by": None}
+    each was written against, and never who gave or relayed them (``reader``, ``collected_by``) or the memo passage
+    each points at (``memo_excerpt``) — provenance, so a re-freeze of the same verdicts names the stored case, whose
+    own record of them stands."""
+    dropped: dict[str, Any] = {"reader": None, "collected_by": None, "memo_excerpt": None}
     if not criterion:
         dropped["criterion"] = None
     return sorted(label.model_copy(update=dropped).model_dump_json() for label in labels)
+
+
+def _whitespace_collapsed(text: str) -> str:
+    """``text`` with every run of whitespace one space: how an excerpt and the memo it quotes are compared."""
+    return re.sub(r"\s+", " ", text)
+
+
+def _refuse_a_label_of_another_form(labels: Sequence[ReporterLabel], *, template_id: str) -> None:
+    """Refuse a label whose form is not its dimension's scale, as the criterion the freeze stamped states it.
+
+    A pass/fail dimension takes a ``verdict``, an ordinal one a ``direction``: a label in the other form could never
+    be compared with the judge's score (:func:`~threetears.evals.analysis.reporter_bank.label_agrees`), and no
+    mapping between the two is ratified. Applied at the freeze only, so a label stored before verdicts existed keeps
+    reading.
+
+    :raises ValidationFailedError: A label's form is not its stamped criterion's scale.
+    """
+    wrong = [
+        f"{label.dimension} ({label.criterion.scale}) carries a {'verdict' if label.direction is None else 'direction'}"
+        for label in labels
+        if label.criterion is not None and (label.verdict is None) == (label.criterion.scale == "pass_fail")
+    ]
+    if wrong:
+        raise ValidationFailedError(
+            f"a label's form follows its dimension's scale on template {template_id!r}: a pass_fail dimension takes a "
+            f"verdict and an ordinal one a direction, and {'; '.join(wrong)}",
+            remedy="send a verdict (pass|fail) on each pass_fail dimension and a direction on each ordinal one",
+        )
+
+
+def _refuse_an_excerpt_not_in_the_memo(labels: Sequence[ReporterLabel], memo: str) -> None:
+    """Refuse a label whose ``memo_excerpt`` is not a passage of the recorded memo the case pins.
+
+    Compared after collapsing each run of whitespace to one space, in the excerpt and the memo alike, and nothing
+    else: a surface prints the memo's text whitespace-collapsed, so a passage copied from one matches, and any other
+    difference is a passage the memo does not hold.
+
+    :raises ValidationFailedError: An excerpt is not found in the memo.
+    """
+    collapsed = _whitespace_collapsed(memo)
+    if missing := [
+        label.dimension
+        for label in labels
+        if label.memo_excerpt is not None and _whitespace_collapsed(label.memo_excerpt) not in collapsed
+    ]:
+        raise ValidationFailedError(
+            f"the memo_excerpt of the label(s) on {', '.join(missing)} is not a passage of the recorded memo, compared "
+            "with each run of whitespace collapsed to one space",
+            remedy="copy each excerpt verbatim from the recorded memo as the judge reads it, or omit it",
+        )
 
 
 def freeze_reporter_case(
@@ -1997,6 +2049,13 @@ def freeze_reporter_case(
     the template states for its dimension (``ReporterLabel.criterion``), so a reworded rubric shows
     on a calibration read instead of silently re-meaning the label; a label that arrives already
     carrying one is refused.
+
+    **A label's form is its dimension's scale.** The criterion stamped on it says whether the dimension is
+    ``pass_fail``, which takes a ``verdict``, or ``ordinal``, which takes a ``direction``; a label in the other form is
+    refused, since it could never be compared with the judge's score. A label's ``memo_excerpt``, when given, must be
+    a passage of the recorded memo, compared with each run of whitespace collapsed to one space on both sides and
+    nothing else. Both refusals are structural, and neither is applied when a stored case is read. Like the reader,
+    the excerpt is not part of what makes two freezes the same case.
 
     **Who gave a verdict is taken as the caller names it.** This is the host's own door, trusted as its own
     ``rate_result`` is: a label's ``reader`` and ``collected_by`` are stored as given, or not at all. An action reaches
@@ -2079,7 +2138,8 @@ def freeze_reporter_case(
     :raises NotFoundError: The template, campaign or analysis does not exist.
     :raises ValidationFailedError: A template that is not of the reporter kind
         (:data:`~threetears.evals.analysis.reporter_kind.REPORTER_KIND`), a label that does not
-        validate or names an unscored dimension,
+        validate or names an unscored dimension, a label whose form (direction or verdict) is not its dimension's
+        scale, a ``memo_excerpt`` that is not a passage of the recorded memo,
         labels with no recorded memo to be about, an analysis of another campaign,
         a campaign of several aspects, a bundle resolving no runs, a label change or a moved re-assembly that
         does not name the live case in ``supersedes``, a ``supersedes`` naming a case outside this pair or one
@@ -2109,7 +2169,8 @@ def freeze_reporter_case(
         ]
     except ValidationError as e:
         raise ValidationFailedError(
-            f"invalid labels: {e}", remedy="send each label as a dimension, a direction and the reader's words"
+            f"invalid labels: {e}",
+            remedy="send each label as a dimension, a direction or a verdict (one), and the reader's words",
         ) from e
     criteria = {dim.name: LabelCriterion.of(dim) for dim in template.rubric}
     if unscored := sorted({label.dimension for label in parsed} - set(criteria)):
@@ -2128,6 +2189,7 @@ def freeze_reporter_case(
     # The criterion each verdict was written against, as the template words it now — the words a
     # reader of the memo had in front of them when the label is frozen with it.
     parsed = [label.model_copy(update={"criterion": criteria[label.dimension]}) for label in parsed]
+    _refuse_a_label_of_another_form(parsed, template_id=template_id)
     if parsed and not analysis_id:
         raise ValidationFailedError(
             "labels are a reader's verdict on a recorded memo, and this freeze pins none",
@@ -2153,12 +2215,16 @@ def freeze_reporter_case(
                 "its memo would be judged against another campaign's evidence",
                 remedy=f"pass an analysis of campaign {campaign_id!r} ({FIND_ANALYSIS})",
             )
+        memo = render_memo_as_written(analysis)
+        _refuse_an_excerpt_not_in_the_memo(parsed, memo)
+        recorded_memo: str | None = memo
         # The ledger as the generation read it, on `inspect_analysis_bundle`'s terms.
         assembled_at = analysis.generation.bundle_assembled_at
         bundle = _assembled_campaign_bundle(
             campaign, storage=storage, profile=host.profile, insights_as_of=assembled_at
         )
     else:
+        recorded_memo = None
         # Stamped BEFORE assembly, as a generation stamps it: the instant is the
         # insight ledger's cutoff.
         assembled_at = utc_now_iso()
@@ -2286,7 +2352,7 @@ def freeze_reporter_case(
         bundle_fingerprint=fingerprint,
         bundle_assembled_at=assembled_at,
         recorded_analysis_id=analysis.id if analysis is not None else None,
-        recorded_memo=render_memo_as_written(analysis) if analysis is not None else None,
+        recorded_memo=recorded_memo,
         writer_message=writer_message,
         recorded_writer_message_digest=recorded_message_digest,
         labels=parsed,

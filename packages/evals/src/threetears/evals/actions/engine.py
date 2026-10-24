@@ -2265,11 +2265,14 @@ def engine_actions() -> tuple[Action, ...]:
                 "candidate replays and labels are written about; without it only a generating candidate can run "
                 "the case. One campaign and memo is one case: a freeze matching the pair's live case returns it, and "
                 "one that differs (other labels, or evidence that moved) is refused unless supersedes names the live "
-                "case. Each label is a reader's verdict, its reader named in the label or, omitted, you; the host "
-                "must vouch that you relay each reader's verdict, or the freeze is refused and nothing is written. "
-                "Who gave or relayed a verdict is not part of the case's identity: re-freezing the same verdicts "
-                "returns the stored case. limits states what the frozen evidence cannot support. Then run_launch the "
-                "template; reporter_cases_list reads its bank, reporter_case_archive retires a case. Calls no model."
+                "case. Each label is a reader's verdict in its dimension's form: a direction on an ordinal "
+                "dimension, pass or fail on a pass_fail one, and a mismatch is refused. A memo_excerpt quotes the "
+                "passage it is about and must be in the recorded memo. Its reader is named in the label or, omitted, "
+                "you; the host must vouch that you relay each reader's verdict, or the freeze is refused and nothing "
+                "is written. Who gave or relayed a verdict, and its excerpt, are not part of the case's identity: "
+                "re-freezing the same verdicts returns the stored case. limits states what the frozen evidence cannot "
+                "support. Then run_launch the template; reporter_cases_list reads its bank, reporter_case_archive "
+                "retires a case. Calls no model."
             ),
         ),
         Action(
