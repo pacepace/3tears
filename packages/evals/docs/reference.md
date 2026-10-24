@@ -1091,6 +1091,7 @@ Everything the engine knows about one consuming product.
 | `listing_elisions` | `frozenset[str]` | `frozenset()` | Paths inside `EvalRun.host_payload` that a read LISTING many runs leaves out. |
 | `release_label` | `str \| None` | `None` | The `label` sweepable whose value names the BUILD of the product that ran — an app version. |
 | `analysis_writer_models` | `tuple[str, ...]` | `()` | The model ids this host allows to write a campaign's analysis. Empty: any model. |
+| `model_pass_hat_k` | `bool` | `False` | Whether the frontier also reads a model-based pass^k for each contestant at a depth it never reached. |
 | `sweepables` | `SweepableRegistry` | derived | Every input this host's runs carry: `host_sweepables` plus each kind contract's levers. |
 
 <a id="documents"></a>
@@ -1211,7 +1212,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schema_version` | `int` | `62` | Bundle-shape version, for future evolution + fingerprint clarity. |
+| `schema_version` | `int` | `63` | Bundle-shape version, for future evolution + fingerprint clarity. |
 | `campaign_id` | `str` | required | The campaign this bundle summarises. |
 | `subject_id` | `str` | required | The analysed subject's stable id. |
 | `subject_kind` | `str` | `''` | Discriminator; data, never a code branch. |
@@ -1998,6 +1999,7 @@ The engine's own measures (`METRIC_DESCRIPTORS`), grouped by family in the order
 | `n_no_criterion_excluded` | — | — | iterations | Iterations left out of pass^k because they carried nothing for it to conjoin: no goal-state check and no judge, as a classifier scored only against its expected label. |
 | `pass_hat_k_unmeasured_reason` | — | — | — | Why pass_hat_k is null when the reason is that no iteration carried a pass criterion; null otherwise. |
 | `n_cases_at_k` | — | — | cases | The cases pass_hat_k averages over: those scored at least k times. |
+| `n_cases_short_of_k` | — | — | cases | The scored cases pass_hat_k leaves out because each was scored fewer than k times; with n_cases_at_k they make n_test_cases, so a shallow case is counted rather than dropped unsaid. |
 | `mean_total_ms` | lower | — | ms | Average end-to-end wall-clock over the cells that MEASURE the candidate — a cell an apparatus fault produced is excluded, since a clock stopped by a cassette miss or a judge error times the harness. |
 | `median_total_ms` | lower | — | ms | Typical end-to-end wall-clock, less sensitive to one slow outlier than the mean. |
 | `p95_total_ms` | lower | — | ms | Tail end-to-end wall-clock: as likely above the true 95th percentile as below it. |

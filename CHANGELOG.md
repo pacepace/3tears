@@ -13,7 +13,7 @@ and nothing said so. Every arm's scoreboard, every pass-rate reading (both arms)
 `Depth`: its cases, trials and repeats per case, fewest, median and most. A frontier subject names its common depth,
 the fewest runs any arm gave a case every arm shares, over every shared case (a case some arm never ran is left out
 and counted), and reads
-each point there over all its runs (`C(c, k) / C(n, k)`, exact, no model); a depth an arm never reached is
+each point there over all its runs (`C(c, k) / C(n, k)`, exact, no model); a depth an arm ran no case to is
 `unmeasured_for` it, and the pass^k row counts the cases short of `k`. A pass-rate reading's `precision` states each
 side's own half-width, which side limits the interval, and the share of the difference's variance that lies between
 cases, which extra repeats cannot lower. Nothing read changes: the frontier still ranks at the planned `k`, and every
@@ -22,10 +22,15 @@ interval, change and count is as it was. The bundle shape moves from 62 to 63. S
 **Added (surfaces):** The campaign page states depth in three tables, `Depth`, `Pass^k depth` and `Precision`, each
 with one plain sentence under it ("v2 was run twice on character, the others once; that tightens v2's own estimate,
 not the comparison much."), and its Methods say that a pass-rate interval weighs each shared case equally while the
-counts beside it pool every trial. The writer's view carries the same depths and the sentence to say, and code holds
-the memo to them: a sentence comparing arms on pass^k at a depth some arm never reached is dropped and listed, and a
-memo that never says its arms ran to different depths is named in the Methods. The seeded writer prompt's rule 5
-says so, so hosts push the new seed. Page JSON shape 4; campaign bundle shape 2.
+counts beside it pool every trial. The writer's view carries the same depths as structure: each arm's, the sentence
+to say once, and per frontier subject the common depth, whether the arms share no case, and the arms pass^k at the
+planned depth is unmeasured for. The seeded writer prompt's rule 5 asks the memo to say the depth sentence once and
+never compare arms on pass^k above the common depth, so hosts push the new seed; no code checks the memo's prose for
+it (owner, 2026-10-24). Page JSON shape 4; campaign bundle shape 2.
+
+**Added (floors):** A floor's status now carries its margin, its worst case and how far it is `short_by`, and the
+writer's view lists each arm's pass-rate verdict on each aspect before the floors, each floor naming the one rate it
+speaks for. The seeded prompt says an unclear floor is not yet shown within the margin, never failed.
 
 **Added (opt-in):** `HostProfile.model_pass_hat_k` asks the frontier for a model-based pass^k at a depth a contestant
 never reached: a beta-binomial over the per-case pass chance, carried as `basis: "model"` with what it assumes, shown

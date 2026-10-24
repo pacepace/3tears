@@ -292,6 +292,25 @@ class FloorStatus(EvalDocumentModel):
         )
     )
     reason: str = Field(description="Why, in one plain sentence, with the counts it rests on.")
+    margin: float | None = Field(
+        default=None,
+        description="A rate floor's margin, in points: the most the candidate's rate may drop. None for a cost floor.",
+    )
+    worst_drop: float | None = Field(
+        default=None,
+        description=(
+            "The largest drop in points the deciding rate's interval allows: the worst case the floor is read against. "
+            "None for a cost floor, or with no interval."
+        ),
+    )
+    short_by: float | None = Field(
+        default=None,
+        description=(
+            "How far the worst case lies past the margin, in points (`worst_drop` less `margin`), where it does: how "
+            "far an unclear floor is from being shown held, or a broken one past it. None where the worst case lies "
+            "within the margin, or for a cost floor. A floor speaks for the one rate it read, never its whole aspect."
+        ),
+    )
 
 
 class PairReading(EvalDocumentModel):
@@ -1296,7 +1315,14 @@ def _precision(rate: RateReading, keys: tuple[str, ...]) -> Precision | None:
     depth.precision`), its sides named by ``keys`` in its samples' order; None with no per-case shares."""
     if rate.samples is None:
         return None
-    return precision(rate.samples, rate.trials, keys=(keys[0], keys[1]), interval=rate.interval, paired=rate.paired)
+    return precision(
+        rate.samples,
+        rate.trials,
+        passes=rate.passes,
+        keys=(keys[0], keys[1]),
+        interval=rate.interval,
+        paired=rate.paired,
+    )
 
 
 def _points(rate: RateReading | None) -> tuple[float, float] | None:

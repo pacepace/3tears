@@ -78,15 +78,22 @@ def test_the_sentences_say_the_depths_in_plain_words() -> None:
     )
     assert depth_sentence("character", {"1017": once, "1016": once}) is None
     assert not depths_differ([once, once, None]) and depths_differ([once, twice])
-    assert common_depth_sentence(1, left_out=0) == (
-        "pass^k is compared at depth 1, the fewest runs any arm gave a case, so it compares pass rates, not reliability."
+    assert common_depth_sentence("character", 1, left_out=0) == (
+        "On character, pass^k is compared at depth 1, the fewest runs any arm gave a shared case, so it compares pass "
+        "rates, not reliability."
     )
-    assert common_depth_sentence(2, left_out=1) == (
-        "pass^k is compared at depth 2, the fewest runs any arm gave a case, over each arm's runs; 1 case some "
-        "arm never ran is left out."
+    assert common_depth_sentence("character", 2, left_out=1) == (
+        "On character, pass^k is compared at depth 2, the fewest runs any arm gave a shared case, over all runs. 1 case "
+        "some arm never ran is left out."
     )
-    assert unmeasured_sentence(2, ["B"]) == "pass^2 is unmeasured for B, which ran no case twice."
-    assert unmeasured_sentence(2, []) is None
+    assert common_depth_sentence("character", None, left_out=4) == (
+        "On character the arms share no case, so pass^k compares nothing between them."
+    )
+    assert (
+        unmeasured_sentence("character", 2, ["B"])
+        == "On character, pass^2 is unmeasured for B, which ran no case twice."
+    )
+    assert unmeasured_sentence("character", 2, []) is None
 
 
 def test_a_pass_hat_k_entry_counts_the_cases_short_of_k() -> None:
@@ -117,6 +124,8 @@ def test_each_arm_s_depth_is_on_the_scoreboard_and_its_trials_beside_its_shares(
     [passed] = [contrast for contrast in arms.bundle.floor_contrasts if contrast.reading == "trial"]
     assert passed.case_values == ([1.0, 0.5, 0.0, 1.0], [1.0, 0.0, 1.0, 1.0])
     assert passed.case_trials == ([2, 2, 2, 2], [1, 1, 1, 1])
+    # The passes themselves, so a variance split reads the attempts, not a share rounded back into them.
+    assert passed.case_passed == ([2, 1, 0, 2], [1, 0, 1, 1])
     # The cost contrast carries no trials: its depth is the pass rate's.
     assert all(contrast.case_trials is None for contrast in arms.bundle.floor_contrasts if contrast.reading != "trial")
 
@@ -282,5 +291,7 @@ def test_a_floor_contrast_refuses_trials_that_do_not_line_up_with_its_shares() -
 
     with pytest.raises(ValueError, match="line up"):
         type(passed).model_validate({**data, "case_trials": [[2, 2, 2], [1, 1, 1, 1]]})
+    with pytest.raises(ValueError, match="each case passing at most its trials"):
+        type(passed).model_validate({**data, "case_passed": [[3, 1, 0, 2], [1, 0, 1, 1]]})
     with pytest.raises(ValueError, match="at least one usable trial"):
         type(passed).model_validate({**data, "case_trials": [[2, 2, 2, 0], [1, 1, 1, 1]]})

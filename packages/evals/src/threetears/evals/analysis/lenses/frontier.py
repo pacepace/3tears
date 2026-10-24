@@ -543,14 +543,13 @@ class FrontierPoint(EvalBaseModel):
     #: unsaid. ``n_pass_cases`` plus this is every scored case.
     n_cases_short_of_k: int = 0
     #: This point's pass^k at the subject's common depth (:attr:`SubjectFrontier.common_depth`), over the cases
-    #: every point measured that deep, each case's ``C(c, k) / C(n, k)`` over all its attempts: what this point
+    #: every point ran, each case's ``C(c, k) / C(n, k)`` over all its attempts: what this point
     #: reads in a comparison every point can enter. Disclosed beside ``pass_hat_k``, never ranked on. ``None`` with
-    #: no common depth, or no case every point measured that deep.
+    #: no common depth: the points share no case.
     common_pass_hat_k: float | None = None
     #: The cases ``common_pass_hat_k`` averages over: the same cases on every point.
     n_common_cases: int = 0
-    #: This point's scored cases the common-depth reading leaves out: some point measured them fewer times, or not
-    #: at all.
+    #: This point's scored cases the common-depth reading leaves out: some point never ran them.
     n_cases_left_out: int = 0
     #: A MODEL's pass^k at the subject's ``k``, for a point that scored no case that deep: a beta-binomial over the
     #: per-case pass chance (:func:`~threetears.evals.analysis.depth.model_pass_hat_k`), ``basis: "model"`` with what
@@ -810,6 +809,9 @@ class SubjectFrontier(EvalBaseModel):
     #: 1 a comparison is of pass rates, not reliability. ``None`` when no point scored an attempt. Disclosed beside
     #: ``k``, which the ranking still reads.
     common_depth: int | None = None
+    #: True where two or more points scored an attempt and they share no case: pass^k compares nothing between them,
+    #: said rather than left to a missing ``common_depth``.
+    shares_no_case: bool = False
     #: The variant keys of the points that scored no case ``k`` times: pass^k at ``k`` is unmeasured for each, said
     #: rather than left to a missing figure.
     unmeasured_for: list[str] = []
@@ -1492,7 +1494,7 @@ class _ContestantCases(NamedTuple):
 
 def _place_common_depth(points: Sequence[FrontierPoint], cases: Sequence[_ContestantCases]) -> int | None:
     """Read every point at the subject's common depth (:func:`~threetears.evals.analysis.depth.common_depth`): each
-    point's pass^k there over the cases every point measured that deep, and what it leaves out. Nothing ranked reads
+    point's pass^k there over the cases every point ran, and what it leaves out. Nothing ranked reads
     it; it is the comparison every point can enter, stated beside the headline.
 
     :return: The common depth; None when no point scored an attempt.
@@ -2223,6 +2225,7 @@ def compute_frontier(
                 subject_label=subject_labels.get(resolved, ""),
                 k=subject_k,
                 common_depth=common,
+                shares_no_case=common is None and sum(1 for point in points if point.depth is not None) > 1,
                 unmeasured_for=[
                     point.variant_key
                     for point in points

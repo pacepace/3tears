@@ -99,7 +99,8 @@ class RateReading:
     trials' own pass rate. ``samples`` are the control's and the arm's per-case values, higher better, which a
     projection reads again at more cases (:func:`project_rate`); ``paired`` whether they are one-to-one; ``rig`` the
     test setup (apparatus class) they were read under, None with no per-case values. ``trials`` are each side's usable
-    trials per case, aligned with ``samples``: carried on the overall pass rate, None elsewhere. Each case's share
+    trials per case, aligned with ``samples``, and ``passes`` each side's trials passed per case: carried on the overall
+    pass rate, None elsewhere. Each case's share
     weighs the same in the interval whatever its trials, while the passed-of-measured counts pool every trial.
     """
 
@@ -117,6 +118,7 @@ class RateReading:
     confidence: float | None = None
     rig: str | None = None
     trials: tuple[tuple[int, ...], tuple[int, ...]] | None = None
+    passes: tuple[tuple[int, ...], tuple[int, ...]] | None = None
 
     def drop_bounds(self) -> tuple[float, float]:
         """The arm's drop from the control in points, at best and at worst for the arm."""
@@ -341,7 +343,12 @@ def evaluate_floor(
     from threetears.evals.analysis.campaign_readings import FloorStatus  # this module is read by that one
 
     verdict = read_floor(floor, readings, control=control_label, candidate=arm_label)
+    margin = floor.clause.max_points if isinstance(floor.clause, RateDrop) else None
+    worst = verdict.rate.worst_drop() if margin is not None and verdict.rate is not None else None
     return FloorStatus(
+        margin=margin,
+        worst_drop=worst,
+        short_by=worst - margin if worst is not None and margin is not None and worst > margin else None,
         floor=floor.key,
         aspect=floor.aspect,
         arm=arm,
@@ -615,9 +622,10 @@ def _read_on(
         control, contrast, paired=paired, value_range=_RATE_RANGE, confidence=confidence
     )
     trials = comparison.case_trials if isinstance(comparison, FloorContrast) else None
+    passes = comparison.case_passed if isinstance(comparison, FloorContrast) else None
     # Trials that do not line up with the shares they sit beside are none: no depth is read off them.
     if trials is not None and (len(trials[0]), len(trials[1])) != (len(control), len(contrast)):
-        trials = None
+        trials = passes = None
     return replace(
         rate,
         interval=interval,
@@ -626,6 +634,7 @@ def _read_on(
         confidence=confidence,
         rig=comparison.control.apparatus_class_id,
         trials=None if trials is None else (tuple(trials[0]), tuple(trials[1])),
+        passes=None if passes is None or trials is None else (tuple(passes[0]), tuple(passes[1])),
     )
 
 

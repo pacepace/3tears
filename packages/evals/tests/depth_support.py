@@ -6,12 +6,14 @@ point. ``A`` is the control, ``B`` the candidate; their attempts are given case 
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 
 from threetears.evals.analysis import assemble_context_bundle, campaign_readings
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.lenses.frontier import FrontierPoint
-from threetears.evals.kernel.declaration import CampaignArm
+from threetears.evals.kernel.declaration import CampaignArm, DecisionClause
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.identity import IDENTITY_VERSION, derive_context_identity, derive_variant_identity
 from threetears.evals.schema.models import EvalResult, EvalRun, RoleUsage
@@ -87,6 +89,7 @@ class TwoArms:
         k_a: int,
         k_b: int,
         profile: HostProfile = PROFILE,
+        floors: Sequence[DecisionClause] = (),
     ) -> None:
         self.run_a, self.run_b = _launched("run-a", "sonnet", k_a), _launched("run-b", "haiku", k_b)
         self.key_a, self.key_b = _key(self.run_a), _key(self.run_b)
@@ -102,6 +105,7 @@ class TwoArms:
             design=minimal_aspect_design(merit_axes=[]),
             margin=10.0,
             control=self.arms[0],
+            floors=floors,
             scope_id=self.run_a.scope_id,
             subject_id=self.run_a.subject_snapshot.subject_id,
             behavior="b",

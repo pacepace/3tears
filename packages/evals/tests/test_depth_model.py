@@ -22,9 +22,8 @@ from threetears.evals.analysis import build_campaign_report, build_code_only_rep
 from threetears.evals.analysis.campaign_bundle import writer_view
 from threetears.evals.analysis.depth import MODEL_ASSUMES, model_pass_hat_k
 from threetears.evals.analysis.lens_text import frontier_text
-from threetears.evals.analysis.report.memo_style import MemoStyle
 from threetears.evals.analysis.report.model import DisclosureBlock, TableBlock
-from threetears.evals.analysis.style import ArmName, lint_prose
+from threetears.evals.analysis.style import lint_prose
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.depth_support import ONCE, PROFILE, TWICE, TwoArms
 
@@ -112,7 +111,7 @@ def test_the_page_puts_the_model_in_a_table_of_its_own_labelled_with_what_it_ass
     assert [{key: cell.value for key, cell in row.items()} for row in table.rows] == [
         {"aspect": "character", "arm": "A", "depth": 3, "model": round(100 * _A_PASS_3, 1)}
     ]
-    said = f"These pass^k figures are {MODEL_ASSUMES}. No arm ran a case that deep, so nothing ranks on them."
+    said = f"Each figure here is {MODEL_ASSUMES}. Its arm ran no case that deep, so nothing ranks on it."
     assert said in [block.text for block in page.blocks if isinstance(block, DisclosureBlock)]
     assert lint_prose(said) == []
 
@@ -123,14 +122,7 @@ def test_the_writer_reads_the_model_labelled_and_the_text_says_it_is_one() -> No
 
     [aspect] = writer_view(bundle)["aspects"]
 
-    assert aspect["depth"]["pass_k"]["model"] == {
+    assert aspect["depth"]["pass_k_model"] == {
         "A": {"k": 3, "pass_hat_k": pytest.approx(_A_PASS_3, rel=1e-3), "basis": "model", "assumes": MODEL_ASSUMES}
     }
     assert MODEL_ASSUMES in frontier_text(arms.bundle.frontier)
-
-
-def test_a_memo_comparing_arms_on_the_model_is_dropped_as_any_unreached_comparison_is() -> None:
-    arms = TwoArms(TWICE, ONCE, k_a=3, k_b=3, profile=_MODELLED)
-    style = MemoStyle(bundle=arms.bundle, names={arms.key_a: ArmName(label="A"), arms.key_b: ArmName(label="B")})
-
-    assert style.compares_unreached("On the model, A beats B at pass^3.")

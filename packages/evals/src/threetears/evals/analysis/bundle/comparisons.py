@@ -738,14 +738,14 @@ def _multiple_comparisons(
     values: dict[_CellKey, dict[tuple[ComparisonReading, str], dict[str, float]]] = {}
     # Each cell's usable trials per case on the overall pass rate, carried beside its shares so a reading states each
     # side's depth case by case.
-    trials: dict[_CellKey, dict[str, int]] = {}
+    trials: dict[_CellKey, dict[str, tuple[int, int]]] = {}
     for key, members in results_by_cell.items():
         values[key] = {
             reading: by_case for reading, by_case in _per_case_values(members, judged_rows, profile=profile).items()
         }
         counts = _trial_pass_counts(members, rubric_threshold=rubric_threshold, catalog=catalog)
         values[key][("trial", TRIAL_PASS_NAME)] = {case: passed / usable for case, (passed, usable) in counts.items()}
-        trials[key] = {case: usable for case, (_, usable) in counts.items()}
+        trials[key] = counts
     pairs = [
         (control_key, contrast_key)
         for control_key in sorted(values)
@@ -855,7 +855,7 @@ def _choice_contrasts(
     values = {
         key: {case: passed / usable for case, (passed, usable) in by_case.items()} for key, by_case in counts.items()
     }
-    trials = {key: {case: usable for case, (_, usable) in by_case.items()} for key, by_case in counts.items()}
+    trials = counts
     keys = sorted(values)
     contrasts = [
         _floor_contrast(
@@ -876,20 +876,21 @@ def _floor_contrast(
     control: tuple[_CellKey, dict[str, float]],
     contrast: tuple[_CellKey, dict[str, float]],
     *,
-    trials: tuple[Mapping[str, int], Mapping[str, int]] | None = None,
+    trials: tuple[Mapping[str, tuple[int, int]], Mapping[str, tuple[int, int]]] | None = None,
 ) -> FloorContrast | None:
     """One arm against the control under one rig on a reading a floor reads, its samples as a comparison's would be
-    (:func:`_test_samples`), and, where ``trials`` gives each side's usable trials per case, those trials case for case
-    beside them; None where a side has fewer than two cases, which no interval reads."""
+    (:func:`_test_samples`), and, where ``trials`` gives each side's passed and usable trials per case, both case for
+    case beside them; None where a side has fewer than two cases, which no interval reads."""
     (control_key, control_values), (contrast_key, contrast_values) = control, contrast
     a, b, paired = _test_samples(control_values, contrast_values)
     if len(a) < 2 or len(b) < 2:
         return None
     kind, name = reading
-    case_trials = None
+    case_trials = case_passed = None
     if trials is not None:
         cases_a, cases_b, _ = contrast_cases(control_values, contrast_values)
-        case_trials = ([trials[0][case] for case in cases_a], [trials[1][case] for case in cases_b])
+        case_trials = ([trials[0][case][1] for case in cases_a], [trials[1][case][1] for case in cases_b])
+        case_passed = ([trials[0][case][0] for case in cases_a], [trials[1][case][0] for case in cases_b])
     return FloorContrast(
         reading="trial" if kind == "trial" else "measure",
         name=name,
@@ -910,6 +911,7 @@ def _floor_contrast(
         test="paired" if paired else "unpaired",
         case_values=(list(a), list(b)),
         case_trials=case_trials,
+        case_passed=case_passed,
     )
 
 

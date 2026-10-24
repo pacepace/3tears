@@ -1904,6 +1904,13 @@ class FloorContrast(EvalDocumentModel):
             "which its share weighs equally whatever it is. Carried on the overall pass rate; None on cost."
         ),
     )
+    case_passed: tuple[list[int], list[int]] | None = Field(
+        default=None,
+        description=(
+            "The control's and the arm's usable trials passed per case, aligned with `case_trials`: each case's share "
+            "is its passed over its trials. Carried with `case_trials`, None without them."
+        ),
+    )
 
     @model_validator(mode="after")
     def _trials_line_up(self) -> FloorContrast:
@@ -1918,6 +1925,12 @@ class FloorContrast(EvalDocumentModel):
             raise ValueError("case_trials must line up with case_values, case for case on each side")
         if any(count < 1 for side in trials for count in side):
             raise ValueError("a case carried in case_trials has at least one usable trial")
+        passed = self.case_passed
+        if passed is not None and not all(
+            len(counts) == len(side) and all(0 <= hit <= of for hit, of in zip(counts, side, strict=True))
+            for counts, side in zip(passed, trials, strict=True)
+        ):
+            raise ValueError("case_passed must line up with case_trials, each case passing at most its trials")
         return self
 
 
@@ -2515,9 +2528,9 @@ class AnalysisContextBundle(EvalDocumentModel):
     # reason (`pass_hat_k_cells`), so pass^k and its curve move over unchanged runs; a comparison set's case-set fingerprint digests the run's frozen case ids
     # and is never None.
     # 63: depth is stated, nothing read changes: each arm's `scoreboard[].depth` (usable cases, trials, and trials per
-    # case fewest, median and most), each overall pass-rate floor contrast's `case_trials` beside its shares, and each
+    # case fewest, median and most), each overall pass-rate floor contrast's `case_trials` and `case_passed` beside its shares, and each
     # frontier point's delivered `depth`, `n_cases_short_of_k`, common-depth reading (`common_pass_hat_k`,
-    # `n_common_cases`, `n_cases_left_out`) and each subject's `common_depth` and `unmeasured_for`; a point's opt-in
+    # `n_common_cases`, `n_cases_left_out`) and each subject's `common_depth`, `shares_no_case` and `unmeasured_for`; a point's opt-in
     # `model_pass_hat_k` (`basis: "model"`), None unless the host asks for it.
     schema_version: int = Field(
         default=63, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."

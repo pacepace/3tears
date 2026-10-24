@@ -627,6 +627,12 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
         ]
     view |= {
         "arms": _arms(bundle, namer),
+        # Each arm's verdict on each aspect's pass rate first, then each floor apart: a floor speaks for the one rate it
+        # read (a check's, or the pass rate's), never for its whole aspect, and an unclear floor is not a broken one.
+        "pass_rate_verdicts": [
+            {"aspect": row.aspect, "arm": row.arm_label, "reading": row.reading, "change": _figure(row.change)}
+            for row in bundle.readings.readings
+        ],
         "floors": [
             {
                 "floor": status.floor,
@@ -634,7 +640,11 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
                 "arm": status.arm_label,
                 "status": status.status,
                 "reading": status.reading,
+                "speaks_for": status.reading or "the pass rate",
                 "interval": _figures(status.interval),
+                "worst_drop": _figure(status.worst_drop),
+                "margin": status.margin,
+                "short_by": _figure(status.short_by),
                 "reason": status.reason,
             }
             for status in floors
@@ -915,9 +925,9 @@ def _repeats(depth: Depth) -> dict[str, Any]:
 
 
 def _depth(aspect: AnalysisContextBundle, namer: _Namer) -> dict[str, Any]:
-    """The aspect's depths: each arm's, the sentence to say once where they differ, and the depth pass^k compares at
-    (``common_depth``), above which no comparison of pass^k may rank (``unmeasured_for`` names the arms that never
-    reached the planned ``k``)."""
+    """The aspect's depths: each arm's, the sentence to say once where they differ, and per frontier subject the depth
+    pass^k compares at (``common_depth``, the fewest runs any arm gave a shared case), above which no comparison of
+    pass^k may rank; ``unmeasured_for`` names the arms that ran no case the planned ``k`` times."""
     depth = aspect_depth(aspect, namer.arm)
     view: dict[str, Any] = {
         "arms": {label: _repeats(held) for label, held in depth.arms.items()},
@@ -926,26 +936,34 @@ def _depth(aspect: AnalysisContextBundle, namer: _Namer) -> dict[str, Any]:
     if depth.said is not None:
         view["said"] = depth.said
     if depth.compared:
-        view["pass_k"] = {
-            "k": depth.k,
-            "common_depth": depth.common_depth,
-            "unmeasured_for": depth.unmeasured_for,
-            "said": depth.pass_k_lines(),
-        }
-        modelled = {
-            namer.arm(point.variant_key): {
-                "k": point.model_pass_hat_k.k,
-                "pass_hat_k": _figure(point.model_pass_hat_k.pass_hat_k),
-                "basis": point.model_pass_hat_k.basis,
-                "assumes": point.model_pass_hat_k.assumes,
+        # One entry per frontier subject, each with the sentences to say: pass^k compares at `common_depth`, nothing
+        # where `shares_no_case`, and is unmeasured at the planned `k` for each arm `unmeasured_for` names.
+        view["pass_k"] = [
+            {
+                "where": subject.where,
+                "k": subject.k,
+                "common_depth": subject.common_depth,
+                "shares_no_case": subject.shares_no_case,
+                "unmeasured_for": subject.unmeasured_for,
+                "said": subject.lines(),
             }
-            for subject in aspect.frontier.subjects
-            for point in subject.points
-            if point.model_pass_hat_k is not None
+            for subject in depth.subjects
+            if subject.compared
+        ]
+    modelled = {
+        namer.arm(point.variant_key): {
+            "k": point.model_pass_hat_k.k,
+            "pass_hat_k": _figure(point.model_pass_hat_k.pass_hat_k),
+            "basis": point.model_pass_hat_k.basis,
+            "assumes": point.model_pass_hat_k.assumes,
         }
-        if modelled:
-            # A model, never a measurement: carried labelled, and no comparison may rank on it.
-            view["pass_k"]["model"] = modelled
+        for subject in aspect.frontier.subjects
+        for point in subject.points
+        if point.model_pass_hat_k is not None
+    }
+    if modelled:
+        # A model, never a measurement: carried labelled, and no comparison may rank on it.
+        view["pass_k_model"] = modelled
     return view
 
 

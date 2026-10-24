@@ -5026,6 +5026,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.Depth": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.describe_insight_id_filters": {
       "kind": "function",
       "signature": "",
@@ -5676,6 +5681,11 @@
       "signature": "",
       "tier": "host-contract"
     },
+    "threetears.evals.analysis.ModelPassHatK": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.multi_rig_variants": {
       "kind": "function",
       "signature": "",
@@ -5782,6 +5792,11 @@
       "tier": "provisional"
     },
     "threetears.evals.analysis.PlannedCost": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.Precision": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"

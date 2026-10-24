@@ -38,7 +38,6 @@ Every arm is named by its label, never by its role; every line is held to :mod:`
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
@@ -214,9 +213,7 @@ def build_campaign_report(
         )
         for aspect in campaign.aspects
     ]
-    blocks += style.methods(
-        memo, [aspect_depth(bundle, _label_of(bundle, readings.arm_labels())) for bundle in bundles]
-    )
+    blocks += style.methods()
     if readings.readings or readings.pairs:
         blocks.append(DisclosureBlock(section="methods", source="comparisons", text=PAIRING_METHOD))
     return CampaignReport(
@@ -1310,18 +1307,20 @@ def _pass_k_depth_blocks(
     depths: Sequence[tuple[AnalysisContextBundle, AspectDepth]], labels: Mapping[str, str]
 ) -> list[ReportBlock]:
     """Each frontier point's depth beside its pass^k: the planned depth, the cases short of it, and its reading at the
-    depth every arm reached; a sentence on the common depth and on each arm pass^k is unmeasured for."""
+    common depth, the fewest runs any arm gave a shared case; a sentence on the common depth, or that the arms share no
+    case, and on each arm pass^k is unmeasured for. Every subject of every aspect."""
     rows: list[dict[str, TableCell]] = []
     for bundle, depth in depths:
-        if not depth.compared:
-            continue
         name = _label_of(bundle, labels)
-        for subject in bundle.frontier.subjects:
+        subjects = [subject for subject in bundle.frontier.subjects if subject.points]
+        for subject, said in zip(subjects, depth.subjects, strict=True):
+            if not said.compared:
+                continue
             for point in subject.points:
                 rows.append(
                     table_row(
                         {
-                            "aspect": depth.aspect,
+                            "aspect": said.where,
                             "arm": name(point.variant_key),
                             "planned": subject.k,
                             "short": point.n_cases_short_of_k,
@@ -1362,8 +1361,11 @@ def _pass_k_depth_blocks(
     return blocks + _model_blocks(depths, labels)
 
 
+#: The two arms a precision row compares.
+ARMS_PAIR = "{first} and {second}"
+
 #: What the page says under the model's table: what the figures are, and that nothing ranks on them.
-_MODEL_SAID = f"These pass^k figures are {MODEL_ASSUMES}. No arm ran a case that deep, so nothing ranks on them."
+_MODEL_SAID = f"Each figure here is {MODEL_ASSUMES}. Its arm ran no case that deep, so nothing ranks on it."
 
 
 def _model_blocks(
@@ -1430,7 +1432,7 @@ def _precision_blocks(readings: CampaignReadings) -> list[ReportBlock]:
             table_row(
                 {
                     "aspect": aspect,
-                    "arms": f"{named(first)} and {named(second)}",
+                    "arms": ARMS_PAIR.format(first=named(first), second=named(second)),
                     "half_width": round(precision.half_width, 1),
                     "first": round(first_width, 1),
                     "second": round(second_width, 1),
@@ -1681,20 +1683,10 @@ class _CampaignStyle:
             kept.append(part)
         return " ".join(kept)
 
-    def _unreached(self, text: str) -> bool:
-        """Whether ``text`` compares arms on pass^k at a depth some arm never reached on any aspect; recorded once."""
-        if not any(style.compares_unreached(text) for style in self.styles):
-            return False
-        if text not in self.primary.unreached:
-            self.primary.unreached.append(text)
-        return True
-
     def sentence(self, text: str, *, plans: bool = False) -> str:
         """One sentence the memo stands on (a title, a next step), held to every rule."""
         named = self._named(" ".join(text.split()))
         if plans and not (named := self._unplanned(named)):
-            return ""
-        if self._unreached(named):
             return ""
         return self.primary.sentence(named)
 
@@ -1707,8 +1699,6 @@ class _CampaignStyle:
                 continue
             if any(style.holds_measured(part) for style in self.styles[1:]):
                 self.primary.dropped += 1
-                continue
-            if self._unreached(part):
                 continue
             kept.append(part)
         return self.primary.prose(" ".join(kept)) if kept else ""
@@ -1723,35 +1713,16 @@ class _CampaignStyle:
         written where the pass would leave none of it, unless it proposed a sample or cost no aspect projects."""
         return self.primary.or_as_written(lambda: self.prose(text, plans=True), self._named(text))
 
-    def methods(self, memo: AuthoredCampaignAnalysis | None, depths: Sequence[AspectDepth]) -> list[ReportBlock]:
-        """What the memo said that the page did not print as written, what it left unsaid that the page says, and what
-        still breaks a rule: the methods."""
+    def methods(self) -> list[ReportBlock]:
+        """What the memo said that the page did not print as written, and what still breaks a rule: the methods."""
         blocks: list[ReportBlock] = [
             DisclosureBlock(section="methods", source="memo", text=text) for text in decision_disclosures(self.primary)
         ]
-        if memo is not None and (differ := [depth.aspect for depth in depths if depth.differ]):
-            if not _DEPTH_WORDS.search(memo.model_dump_json()):
-                blocks.append(DisclosureBlock(section="methods", source="memo", text=_depth_unsaid(differ)))
         blocks += [
             DisclosureBlock(section="methods", source="memo", text=text, fold="Style")
             for text in self.primary.offending()
         ]
         return blocks
-
-
-#: Words a memo says depth in: what it must say somewhere where arms ran to different depths.
-_DEPTH_WORDS = re.compile(
-    r"\b(?:depths?|deeper|shallower|repeats?|repeated|once|twice|thrice|\d+ times|times per case)\b",
-    re.I,
-)
-
-
-def _depth_unsaid(aspects: Sequence[str]) -> str:
-    """The methods' line on a memo that never says its arms ran to different depths, which the page says for it."""
-    return (
-        f"The memo does not say the arms ran to different depths on {_listed(list(aspects))}; the Depth table and the "
-        "sentence under it say so."
-    )
 
 
 def _names(bundle: AnalysisContextBundle, labels: Mapping[str, str]) -> dict[str, ArmName]:

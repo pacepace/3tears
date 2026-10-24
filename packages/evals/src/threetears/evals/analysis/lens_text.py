@@ -9,7 +9,8 @@ from __future__ import annotations
 
 
 from threetears.evals.analysis.arms import short_digest
-from threetears.evals.analysis.depth import common_depth_sentence, times, unmeasured_sentence
+from threetears.evals.analysis.depth import times
+from threetears.evals.analysis.depth_reading import SubjectDepth, subject_depth
 
 
 from threetears.evals.analysis.numbers import format_number
@@ -54,34 +55,37 @@ def _pass_hat_k_text(k: int, value: float, n_cases: int, low: float | None, high
     return f"pass^{k} {format_number(value)}{interval} over {n_cases} case(s)"
 
 
+#: The frontier text's depth lines, each one template: a subject's place, a contestant's delivered depth, the cases it
+#: is short of ``k``, its model's reading, and its reading at the common depth.
+WHERE_SUBJECT = "subject {subject}"
+POINT_DEPTH = "ran each case {times} over {cases} case(s)"
+POINT_SHORT = ", {short} short of k={k}"
+POINT_MODEL = "; pass^{k} {value} {assumes}"
+POINT_COMMON = "; pass^{k} {value} over {cases} case(s) at the common depth"
+
+
 def _depth_lines(subject: SubjectFrontier) -> list[str]:
-    """What depth a subject's pass^k compares at, and each contestant it is unmeasured for at its planned ``k``."""
-    lines: list[str] = []
-    if len(subject.points) > 1:
-        left_out = max((point.n_cases_left_out for point in subject.points), default=0)
-        lines.append(common_depth_sentence(subject.common_depth, left_out=left_out) or "")
-    unmeasured = [
-        _contestant(point.model, point.variant_key)
-        for point in subject.points
-        if point.variant_key in subject.unmeasured_for
-    ]
-    lines.append(unmeasured_sentence(subject.k, unmeasured) or "")
-    return [line for line in lines if line]
+    """What depth a subject's pass^k compares at, or that its contestants share no case, and each contestant it is
+    unmeasured for at its planned ``k``: :class:`~threetears.evals.analysis.depth_reading.SubjectDepth`'s sentences,
+    each contestant named as this text names it."""
+    named = {point.variant_key: _contestant(point.model, point.variant_key) for point in subject.points}
+    where = WHERE_SUBJECT.format(subject=subject.subject_label or subject.subject_id)
+    depth: SubjectDepth = subject_depth(subject, lambda key: named.get(key, short_digest(key)), where=where)
+    return depth.lines()
 
 
 def _point_depth(point: FrontierPoint, subject: SubjectFrontier) -> str | None:
     """One contestant's delivered depth, and its pass^k at the subject's common depth where it differs from ``k``."""
     if point.depth is None:
         return None
-    said = f"ran each case {times(point.depth)} over {point.depth.cases} case(s)"
+    said = POINT_DEPTH.format(times=times(point.depth), cases=point.depth.cases)
     if point.n_cases_short_of_k:
-        said += f", {point.n_cases_short_of_k} short of k={subject.k}"
+        said += POINT_SHORT.format(short=point.n_cases_short_of_k, k=subject.k)
     if (model := point.model_pass_hat_k) is not None:
-        said += f"; pass^{model.k} {format_number(model.pass_hat_k)} {model.assumes}"
+        said += POINT_MODEL.format(k=model.k, value=format_number(model.pass_hat_k), assumes=model.assumes)
     if subject.common_depth is not None and subject.common_depth != subject.k and point.common_pass_hat_k is not None:
-        said += (
-            f"; pass^{subject.common_depth} {format_number(point.common_pass_hat_k)} over {point.n_common_cases} "
-            "case(s) at the common depth"
+        said += POINT_COMMON.format(
+            k=subject.common_depth, value=format_number(point.common_pass_hat_k), cases=point.n_common_cases
         )
     return said
 

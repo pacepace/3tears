@@ -9,7 +9,7 @@ one ``k``: the fewest times any arm ran any case they all share (owner, 2026-10-
 over every shared case, so no shared case is left out for depth and a case some arm never ran is left out and counted
 (:func:`common_depth`). A deeper arm is read at that ``k`` over all its runs,
 ``C(c, k) / C(n, k)`` per case, the exact mean over every ``k``-subset of its attempts, so its extra runs tighten its
-own estimate with no model. A depth some arm never reached is unmeasured for that arm, and said so. At depth 1 the
+own estimate with no model. A depth an arm never ran any case to is unmeasured for that arm, and said so. At depth 1 the
 comparison is of pass rates, not of reliability.
 
 **One opt-in model.** Above an arm's depth nothing is measured. :func:`model_pass_hat_k` fits a beta-binomial over
@@ -66,9 +66,54 @@ REPEATS_FLOOR = (
     "more cases lower."
 )
 
+# The package's own page text, each sentence one template so a locale can supply it later; nothing here reads words
+# back out of what a writer or a host wrote.
+
+#: How many times a case ran: once, twice, a count, or a range.
+TIMES_ONCE = "once"
+TIMES_TWICE = "twice"
+TIMES_MANY = "{count} times"
+TIMES_RANGE = "{fewest} to {most} times"
+
+#: The arms besides the deepest, where more than one ran alike.
+THE_OTHERS = "the others"
+
+#: One arm ran deeper than the rest, which ran alike (the owner's words, 2026-10-24).
+DEPTH_ONE_DEEPER = (
+    "{deep} was run {deep_times} on {aspect}, {others} {others_times}; that tightens {deep}'s own estimate, not the "
+    "comparison much."
+)
+
+#: One arm and how many times it ran each case, as :data:`DEPTH_EACH` lists them.
+ARM_TIMES = "{arm} {times}"
+
+#: The arms ran to several depths.
+DEPTH_EACH = (
+    "On {aspect} the arms ran each case {said}; extra repeats tighten an arm's own estimate, not the comparison much."
+)
+
+#: The arms share no case, so pass^k compares nothing.
+NO_SHARED_CASE = "On {where} the arms share no case, so pass^k compares nothing between them."
+
+#: The common depth at 1, where pass^k is a pass rate.
+COMMON_DEPTH_ONE = (
+    "On {where}, pass^k is compared at depth 1, the fewest runs any arm gave a shared case, so it compares pass "
+    "rates, not reliability."
+)
+
+#: The common depth above 1.
+COMMON_DEPTH = "On {where}, pass^k is compared at depth {k}, the fewest runs any arm gave a shared case, over all runs."
+
+#: The cases some arm never ran, which the comparison leaves out: one, or a count.
+LEFT_OUT_ONE = "1 case some arm never ran is left out."
+LEFT_OUT = "{count} cases some arm never ran are left out."
+
+#: pass^k at the planned depth is unmeasured for the arms that ran no case that deep.
+UNMEASURED = "On {where}, pass^{k} is unmeasured for {arms}, which ran no case {times}."
+
 #: What the opt-in model-based pass^k assumes, carried with every value it reads.
 MODEL_ASSUMES = (
-    "model-based, assumes one beta distribution of pass chance across cases, each case's attempts independent"
+    "model-based, assuming one beta distribution of pass chance across cases, each case's attempts independent"
 )
 
 #: The share range a pass rate's per-case values lie in.
@@ -117,12 +162,12 @@ def times(depth: Depth) -> str:
     """How many times each case ran, in words: ``once``, ``twice``, ``3 times``, ``1 to 3 times``."""
     if depth.uniform():
         return _times(depth.repeats_min)
-    return f"{depth.repeats_min} to {depth.repeats_max} times"
+    return TIMES_RANGE.format(fewest=depth.repeats_min, most=depth.repeats_max)
 
 
 def _times(count: int) -> str:
     """A count of runs in words."""
-    return {1: "once", 2: "twice"}.get(count, f"{count} times")
+    return {1: TIMES_ONCE, 2: TIMES_TWICE}.get(count) or TIMES_MANY.format(count=count)
 
 
 def depths_differ(depths: Iterable[Depth | None]) -> bool:
@@ -156,23 +201,27 @@ def depth_sentence(aspect: str, depths: Mapping[str, Depth | None]) -> str | Non
     rest = [label for label in known if label not in deep]
     rest_spreads = {known[label].spread() for label in rest}
     if len(deep) == 1 and len(rest_spreads) == 1:
-        others = "the others" if len(rest) > 1 else rest[0]
-        return (
-            f"{deep[0]} was run {times(known[deep[0]])} on {aspect}, {others} {times(known[rest[0]])}; that "
-            f"tightens {deep[0]}'s own estimate, not the comparison much."
+        others = THE_OTHERS if len(rest) > 1 else rest[0]
+        return DEPTH_ONE_DEEPER.format(
+            deep=deep[0],
+            deep_times=times(known[deep[0]]),
+            aspect=aspect,
+            others=others,
+            others_times=times(known[rest[0]]),
         )
-    said = ", ".join(f"{label} {times(depth)}" for label, depth in known.items())
-    return f"On {aspect} the arms ran each case {said}; extra repeats tighten an arm's own estimate, not the comparison much."
+    said = ", ".join(ARM_TIMES.format(arm=label, times=times(depth)) for label, depth in known.items())
+    return DEPTH_EACH.format(aspect=aspect, said=said)
 
 
 class CommonDepth(NamedTuple):
     """The depth a comparison of arms reads pass^k at, and the cases it counts there."""
 
-    #: The deepest ``k`` every arm reached: the shallowest of the arms' deepest cases. None with no arm measured.
+    #: The fewest runs any arm gave a case every arm shares (owner, 2026-10-24: compare at min(k)). None where the
+    #: arms share no case, or no arm measured any.
     k: int | None
-    #: The cases every arm measured at least ``k`` times, which the comparison counts.
+    #: The cases every arm ran, which the comparison counts.
     cases: frozenset[str]
-    #: Each arm's measured cases the comparison leaves out at ``k``: some arm measured them fewer times, or not at all.
+    #: Each arm's measured cases the comparison leaves out: some arm never ran them.
     left_out: dict[str, int]
 
 
@@ -215,31 +264,31 @@ def pass_hat_k_over(attempts: Mapping[str, Sequence[bool]], cases: Iterable[str]
     return math.fsum(estimates) / len(estimates) if estimates else None
 
 
-def common_depth_sentence(k: int | None, *, left_out: int) -> str | None:
-    """What depth a comparison of pass^k reads, in one sentence; None with no depth.
+def common_depth_sentence(where: str, k: int | None, *, left_out: int) -> str:
+    """What depth a comparison of pass^k reads on ``where``, in plain sentences, or that the arms share no case.
 
-    :param k: The common depth (:func:`common_depth`).
+    :param where: The aspect, and the subject where an aspect has several, as a sentence names it.
+    :ptype where: str
+    :param k: The common depth (:func:`common_depth`); None where the arms share no case.
     :ptype k: int | None
-    :param left_out: The cases some arm measured that the comparison leaves out at ``k``.
+    :param left_out: The cases some arm ran that another never did, which the comparison leaves out.
     :ptype left_out: int
-    :return: The sentence, or None.
-    :rtype: str | None
+    :return: The sentences.
+    :rtype: str
     """
     if k is None:
-        return None
-    if k == 1:
-        said = "pass^k is compared at depth 1, the fewest runs any arm gave a case, so it compares pass rates, not reliability"
-    else:
-        said = f"pass^k is compared at depth {k}, the fewest runs any arm gave a case, over each arm's runs"
+        return NO_SHARED_CASE.format(where=where)
+    said = COMMON_DEPTH_ONE.format(where=where) if k == 1 else COMMON_DEPTH.format(where=where, k=k)
     if left_out:
-        cases = "1 case" if left_out == 1 else f"{left_out} cases"
-        said += f"; {cases} some arm never ran {'is' if left_out == 1 else 'are'} left out"
-    return said + "."
+        said += " " + (LEFT_OUT_ONE if left_out == 1 else LEFT_OUT.format(count=left_out))
+    return said
 
 
-def unmeasured_sentence(k: int, arms: Sequence[str]) -> str | None:
-    """That pass^k at ``k`` is unmeasured for the arms that never reached it, in one sentence; None with none.
+def unmeasured_sentence(where: str, k: int, arms: Sequence[str]) -> str | None:
+    """That pass^k at ``k`` is unmeasured on ``where`` for the arms that never reached it; None with none.
 
+    :param where: The aspect, and the subject where an aspect has several, as a sentence names it.
+    :ptype where: str
     :param k: The depth read.
     :ptype k: int
     :param arms: The arms, by label, that measured no case ``k`` times.
@@ -249,7 +298,7 @@ def unmeasured_sentence(k: int, arms: Sequence[str]) -> str | None:
     """
     if not arms:
         return None
-    return f"pass^{k} is unmeasured for {', '.join(arms)}, which ran no case {_times(k)}."
+    return UNMEASURED.format(where=where, k=k, arms=", ".join(arms), times=_times(k))
 
 
 # =============================================================================
@@ -292,9 +341,8 @@ class Precision(EvalDocumentModel):
     )
 
 
-def _repeats(share: float, trials: int) -> list[float]:
-    """A case's repeats as passes and fails, from its share passed and its usable trials."""
-    passed = round(share * trials)
+def _repeats(passed: int, trials: int) -> list[float]:
+    """A case's repeats as passes and fails, from its passed and usable trials."""
     return [1.0] * passed + [0.0] * (trials - passed)
 
 
@@ -307,6 +355,7 @@ def precision(
     samples: tuple[Sequence[float], Sequence[float]],
     trials: tuple[Sequence[int], Sequence[int]] | None,
     *,
+    passes: tuple[Sequence[int], Sequence[int]] | None = None,
     keys: tuple[str, str],
     interval: tuple[float, float] | None,
     paired: bool,
@@ -318,6 +367,9 @@ def precision(
     :param trials: Each side's usable trials per case, aligned with ``samples``; None where not carried, and then no
         variance split is read.
     :ptype trials: tuple[Sequence[int], Sequence[int]] | None
+    :param passes: Each side's trials passed per case, aligned with ``trials``; None where not carried, and then each
+        case's passes are its share times its trials, rounded.
+    :ptype passes: tuple[Sequence[int], Sequence[int]] | None
     :param keys: Each side's variant key, in ``samples``' order.
     :ptype keys: tuple[str, str]
     :param interval: The comparison's interval as a share, at the nominal level.
@@ -336,9 +388,13 @@ def precision(
     attribution = Precision(half_width=whole, half_widths={keys[0]: first, keys[1]: second}, limited_by=limited)
     if trials is None:
         return attribution
-    cases = [
-        [_repeats(share, count) for share, count in zip(side, counts, strict=True)]
+    passed = passes or tuple(
+        [round(share * count) for share, count in zip(side, counts, strict=True)]
         for side, counts in zip(samples, trials, strict=True)
+    )
+    cases = [
+        [_repeats(hit, count) for hit, count in zip(hits, counts, strict=True)]
+        for hits, counts in zip(passed, trials, strict=True)
     ]
     components = variance_components(cases)
     if components is None:
@@ -393,12 +449,17 @@ def model_pass_hat_k(attempts: Mapping[str, Sequence[bool]], k: int) -> ModelPas
     ``k``-th moment, ``Π_{i<k} (α + i) / (α + β + i)``. Where the shares spread no more than their noise (``v <= 0``),
     every case is read at ``μ`` and pass^k is ``μ^k``; a ``v`` past the beta's limit is held just inside it.
 
+    The method of moments, not empirical Bayes by maximum likelihood: it is closed form and deterministic, so two
+    builds read one figure, it needs no optimiser that can fail to converge on a few cases, and it reads only the
+    shares and depths the page already states. What it costs: its shapes are noisier than a likelihood fit's on few
+    cases, and the two clamps above bend it at the edges. It is opt-in, labelled and never ranked, so that is accepted.
+
     :param attempts: One arm's scored attempts per case.
     :ptype attempts: Mapping[str, Sequence[bool]]
     :param k: The depth, at least 1.
     :ptype k: int
     :return: The model's reading, or None below two cases, or where every case ran once (the spread between cases
-        cannot be told from each case's noise then), or where every case's share is 0 or 1 everywhere alike.
+        cannot be told from each case's noise then). Every case passing all, or none, reads that share at every depth.
     :rtype: ModelPassHatK | None
     :raises ValueError: ``k`` is below 1.
     """
