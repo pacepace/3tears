@@ -665,7 +665,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`AsRecordedReporterKind`** · class · The memo each case's campaign actually got, replayed — the calibration candidate.
 - **`CampaignBundle`** · model · A campaign's whole evidence for its one memo: the question, arms and floors, code's readings, every aspect.
 - **`CampaignReadings`** · model · Everything code reads off a campaign, by its kind: for a change, one row per aspect × candidate and one status per floor × candidate; for a choice, one reading per pair of arms per aspect; for a measurement, each arm's measures; for every kind, each arm against each absolute bar.
-- **`CampaignReport`** · model · A campaign's page: the writer's summary and recommendation, what code read across its aspects, the person's call, then one fold per aspect.
+- **`CampaignReport`** · model · A campaign's page: the decision first, then what code read across its aspects, the writer's findings and next steps, how the campaign was set up, then one fold per aspect.
 - **`ChartBlock`** · *host contract* · model · One of the charts a report draws, with every value it draws, so it prints as a table too.
 - **`EvalSummary`** · *host contract* · model · One run, summarised.
 - **`GateResult`** · dataclass · What a gate read and what it came to.
@@ -1165,6 +1165,7 @@ A table code laid out — its columns, its rows in their stated order, and how m
 | `total_rows` | `int` | required | How many rows the table has; more than are shown when it is truncated. |
 | `details` | `bool` | `False` | Whether the table is drill-down: HTML folds it in a `<details>`, closed. |
 | `title_ref` | `str \| None` | `None` | An anchor on the page the title links to, where the table reads a sentence said there; None for none. |
+| `shared_scale` | `bool` | `False` | Whether HTML draws every glyph in one unit on one scale across the table's columns, as a matrix's are, each column the same quantity for another arm; otherwise each column has its own. |
 
 #### `ChartBlock`
 
