@@ -241,10 +241,18 @@ def _snapshot(**options: Any) -> tuple[ScopedSnapshot, _Pointers, _Store, _L3]:
 
 
 async def _until(check: Any, *, what: str, timeout: float = 5.0) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
+    """wait for ``check()``, looking every 10 ms, for ``timeout`` seconds of the loop's own running.
+
+    A poll counts at most 0.1 s however long it took, so a pause of the whole process is not a wait
+    that ran out: a full garbage collection on a loaded runner stops every thread for seconds, past
+    this budget, while the snapshot's tasks make no progress either.
+    """
+    spent, last = 0.0, time.monotonic()
     while not check():
-        assert asyncio.get_running_loop().time() < deadline, f"timed out waiting for {what}"
+        assert spent < timeout, f"timed out waiting for {what}"
         await asyncio.sleep(0.01)
+        now = time.monotonic()
+        spent, last = spent + min(now - last, 0.1), now
 
 
 class _NoQueries(DuckDBBackend):
@@ -587,10 +595,10 @@ async def _versioned_in_time(snapshot: ScopedSnapshot, seconds: float = 3.0) -> 
 
     thread = threading.Thread(target=read, daemon=True)
     thread.start()
-    deadline = time.monotonic() + seconds
-    while thread.is_alive() and time.monotonic() < deadline:
-        await asyncio.sleep(0.02)
-    assert out, f"a versioned read did not finish in {seconds} s: the swap lock was left held"
+    await _until(
+        lambda: not thread.is_alive(), what="a versioned read to finish; the swap lock was left held", timeout=seconds
+    )
+    assert out, "the versioned read failed on its thread"
     return out[0]
 
 
@@ -809,13 +817,35 @@ async def test_a_stuck_scope_whose_later_pointer_carries_other_columns_stays_beh
     await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
     l3.epochs["TX"] = 2
     takes = [0]
-    real_create = pointers.create
+    current: list[Any] = []  # the looks that found TX not behind; the others are not kept
+    looking = False
+    real_create, real_delete = pointers.create, pointers.delete
 
+    def look() -> None:
+        status = snapshot.status()
+        if "TX" not in status.behind:
+            current.append(status)
+
+    # a look on each side of every take and every release of the claim, inside the loop's turn that runs them
     async def counting(*, key: str, value: bytes, ttl: timedelta | None = None) -> int | None:
         takes[0] += key == "enr.rebuild"
-        return await real_create(key=key, value=value, ttl=ttl)
+        if looking and key == "enr.rebuild":
+            look()
+        taken = await real_create(key=key, value=value, ttl=ttl)
+        if looking and key == "enr.rebuild":
+            look()
+        return taken
+
+    async def releasing(*, key: str, revision: int | None = None) -> bool:
+        if looking and key == "enr.rebuild":
+            look()
+        released = await real_delete(key=key, revision=revision)
+        if looking and key == "enr.rebuild":
+            look()
+        return released
 
     pointers.create = counting  # type: ignore[method-assign]
+    pointers.delete = releasing  # type: ignore[method-assign]
     tx = json.loads(pointers.entries["enr.s.TX"][0])
     store.objects["enr/TX/3/results.other"] = encode_chunk(_tx_arrow(7).drop_columns(["votes"]))
     foreign = {
@@ -827,18 +857,21 @@ async def test_a_stuck_scope_whose_later_pointer_carries_other_columns_stays_beh
     pointers.put_now("enr.s.TX", json.dumps(foreign).encode())
     await _until(lambda: "TX" in snapshot.status().behind, what="TX shown behind")
 
-    looks = []
-    first = takes[0]
-    deadline = asyncio.get_running_loop().time() + 5
-    while takes[0] < first + 3 and asyncio.get_running_loop().time() < deadline:
-        # rebuilds of TX ran, each taking and letting go of the claim; looked at between every step
-        looks.append(snapshot.status())
-        await asyncio.sleep(0)
-    assert takes[0] >= first + 3, "TX was not rebuilt again and again"
+    # and a look at every poll in between. Never a spin on asyncio.sleep(0): a loop that never waits
+    # keeps the GIL from the rebuild's export, whose DuckDB threads need it to read the rows from Arrow
+    # (with 32 DuckDB threads one export took 4.96 s under the spin, and 4 ms without it)
+    first, looking = takes[0], True
 
-    assert all("TX" in look.behind for look in looks), [
-        (look.phase, sorted(look.behind)) for look in looks if "TX" not in look.behind
-    ][:3]
+    def rebuilt_three_more_times() -> bool:
+        look()
+        return takes[0] >= first + 3
+
+    try:
+        await _until(rebuilt_three_more_times, what="TX rebuilt again and again")
+    finally:
+        looking = False
+
+    assert current == [], [(look.phase, sorted(look.behind)) for look in current][:3]
     assert snapshot.applied_epoch("TX") == 1
     await snapshot.stop()
 
