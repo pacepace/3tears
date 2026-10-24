@@ -75,18 +75,34 @@ def _span_attributes(result: GroundedAnswer, *, provider: AnswerProvider, egress
     :param egress: the exit the call left by
     :ptype egress: str
     """
-    set_span_attribute("answer.provider_instance", provider.provider_instance)
-    set_span_attribute("answer.egress", egress)
+    _span_spend(result.spend, provider=provider, egress=egress)
     set_span_attribute("answer.sources", len(result.sources))
     set_span_attribute("answer.anchored", bool(result.anchors))
-    set_span_attribute("answer.spend.money", str(result.spend.money))
-    set_span_attribute("answer.spend.calls", result.spend.calls)
-    set_span_attribute("answer.spend.provider_units", str(result.spend.provider_units))
-    set_span_attribute("answer.spend.wall_clock_seconds", result.spend.wall_clock_seconds)
     if result.prompt_tokens is not None:
         set_span_attribute("answer.prompt_tokens", result.prompt_tokens)
     if result.completion_tokens is not None:
         set_span_attribute("answer.completion_tokens", result.completion_tokens)
+
+
+def _span_spend(spend: Spend, *, provider: AnswerProvider, egress: str) -> None:
+    """Attach what one answer call consumed, and where it went, to the current span (AR-J1).
+
+    Set on every outcome: a failed answer -- a refusal, a broken or timed-out
+    stream -- cost something too, and a span without it hides the bill.
+
+    :param spend: what the call consumed
+    :ptype spend: Spend
+    :param provider: the provider asked
+    :ptype provider: AnswerProvider
+    :param egress: the exit the call left by
+    :ptype egress: str
+    """
+    set_span_attribute("answer.provider_instance", provider.provider_instance)
+    set_span_attribute("answer.egress", egress)
+    set_span_attribute("answer.spend.money", str(spend.money))
+    set_span_attribute("answer.spend.calls", spend.calls)
+    set_span_attribute("answer.spend.provider_units", str(spend.provider_units))
+    set_span_attribute("answer.spend.wall_clock_seconds", spend.wall_clock_seconds)
 
 
 @traced(name="threetears.search.answer")
@@ -134,53 +150,60 @@ async def answer(
     scope_tags = request.budget_scope_tags
     remaining_seconds = DEFAULT_ANSWER_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
 
-    if budget is not None:
-        # Before the provider call, and before pacing: a refused call needs
-        # no pacing slot (Call's order, D4).
-        decision = await budget.check(provider.estimate(request), scope_tags=scope_tags)
-        if not decision.allowed:
-            raise _refusal(decision, provider=provider, egress=egress)
-
-    if limiter is not None:
-        remaining_seconds = await _pace(
-            limiter,
-            provider=provider,
-            egress=egress,
-            budget_seconds=remaining_seconds,
-            started=started,
-            clock=clock,
-        )
-
     try:
-        result = await provider.answer(request, timeout_seconds=remaining_seconds)
-    except SearchFailure as failure:
-        _stamp(failure, elapsed=clock() - started)
-        # the failure's spend is as real as a success's: a stream that broke
-        # after the provider began answering was billed (AR-E1, SR-E3).
-        await _record(budget, failure.spend, scope_tags=scope_tags)
-        raise
-    except Exception as exc:
-        # An adapter letting an untyped exception out is the adapter's defect;
-        # logged as one and re-raised typed, with only the wall-clock this
-        # layer measured itself as its spend (Call's rule, SR-J1).
-        _logger.exception(
-            "answers provider %s raised an untyped exception; the adapter should map failures onto the taxonomy",
-            provider.provider_instance,
-        )
-        failed_spend = Spend(wall_clock_seconds=clock() - started)
-        await _record(budget, failed_spend, scope_tags=scope_tags)
-        raise TransportFailed(
-            f"answers provider {provider.provider_instance} failed with an unmapped {type(exc).__name__}: {exc}",
-            spend=failed_spend,
-            provider_instance=provider.provider_instance,
-        ) from exc
+        if budget is not None:
+            # Before the provider call, and before pacing: a refused call needs
+            # no pacing slot (Call's order, D4).
+            decision = await budget.check(provider.estimate(request), scope_tags=scope_tags)
+            if not decision.allowed:
+                raise _refusal(decision, provider=provider, egress=egress)
 
-    completed = result.model_copy(
-        update={
-            "dispositions": _completed_dispositions(request, result, provider),
-            "spend": result.spend.model_copy(update={"wall_clock_seconds": clock() - started}),
-        }
-    )
-    await _record(budget, completed.spend, scope_tags=scope_tags)
-    _span_attributes(completed, provider=provider, egress=egress)
-    return completed
+        if limiter is not None:
+            remaining_seconds = await _pace(
+                limiter,
+                provider=provider,
+                egress=egress,
+                budget_seconds=remaining_seconds,
+                started=started,
+                clock=clock,
+            )
+
+        try:
+            result = await provider.answer(request, timeout_seconds=remaining_seconds)
+        except SearchFailure as failure:
+            _stamp(failure, elapsed=clock() - started)
+            # the failure's spend is as real as a success's: a stream that broke
+            # after the provider began answering was billed (AR-E1, SR-E3).
+            await _record(budget, failure.spend, scope_tags=scope_tags)
+            raise
+        except Exception as exc:
+            # An adapter letting an untyped exception out is the adapter's defect;
+            # logged as one and re-raised typed, with only the wall-clock this
+            # layer measured itself as its spend (Call's rule, SR-J1).
+            _logger.exception(
+                "answers provider %s raised an untyped exception; the adapter should map failures onto the taxonomy",
+                provider.provider_instance,
+            )
+            failed_spend = Spend(wall_clock_seconds=clock() - started)
+            await _record(budget, failed_spend, scope_tags=scope_tags)
+            raise TransportFailed(
+                f"answers provider {provider.provider_instance} failed with an unmapped {type(exc).__name__}: {exc}",
+                spend=failed_spend,
+                provider_instance=provider.provider_instance,
+            ) from exc
+
+        completed = result.model_copy(
+            update={
+                "dispositions": _completed_dispositions(request, result, provider),
+                "spend": result.spend.model_copy(update={"wall_clock_seconds": clock() - started}),
+            }
+        )
+        await _record(budget, completed.spend, scope_tags=scope_tags)
+        _span_attributes(completed, provider=provider, egress=egress)
+        return completed
+    except SearchFailure as failure:
+        # every way out carries its spend onto the span, a refusal or a broken
+        # stream as much as an answer (AR-J1)
+        _span_spend(failure.spend, provider=provider, egress=egress)
+        set_span_attribute("answer.failure_class", failure.failure_class)
+        raise

@@ -299,9 +299,13 @@ transport's (AR-F2). The answer contracts import nothing beyond the existing con
   - `builtin/web_answer.py`: `WebAnswerTool(TearsTool)` mirroring `web_search` -- `question` in,
     `RenderedAnswer.content` on `content`, the projection on `metadata[ANSWER_METADATA_KEY]`, a
     failed `ToolResult` carrying the failure record -- and `create_web_answer_tool(config,
-    description)` taking `api_key`, `transport`, `budget`, `limiter`, `timeout_seconds`;
+    description)` taking `api_key`, `transport`, `budget`, `limiter`, `timeout_seconds`, and
+    optionally `usd_per_search` / `usd_per_million_tokens` (both or neither; a finite number of 0
+    or more, refused naming the key) to price the budget's pre-call estimate;
   - registered in `builtin/__init__.py`'s list, and served by the built-in pod when
-    `THREETEARS_BRAVE_ANSWERS_API_KEY` is set, with the skip reported otherwise;
+    `THREETEARS_BRAVE_ANSWERS_API_KEY` is set, with the skip reported otherwise. Known limit: the
+    pod reads no rates (as `web_search`'s pod reads no optional settings), so a pod-served
+    `web_answer` cannot refuse on money before the call;
   - `aliases.py`: `answers` → `{"threetears.web_answer"}`; `web` unchanged;
   - the agent-tools README's builtin list and alias table.
 - **Tests:** the tool over a parity-declared fake streaming transport replaying the live

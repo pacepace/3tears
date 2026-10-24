@@ -393,6 +393,8 @@ class _TagReader:
         self._text: list[str] = []
         self._pending = ""
         self._open: str | None = None
+        #: names of unknown tags kept in the text as the answer's own, first appearance first.
+        self.quoted: list[str] = []
 
     @property
     def text(self) -> str:
@@ -431,7 +433,7 @@ class _TagReader:
         if self._open is not None:
             if self._open in _KNOWN_TAGS:
                 return f"<{self._open}>{self._pending}"
-            self._text.append(f"<{self._open}>")
+            self._keep_as_text(self._open, f"<{self._open}>")
             self._open = None
         self._text.append(self._pending)
         self._pending = ""
@@ -470,6 +472,18 @@ class _TagReader:
         self._pending = self._pending[after:]
         return True
 
+    def _keep_as_text(self, name: str, raw: str) -> None:
+        """Put markup back into the text where it stood, remembering its name for the notice.
+
+        :param name: the unknown tag's name
+        :ptype name: str
+        :param raw: the markup, verbatim
+        :ptype raw: str
+        """
+        self._text.append(raw)
+        if name not in self.quoted:
+            self.quoted.append(name)
+
     def _read_inside(self, name: str, closed: list[_Tag]) -> bool:
         """Advance inside a tag, closing it when its closer has arrived.
 
@@ -493,7 +507,7 @@ class _TagReader:
                 if found >= 0 and (at < 0 or found < at)
             ]
             if known:
-                self._text.append(f"<{name}>")
+                self._keep_as_text(name, f"<{name}>")
                 self._open = None
                 return True
         if at < 0:
@@ -502,7 +516,7 @@ class _TagReader:
         if name in _KNOWN_TAGS or _is_json_object(tag.body):
             closed.append(tag)
         else:
-            self._text.append(tag.raw)
+            self._keep_as_text(name, tag.raw)
         self._pending = self._pending[at + len(closer) :]
         self._open = None
         return True
@@ -1416,6 +1430,12 @@ class BraveAnswersAdapter:
             notices.append(
                 f"brave sent a <{tag.name}> tag this adapter does not read; it was removed from the text and kept "
                 f"verbatim on the answer's provenance"
+            )
+        if reading.tags.quoted:
+            named = ", ".join(f"<{name}>" for name in reading.tags.quoted)
+            notices.append(
+                f"brave's answer text holds markup this adapter does not read ({named}); it is not provider "
+                f"machinery, so it was kept in the text verbatim, where the provider's offsets count it"
             )
         if reading.usage is None:
             notices.append(

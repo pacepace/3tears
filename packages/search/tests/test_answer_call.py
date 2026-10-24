@@ -11,6 +11,10 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
+from opentelemetry import trace as otel_trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from threetears.search.adapters.brave_answers import BRAVE_ANSWERS_CAPABILITIES, BraveAnswersAdapter
 from threetears.search.answer import DEFAULT_ANSWER_TIMEOUT_SECONDS, answer
@@ -28,11 +32,12 @@ from threetears.search.contracts import (
     RateLimitDecision,
     RateLimited,
     Spend,
+    TimedOut,
     TransportFailed,
 )
 from threetears.search.testing import FakeBudgetPort, FakeRateLimiterPort
 from packages.search.tests.recorded_streams import RecordedStream, RecordedStreamingTransport
-from packages.search.tests.brave_answers_payloads import SINGLE, SINGLE_TOTAL_COST
+from packages.search.tests.brave_answers_payloads import SINGLE, SINGLE_TOTAL_COST, stream
 from packages.search.tests.search_instances import GROUNDED_ANSWER
 
 ESTIMATE = Spend(money=Decimal("0.004"), calls=1, provider_units=Decimal(1), provider_unit="brave:searches")
@@ -254,3 +259,70 @@ async def test_the_call_layer_over_the_real_adapter_reads_the_recorded_bill() ->
     assert budget.records[0][0].money == SINGLE_TOTAL_COST
     assert budget.checks[0][0].provider_unit == "brave:searches"
     assert transport.calls[0]["timeout_seconds"] == DEFAULT_ANSWER_TIMEOUT_SECONDS
+
+
+@pytest.fixture
+def spans(monkeypatch: pytest.MonkeyPatch) -> InMemorySpanExporter:
+    """Route spans to an in-memory exporter, without touching the global provider.
+
+    :param monkeypatch: pytest's patcher
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: the exporter the spans land in
+    :rtype: InMemorySpanExporter
+    """
+    exporter = InMemorySpanExporter()
+    tracer_provider = TracerProvider()
+    tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(otel_trace, "get_tracer", lambda name, *args, **kwargs: tracer_provider.get_tracer(name))
+    return exporter
+
+
+def _answer_span(spans: InMemorySpanExporter) -> dict[str, object]:
+    """The one answer span's attributes.
+
+    :param spans: the exporter
+    :ptype spans: InMemorySpanExporter
+    :return: its attributes
+    :rtype: dict[str, object]
+    """
+    (span,) = [span for span in spans.get_finished_spans() if span.name == "threetears.search.answer"]
+    return dict(span.attributes or {})
+
+
+async def test_an_answered_call_s_span_carries_its_spend_sources_and_tokens(spans: InMemorySpanExporter) -> None:
+    adapter = BraveAnswersAdapter(api_key="k", transport=RecordedStreamingTransport((RecordedStream.of(SINGLE),)))
+    await answer(AnswerRequest(question="q"), provider=adapter, egress="warp")
+
+    attributes = _answer_span(spans)
+    assert attributes["answer.spend.money"] == str(SINGLE_TOTAL_COST)
+    assert attributes["answer.spend.calls"] == 1
+    assert attributes["answer.egress"] == "warp"
+    assert attributes["answer.sources"] == 12
+    assert attributes["answer.prompt_tokens"] == 10463
+    assert "answer.failure_class" not in attributes
+
+
+async def test_a_stream_that_times_out_mid_body_still_puts_its_spend_on_the_span(spans: InMemorySpanExporter) -> None:
+    """AR-J1 on the failure path: the call that began answering is counted on the span too."""
+    broken = RecordedStream.of(stream("Capybaras", done=False), broken=TimeoutError())
+    adapter = BraveAnswersAdapter(api_key="k", transport=RecordedStreamingTransport((broken,)))
+    with pytest.raises(TimedOut):
+        await answer(AnswerRequest(question="q"), provider=adapter)
+
+    attributes = _answer_span(spans)
+    assert attributes["answer.failure_class"] == "timed-out"
+    assert attributes["answer.spend.calls"] == 1
+    assert attributes["answer.spend.money"] == "0"
+    assert attributes["answer.provider_instance"] == adapter.provider_instance
+
+
+async def test_a_budget_refusal_s_span_carries_the_refusing_scope_s_spend(spans: InMemorySpanExporter) -> None:
+    consumed = Spend(money=Decimal("9.99"), calls=40)
+    budget = FakeBudgetPort(BudgetDecision(allowed=False, scope="run:1", consumed=consumed))
+    with pytest.raises(LocalCapExceeded):
+        await answer(AnswerRequest(question="q"), provider=_RecordingAnswerProvider(), budget=budget)
+
+    attributes = _answer_span(spans)
+    assert attributes["answer.failure_class"] == "local-cap-exceeded"
+    assert attributes["answer.spend.money"] == "9.99"
+    assert attributes["answer.spend.calls"] == 40

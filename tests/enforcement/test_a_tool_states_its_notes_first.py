@@ -72,17 +72,20 @@ NOT_A_TOOL_RESULT: dict[str, str] = {
 }
 
 
-#: ``file:function`` -> why a string built there puts its note after something. A new one is added with its reason.
+#: ``file:function:piece`` -> why that one late note piece is placed after something on purpose. The piece
+#: is the late note's source, as ``ast.unparse`` writes it, so the waiver covers that piece and no other
+#: string in the function. A new one is added with its reason.
 NOTE_BUILT_AFTER_ON_PURPOSE: dict[str, str] = {
-    "packages/search/src/threetears/search/bind_answer.py:_head": (
+    "packages/search/src/threetears/search/bind_answer.py:_head:notes": (
         "the one-line attribution AR-G2 requires first, naming whose synthesis follows; the note comes right "
         "under it, before the answer text and its sources"
     ),
-    "packages/agent/tools/src/threetears/agent/tools/builtin/calculator.py:_evaluate": (
+    "packages/agent/tools/src/threetears/agent/tools/builtin/calculator.py:_evaluate:"
+    "_units_note(_normalize_expression(shown))": (
         "a one-line result whose parenthetical names its units, on the same line as the number it qualifies, "
         "so no head of the result keeps the number without it"
     ),
-    "packages/agent/tools/src/threetears/agent/tools/builtin/analyze_media.py:_handle_document": (
+    "packages/agent/tools/src/threetears/agent/tools/builtin/analyze_media.py:_handle_document:window_note": (
         "the prompt an analyser model reads, not a tool result: the window note follows the document fence it "
         "describes, as HAND_PLACED records"
     ),
@@ -238,8 +241,11 @@ def _makes_note(node: ast.AST) -> bool:
     return "note" in callee.lower()
 
 
-def _built_late(tree: ast.AST, where: str) -> list[str]:
-    """Every string built with a note piece after a piece that is not a note."""
+def _built_late(tree: ast.AST, where: str, waived: set[str] | None = None) -> list[str]:
+    """Every string built with a note piece after a piece that is not a note.
+
+    :param waived: when given, collects the ``NOTE_BUILT_AFTER_ON_PURPOSE`` keys that suppressed a finding
+    """
     made = {
         target.id
         for node in ast.walk(tree)
@@ -256,7 +262,11 @@ def _built_late(tree: ast.AST, where: str) -> list[str]:
         for piece in pieces:
             kind = _piece_kind(piece, made)
             if kind == "note" and seen_body:
-                if f"{where}:{_owner(tree, node)}" not in NOTE_BUILT_AFTER_ON_PURPOSE:
+                key = f"{where}:{_owner(tree, node)}:{ast.unparse(piece)}"
+                if key in NOTE_BUILT_AFTER_ON_PURPOSE:
+                    if waived is not None:
+                        waived.add(key)
+                else:
                     hits.append(f"{where}:{node.lineno}: a note built into a string after what it is about")
                 break
             seen_body = seen_body or kind == "body"
@@ -314,10 +324,14 @@ def test_the_tables_name_what_is_there() -> None:
         file, opening = key.split(":", 1)
         path = WORKSPACE / file
         assert path.is_file() and opening.strip() in path.read_text(encoding="utf-8"), f"names what is gone: {key}"
-    for key in NOTE_BUILT_AFTER_ON_PURPOSE:
-        file, function = key.split(":", 1)
-        path = WORKSPACE / file
-        assert path.is_file() and f"def {function}(" in path.read_text(encoding="utf-8"), f"names what is gone: {key}"
+    waived: set[str] = set()
+    for source, where in _each_source():
+        if where != WINDOW_MODULE:
+            _built_late(ast.parse(source), where, waived)
+    assert waived == set(NOTE_BUILT_AFTER_ON_PURPOSE), (
+        "NOTE_BUILT_AFTER_ON_PURPOSE must name exactly the late pieces it suppresses. "
+        f"listed but suppressing nothing: {sorted(set(NOTE_BUILT_AFTER_ON_PURPOSE) - waived)}"
+    )
     assert len(SOURCES) > 20, f"the walk found only {SOURCES}"
 
 

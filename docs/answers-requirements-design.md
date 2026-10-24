@@ -405,7 +405,12 @@ slice 0: code points into `text`, and Brave's anchors are zero-width
 **AR-A5 (SHOULD).** Unknown `<name>{json}</name>` tags in single mode are
 removed from `text`, kept verbatim under `provenance.provider_ids`, and named
 in a notice. Treating them as answer text would put provider machinery in a
-persona's mouth; dropping them silently would break P2.
+persona's mouth; dropping them silently would break P2. An unknown name whose
+body is *not* a JSON object -- an answer quoting `<div>{x}</div>` -- is the
+answer's own text: it stays in `text` verbatim, where the provider's offsets
+count it, and one notice names the tag names so a consumer can see markup
+reached the prose. Only `<citation>` and `<usage>` fail closed on a bad body
+(AR-E2).
 
 ### B. What goes in
 
@@ -456,7 +461,13 @@ rps default is the limiter's configuration, not the adapter's constant.
 **AR-E1 (MUST).** AD9. Every raise carries the spend consumed so far (SR-E3).
 A stream broken after the first byte is `TransportFailed` with
 `attempts` as the transport counted them; it is never retried after the first
-byte, because the provider has billed the search (AR-C1).
+byte, because the provider has billed the search (AR-C1). A deadline passing
+after the first byte is `TimedOut`, not `TransportFailed`, whether the
+transport raises it typed or as a bare `TimeoutError`: the remedy differs --
+raise the call's bound, which covers the whole answer, rather than look at the
+connection -- and a consumer branching on the class must be able to tell. It
+too carries `calls=1` and is never retried. A failed answer's span carries the
+same spend as its failure (AR-J1).
 
 **AR-E2 (MUST).** A tag whose JSON does not parse, or a `<usage>` whose cost
 keys are absent, is `MalformedResponse`, carrying the raw tag in the failure
@@ -612,10 +623,29 @@ own.
 
 `bind_answer(request, *, provider, timeout_seconds, budget, limiter, egress,
 zone) -> RenderedAnswer` (success / content / error / metadata, the
-`RenderedSearch` shape). Prose: AR-G2's first line, the text, then a numbered
-sources list in citation order using `result_facts`. `project_metadata` and
-`project_failure_metadata` own `ANSWER_SCHEMA_VERSION`. The reader checks
-`schema_version` before structural validation (D13).
+`RenderedSearch` shape). Prose, in order: AR-G2's first line; right under it,
+the "What this answer could not do" note naming any unhonoured criterion and
+every notice; the text; then a numbered sources list in citation order using
+`result_facts`. The note leads the body because a reader that keeps only the
+head of a long result keeps what comes first, and the sentence saying an
+answer is uncited, unbilled or unscoped is the one it must not lose
+(`test_a_tool_states_its_notes_first`). The note is built by
+`threetears.search.bind.could_not_do_note`, the same builder the search prose
+uses, so the two word an unmet criterion and a notice alike.
+`project_answer_metadata` and `project_answer_failure_metadata` own
+`ANSWER_SCHEMA_VERSION`. The reader checks `schema_version` before structural
+validation (D13).
+
+**The search prose changes with it.** `render_prose` states its "What this
+search could not do" note before the results, where it used to close them.
+That is a change to `web_search`'s shipped prose: the tool's own "Searched the
+web for ..." line still comes first, then the note, then the results. Its
+in-repo consumers -- the `web_search` builtin and its tests,
+`test_three_faces_one_contract`, and the search package's bind tests -- were
+checked and carry the new order. discodon's persona `web_search` reads the
+same prose from outside this repo and was not checked here: it sees the note
+earlier, and any parsing of the old position is discodon's to find when it
+takes the release.
 
 ### 10.5 `agent-tools`: `threetears.web_answer`
 
@@ -623,10 +653,18 @@ sources list in citation order using `result_facts`. `project_metadata` and
 `content`, the projection on `metadata[ANSWER_METADATA_KEY]`, a failed
 `ToolResult` carrying the failure record. Factory `create_web_answer_tool`
 takes `api_key`, `transport`, `budget`, `limiter`, `timeout_seconds` from its
-config dict, the `web_search` factory's shape. Registered in
+config dict, the `web_search` factory's shape, and optionally `usd_per_search`
+and `usd_per_million_tokens` -- the account's Brave rates, given together or
+not at all, each a finite number of 0 or more, refused naming the key
+otherwise -- which price the estimate the budget checks before the call
+(AR-C3). Registered in
 `builtin/__init__.py`'s list; the built-in pod serves it when
 `THREETEARS_BRAVE_ANSWERS_API_KEY` is set and reports the skip when it is not,
-as it does for `web_search`; alias per AD13. With no transport injected it
+as it does for `web_search`; alias per AD13. **Known limit:** the pod path
+reads no rates -- `web_search`'s pod reads no optional settings either -- so a
+pod-served `web_answer` estimates no money and cannot refuse on a money cap
+before the call. It still records the provider's own bill after it; a host
+that needs a money pre-check constructs the tool with the rates. With no transport injected it
 reads through the leaf's standalone streaming transport, since the host-side
 traced client buffers.
 

@@ -25,7 +25,7 @@ reads before trusting a claim; the prose says so in its first line (AR-G2).
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.tools import StructuredTool
@@ -66,8 +66,9 @@ def create_web_answer_tool(config: dict[str, Any], description: str) -> Structur
     :ptype description: str
     :return: the wrapped tool
     :rtype: StructuredTool
-    :raises ValueError: when ``api_key`` is absent, or one rate is given
-        without the other
+    :raises ValueError: when ``api_key`` is absent, a rate is not a finite
+        number of 0 or more (the message names its config key), or one rate
+        is given without the other
     """
     from threetears.agent.tools.langchain_adapter import to_langchain_tool
 
@@ -81,8 +82,8 @@ def create_web_answer_tool(config: dict[str, Any], description: str) -> Structur
             timeout_seconds=config.get("timeout_seconds"),
             budget=config.get("budget"),
             limiter=config.get("limiter"),
-            usd_per_search=_rate(config.get("usd_per_search")),
-            usd_per_million_tokens=_rate(config.get("usd_per_million_tokens")),
+            usd_per_search=_rate(config, "usd_per_search"),
+            usd_per_million_tokens=_rate(config, "usd_per_million_tokens"),
             zone=config.get("_user_timezone") or None,
         ),
         description=description,
@@ -243,17 +244,34 @@ class WebAnswerTool(TearsTool):
         return "1.0"
 
 
-def _rate(value: object) -> Decimal | None:
-    """Read a configured rate as a Decimal, through its text so no float rounding reaches money.
+def _rate(config: dict[str, Any], key: str) -> Decimal | None:
+    """Read one configured rate as a Decimal, through its text so no float rounding reaches money.
 
-    :param value: the config value -- a Decimal, a number or a numeric string -- or None
-    :ptype value: object
+    A rate is a finite number of 0 or more. Anything else is refused naming
+    the key, so the registry's "failed to create tool" line says which setting
+    to fix rather than a decimal library's own words.
+
+    :param config: the tool's configuration
+    :ptype config: dict[str, Any]
+    :param key: the rate's config key
+    :ptype key: str
     :return: the rate, or None when the config states none
     :rtype: Decimal | None
+    :raises ValueError: when the value is not a finite number of 0 or more
     """
-    if value is None or isinstance(value, Decimal):
-        return value
-    return Decimal(str(value))
+    value = config.get(key)
+    if value is None:
+        return None
+    refusal = f"web_answer config {key!r} must be a finite number of 0 or more, got {value!r}"
+    if isinstance(value, bool):
+        raise ValueError(refusal)
+    try:
+        rate = value if isinstance(value, Decimal) else Decimal(str(value))
+    except InvalidOperation as exc:
+        raise ValueError(refusal) from exc
+    if not rate.is_finite() or rate < 0:
+        raise ValueError(refusal)
+    return rate
 
 
 def _refused(message: str) -> ToolResult:

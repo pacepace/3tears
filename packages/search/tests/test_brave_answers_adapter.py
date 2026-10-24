@@ -274,7 +274,8 @@ async def test_an_unknown_tag_whose_body_is_not_json_is_the_answer_s_own_text() 
     assert result.text == text, "the quoted markup stays where it stood"
     assert [anchor.start for anchor in result.anchors] == [len(text)]
     assert result.text[: result.anchors[0].start].endswith(claim)
-    assert not any("<div>" in notice for notice in result.notices), "quoted text is not provider machinery"
+    (said,) = [notice for notice in result.notices if "<div>" in notice]
+    assert "kept in the text verbatim" in said, "a consumer can see provider markup reached the prose"
     assert not any(key.startswith("unknown-tag") for key in result.provenance.provider_ids)
 
 
@@ -282,6 +283,16 @@ async def test_an_unknown_tag_never_closed_is_text_too() -> None:
     result, _ = await _answer(stream("Use <span>{ as an opener.", usage_tag()))
 
     assert result.text == "Use <span>{ as an opener."
+    assert any("<span>" in notice and "verbatim" in notice for notice in result.notices)
+
+
+async def test_markup_kept_as_text_is_named_once_per_name_in_one_notice() -> None:
+    body = stream("<b>{x}</b> and <b>{y}</b> and <i>{z}</i>.", usage_tag())
+    result, _ = await _answer(body)
+
+    assert result.text == "<b>{x}</b> and <b>{y}</b> and <i>{z}</i>."
+    (said,) = [notice for notice in result.notices if "markup" in notice]
+    assert "(<b>, <i>)" in said
 
 
 async def test_an_unclosed_unknown_tag_never_swallows_a_citation_or_the_bill() -> None:
@@ -292,6 +303,7 @@ async def test_an_unclosed_unknown_tag_never_swallows_a_citation_or_the_bill() -
     assert result.text == text
     assert [anchor.start for anchor in result.anchors] == [len(text)]
     assert result.spend.money == Decimal("0.01567"), "the bill after the stray opener was read"
+    assert sum("<span>" in notice for notice in result.notices) == 1
 
 
 async def test_a_known_tag_with_a_body_that_is_not_json_still_fails_closed() -> None:

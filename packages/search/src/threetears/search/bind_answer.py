@@ -34,9 +34,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from threetears.observe import contain, get_logger
-from threetears.observe.text_block import one_line, under
+from threetears.observe.text_block import under
 from threetears.search.answer import answer
-from threetears.search.bind import result_facts
+from threetears.search.bind import could_not_do_note, result_facts
 from threetears.search.contracts import (
     ANSWER_METADATA_KEY,
     ANSWER_SCHEMA_VERSION,
@@ -147,16 +147,7 @@ def _notes(result: GroundedAnswer) -> str:
     :return: the note, or the empty string when there is nothing to say
     :rtype: str
     """
-    notes = [
-        f"- the {disposition.criterion_key} constraint was not applied"
-        + (f": {one_line(disposition.detail)}" if disposition.detail else "")
-        for disposition in result.dispositions
-        if disposition.disposition in {"unsatisfied", "ignored-unknown"}
-    ]
-    notes.extend(f"- {notice}" for notice in (one_line(str(n)) for n in result.notices) if notice)
-    if not notes:
-        return ""
-    return "What this answer could not do:\n" + "\n".join(notes)
+    return could_not_do_note("answer", result.dispositions, result.notices, constraint="constraint")
 
 
 def project_answer_metadata(question: str, result: GroundedAnswer) -> dict[str, Any]:

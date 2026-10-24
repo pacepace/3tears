@@ -369,3 +369,43 @@ def test_one_rate_without_the_other_is_refused_at_construction() -> None:
         create_web_answer_tool(
             {"api_key": "k", "transport": _FakeStreamingTransport(b""), "usd_per_search": "0.004"}, "answer"
         )
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("usd_per_search", "four tenths of a cent"),
+        ("usd_per_search", float("nan")),
+        ("usd_per_million_tokens", "Infinity"),
+        ("usd_per_million_tokens", -5),
+        ("usd_per_search", True),
+    ],
+)
+def test_a_rate_that_is_not_a_finite_non_negative_number_is_refused_naming_its_key(key: str, value: object) -> None:
+    config: dict[str, object] = {
+        "api_key": "k",
+        "transport": _FakeStreamingTransport(b""),
+        "usd_per_search": "0.004",
+        "usd_per_million_tokens": "5",
+    }
+    config[key] = value
+    with pytest.raises(ValueError, match=f"web_answer config '{key}' must be a finite number of 0 or more"):
+        create_web_answer_tool(config, "answer")
+
+
+async def test_the_registry_s_failure_line_names_the_mistyped_key(caplog: pytest.LogCaptureFixture) -> None:
+    """The tool does not vanish without a trace: the line saying it was not created names the setting."""
+    registry = ToolRegistry()
+    register_builtins(registry)
+    bad = {
+        "tool_type": "web_answer",
+        "description": "answer",
+        "config": {"api_key": "k", "usd_per_search": "abc", "usd_per_million_tokens": "5"},
+    }
+
+    with caplog.at_level("WARNING"):
+        tools = await registry.create_tools([bad])
+
+    assert tools == []
+    (record,) = [record for record in caplog.records if "Failed to create tool" in record.getMessage()]
+    assert "usd_per_search" in str(record.__dict__)

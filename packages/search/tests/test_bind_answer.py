@@ -13,7 +13,13 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.search.adapters.brave_answers import BraveAnswersAdapter
-from threetears.search.bind_answer import bind_answer, project_answer_failure_metadata, project_answer_metadata
+from threetears.search.bind import could_not_do_note, render_prose
+from threetears.search.bind_answer import (
+    bind_answer,
+    project_answer_failure_metadata,
+    project_answer_metadata,
+    render_answer_prose,
+)
 from threetears.search.contracts import (
     ANSWER_METADATA_KEY,
     ANSWER_SCHEMA_VERSION,
@@ -21,7 +27,9 @@ from threetears.search.contracts import (
     AnswerMetadata,
     AnswerRequest,
     BudgetDecision,
+    CandidateSet,
     Criterion,
+    CriterionDisposition,
     QuotaExhausted,
     Spend,
 )
@@ -175,3 +183,29 @@ def test_a_provider_quota_refusal_and_a_local_one_stay_distinct_in_the_record() 
     record = QuotaExhausted("credit limit", spend=Spend(calls=1)).to_record()
     payload = AnswerMetadata.from_metadata(project_answer_failure_metadata(QUESTION, record)[ANSWER_METADATA_KEY])
     assert payload.failure is not None and payload.failure.failure_class == "quota-exhausted"
+
+
+def test_the_answer_note_is_worded_by_the_one_builder_the_search_note_uses() -> None:
+    """One builder, two headings: the same items, worded the same way, in both renderings."""
+    result = GROUNDED_ANSWER.model_copy(
+        update={
+            "dispositions": (
+                CriterionDisposition(criterion_key="time-range", disposition="unsatisfied", detail="no dates\n here"),
+                CriterionDisposition(criterion_key="brave:x", disposition="ignored-unknown", detail=" \n "),
+                CriterionDisposition(criterion_key="language", disposition="pushdown"),
+            ),
+            "notices": ("anchor offsets\n are provisional", "  "),
+        }
+    )
+    note = (
+        "What this answer could not do:\n"
+        "- the time-range constraint was not applied: no dates here\n"
+        "- the brave:x constraint was not applied\n"
+        "- anchor offsets are provisional"
+    )
+    prose = render_answer_prose(result, provider="brave")
+
+    assert prose.split("\n\n")[1] == note
+    assert could_not_do_note("answer", result.dispositions, result.notices, constraint="constraint") == note
+    search_note = render_prose(CandidateSet(dispositions=result.dispositions, notices=result.notices))
+    assert search_note.split("\n\n")[0] == note.replace("answer", "search").replace("constraint", "filter")
