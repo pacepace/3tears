@@ -29,6 +29,9 @@ the structured content holds `campaign_id`, `basis`, `analysis_id` and `format`.
 top-level string field whose value is the text itself; no other action renders a field verbatim, so no other
 action's structured content changes.
 
+**Docs:** the host-adoption guide says a CPU-bound read shares the interpreter lock with the eval runs in its process
+whatever executor runs it, beside the guidance on offloading store calls.
+
 ## v0.78.0 -- 2026-10-24
 
 ### evals: a reporter label's form follows its dimension's scale, and may quote the memo passage it is about
