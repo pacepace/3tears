@@ -171,7 +171,7 @@ async def test_the_page_json_carries_each_aspect_s_late_criteria_beside_its_read
     page = await page_of("billing", "tone", bundle=_set_late(("margin", None, _SET)))
     aspects = page.json_document()["aspects"]
     assert isinstance(aspects, list)
-    assert CAMPAIGN_JSON_SHAPE == 4
+    assert CAMPAIGN_JSON_SHAPE == 5
     assert [aspect["late_criteria"] for aspect in aspects] == [
         [{"criterion": "margin", "name": None, "set_at": _SET}],
         [],

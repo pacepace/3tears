@@ -43,7 +43,7 @@ from pydantic import Field, model_validator
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TrialCheck, TrialJudgement, TrialState
 from threetears.evals.analysis.campaign_readings import CampaignReadings
-from threetears.evals.analysis.quantities import number_in, render_cell, unit_label, with_unit
+from threetears.evals.analysis.quantities import PERCENT, number_in, render_cell, unit_label, with_unit
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.kernel.authored import Recommendation
 from threetears.evals.kernel.declaration import CampaignCall
@@ -104,9 +104,26 @@ ReportBasis = Literal["analysis", "code_only"]
 #: ``scoreboard`` the rest of the first screen; ``decision`` is the floors section: each declared floor read clause by clause;
 #: ``memo`` and ``contrasts`` are what it means; ``cases`` and ``trials`` the cases and their drill-down;
 #: ``not_tested`` what the campaign could not speak to; ``methods`` how everything was measured; ``glossary`` every
-#: term of art the page used.
+#: term of art the page used. A campaign's page has six more (:attr:`CampaignReport.section_titles`): ``answer``, the
+#: question and what it was answered; ``warnings``, what warns, as consequences; ``scorecard``, every aspect's reading
+#: in one table; ``findings`` and ``next``, the writer's; and ``provenance``, the design and when each criterion was set.
 ReportSection = Literal[
-    "header", "scoreboard", "decision", "memo", "contrasts", "cases", "trials", "not_tested", "methods", "glossary"
+    "header",
+    "answer",
+    "warnings",
+    "scoreboard",
+    "scorecard",
+    "decision",
+    "findings",
+    "next",
+    "memo",
+    "contrasts",
+    "provenance",
+    "cases",
+    "trials",
+    "not_tested",
+    "methods",
+    "glossary",
 ]
 
 #: The sections a reader opens on demand, each laid out closed: the cases, the trials, what was not tested, the
@@ -130,8 +147,19 @@ SECTION_TITLES: dict[str, str] = {
     "glossary": "Glossary",
 }
 
-#: The sections the first screen is made of.
-FIRST_SCREEN: frozenset[str] = frozenset({"header", "scoreboard"})
+#: The sections the first screen is made of: a campaign's answer and warnings are on it too.
+FIRST_SCREEN: frozenset[str] = frozenset({"header", "answer", "warnings", "scoreboard"})
+
+#: Each of a campaign's own sections' heading, three words or fewer; a first screen's carries none
+#: (:attr:`CampaignReport.section_titles`).
+_CAMPAIGN_SECTION_TITLES: dict[str, str] = {
+    "answer": "",
+    "warnings": "",
+    "scorecard": "Scorecard",
+    "findings": "Findings",
+    "next": "Next steps",
+    "provenance": "Design & provenance",
+}
 
 #: What a text block's author wrote it as. ``summary`` is the memo's read across every aspect, which a campaign's page
 #: opens on after its warnings.
@@ -470,6 +498,15 @@ class TableCell(EvalDocumentModel):
             "trace links to the heading of the aspect's fold that prints it. None where nothing on the page prints it."
         ),
     )
+    flag: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "A short marker code writes beside the value, where the cell reads differently from its row: a floor's "
+            "status that differs from the row's reading, or a reading that cannot move (`cannot show a drop`). Every "
+            "serializer prints it after the value, in parentheses. None for none."
+        ),
+    )
 
     @model_validator(mode="after")
     def _a_unit_qualifies_a_number(self) -> Self:
@@ -507,11 +544,13 @@ class TableCell(EvalDocumentModel):
 
     @property
     def text(self) -> str:
-        """``value`` as every serializer prints it; the interval, where the cell has one, is the glyph's and the
-        row's own interval column's, never spelled here twice."""
+        """``value`` as every serializer prints it, its ``flag`` after it in parentheses; the interval, where the cell
+        has one, is the glyph's and the row's own interval column's, never spelled here twice."""
         if self.unit and isinstance(self.value, int | float) and not isinstance(self.value, bool):
-            return with_unit(self.value, self.unit)
-        return render_cell(self.value)
+            said = with_unit(self.value, self.unit)
+        else:
+            said = render_cell(self.value)
+        return said if self.flag is None else f"{said} ({self.flag})"
 
 
 def table_row(values: Mapping[str, CellValue]) -> dict[str, TableCell]:
@@ -567,8 +606,8 @@ class TableBlock(_Block):
         return [{key: cell.value for key, cell in row.items()} for row in self.rows]
 
 
-#: The two charts a report draws.
-ChartKind = Literal["outcome_bar", "interval_rows"]
+#: The charts a report draws: an outcome bar, interval rows, and a campaign's cost against its pass rate.
+ChartKind = Literal["outcome_bar", "interval_rows", "cost_quality"]
 
 
 class OutcomeSegment(EvalDocumentModel):
@@ -612,15 +651,48 @@ class IntervalRow(EvalDocumentModel):
         return self
 
 
+class CostQualityPoint(EvalDocumentModel):
+    """One arm on a cost/quality chart: what a reply costs it, on x, and its pass rate, on y, each with its interval."""
+
+    arm: str = Field(min_length=1, description="The arm, as the page names it.")
+    cost: float = Field(ge=0, allow_inf_nan=False, description="What a reply costs the arm, in the chart's `unit`.")
+    cost_low: float = Field(allow_inf_nan=False, description="The low end of the cost's interval.")
+    cost_high: float = Field(allow_inf_nan=False, description="The high end of the cost's interval.")
+    pass_rate: float = Field(ge=0, le=100, description="The arm's pass rate, in percent.")
+    pass_rate_low: float = Field(ge=0, le=100, description="The low end of the pass rate's interval, in percent.")
+    pass_rate_high: float = Field(ge=0, le=100, description="The high end of the pass rate's interval, in percent.")
+
+    @model_validator(mode="after")
+    def _each_interval_holds_its_value(self) -> Self:
+        """Refuse an interval that runs backwards or leaves out its value.
+
+        :raises ValueError: An interval's low end is above its value, or its value above its high end.
+        """
+        if not self.cost_low <= self.cost <= self.cost_high:
+            raise ValueError(f"{self.arm!r}: its cost {self.cost} is not within [{self.cost_low}, {self.cost_high}]")
+        if not self.pass_rate_low <= self.pass_rate <= self.pass_rate_high:
+            raise ValueError(
+                f"{self.arm!r}: its pass rate {self.pass_rate} is not within "
+                f"[{self.pass_rate_low}, {self.pass_rate_high}]"
+            )
+        return self
+
+
 class ChartBlock(_Block):
-    """One of the two charts a report draws, with every value it draws, so it prints as a table too."""
+    """One of the charts a report draws, with every value it draws, so it prints as a table too."""
 
     kind: Literal["chart"] = Field(default="chart", description="Which kind of block this is.")
-    chart: ChartKind = Field(description="`outcome_bar` or `interval_rows`.")
+    chart: ChartKind = Field(description="`outcome_bar`, `interval_rows` or `cost_quality`.")
     title: str = Field(min_length=1, description="What the chart shows.")
     bars: list[OutcomeBar] = Field(default_factory=list, description="An outcome bar's arms, one bar each.")
     rows: list[IntervalRow] = Field(default_factory=list, description="An interval chart's rows, in drawn order.")
-    unit: str = Field(default="", description="The unit an interval chart's values are stated in; empty for none.")
+    points: list[CostQualityPoint] = Field(
+        default_factory=list, description="A cost/quality chart's arms, one point each, in drawn order."
+    )
+    unit: str = Field(
+        default="",
+        description="The unit an interval chart's values, or a cost/quality chart's costs, are stated in; empty for none.",
+    )
     zero_line: bool = Field(default=False, description="Whether the chart draws a line at zero (a difference's).")
     margin: float | None = Field(
         default=None, description="A margin band either side of zero, on the chart's ruler; None when none declared."
@@ -628,14 +700,18 @@ class ChartBlock(_Block):
 
     @model_validator(mode="after")
     def _draws_what_its_kind_draws(self) -> Self:
-        """Refuse a chart with nothing to draw, or one carrying the other kind's marks.
+        """Refuse a chart with nothing to draw, or one carrying another kind's marks.
 
-        :raises ValueError: An outcome bar with rows or no bar, or an interval chart with bars or no row.
+        :raises ValueError: An outcome bar with rows, points or no bar; an interval chart with bars, points or no
+            row; or a cost/quality chart with bars, rows or fewer than two points, since a chart is never drawn for
+            one point.
         """
-        if self.chart == "outcome_bar" and (self.rows or not self.bars):
+        if self.chart == "outcome_bar" and (self.rows or self.points or not self.bars):
             raise ValueError("an outcome bar draws one bar per arm and no interval row")
-        if self.chart == "interval_rows" and (self.bars or not self.rows):
+        if self.chart == "interval_rows" and (self.bars or self.points or not self.rows):
             raise ValueError("an interval chart draws at least one row and no outcome bar")
+        if self.chart == "cost_quality" and (self.bars or self.rows or len(self.points) < 2):
+            raise ValueError("a cost/quality chart draws one point per arm, for two arms or more, and nothing else")
         return self
 
     def values_table(self) -> tuple[list[str], list[list[str]]]:
@@ -652,6 +728,19 @@ class ChartBlock(_Block):
                 counts = {segment.label: segment.count for segment in bar.segments}
                 body.append([bar.arm, str(bar.total), *(str(counts.get(label, 0)) for label in labels)])
             return headers, body
+        if self.chart == "cost_quality":
+            cost = f" ({unit_label(self.unit)})" if self.unit else ""
+            headers = ["Arm", f"Cost{cost}", f"Cost interval{cost}", "Pass rate (%)", "Interval (%)"]
+            return headers, [
+                [
+                    point.arm,
+                    interval_value_text(point.cost, self.unit),
+                    interval_text(point.cost_low, point.cost_high, self.unit),
+                    interval_value_text(point.pass_rate, PERCENT),
+                    interval_text(point.pass_rate_low, point.pass_rate_high, PERCENT),
+                ]
+                for point in self.points
+            ]
         unit = f" ({unit_label(self.unit)})" if self.unit else ""
         headers = [
             "Row",
@@ -951,8 +1040,10 @@ class Report(EvalDocumentModel):
 
 #: The shape of a campaign page's JSON (:meth:`CampaignReport.json_document`), raised whenever a reader of the old
 #: shape would misread the new one. 3: each aspect's `question_after_runs` is replaced by `late_criteria`. 4: each
-#: reading and pair in `readings` states both arms' depth and what limits its interval.
-CAMPAIGN_JSON_SHAPE = 4
+#: reading and pair in `readings` states both arms' depth and what limits its interval. 5: the page's model gains a
+#: campaign's own sections, a cell's `flag` and the `cost_quality` chart, and the JSON what the page reads across
+#: aspects as it lands; one unreleased shape holds them all.
+CAMPAIGN_JSON_SHAPE = 5
 
 
 class CampaignAspectFold(EvalDocumentModel):
@@ -1093,6 +1184,14 @@ class CampaignReport(EvalDocumentModel):
         return self
 
     @property
+    def section_titles(self) -> dict[str, str]:
+        """Each section's heading on a campaign's page, in its reading order (:data:`ReportSection`'s): an aspect
+        page's (:data:`SECTION_TITLES`) with the campaign's own among them (``answer``, ``warnings``, ``scorecard``,
+        ``findings``, ``next`` and ``provenance``), each three words or fewer, the first screen's headed by none."""
+        titles = {**SECTION_TITLES, **_CAMPAIGN_SECTION_TITLES}
+        return {section: titles[section] for section in get_args(ReportSection)}
+
+    @property
     def terms(self) -> list[str]:
         """Every glossary term the page links, in the order first linked: its own first screen's, then each aspect's
         fold's — what its one glossary defines."""
@@ -1222,6 +1321,7 @@ __all__ = [
     "ChartBlock",
     "ChartKind",
     "ContrastOutcome",
+    "CostQualityPoint",
     "DisclosureBlock",
     "DisclosureSource",
     "Fact",

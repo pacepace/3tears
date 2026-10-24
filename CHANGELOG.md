@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the campaign page is laid out by one module per part, and its model holds the parts to come
+
+**Changed:** `threetears.evals.analysis.report.campaign` lays a campaign's page out, one module per part (the
+warnings, the question and late criteria, the scorecard, depth, figures across aspects, the writer's and the person's
+words), and `report.campaign_page` re-exports what it exported, `late_criteria_lines` now among them. Every page
+renders as before, byte for byte. **Added**, none of it set on a page laid out today: a campaign's own sections in
+`ReportSection` (`answer`, `warnings`, `scorecard`, `findings`, `next`, `provenance`), headed by
+`CampaignReport.section_titles`; `TableCell.flag`, a short marker printed after a cell's value; and the `cost_quality`
+chart, one `CostQualityPoint` per arm (new, provisional). `CAMPAIGN_JSON_SHAPE` is 5; the JSON's keys do not move
+yet. See `packages/evals/MIGRATIONS.toml`.
+
 ### evals: code no longer reads the memo writer's prose; the page prints it as written
 
 **Changed:** Code checks code, and a model's prose is a model's to check: the page prints every memo sentence as
