@@ -43,8 +43,16 @@ first screen. Top to bottom:
 | 2 | title and question | title and question | title and question |
 | 3 | the writer's summary | the writer's summary | the writer's summary |
 | 4 | the writer's recommendation | the writer's recommendation, or no clear winner | **By aspect, measure by measure** |
-| 5 | **By aspect**: each candidate against the control, then **To show no worse than the margin** | **By aspect, pair by pair** | **Bars** |
-| 6 | **Bars**, then the call | **Bars**, then the call | |
+| 5 | **By aspect**: each candidate against the control, then **To show no worse than the margin** | **By aspect, pair by pair** | **Depth** tables |
+| 6 | **Depth** tables | **Depth** tables | **Bars** |
+| 7 | **Bars**, then the call | **Bars**, then the call | |
+
+The **Depth** tables say how much each reading stands on, before the bars read it. **Depth** gives each arm's usable
+cases and trials per aspect, and its fewest, median and most repeats of a case. **Pass^k depth** gives each frontier
+point's planned depth, the cases short of it, the common depth every point reached and its pass^k there.
+**Precision** gives each comparison's half-width, each arm's own, the arm limiting it and the share of spread between
+cases. **Model-based pass^k** appears only when the host asks for it (`HostProfile.model_pass_hat_k`), labelled a
+model. Each table has one sentence under it where it applies; [concepts.md](concepts.md#depth) defines the terms.
 
 The warnings are bold, above the title (in HTML each a `<p role="alert">`), and the writer's why sits beside each
 one the recommendation answers. A warning only warns: nothing on the page picks an arm, and the bars and floors decide
