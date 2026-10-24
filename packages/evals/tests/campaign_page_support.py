@@ -35,8 +35,9 @@ from threetears.evals.kernel.authored import (
     Recommendation,
 )
 from threetears.evals.kernel.campaign import EvalCampaign
-from threetears.evals.kernel.declaration import BarOverride, CampaignCall, RateDrop
+from threetears.evals.kernel.declaration import CampaignCall, RateDrop
 
+from packages.evals.tests.report_shapes_support import COST_BAR
 from packages.evals.tests.campaign_support import (
     ASSEMBLED_AT,
     CONTROL_LABEL,
@@ -205,10 +206,6 @@ def header_html(page: CampaignReport) -> str:
 _KINDS: dict[str, MeasuredKind] = {}
 
 
-#: No reply may cost more than a tenth of a cent; alpha costs two tenths a reply, so it misses this bar everywhere.
-_COST_BAR = BarOverride(measure_id="cost_usd", threshold=0.001, direction="lower_is_better")
-
-
 async def kind_fixture(label: str) -> MeasuredKind:
     """Each fixture aspect of the other two kinds, measured once: on tone alpha passes nineteen cases to beta's six,
     on billing ten to nine, on refunds ten to ten; solo is alpha alone."""
@@ -220,7 +217,7 @@ async def kind_fixture(label: str) -> MeasuredKind:
             "solo": ({"alpha": 15}, True),
         }
         arms, control = shapes[label]
-        _KINDS[label] = await measured_kind(label, arms, control=control, bars=[_COST_BAR], costs={"beta": 0.0005})
+        _KINDS[label] = await measured_kind(label, arms, control=control, bars=[COST_BAR], costs={"beta": 0.0005})
     return _KINDS[label]
 
 

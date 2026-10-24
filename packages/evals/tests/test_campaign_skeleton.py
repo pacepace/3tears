@@ -15,17 +15,27 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis import campaign_report_html, campaign_report_markdown, serialize_report
-from threetears.evals.analysis.report.campaign.names import aspect_name
+from threetears.evals.analysis.report.campaign.aggregate import aggregate_blocks, equal_weight_cells
+from threetears.evals.analysis.report.campaign.depth_blocks import depth_provenance_blocks
+from threetears.evals.analysis.report.campaign.names import AspectNames, aspect_name
+from threetears.evals.analysis.report.campaign.provenance import provenance_blocks
 from threetears.evals.analysis.report.model import (
     CAMPAIGN_JSON_SHAPE,
     FIRST_SCREEN,
     SECTION_TITLES,
+    CampaignReport,
     ChartBlock,
     CostQualityPoint,
+    DisclosureBlock,
+    IntervalRow,
+    OutcomeBar,
+    OutcomeSegment,
+    Report,
     ReportSection,
     TableBlock,
     TableCell,
 )
+from threetears.evals.analysis.report.svg import chart_svg
 
 from packages.evals.tests.report_shapes_support import SHAPES, Shape, s1_change, s3_measurement, s4_change
 
@@ -48,10 +58,65 @@ def test_a_campaign_page_heads_every_section_in_reading_order_its_own_among_an_a
     assert all(fold.report.section_titles.keys() == SECTION_TITLES.keys() for fold in page.aspects)
 
 
+#: Each campaign section no part fills yet, by the chunk of the senior-report plan that fills it. A chunk that fills
+#: its section deletes its own row here and tests what the section holds in its own test module.
+_UNFILLED: dict[str, str] = {
+    "answer": "03",
+    "warnings": "03",
+    "scorecard": "04",
+    "findings": "03",
+    "next": "03",
+    "provenance": "03",
+}
+
+
 @pytest.mark.parametrize("name", sorted(SHAPES))
-def test_no_block_sits_in_a_campaign_s_own_sections_yet(name: str) -> None:
+@pytest.mark.parametrize("section", sorted(_UNFILLED))
+def test_no_block_sits_in_a_campaign_section_no_part_fills_yet(section: str, name: str) -> None:
     page = SHAPES[name]().page()
-    assert not [block for block in page.blocks if block.section in _CAMPAIGN_SECTIONS]
+    assert not [block for block in page.blocks if block.section == section]
+
+
+@pytest.mark.parametrize("name", ["s1", "s2"])
+@pytest.mark.parametrize("section", ["scorecard", "findings", "next", "provenance"])
+def test_a_block_in_a_campaign_s_own_headed_section_is_laid_out_under_its_heading_before_the_folds(
+    section: str, name: str
+) -> None:
+    page = SHAPES[name]().page()
+    said = f"A line placed in {section}."
+    placed = page.model_copy(
+        update={"blocks": [*page.blocks, DisclosureBlock(section=section, source="comparisons", text=said)]}
+    )
+    heading = page.section_titles[section]
+    markdown, html = campaign_report_markdown(placed), campaign_report_html(placed)
+    first_fold = f"## {page.aspects[0].aspect}"
+    assert markdown.index(f"## {heading}") < markdown.index(said) < markdown.index(first_fold)
+    assert html.index(f'<section id="{section}">') < html.index(said) < html.index('<section id="aspect-')
+    assert f'<a href="#{section}">' in html
+
+
+@pytest.mark.parametrize("section", sorted(_CAMPAIGN_SECTIONS))
+def test_an_aspect_s_page_refuses_a_block_in_a_campaign_s_own_section(section: str) -> None:
+    report = next(iter(s4_change().reports.values()))
+    with pytest.raises(ValidationError, match=f"lays out no section {section}"):
+        Report.model_validate(
+            {
+                **dict(report),
+                "blocks": [*report.blocks, DisclosureBlock(section=section, source="comparisons", text="A line.")],
+            }
+        )
+
+
+@pytest.mark.parametrize("build", [s1_change, s4_change], ids=["s1", "s4"])
+def test_no_page_holds_a_block_in_the_glossary_which_is_written_from_its_terms(build: Callable[[], Shape]) -> None:
+    shape = build()
+    report = next(iter(shape.reports.values()))
+    stray = DisclosureBlock(section="glossary", source="comparisons", text="A line.")
+    with pytest.raises(ValidationError, match="lays out no section glossary"):
+        Report.model_validate({**dict(report), "blocks": [*report.blocks, stray]})
+    page = shape.page()
+    with pytest.raises(ValidationError, match="the glossary is written from the terms"):
+        CampaignReport.model_validate({**dict(page), "blocks": [*page.blocks, stray]})
 
 
 def test_a_flag_is_printed_after_its_value_and_a_cell_without_one_prints_as_before() -> None:
@@ -110,13 +175,48 @@ def test_a_cost_quality_chart_of_one_point_or_another_kind_s_marks_is_refused() 
         CostQualityPoint(
             arm="alpha", cost=0.004, cost_low=0.005, cost_high=0.006, pass_rate=50, pass_rate_low=40, pass_rate_high=60
         )
+    with pytest.raises(ValidationError, match="its pass rate 50.0 is not within"):
+        CostQualityPoint(
+            arm="alpha", cost=0.004, cost_low=0.003, cost_high=0.005, pass_rate=50, pass_rate_low=55, pass_rate_high=60
+        )
+    two = [_point("alpha", 0.004, 85.0), _point("beta", 0.0008, 60.0)]
+    row = IntervalRow(label="alpha", value=1.0, low=0.0, high=2.0, n_cases=5)
+    bar = OutcomeBar(arm="alpha", segments=[OutcomeSegment(state="passed", label="passed", count=3)])
+    with pytest.raises(ValidationError, match="an interval chart draws at least one row and no outcome bar"):
+        ChartBlock(section="contrasts", chart="interval_rows", title="t", rows=[row], points=two)
+    for marks in ({"rows": [row]}, {"bars": [bar]}):
+        with pytest.raises(ValidationError, match="for two arms or more, and nothing else"):
+            ChartBlock(section="scorecard", chart="cost_quality", title="t", points=two, **marks)
+
+
+def test_a_cost_quality_chart_is_refused_by_the_drawing_until_one_exists() -> None:
+    chart = ChartBlock(
+        section="scorecard",
+        chart="cost_quality",
+        title="Cost and pass rate",
+        points=[_point("alpha", 0.004, 85.0), _point("beta", 0.0008, 60.0)],
+    )
+    with pytest.raises(ValueError, match="has no drawing yet"):
+        chart_svg(chart, chart_id="c1")
 
 
 def test_an_aspect_is_called_by_its_full_label_as_declared() -> None:
     for shape in (s1_change(), s3_measurement()):
-        assert [aspect_name(bundle) for bundle in shape.bundles.values()] == [
-            aspect.label for aspect in shape.campaign.aspects
-        ]
+        labels = [aspect.label for aspect in shape.campaign.aspects]
+        assert [aspect_name(bundle) for bundle in shape.bundles.values()] == labels
+        names = AspectNames.of(shape.bundles.values())
+        assert [names(label) for label in labels] == labels
+        # A label no evidence was given for is printed whole, never shortened.
+        assert names("an aspect no bundle reads") == "an aspect no bundle reads"
+
+
+@pytest.mark.parametrize("build", [s1_change, s4_change], ids=["s1", "s4"])
+def test_the_seams_later_parts_fill_are_empty_today(build: Callable[[], Shape]) -> None:
+    shape = build()
+    assert equal_weight_cells(shape.campaign, shape.readings, shape.reports) == {}
+    assert aggregate_blocks(shape.campaign, shape.readings, shape.reports) == []
+    assert provenance_blocks(shape.campaign, list(shape.bundles.values())) == []
+    assert depth_provenance_blocks(shape.readings) == []
 
 
 @pytest.mark.parametrize("name", ["s1", "s2"])

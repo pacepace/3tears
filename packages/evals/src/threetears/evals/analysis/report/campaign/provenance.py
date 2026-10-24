@@ -8,12 +8,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, CriterionKind, LateCriterion
+from threetears.evals.analysis.report.campaign.names import aspect_name
 from threetears.evals.analysis.report.decision import floor_statement
 from threetears.evals.analysis.report.model import DisclosureBlock, ReportBlock
 from threetears.evals.analysis.style import humanize, measure_name
 from threetears.evals.kernel.campaign import EvalCampaign
 
-__all__ = ["late_criteria_lines", "question_blocks", "timing_blocks"]
+__all__ = ["late_criteria_lines", "provenance_blocks", "question_blocks", "timing_blocks"]
 
 
 def question_blocks(campaign: EvalCampaign) -> list[ReportBlock]:
@@ -40,6 +41,20 @@ def timing_blocks(bundles: Sequence[AnalysisContextBundle]) -> list[ReportBlock]
     return [DisclosureBlock(section="header", source="timing", text=line) for line in late_criteria_lines(bundles)]
 
 
+def provenance_blocks(campaign: EvalCampaign, bundles: Sequence[AnalysisContextBundle]) -> list[ReportBlock]:
+    """The page's Design & provenance section: the design as data, and when each criterion was set. Nothing yet: the
+    first screen says each late criterion (:func:`timing_blocks`).
+
+    :param campaign: The campaign.
+    :ptype campaign: EvalCampaign
+    :param bundles: Each aspect's evidence, in the campaign's order.
+    :ptype bundles: Sequence[AnalysisContextBundle]
+    :return: No block.
+    :rtype: list[ReportBlock]
+    """
+    return []
+
+
 def late_criteria_lines(bundles: Sequence[AnalysisContextBundle]) -> list[str]:
     """The lines a page and a listing say for each criterion set after the readings it judges were visible, or whose
     time is not recorded (each aspect's ``reading_scope.late_criteria``): disclosed, never a demotion, so a reader
@@ -58,7 +73,7 @@ def late_criteria_lines(bundles: Sequence[AnalysisContextBundle]) -> list[str]:
     for bundle in bundles:
         for late in bundle.reading_scope.late_criteria:
             key = (late.criterion, _criterion_words(bundle, late), late.page_date())
-            groups.setdefault(key, []).append(bundle.aspect)
+            groups.setdefault(key, []).append(aspect_name(bundle))
     every = len(bundles) > 1
     lines = [
         _late_line(kind, what, at, labels, every=every and len(labels) == len(bundles))
@@ -67,7 +82,7 @@ def late_criteria_lines(bundles: Sequence[AnalysisContextBundle]) -> list[str]:
     untimed = [bundle for bundle in bundles if bundle.reading_scope.untimed_results]
     if untimed:
         count = sum(bundle.reading_scope.untimed_results for bundle in untimed)
-        on = "" if len(untimed) == len(bundles) else f" on {_listed([bundle.aspect for bundle in untimed])}"
+        on = "" if len(untimed) == len(bundles) else f" on {_listed([aspect_name(bundle) for bundle in untimed])}"
         plural = count != 1
         lines.append(
             f"{count} result{'s' if plural else ''}{on} carr{'y' if plural else 'ies'} no time that can be ordered, so "

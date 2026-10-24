@@ -128,9 +128,13 @@ def chart_svg(block: ChartBlock, *, chart_id: str) -> str:
     :ptype chart_id: str
     :return: The ``<svg>`` element.
     :rtype: str
+    :raises ValueError: The chart is a cost/quality chart, which no drawing exists for yet: it is refused rather than
+        drawn as an empty interval chart.
     """
     if block.chart == "outcome_bar":
         return outcome_bar_svg(block.title, block.bars, chart_id=chart_id)
+    if block.chart == "cost_quality":
+        raise ValueError(f"the cost/quality chart {block.title!r} has no drawing yet, so it is not drawn")
     return interval_rows_svg(
         block.title, block.rows, unit=block.unit, zero_line=block.zero_line, margin=block.margin, chart_id=chart_id
     )

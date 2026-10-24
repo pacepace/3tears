@@ -22,7 +22,9 @@ from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.campaign_readings import AspectReading, CampaignReadings, PairReading
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.quantities import PERCENT, POINTS
+from threetears.evals.analysis.report.campaign.aggregate import EQUAL_WEIGHT_ROW, equal_weight_cells
 from threetears.evals.analysis.report.campaign.common import floor_of, points, rate_name
+from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.report.decision import projected_cell
 from threetears.evals.analysis.report.model import (
     CellValue,
@@ -90,13 +92,21 @@ def _reading_words(row: AspectReading) -> str:
     return words if row.confirmatory else f"{words}, a lead"
 
 
-def table_blocks(campaign: EvalCampaign, readings: CampaignReadings) -> list[ReportBlock]:
-    """Code's table, one row per aspect × candidate, and the lines under it that change how a row reads.
+def table_blocks(
+    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames
+) -> list[ReportBlock]:
+    """Code's table, one row per aspect × candidate, then one row per arm across every aspect where
+    :func:`~threetears.evals.analysis.report.campaign.aggregate.equal_weight_cells` gives it one, and the lines under
+    it that change how a row reads.
 
     :param campaign: The campaign, a change.
     :ptype campaign: EvalCampaign
     :param readings: What code read off it.
     :ptype readings: CampaignReadings
+    :param reports: Each aspect's own page, by its label.
+    :ptype reports: Mapping[str, Report]
+    :param names: What the page calls each aspect.
+    :ptype names: AspectNames
     :return: The table and its lines; one line where no control was named.
     :rtype: list[ReportBlock]
     """
@@ -128,7 +138,7 @@ def table_blocks(campaign: EvalCampaign, readings: CampaignReadings) -> list[Rep
             levels.append(level)
         change = round(row.change, 1)
         values: dict[str, CellValue] = {
-            "aspect": row.aspect,
+            "aspect": names(row.aspect),
             "arm": row.arm_label,
             "cases": min(row.control_cases, row.arm_cases),
             "control": f"{row.control_passed} of {row.control_trials}",
@@ -148,6 +158,12 @@ def table_blocks(campaign: EvalCampaign, readings: CampaignReadings) -> list[Rep
                 zero_line=True,
             )
         rows.append(cells)
+    labels = readings.arm_labels()
+    for arm, cell in equal_weight_cells(campaign, readings, reports).items():
+        across = {column.key: TableCell(value=None) for column in columns}
+        rows.append(
+            across | {"aspect": TableCell(value=EQUAL_WEIGHT_ROW), "arm": TableCell(value=labels[arm]), "change": cell}
+        )
     blocks: list[ReportBlock] = [
         TableBlock(
             section="scoreboard",
@@ -162,12 +178,12 @@ def table_blocks(campaign: EvalCampaign, readings: CampaignReadings) -> list[Rep
     notes = _level_lines(levels, readings) if readings.readings else []
     notes += _within_lines(readings)
     notes += [
-        _rig_line(row.aspect, f"{row.arm_label}'s change against {control}", row.rig)
+        _rig_line(names(row.aspect), f"{row.arm_label}'s change against {control}", row.rig)
         for row in readings.readings
         if row.rig is not None
     ]
-    notes += _floor_beside_lines(campaign, readings)
-    notes += _unread_lines(campaign, readings)
+    notes += _floor_beside_lines(campaign, readings, names)
+    notes += _unread_lines(campaign, readings, names)
     notes += _no_question_lines(campaign)
     blocks += [DisclosureBlock(section="scoreboard", source="comparisons", text=note) for note in notes if note]
     return blocks
@@ -231,7 +247,7 @@ def _within_lines(readings: CampaignReadings) -> list[str]:
     return lines
 
 
-def _floor_beside_lines(campaign: EvalCampaign, readings: CampaignReadings) -> list[str]:
+def _floor_beside_lines(campaign: EvalCampaign, readings: CampaignReadings, names: AspectNames) -> list[str]:
     """A broken floor beside a row that is not shown worse, and a held floor beside a row left unclear: the two read
     different intervals, or different points, and say which."""
     lines: list[str] = []
@@ -240,7 +256,7 @@ def _floor_beside_lines(campaign: EvalCampaign, readings: CampaignReadings) -> l
         if row is None or row.reading == "worse":
             continue
         lines.append(
-            f"The floor broken on {status.aspect} for {status.arm_label} reads its {rate_name(status)} at "
+            f"The floor broken on {names(status.aspect)} for {status.arm_label} reads its {rate_name(status)} at "
             f"{_percent(INTERVAL_LEVEL)} on its own, while its row reads only the pass rate, corrected across "
             f"{status.arm_label}'s aspects."
         )
@@ -257,7 +273,7 @@ def _floor_beside_lines(campaign: EvalCampaign, readings: CampaignReadings) -> l
             state = "left unclear"
         else:
             continue
-        lead = f"The floor {state} on {status.aspect} for {status.arm_label} reads its {rate_name(status)}"
+        lead = f"The floor {state} on {names(status.aspect)} for {status.arm_label} reads its {rate_name(status)}"
         if floor.clause.max_points != row.margin:
             lines.append(
                 f"{lead} against {format_number(floor.clause.max_points)} points, while its row reads the pass rate "
@@ -268,15 +284,16 @@ def _floor_beside_lines(campaign: EvalCampaign, readings: CampaignReadings) -> l
     return lines
 
 
-def _unread_lines(campaign: EvalCampaign, readings: CampaignReadings) -> list[str]:
+def _unread_lines(campaign: EvalCampaign, readings: CampaignReadings, names: AspectNames) -> list[str]:
     """An aspect no arm was compared on, and an aspect with no margin, which is never shown worse."""
     lines: list[str] = []
     for aspect in campaign.aspects:
         rows = readings.on_aspect(aspect.label)
         if not rows:
-            lines.append(f"No arm was compared on {aspect.label}: the control or every other arm did not run there.")
+            named = names(aspect.label)
+            lines.append(f"No arm was compared on {named}: the control or every other arm did not run there.")
         elif aspect.margin is None:
-            lines.append(f"No margin was declared on {aspect.label}, so no arm is ever shown worse there.")
+            lines.append(f"No margin was declared on {names(aspect.label)}, so no arm is ever shown worse there.")
     return lines
 
 
@@ -285,7 +302,7 @@ def _no_question_lines(campaign: EvalCampaign) -> list[str]:
     return [] if campaign.question.strip() else ["No question was declared, so every reading is a lead."]
 
 
-def settle_blocks(readings: CampaignReadings) -> list[ReportBlock]:
+def settle_blocks(readings: CampaignReadings, *, names: AspectNames) -> list[ReportBlock]:
     """Each unclear row: why it is unclear, and the cases that would show the arm no worse than the control by more
     than the aspect's margin, if the arms do not differ and if they differ as observed. The count is read at the
     nominal level, as a floor's is, so where a floor reads the same rate against the same points the two counts are
@@ -295,6 +312,8 @@ def settle_blocks(readings: CampaignReadings) -> list[ReportBlock]:
 
     :param readings: What code read off a change.
     :ptype readings: CampaignReadings
+    :param names: What the page calls each aspect.
+    :ptype names: AspectNames
     :return: The table and its note; nothing where no row is to settle.
     :rtype: list[ReportBlock]
     """
@@ -311,7 +330,7 @@ def settle_blocks(readings: CampaignReadings) -> list[ReportBlock]:
     rows = [
         table_row(
             {
-                "aspect": row.aspect,
+                "aspect": names(row.aspect),
                 "arm": row.arm_label,
                 "why": row.reason or None,
                 "none": None if row.projection is None else projected_cell(row.projection, row.projection.if_none),
@@ -371,7 +390,7 @@ def aspect_shows(readings: CampaignReadings, aspect: str) -> str:
     return ", ".join(f"{row.arm_label} {_reading_words(row)}" for row in rows)
 
 
-def campaign_verdict(readings: CampaignReadings, aspects: Sequence[str]) -> str:
+def campaign_verdict(readings: CampaignReadings, aspects: Sequence[str], names: AspectNames) -> str:
     """The verdict line of a campaign of several aspects, as code writes it: what code read on each aspect, as the
     campaign's page says it beside that aspect's fold, in the campaign's order — ``billing: v2 shown worse; tone: v2
     shown better``. Never the writer's words.
@@ -380,10 +399,12 @@ def campaign_verdict(readings: CampaignReadings, aspects: Sequence[str]) -> str:
     :ptype readings: CampaignReadings
     :param aspects: The campaign's aspects' labels, in its order.
     :ptype aspects: Sequence[str]
+    :param names: What the page calls each aspect.
+    :ptype names: AspectNames
     :return: The verdict line.
     :rtype: str
     """
-    return "; ".join(f"{aspect}: {aspect_shows(readings, aspect)}" for aspect in aspects)
+    return "; ".join(f"{names(aspect)}: {aspect_shows(readings, aspect)}" for aspect in aspects)
 
 
 def _pair_words(pair: PairReading) -> str:
@@ -405,7 +426,9 @@ CHOICE_NOTE = (
 )
 
 
-def pair_blocks(campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]) -> list[ReportBlock]:
+def pair_blocks(
+    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames
+) -> list[ReportBlock]:
     """A choice's table, one row per pair per aspect: each arm's pass count, the difference with its interval, and
     the arm shown ahead or no separation; then the lines that change how a row reads.
 
@@ -415,6 +438,8 @@ def pair_blocks(campaign: EvalCampaign, readings: CampaignReadings, reports: Map
     :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
     :ptype reports: Mapping[str, Report]
+    :param names: What the page calls each aspect.
+    :ptype names: AspectNames
     :return: The table and its lines.
     :rtype: list[ReportBlock]
     """
@@ -438,7 +463,7 @@ def pair_blocks(campaign: EvalCampaign, readings: CampaignReadings, reports: Map
         ahead = pair.ahead_label or "no separation"
         cells = table_row(
             {
-                "aspect": pair.aspect,
+                "aspect": names(pair.aspect),
                 "first": pair.first_label,
                 "second": pair.second_label,
                 "cases": min(pair.first_cases, pair.second_cases),
@@ -472,7 +497,7 @@ def pair_blocks(campaign: EvalCampaign, readings: CampaignReadings, reports: Map
             else f"Each interval is read at the level its pair was tested at, from {_percent(low)} to {_percent(high)}."
         )
     notes += [
-        _rig_line(pair.aspect, f"the difference between {pair.first_label} and {pair.second_label}", pair.rig)
+        _rig_line(names(pair.aspect), f"the difference between {pair.first_label} and {pair.second_label}", pair.rig)
         for pair in readings.pairs
         if pair.rig is not None
     ]
@@ -483,7 +508,7 @@ def pair_blocks(campaign: EvalCampaign, readings: CampaignReadings, reports: Map
 
 
 def frontier_blocks(
-    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]
+    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames
 ) -> list[ReportBlock]:
     """Where an aspect's frontier read which arm clears its bar cheapest, one line saying what it read: the arm shown
     cheaper than every other that cleared, the only arm that cleared with a cost, or the arms that cleared with none
@@ -495,6 +520,8 @@ def frontier_blocks(
     :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
     :ptype reports: Mapping[str, Report]
+    :param names: What the page calls each aspect.
+    :ptype names: AspectNames
     :return: The lines, aspect by aspect.
     :rtype: list[ReportBlock]
     """
@@ -511,7 +538,7 @@ def frontier_blocks(
                 DisclosureBlock(
                     section="scoreboard",
                     source="comparisons",
-                    text=_frontier_words(aspect.label, named, tied, verdict.cost_decision),
+                    text=_frontier_words(names(aspect.label), named, tied, verdict.cost_decision),
                 )
             )
     return lines
@@ -535,7 +562,7 @@ def _frontier_words(aspect: str, named: str, tied: Sequence[str], decision: str 
 
 
 def measure_blocks(
-    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]
+    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames
 ) -> list[ReportBlock]:
     """A measurement's table: each aspect's measures for its arm, each value with its interval, the pass rate as its
     count; a Setup column where an arm was measured under more than one test setup, each cell's apart.
@@ -546,6 +573,8 @@ def measure_blocks(
     :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
     :ptype reports: Mapping[str, Report]
+    :param names: What the page calls each aspect.
+    :ptype names: AspectNames
     :return: The table and its lines.
     :rtype: list[ReportBlock]
     """
@@ -566,7 +595,7 @@ def measure_blocks(
     rows = []
     for reading in readings.measures:
         values: dict[str, CellValue] = {
-            "aspect": reading.aspect,
+            "aspect": names(reading.aspect),
             "arm": reading.arm_label,
             "measure": reading.name,
             "value": _measured(reading.value, reading.passed, reading.trials),
@@ -593,7 +622,7 @@ def measure_blocks(
         ),
     ]
     notes = _no_question_lines(campaign) + _unread_without_control_lines(campaign, reports)
-    notes += _unread_until_candidate_lines(campaign)
+    notes += _unread_until_candidate_lines(campaign, names)
     blocks += [DisclosureBlock(section="scoreboard", source="comparisons", text=note) for note in notes]
     return blocks
 
@@ -614,11 +643,11 @@ def _measured_interval(interval: tuple[float, float] | None, rate: bool) -> str 
     return f"[{format_number(round(interval[0], 4))}, {format_number(round(interval[1], 4))}]"
 
 
-def _unread_until_candidate_lines(campaign: EvalCampaign) -> list[str]:
+def _unread_until_candidate_lines(campaign: EvalCampaign, names: AspectNames) -> list[str]:
     """A change whose control alone has run reads as a measurement, so its margins and floors wait for a candidate;
     one line saying which, so they are not silently dropped."""
     control = campaign.control
-    margined = [aspect.label for aspect in campaign.aspects if aspect.margin is not None]
+    margined = [names(aspect.label) for aspect in campaign.aspects if aspect.margin is not None]
     if control is None or not (margined or campaign.floors):
         return []
     waiting = []
@@ -637,7 +666,7 @@ def _unread_until_candidate_lines(campaign: EvalCampaign) -> list[str]:
 BAR_WORDS: dict[str, str] = {"met": "met", "missed": "missed", "unclear": "unclear"}
 
 
-def bar_blocks(readings: CampaignReadings, reports: Mapping[str, Report]) -> list[ReportBlock]:
+def bar_blocks(readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames) -> list[ReportBlock]:
     """Every arm against every absolute bar, aspect by aspect, for every kind, each measure by its reader's name;
     nothing where no bar is declared.
 
@@ -645,6 +674,8 @@ def bar_blocks(readings: CampaignReadings, reports: Mapping[str, Report]) -> lis
     :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
     :ptype reports: Mapping[str, Report]
+    :param names: What the page calls each aspect.
+    :ptype names: AspectNames
     :return: The bars table, or nothing.
     :rtype: list[ReportBlock]
     """
@@ -667,7 +698,7 @@ def bar_blocks(readings: CampaignReadings, reports: Mapping[str, Report]) -> lis
     rows = [
         table_row(
             {
-                "aspect": status.aspect,
+                "aspect": names(status.aspect),
                 "arm": status.arm_label,
                 "measure": named(status.aspect, status.measure),
                 "bar": f"{'at most' if status.direction == 'lower_is_better' else 'at least'} {format_number(status.bar)}",

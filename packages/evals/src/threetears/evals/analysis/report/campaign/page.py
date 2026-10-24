@@ -26,7 +26,7 @@ from collections.abc import Mapping, Sequence
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.depth_reading import PAIRING_METHOD
 from threetears.evals.analysis.report.campaign.aggregate import aggregate_blocks
-from threetears.evals.analysis.report.campaign.depth_blocks import depth_blocks
+from threetears.evals.analysis.report.campaign.depth_blocks import depth_blocks, depth_provenance_blocks
 from threetears.evals.analysis.report.campaign.memo_blocks import (
     aspect_summary_blocks,
     behind_on_blocks,
@@ -35,7 +35,8 @@ from threetears.evals.analysis.report.campaign.memo_blocks import (
     memo_summary_blocks,
     recommendation_blocks,
 )
-from threetears.evals.analysis.report.campaign.provenance import question_blocks, timing_blocks
+from threetears.evals.analysis.report.campaign.names import AspectNames
+from threetears.evals.analysis.report.campaign.provenance import provenance_blocks, question_blocks, timing_blocks
 from threetears.evals.analysis.report.campaign.scorecard import (
     aspect_shows,
     bar_blocks,
@@ -110,10 +111,11 @@ def build_campaign_report(
         )
     kind = readings.kind
     bundles = [reports[aspect.label].bundle for aspect in campaign.aspects]
+    names = AspectNames.of(bundles)
     blocks: list[ReportBlock] = [
-        *bar_warnings(readings, memo),
-        *floor_warnings(campaign, readings, memo),
-        *guardrail_warnings(campaign, readings, reports),
+        *bar_warnings(readings, memo, names=names),
+        *floor_warnings(campaign, readings, memo, names=names),
+        *guardrail_warnings(campaign, readings, reports, names=names),
         *question_blocks(campaign),
         *timing_blocks(bundles),
         # The writer's read across every aspect, then what it recommends, then the aspects code read them on.
@@ -122,20 +124,23 @@ def build_campaign_report(
     if kind != "measurement":
         blocks += recommendation_blocks(memo, kind)
     if kind == "change":
-        blocks += table_blocks(campaign, readings)
-        blocks += settle_blocks(readings)
+        blocks += table_blocks(campaign, readings, reports, names=names)
+        blocks += settle_blocks(readings, names=names)
     elif kind == "choice":
-        blocks += pair_blocks(campaign, readings, reports)
-        blocks += behind_on_blocks(memo)
-        blocks += frontier_blocks(campaign, readings, reports)
+        blocks += pair_blocks(campaign, readings, reports, names=names)
+        blocks += behind_on_blocks(memo, names=names)
+        blocks += frontier_blocks(campaign, readings, reports, names=names)
     else:
-        blocks += measure_blocks(campaign, readings, reports)
+        blocks += measure_blocks(campaign, readings, reports, names=names)
     blocks += aggregate_blocks(campaign, readings, reports)
-    blocks += depth_blocks(campaign, readings, reports)
-    blocks += bar_blocks(readings, reports)
+    blocks += depth_blocks(campaign, readings, reports, names=names)
+    blocks += bar_blocks(readings, reports, names=names)
     if kind != "measurement" or call is not None:
-        blocks += call_blocks(campaign, readings, call)
-    blocks += memo_blocks(memo, campaign, readings, reports, resolutions, trial_ids or {})
+        blocks += call_blocks(campaign, readings, call, names=names)
+    blocks += memo_blocks(memo, campaign, readings, reports, resolutions, trial_ids or {}, names=names)
+    # Design & provenance: the design and when each criterion was set, then what depth says once.
+    blocks += provenance_blocks(campaign, bundles)
+    blocks += depth_provenance_blocks(readings)
     summaries = {summary.aspect: summary for summary in (memo.aspect_summaries if memo is not None else [])}
     folds = [
         CampaignAspectFold(

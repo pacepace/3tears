@@ -19,6 +19,7 @@ from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.campaign_readings import CampaignReadings, FloorStatus
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.report.campaign.common import as_written, floor_of, named_arms
+from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.report.decision import floor_statement
 from threetears.evals.analysis.report.figures import report_rulers
 from threetears.evals.analysis.report.model import (
@@ -114,12 +115,14 @@ def recommendation_blocks(memo: AuthoredCampaignAnalysis | None, kind: str) -> l
     ]
 
 
-def behind_on_blocks(memo: AuthoredCampaignAnalysis | None) -> list[ReportBlock]:
+def behind_on_blocks(memo: AuthoredCampaignAnalysis | None, *, names: AspectNames) -> list[ReportBlock]:
     """The writer's why for each aspect a choice's recommended arm is shown behind on, set beside the pairs: what the
     recommendation answers there (``behind_on``), as written.
 
     :param memo: The writer's memo; None where none was written.
     :ptype memo: AuthoredCampaignAnalysis | None
+    :param names: What the page calls each aspect.
+    :ptype names: AspectNames
     :return: One block per why; nothing with no recommendation.
     :rtype: list[ReportBlock]
     """
@@ -133,7 +136,7 @@ def behind_on_blocks(memo: AuthoredCampaignAnalysis | None) -> list[ReportBlock]
             body=why,
             facts=[
                 Fact(name="Arm", value=recommendation.arm),
-                Fact(name="Over", value=f"{behind.ahead_arm}, ahead on {behind.aspect}"),
+                Fact(name="Over", value=f"{behind.ahead_arm}, ahead on {names(behind.aspect)}"),
             ],
         )
         for behind in recommendation.behind_on
@@ -141,15 +144,17 @@ def behind_on_blocks(memo: AuthoredCampaignAnalysis | None) -> list[ReportBlock]
     ]
 
 
-def _floor_words(floor: Floor | None, status: FloorStatus) -> str:
+def _floor_words(floor: Floor | None, status: FloorStatus, names: AspectNames) -> str:
     """A floor as the page says it, naming its arm and its aspect: ``no pass rate drops by more than 10 points on
     billing``."""
     if floor is None:
-        return f"a floor on {status.aspect}"
-    return f"{floor_statement(floor.clause, candidate=status.arm_label)} on {status.aspect}"
+        return f"a floor on {names(status.aspect)}"
+    return f"{floor_statement(floor.clause, candidate=status.arm_label)} on {names(status.aspect)}"
 
 
-def call_blocks(campaign: EvalCampaign, readings: CampaignReadings, call: CampaignCall | None) -> list[ReportBlock]:
+def call_blocks(
+    campaign: EvalCampaign, readings: CampaignReadings, call: CampaignCall | None, *, names: AspectNames
+) -> list[ReportBlock]:
     """The person's call, who made it and when, their reason quoted, and every floor and bar it overrides; a line
     saying none is recorded while none is.
 
@@ -165,6 +170,8 @@ def call_blocks(campaign: EvalCampaign, readings: CampaignReadings, call: Campai
     :ptype readings: CampaignReadings
     :param call: The person's call; None while none is recorded.
     :ptype call: CampaignCall | None
+    :param names: What the page calls each aspect.
+    :ptype names: AspectNames
     :return: The call's lines.
     :rtype: list[ReportBlock]
     """
@@ -184,7 +191,9 @@ def call_blocks(campaign: EvalCampaign, readings: CampaignReadings, call: Campai
     for key in call.floors_overridden:
         broken = next((status for status in floors if status.floor == key and status.status == "broken"), None)
         if broken is not None:
-            lines.append(f"The call overrides a broken floor: {_floor_words(floor_of(campaign.floors, key), broken)}.")
+            lines.append(
+                f"The call overrides a broken floor: {_floor_words(floor_of(campaign.floors, key), broken, names)}."
+            )
         else:
             lines.append(f"The call overrides the floor {code(key)} (no longer broken).")
     unanswered: dict[str, FloorStatus] = {}
@@ -192,21 +201,23 @@ def call_blocks(campaign: EvalCampaign, readings: CampaignReadings, call: Campai
         if status.status == "broken" and status.floor not in call.floors_overridden:
             unanswered.setdefault(status.floor, status)
     for key, status in unanswered.items():
-        said = _floor_words(floor_of(campaign.floors, key), status)
+        said = _floor_words(floor_of(campaign.floors, key), status, names)
         lines.append(f"The call does not name the broken floor as overridden: {said}.")
     missed = {(bar.aspect, bar.measure): bar for bar in readings.missed_bars() if bar.arm in keys}
     overridden = {(bar.aspect, bar.measure) for bar in call.bars_overridden}
     for bar in call.bars_overridden:
         if (still := missed.get((bar.aspect, bar.measure))) is not None:
-            lines.append(f"The call overrides a missed bar on {bar.aspect}: {still.reason}.")
+            lines.append(f"The call overrides a missed bar on {names(bar.aspect)}: {still.reason}.")
         else:
-            lines.append(f"The call overrides the bar on {code(bar.measure)} on {bar.aspect} (no longer missed).")
+            on = names(bar.aspect)
+            lines.append(f"The call overrides the bar on {code(bar.measure)} on {on} (no longer missed).")
     for (aspect, measure), unnamed in missed.items():
         if (aspect, measure) not in overridden:
-            lines.append(f"The call does not name the missed bar on {aspect} as overridden: {unnamed.reason}.")
+            on = names(aspect)
+            lines.append(f"The call does not name the missed bar on {on} as overridden: {unnamed.reason}.")
     for pair in readings.pairs:
         if pair.ahead is not None and pair.ahead not in keys and keys & {pair.first, pair.second}:
-            lines.append(f"{pair.ahead_label or pair.ahead} is shown ahead of {call.arm} on {pair.aspect}.")
+            lines.append(f"{pair.ahead_label or pair.ahead} is shown ahead of {call.arm} on {names(pair.aspect)}.")
     return [DisclosureBlock(section="header", source="call", text=line) for line in lines]
 
 
@@ -227,6 +238,8 @@ def memo_blocks(
     reports: Mapping[str, Report],
     resolutions: Sequence[FindingResolution],
     trial_ids: Mapping[str, tuple[str, str]],
+    *,
+    names: AspectNames,
 ) -> list[ReportBlock]:
     """The memo's findings, each its headline and body and, folded, its trace; then its next steps, every word as
     written; nothing with no memo.
@@ -243,12 +256,14 @@ def memo_blocks(
     :ptype resolutions: Sequence[FindingResolution]
     :param trial_ids: The ids the memo names trials by, each to its aspect and its id there.
     :ptype trial_ids: Mapping[str, tuple[str, str]]
+    :param names: What the page calls each aspect.
+    :ptype names: AspectNames
     :return: The findings and next steps, or nothing.
     :rtype: list[ReportBlock]
     """
     if memo is None:
         return []
-    trace = _Trace.over(campaign, readings, reports, resolutions, trial_ids)
+    trace = _Trace.over(campaign, readings, reports, resolutions, trial_ids, names)
     blocks: list[ReportBlock] = []
     for position, finding in enumerate(memo.findings):
         title = as_written(finding.title)
@@ -278,6 +293,7 @@ class _Trace:
     reports: Mapping[str, Report]
     resolutions: Sequence[FindingResolution]
     trial_ids: Mapping[str, tuple[str, str]]
+    names: AspectNames
 
     @classmethod
     def over(
@@ -287,6 +303,7 @@ class _Trace:
         reports: Mapping[str, Report],
         resolutions: Sequence[FindingResolution],
         trial_ids: Mapping[str, tuple[str, str]],
+        names: AspectNames,
     ) -> _Trace:
         """The trace over the campaign's folds, each arm named by its campaign label as the folds name it."""
         return cls(
@@ -295,6 +312,7 @@ class _Trace:
             reports=reports,
             resolutions=resolutions,
             trial_ids=trial_ids,
+            names=names,
         )
 
     def blocks(self, position: int, finding: Finding) -> list[ReportBlock]:
@@ -350,7 +368,7 @@ class _Trace:
             figure = evidence_figure(row, ruler)
             rows.append(
                 {
-                    "aspect": TableCell(value=row.aspect),
+                    "aspect": TableCell(value=self.names(row.aspect)),
                     "arm": TableCell(value=self._arm(row.aspect, variant_of_cell_ref(row.cell_ref) or row.cell_ref)),
                     "reading": TableCell(value=ruler.scaled(reading_heading(surface, row.measure_id, row.reading))),
                     "value": figure.model_copy(update={"ref": self._fold(row.aspect) if printed else None}),
@@ -371,7 +389,7 @@ class _Trace:
         aspect, own = where
         arm = next((held.arm for held in self.reports[aspect].bundle.trials if held.trial_id == own), None)
         return {
-            "aspect": TableCell(value=aspect),
+            "aspect": TableCell(value=self.names(aspect)),
             "arm": TableCell(value=self._arm(aspect, arm) if arm is not None else None),
             "reading": TableCell(value="trial"),
             "value": TableCell(value=own, ref=self._fold(aspect) if arm is not None else None),

@@ -12,6 +12,7 @@ from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.depth import MODEL_ASSUMES, REPEATS_FLOOR, Precision
 from threetears.evals.analysis.depth_reading import AspectDepth, aspect_depth
 from threetears.evals.analysis.report.campaign.common import named_arms
+from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.report.model import (
     DisclosureBlock,
     Report,
@@ -23,7 +24,7 @@ from threetears.evals.analysis.report.model import (
 )
 from threetears.evals.kernel.campaign import EvalCampaign
 
-__all__ = ["depth_blocks"]
+__all__ = ["depth_blocks", "depth_provenance_blocks"]
 
 
 def _label_of(bundle: AnalysisContextBundle, labels: Mapping[str, str]) -> Callable[[str], str]:
@@ -33,7 +34,7 @@ def _label_of(bundle: AnalysisContextBundle, labels: Mapping[str, str]) -> Calla
 
 
 def depth_blocks(
-    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]
+    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames
 ) -> list[ReportBlock]:
     """How deep each arm ran on each aspect, what pass^k compares at, and what limits each comparison's interval:
     tables, with one sentence under each where the arms differ.
@@ -44,6 +45,8 @@ def depth_blocks(
     :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
     :ptype reports: Mapping[str, Report]
+    :param names: What the page calls each aspect.
+    :ptype names: AspectNames
     :return: The tables and their sentences; nothing where no arm ran.
     :rtype: list[ReportBlock]
     """
@@ -51,14 +54,18 @@ def depth_blocks(
     depths = [
         (
             reports[aspect.label].bundle,
-            aspect_depth(reports[aspect.label].bundle, _label_of(reports[aspect.label].bundle, labels)),
+            aspect_depth(
+                reports[aspect.label].bundle,
+                _label_of(reports[aspect.label].bundle, labels),
+                name=names(aspect.label),
+            ),
         )
         for aspect in campaign.aspects
     ]
     rows = [
         table_row(
             {
-                "aspect": depth.aspect,
+                "aspect": names(depth.aspect),
                 "arm": arm,
                 "cases": held.cases,
                 "trials": held.trials,
@@ -97,7 +104,7 @@ def depth_blocks(
         if depth.said is not None
     ]
     blocks += _pass_k_depth_blocks(depths, labels)
-    blocks += _precision_blocks(readings)
+    blocks += _precision_blocks(readings, names)
     return blocks
 
 
@@ -210,7 +217,7 @@ def _model_blocks(
     ]
 
 
-def _precision_blocks(readings: CampaignReadings) -> list[ReportBlock]:
+def _precision_blocks(readings: CampaignReadings, names: AspectNames) -> list[ReportBlock]:
     """What limits each pass-rate comparison's interval: its half-width, each arm's own, the arm limiting it and the
     between-case share of its variance, with the one sentence saying what extra repeats can and cannot lower."""
     compared: list[tuple[str, Precision]] = [(row.aspect, row.precision) for row in readings.readings if row.precision]
@@ -229,7 +236,7 @@ def _precision_blocks(readings: CampaignReadings) -> list[ReportBlock]:
         rows.append(
             table_row(
                 {
-                    "aspect": aspect,
+                    "aspect": names(aspect),
                     "arms": ARMS_PAIR.format(first=named(first), second=named(second)),
                     "half_width": round(precision.half_width, 1),
                     "first": round(first_width, 1),
@@ -259,3 +266,16 @@ def _precision_blocks(readings: CampaignReadings) -> list[ReportBlock]:
         ),
         DisclosureBlock(section="scoreboard", source="comparisons", text=REPEATS_FLOOR),
     ]
+
+
+def depth_provenance_blocks(readings: CampaignReadings) -> list[ReportBlock]:
+    """What depth says once in the page's Design & provenance section, in the slot
+    :mod:`~threetears.evals.analysis.report.campaign.page` gives it there: nothing yet, since the depth tables say it
+    under them.
+
+    :param readings: What code read off the campaign.
+    :ptype readings: CampaignReadings
+    :return: No block.
+    :rtype: list[ReportBlock]
+    """
+    return []

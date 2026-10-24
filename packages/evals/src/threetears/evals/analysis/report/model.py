@@ -957,6 +957,23 @@ class Report(EvalDocumentModel):
         return self
 
     @model_validator(mode="after")
+    def _every_block_sits_where_the_page_lays_it_out(self) -> Self:
+        """Refuse a block in a section an aspect's page has no place for: a campaign's own, or the glossary, which the
+        serializers write from the terms the page links. A block no serializer lays out would vanish from the page.
+
+        :raises ValueError: A block sits in a campaign's own section or in the glossary.
+        """
+        if stray := sorted(
+            {
+                block.section
+                for block in self.blocks
+                if block.section in _CAMPAIGN_SECTION_TITLES or block.section == "glossary"
+            }
+        ):
+            raise ValueError(f"an aspect's page lays out no section {', '.join(stray)}, and blocks sit in it")
+        return self
+
+    @model_validator(mode="after")
     def _the_basis_matches_what_the_report_holds(self) -> Self:
         """Refuse a report whose basis disagrees with its source or its blocks.
 
@@ -1154,6 +1171,18 @@ class CampaignReport(EvalDocumentModel):
         return self
 
     @model_validator(mode="after")
+    def _every_block_sits_where_the_page_lays_it_out(self) -> Self:
+        """Refuse a block in the glossary, which the serializers write from the terms the page links: a block there
+        would vanish from the page. Every other section is on the first screen or headed (:attr:`section_titles`).
+
+        :raises ValueError: A block, or an aspect's summary block, sits in the glossary.
+        """
+        blocks = [*self.blocks, *(block for fold in self.aspects for block in fold.summary)]
+        if any(block.section == "glossary" for block in blocks):
+            raise ValueError("the glossary is written from the terms the page links, and blocks sit in it")
+        return self
+
+    @model_validator(mode="after")
     def _the_basis_matches_what_the_page_holds(self) -> Self:
         """Refuse a code-only page holding a finding or a writer's words, and a block linked to a finding not held.
 
@@ -1190,6 +1219,29 @@ class CampaignReport(EvalDocumentModel):
         ``findings``, ``next`` and ``provenance``), each three words or fewer, the first screen's headed by none."""
         titles = {**SECTION_TITLES, **_CAMPAIGN_SECTION_TITLES}
         return {section: titles[section] for section in get_args(ReportSection)}
+
+    @property
+    def headed_sections(self) -> tuple[list[str], list[str]]:
+        """The headed sections holding a block, in reading order (:attr:`section_titles`), split at the aspect folds:
+        those up to Design & provenance read before the folds, what the page says of how it was made (cases, trials,
+        what was not tested, the methods) after them. The first screen and the glossary are laid out apart.
+
+        :return: ``(before, after)``, each a list of section ids.
+        :rtype: tuple[list[str], list[str]]
+        """
+        present = [
+            section
+            for section in self.section_titles
+            if section not in FIRST_SCREEN
+            and section != "glossary"
+            and any(block.section == section for block in self.blocks)
+        ]
+        order = list(self.section_titles)
+        fold_at = order.index("provenance")
+        return (
+            [section for section in present if order.index(section) <= fold_at],
+            [section for section in present if order.index(section) > fold_at],
+        )
 
     @property
     def terms(self) -> list[str]:

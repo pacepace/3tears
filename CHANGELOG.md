@@ -10,12 +10,18 @@ packages (bumped in lock-step).
 
 **Changed:** `threetears.evals.analysis.report.campaign` lays a campaign's page out, one module per part (the
 warnings, the question and late criteria, the scorecard, depth, figures across aspects, the writer's and the person's
-words), and `report.campaign_page` re-exports what it exported, `late_criteria_lines` now among them. Every page
-renders as before, byte for byte. **Added**, none of it set on a page laid out today: a campaign's own sections in
-`ReportSection` (`answer`, `warnings`, `scorecard`, `findings`, `next`, `provenance`), headed by
-`CampaignReport.section_titles`; `TableCell.flag`, a short marker printed after a cell's value; and the `cost_quality`
-chart, one `CostQualityPoint` per arm (new, provisional). `CAMPAIGN_JSON_SHAPE` is 5; the JSON's keys do not move
-yet. See `packages/evals/MIGRATIONS.toml`.
+words), and `report.campaign_page` re-exports what it exported, with `late_criteria_lines` and `AspectNames` (what the
+page calls each aspect) now among them. `campaign_warnings` and `campaign_verdict` take the `AspectNames` to name
+aspects by. Both serializers lay a page's sections out in the page's own order: an aspect's page by
+`Report.section_titles`, a campaign's by `CampaignReport.section_titles`, its sections up to Design & provenance
+before the aspect folds and the rest after (`CampaignReport.headed_sections`). Every page renders as before, byte for
+byte. **Added**, none of it set on a page laid out today: a campaign's own sections in `ReportSection` (`answer`,
+`warnings`, `scorecard`, `findings`, `next`, `provenance`), each laid out under its heading; `TableCell.flag`, a short
+marker printed after a cell's value; and the `cost_quality` chart, one `CostQualityPoint` per arm (new, provisional),
+which `chart_svg` refuses until it has a drawing. **Refused:** an aspect's page holding a block in a campaign's own
+section, and any page holding a block in the glossary, which the serializers write from the page's terms; each would
+otherwise vanish from the page. `CAMPAIGN_JSON_SHAPE` is 5; the JSON's keys do not move yet. See
+`packages/evals/MIGRATIONS.toml`.
 
 ### evals: code no longer reads the memo writer's prose; the page prints it as written
 

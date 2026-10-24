@@ -92,14 +92,11 @@ def campaign_report_markdown(report: CampaignReport) -> str:
     head = [block for block in report.blocks if block.section in FIRST_SCREEN and not _warns(block)]
     for index, block in enumerate(head):
         lines += [*([] if index == 0 else [""]), *_block(block)]
-    present = [
-        section
-        for section in SECTION_TITLES
-        if section not in FIRST_SCREEN and section != "glossary" and any(b.section == section for b in report.blocks)
-    ]
-    # What the memo says reads before the folds; how the page was made (the methods) after them.
-    for section in [section for section in present if section == "memo"]:
-        lines += ["", f"## {SECTION_TITLES[section]}", *_folded([b for b in report.blocks if b.section == section])]
+    # What the page reads and the writer says sit before the folds; how the page was made (the methods) after them.
+    before, after = report.headed_sections
+    titles = report.section_titles
+    for section in before:
+        lines += ["", f"## {titles[section]}", *_folded([b for b in report.blocks if b.section == section])]
     for fold, slug in zip(report.aspects, report.fold_ids, strict=True):
         prefix = f"a-{slug}-"
         lines += ["", f"## {_inert(_one_line(fold.aspect))}", "", f"{_inert(_one_line(fold.shows))}.", ""]
@@ -111,8 +108,8 @@ def campaign_report_markdown(report: CampaignReport) -> str:
             lines += ["", *_block(block, prefix=prefix)]
         lines += _section_lines(aspect, depth=3, prefix=prefix)
         lines += ["", "</details>"]
-    for section in [section for section in present if section != "memo"]:
-        lines += ["", f"## {SECTION_TITLES[section]}", *_folded([b for b in report.blocks if b.section == section])]
+    for section in after:
+        lines += ["", f"## {titles[section]}", *_folded([b for b in report.blocks if b.section == section])]
     lines += _glossary_lines(report.terms)
     return "\n".join(lines) + "\n"
 
@@ -121,7 +118,7 @@ def _section_lines(report: Report, *, depth: int, prefix: str = "") -> list[str]
     """Each section after the first screen under a heading of ``depth``, its trials' ids prefixed with ``prefix``."""
     titles = report.section_titles
     lines: list[str] = []
-    for section in SECTION_TITLES:
+    for section in titles:
         if section in FIRST_SCREEN or section == "glossary":
             continue
         blocks = [block for block in report.blocks if block.section == section and not _repeats_scoreboard(block)]

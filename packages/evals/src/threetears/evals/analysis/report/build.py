@@ -109,6 +109,7 @@ from threetears.evals.analysis.report.decision import (
     read_floor,
 )
 from threetears.evals.analysis.report.campaign_page import (
+    AspectNames,
     campaign_verdict,
     campaign_warnings,
     late_criteria_lines,
@@ -432,10 +433,11 @@ def analysis_verdict(analysis: EvalAnalysis) -> str:
     """
     campaign = analysis_campaign_bundle(analysis)
     readings = campaign.readings
-    warnings = campaign_warnings(analysis.design_snapshot.floors, readings)
+    names = AspectNames.of(campaign.aspects)
+    warnings = campaign_warnings(analysis.design_snapshot.floors, readings, names)
     warnings += late_criteria_lines(campaign.aspects)
     if len(analysis.aspects) > 1:
-        verdict = campaign_verdict(readings, [aspect.label for aspect in analysis.aspects])
+        verdict = campaign_verdict(readings, [aspect.label for aspect in analysis.aspects], names)
     else:
         bundle = campaign.aspects[0]
         verdict = verdict_line(bundle, _namer(_arm_names(bundle)), case_name=_case_namer(bundle)).text

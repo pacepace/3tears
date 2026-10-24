@@ -25,7 +25,6 @@ from threetears.evals.analysis import (
     report_html,
     serialize_report,
 )
-from threetears.evals.analysis.report.campaign_page import NO_CALL, NO_RECOMMENDATION
 from threetears.evals.analysis.report.model import (
     CAMPAIGN_JSON_SHAPE,
     CampaignAspectFold,
@@ -45,70 +44,13 @@ from packages.evals.tests.campaign_support import (
 )
 
 from packages.evals.tests.campaign_page_support import (
-    SUMMARY,
     aspect_fixture,
     campaign_fixture,
     first_screen_markdown,
-    header_html,
     kind_fixture,
-    kind_page_of,
-    opening,
     page_of,
-    recommending_nothing,
     two_aspect_memo,
 )
-
-
-async def test_both_aspects_readings_are_on_the_first_screen_and_the_broken_floor_is_first() -> None:
-    page = await page_of("billing", "tone")
-    table = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "aspects")
-    assert [(row["aspect"].text, row["arm"].text, row["reading"].text) for row in table.rows] == [
-        ("billing", CANDIDATE_LABEL, "shown worse"),
-        ("tone", CANDIDATE_LABEL, "shown better"),
-    ]
-    first = first_screen_markdown(page)
-    assert first.startswith("**Floor broken on billing: v2's pass rate falls past the 10-point margin")
-    assert "shown worse" in first and "shown better" in first
-    header = header_html(page)
-    assert header.index('role="alert"') < header.index("<h1>") < header.index('data-table="aspects"')
-    assert "shown worse" in header and "shown better" in header
-    # The broken floor is code's: the readings carry it, and the page warns once.
-    assert [status.floor for status in page.readings.broken_floors()] == ["billing/rate_drop/*"]
-    assert header.count('role="alert"') == 1
-
-
-async def test_the_first_screen_runs_in_order_floor_question_summary_recommendation_table_call() -> None:
-    """A change with a recommendation reads its summary, then the recommendation, then the aspect table."""
-    page = await page_of("billing", "tone", memo=two_aspect_memo())
-    first = first_screen_markdown(page)
-    order = [
-        first.index("**Floor broken on billing"),
-        first.index(f'"{QUESTION}"'),
-        first.index(SUMMARY),
-        first.index(f"**Recommended:** {CONTROL_LABEL} (high confidence)"),
-        first.index("- The billing floor is broken"),
-        first.index("**By aspect**"),
-        first.index(NO_CALL),
-    ]
-    assert order == sorted(order)
-    assert page.basis == "analysis" and page.finding_count == 1
-    header = header_html(page)
-    order = [
-        header.index('role="alert"'),
-        header.index("<h1>"),
-        header.index('data-role="summary"'),
-        header.index('data-role="recommendation"'),
-        header.index('data-table="aspects"'),
-    ]
-    assert order == sorted(order)
-    assert opening(page) == [("text", "summary"), ("text", "recommendation"), ("text", "reason")]
-
-
-async def test_a_code_only_page_has_no_summary_and_says_no_recommendation_was_written_before_the_table() -> None:
-    page = await page_of("billing", "tone")
-    first = first_screen_markdown(page)
-    assert first.index(f'"{QUESTION}"') < first.index(NO_RECOMMENDATION) < first.index("**By aspect**")
-    assert opening(page)[0] == ("memo", NO_RECOMMENDATION)
 
 
 async def test_a_campaign_of_one_aspect_has_one_row_and_its_fold_holds_the_aspect_s_page() -> None:
@@ -264,19 +206,6 @@ async def test_a_fold_s_markdown_heading_is_inert() -> None:
         floors=[],
     )
     assert "\n## \\# billing\n" in campaign_report_markdown(page)
-
-
-async def test_a_measurement_opens_after_its_warning_on_its_summary_then_its_measures() -> None:
-    summary = "Alpha passes most cases on solo and costs too much a reply to meet its bar."
-    page = await kind_page_of("solo", memo=recommending_nothing(summary))
-    assert page.readings.kind == "measurement"
-    assert opening(page) == [("text", "summary")]
-    first = first_screen_markdown(page)
-    assert first.startswith("**Bar missed on solo:")
-    assert first.index("# ") < first.index(summary) < first.index("**By aspect, measure by measure**")
-    header = header_html(page)
-    assert header.index('role="alert"') < header.index("<h1>") < header.index('data-role="summary"')
-    assert header.index('data-role="summary"') < header.index('data-table="measures"')
 
 
 async def test_a_fold_of_a_choice_names_the_arms_by_the_campaign_s_labels() -> None:

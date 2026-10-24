@@ -16,7 +16,7 @@ from threetears.evals.analysis import (
     campaign_report_markdown,
 )
 from threetears.evals.analysis.lenses.frontier import FrontierCostDecision, FrontierCostTie, FrontierVerdict
-from threetears.evals.analysis.report.campaign_page import CHOICE_NOTE, campaign_verdict
+from threetears.evals.analysis.report.campaign_page import CHOICE_NOTE, AspectNames, campaign_verdict
 from threetears.evals.analysis.report.model import (
     DisclosureBlock,
     TableBlock,
@@ -110,7 +110,7 @@ async def test_a_row_no_worse_than_the_margin_reads_so_beside_its_held_floor_and
     steady = markdown[markdown.index("## steady") : markdown.index("## tone")]
     assert "v2 no worse than the margin." in steady
     assert (
-        campaign_verdict(page.readings, ["steady", "tone"])
+        campaign_verdict(page.readings, ["steady", "tone"], AspectNames.of(fold.report.bundle for fold in page.aspects))
         == "steady: v2 no worse than the margin; tone: v2 shown better"
     )
 
