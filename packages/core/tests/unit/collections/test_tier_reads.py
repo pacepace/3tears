@@ -93,3 +93,32 @@ async def test_the_total_since_the_process_started_is_read_without_starting_the_
     assert tier_reads_total()["totals-table"] == after, "and the line starts none of the total again"
     record_tier_read("totals-table", ReadTier.L3)
     assert tier_reads_total()["totals-table"] == {**after, "l3": before.get("l3", 0) + 1}
+
+
+def test_a_hold_on_a_second_open_loop_is_served_by_the_first_loops_timer_and_neither_fails_its_release() -> None:
+    import threading
+
+    first = asyncio.new_event_loop()
+    ready = threading.Event()
+    runner = threading.Thread(target=lambda: (first.call_soon(ready.set), first.run_forever()), daemon=True)
+    runner.start()
+    ready.wait()
+    try:
+        asyncio.run_coroutine_threadsafe(_hold(), first).result(timeout=5)
+
+        async def second_loop() -> dict[str, dict[str, int]]:
+            hold_tier_reads_timer()
+            return await release_tier_reads_timer()
+
+        assert asyncio.run(second_loop()) == {}, "the second loop's hold started nothing, and its release logs nothing"
+        record_tier_read("two-loops", ReadTier.L2)
+        released = asyncio.run_coroutine_threadsafe(release_tier_reads_timer(), first).result(timeout=5)
+        assert released["two-loops"] == {"l2": 1}, "the first loop's timer was never taken from it"
+    finally:
+        first.call_soon_threadsafe(first.stop)
+        runner.join(timeout=5)
+        first.close()
+
+
+async def _hold() -> None:
+    hold_tier_reads_timer()

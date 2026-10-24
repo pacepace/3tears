@@ -1414,7 +1414,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         Every reader **in this class** routes through here. Nothing cached in L1
         ages; the one expiry is the row's own (:attr:`expires_at_column`), data the
         row carries. Callers that repair a miss by pulling through (:meth:`ensure`,
-        :meth:`_resolve_row`, :meth:`_ensure_in_l1`) pass ``expiring=True``; a
+        :meth:`_resolve_row`) pass ``expiring=True``; a
         reporting caller (:meth:`get_row_sync` and the like) does not, since hiding
         a row there turns updating an entity past its expiry into a crash.
 
@@ -2478,17 +2478,6 @@ class BaseCollection(ABC, Generic[EntityT]):
 
     # --- Subscript access (sync, transparent pull-through) ---
 
-    def _ensure_in_l1(self, entity_id: Any) -> dict[str, Any] | None:
-        """Pull entity into L1 via L2/L3 if not already cached. Sync.
-
-        Returns the row data if found, None if not found in any tier.
-        """
-        row = self._select_from_l1(entity_id, expiring=True)
-        if row is not None:
-            record_tier_read(self.table_name, ReadTier.L1)
-            return row
-        return sync_await(self._pull_through(entity_id))
-
     async def _pull_through(self, entity_id: Any) -> dict[str, Any] | None:
         """Async pull-through: L2 -> L1, then L3 -> L1+L2. Returns the data or None.
 
@@ -2812,7 +2801,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         data = sync_await(self._pull_through(entity_id))
         if data is None:
             raise KeyError(f"{self.table_name}[{entity_id!r}]: entity not found")
-        # If L1 exists, re-read from it (ensure_in_l1 populated it)
+        # If L1 exists, re-read from it (the pull-through populated it)
         if self._l1 is not None:
             row = self.get_row_sync(entity_id)
             if row is not None:
