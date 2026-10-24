@@ -1208,6 +1208,12 @@ class KVLease:
         # to catch for the conflict path -- the wrapper hides
         # KeyWrongLastSequenceError behind the typed ``None`` return.
         revision = await bucket.create(key=key, value=payload, ttl=self._entry_ttl(ttl_seconds))
+        if revision is None and await bucket.get_entry(key=key) is None:
+            # the create lost, yet the key holds nothing: it lost to a released key's marker that
+            # lapsed under it (a create over a marker swaps against the marker's revision), or to an
+            # entry released since. The key is free, so it is created again, once: a contender that
+            # took it meanwhile makes this one lose too, and the entry is then judged below
+            revision = await bucket.create(key=key, value=payload, ttl=self._entry_ttl(ttl_seconds))
         if revision is not None:
             result = LeaseHandle(
                 lease=self,
@@ -1563,6 +1569,16 @@ class KVLease:
             # this handle's own renewal, applied by the server after the handle stopped waiting for
             # its answer: the entry is ours, one revision on from what the handle recorded
             revision = observed
+        if revision <= 0:
+            # no revision proves the entry is this handle's own (one of its holder's other handles may
+            # have taken the key since): an unfenced removal could take a successor's lease, so the
+            # entry is left to lapse by its TTL
+            log.info(
+                "KVLease: the release of %s holds no revision to fence its delete on; it is left to lapse by its TTL",
+                handle.key,
+            )
+            handle.released = True
+            return
         # CAS delete keyed on the handle's revision so a stale-after-
         # check delete cannot evict a successor's freshly reclaimed
         # entry. KvBucketLike.delete returns False on revision mismatch

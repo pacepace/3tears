@@ -9,6 +9,7 @@ below its own sequence plus one, so a write that lands after the sweep read the 
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -92,6 +93,27 @@ class TestARemovalWithAMarkerLifetime:
 
         assert await _bucket(js, kv).delete(key="k", revision=7, marker_ttl=timedelta(seconds=5)) is True
         kv.delete.assert_awaited_once_with("k", last=7)
+
+    async def test_a_revision_of_zero_still_fences(self) -> None:
+        js = _Js()
+
+        await _bucket(js).delete(key="k", revision=0, marker_ttl=timedelta(seconds=5))
+
+        assert js.published[0]["headers"]["Nats-Expected-Last-Subject-Sequence"] == "0"
+
+    async def test_the_fallback_names_the_streams_own_refusal(self, caplog: pytest.LogCaptureFixture) -> None:
+        js = _Js(APIError(code=400, err_code=10115, description="rollup not permitted"))
+        kv = MagicMock()
+        kv.delete = AsyncMock(return_value=True)
+
+        with caplog.at_level(logging.WARNING):
+            await _bucket(js, kv).delete(key="k", revision=7, marker_ttl=timedelta(seconds=5))
+
+        refusal = next(
+            record.getMessage() for record in caplog.records if "lapsing purge marker" in record.getMessage()
+        )
+        assert "10115" in refusal and "rollup not permitted" in refusal
+        assert "allow_msg_ttl" not in refusal
 
     async def test_a_lifetime_under_a_second_is_refused(self) -> None:
         with pytest.raises(ValueError, match="at least one second"):

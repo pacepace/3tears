@@ -2220,12 +2220,12 @@ class NatsKvBucket:
         A delete publishes a marker, and on a bucket with no expiry that marker is the key's one
         message forever: a writer of a fresh key per unit of work fills a bounded bucket with them.
         ``marker_ttl`` gives the marker a lifetime, after which the server removes it and the key
-        holds nothing. The marker is then a PURGE marker (it rolls the key's earlier revisions up),
+        holds nothing. Any ``revision`` given fences it, ``0`` included. The marker is then a PURGE marker (it rolls the key's earlier revisions up),
         so its going never brings an older revision back on a bucket that keeps history. The
         lifetime is the marker's alone: a write that lands on the key before it lapses replaces it,
         and lives as long as that write asks. A stream that refuses the marker (no
         ``allow_msg_ttl``, or no rollups) gets the plain delete, under the same revision, and keeps
-        its marker, as before.
+        its marker, as before, and the refusal's code and description are logged.
 
         :param key: key to delete
         :ptype key: str
@@ -2292,7 +2292,9 @@ class NatsKvBucket:
         js = self._client.jetstream_context()
         subject = f"$KV.{self._full_name}.{key}"
         headers = {_KV_OPERATION_HEADER: "PURGE", Header.ROLLUP: "sub"}
-        if revision:
+        if revision is not None:
+            # every given revision fences, 0 included (the key must hold nothing): a fence is never
+            # dropped for a falsy value, as nats-py's own delete drops ``last=0``
             headers[Header.EXPECTED_LAST_SUBJECT_SEQUENCE] = str(revision)
         failure = f"KV delete failed: bucket={self._full_name} key={key} revision={revision}"
         try:
@@ -2309,9 +2311,18 @@ class NatsKvBucket:
                 )
                 return False
             log.warning(
-                "KV delete: the stream refused a marker with a lifetime, so the key is deleted plainly "
-                "and its marker stays until something purges it",
-                extra={"extra_data": {"bucket": self._full_name, "key": key, "error": f"{exc}"}},
+                "KV delete: the stream refused the lapsing purge marker (err_code=%s: %s), so the key is "
+                "deleted plainly and its marker stays until the bucket's owner sweeps it",
+                exc.err_code,
+                exc.description,
+                extra={
+                    "extra_data": {
+                        "bucket": self._full_name,
+                        "key": key,
+                        "err_code": exc.err_code,
+                        "description": exc.description,
+                    }
+                },
             )
             return None
         return True

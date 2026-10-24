@@ -76,5 +76,7 @@ async def test_a_stale_release_is_refused_and_leaves_the_entry(nats_container: s
         judged = await bucket.put(key="k", value=b"old")
         await bucket.put(key="k", value=b"new")
         assert await bucket.delete(key="k", revision=judged, marker_ttl=timedelta(seconds=1)) is False
+        # revision 0 fences too: the key must hold nothing, and it holds a value
+        assert await bucket.delete(key="k", revision=0, marker_ttl=timedelta(seconds=1)) is False
         await asyncio.sleep(2)
         assert await bucket.get(key="k") == b"new", "a refused release removed the key"
