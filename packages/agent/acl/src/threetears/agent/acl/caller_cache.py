@@ -44,7 +44,7 @@ Otherwise a change landing while the hub answers would be evicted from an empty 
 answer stored after it.
 
 :class:`CallerNamespaces` is the answer this was built for: the namespaces the hub's
-``namespace.discover`` lists for a caller, asked with the caller's own tokens, failing closed.
+``namespace.discover`` lists for a caller, asked with the call's own credential, failing closed.
 
 Bind and follow it in one call with :func:`follow_caller_access_cache`, once the registry's
 invalidation listener is running; it hears the rows, and the follower drops what a missed broadcast
@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from threetears.core.collections.registry import CacheInvalidationMessage, CollectionRegistry
+    from threetears.core.security.door_request import DoorCredential
 
 __all__ = [
     "CallerAccessCache",
@@ -387,8 +388,12 @@ class NamespaceDiscovery(Protocol):
         identity_token: str | None = None,
         user_identity_token: str | None = None,
         namespace_type: Any = None,
+        credential: DoorCredential | None = None,
     ) -> Sequence[Any]:
-        """the namespaces the caller whose tokens these are can see; each has a ``name``."""
+        """the namespaces the caller whose tokens these are can see; each has a ``name``.
+
+        ``credential`` is ``identity_token`` with the key that proves it, passed only when it proves.
+        """
         ...
 
 
@@ -409,7 +414,12 @@ class CallerNamespaces:
     access tables say otherwise.
 
     The hub answers ``namespace.discover`` about whoever signed the tokens forwarded to it, so the
-    answer is about THIS caller; nothing here names a principal. The answer is kept in a
+    answer is about THIS caller; nothing here names a principal. A tool pod that proves delegation is
+    sent the call's delegated token in place of the agent's token and the person's assertion; that
+    token names both the agent and the person, so discovery asked with it answers the person's grants
+    narrowed by the agent's, never wider. Pass the call's credential
+    (:meth:`threetears.agent.tools.call_scope.ToolCallScope.door_credential`) so that token is asked
+    with; the forwarded tokens alone are empty on such a call and it is refused. The answer is kept in a
     :class:`CallerAccessCache` keyed by the verified agent and person, which the pod binds and follows
     (:func:`threetears.agent.acl.generation_follow.follow_caller_access_cache`). It fails closed: a pod
     not connected yet, a call with no token, a failed or refused discovery all raise
@@ -443,6 +453,7 @@ class CallerNamespaces:
         identity_token: str | None,
         user_identity_token: str | None,
         correlation_id: UUID | None = None,
+        credential: DoorCredential | None = None,
     ) -> frozenset[str]:
         """the names of the namespaces the hub lists for this caller.
 
@@ -456,6 +467,10 @@ class CallerNamespaces:
         :ptype user_identity_token: str | None
         :param correlation_id: the call's correlation id, for tracing; a fresh one when ``None``
         :ptype correlation_id: UUID | None
+        :param credential: what the call presents at a platform door: its delegated token proven with
+            the pod's key, or its forwarded identity token. Discovery is asked with its token in place
+            of ``identity_token``; ``None`` asks with ``identity_token``
+        :ptype credential: DoorCredential | None
         :return: the namespace names
         :rtype: frozenset[str]
         :raises CallerNamespacesUnavailable: when the answer cannot be had
@@ -469,15 +484,18 @@ class CallerNamespaces:
         client = self._discovery()
         if client is None:
             raise CallerNamespacesUnavailable("the pod is not connected to the hub yet")
-        if not identity_token and not user_identity_token:
+        token = credential.token if credential is not None else identity_token
+        if not token and not user_identity_token:
             raise CallerNamespacesUnavailable("the call carried no hub credential to ask discovery with")
         fence = self._cache.read_fence()
         try:
             items = await client.discover(
                 correlation_id=correlation_id if correlation_id is not None else uuid7(),
-                identity_token=identity_token,
+                identity_token=token or None,
                 user_identity_token=user_identity_token,
                 namespace_type=self._namespace_type,
+                # the credential rides only when it proves, so a stand-in written before it keeps working
+                **({"credential": credential} if credential is not None and credential.proves else {}),
             )
         # prawduct:allow prawduct/broad-except -- the hub's answer is the authority; any failure to have it is a refusal
         except Exception as exc:  # noqa: BLE001
