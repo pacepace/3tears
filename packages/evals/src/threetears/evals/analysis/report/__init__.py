@@ -4,7 +4,7 @@
   :meth:`Report.write`, which puts the page, its Markdown and ``bundle.json`` in one directory.
 - :mod:`campaign_page` — :func:`build_campaign_report`, a campaign's page over its aspects: code's warnings, the
   writer's summary and recommendation, code's readings, the person's call, then one fold per aspect holding that
-  aspect's page.
+  aspect's page; each part is laid out by its own module of :mod:`campaign`, and ``campaign_page`` re-exports them.
 - :mod:`build` — :func:`build_report`, laying a stored analysis out over the bundle frozen with it, and
   :func:`build_code_only_report`, laying a campaign's evidence out when no analysis exists. One page either way.
 - :mod:`verdict` — the first screen's basis and verdict lines, and the words for every way a trial is lost or fails.
