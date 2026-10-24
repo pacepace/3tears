@@ -8,6 +8,23 @@ packages (bumped in lock-step).
 
 ## v0.78.0 -- 2026-10-24
 
+### evals: a reporter label's form follows its dimension's scale, and may quote the memo passage it is about
+
+**Changed:** A reporter label on a pass/fail rubric dimension now takes a `verdict` (`pass` or `fail`), and one on an
+ordinal dimension keeps its `direction` (one of the five). Exactly one is set. `ReporterLabel.direction` is optional
+now, `ReporterLabel.verdict` and `LabelVerdict` are new, and the freeze (`freeze_reporter_case`, the
+`reporter_case_freeze` action) refuses a label whose form is not the scale of the criterion it stamps. No mapping
+between the two forms exists. `label_agrees` takes the label rather than its direction, and a verdict agrees with a
+pass/fail score that reads as it (a direction stored on a pass/fail dimension still reads no agreement).
+`ReporterLabel.memo_excerpt` (new, optional) is the passage of the recorded memo the verdict is about. The freeze
+refuses one that is not in the recorded memo as the judge reads it, compared after collapsing each run of whitespace
+on both sides with its ends trimmed, and refuses one on a freeze that pins no memo. A re-freeze of the same verdicts
+quoting other passages is refused unless `supersedes` names the live case, so a corrected excerpt is stored, not
+dropped.
+`LabelReading` carries `verdict` and `memo_excerpt` beside the quote. Durable v16.2: a direction label quoting no
+passage is stored byte-identically to v16.1. A v16.1 build cannot read a case holding a verdict or an excerpt, which
+stops that reporter template on it until it upgrades.
+
 ### evals: code no longer reads the memo writer's prose; the page prints it as written
 
 **Changed:** Code checks code, and a model's prose is a model's to check: the page prints every memo sentence as
