@@ -58,7 +58,7 @@ from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
 from threetears.evals.analysis.cells import cell_ref
-from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines
+from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines_bounded
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import CellAddress, campaign_cell_aliases
 from threetears.evals.kernel.campaign import CampaignDeclaration, EvalCampaign
@@ -858,13 +858,15 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
     }
     if unmeasured:
         view["disclosures"]["pass_k_unmeasured"] = unmeasured
-    # Every pass^k cell beside an arm's headline, and every run placed in a cell by a silence, after the one sentence
+    # Every pass^k cell beside an arm's headline, and a headline that is a cell of one run, after the one sentence
     # saying what "kept out" covers (the frontier's pass^k, bar and verdict; every other figure still counts the run).
+    # Bounded to a line per reason, since the writer's budget is shared with its evidence and a contestant of many
+    # runs that each recorded nothing would otherwise spend it a sentence per run.
     unpooled: dict[str, list[str]] = {}
     for subject in aspect.frontier.subjects:
         for point in subject.points:
             unpooled.setdefault(namer.arm(point.variant_key), []).extend(
-                line for cell in point.pass_hat_k_cells for line in pass_hat_k_cell_lines(cell)
+                pass_hat_k_cell_lines_bounded(point.pass_hat_k_cells)
             )
     unpooled = {arm: lines for arm, lines in unpooled.items() if lines}
     if unpooled:

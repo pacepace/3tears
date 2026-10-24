@@ -253,13 +253,15 @@ A contestant's pass^k pools per case over the runs of one pass^k cell (`PassHatK
 today's identity version), one template revision (the template's id and the digest of what it measured that
 the run froze, `EvalRun.template_digest`), one apparatus provenance and one set of served models, whatever
 cases each run covered and whenever each ran. Its headline figure, interval, bar and verdict read the headline
-cell alone, chosen in the one order `PassHatKCellReading` states (a recorded, resolved context first, then most
-runs, most results and the first run id); every other cell stands beside it with its own pass^k and the reason
-it is not the headline (`FrontierPoint.pass_hat_k_cells`), named on the frontier's text, the report page and
+cell alone, chosen in the one order `PassHatKCellReading` states (a recorded, resolved context first, then a cell
+that pools, then most runs, most results and the first run id); every other cell stands beside it with its own
+pass^k and the reason it is not the headline (`FrontierPoint.pass_hat_k_cells`), named on the frontier's text, the report page and
 the memo writer's view. A run kept out of the headline is kept out of the frontier's pass^k, bar and verdict
 only: the arm's tables, its cells (see [Apparatus class](#apparatus-class)), composite, cost and latency still
-count it. A run stored before runs froze a template digest, and a run whose responses named no served model, is
-not evidence of a difference: it joins its cell and is named as having joined by assumption.
+count it. A run that froze no template digest, and a run with a candidate call whose response named no model, is
+a cell of its own: a silence is never evidence of a match, so it pools with nothing and is named with what it did
+not record, the headline too when every run is silent and others are kept out beside it. A run whose candidate made no model call recorded
+that, and pools on everything else.
 
 ### Running
 

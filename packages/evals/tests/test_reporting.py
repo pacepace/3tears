@@ -6254,13 +6254,22 @@ class TestFrontierPassHatKPoolsRepeatRuns:
 
     @staticmethod
     def _run(context_key, *, k_runs=1):
-        return _fr_run(context_key=context_key, identity_version=IDENTITY_VERSION, k_runs=k_runs)
+        """A run as a launch records it: its context and the digest of what its template measured."""
+        return _fr_run(
+            context_key=context_key, identity_version=IDENTITY_VERSION, k_runs=k_runs, template_digest="digest-1"
+        )
+
+    @staticmethod
+    def _served(result):
+        """``result`` with a candidate call whose response named the model that answered it."""
+        usage = RoleUsage(role="candidate", model=result.model, cost_usd=0.01, call_count=1, served_model="m-served")
+        return result.model_copy(update={"usage": [usage]})
 
     def test_two_runs_of_one_cell_add_depth_not_cases(self):
         first, second = self._run("ctx-1"), self._run("ctx-1")
         results = [
-            _fr_result(first, model="m", variant_key="vk", test_case_id="c1", passes=True),
-            _fr_result(second, model="m", variant_key="vk", test_case_id="c1", passes=False),
+            self._served(_fr_result(first, model="m", variant_key="vk", test_case_id="c1", passes=True)),
+            self._served(_fr_result(second, model="m", variant_key="vk", test_case_id="c1", passes=False)),
         ]
 
         point = compute_frontier([first, second], results, archived_run_ids=None).subjects[0].points[0]
@@ -6272,8 +6281,8 @@ class TestFrontierPassHatKPoolsRepeatRuns:
         """A run of another context stays out of the point's pass^k: beside it, with its own reading and reason."""
         first, second = self._run("ctx-1"), self._run("ctx-2")
         results = [
-            _fr_result(first, model="m", variant_key="vk", test_case_id="c1", passes=True),
-            _fr_result(second, model="m", variant_key="vk", test_case_id="c1", passes=False),
+            self._served(_fr_result(first, model="m", variant_key="vk", test_case_id="c1", passes=True)),
+            self._served(_fr_result(second, model="m", variant_key="vk", test_case_id="c1", passes=False)),
         ]
 
         point = compute_frontier([first, second], results, archived_run_ids=None).subjects[0].points[0]
