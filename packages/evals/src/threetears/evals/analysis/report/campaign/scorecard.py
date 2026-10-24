@@ -24,7 +24,7 @@ from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.quantities import PERCENT, POINTS
 from threetears.evals.analysis.report.campaign.aggregate import EQUAL_WEIGHT_ROW, equal_weight_cells
 from threetears.evals.analysis.report.campaign.common import floor_of, points, rate_name
-from threetears.evals.analysis.report.campaign.names import AspectNames
+from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
 from threetears.evals.analysis.report.decision import projected_cell
 from threetears.evals.analysis.report.model import (
     CellValue,
@@ -38,7 +38,6 @@ from threetears.evals.analysis.report.model import (
     table_row,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
-from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import RateDrop
 
@@ -683,8 +682,7 @@ def bar_blocks(readings: CampaignReadings, reports: Mapping[str, Report], *, nam
         return []
 
     def named(aspect: str, measure: str) -> str:
-        descriptor = reports[aspect].bundle.measure_catalog.get(measure)
-        return measure_name(measure, descriptor.reader_name if descriptor is not None else None)
+        return measure_name_of(reports[aspect].bundle, measure)
 
     columns = [
         TableColumn(key="aspect", header="Aspect", term="aspect"),

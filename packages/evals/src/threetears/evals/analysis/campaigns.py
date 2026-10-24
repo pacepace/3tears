@@ -35,7 +35,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, field_validator
 
 from threetears.evals.analysis.arms import arm_names
 from threetears.evals.analysis.style import arm_name
@@ -62,7 +62,7 @@ from threetears.evals.kernel.campaign_writes import serialized_campaign_write
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.schema.logs import get_logger
-from threetears.evals.schema.models import utc_now_iso
+from threetears.evals.schema.models import DECLARED_NAME_CHARS, declared_name, utc_now_iso
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN, FIND_TEMPLATE, SCHEMA_REMEDY
 
 if TYPE_CHECKING:
@@ -153,9 +153,10 @@ CAMPAIGN_SERVER_FIELDS: tuple[str, ...] = (
 
 #: What an operator may change on a campaign after it exists. Membership and the control have their own write paths
 #: carrying rules this one does not enforce; ``created_by`` is absent because a later editor is not the author.
-_CAMPAIGN_UPDATABLE_FIELDS: tuple[str, ...] = ("name", "description", "question", "aspects", "floors")
+_CAMPAIGN_UPDATABLE_FIELDS: tuple[str, ...] = ("name", "description", "question", "aspects", "floors", "short_names")
 
-#: The part of an update that rewrites the declaration: frozen once any aspect holds a run.
+#: The part of an update that rewrites the declaration: frozen once any aspect holds a run. ``short_names`` is not in
+#: it: what a page prints for an aspect asks nothing of its runs, so it stays editable, as ``name`` does.
 _DECLARATION_FIELDS = frozenset({"question", "aspects", "floors"})
 
 
@@ -194,6 +195,13 @@ class AspectDefinition(EvalBaseModel):
             "campaign's behavior (`aspect_label_for`: each `/` becomes `-`), which one aspect at most may be."
         ),
     )
+    short_name: str | None = Field(
+        default=None,
+        description=(
+            f"What a page prints for the aspect in place of its label, at most {DECLARED_NAME_CHARS} characters, "
+            "and no other aspect's label or short name. Omitted, the label is printed whole."
+        ),
+    )
     template_id: str | None = Field(
         default=None,
         min_length=1,
@@ -208,6 +216,15 @@ class AspectDefinition(EvalBaseModel):
         description="What the aspect sets out to vary and hold itself to. Omitted, the aspect is exploratory.",
     )
     run_ids: list[str] = Field(default_factory=list, description="The aspect's runs, each in the campaign's scope.")
+
+    @field_validator("short_name")
+    @classmethod
+    def _a_short_name_is_short(cls, name: str | None) -> str | None:
+        """Refuse a blank or over-long short name where it is declared, before anything is read.
+
+        :raises ValueError: The name is blank or longer than :data:`DECLARED_NAME_CHARS`.
+        """
+        return None if name is None else declared_name(name, what="an aspect")
 
 
 class FloorDefinition(EvalBaseModel):
@@ -622,6 +639,7 @@ def _declared_aspect(
     declares = defined.design is not None
     return Aspect(
         label=label,
+        short_name=defined.short_name,
         template_id=_aspect_template(storage, scope_id, defined.template_id, defined.run_ids),
         margin=defined.margin,
         design=defined.design,
@@ -1038,14 +1056,16 @@ def update_campaign(
 ) -> EvalCampaign:
     """Amend a campaign's name, description, declaration or control.
 
-    Only ``name``, ``description``, ``question``, ``aspects`` (:class:`AspectDefinition`, replacing the aspects whole)
-    and ``floors`` may be named, and an unrecognised key is refused rather than ignored. A write of the declaration —
+    Only ``name``, ``description``, ``question``, ``aspects`` (:class:`AspectDefinition`, replacing the aspects whole),
+    ``floors`` and ``short_names`` (an aspect's label to what a page prints for it, or null to print the label) may be
+    named, and an unrecognised key is refused rather than ignored. A write of the declaration —
     ``question``, ``aspects`` or ``floors`` — is stamped with ``updated_by`` and dated now, and every aspect it
     declares is dated now too; the declaration gate runs here exactly as it does at creation.
 
     **The declaration is frozen once any aspect holds a run.** It is what those runs were gathered to answer, so once
     the campaign holds a run, ``question``, ``aspects`` and ``floors`` are refused in any form, and so is re-pointing
-    or clearing a control already named. ``name`` and ``description`` stay editable, and a control may be named once,
+    or clearing a control already named. ``name``, ``description`` and ``short_names`` stay editable, since none asks
+    anything of the runs, and a control may be named once,
     from a member run, while none is (which is how a comparison names its control after launching its arms). The
     amended declaration is a new campaign (``campaign_create``, which adopts the aspects it keeps with
     ``aspects_from``).
@@ -1146,6 +1166,14 @@ def update_campaign(
         )
     except (ValidationError, TypeError) as e:
         raise ValidationFailedError(f"invalid campaign update: {e}", remedy=SCHEMA_REMEDY) from e
+    if "short_names" in updates:
+        if "aspects" in updates:
+            raise ValidationFailedError(
+                "the update both declares the aspects and names them (short_names)",
+                remedy="give each declared aspect its short_name in aspects, and leave short_names out",
+            )
+        aspects = _named(aspects, updates["short_names"])
+        changes["aspects"] = aspects
     declared = any(aspect.design is not None for aspect in aspects)
     if exploratory and declared:
         raise ValidationFailedError(
@@ -1228,6 +1256,38 @@ def update_campaign(
         updated_by,
     )
     return updated
+
+
+def _named(aspects: Sequence[Aspect], short_names: object) -> list[Aspect]:
+    """``aspects`` with the short names an update gives, by label: a name sets one, null clears it, an aspect not named
+    keeps its own.
+
+    :raises ValidationFailedError: ``short_names`` is not a map of labels to names or nulls, names a label the campaign
+        has no aspect for, or gives a blank or over-long name.
+    """
+    if not isinstance(short_names, dict) or not all(
+        isinstance(label, str) and (name is None or isinstance(name, str)) for label, name in short_names.items()
+    ):
+        raise ValidationFailedError(
+            "invalid campaign update: short_names maps an aspect's label to its short name, or to null to clear it",
+            remedy=SCHEMA_REMEDY,
+        )
+    labels = [aspect.label for aspect in aspects]
+    if stray := sorted(set(short_names) - set(labels)):
+        raise ValidationFailedError(
+            f"short_names names {', '.join(map(repr, stray))}, which the campaign has no aspect for",
+            remedy=f"key each short name by one of its aspects' labels: {', '.join(map(repr, labels))}",
+        )
+    try:
+        for label, name in short_names.items():
+            if name is not None:
+                declared_name(name, what=f"aspect {label!r}")
+    except ValueError as e:
+        raise ValidationFailedError(f"invalid campaign update: {e}", remedy=SCHEMA_REMEDY) from e
+    return [
+        aspect.model_copy(update={"short_name": short_names[aspect.label]}) if aspect.label in short_names else aspect
+        for aspect in aspects
+    ]
 
 
 def _updated_aspect(storage: CampaignStore, scope_id: str, defined: AspectDefinition, *, label: str, at: str) -> Aspect:
@@ -1720,7 +1780,7 @@ def _refuse_frozen_declaration(
         "asked before them",
         remedy=(
             "create a new campaign with the amended declaration (campaign_create, adopting the aspects it keeps with "
-            "aspects_from) and launch into it; name and description stay editable here"
+            "aspects_from) and launch into it; name, description and short_names stay editable here"
         ),
     )
 

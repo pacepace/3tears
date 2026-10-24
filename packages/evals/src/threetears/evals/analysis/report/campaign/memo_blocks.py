@@ -370,7 +370,16 @@ class _Trace:
                 {
                     "aspect": TableCell(value=self.names(row.aspect)),
                     "arm": TableCell(value=self._arm(row.aspect, variant_of_cell_ref(row.cell_ref) or row.cell_ref)),
-                    "reading": TableCell(value=ruler.scaled(reading_heading(surface, row.measure_id, row.reading))),
+                    "reading": TableCell(
+                        value=ruler.scaled(
+                            reading_heading(
+                                surface,
+                                row.measure_id,
+                                row.reading,
+                                declared=report.bundle.check_name(row.measure_id),
+                            )
+                        )
+                    ),
                     "value": figure.model_copy(update={"ref": self._fold(row.aspect) if printed else None}),
                 }
             )

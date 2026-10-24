@@ -4,7 +4,9 @@ The renderer (:mod:`threetears.evals.analysis.report`) reads this module for eve
 
 - :func:`humanize` is the one seam an identifier passes through on its way to a reader: a model id, an arm, a judged
   dimension, a case, a provider. :data:`HUMANIZE_OVERRIDES` names exceptions by hand. A check expression is code and
-  never passes through it: :func:`measure_name` names a check's measure by its expression, verbatim.
+  never passes through it: :func:`measure_name` names a check's measure by the display name its template declares,
+  when the caller passes it (``declared=``, read off the bundle with :func:`declared_check_name`), else by its
+  expression, verbatim.
 - :class:`ArmName` names an arm twice: in full on its first mention (``deepseek-v4.1-flash (production, control)``)
   and by its given label after that (``production``).
 - :data:`GLOSSARY` defines every term of art a page uses, once, in one plain sentence.
@@ -17,6 +19,7 @@ The renderer (:mod:`threetears.evals.analysis.report`) reads this module for eve
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -78,22 +81,43 @@ def code(text: str) -> str:
     return f"`{text}`" if "`" not in text else text
 
 
-def measure_name(name: str, reader_name: str | None = None) -> str:
+def measure_name(name: str, reader_name: str | None = None, *, declared: str | None = None) -> str:
     """A measure as a page names it.
 
-    A goal check's measure is named by its expression, verbatim, as a code span: never humanized and never "Pass rate
-    of", since a single trial's failure has no rate. Any other measure by its reader name, else its key humanized.
+    A goal check's measure is named by ``declared``, the display name its template declares
+    (``EvalTemplate.goal_check_names``), which the caller reads off the aspect's bundle
+    (:meth:`~threetears.evals.analysis.bundle.schema.AnalysisContextBundle.check_name`); the bundle's
+    ``measure_catalog`` never carries it, since the catalog is in every fingerprint. With none, a check is named by its
+    expression, verbatim and whole, as a code span: never humanized, never shortened, and never by the catalog's
+    rate name ("Pass rate of …"), since a single trial's failure has no rate. Any other measure by its reader name,
+    else its key humanized; ``declared`` names checks only.
 
     :param name: The measure's key.
     :ptype name: str
-    :param reader_name: Its reader-facing name, when the catalog carries one.
+    :param reader_name: Its reader-facing name, when the catalog carries one. Never read for a goal check.
     :ptype reader_name: str | None
+    :param declared: A goal check's declared display name, or None for none declared.
+    :ptype declared: str | None
     :return: The name.
     :rtype: str
     """
     if (check := goal_check_of(name)) is not None:
-        return code(check)
+        return declared if declared is not None else code(check)
     return reader_name or humanize("dimension", name)
+
+
+def declared_check_name(names: Mapping[str, str], measure: str) -> str | None:
+    """The display name ``names`` (a check's expression to its name) declares for the goal check ``measure`` reads.
+
+    :param names: Declared display names, by check expression (``AnalysisContextBundle.goal_check_names``).
+    :ptype names: Mapping[str, str]
+    :param measure: Any measure key.
+    :ptype measure: str
+    :return: The declared name, or None when ``measure`` is no goal check's or its check is not named.
+    :rtype: str | None
+    """
+    check = goal_check_of(measure)
+    return names.get(check) if check is not None else None
 
 
 def is_dump(label: str) -> bool:
@@ -322,6 +346,7 @@ __all__ = [
     "StyleViolation",
     "arm_name",
     "code",
+    "declared_check_name",
     "humanize",
     "is_dump",
     "lint_prose",

@@ -64,7 +64,7 @@ from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, p
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import CellAddress, campaign_cell_aliases
 from threetears.evals.kernel.campaign import CampaignDeclaration, EvalCampaign
-from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
+from threetears.evals.kernel.declaration import ASPECT_PRESENTATION_FIELDS, CampaignArm, resolve_control_arm
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.evals.schema.base import EvalDocumentModel
@@ -225,7 +225,7 @@ class CampaignBundle(EvalDocumentModel):
         :return: ``v2:`` and a 64-character lowercase hex digest, or, ``like`` an unprefixed one, the bare digest.
         :rtype: str
         """
-        return fingerprint_digest(self.frame(like=like), like=like)
+        return fingerprint_digest(_evidence_of(self.frame(like=like)), like=like)
 
     @staticmethod
     def refuse_another_shape(data: Mapping[str, Any], *, what: str, remedy: str) -> None:
@@ -478,7 +478,26 @@ def campaign_evidence_digest(document: Mapping[str, Any], *, like: str | None = 
         {"aspect": aspect.get("aspect"), "fingerprint": evidence_digest(aspect, like=like)}
         for aspect in document.get("aspects") or []
     ]
-    return fingerprint_digest(frame, like=like)
+    return fingerprint_digest(_evidence_of(frame), like=like)
+
+
+def _evidence_of(frame: Mapping[str, Any]) -> dict[str, Any]:
+    """A campaign bundle's frame as its fingerprint reads it: without how a page prints each aspect
+    (:data:`~threetears.evals.kernel.declaration.ASPECT_PRESENTATION_FIELDS`).
+
+    A short name is presentation, as an aspect bundle's own is (left out of its fingerprint), so naming an aspect
+    leaves every analysis and reporter case of the campaign reproducing. An aspect naming none carries no key to drop.
+    """
+    declaration = frame.get("declaration")
+    if not isinstance(declaration, Mapping) or not isinstance(declaration.get("aspects"), list):
+        return dict(frame)
+    aspects = [
+        {key: value for key, value in aspect.items() if key not in ASPECT_PRESENTATION_FIELDS}
+        if isinstance(aspect, Mapping)
+        else aspect
+        for aspect in declaration["aspects"]
+    ]
+    return {**frame, "declaration": {**declaration, "aspects": aspects}}
 
 
 def build_campaign_bundle(
