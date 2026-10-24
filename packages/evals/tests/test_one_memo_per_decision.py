@@ -316,7 +316,9 @@ async def test_seven_stored_campaigns_adopted_into_one_are_one_memo_one_table_an
         ], fold.aspect
     first = _first_screen(page)
     assert "**Recommended:** control" in first
-    assert first.index("**Recommended:**") < first.index("**By aspect**")
+    # Code's readings follow the recommendation, in the page's Scorecard.
+    markdown = campaign_report_markdown(page)
+    assert markdown.index("**Recommended:**") < markdown.index("## Scorecard") < markdown.index("**By aspect**")
 
     recorded = off_loop(
         campaign_record,
@@ -428,14 +430,16 @@ async def _build_two(
     return held, two
 
 
-async def test_two_aspects_that_regress_and_improve_are_both_on_the_first_screen_the_broken_floor_first() -> None:
+async def test_two_aspects_that_regress_and_improve_are_both_in_the_scorecard_the_broken_floor_first() -> None:
     held, two = await _two()
     page = off_loop(campaign_report, held.host, two.id, SCOPE)
     assert page.basis == "code_only" and [fold.aspect for fold in page.aspects] == ["billing", "tone"]
     readings = {row.aspect: row.reading for row in page.readings.readings}
     assert readings == {"billing": "worse", "tone": "better"}
     first = _first_screen(page)
-    assert first.index("**Floor broken on billing") < first.index("# support queue") < first.index("**By aspect**")
+    assert first.index("**Floor broken on billing") < first.index("# support queue")
+    markdown = campaign_report_markdown(page)
+    assert markdown.index("# support queue") < markdown.index("## Scorecard") < markdown.index("**By aspect**")
     assert "Bar missed on tone" in first
 
 

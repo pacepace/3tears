@@ -125,7 +125,7 @@ def build_campaign_report(
         blocks += recommendation_blocks(memo, kind)
     if kind == "change":
         blocks += table_blocks(campaign, readings, reports, names=names)
-        blocks += settle_blocks(readings, names=names)
+        blocks += settle_blocks(campaign, readings, reports, names=names)
     elif kind == "choice":
         blocks += pair_blocks(campaign, readings, reports, names=names)
         blocks += behind_on_blocks(memo, names=names)

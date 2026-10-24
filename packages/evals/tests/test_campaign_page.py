@@ -57,7 +57,7 @@ async def test_a_campaign_of_one_aspect_has_one_row_and_its_fold_holds_the_aspec
     page = await page_of("billing")
     table = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "aspects")
     assert len(table.rows) == 1
-    assert "The interval is read at 95%, as a floor's is." in first_screen_markdown(page)
+    assert "The interval is read at 95%, as a floor's is." in campaign_report_markdown(page)
     (fold,) = page.aspects
     html = campaign_report_html(page)
     own = report_html(fold.report)

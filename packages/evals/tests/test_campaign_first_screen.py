@@ -28,8 +28,8 @@ from packages.evals.tests.campaign_support import CANDIDATE_LABEL, CONTROL_LABEL
 #: Where code's readings are found on the first screen, by the campaign's kind (chunk 04's rows): the table's name,
 #: its caption in Markdown, and its mark in HTML.
 _SCORECARD: dict[str, tuple[str, str, str]] = {
-    "change": ("aspects", "**By aspect**", 'data-table="aspects"'),
-    "measurement": ("measures", "**By aspect, measure by measure**", 'data-table="measures"'),
+    "change": ("aspects", "**By aspect**", 'data-table="scorecard"'),
+    "measurement": ("measures", "**alpha by aspect**", 'data-table="scorecard"'),
 }
 
 #: A change's first screen in Markdown, in order, each marker by the chunk that lays its part out.

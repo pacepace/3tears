@@ -63,7 +63,6 @@ def test_a_campaign_page_heads_every_section_in_reading_order_its_own_among_an_a
 _UNFILLED: dict[str, str] = {
     "answer": "03",
     "warnings": "03",
-    "scorecard": "04",
     "findings": "03",
     "next": "03",
     "provenance": "03",
