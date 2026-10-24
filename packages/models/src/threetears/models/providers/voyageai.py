@@ -9,14 +9,31 @@ needs (see :mod:`._voyageai_compat`) before it imports the upstream package.
 
 from __future__ import annotations
 
+from importlib.util import find_spec
 from typing import Any
 
 from threetears.models.capabilities import ModelCapabilities, register_capabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 from threetears.models.providers._voyageai_compat import apply_voyageai_compat
 
-# the shim goes in before the upstream package loads, or its multimodal models crash the import.
-apply_voyageai_compat()
+
+def _voyageai_installed() -> bool:
+    """whether the voyageai extra's package can be imported, found without importing it.
+
+    :return: True when ``langchain_voyageai`` is installed
+    :rtype: bool
+    """
+    try:
+        return find_spec("langchain_voyageai") is not None
+    except ValueError, ImportError:
+        # NOSILENT: a module set to None in sys.modules, or one a finder refuses, is one this process cannot import
+        return False
+
+
+# the shim goes in before the upstream package loads, or its multimodal models crash the import; only where the
+# extra is installed, so a process without it gets no stub module in sys.modules
+if _voyageai_installed():
+    apply_voyageai_compat()
 
 _VOYAGEAI_IMPORT_ERROR: ImportError | None = None
 try:

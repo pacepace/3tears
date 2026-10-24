@@ -564,7 +564,7 @@ class CollectionRegistry:
         :rtype: int
         """
         dropped = 0
-        self._l2_caught_up_at = time.monotonic()
+        judged = False
         for table_name in self._generation_marks.followed:
             collection = self._collections.get(table_name)
             if not self.generation_kept_in_l2(table_name) or collection is None:
@@ -578,8 +578,12 @@ class CollectionRegistry:
                     extra={"extra_data": {"table": table_name, "error": str(exc)}},
                 )
                 continue
+            judged = True
             if self.settle_generation(table_name, token).drops:
                 dropped += 1
+        if judged:
+            # a pass that could read no generation judged nothing, and leaves the overdue warning to say so
+            self._l2_caught_up_at = time.monotonic()
         return dropped
 
     @property

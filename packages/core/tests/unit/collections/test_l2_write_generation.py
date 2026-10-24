@@ -165,3 +165,14 @@ class TestAHostThatNeverSchedulesThePass:
         age = registry.l2_catch_up_age
         assert age is not None and age < timedelta(seconds=1)
         await registry.stop_invalidation_listener()
+
+    async def test_a_pass_that_reads_no_generation_does_not_count_as_run(self) -> None:
+        bus = FakeNatsClient()
+        answers = await _replica(bus)
+        bucket = await _bucket(bus)
+        for key in (_ANSWERS_KEY, _INDEX_KEY):
+            await bucket.put(key=key, value=b"not a generation")
+        registry = _registry(answers)
+        assert await registry.catch_up_l2_generations() == 0
+        assert registry.l2_catch_up_age is None, "a pass that judged nothing quieted the overdue warning"
+        await registry.stop_invalidation_listener()

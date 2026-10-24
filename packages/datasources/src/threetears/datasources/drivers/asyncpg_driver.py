@@ -149,12 +149,10 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
-from datetime import date, datetime, time
-from decimal import Decimal
 from typing import Any, Final, TypeVar
-from uuid import UUID
 
 import asyncpg
 
@@ -454,29 +452,61 @@ def _get_cancellation_fired_counter() -> Any:
 BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS: Final = 5.0
 
 
-#: how a parameter's text becomes the value asyncpg binds, by the type Postgres declared for it. The datasource
-#: rail carries every value JSON cannot (a timestamp, a date, a UUID, a decimal) as its text, and a page's last
-#: key comes back as a parameter in that form; asyncpg binds by the declared type and refuses text for these
-_FROM_TEXT: Final[dict[str, Callable[[str], Any]]] = {
-    "timestamp": datetime.fromisoformat,
-    "timestamptz": datetime.fromisoformat,
-    "date": date.fromisoformat,
-    "time": time.fromisoformat,
-    "timetz": time.fromisoformat,
-    "uuid": UUID,
-    "numeric": Decimal,
-    "int2": int,
-    "int4": int,
-    "int8": int,
-    "float4": float,
-    "float8": float,
-}
+#: the declared Postgres types whose text a datasource rail carries for a value JSON cannot (a timestamp, a date,
+#: a UUID, a decimal), and which asyncpg refuses as text: a page's last key comes back as a parameter in that form.
+#: Postgres casts each from text itself (``$n::text::type``), so a value means what Postgres's own text cast makes
+#: of it, the session's time zone included
+_CAST_FROM_TEXT: Final[frozenset[str]] = frozenset(
+    {
+        "timestamp",
+        "timestamptz",
+        "date",
+        "time",
+        "timetz",
+        "interval",
+        "uuid",
+        "numeric",
+        "int2",
+        "int4",
+        "int8",
+        "float4",
+        "float8",
+        "bool",
+    }
+)
+
+#: the statements whose refused text parameters were bound as their declared types, most recent last: each is
+#: logged once while it is among the last :data:`_RETRIED_SHAPES_KEPT`, so the record stays bounded
+_RETRIED_SHAPES: Final[OrderedDict[str, None]] = OrderedDict()
+_RETRIED_SHAPES_KEPT: Final = 1024
 
 _BoundT = TypeVar("_BoundT")
 
 
+def _refused_bind(exc: BaseException) -> bool:
+    """whether ``exc`` is asyncpg's own refusal to encode a parameter, raised before the statement is sent.
+
+    asyncpg raises that refusal as a bare ``DataError`` caused by its codec's error. A server's data error -- a
+    division by zero, a bad value the server parsed -- is a subclass, or carries the server's own fields, and is
+    never one: the statement ran, and running it again could run it twice.
+
+    :param exc: what a statement raised
+    :ptype exc: BaseException
+    :return: True only for the client-side bind refusal
+    :rtype: bool
+    """
+    return (
+        type(exc) is asyncpg.exceptions.DataError
+        and exc.__cause__ is not None
+        and getattr(exc, "server_source_function", None) is None
+    )
+
+
 async def _as_declared(conn: Any, sql: str, params: Sequence[Any]) -> tuple[Any, ...] | None:
-    """``params`` with each text value converted to the type Postgres declares for its placeholder.
+    """``params`` with each text value cast by Postgres to the type it declares for its placeholder.
+
+    The casts run in one statement inside a savepoint (or a transaction of their own), so text that is no value
+    of its type rolls back cleanly and leaves a caller's transaction as it was.
 
     :param conn: the connection the statement runs on
     :ptype conn: Any
@@ -484,26 +514,51 @@ async def _as_declared(conn: Any, sql: str, params: Sequence[Any]) -> tuple[Any,
     :ptype sql: str
     :param params: its parameters
     :ptype params: Sequence[Any]
-    :return: the converted parameters; ``None`` when no text value has a type to convert to, or one does
-        not parse as it (the caller's own refusal then stands)
+    :return: the converted parameters; ``None`` when no text value has a type to convert to, or one is no value
+        of its type (the caller's own refusal then stands)
     :rtype: tuple[Any, ...] | None
     """
-    if not any(isinstance(value, str) for value in params):
-        return None
     statement = await conn.prepare(sql)
+    casts = [
+        (index, declared.name)
+        for index, (value, declared) in enumerate(zip(params, statement.get_parameters(), strict=False))
+        if isinstance(value, str) and declared.name in _CAST_FROM_TEXT
+    ]
+    if not casts:
+        return None
+    # the type names are this module's own allowlist, so the cast list is no caller's text
+    select = ", ".join(f"${position}::text::{name}" for position, (_, name) in enumerate(casts, start=1))
+    try:
+        async with conn.transaction():
+            row = await conn.fetchrow(f"SELECT {select}", *(params[index] for index, _ in casts))
+    except asyncpg.exceptions.DataError:
+        # NOSILENT: not this type's text; the caller re-raises the driver's own refusal of it
+        return None
     converted = list(params)
-    changed = False
-    for index, (value, declared) in enumerate(zip(params, statement.get_parameters(), strict=False)):
-        convert = _FROM_TEXT.get(declared.name)
-        if not isinstance(value, str) or convert is None:
-            continue
-        try:
-            converted[index] = convert(value)
-        except ValueError, ArithmeticError:
-            # NOSILENT: not this type's text; the caller re-raises the driver's own refusal of it
-            return None
-        changed = True
-    return tuple(converted) if changed else None
+    for position, (index, _) in enumerate(casts):
+        converted[index] = row[position]
+    return tuple(converted)
+
+
+def _note_typed_retry(sql: str) -> None:
+    """say, once per statement, that its refused text parameters were bound as their declared types.
+
+    :param sql: the statement
+    :ptype sql: str
+    :return: nothing
+    :rtype: None
+    """
+    if sql in _RETRIED_SHAPES:
+        _RETRIED_SHAPES.move_to_end(sql)
+        return
+    _RETRIED_SHAPES[sql] = None
+    while len(_RETRIED_SHAPES) > _RETRIED_SHAPES_KEPT:
+        _RETRIED_SHAPES.popitem(last=False)
+    log.info(
+        "a statement's text parameters were refused and bound as their declared types; each such call pays "
+        "a prepare and a cast round trip",
+        extra={"extra_data": {"statement": sql[:200]}},
+    )
 
 
 async def _bound_as_declared(
@@ -512,10 +567,11 @@ async def _bound_as_declared(
     params: Sequence[Any],
     run: Callable[[Sequence[Any]], Awaitable[_BoundT]],
 ) -> _BoundT:
-    """run a statement; when asyncpg refuses a text parameter, once more with each converted to its declared type.
+    """run a statement; when asyncpg refuses a text parameter, once more with each cast to its declared type.
 
-    Only a refused bind pays the extra round trip that reads the declared types. The refusal is raised
-    before the statement is executed, so a transaction it runs in is unharmed.
+    Only asyncpg's own bind refusal is retried (:func:`_refused_bind`): it is raised before the statement is
+    sent, so a transaction it runs in is unharmed and the statement has not run. A server's error is raised
+    as it is, and the statement never runs twice. Only a refused bind pays the extra round trips.
 
     :param conn: the connection
     :ptype conn: Any
@@ -531,10 +587,13 @@ async def _bound_as_declared(
     """
     try:
         return await run(params)
-    except asyncpg.exceptions.DataError:
+    except asyncpg.exceptions.DataError as exc:
+        if not _refused_bind(exc):
+            raise
         declared = await _as_declared(conn, sql, params)
         if declared is None:
             raise
+        _note_typed_retry(sql)
         return await run(declared)
 
 
@@ -1361,10 +1420,24 @@ class AsyncpgDriver(Driver):
             async with conn.transaction():
                 # ``Connection.cursor`` returns a server-side cursor;
                 # this is the WHOLE reason we override the ABC default.
-                # a stream's first bind is inside its iteration, so its text values are converted before it
-                bound = await _as_declared(conn, translated, params) or params
-                async for record in conn.cursor(translated, *bound):
-                    yield dict(record)
+                # a stream binds inside its first step: a refused bind is retried there, as the other paths
+                # retry theirs, before any row was yielded
+                bound: Sequence[Any] = params
+                for attempt in range(2):
+                    yielded = False
+                    try:
+                        async for record in conn.cursor(translated, *bound):
+                            yielded = True
+                            yield dict(record)
+                        break
+                    except asyncpg.exceptions.DataError as exc:
+                        if yielded or attempt or not _refused_bind(exc):
+                            raise
+                        declared = await _as_declared(conn, translated, params)
+                        if declared is None:
+                            raise
+                        _note_typed_retry(translated)
+                        bound = declared
 
     # -------------------------------------------------------------------
     # Driver ABC: introspection surface

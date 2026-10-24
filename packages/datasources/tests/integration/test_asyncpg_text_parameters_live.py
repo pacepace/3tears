@@ -46,12 +46,13 @@ async def driver(db_container: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIte
         await conn.execute(f'CREATE SCHEMA "{_SCHEMA}"')
         await conn.execute(
             f'CREATE TABLE "{_SCHEMA}".runs (observed_at timestamp NOT NULL, id integer NOT NULL, '
-            "noted timestamptz, PRIMARY KEY (observed_at, id))"
+            "noted timestamptz, label text, PRIMARY KEY (observed_at, id))"
         )
+        await conn.execute(f'CREATE SEQUENCE "{_SCHEMA}".calls')
         await conn.execute(
             f'INSERT INTO "{_SCHEMA}".runs VALUES '
-            "('2026-11-04 05:33:12', 1, '2026-11-04 05:33:12+00'), ('2026-11-04 05:33:12', 2, NULL), "
-            "('2026-11-04 06:00:00', 1, NULL), ('2026-11-05 00:00:00', 1, NULL)"
+            "('2026-11-04 05:33:12', 1, '2026-11-04 05:33:12+00', 'a'), ('2026-11-04 05:33:12', 2, NULL, 'b'), "
+            "('2026-11-04 06:00:00', 1, NULL, 'c'), ('2026-11-05 00:00:00', 1, NULL, 'd')"
         )
     finally:
         await conn.close()
@@ -104,3 +105,75 @@ class TestATextKeyBindsAsItsDeclaredType:
     async def test_text_that_is_no_timestamp_is_still_refused(self, driver: AsyncpgDriver) -> None:
         with pytest.raises(asyncpg.exceptions.DataError):
             await driver.fetch(f"SELECT id FROM {_SCHEMA}.runs WHERE observed_at > $1", "not a time")
+
+    async def test_text_converts_as_postgres_casts_it_at_the_time_zone_edges(self, driver: AsyncpgDriver) -> None:
+        # a naive time at a timestamptz is read in the session's zone (UTC here), as Postgres's own cast reads it
+        rows = await driver.fetch(f"SELECT id FROM {_SCHEMA}.runs WHERE noted = $1", "2026-11-04 05:33:12")
+        assert [row["id"] for row in rows] == [1]
+        # an offset at a plain timestamp is dropped, as Postgres's cast drops it, rather than refused
+        rows = await driver.fetch(
+            f"SELECT id FROM {_SCHEMA}.runs WHERE observed_at = $1 ORDER BY id", "2026-11-04 06:00:00+02"
+        )
+        assert [row["id"] for row in rows] == [1]
+
+    async def test_the_retry_is_said_once_per_statement(
+        self, driver: AsyncpgDriver, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sql = f"SELECT id FROM {_SCHEMA}.runs WHERE observed_at > $1 AND id >= 0"
+        with caplog.at_level("INFO", logger="threetears.datasources.drivers.asyncpg_driver"):
+            await driver.fetch(sql, "2026-11-04 05:33:12")
+            await driver.fetch(sql, "2026-11-04 06:00:00")
+        said = [r for r in caplog.records if "bound as their declared types" in r.getMessage()]
+        assert len(said) == 1, said
+
+
+class TestAServerErrorIsNeverRetried:
+    """a server's own data error is raised as it is, and the statement runs once."""
+
+    _DIVIDES = "SELECT nextval('{schema}.calls') / (CASE WHEN $1::uuid IS NOT NULL THEN 0 ELSE 1 END) AS q"
+
+    async def _calls(self, db_container: str) -> int:
+        conn = await asyncpg.connect(**_connect_kwargs(db_container))
+        try:
+            value: int = await conn.fetchval(
+                f'SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM "{_SCHEMA}".calls'
+            )
+        finally:
+            await conn.close()
+        return value
+
+    async def test_outside_a_transaction(self, driver: AsyncpgDriver, db_container: str) -> None:
+        with pytest.raises(asyncpg.exceptions.DivisionByZeroError):
+            await driver.fetch(self._DIVIDES.format(schema=_SCHEMA), "0198a3f2-1c4e-7b9a-8d2f-3e4a5b6c7d8e")
+        assert await self._calls(db_container) == 1, "the statement ran twice"
+
+    async def test_inside_a_statement_timeouts_transaction(self, driver: AsyncpgDriver, db_container: str) -> None:
+        with pytest.raises(asyncpg.exceptions.DivisionByZeroError):
+            await driver.fetch(
+                self._DIVIDES.format(schema=_SCHEMA), "0198a3f2-1c4e-7b9a-8d2f-3e4a5b6c7d8e", timeout_seconds=5
+            )
+        assert await self._calls(db_container) == 1, "the statement ran twice"
+
+    async def test_inside_a_cursors_transaction(self, driver: AsyncpgDriver, db_container: str) -> None:
+        with pytest.raises(asyncpg.exceptions.DivisionByZeroError):
+            await driver.fetch_at_most(
+                self._DIVIDES.format(schema=_SCHEMA), "0198a3f2-1c4e-7b9a-8d2f-3e4a5b6c7d8e", max_rows=1
+            )
+        assert await self._calls(db_container) == 1, "the statement ran twice"
+
+
+class TestAStreamPaysNothingForTextItBinds:
+    async def test_a_text_parameter_at_a_text_placeholder_prepares_nothing_more(
+        self, driver: AsyncpgDriver, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        prepared: list[str] = []
+        real_prepare = asyncpg.connection.Connection.prepare
+
+        async def counting(self: Any, query: str, *args: Any, **kwargs: Any) -> Any:
+            prepared.append(query)
+            return await real_prepare(self, query, *args, **kwargs)
+
+        monkeypatch.setattr(asyncpg.connection.Connection, "prepare", counting)
+        rows = [row["id"] async for row in driver.fetch_iter(f"SELECT id FROM {_SCHEMA}.runs WHERE label = $1", "c")]
+        assert rows == [1]
+        assert prepared == [], f"a stream prepared on a bind nothing refused: {prepared}"

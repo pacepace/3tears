@@ -177,6 +177,34 @@ _DEFAULT_L2_CONCURRENCY: Final = 16
 #: committed in batches of this many
 _DEFAULT_APPLY_BATCH: Final = 64
 
+#: how many times the scopes that moved while a batch fetched join it before it is committed: enough to fold a
+#: burst's stragglers in, few enough that a scope a writer keeps moving never holds the batch back
+_APPLY_JOINS: Final = 2
+
+
+def _raise_first(results: Sequence[object], *, log: Any, what: str) -> None:
+    """raise the first failure of a gather that ran every task to its end, recording every later one.
+
+    Every failure either reaches the caller (the first) or is recorded where an operator sees it (the rest).
+
+    :param results: what ``asyncio.gather(..., return_exceptions=True)`` returned
+    :ptype results: Sequence[object]
+    :param log: where the later failures are recorded
+    :ptype log: Any
+    :param what: what failed, for the record
+    :ptype what: str
+    :return: nothing
+    :rtype: None
+    :raises BaseException: the first failure, when there is one
+    """
+    failures = [result for result in results if isinstance(result, BaseException)]
+    for later in failures[1:]:
+        if isinstance(later, Exception):
+            contain(later, log=log, what=f"{what} (beside an earlier failure, which is raised): {later}")
+    if failures:
+        raise failures[0]
+
+
 #: how many times a rebuild reads again after a write committed while it read
 _REBUILD_ATTEMPTS: Final = 3
 
@@ -2345,6 +2373,7 @@ class ScopedSnapshot:
         pending = dict(pointers)
         # the pointer each scope was fetched at in this call: a scope is fetched again only once it moves past it
         fetched_at: dict[str, _Pointer] = {}
+        joins = 0
         while pending:
             batch: dict[str, _Fetched] = {}
             while pending and len(batch) < self._apply_batch:
@@ -2353,14 +2382,29 @@ class ScopedSnapshot:
                     del pending[scope]
                     fetched_at[scope] = pointer
                 batch.update(await self._fetch_wave(wave, failed, mark_behind=mark_behind))
-                if more is not None and not pending:
-                    pending = {
-                        scope: pointer
-                        for scope, pointer in more().items()
-                        if scope not in fetched_at or pointer.supersedes(fetched_at[scope])
-                    }
-            await self._commit_batch(batch)
+                if more is not None and not pending and joins < _APPLY_JOINS:
+                    # the scopes that moved while the wave fetched join it, a bounded number of times: a scope a
+                    # writer keeps moving would otherwise hold the batch uncommitted for as long as it moves
+                    joins += 1
+                    pending = self._moved_since(more(), fetched_at)
+            await self._commit_batch(batch, failed, mark_behind=mark_behind)
+        if more is not None and self._moved_since(more(), fetched_at):
+            # what moved after the last join is the next pass's, at once
+            self._changed.set()
         return failed
+
+    @staticmethod
+    def _moved_since(current: Mapping[str, _Pointer], fetched_at: Mapping[str, _Pointer]) -> dict[str, _Pointer]:
+        """the scopes not fetched yet, or moved past the pointer they were fetched at.
+
+        :return: scope -> its pointer now
+        :rtype: dict[str, _Pointer]
+        """
+        return {
+            scope: pointer
+            for scope, pointer in current.items()
+            if scope not in fetched_at or pointer.supersedes(fetched_at[scope])
+        }
 
     async def _fetch_wave(
         self, pointers: Mapping[str, _Pointer], failed: dict[str, str], *, mark_behind: bool
@@ -2389,8 +2433,11 @@ class ScopedSnapshot:
                 return None
             return _Fetched(held=held, current=current, replacements=replacements, started=started)
 
-        fetched = await asyncio.gather(*(fetch(scope, pointer) for scope, pointer in pointers.items()))
-        return {scope: got for scope, got in zip(pointers, fetched, strict=True) if got is not None}
+        results = await asyncio.gather(
+            *(fetch(scope, pointer) for scope, pointer in pointers.items()), return_exceptions=True
+        )
+        _raise_first(results, log=log, what=f"scoped snapshot {self._name}: a scope's fetch failed")
+        return {scope: got for scope, got in zip(pointers, results, strict=True) if isinstance(got, _Fetched)}
 
     async def _note_unread(
         self, scope: str, pointer: _Pointer, exc: _Lost, failed: dict[str, str], *, mark_behind: bool
@@ -2410,11 +2457,15 @@ class ScopedSnapshot:
                 self._behind = _updated(self._behind, {scope: (self._behind.get(scope, (0, ""))[0] + 1, str(exc))})
         failed[scope] = str(exc)
 
-    async def _commit_batch(self, batch: Mapping[str, _Fetched]) -> None:
+    async def _commit_batch(self, batch: Mapping[str, _Fetched], failed: dict[str, str], *, mark_behind: bool) -> None:
         """commit what a batch fetched in one swap, the scopes in order; scope by scope when the L1 refuses it.
 
         :param batch: scope -> what was fetched
         :ptype batch: Mapping[str, _Fetched]
+        :param failed: where a scope the L1 refuses is recorded, with why, as one whose chunks cannot be read is
+        :ptype failed: dict[str, str]
+        :param mark_behind: whether such a scope goes on ``behind``
+        :ptype mark_behind: bool
         :return: nothing
         :rtype: None
         """
@@ -2438,24 +2489,34 @@ class ScopedSnapshot:
                     epochs={scope: got.current.epoch for scope, got in fresh.items()},
                 )
                 applied = fresh
-            except _Lost:
-                # NOSILENT: one scope's rows were refused; each is committed on its own below, and the one refused
-                # is recorded there
+            except _Lost as exc:
+                # NOSILENT: logged here; each scope is committed on its own below, and one refused alone is recorded
+                log.warning(
+                    "scoped snapshot %s: the L1 refused a batch of %d scopes; committing them one by one: %s",
+                    self._name,
+                    len(fresh),
+                    exc,
+                    extra={"extra_data": {"scopes": list(fresh)}},
+                )
                 applied = {}
             else:
                 self._applied = _updated(self._applied, {scope: got.current for scope, got in applied.items()})
         if fresh and not applied:
             for scope, got in fresh.items():
-                await self._commit_one(scope, got)
+                await self._commit_one(scope, got, failed, mark_behind=mark_behind)
             return
         if applied:
             self._notify()
             for scope, got in applied.items():
                 self._record_change(scope, got.current, got.started)
 
-    async def _commit_one(self, scope: str, got: _Fetched) -> None:
+    async def _commit_one(self, scope: str, got: _Fetched, failed: dict[str, str], *, mark_behind: bool) -> None:
         """commit one scope's fetched chunks, as a batch the L1 refused is committed.
 
+        :param failed: where the scope is recorded when the L1 refuses it
+        :ptype failed: dict[str, str]
+        :param mark_behind: whether it then goes on ``behind``
+        :ptype mark_behind: bool
         :return: nothing
         :rtype: None
         """
@@ -2466,7 +2527,7 @@ class ScopedSnapshot:
                 await self._commit_fetched(got.replacements, [scope], epochs={scope: got.current.epoch})
                 self._applied = _updated(self._applied, {scope: got.current})
         except _Lost as exc:
-            await self._note_unread(scope, got.current, exc, {}, mark_behind=True)
+            await self._note_unread(scope, got.current, exc, failed, mark_behind=mark_behind)
             return
         self._notify()
         self._record_change(scope, got.current, got.started)
@@ -3147,9 +3208,7 @@ class ScopedSnapshot:
                     outcomes[outcome].append(scope.scope)
 
                 results = await asyncio.gather(*(publish_one(scope) for scope in staged), return_exceptions=True)
-                failure = next((result for result in results if isinstance(result, BaseException)), None)
-                if failure is not None:
-                    raise failure
+                _raise_first(results, log=log, what=f"scoped snapshot {self._name}: a staged scope's publish failed")
                 # in the order the scopes were staged, as one after another they were
                 order = {scope.scope: index for index, scope in enumerate(staged)}
                 for listed in (moved, skipped, superseded):

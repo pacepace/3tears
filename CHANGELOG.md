@@ -41,7 +41,7 @@ contract in `gen/proposal_contract.py` (`PROPOSAL_RESPONSE_FORMAT` is public), `
 top under `try/except ImportError` and name themselves when needed: models' claude-cli and voyageai, search's
 extract, mcp's grants, agent-tools' pdf/docx/xlsx/ocr/vision, scrape's hitl, and prometheus wherever it is optional.
 What loads at import moves accordingly: `import threetears.models` loads every installed provider backend and the
-Claude SDK; with the grants extra, `import threetears.mcp` loads the grant store's stack; agent-tools imports PyMuPDF
+Claude SDK (the voyageai compatibility shim only where that extra is installed); with the grants extra, `import threetears.mcp` loads the grant store's stack; agent-tools imports PyMuPDF
 as `pymupdf` (its `fitz` alias prints to stdout).
 
 **Changed:** `threetears.datasources.drivers.factory` imports every driver module with itself, so building a
@@ -57,9 +57,11 @@ each), so an every-state write reached a page over half a minute in many index m
 the moved scopes' chunks side by side (`l2_concurrency` at once), takes in the scopes whose pointers move while it
 fetches, and commits them to the L1 in one swap with one change notice (`apply_batch` scopes at most, default 64, so
 memory stays bounded; a larger burst is committed in batches). A batch the L1 refuses is committed scope by scope, so
-one scope that cannot be applied goes behind alone. The writer's `publish_staged` completes, checks and moves its
+one scope that cannot be applied goes behind alone, or, in a rebuild, keeps the copy from being declared ready. The
+scopes that move while a batch fetches join it at most twice, so a scope a writer keeps moving never holds a batch
+back; it is caught at the next pass. The writer's `publish_staged` completes, checks and moves its
 staged scopes side by side (`l2_concurrency` at once) and indexes them in one update; every moved pointer is still
-indexed on every way out. Epochs, L3 as the truth, `discard_epoch` and `catch_up_from_l3` are unchanged.
+indexed on every way out, and when several scopes fail the first is raised and every other is logged. Epochs, L3 as the truth, `discard_epoch` and `catch_up_from_l3` are unchanged.
 
 ### nats: a tool pod tells the hub that a CDN-cached index it serves moved
 
@@ -77,10 +79,12 @@ returns the `CacheIndexMovedReply` (`success` means the purge was accepted and q
 **Fixed:** The datasource rail carries a timestamp (and a date, a time, a UUID, a decimal) as its text, and a paged
 read hands its last row's key back as the next page's parameters in that form. The asyncpg driver bound by the type
 Postgres declares for each placeholder and refused the text (`DataError`), so a read of a relation whose key held a
-timestamp failed on its second page. When asyncpg refuses a parameter, the driver now reads the statement's declared
-types and binds each text value as its type (`timestamp`, `timestamptz`, `date`, `time`, `uuid`, `numeric`, the
-integers and floats) once more; only a refused bind pays that round trip. Text that does not parse as its type is
-still refused.
+timestamp failed on its second page. When asyncpg itself refuses to encode a text parameter (before the statement is
+sent), the driver reads the statement's declared types, has Postgres cast each text value to its type
+(`$n::text::type`, so the session's time zone and an offset at a plain `timestamp` mean what Postgres's own cast
+makes of them), and runs the statement once more; it logs that once per statement at INFO. A server's own data error
+(SQLSTATE 22) is never retried and reaches the caller as it is, so no statement runs twice. Only a refused bind pays
+the extra round trips, a stream's included. Text that is no value of its type is still refused.
 
 ### agent-acl: a caller cache of any answer type binds to the access tables
 
@@ -108,7 +112,8 @@ version belongs to one scope. A writer reads the floor from L2 when it confirms 
 kept in L2 alone: its generation is a key beside its rows (`{scope}.{table}-generation`), advanced by every write that
 changes a row (a won compare-and-set, a delete, an eviction), with no generation source on the registry. A registry
 follows every such table it holds, and `CollectionRegistry.catch_up_l2_generations()` judges the marks from L2, so a
-replica that missed a broadcast drops its L1 copy at the next pass. `threetears.epoch.generation_catchup_tick` runs that
+replica that missed a broadcast drops its L1 copy at the next pass. A pass that could read no generation does not count
+as run. `threetears.epoch.generation_catchup_tick` runs that
 pass too and no longer reads these tables from the epoch bucket. `VersionedAnswers` and its index declare it; a host
 schedules the pass, and a registry following such a table warns each `l2_catch_up_overdue` (two minutes by default)
 while no pass has judged it within that time; `CollectionRegistry.l2_catch_up_age` says when one last ran. A won

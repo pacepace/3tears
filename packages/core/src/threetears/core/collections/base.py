@@ -755,6 +755,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         # drops every marker recorded under an older one
         self._marker_generation: str | None = None
         self._last_generation_warning: float | None = None
+        #: this process's advances of an L2-kept write generation take turns (_advance_l2_generation)
+        self._l2_generation_lock = asyncio.Lock()
         self._refuse_unsound_negative_cache()
         if self._negative_cache_active and self._l1 is not None:
             self._l1.initialize(_ABSENT_MARKER_METADATA)
@@ -1712,9 +1714,8 @@ class BaseCollection(ABC, Generic[EntityT]):
             once its write path has run, when the key could not be advanced
         :rtype: _Bump
         """
-        lock: asyncio.Lock = self.__dict__.setdefault("_l2_generation_lock", asyncio.Lock())
         try:
-            async with lock:
+            async with self._l2_generation_lock:
                 token = await self._advance_l2_generation_key()
         except (KvError, ConcurrentModificationError) as exc:
             failure = GenerationUnavailableError(

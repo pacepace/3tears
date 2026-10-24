@@ -3020,3 +3020,112 @@ async def test_a_burst_the_l1_refuses_one_scope_of_still_applies_the_others() ->
     await _until(lambda: "S03" in replica.status().behind, what="the refused scope shown behind")
     await writer.stop()
     await replica.stop()
+
+
+class _RefusingNewRows(DuckDBBackend):
+    """a DuckDB L1 that refuses, as a broken key does, a chunk bringing S03's epoch-2 rows (votes 2)."""
+
+    def replace_partitions(self, replacements: Any) -> int:
+        for replacement in replacements:
+            arrow = replacement.arrow
+            if replacement.value == "S03" and arrow is not None and 2 in arrow.column("votes").to_pylist():
+                raise duckdb.ConstraintException("a row of S03 is already held")
+        written: int = super().replace_partitions(replacements)
+        return written
+
+
+async def test_a_rebuild_whose_l1_refuses_a_published_scope_is_not_declared_ready() -> None:
+    pointers, store = _Pointers(), _Store()
+    l3 = _L3([{"county": f"c{scope}", "state": scope, "votes": 1} for scope in _BURST])
+    writer, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    l3.epochs = dict.fromkeys(_BURST, 1)
+    await writer.start()
+    await writer.wait_ready(timeout=5)
+    # a writer moves S03 past the epoch L3 shows a rebuild, so the rebuild applies its chunk rather than read it
+    await writer.publish("S03", 2, {"results": [{"county": "cS03", "state": "S03", "votes": 2}]})
+    refusing = _RefusingNewRows()
+    metadata = MetaData()
+    _RESULTS.to_sqlalchemy_table(metadata)
+    refusing.initialize(metadata)
+    replica, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3, backend=refusing)
+    l3.epochs = dict.fromkeys(_BURST, 1)
+    await replica.start()
+    with pytest.raises(TimeoutError):
+        await replica.wait_ready(timeout=1)
+    assert replica.applied_epoch("S03") != 2
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_scope_that_keeps_moving_never_holds_a_burst_back() -> None:
+    """S00's pointer moves again each time its chunk is fetched: the burst still commits in a bounded number of
+    fetches, the newest S00 a join caught among it, and S00 catches up on the next pass once it stops."""
+    writer, replica, pointers, store, l3 = await _burst_pair()
+    real_get = store.get
+    s00_fetches = [0]
+    keep_moving = [True]
+
+    async def moving_get(name: str) -> bytes:
+        data = await real_get(name)
+        if name.startswith("enr/S00/") and keep_moving[0]:
+            s00_fetches[0] += 1
+            later = json.loads(pointers.entries["enr.s.S00"][0])
+            epoch = later["epoch"] + 1
+            moved = f"enr/S00/{epoch}/results.moving"
+            store.objects[moved] = store.objects[later["tables"]["results"]["object"]]
+            later["epoch"], later["tables"]["results"]["object"] = epoch, moved
+            pointers.put_now("enr.s.S00", json.dumps(later).encode())
+        return data
+
+    store.get = moving_get  # type: ignore[method-assign]
+    moves: list[int] = []
+    first_s00: list[int | None] = []
+
+    def moved() -> None:
+        moves.append(s00_fetches[0])
+        if len(first_s00) == 0:
+            first_s00.append(replica.applied_epoch("S00"))
+
+    replica.on_change(moved)
+
+    await _publish_burst(writer, l3)
+    others = dict.fromkeys(_BURST[1:], 2)
+    await _until(
+        lambda: {s: e for s, e in replica.applied_epochs().items() if s != "S00"} == others,
+        what="the burst committed while S00 keeps moving",
+    )
+    assert moves and moves[0] <= 8, f"the burst waited on {moves[0] if moves else '?'} fetches of the moving scope"
+    assert (first_s00[0] or 0) > 2, (
+        f"S00 moved while the batch fetched, and its newer pointer did not join it: {first_s00}"
+    )
+    keep_moving[0] = False
+    final = json.loads(pointers.entries["enr.s.S00"][0])["epoch"]
+    await _until(lambda: replica.applied_epoch("S00") == final, what="the moving scope caught up once it stopped")
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_every_staged_scope_that_fails_is_raised_or_recorded(caplog: pytest.LogCaptureFixture) -> None:
+    writer, replica, _, store, l3 = await _burst_pair()
+    real_info = store.info
+
+    async def broken_info(name: str) -> ObjectInfo | None:
+        for scope in ("S02", "S07"):
+            if name.startswith(f"enr/{scope}/2/"):
+                raise RuntimeError(f"the store broke on {scope}")
+        return await real_info(name)
+
+    store.info = broken_info  # type: ignore[method-assign]
+    staged = [
+        await writer.stage(scope, 2, {"results": [{"county": f"c{scope}", "state": scope, "votes": 2}]})
+        for scope in _BURST
+    ]
+    l3.epochs = dict.fromkeys(_BURST, 2)
+    with caplog.at_level("WARNING"), pytest.raises(RuntimeError, match="the store broke on") as raised:
+        await writer.publish_staged(staged, carry_at=dict.fromkeys(_BURST, 1))
+    other = "S07" if "S02" in str(raised.value) else "S02"
+    assert any(f"the store broke on {other}" in record.getMessage() for record in caplog.records), (
+        "a second failure was neither raised nor recorded"
+    )
+    await writer.stop()
+    await replica.stop()

@@ -99,3 +99,17 @@ def test_the_package_imports_without_either_extra() -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "imported"
+
+
+def test_a_process_without_the_voyageai_extra_gets_no_stub_module() -> None:
+    result = _refusing(
+        ("langchain_voyageai",),
+        """
+        import sys
+        import threetears.models  # noqa: F401
+        stubbed = "voyageai.object.multimodal_embeddings" in sys.modules
+        print("stubbed" if stubbed else "clean")
+        """,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().endswith("clean"), "importing threetears.models put the voyageai stub in sys.modules"
