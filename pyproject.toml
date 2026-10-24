@@ -161,6 +161,7 @@ dev-dependencies = [
 # today, so adding a 3tears dependency later cannot reintroduce the failure.
 [tool.uv.exclude-newer-package]
 "3tears" = "PT0S"
+"3tears-access-contracts" = "PT0S"
 "3tears-agent-acl" = "PT0S"
 "3tears-agent-audit" = "PT0S"
 "3tears-agent-identity" = "PT0S"
@@ -417,6 +418,7 @@ python_version = "3.14"
 namespace_packages = true
 explicit_package_bases = true
 mypy_path = [
+    "packages/access-contracts/src",
     "packages/agent/acl/src",
     "packages/agent/audit/src",
     "packages/agent/identity/src",
@@ -453,6 +455,7 @@ mypy_path = [
 # default scope when invoked with no arguments; avoids duplicate-module errors
 # from the per-package tests/ trees (each has an enforcement/ package).
 files = [
+    "packages/access-contracts/src",
     "packages/agent/acl/src",
     "packages/agent/audit/src",
     "packages/agent/identity/src",

@@ -37,7 +37,7 @@ source "$REPO_ROOT/scripts/_tool.sh"
 # skipped six packages this script checks. Keep both in step. A package added to the
 # workspace without a line in each is a package nobody is checking, and the gap is
 # invisible because the gate still passes.
-MYPYPATH_ALL=packages/core/src:packages/nats/src:packages/observe/src:packages/agent/acl/src:packages/agent/audit/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/knowledge/src:packages/agent/memory/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/channels/src:packages/datasources/src:packages/enforcement/src:packages/epoch/src:packages/evals/src:packages/langgraph/src:packages/media-contracts/src:packages/models/src:packages/object-store/src:packages/registry/src:packages/scheduled-jobs/src:packages/scrape/src:packages/search/src:packages/tool-schema/src:packages/backup/src:packages/geo/src:packages/iam/src
+MYPYPATH_ALL=packages/access-contracts/src:packages/core/src:packages/nats/src:packages/observe/src:packages/agent/acl/src:packages/agent/audit/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/knowledge/src:packages/agent/memory/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/channels/src:packages/datasources/src:packages/enforcement/src:packages/epoch/src:packages/evals/src:packages/langgraph/src:packages/media-contracts/src:packages/models/src:packages/object-store/src:packages/registry/src:packages/scheduled-jobs/src:packages/scrape/src:packages/search/src:packages/tool-schema/src:packages/backup/src:packages/geo/src:packages/iam/src
 
 PACKAGE=""
 if [ $# -gt 0 ] && [[ "$1" != -* ]]; then
@@ -85,6 +85,7 @@ else
         -p threetears.channels
         -p threetears.datasources
         -p threetears.media.contracts
+        -p threetears.access.contracts
         -p threetears.object_store
         -p threetears.backup
         -p threetears.scrape

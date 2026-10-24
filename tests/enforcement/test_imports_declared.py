@@ -26,7 +26,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: contracts packages import no third-party module at all; ``test_dependency_alignment.py`` holds
 #: them to that, and this gate's non-vacuity guard would refuse them for having nothing to check.
-_CONTRACT_PACKAGES = frozenset({"packages/media-contracts", "packages/tool-schema"})
+_CONTRACT_PACKAGES = frozenset({"packages/access-contracts", "packages/media-contracts", "packages/tool-schema"})
 
 _PACKAGES = sorted(
     pyproject.parent.relative_to(_REPO_ROOT).as_posix()

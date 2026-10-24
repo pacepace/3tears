@@ -12,6 +12,7 @@ exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
 3tears = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-access-contracts = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-agent-acl = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-agent-audit = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-agent-identity = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
@@ -49,6 +50,7 @@ langchain-openrouter = "2026-09-22T05:00:00Z"
 [manifest]
 members = [
     "3tears",
+    "3tears-access-contracts",
     "3tears-agent-acl",
     "3tears-agent-audit",
     "3tears-agent-identity",
@@ -211,11 +213,17 @@ requires-dist = [
 provides-extras = ["security", "http", "nats", "tracing", "socks", "duckdb", "snapshot", "testing", "pgvector", "uuid-utils"]
 
 [[package]]
+name = "3tears-access-contracts"
+version = "0.78.0"
+source = { editable = "packages/access-contracts" }
+
+[[package]]
 name = "3tears-agent-acl"
 version = "0.78.0"
 source = { editable = "packages/agent/acl" }
 dependencies = [
     { name = "3tears" },
+    { name = "3tears-access-contracts" },
     { name = "3tears-observe" },
     { name = "pydantic" },
     { name = "sqlalchemy" },
@@ -230,6 +238,7 @@ follow = [
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
+    { name = "3tears-access-contracts", editable = "packages/access-contracts" },
     { name = "3tears-epoch", marker = "extra == 'follow'", editable = "packages/epoch" },
     { name = "3tears-nats", extras = ["client"], marker = "extra == 'follow'", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
@@ -818,9 +827,7 @@ name = "3tears-iam"
 version = "0.78.0"
 source = { editable = "packages/iam" }
 dependencies = [
-    { name = "3tears", extra = ["security"] },
-    { name = "3tears-agent-acl" },
-    { name = "3tears-nats", extra = ["client"] },
+    { name = "3tears-access-contracts" },
     { name = "3tears-observe" },
     { name = "argon2-cffi" },
     { name = "bcrypt" },
@@ -833,6 +840,12 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+core = [
+    { name = "3tears", extra = ["security"] },
+]
+nats = [
+    { name = "3tears-nats", extra = ["client"] },
+]
 saml = [
     { name = "defusedxml" },
     { name = "pysaml2" },
@@ -843,9 +856,9 @@ webauthn = [
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears", extras = ["security"], editable = "packages/core" },
-    { name = "3tears-agent-acl", editable = "packages/agent/acl" },
-    { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
+    { name = "3tears", extras = ["security"], marker = "extra == 'core'", editable = "packages/core" },
+    { name = "3tears-access-contracts", editable = "packages/access-contracts" },
+    { name = "3tears-nats", extras = ["client"], marker = "extra == 'nats'", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "argon2-cffi", specifier = ">=25.1.0" },
     { name = "bcrypt", specifier = ">=5.0.0" },
@@ -859,7 +872,7 @@ requires-dist = [
     { name = "pysaml2", marker = "extra == 'saml'", specifier = ">=7.5.0" },
     { name = "webauthn", marker = "extra == 'webauthn'", specifier = ">=3.0" },
 ]
-provides-extras = ["saml", "webauthn"]
+provides-extras = ["core", "nats", "saml", "webauthn"]
 
 [[package]]
 name = "3tears-langgraph"

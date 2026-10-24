@@ -6,6 +6,80 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### iam: the base install brings no core, NATS client or agent layer
+
+**Changed (iam):** `3tears-iam`'s hard dependencies no longer include `3tears[security]`,
+`3tears-nats[client]` or `3tears-agent-acl`. They put sqlalchemy, asyncpg, pyyaml, nats-py and nkeys
+into every install, though only three modules use core and none uses the NATS client at runtime. The
+base install covers passwords, OAuth2/OIDC, GitHub sign-in, PKCE, session tokens and rotation, TOTP
+seed generation and verification, backup codes, step-up, client-IP resolution, the store Protocols
+and the in-memory, NATS-KV and Postgres stores.
+
+Two new extras:
+
+- `core` (`3tears[security]`): `threetears.iam.dpop`, `threetears.iam.stores.attempt_limiter`
+  (`CollectionAttemptLimiter`), and TOTP's `seal_seed`, `unseal_seed` and `DecryptionError`, which
+  still use core's own `seal`/`open_secret`, so sealed seeds are unchanged.
+- `nats` (`3tears-nats[client]`): the client the `stores.nats_kv` stores run over.
+
+`dpop` takes its `ReplayGuard` from the caller and names the type for type checking only.
+`threetears.iam.saml` now names its extra only when `defusedxml` itself is missing. A fault inside an
+installed `defusedxml` is re-raised as it came.
+
+**Breaking:** an app that uses `dpop`, `CollectionAttemptLimiter` or TOTP sealing must depend on
+`3tears-iam[core]`, plus `[nats]` for the KV stores. `3tears-iam[core,nats]` restores the old
+install except for agent-acl: an app that reached `threetears.agent.acl` through iam declares
+`3tears-agent-acl` itself. Without `core`, importing `dpop` or `stores.attempt_limiter`, calling `seal_seed` or
+`unseal_seed`, or reaching `totp.DecryptionError` raises `ImportError` naming `3tears-iam[core]`. An
+app that imported `threetears.core`, `threetears.nats` or `threetears.agent.acl` while depending only
+on `3tears-iam` must now declare them itself. Every import path is unchanged. This ships in a minor
+release.
+
+### iam: the GitHub device flow, and PKCE for GitHub sign-in
+
+**Added (iam):** the GitHub device flow (RFC 8628), for a CLI on a machine with no browser.
+`HttpxGithubOAuth2Client.request_device_code(scopes=)` returns a `GithubDeviceCode` (`device_code`,
+`user_code`, `verification_uri`, `expires_in`, `interval`). `wait_for_device_token(client, device)`
+polls at the interval, adds five seconds on each `slow_down` (or takes GitHub's longer interval),
+stops once the next poll would pass `expires_in`, and returns the access token for `fetch_profile`.
+`poll_device_token` is the single poll, answering `DeviceToken` or `DevicePending`. The two device
+methods form their own Protocol, `GithubDeviceFlowClient`. A terminal answer
+raises `GithubDeviceCodeExpiredError`, `GithubAccessDeniedError` or `GithubDeviceFlowDisabledError`
+(the OAuth app needs "Enable Device Flow"), and any other `error` raises their base,
+`GithubDeviceFlowError`, a `GithubOAuth2Error`. `HttpxGithubOAuth2Client`'s `client_secret` and
+`redirect_uri` are now optional, since the device flow sends neither; `exchange_code` raises
+`GithubOAuth2Error` when they are missing.
+
+**Added (iam):** `github.authorize_url(code_challenge=)` sends an S256 PKCE challenge with
+`code_challenge_method=S256`, and `exchange_code(code, code_verifier=)` sends the matching verifier.
+Both are recommended, and optional only because GitHub Enterprise Server 3.21 does not accept them.
+
+**Breaking (iam):** `GithubOAuth2Client`'s `exchange_code` takes a keyword `code_verifier`, so an
+implementation of that Protocol outside this package adds the parameter. The device flow is a separate
+Protocol, `GithubDeviceFlowClient` (`request_device_code`, `poll_device_token`), which
+`HttpxGithubOAuth2Client` implements and `wait_for_device_token` takes, so a redirect-only
+implementation grows nothing else.
+
+### iam: the in-memory stores are bounded, and supported for a single-process service
+
+**Changed (iam):** `stores.memory` sweeps expired entries on each write, in expiry order, instead of
+dropping one only when it is read, so abandoned sign-in state no longer accumulates.
+`MemoryStateStore` and `MemoryTicketStore` take `max_entries`, and a write that would add a live entry
+past it raises `MemoryStoreFullError`. `MemoryAttemptLimiter` sweeps lapsed windows the same way.
+Redemption and the injectable clock are unchanged. The stores are now supported for a single-process
+service with one event loop. State is lost on restart, and the stores are not thread-safe.
+
+### access-contracts: a new dependency-free leaf for the vocabulary iam and agent-acl share
+
+**Release step:** `3tears-access-contracts` is a new PyPI project, so it needs a pending trusted
+publisher on PyPI before the release that carries it (docs/releasing.md). iam and agent-acl
+hard-depend on it, so without it they are uninstallable at the new version.
+
+**Added:** `3tears-access-contracts` (`threetears.access.contracts`) depends on nothing and holds
+`ImpersonationCategory`, the six sensitive-action categories that agent-acl's impersonation deny-list
+and iam's step-up check both enforce. `threetears.agent.acl.ImpersonationCategory` is the same class,
+so existing imports and identity comparisons hold. agent-acl now depends on the leaf.
+
 ## v0.78.0 -- 2026-10-24
 
 ### evals: a reporter label's form follows its dimension's scale, and may quote the memo passage it is about

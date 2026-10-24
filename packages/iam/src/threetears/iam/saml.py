@@ -37,7 +37,11 @@ from threetears.observe import get_logger
 try:
     from defusedxml import DefusedXmlException
     from defusedxml import ElementTree as DefusedElementTree
-except ImportError as _exc:  # pragma: no cover - exercised by installing without the extra
+except ModuleNotFoundError as _exc:
+    # only defusedxml's own absence is the missing extra; a fault inside an installed copy
+    # is re-raised as it came, not relabelled as an install instruction that would not fix it
+    if _exc.name != "defusedxml" and not (_exc.name or "").startswith("defusedxml."):
+        raise
     raise ImportError(
         "threetears.iam.saml requires the 'saml' extra: pip install '3tears-iam[saml]'. "
         "It also needs the xmlsec1 system binary on PATH."

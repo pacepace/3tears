@@ -133,6 +133,7 @@ Cross-pod plumbing: transport, identity, scheduling, and the things every pod ne
 | [`3tears-observe`](packages/observe/) | `threetears.observe` | Structured logging, OpenTelemetry tracing, a `@traced` decorator, ContextVar-backed tags, and ASGI correlation middleware |
 | [`3tears-epoch`](packages/epoch/) | `threetears.epoch` | Generation-stamped config epochs with NATS broadcast and per-message echo, for coherent cross-pod cache reloads |
 | [`3tears-iam`](packages/iam/) | `threetears.iam` | Identity and access primitives. Passwords, OAuth2/OIDC, SAML, GitHub sign-in, session tokens, DPoP, TOTP, WebAuthn, and the anti-automation controls that guard them |
+| [`3tears-access-contracts`](packages/access-contracts/) | `threetears.access.contracts` | Dependency-free identity and authorization vocabulary shared by `iam` and `agent-acl`, such as the sensitive-action categories both enforce |
 | [`3tears-registry`](packages/registry/) | `threetears.registry` | Multi-pod tool routing. Registration, a NATS KV-backed catalog, discovery, a load-balancing call proxy, heartbeat monitoring, and pluggable routing strategies |
 | [`3tears-scheduled-jobs`](packages/scheduled-jobs/) | `threetears.scheduled_jobs` | Payload-agnostic, multi-pod-safe scheduled-jobs engine. Cross-pod-locked tick loop, reschedule math, and store protocols |
 | [`3tears-geo`](packages/geo/) | `threetears.geo` | Slippy-map tile geometry. WKB decoding, zoom bands, and MVT encoding in application code, with no PostGIS dependency |
@@ -247,6 +248,7 @@ graph LR
         CORE[core]
         NATS[nats]
         MEDIA[media-contracts]
+        ACCESS[access-contracts]
         TSCHEMA[tool-schema]
     end
 
@@ -277,6 +279,7 @@ graph LR
     WAKE --> SKILL
     SKILL --> CORE
     ACL --> CORE
+    ACL --> ACCESS
     LG --> CORE
     AUDIT --> NATS
     MCP --> NATS
@@ -297,7 +300,7 @@ Two things the diagram is telling you deliberately. **`search` connects only to
 `media-contracts`** -- it takes no `core` dependency at all, so it runs from a one-shot
 `asyncio.run()` with no broker, and nothing consumes it yet: wiring it into `agent-tools`
 is a later phase. **`observe` is on every box and drawn on none**, because an arrow from
-all 30 packages to one node is noise rather than information.
+every package to one node is noise rather than information.
 
 ## Development
 

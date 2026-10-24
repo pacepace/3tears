@@ -18,9 +18,12 @@ Protocols here, with implementations supplied rather than assumed:
   something application code can forget.
 - :mod:`threetears.iam.stores.postgres` -- for a service that already has a
   pool and wants the expiry predicate inside the claiming statement.
-- :mod:`threetears.iam.stores.memory` -- in-memory, for tests. Shipped rather
-  than left to each consumer, because a hand-rolled fake KV that quietly
-  diverges from the real one is how a store bug reaches production green.
+- :mod:`threetears.iam.stores.memory` -- in-memory: the double for tests, and a
+  supported store for a single-process service with one event loop, which loses
+  its state on restart. Expired entries are swept on write and ``max_entries``
+  caps the rest. Shipped rather than left to each consumer, because a hand-rolled
+  fake KV that quietly diverges from the real one is how a store bug reaches
+  production green.
 
 **All three honour the per-call ``ttl`` identically**, and that uniformity is
 the point of shipping the double rather than describing it. The KV store once

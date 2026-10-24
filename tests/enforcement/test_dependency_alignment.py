@@ -26,7 +26,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: packages whose hard-dependency list is an argued ruling, not an accretion.
 #:
-#: ``media-contracts`` and ``tool-schema`` need no entry: their floor is *nothing*, which
+#: ``access-contracts``, ``media-contracts`` and ``tool-schema`` need no entry: their floor is *nothing*, which
 #: ``contract_packages`` above already states more strongly. This list is for the
 #: packages that cannot be dependency-free but whose floor was still ruled -- where
 #: "nothing" is unavailable and "these three" is the promise instead.
@@ -60,6 +60,31 @@ _DEPENDENCY_FLOORS = (
         ),
     ),
     DependencyFloor(
+        package="packages/iam",
+        allowed=(
+            "3tears-observe",
+            "3tears-access-contracts",
+            "argon2-cffi",
+            "bcrypt",
+            "pyjwt",
+            "cryptography",
+            "httpx",
+            "pyotp",
+            "joserfc",
+            "pydantic",
+        ),
+        rationale=(
+            "owner ruling 2026-10-24 (#943): iam owns protocol, crypto and policy, and a consumer outside "
+            "the platform -- testament's coordinator, which runs neither NATS nor Postgres -- takes it for "
+            "GitHub sign-in, CI OIDC, session tokens and client-IP resolution with nothing else behind it. "
+            "Only dpop, CollectionAttemptLimiter and TOTP seed sealing build on core, so 3tears[security] "
+            "rides the [core] extra; the NATS client rides [nats], since stores.nats_kv names it for type "
+            "checking only; and agent-acl, needed for one six-member enum, is replaced by the "
+            "dependency-free access-contracts leaf that holds it. As hard dependencies they put sqlalchemy, "
+            "asyncpg, nats-py and nkeys into every install, though the base modules load none of them"
+        ),
+    ),
+    DependencyFloor(
         package="packages/evals",
         allowed=("httpx", "pydantic"),
         rationale=(
@@ -87,6 +112,7 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
         "packages/agent/acl",
         (
             "3tears",
+            "3tears-access-contracts",
             "3tears-observe",
             "pydantic",
             "sqlalchemy",
@@ -304,23 +330,6 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     (
-        "packages/iam",
-        (
-            "3tears",
-            "3tears-observe",
-            "3tears-agent-acl",
-            "3tears-nats",
-            "argon2-cffi",
-            "bcrypt",
-            "pyjwt",
-            "cryptography",
-            "httpx",
-            "pyotp",
-            "joserfc",
-            "pydantic",
-        ),
-    ),
-    (
         "packages/langgraph",
         (
             "3tears",
@@ -427,7 +436,7 @@ _CONFIG = DependencyAlignmentConfig(
     repo_root=_REPO_ROOT,
     package_globs=("packages/*", "packages/agent/*"),
     exemptions_path=_REPO_ROOT / "tests" / "enforcement" / "_dependency_alignment_exemptions.txt",
-    contract_packages=("packages/media-contracts", "packages/tool-schema"),
+    contract_packages=("packages/access-contracts", "packages/media-contracts", "packages/tool-schema"),
     dependency_floors=_ALL_FLOORS,
 )
 

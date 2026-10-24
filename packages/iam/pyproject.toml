@@ -21,27 +21,14 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
     "Typing :: Typed",
 ]
+# The base is protocol, crypto and policy: what a consumer doing sign-in, OIDC and sessions needs, with
+# no Postgres or NATS stack behind it. The floor is pinned in tests/enforcement/test_dependency_alignment.py.
 dependencies = [
-    # core supplies the crypto this package builds ON rather than beside:
-    # jwk_thumbprint/build_jwks/generate_signing_keypair (identity_token),
-    # ReplayGuard/RevocationGuard/WindowedCounter (coordination), and
-    # seal/open_secret (encryption) for TOTP seed material at rest. Forking
-    # any of those would give the platform two answers to the same question.
-    "3tears[security]>=0.78.0,<0.79.0",
     "3tears-observe>=0.78.0,<0.79.0",
-    # the sensitive-action taxonomy. agent-acl's ImpersonationCategory and
-    # identity-core's SensitiveActionCategory declared the same six strings
-    # independently, each documenting that the copy existed only because no
-    # import path connected them. This package is that path, so the enum is
-    # imported here and the second declaration goes away.
-    "3tears-agent-acl>=0.78.0,<0.79.0",
-    # the KV adapters in threetears.iam.stores.nats_kv: auth codes, OAuth state
-    # and single-use tickets, each short-lived and TTL'd, which is a KV
-    # bucket's job -- losing one costs whoever is mid-login a retry. Attempt
-    # counters are NOT in that list any more: a lockout that resets on every
-    # broker restart is not a lockout, so CollectionAttemptLimiter keeps its counts
-    # in L3 through a collection and NATS is the fence in front of it.
-    "3tears-nats[client]>=0.78.0,<0.79.0",
+    # the sensitive-action taxonomy stepup names (ImpersonationCategory), in the dependency-free
+    # leaf agent-acl's impersonation deny-list reads too. One class for both checks, without
+    # installing the authorization layer to name it.
+    "3tears-access-contracts>=0.78.0,<0.79.0",
     # argon2id for password hashing, bcrypt for verify-then-upgrade of hashes
     # migrated in from an older system. bcrypt is verify-only here: nothing in
     # this package ever WRITES a bcrypt hash.
@@ -50,7 +37,7 @@ dependencies = [
     # session tokens (EdDSA or HS256), DPoP proofs, and OIDC id_token
     # verification. [crypto] pulls the asymmetric backends.
     "pyjwt[crypto]>=2.8",
-    # Ed25519/EC key handling, and AES-256-GCM for TOTP seeds at rest.
+    # Ed25519/EC key handling for session tokens and DPoP proofs.
     "cryptography>=43.0",
     # OIDC discovery, the OAuth2 token exchange, provider userinfo/profile
     # fetches, and the k-anonymity breach-corpus range query. Used directly
@@ -70,6 +57,23 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The three modules that build on core rather than beside it: dpop (core's jwk_thumbprint and
+# proof-freshness rules, with a caller-supplied ReplayGuard), stores.attempt_limiter
+# (CollectionAttemptLimiter, over core's WindowedCounter and collections), and TOTP's
+# seal_seed/unseal_seed (core's seal/open_secret, so sealed seeds stay readable by the one
+# implementation that wrote them). Each raises an ImportError naming this extra without it.
+# Behind an extra because core brings sqlalchemy, asyncpg and pyyaml, which nothing else here uses.
+core = [
+    "3tears[security]>=0.78.0,<0.79.0",
+]
+# The switch for the KV stores in threetears.iam.stores.nats_kv: auth codes, OAuth state and
+# single-use tickets, each short-lived and TTL'd, which is a KV bucket's job. The module itself
+# names the NATS client only for type checking and takes the bucket by shape, so this extra
+# installs the client a caller opens that bucket with. It brings nats-py and nkeys, which has no
+# wheels for every target, so a consumer with its own stores does not carry it.
+nats = [
+    "3tears-nats[client]>=0.78.0,<0.79.0",
+]
 # SAML drags pysaml2 AND the xmlsec1 SYSTEM binary in with it. A consumer that
 # only needs OAuth/OIDC should not inherit an apt-get line, so the SAML service
 # provider lives behind this extra and threetears.iam.saml raises a pointed
@@ -93,7 +97,7 @@ packages = ["src/threetears"]
 [tool.uv.sources]
 3tears = { workspace = true }
 3tears-observe = { workspace = true }
-3tears-agent-acl = { workspace = true }
+3tears-access-contracts = { workspace = true }
 3tears-nats = { workspace = true }
 
 [tool.mypy]
