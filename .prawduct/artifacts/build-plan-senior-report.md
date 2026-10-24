@@ -68,6 +68,10 @@ is the prompt budget (Q1). The other is whether the aggregate needs a tested rea
 this to High. The cheapest step is the owner answering them before Wave C.
 
 **Decisions made mid-build:** (append here, one line each)
+- [DECISION: open questions Q1-Q8 take the plan's recommendations | main session 2026-10-24, owner may veto; Q8 = exact substring after collapsing whitespace runs and trimming the ends]
+- [DECISION: a re-freeze whose excerpts differ from the stored case's is refused, naming both, and a correction goes through `supersedes` | Critic R-10: a silent drop with a success receipt is a lie to the caller; case identity still excludes the excerpt]
+- [DECISION: the 14 drafted labels ran as a scratch check (all 14 validate once reshaped to verdicts; the draft's direction-plus-verdict shape is refused), not a committed fixture | the drafts are campaign-specific owner text, which this plan keeps out of tests; script kept at the main session's scratchpad `s/draft_labels.py`]
+- [DECISION: `schema/versioning.py`'s general additivity rule (L181-185, L335-336) gains the opaque-payload exception in Chunk 01, which edits the same ledger | Critic R-6 half-fixed in 00; rides 01 rather than buying a round]
 
 ## Advisory: what I would do differently
 
@@ -639,7 +643,7 @@ The main session:
 
 ## Status
 
-- [ ] Chunk 00: reporter label form and memo excerpt
+- [x] Chunk 00: reporter label form and memo excerpt
 - [ ] Chunk 01: declared names
 - [ ] Chunk 02: split and scaffold
 - [ ] Chunk 03: first screen, caveats once, provenance
