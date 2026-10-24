@@ -18,10 +18,11 @@ from threetears.iam.github import (
     GithubAccessDeniedError,
     GithubDeviceCode,
     GithubDeviceCodeExpiredError,
+    GithubDeviceFlowClient,
     GithubDeviceFlowDisabledError,
     GithubDeviceFlowError,
+    GithubOAuth2Client,
     GithubOAuth2Error,
-    GithubProfile,
     HttpxGithubOAuth2Client,
     authorize_url,
     primary_verified_email,
@@ -402,16 +403,17 @@ async def test_poll_device_token_surfaces_transport_failure_as_auth_failure() ->
 
 
 class _ScriptedDevice:
-    """A :class:`~threetears.iam.github.GithubOAuth2Client` whose polls answer from a script, with a clock it advances."""
+    """A :class:`~threetears.iam.github.GithubDeviceFlowClient` whose polls answer from a script, with a clock it advances.
+
+    It implements the device-flow Protocol alone, which is the point: ``wait_for_device_token``
+    needs nothing of the redirect flow.
+    """
 
     def __init__(self, answers: list[DeviceToken | DevicePending | GithubOAuth2Error]) -> None:
         self.answers = answers
         self.now = 0.0
         self.sleeps: list[float] = []
         self.polled_at: list[float] = []
-
-    async def exchange_code(self, code: str, *, code_verifier: str | None = None) -> str:
-        raise AssertionError("the device flow never exchanges a code")
 
     async def request_device_code(self, *, scopes: Sequence[str] = DEFAULT_SCOPES) -> GithubDeviceCode:
         raise AssertionError("the test hands the device code in")
@@ -422,9 +424,6 @@ class _ScriptedDevice:
         if isinstance(answer, GithubOAuth2Error):
             raise answer
         return answer
-
-    async def fetch_profile(self, access_token: str) -> GithubProfile:
-        raise AssertionError("not reached")
 
     async def sleep(self, seconds: float) -> None:
         self.sleeps.append(seconds)
@@ -442,6 +441,16 @@ def _device(*, expires_in: int = 900, interval: int = 5) -> GithubDeviceCode:
         expires_in=expires_in,
         interval=interval,
     )
+
+
+def test_the_http_client_implements_both_protocols_and_the_redirect_one_stays_narrow() -> None:
+    """A redirect-only implementer is not made to grow device-flow methods."""
+    redirect_members = {name for name in vars(GithubOAuth2Client) if not name.startswith("_")}
+    device_members = {name for name in vars(GithubDeviceFlowClient) if not name.startswith("_")}
+    assert redirect_members == {"exchange_code", "fetch_profile"}
+    assert device_members == {"request_device_code", "poll_device_token"}
+    client = _device_client(lambda request: httpx.Response(500))
+    assert all(callable(getattr(client, name)) for name in redirect_members | device_members)
 
 
 async def test_waiting_polls_at_the_interval_until_the_person_approves() -> None:

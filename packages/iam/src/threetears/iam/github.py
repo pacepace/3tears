@@ -68,6 +68,7 @@ __all__ = [
     "GithubAccessDeniedError",
     "GithubDeviceCode",
     "GithubDeviceCodeExpiredError",
+    "GithubDeviceFlowClient",
     "GithubDeviceFlowDisabledError",
     "GithubDeviceFlowError",
     "GithubOAuth2Client",
@@ -273,11 +274,25 @@ def authorize_url(
 
 
 class GithubOAuth2Client(Protocol):
-    """The GitHub HTTP seam: code to token, device code to token, token to profile."""
+    """The GitHub HTTP seam for the redirect flow: code to token, token to profile."""
 
     async def exchange_code(self, code: str, *, code_verifier: str | None = None) -> str:
         """Exchange an authorization ``code`` (and its PKCE verifier, if any) for an access token."""
         ...
+
+    async def fetch_profile(self, access_token: str) -> GithubProfile:
+        """Fetch the authenticated account's profile."""
+        ...
+
+
+class GithubDeviceFlowClient(Protocol):
+    """The GitHub HTTP seam for the device flow (RFC 8628): device code to token.
+
+    Separate from :class:`GithubOAuth2Client` so an implementation of the redirect flow is not
+    made to grow device-flow methods it never serves. :class:`HttpxGithubOAuth2Client`
+    implements both; the token this flow yields goes to
+    :meth:`GithubOAuth2Client.fetch_profile`.
+    """
 
     async def request_device_code(self, *, scopes: Sequence[str] = DEFAULT_SCOPES) -> GithubDeviceCode:
         """Start the device flow: a device code to poll with, and a user code to show."""
@@ -287,13 +302,9 @@ class GithubOAuth2Client(Protocol):
         """Poll once for the device flow's token."""
         ...
 
-    async def fetch_profile(self, access_token: str) -> GithubProfile:
-        """Fetch the authenticated account's profile."""
-        ...
-
 
 class HttpxGithubOAuth2Client:
-    """The real :class:`GithubOAuth2Client`, over an injected ``httpx.AsyncClient``.
+    """The real :class:`GithubOAuth2Client` and :class:`GithubDeviceFlowClient`, over an injected ``httpx.AsyncClient``.
 
     The client is supplied rather than constructed here so its timeouts, connection limits,
     and lifecycle stay with the application that owns them -- and so a test can pass an
@@ -504,7 +515,7 @@ class HttpxGithubOAuth2Client:
 
 
 async def wait_for_device_token(
-    client: GithubOAuth2Client,
+    client: GithubDeviceFlowClient,
     device: GithubDeviceCode,
     *,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -517,9 +528,9 @@ async def wait_for_device_token(
     names if that is longer. Stops once the next poll would land past
     :attr:`GithubDeviceCode.expires_in`, counted from the call.
 
-    :param client: the GitHub client
-    :ptype client: GithubOAuth2Client
-    :param device: what :meth:`GithubOAuth2Client.request_device_code` returned
+    :param client: the GitHub device-flow client
+    :ptype client: GithubDeviceFlowClient
+    :param device: what :meth:`GithubDeviceFlowClient.request_device_code` returned
     :ptype device: GithubDeviceCode
     :param sleep: the wait between polls; injectable so a test does not wait
     :ptype sleep: Callable[[float], Awaitable[None]]

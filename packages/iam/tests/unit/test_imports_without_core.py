@@ -15,6 +15,8 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import pytest
+
 #: refuses what the base install leaves out, as an install without it would
 BLOCK_CORE = """
 import importlib.abc, sys
@@ -220,3 +222,97 @@ def test_decryption_error_with_core_is_core_s_own_class() -> None:
 
     assert totp.DecryptionError is DecryptionError
     assert "DecryptionError" in dir(totp)
+
+
+def _refusing(module: str, *, reported_as: str | None = None) -> str:
+    """A program prefix whose import hook refuses *module*, reporting it as *reported_as*.
+
+    :param module: the module whose import fails
+    :ptype module: str
+    :param reported_as: the name the ``ModuleNotFoundError`` carries, when not *module* itself
+    :ptype reported_as: str | None
+    :return: the program prefix
+    :rtype: str
+    """
+    name = reported_as or module
+    return (
+        "import importlib.abc, sys\n"
+        "class _Refuse(importlib.abc.MetaPathFinder):\n"
+        "    def find_spec(self, fullname, path=None, target=None):\n"
+        f"        if fullname == {module!r} or fullname.startswith({module + '.'!r}):\n"
+        f"            raise ModuleNotFoundError(f'No module named {{fullname!r}}', name={name!r})\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, _Refuse())\n"
+    )
+
+
+def test_saml_without_defusedxml_names_the_saml_extra() -> None:
+    code = _refusing("defusedxml") + (
+        "try:\n"
+        "    import threetears.iam.saml\n"
+        "except ModuleNotFoundError as exc:\n"
+        "    raise AssertionError(f'a bare ModuleNotFoundError, not the named extra: {exc}')\n"
+        "except ImportError as exc:\n"
+        '    assert "3tears-iam[saml]" in str(exc), str(exc)\n'
+        "    assert exc.__cause__ is not None and exc.__cause__.name == 'defusedxml', exc.__cause__\n"
+        "else:\n"
+        "    raise AssertionError('saml imported with defusedxml refused')\n"
+        "print('refused')\n"
+    )
+    result = _run(code)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "refused"
+
+
+def test_a_module_missing_inside_an_installed_defusedxml_is_not_relabelled_as_the_extra() -> None:
+    """defusedxml present, its expat import gone: a broken environment, not a missing extra."""
+    code = _refusing("xml.parsers.expat") + (
+        "try:\n"
+        "    import threetears.iam.saml\n"
+        "except ModuleNotFoundError as exc:\n"
+        "    assert exc.name == 'xml.parsers.expat', exc.name\n"
+        "    assert '3tears-iam[saml]' not in str(exc), str(exc)\n"
+        "else:\n"
+        "    raise AssertionError('imported with expat refused; the test no longer exercises defusedxml')\n"
+        "print('passed through')\n"
+    )
+    result = _run(code)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "passed through"
+
+
+def test_a_missing_module_that_only_shares_core_s_prefix_is_not_relabelled() -> None:
+    """``threetears.corex`` is not ``threetears.core``: the guard matches the package, not the string."""
+    code = _refusing("threetears.core.security.freshness", reported_as="threetears.corex") + (
+        "try:\n"
+        "    import threetears.iam.dpop\n"
+        "except ModuleNotFoundError as exc:\n"
+        "    assert exc.name == 'threetears.corex', exc.name\n"
+        "    assert '3tears-iam[core]' not in str(exc), str(exc)\n"
+        "else:\n"
+        "    raise AssertionError('dpop imported with its freshness import refused')\n"
+        "print('passed through')\n"
+    )
+    result = _run(code)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "passed through"
+
+
+def test_totp_does_not_list_decryption_error_where_reaching_it_would_raise() -> None:
+    code = BLOCK_CORE + (
+        "from threetears.iam import totp\n"
+        "assert 'DecryptionError' not in dir(totp), dir(totp)\n"
+        "assert 'seal_seed' in dir(totp)\n"
+        "print('listed')\n"
+    )
+    result = _run(code)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "listed"
+
+
+def test_an_unknown_totp_attribute_is_an_attribute_error() -> None:
+    from threetears.iam import totp
+
+    with pytest.raises(AttributeError, match="no_such_name"):
+        totp.no_such_name  # noqa: B018
+    assert not hasattr(totp, "no_such_name")

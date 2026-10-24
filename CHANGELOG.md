@@ -27,8 +27,9 @@ Two new extras:
 installed `defusedxml` is re-raised as it came.
 
 **Breaking:** an app that uses `dpop`, `CollectionAttemptLimiter` or TOTP sealing must depend on
-`3tears-iam[core]`, plus `[nats]` for the KV stores, so `3tears-iam[core,nats]` restores the old
-install. Without `core`, importing `dpop` or `stores.attempt_limiter`, calling `seal_seed` or
+`3tears-iam[core]`, plus `[nats]` for the KV stores. `3tears-iam[core,nats]` restores the old
+install except for agent-acl: an app that reached `threetears.agent.acl` through iam declares
+`3tears-agent-acl` itself. Without `core`, importing `dpop` or `stores.attempt_limiter`, calling `seal_seed` or
 `unseal_seed`, or reaching `totp.DecryptionError` raises `ImportError` naming `3tears-iam[core]`. An
 app that imported `threetears.core`, `threetears.nats` or `threetears.agent.acl` while depending only
 on `3tears-iam` must now declare them itself. Every import path is unchanged. This ships in a minor
@@ -41,7 +42,8 @@ release.
 `user_code`, `verification_uri`, `expires_in`, `interval`). `wait_for_device_token(client, device)`
 polls at the interval, adds five seconds on each `slow_down` (or takes GitHub's longer interval),
 stops once the next poll would pass `expires_in`, and returns the access token for `fetch_profile`.
-`poll_device_token` is the single poll, answering `DeviceToken` or `DevicePending`. A terminal answer
+`poll_device_token` is the single poll, answering `DeviceToken` or `DevicePending`. The two device
+methods form their own Protocol, `GithubDeviceFlowClient`. A terminal answer
 raises `GithubDeviceCodeExpiredError`, `GithubAccessDeniedError` or `GithubDeviceFlowDisabledError`
 (the OAuth app needs "Enable Device Flow"), and any other `error` raises their base,
 `GithubDeviceFlowError`, a `GithubOAuth2Error`. `HttpxGithubOAuth2Client`'s `client_secret` and
@@ -52,9 +54,11 @@ raises `GithubDeviceCodeExpiredError`, `GithubAccessDeniedError` or `GithubDevic
 `code_challenge_method=S256`, and `exchange_code(code, code_verifier=)` sends the matching verifier.
 Both are recommended, and optional only because GitHub Enterprise Server 3.21 does not accept them.
 
-**Breaking (iam):** `GithubOAuth2Client` gains `request_device_code` and `poll_device_token`, and its
-`exchange_code` takes a keyword `code_verifier`. An implementation of the Protocol outside this package
-adds them.
+**Breaking (iam):** `GithubOAuth2Client`'s `exchange_code` takes a keyword `code_verifier`, so an
+implementation of that Protocol outside this package adds the parameter. The device flow is a separate
+Protocol, `GithubDeviceFlowClient` (`request_device_code`, `poll_device_token`), which
+`HttpxGithubOAuth2Client` implements and `wait_for_device_token` takes, so a redirect-only
+implementation grows nothing else.
 
 ### iam: the in-memory stores are bounded, and supported for a single-process service
 
@@ -66,6 +70,10 @@ Redemption and the injectable clock are unchanged. The stores are now supported 
 service with one event loop. State is lost on restart, and the stores are not thread-safe.
 
 ### access-contracts: a new dependency-free leaf for the vocabulary iam and agent-acl share
+
+**Release step:** `3tears-access-contracts` is a new PyPI project, so it needs a pending trusted
+publisher on PyPI before the release that carries it (docs/releasing.md). iam and agent-acl
+hard-depend on it, so without it they are uninstallable at the new version.
 
 **Added:** `3tears-access-contracts` (`threetears.access.contracts`) depends on nothing and holds
 `ImpersonationCategory`, the six sensitive-action categories that agent-acl's impersonation deny-list

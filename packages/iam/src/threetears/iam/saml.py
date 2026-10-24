@@ -37,7 +37,7 @@ from threetears.observe import get_logger
 try:
     from defusedxml import DefusedXmlException
     from defusedxml import ElementTree as DefusedElementTree
-except ModuleNotFoundError as _exc:  # pragma: no cover - exercised by installing without the extra
+except ModuleNotFoundError as _exc:
     # only defusedxml's own absence is the missing extra; a fault inside an installed copy
     # is re-raised as it came, not relabelled as an install instruction that would not fix it
     if _exc.name != "defusedxml" and not (_exc.name or "").startswith("defusedxml."):

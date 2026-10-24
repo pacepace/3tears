@@ -32,6 +32,7 @@ again -- and without the extra they raise an :class:`ImportError` naming it.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import secrets
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, NoReturn
@@ -255,9 +256,29 @@ def __getattr__(name: str) -> object:
 
 
 def __dir__() -> list[str]:
-    """The module's names, ``DecryptionError`` included though it is not loaded yet.
+    """The module's names, with ``DecryptionError`` when core is installed to resolve it.
+
+    Left out on the base install, where reaching it raises :class:`ImportError`: a name
+    ``dir()`` lists is one introspection (``hasattr``, ``inspect``) will try to read, and
+    ``hasattr`` only expects :class:`AttributeError`.
 
     :return: sorted attribute names
     :rtype: list[str]
     """
-    return sorted(set(globals()) | {"DecryptionError"})
+    names = set(globals())
+    if _core_is_installed():
+        names.add("DecryptionError")
+    return sorted(names)
+
+
+def _core_is_installed() -> bool:
+    """Whether ``threetears.core`` can be found, without importing it.
+
+    :return: whether core is installed
+    :rtype: bool
+    """
+    try:
+        return importlib.util.find_spec("threetears.core") is not None
+    except ModuleNotFoundError:
+        # an import hook that refuses core answers by raising rather than with None
+        return False
