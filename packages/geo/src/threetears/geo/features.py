@@ -43,6 +43,7 @@ from typing import Any, ClassVar
 
 from threetears.core.collections.base import BaseCollection
 from threetears.core.entities.base import BaseEntity
+from threetears.core.serialization import deserialize_from_json, serialize_to_json
 from threetears.geo.scope import check_cache_scope
 from threetears.geo.tiles import BoundingBox, TileId, bounds_to_tile_range, tile_bounds
 from threetears.observe import contain, get_logger, traced
@@ -587,13 +588,9 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         return None
 
     def serialize(self, data: dict[str, Any]) -> bytes:
-        from threetears.core.serialization import serialize_to_json
-
         return serialize_to_json(data)
 
     def deserialize(self, data: bytes) -> dict[str, Any]:
-        from threetears.core.serialization import deserialize_from_json
-
         # no declared field types: a cached feature row's columns are whatever
         # the datasource's layer declaration selected, which varies per layer
         # and is not known to this class. values round-trip as their JSON

@@ -8,7 +8,7 @@ packages (bumped in lock-step).
 
 ## v0.78.0 -- 2026-10-24
 
-### core, nats, observe, datasources: nothing is imported inside a function on a serving path
+### every package: nothing is imported inside a function on a serving path
 
 **Changed:** Owner ruling, 2026-10-24: lazy imports are banned in serving code. An import inside a function ran
 the first time it was called, mid-request, holding the event loop (a first collection read loaded OpenTelemetry's
@@ -22,10 +22,27 @@ re-export every name, and the lock logs under its old logger name), the write-ma
 `threetears.core.ddl.write_marks` (re-exported by `threetears.core.collections.write_marks`), and
 `table_named_by_class`, `tables_with_write_generation` and `note_generation_class` in
 `threetears.core.collections.generation` (`threetears.core.collections.base` re-exports the first two).
-`schema_backed.require_pgvector` is public (was `_require_pgvector`). `tests/enforcement/test_no_function_level_imports.py`
-holds it: a function-level import in those packages fails unless `_function_level_import_exemptions.txt` gives
-the reason it runs on no serving path (the testing extra's fixtures; telemetry start-up and shutdown in
-`observe.setup`).
+`schema_backed.require_pgvector` is public (was `_require_pgvector`); pgvector is probed once, in
+`backends.schema_sql.PGVECTOR_TYPES`; `scoped_snapshot` imports the snapshot extra under `try/except ImportError` and
+a snapshot or chunk raises naming it. `tests/enforcement/test_no_function_level_imports.py` holds every package of
+the workspace to it: a function-level import fails unless `_function_level_import_exemptions.txt` gives the reason it
+runs on no serving path (the enforcement package; the testing extra's fixtures; telemetry start-up and shutdown in
+`observe.setup`; the evals FastMCP mount at start-up; five `evals.quick` sites that build a quick eval's provider
+client, which `test_providers_boundary` keeps out of `quick`'s import).
+
+**Changed:** The same move in every other package. Cycles were broken by moving the shared piece down, with the old
+import paths re-exporting it: models' `CircuitOpenError` lives in `errors`, and the structured-output errors and
+`ensure_valid_json_schema` in `providers/_structured_output_schema.py`; agent-workspace's `register_tool_builder` lives
+in `tool_registry` (new, with `registered_tool_builders()`); scrape's operator relay and token parsing in
+`operator_relay` (new); evals' report blocks in `analysis/report/blocks.py`, the carried mechanism measures in
+`kernel/carried_measures.py` (`per_result_measure_names` is public), `job_resume` in `ops/resume.py`, the proposal
+contract in `gen/proposal_contract.py` (`PROPOSAL_RESPONSE_FORMAT` is public), `RUN_LOST_STATUS` in
+`kernel/job_leases`, and `FloorState`/`FloorStatus` in `analysis/report/decision`. Optional extras are imported at the
+top under `try/except ImportError` and name themselves when needed: models' claude-cli and voyageai, search's
+extract, mcp's grants, agent-tools' pdf/docx/xlsx/ocr/vision, scrape's hitl, and prometheus wherever it is optional.
+What loads at import moves accordingly: `import threetears.models` loads every installed provider backend and the
+Claude SDK; with the grants extra, `import threetears.mcp` loads the grant store's stack; agent-tools imports PyMuPDF
+as `pymupdf` (its `fitz` alias prints to stdout).
 
 **Changed:** `threetears.datasources.drivers.factory` imports every driver module with itself, so building a
 driver loads nothing; this replaces DS-09-09's contract that importing the package roots loads no driver. With

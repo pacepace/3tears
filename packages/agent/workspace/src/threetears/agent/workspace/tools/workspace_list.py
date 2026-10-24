@@ -35,7 +35,7 @@ from threetears.agent.tools.namespace_discovery_client import (
     DiscoveryClientError,
     NamespaceDiscoveryClient,
 )
-from threetears.agent.workspace.factory import register_tool_builder
+from threetears.agent.workspace.tool_registry import register_tool_builder
 
 __all__ = [
     "WorkspaceListTool",
@@ -187,7 +187,7 @@ def _build(**kwargs: Any) -> WorkspaceListTool:
 
     consumes ``nats_client``, ``namespace``, and ``agent_id`` to build
     a :class:`NamespaceDiscoveryClient`; ignores the rest. registered
-    with :mod:`threetears.agent.workspace.factory` on import so
+    with :mod:`threetears.agent.workspace.tool_registry` on import so
     :func:`build_workspace_tools` emits this tool.
 
     :param kwargs: full factory dependency bundle

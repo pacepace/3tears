@@ -104,7 +104,7 @@ class TestListToolNamespacesForActor:
         pool.fetch.return_value = []
         coll = _make_collection(NamespaceCollection, l3_pool=pool)
         with patch(
-            "threetears.agent.acl.evaluator.evaluate_decision",
+            "threetears.agent.acl.collections.evaluate_decision",
             new=AsyncMock(return_value=True),
         ):
             await coll.list_tool_namespaces_for_actor(
@@ -130,7 +130,7 @@ class TestListToolNamespacesForActor:
             return ctx.namespace.id == permitted_row["namespace_id"]
 
         with patch(
-            "threetears.agent.acl.evaluator.evaluate_decision",
+            "threetears.agent.acl.collections.evaluate_decision",
             new=AsyncMock(side_effect=_decisions),
         ):
             result = await coll.list_tool_namespaces_for_actor(
@@ -148,7 +148,7 @@ class TestListToolNamespacesForActor:
         coll = _make_collection(NamespaceCollection, l3_pool=pool)
         decide = AsyncMock(return_value=True)
         with patch(
-            "threetears.agent.acl.evaluator.evaluate_decision",
+            "threetears.agent.acl.collections.evaluate_decision",
             new=decide,
         ):
             result = await coll.list_tool_namespaces_for_actor(
@@ -181,7 +181,7 @@ class TestListSkillEligibleToolNamespaces:
         pool.fetch.return_value = []
         coll = _make_collection(NamespaceCollection, l3_pool=pool)
         with patch(
-            "threetears.agent.acl.evaluator.evaluate_decision",
+            "threetears.agent.acl.collections.evaluate_decision",
             new=AsyncMock(return_value=True),
         ):
             await coll.list_skill_eligible_tool_namespaces(
@@ -217,7 +217,7 @@ class TestListSkillEligibleToolNamespaces:
             return ctx.namespace.id == permitted_row["namespace_id"]
 
         with patch(
-            "threetears.agent.acl.evaluator.evaluate_decision",
+            "threetears.agent.acl.collections.evaluate_decision",
             new=AsyncMock(side_effect=_decisions),
         ):
             result = await coll.list_skill_eligible_tool_namespaces(
@@ -247,7 +247,7 @@ class TestNoCallerInputReachesTheEligibilitySql:
         coll = _make_collection(NamespaceCollection, l3_pool=pool)
         query = getattr(coll, method_name)
         with patch(
-            "threetears.agent.acl.evaluator.evaluate_decision",
+            "threetears.agent.acl.collections.evaluate_decision",
             new=AsyncMock(return_value=True),
         ):
             for _ in range(2):

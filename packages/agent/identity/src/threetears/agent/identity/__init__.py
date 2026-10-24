@@ -10,6 +10,7 @@ from __future__ import annotations
 # Version derived from pyproject.toml so the metadata is the single source
 # of truth. The except guard handles running from a source tree without an
 # installed distribution (reports ``unknown`` rather than crashing).
+from importlib import import_module
 from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _version
 from typing import TYPE_CHECKING
@@ -162,8 +163,6 @@ def __getattr__(name: str) -> object:
     entry = _LAZY.get(name)
     if entry is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    from importlib import import_module
-
     module_name, attr = entry
     value: object = getattr(import_module(module_name), attr)
     globals()[name] = value

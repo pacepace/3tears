@@ -33,22 +33,20 @@ this whole layer exists to avoid — the slot is shared, the word is not.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterator, Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
-from functools import cache
-from typing import TYPE_CHECKING, Annotated, Any, Literal, get_args, get_origin
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, TypeAdapter, computed_field, field_validator, model_validator
+from pydantic import Field, TypeAdapter, computed_field, field_validator, model_validator
 
 from threetears.evals.schema.campaign_upgrade import aware_instant
 from threetears.evals.schema.base import CoreShapeModel, EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key
-from threetears.evals.kernel.covariates import COVARIATE_KEYS
+from threetears.evals.kernel.carried_measures import mechanism_measure_names, per_result_measure_names
 from threetears.evals.kernel.host.bars import Bar, BarRegistrationError, contradicts_descriptor, no_better_end
 from threetears.evals.schema.values import Scale, SweepableValue
 from threetears.evals.kernel.metrics import (
-    DERIVED_PER_RESULT_MEASURES,
     FRONTIER_RANKING_MEASURE,
     METRIC_DESCRIPTORS,
     MeritAxis,
@@ -65,7 +63,6 @@ from threetears.evals.schema.models import (
     RESERVED_DIM_IDS,
     SCALES,
     ApparatusProvenance,
-    EvalResult,
     EvalTemplate,
     RubricScale,
     utc_now_iso,
@@ -1138,10 +1135,6 @@ BarNameKind = Literal["measure", "judged", "goal_state"]
 #: ``not_carried`` — no result can carry a value under it as any of the three kinds.
 BarNameRefusal = Literal["not_numeric", "no_better_end", "not_carried"]
 
-#: The covariate keys a result can carry — every key ``derive_covariates`` writes. A covariate is a
-#: per-result observation keyed by a described name, so a bar may name one.
-_COVARIATE_MEASURES: frozenset[str] = COVARIATE_KEYS
-
 
 @dataclass(frozen=True)
 class BarName:
@@ -1178,116 +1171,6 @@ class UnreadableBarName:
     reason: str
 
 
-def _carriers_of(annotation: object) -> Iterator[type[BaseModel]]:
-    """Yield every pydantic model inside a field annotation, through ``Optional`` and collections."""
-    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-        yield annotation
-    for argument in get_args(annotation):
-        yield from _carriers_of(argument)
-
-
-@cache
-def _carried_field_names() -> frozenset[str]:
-    """Every name a result's own fields can carry a measure under — its scalars and its carriers' fields.
-
-    The type-level mirror of the bundle's measure walk, which reads a result's top-level scalars and
-    the scalar leaves of every sub-model it holds, single or listed. Derived from ``EvalResult`` by
-    reflection so a carrier the result gains is counted with no edit here. Cached because the
-    answer is a property of the model class and never of a run.
-    """
-    names: set[str] = set()
-    for field_name, field in EvalResult.model_fields.items():
-        carriers = list(_carriers_of(field.annotation))
-        if not carriers:
-            names.add(field_name)
-        for carrier in carriers:
-            names.update(carrier.model_fields)
-    return frozenset(names)
-
-
-def _host_measure_names(measures: MeasureRegistry) -> frozenset[str]:
-    """The names only the host declares — each one a key its kinds may land on ``host_measures``.
-
-    The one open door of the per-result set, and the gate is honest about what it cannot see
-    through it: a host may declare a run-level aggregate beside its per-cell measures, and nothing
-    in a descriptor tells the two apart, so every name the host declares is admitted. A bar on one
-    its kind never emits is admitted here and adjudicated as carried by no result.
-
-    :param measures: The host's measure registry.
-    :ptype measures: MeasureRegistry
-    """
-    names = measures.names
-    # A host catalogue may re-declare the engine's core, and the core wins that tie wherever a name
-    # is described. A re-declared core name is carried where the core carries it or nowhere, so it
-    # opens no door here.
-    return frozenset(names) - METRIC_DESCRIPTORS.keys()
-
-
-def _per_result_measure_names(measures: MeasureRegistry) -> frozenset[str]:
-    """Every described name a single result can carry a code-graded value under.
-
-    Four sources, which are exactly the four the bundle's measure walk reads: the result's own
-    fields, the measures it implies, its covariates, and the host's own measures. A core
-    measure outside them — a run-summary statistic such as ``mean_total_ms`` or ``p95_total_ms``,
-    a report-level accuracy — is described and never carried by any one result, so a bar on it is
-    never read.
-
-    :param measures: The host's measure registry.
-    :ptype measures: MeasureRegistry
-    """
-    return _carried_field_names() | DERIVED_PER_RESULT_MEASURES | _COVARIATE_MEASURES | _host_measure_names(measures)
-
-
-def _listed(annotation: object) -> bool:
-    """Whether a field annotation holds MANY carriers (one observation per element), through ``Optional``.
-
-    A map counts as a list: ``judge_cut_short`` holds one record per rubric dimension, so a result carries
-    as many ``reasoning_tokens`` under it as it has cut-short dimensions, and no one of them is the result's.
-    """
-    if get_origin(annotation) in (list, tuple, dict):
-        return True
-    return any(_listed(argument) for argument in get_args(annotation) if argument is not type(None))
-
-
-@cache
-def _single_carried_field_names() -> frozenset[str]:
-    """Every name a result's own fields carry ONCE — its scalars and the fields of its single sub-models.
-
-    :func:`_carried_field_names` without the listed carriers: a usage row per role or a delivery per
-    async call carries its fields once per element, so a result holds several values under such a name
-    and no one of them is the result's. Derived by reflection, cached, for the same reasons.
-    """
-    names: set[str] = set()
-    for field_name, field in EvalResult.model_fields.items():
-        carriers = list(_carriers_of(field.annotation))
-        if not carriers:
-            names.add(field_name)
-        elif not _listed(field.annotation):
-            for carrier in carriers:
-                names.update(carrier.model_fields)
-    return frozenset(names)
-
-
-def mechanism_measure_names(measures: MeasureRegistry) -> frozenset[str]:
-    """Every described name one result carries a single value under — what a lever may declare it acts on.
-
-    The per-result set :func:`_per_result_measure_names` reads, narrowed to the values a result holds
-    once: its own scalars and single sub-models, the measures it implies, its covariates and the host's
-    own measures. A field of a listed carrier is left out — ``reasoning_tokens`` is recorded per usage
-    row, one per role — because comparing a lever's levels needs one value per result, and pooling one
-    role's count with another's describes no mechanism.
-
-    :param measures: The host's measure registry.
-    :ptype measures: MeasureRegistry
-    """
-    return (
-        _single_carried_field_names()
-        | DERIVED_PER_RESULT_MEASURES
-        | _COVARIATE_MEASURES
-        | _host_measure_names(measures)
-    )
-
-
 def resolve_bar_name(
     name: str,
     *,
@@ -1305,7 +1188,7 @@ def resolve_bar_name(
 
     Resolution order, most specific first, so a name two kinds share is read one way everywhere:
 
-    1. A described measure a result can carry (:func:`_per_result_measure_names`). Admitted when it
+    1. A described measure a result can carry (:func:`~threetears.evals.kernel.carried_measures.per_result_measure_names`). Admitted when it
        is code-graded (:func:`~threetears.evals.kernel.metrics.is_code_graded`), numeric and declares
        a better end. A non-numeric one (categorical, boolean) is refused as ``not_numeric`` and a
        directionless one as ``no_better_end``.
@@ -1337,7 +1220,7 @@ def resolve_bar_name(
     if (check := goal_check_of(name)) is not None:
         name = check
     described = {descriptor.name: descriptor for descriptor in list_metrics(measures)}
-    carried = _per_result_measure_names(measures)
+    carried = per_result_measure_names(measures)
     descriptor = described.get(name)
     if descriptor is not None and name in carried and is_code_graded(descriptor, measures):
         if descriptor.data_type != "numeric":

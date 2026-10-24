@@ -3,7 +3,8 @@
 The grant store (``LocalGrantAuthorizer`` over ``mcp_tool_grants``, kept coherent across pods
 by an epoch broadcast) is the ``grants`` extra. It is the only part of the package that needs
 core, epoch, nats, sqlalchemy and asyncpg, so a host that brings its own ``Authorizer`` must be
-able to serve MCP with none of them installed -- and must not load them when they are.
+able to serve MCP with none of them installed. Where the extra is installed they load with the
+package, at its top (owner ruling, 2026-10-24: no lazy imports in serving code).
 
 Each check runs in a fresh interpreter with the extra's modules refused at import, as an install
 without the extra refuses them.

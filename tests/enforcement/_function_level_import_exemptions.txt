@@ -8,3 +8,10 @@ packages/observe/src/threetears/observe/setup.py::_init_log_export  # telemetry 
 packages/observe/src/threetears/observe/setup.py::_BoundedFlush.__init__  # telemetry flush at shutdown or an explicit force flush, only after init_telemetry loaded the SDK
 packages/observe/src/threetears/observe/setup.py::force_flush_telemetry  # an explicit flush of telemetry the process configured; no serving path calls it
 packages/observe/src/threetears/observe/setup.py::shutdown_telemetry  # telemetry shutdown, once at process stop, after it has stopped serving
+packages/enforcement/src/threetears/enforcement/*  # the enforcement package: gates that run in test suites and CI over source trees, never inside a serving process
+packages/evals/src/threetears/evals/transports/fastmcp/__init__.py::mount_fastmcp  # builds the FastMCP server once at process start-up; test_importing_the_transport_leaves_fastmcps_server_stack_unloaded pins the server stack unloaded on import
+packages/evals/src/threetears/evals/quick/judged.py::judge_client  # builds a quick eval's judge client once per run; test_providers_boundary pins that importing quick loads no providers client
+packages/evals/src/threetears/evals/quick/toml_file.py::_prompt_runner  # builds a quick eval's prompt runner once per run; test_providers_boundary pins that importing quick loads no providers client
+packages/evals/src/threetears/evals/quick/toml_file.py::_graders  # builds a quick eval's graders once per run; test_providers_boundary pins that importing quick loads no providers client
+packages/evals/src/threetears/evals/quick/one_call.py::_describe_failure  # describes a failed candidate inside an eval job, not a request; test_providers_boundary pins that importing quick loads no client
+packages/evals/src/threetears/evals/quick/one_call.py::_owner_of  # names a failed candidate's owner inside an eval job, not a request; test_providers_boundary pins that importing quick loads no client

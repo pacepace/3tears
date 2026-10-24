@@ -92,6 +92,7 @@ from threetears.channels.mail import (
     TokenBucketPacer,
     send_batch,
 )
+from threetears.observe import get_logger
 
 __all__ = [
     "PRESENCE_L1_METADATA",
@@ -169,8 +170,6 @@ def _log_missing_adapter(name: str, extra: str, exc: ImportError) -> None:
     :return: nothing
     :rtype: None
     """
-    from threetears.observe import get_logger
-
     get_logger(__name__).debug(
         "optional channel adapter not loaded",
         extra={"extra_data": {"adapter": name, "packaging_extra": extra, "error": str(exc)}},

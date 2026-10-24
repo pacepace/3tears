@@ -167,6 +167,44 @@ class ModelRefusalError(ModelProviderError):
         super().__init__(detail, provider=provider, reason=reason, status=status)
 
 
+class CircuitOpenError(Exception):
+    """raised when circuit breaker is open and request should be rejected.
+
+    defined here, beside the errors that classify it, and re-exported by
+    :mod:`threetears.models.circuit_breaker`, the module that raises it.
+
+    :param provider_name: name of provider whose circuit is open
+    :ptype provider_name: str
+    :param remaining_seconds: seconds until recovery timeout expires
+    :ptype remaining_seconds: float
+    :param credential_scoped: whether the open circuit is ONE credential's on the provider
+        rather than the provider's own -- a revoked key, not an outage. the credential is
+        never named
+    :ptype credential_scoped: bool
+    :param model_name: the one model whose circuit is open for its rate limit, ``None`` when
+        the provider's is
+    :ptype model_name: str | None
+    """
+
+    def __init__(
+        self,
+        provider_name: str,
+        remaining_seconds: float,
+        *,
+        credential_scoped: bool = False,
+        model_name: str | None = None,
+    ) -> None:
+        self.provider_name = provider_name
+        self.remaining_seconds = remaining_seconds
+        self.credential_scoped = credential_scoped
+        self.model_name = model_name
+        scope = " (one credential on it; the provider itself may be healthy)" if credential_scoped else ""
+        target = (
+            f"{model_name} on {provider_name} (rate-limited; its other models are not)" if model_name else provider_name
+        )
+        super().__init__(f"Circuit open for {target}{scope}, retry in {remaining_seconds:.0f}s")
+
+
 #: The packages a model call's own errors come from.
 _PROVIDER_PACKAGES = frozenset({"anthropic", "openai", "openrouter", "httpx", "httpcore"})
 
@@ -385,7 +423,7 @@ def is_provider_error(exc: BaseException) -> bool:
     A provider SDK's or its HTTP client's exception, a :class:`ModelCallTimeout`,
     a failure the provider reported as data (:class:`ModelProviderError`, a rate
     limit included), the circuit breaker refusing a provider that keeps failing
-    (:class:`~threetears.models.circuit_breaker.CircuitOpenError`), or the
+    (:class:`CircuitOpenError`), or the
     OpenRouter error the chat model raises as a ``ValueError``.
 
     :param exc: what the call raised
@@ -393,8 +431,6 @@ def is_provider_error(exc: BaseException) -> bool:
     :return: ``True`` for a provider failure
     :rtype: bool
     """
-    from threetears.models.circuit_breaker import CircuitOpenError
-
     package = (type(exc).__module__ or "").split(".", 1)[0]
     return (
         package in _PROVIDER_PACKAGES

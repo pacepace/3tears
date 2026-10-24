@@ -86,7 +86,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 from uuid import UUID
 
+from threetears.core.coordination import LockHeld, nats_distributed_lock
+from threetears.nats.errors import KvError
 from threetears.observe import contain, get_logger
+from uuid_utils import uuid7
 
 from threetears.scheduled_jobs.config import (
     DEFAULT_JOB_CONFIG,
@@ -208,11 +211,6 @@ async def scheduled_tick_job(
     :raises ValueError: when ``dispatch_routes`` is empty -- such a pump
         would scan nothing and silently do no work forever
     """
-    # local import to keep the lock module out of the engine's always-paid
-    # import cost (consumers without NATS skip this).
-    from threetears.core.coordination import LockHeld, nats_distributed_lock  # noqa: PLC0415
-    from threetears.nats.errors import KvError  # noqa: PLC0415
-
     routed_kinds = _validate_routes(dispatch_routes)
 
     try:
@@ -696,6 +694,4 @@ def _generate_fire_id() -> UUID:
     UUIDv7 keeps lexicographic ordering for "list fires since" cursor
     queries (the canonical fire-history read pattern).
     """
-    from uuid_utils import uuid7  # noqa: PLC0415
-
     return UUID(str(uuid7()))

@@ -9,7 +9,10 @@ extra's module under ``try/except ImportError`` there, and an import cycle is fi
 modules, not by deferring one side.
 
 **What it holds.** Every ``import`` and ``from ... import`` statement inside a function or method body
-(nested ones included) in ``core``, ``nats``, ``observe`` and ``datasources``. An import under ``if
+(nested ones included) in every package of the workspace (``packages/*/src``, ``packages/agent/*/src``), so a
+package added later is held the day it exists. A module that runs on no serving path -- the enforcement
+package, which runs in test suites and CI; the testing extra's fixtures; telemetry start-up -- is named in the
+ledger with why. An import under ``if
 TYPE_CHECKING:`` runs nowhere and is not counted. A module-level ``__getattr__`` resolving a name through
 ``importlib`` holds no import statement and is not counted.
 
@@ -28,8 +31,16 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LEDGER = _REPO_ROOT / "tests" / "enforcement" / "_function_level_import_exemptions.txt"
 _MIN_REASON = 30
 
-#: the packages a serving process runs on
-_SERVING = ("packages/core/src", "packages/nats/src", "packages/observe/src", "packages/datasources/src")
+#: every workspace member's source tree: the ruling covers all serving code, and a module that serves nothing
+#: is exempted in the ledger by name, with why
+_SERVING = tuple(
+    sorted(
+        path.relative_to(_REPO_ROOT).as_posix()
+        for pattern in ("packages/*/src", "packages/agent/*/src")
+        for path in _REPO_ROOT.glob(pattern)
+        if (path.parent / "pyproject.toml").is_file()
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -172,7 +183,8 @@ def _violations(repo_root: Path, roots: tuple[str, ...], ledger_path: Path) -> l
 class TestTheServingPackages:
     def test_the_scan_reads_the_serving_packages(self) -> None:
         files = [file for root in _SERVING for file in (_REPO_ROOT / root).rglob("*.py")]
-        assert len(files) > 200, f"only {len(files)} files under the serving packages"
+        assert len(_SERVING) > 25, _SERVING
+        assert len(files) > 1000, f"only {len(files)} files under the serving packages"
 
     def test_no_serving_module_imports_inside_a_function(self) -> None:
         problems = _violations(_REPO_ROOT, _SERVING, _LEDGER)
