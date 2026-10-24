@@ -6,6 +6,41 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### iam: the base install brings no core, NATS client or agent layer
+
+**Changed (iam):** `3tears-iam`'s hard dependencies no longer include `3tears[security]`,
+`3tears-nats[client]` or `3tears-agent-acl`. They put sqlalchemy, asyncpg, pyyaml, nats-py and nkeys
+into every install, though only three modules use core and none uses the NATS client at runtime. The
+base install covers passwords, OAuth2/OIDC, GitHub sign-in, PKCE, session tokens and rotation, TOTP
+seed generation and verification, backup codes, step-up, client-IP resolution, the store Protocols
+and the in-memory, NATS-KV and Postgres stores.
+
+Two new extras:
+
+- `core` (`3tears[security]`): `threetears.iam.dpop`, `threetears.iam.stores.attempt_limiter`
+  (`CollectionAttemptLimiter`), and TOTP's `seal_seed`, `unseal_seed` and `DecryptionError`, which
+  still use core's own `seal`/`open_secret`, so sealed seeds are unchanged.
+- `nats` (`3tears-nats[client]`): the client the `stores.nats_kv` stores run over.
+
+`dpop` takes its `ReplayGuard` from the caller and names the type for type checking only.
+`threetears.iam.saml` now names its extra only when `defusedxml` itself is missing. A fault inside an
+installed `defusedxml` is re-raised as it came.
+
+**Breaking:** an app that uses `dpop`, `CollectionAttemptLimiter` or TOTP sealing must depend on
+`3tears-iam[core]`, plus `[nats]` for the KV stores, so `3tears-iam[core,nats]` restores the old
+install. Without `core`, importing `dpop` or `stores.attempt_limiter`, calling `seal_seed` or
+`unseal_seed`, or reaching `totp.DecryptionError` raises `ImportError` naming `3tears-iam[core]`. An
+app that imported `threetears.core`, `threetears.nats` or `threetears.agent.acl` while depending only
+on `3tears-iam` must now declare them itself. Every import path is unchanged. This ships in a minor
+release.
+
+### access-contracts: a new dependency-free leaf for the vocabulary iam and agent-acl share
+
+**Added:** `3tears-access-contracts` (`threetears.access.contracts`) depends on nothing and holds
+`ImpersonationCategory`, the six sensitive-action categories that agent-acl's impersonation deny-list
+and iam's step-up check both enforce. `threetears.agent.acl.ImpersonationCategory` is the same class,
+so existing imports and identity comparisons hold. agent-acl now depends on the leaf.
+
 ## v0.77.1 -- 2026-10-23
 
 ### evals: a resumed run is not refused when its candidate kind or deadlines moved

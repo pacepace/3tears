@@ -76,12 +76,14 @@ it broke when saying so would build an oracle. Errors carry structural reasons
 only -- never token strings, key material, or credentials -- so they are safe to
 log at a verification boundary.
 
-**Builds on core rather than beside it.** `jwk_thumbprint`, `build_jwks`,
-`generate_signing_keypair`, `ReplayGuard`, and `seal`/`open_secret` already
-exist in `threetears.core.security`; the sensitive-action taxonomy already
-exists in `threetears.agent.acl`. This package imports all of them. Two of
-those had been copied by hand into a downstream repo precisely because no
-import path connected them -- this package is that path.
+**Builds on core rather than beside it.** `jwk_thumbprint`, the proof-freshness
+rules, `ReplayGuard`, `WindowedCounter` and `seal`/`open_secret` already exist in
+`threetears.core`; the three modules that need them use core's own, behind the
+`core` extra, so a consumer doing only sign-in and sessions installs no core. The
+sensitive-action taxonomy comes from [`access-contracts`](access-contracts.md), the
+dependency-free leaf agent-acl's deny-list reads too, rather than from agent-acl
+itself. Two of those had been copied by hand into a downstream repo precisely
+because no import path connected them -- this package is that path.
 
 ## When to adopt
 
@@ -105,7 +107,17 @@ principals, connection records, an admin surface -- that is an application built
 ## Install
 
 ```bash
-pip install 3tears-iam
+pip install 3tears-iam             # sign-in, OIDC, sessions, TOTP, client IPs, the store Protocols
+pip install '3tears-iam[core]'      # adds dpop, CollectionAttemptLimiter and TOTP seed sealing
+pip install '3tears-iam[nats]'      # adds the NATS client the stores.nats_kv stores run over
 pip install '3tears-iam[saml]'      # adds pysaml2; needs the xmlsec1 system binary
 pip install '3tears-iam[webauthn]'  # adds passkey support
 ```
+
+The base install brings no core, NATS client, agent layer or Postgres driver. Three
+modules build on core and need the `core` extra: `dpop`, `stores.attempt_limiter`
+(`CollectionAttemptLimiter`) and TOTP's `seal_seed`/`unseal_seed` (and
+`totp.DecryptionError`). Without it they raise an `ImportError` naming
+`3tears-iam[core]`. The rest of `totp` -- seed generation, verification and backup
+codes -- runs on the base install. A service using the shipped KV stores and
+`CollectionAttemptLimiter` installs `3tears-iam[core,nats]`.

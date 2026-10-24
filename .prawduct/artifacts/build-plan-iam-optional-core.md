@@ -47,7 +47,15 @@ API-growth enforcement goes red for the new leaf's names until the maintainer's 
 **Inferred:** the leaf lives at `packages/access-contracts/` beside `packages/media-contracts/`;
 `threetears.access` collides with nothing in the workspace.
 
-**Decisions made mid-build:** (appended while building)
+**Decisions made mid-build:**
+- [DECISION: the guard lives in one private module, `iam/_core_extra.py`, used by dpop,
+  attempt_limiter and totp | the `_digest.py` precedent for a package-private helper]
+- [DECISION: `CollectionRegistry` and `WindowState` are TYPE_CHECKING-only in attempt_limiter,
+  like `ReplayGuard` in dpop; only `WindowedCounter` is a guarded runtime import | the ruling's
+  dpop shape, applied to the other module]
+- [DECISION: the boundary walker counts imports inside module-level try/if/with/class bodies,
+  unlike search's top-level-only reader | a guarded import still runs at import time]
+- [DECISION: README "all 30 packages" made relational | it was already stale at 32]
 
 **Level:** High.
 
@@ -60,7 +68,7 @@ Not shared, so left: agent-acl's `INTERNAL_AUDIENCE`, the `act_reason` value `"i
 
 ## Chunks
 
-### 01 -- the contracts leaf  [ ]
+### 01 -- the contracts leaf  [x]
 `packages/access-contracts`: pyproject (hatchling, 0.77.1, no deps), `py.typed`, README, LICENSE,
 `ImpersonationCategory`; agent-acl declares the leaf and re-exports the same object. Wiring: root
 README table row and diagram, docs/adoption page and index row, root pyproject (exclude-newer,
@@ -69,7 +77,7 @@ test_imports_declared, agent-acl's recorded floor, uv.lock.
 Tests: leaf surface test (members and values pinned); agent-acl identity test
 (`threetears.agent.acl.ImpersonationCategory is threetears.access.contracts.ImpersonationCategory`).
 
-### 02 -- iam's optional core  [ ]
+### 02 -- iam's optional core  [x]
 pyproject: hard deps lose `3tears[security]`, `3tears-agent-acl`, `3tears-nats[client]`, gain
 `3tears-access-contracts`; extras `core = ["3tears[security]..."]`, `nats = ["3tears-nats[client]..."]`.
 `_core_extra.py` guard helper; dpop and stores.attempt_limiter guarded; ReplayGuard and
@@ -113,6 +121,6 @@ Product check: wheels built and installed bare into a throwaway venv; `nats`, `n
 
 ## Status
 
-- [ ] 01 the contracts leaf
-- [ ] 02 iam's optional core
+- [x] 01 the contracts leaf
+- [x] 02 iam's optional core
 - [ ] 03 device flow, memory stores, PKCE

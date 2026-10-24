@@ -827,9 +827,7 @@ name = "3tears-iam"
 version = "0.77.1"
 source = { editable = "packages/iam" }
 dependencies = [
-    { name = "3tears", extra = ["security"] },
-    { name = "3tears-agent-acl" },
-    { name = "3tears-nats", extra = ["client"] },
+    { name = "3tears-access-contracts" },
     { name = "3tears-observe" },
     { name = "argon2-cffi" },
     { name = "bcrypt" },
@@ -842,6 +840,12 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+core = [
+    { name = "3tears", extra = ["security"] },
+]
+nats = [
+    { name = "3tears-nats", extra = ["client"] },
+]
 saml = [
     { name = "defusedxml" },
     { name = "pysaml2" },
@@ -852,9 +856,9 @@ webauthn = [
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears", extras = ["security"], editable = "packages/core" },
-    { name = "3tears-agent-acl", editable = "packages/agent/acl" },
-    { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
+    { name = "3tears", extras = ["security"], marker = "extra == 'core'", editable = "packages/core" },
+    { name = "3tears-access-contracts", editable = "packages/access-contracts" },
+    { name = "3tears-nats", extras = ["client"], marker = "extra == 'nats'", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "argon2-cffi", specifier = ">=25.1.0" },
     { name = "bcrypt", specifier = ">=5.0.0" },
@@ -868,7 +872,7 @@ requires-dist = [
     { name = "pysaml2", marker = "extra == 'saml'", specifier = ">=7.5.0" },
     { name = "webauthn", marker = "extra == 'webauthn'", specifier = ">=3.0" },
 ]
-provides-extras = ["saml", "webauthn"]
+provides-extras = ["core", "nats", "saml", "webauthn"]
 
 [[package]]
 name = "3tears-langgraph"

@@ -21,6 +21,12 @@ candidate.
 is what authenticator apps and verifiers conventionally allow. It is not a
 meaningfully wide replay window, and narrowing it further mostly produces
 support tickets from users with drifting phone clocks.
+
+**Only sealing needs the ``core`` extra** (``3tears-iam[core]``). Seed generation,
+provisioning URIs, verification and backup codes run on the base install. ``seal_seed``,
+``unseal_seed`` and :class:`DecryptionError` are core's sealing, imported when first used --
+sealed seeds are stored data, so they are sealed by the one implementation that opens them
+again -- and without the extra they raise an :class:`ImportError` naming it.
 """
 
 from __future__ import annotations
@@ -28,13 +34,16 @@ from __future__ import annotations
 import hashlib
 import secrets
 from dataclasses import dataclass
-from typing import Final, NoReturn
+from typing import TYPE_CHECKING, Final, NoReturn
 
 import pyotp
 from pydantic import SecretStr
 
-from threetears.core.security import DecryptionError, open_secret, seal
+from threetears.iam._core_extra import core_extra_missing
 from threetears.observe import contain, get_logger
+
+if TYPE_CHECKING:
+    from threetears.core.security import DecryptionError
 
 __all__ = [
     "BACKUP_CODE_COUNT",
@@ -197,7 +206,14 @@ def match_backup_code(code: str, hashes: tuple[str, ...]) -> str | None:
 
 
 def seal_seed(seed_b32: str, key: SecretStr) -> str:
-    """Seal a TOTP seed for storage. See the module docstring on why this is not optional."""
+    """Seal a TOTP seed for storage. See the module docstring on why this is not optional.
+
+    :raises ImportError: the ``core`` extra is not installed
+    """
+    try:
+        from threetears.core.security import seal
+    except ModuleNotFoundError as exc:
+        raise core_extra_missing(exc, needed_by="threetears.iam.totp.seal_seed") from exc
     return seal(seed_b32, key)
 
 
@@ -206,5 +222,42 @@ def unseal_seed(sealed: str, key: SecretStr) -> str:
 
     :raises DecryptionError: the token is malformed, of an unknown version, sealed under a
         different key, or tampered with.
+    :raises ImportError: the ``core`` extra is not installed
     """
+    try:
+        from threetears.core.security import open_secret
+    except ModuleNotFoundError as exc:
+        raise core_extra_missing(exc, needed_by="threetears.iam.totp.unseal_seed") from exc
     return open_secret(sealed, key).get_secret_value()
+
+
+def __getattr__(name: str) -> object:
+    """Resolve :class:`DecryptionError` on first access, from core's sealing.
+
+    It is core's own class, so ``except DecryptionError`` here catches what ``unseal_seed``
+    raises. Resolved lazily so the base install imports this module without core.
+
+    :param name: the attribute asked for
+    :ptype name: str
+    :return: :class:`threetears.core.security.DecryptionError`
+    :rtype: object
+    :raises ImportError: ``DecryptionError`` was asked for and the ``core`` extra is not installed
+    :raises AttributeError: for any other name
+    """
+    if name != "DecryptionError":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    try:
+        from threetears.core import security as core_security
+    except ModuleNotFoundError as exc:
+        raise core_extra_missing(exc, needed_by="threetears.iam.totp.DecryptionError") from exc
+    resolved: object = core_security.DecryptionError
+    return resolved
+
+
+def __dir__() -> list[str]:
+    """The module's names, ``DecryptionError`` included though it is not loaded yet.
+
+    :return: sorted attribute names
+    :rtype: list[str]
+    """
+    return sorted(set(globals()) | {"DecryptionError"})

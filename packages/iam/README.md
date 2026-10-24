@@ -63,10 +63,12 @@ Everything else follows from that:
   rule it broke when saying so would build an oracle. Errors carry structural
   reasons only -- never token strings, key material, or credentials -- so they
   are safe to log at a verification boundary.
-- **Builds on core, does not fork it.** `jwk_thumbprint`, `build_jwks`,
-  `generate_signing_keypair`, `ReplayGuard`, `RevocationGuard`, `WindowedCounter`
-  and `seal`/`open_secret` already exist in `threetears.core`. This package
-  imports them.
+- **Builds on core, does not fork it.** `jwk_thumbprint`, the proof-freshness rules,
+  `ReplayGuard`, `WindowedCounter` and `seal`/`open_secret` already exist in
+  `threetears.core`, and the three modules that need them (`dpop`,
+  `stores.attempt_limiter`, TOTP sealing) use core's own, behind the `core` extra.
+  The sensitive-action taxonomy (`ImpersonationCategory`) comes from
+  `3tears-access-contracts`, the dependency-free leaf agent-acl reads too.
 
 ## Public surface
 
@@ -90,11 +92,11 @@ from threetears.iam.stores.nats_kv import state_store, ticket_store
 - **Sessions** (`.tokens`, `.rotation`) -- `SessionClaims`, `mint_session_token`,
   `verify_session_token` over EdDSA or HS256, `mint_token_pair`, `TokenPair`,
   `sole_audience`, and `rotate_refresh_token` with reuse detection.
-- **Proof of possession** (`.dpop`) -- `validate_dpop_proof` (RFC 9449, ES256/P-256).
+- **Proof of possession** (`.dpop`, extra: `core`) -- `validate_dpop_proof` (RFC 9449, ES256/P-256).
 - **Second factors** (`.totp`, `.webauthn`) -- TOTP enrolment and verification, backup codes, and
   (extra: `webauthn`) passkey registration/assertion helpers.
 - **Anti-automation** (`.stores`, `.clientip`) -- the `AttemptLimiter` Protocol and its
-  `CollectionAttemptLimiter` implementation over `threetears.core.coordination.WindowedCounter`,
+  `CollectionAttemptLimiter` implementation (extra: `core`) over `threetears.core.coordination.WindowedCounter`,
   plus `resolve_client_ip` for trusted-proxy-aware rate-limit keying.
 - **Auth-method descriptors** (`.connection_types`) -- `ConnectionTypeDescriptor`,
   `ConnectionFieldDescriptor`, `ConnectionFieldKind`, `ConnectionScope`: what configuring one
@@ -113,10 +115,20 @@ from threetears.iam.stores.nats_kv import state_store, ticket_store
 ## Install
 
 ```bash
-pip install 3tears-iam
+pip install 3tears-iam             # sign-in, OIDC, sessions, TOTP, client IPs, the store Protocols
+pip install '3tears-iam[core]'      # adds dpop, CollectionAttemptLimiter and TOTP seed sealing
+pip install '3tears-iam[nats]'      # adds the NATS client the stores.nats_kv stores run over
 pip install '3tears-iam[saml]'      # adds pysaml2; needs the xmlsec1 system binary
 pip install '3tears-iam[webauthn]'  # adds passkey support
 ```
+
+The base install brings no core, NATS client, agent layer or Postgres driver. Three
+modules build on core and need the `core` extra: `dpop`, `stores.attempt_limiter`
+(`CollectionAttemptLimiter`) and TOTP's `seal_seed`/`unseal_seed` (and
+`totp.DecryptionError`). Without it they raise an `ImportError` naming
+`3tears-iam[core]`. The rest of `totp` -- seed generation, verification and backup
+codes -- runs on the base install. A service using the shipped KV stores and
+`CollectionAttemptLimiter` installs `3tears-iam[core,nats]`.
 
 ## Versioning policy
 
