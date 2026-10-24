@@ -15,7 +15,8 @@ lease first, so every process answers the job alike.
 running every arm at once is not neutral: shared provider capacity rations one arm's calls and not another's, and
 inflates the latency each arm measures (:mod:`threetears.evals.run.arm_schedule`). By default the arms are
 interleaved: every arm is prepared, then all start together as one launch whose cells are taken in turn, case by
-case, under one width, so a provider's bad minute lands on every arm alike. ``sequential`` launches the arms one
+case, under one width, which costs nothing and absorbs a provider's bad minute across every arm. Arms launched apart
+are one experiment all the same while nothing that decides their result changed. ``sequential`` launches the arms one
 after another, each its own launch, so no arm shares another's provider load; ``concurrent`` launches them all at
 once, each side by side at its own width. Latency under test (``measure_latency``, passed to every arm's launch as
 ``run_launch`` takes it) runs them sequential, the only schedule it takes. Each arm's run joins the campaign as it
@@ -33,8 +34,18 @@ judge: it is left to the launch's own pin resolution, so no model grades its own
 **Its campaign is exploratory.** A sweep takes no design, so the campaign it creates declares none, and says so
 (``exploratory``) rather than leaving the caller to. A campaign's declaration is frozen once it holds a run, so
 ``campaign_update`` refuses to add one; what the arms were swept to learn is declared with ``campaign_create``: an
-aspect over the sweep's ``run_ids`` (its job result names them), its arms named with ``from_run_ids``. A question
-asked after the runs reads as asked, with ``question_after_runs`` disclosing when.
+aspect over the sweep's ``run_ids`` (its job result names them), its arms named with ``from_run_ids``. Its readings
+read as any others do, and each criterion it sets after the runs' results were stored is named with its time
+(``late_criteria``).
+
+**Taken up again.** The sweep's record keeps what each arm launches with, and its job launches every arm from
+that record alone. A sweep lost (its process gone), cancelled, or stopped by its own time budget is taken up again
+as the same sweep (:func:`sweep_resume`, which ``job_resume`` calls for ``sweep:<sweep id>``): each arm whose run was
+lost, cancelled, or stopped by its budget or its account is taken up as that same run, each arm that never launched
+is launched as the sweep would have launched it, an arm whose run ended is left as it ended, and the arm schedule is
+kept — an interleaved sweep's arms run in one group under the sweep's original launch group, so they take their
+remaining cells in turn in the order they always had. Every arm is checked in the call, so one arm that would
+measure otherwise refuses the whole take-up, naming every difference, before anything is spent.
 
 **When it stops early.** If an arm is refused at its launch (the host's admission ceiling, say), or an arm's run
 ends ``failed``, no further arm is launched and the sweep ends ``failed``, naming it. A harness fault is not
@@ -47,16 +58,30 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 from functools import partial
-from typing import Annotated, Any
+from typing import Annotated, Any, assert_never
 
 from pydantic import Field, model_validator
 
 from threetears.evals.analysis.campaigns import add_runs_to_campaign
 from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.schema.base import EvalBaseModel
-from threetears.evals.kernel.campaign import EvalSweep, SweepArmRecord
-from threetears.evals.kernel.errors import EvalServiceError, JobFenced, ValidationFailedError
+from threetears.evals.kernel.campaign import (
+    EvalSweep,
+    SweepArmArguments,
+    SweepArmRecord,
+    SweepLaunchArguments,
+    SweepLifetime,
+    SweepOutcome,
+    ended_sweep_lifetimes,
+)
+from threetears.evals.kernel.errors import (
+    EvalServiceError,
+    JobFenced,
+    NotFoundError,
+    ValidationFailedError,
+)
 from threetears.evals.kernel.refusals import job_refusal
 from threetears.evals.schema.refusal import JobRefusal
 from threetears.evals.kernel.job_timeout import EvalJobTimeout, timed_out_detail
@@ -65,12 +90,29 @@ from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.ops.analysis import CampaignDefinition, campaign_create
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, sweep_job_id, sweep_key
+from threetears.evals.kernel.remedies import FIND_JOB
 from threetears.evals.ops.runs import LaunchArguments
 from threetears.evals.run.arm_schedule import resolve_arm_schedule
 from threetears.evals.run.jobs import JOB_TIMEOUT_CAP_S
-from threetears.evals.run.launch import LaunchGroup, launch_as_group, quote_launch, start_run
-from threetears.evals.kernel.job_leases import SWEEP_JOB, require_held, write_held_record
+from threetears.evals.run.launch import LaunchGroup, admit_resumed_run, launch_as_group, quote_launch, start_run
+from threetears.evals.kernel.job_leases import (
+    SWEEP_JOB,
+    read_to_take_up,
+    reopened_job_fields,
+    require_held,
+    write_held_record,
+    write_reopened,
+)
 from threetears.evals.run.lifecycle import get_run
+from threetears.evals.run.resume import (
+    RunResumption,
+    next_epoch,
+    refuse_a_job_not_taken_up,
+    refused_as_one,
+    start_take_up,
+    take_up_arms,
+    write_taken_up,
+)
 from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)
@@ -193,13 +235,54 @@ def _arms_at_once(arguments: SweepArguments) -> int:
     return 1 if arguments.schedule == "sequential" else len(arguments.arms)
 
 
-async def _refuse_what_any_arm_would_refuse(host: OpsHost, arguments: SweepArguments, scope_id: str) -> None:
+def _what_it_launches(arguments: SweepArguments) -> tuple[SweepLaunchArguments, list[SweepArmRecord]]:
+    """What a sweep records of its launch: what every arm shares, and each arm with what it launches with.
+
+    The sweep's job launches every arm from these alone, so a sweep taken up again launches an arm that never
+    launched exactly as the sweep would have.
+    """
+    shared = SweepLaunchArguments(
+        k_runs=arguments.k_runs,
+        judge_model=arguments.judge_model,
+        simulator_model=arguments.simulator_model,
+        max_cost_usd=arguments.max_cost_usd,
+        cell_timeout_s=arguments.cell_timeout_s,
+        case_set=arguments.case_set,
+        measure_latency=arguments.measure_latency,
+    )
+    arms = [
+        SweepArmRecord(
+            label=_arm_label(arm),
+            model=arm.model,
+            arguments=SweepArmArguments(
+                overlays=arm.overlays,
+                apparatus_settings=arm.apparatus_settings,
+                judge_model=arm.judge_model,
+                simulator_model=arm.simulator_model,
+            ),
+        )
+        for arm in arguments.arms
+    ]
+    return shared, arms
+
+
+async def _refuse_what_any_arm_would_refuse(
+    host: OpsHost,
+    arguments: SweepArguments,
+    shared: SweepLaunchArguments,
+    arms: list[SweepArmRecord],
+    scope_id: str,
+) -> None:
     """Quote every arm by the launch's own rule before anything is created, and refuse the sweep on any refusal.
 
     :param host: The launching host.
     :ptype host: OpsHost
     :param arguments: The sweep.
     :ptype arguments: SweepArguments
+    :param shared: What its arms share, as the sweep records it.
+    :ptype shared: SweepLaunchArguments
+    :param arms: Its arms, as the sweep records them.
+    :ptype arms: list[SweepArmRecord]
     :param scope_id: The scope it runs in.
     :ptype scope_id: str
     :raises ValidationFailedError: An arm's launch would be refused, named with its arm; the schedule is one latency
@@ -221,37 +304,66 @@ async def _refuse_what_any_arm_would_refuse(host: OpsHost, arguments: SweepArgum
             f"({settings.name_of('max_launch_arms')}={settings.max_launch_arms})",
             remedy=f"pass arm_schedule='sequential', or sweep at most {settings.max_launch_arms} arms",
         )
-    for arm in arguments.arms:
-        try:
-            quote = await quote_launch(
-                host.launch,
-                template_id=arguments.template_id,
-                subject_id=arguments.subject_id,
-                models=[arm.model],
-                k_runs=arguments.k_runs,
-                judge_model=arm.judge_model or arguments.judge_model,
-                simulator_model=arm.simulator_model or arguments.simulator_model,
-                overlays=arm.overlays,
-                apparatus_settings=arm.apparatus_settings,
-                max_cost_usd=arguments.max_cost_usd,
-                scope_id=scope_id,
-                cell_timeout_s=arguments.cell_timeout_s,
-                case_set=arguments.case_set,
-            )
-        except ValidationFailedError as refused:
-            raise ValidationFailedError(
-                f"arm {_arm_label(arm)!r} would be refused: {refused.message}", remedy=refused.remedy
-            ) from refused
-        if refused_arms := [verdict for verdict in quote.arms if verdict.refusal is not None]:
-            raise ValidationFailedError(
-                f"arm {_arm_label(arm)!r} would be refused: "
-                + "; ".join(str(verdict.refusal) for verdict in refused_arms),
-                remedy="; ".join(dict.fromkeys(str(verdict.remedy) for verdict in refused_arms)),
-            )
+    for arm in arms:
+        await _refuse_what_an_arm_would_refuse(
+            host,
+            template_id=arguments.template_id,
+            subject_id=arguments.subject_id,
+            shared=shared,
+            arm=arm,
+            scope_id=scope_id,
+        )
+
+
+async def _refuse_what_an_arm_would_refuse(
+    host: OpsHost,
+    *,
+    template_id: str,
+    subject_id: str,
+    shared: SweepLaunchArguments,
+    arm: SweepArmRecord,
+    scope_id: str,
+) -> None:
+    """Quote one arm by the launch's own rule, from what the sweep records it launches with, and refuse it on any
+    refusal, naming the arm.
+
+    :raises ValidationFailedError: The arm's launch would be refused.
+    :raises NotFoundError: The template, or the case set, is not in the scope.
+    """
+    own = arm.arguments if arm.arguments is not None else SweepArmArguments()
+    try:
+        quote = await quote_launch(
+            host.launch,
+            template_id=template_id,
+            subject_id=subject_id,
+            models=[arm.model],
+            k_runs=shared.k_runs,
+            judge_model=own.judge_model or shared.judge_model,
+            simulator_model=own.simulator_model or shared.simulator_model,
+            overlays=own.overlays,
+            apparatus_settings=own.apparatus_settings,
+            max_cost_usd=shared.max_cost_usd,
+            scope_id=scope_id,
+            cell_timeout_s=shared.cell_timeout_s,
+            case_set=shared.case_set,
+        )
+    except ValidationFailedError as refused:
+        raise ValidationFailedError(
+            f"arm {arm.label!r} would be refused: {refused.message}", remedy=refused.remedy
+        ) from refused
+    if refused_arms := [verdict for verdict in quote.arms if verdict.refusal is not None]:
+        raise ValidationFailedError(
+            f"arm {arm.label!r} would be refused: " + "; ".join(str(verdict.refusal) for verdict in refused_arms),
+            remedy="; ".join(dict.fromkeys(str(verdict.remedy) for verdict in refused_arms)),
+        )
 
 
 async def sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, *, created_by: str) -> JobsStarted:
     """Create the sweep's campaign and start the job that launches its arms, as its arm schedule says.
+
+    The sweep's record keeps what each arm launches with (``EvalSweep.arguments``, ``SweepArmRecord.arguments``),
+    and its job launches every arm from that record alone, so a sweep taken up again (:func:`sweep_resume`) launches
+    an arm that never launched exactly as it would have.
 
     :param host: The launching host.
     :ptype host: OpsHost
@@ -268,7 +380,8 @@ async def sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, 
         once above the host's admission ceiling or its launch ceiling, or the campaign definition is refused.
     :raises NotFoundError: The template or the case set is not in the scope.
     """
-    await _refuse_what_any_arm_would_refuse(host, arguments, scope_id)
+    shared, arms = _what_it_launches(arguments)
+    await _refuse_what_any_arm_would_refuse(host, arguments, shared, arms, scope_id)
     eval_host, manager = host.eval_host, host.launch.job_manager
     campaign = await run_blocking(
         eval_host.blocking_executor,
@@ -297,9 +410,10 @@ async def sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, 
         campaign_id=campaign.id,
         template_id=arguments.template_id,
         subject_id=arguments.subject_id,
-        arms=[SweepArmRecord(label=_arm_label(arm), model=arm.model) for arm in arguments.arms],
+        arms=arms,
         max_concurrent_arms=_arms_at_once(arguments),
         arm_schedule=arguments.schedule,
+        arguments=shared,
     )
     leases = host.launch.job_leases
 
@@ -311,7 +425,7 @@ async def sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, 
     await run_blocking(eval_host.blocking_executor, save_started)
 
     async def work() -> None:
-        await _run_sweep(host, arguments, sweep, budget_s=(len(arguments.arms) + 1) * SWEEP_ARM_BUDGET_S)
+        await _run_sweep(host, sweep, budget_s=_budget_s(sweep))
 
     # The sweep enters its own budget (_run_sweep), so its record can say it timed out: one entered around the task
     # would reach the sweep as a cancel.
@@ -321,12 +435,327 @@ async def sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, 
     )
 
 
-async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep, *, budget_s: float) -> None:
+def _budget_s(sweep: EvalSweep) -> float:
+    """A sweep's wall-clock budget, for each holding of it: one arm's share per arm, and one for launching them."""
+    return (len(sweep.arms) + 1) * SWEEP_ARM_BUDGET_S
+
+
+@dataclass(frozen=True)
+class _ArmEnded:
+    """An arm whose run had ended ``completed`` or ``failed``: left alone, and read as it ended.
+
+    :ivar run: Its run, as it ended.
+    """
+
+    run: EvalRun
+
+
+@dataclass(frozen=True)
+class _ArmTakenUp:
+    """An arm whose run is taken up again, started as that run.
+
+    :ivar resumption: Its run's take-up, as planned in the call.
+    """
+
+    resumption: RunResumption
+
+
+@dataclass(frozen=True)
+class _ArmLaunched:
+    """An arm launched as the sweep launches it: every arm of a sweep starting fresh, and an arm that never launched."""
+
+
+#: What a sweep's job does with one arm, set once for every arm before the job starts.
+_ArmTakeUp = _ArmEnded | _ArmTakenUp | _ArmLaunched
+
+
+@dataclass(frozen=True)
+class _TakingUp:
+    """What a sweep's job does with each of its arms, by label: set for every arm, so none is launched by default.
+
+    :ivar arms: Each arm's take-up, by the arm's label.
+    """
+
+    arms: dict[str, _ArmTakeUp]
+
+    @classmethod
+    def fresh(cls, sweep: EvalSweep) -> _TakingUp:
+        """A sweep starting fresh: every arm is launched.
+
+        :param sweep: The sweep.
+        :ptype sweep: EvalSweep
+        :return: Every arm launched.
+        :rtype: _TakingUp
+        """
+        return cls(arms={arm.label: _ArmLaunched() for arm in sweep.arms})
+
+    def of(self, label: str) -> _ArmTakeUp:
+        """What the job does with one arm.
+
+        :param label: The arm's label.
+        :ptype label: str
+        :return: Its take-up.
+        :rtype: _ArmTakeUp
+        :raises KeyError: The arm has none: every arm's is set before the job starts, so this is a defect.
+        """
+        return self.arms[label]
+
+    @property
+    def resumptions(self) -> list[RunResumption]:
+        """Every arm's run taken up again, in the sweep's arm order.
+
+        :return: The take-ups.
+        :rtype: list[RunResumption]
+        """
+        return [arm.resumption for arm in self.arms.values() if isinstance(arm, _ArmTakenUp)]
+
+
+def _never_launched(sweep: EvalSweep, arm: SweepArmRecord) -> ValidationFailedError:
+    """The refusal of an arm that never launched, of a sweep stored before sweeps recorded their arms' arguments."""
+    return ValidationFailedError(
+        f"arm {arm.label!r} never launched, and sweep '{sweep.id}' was stored before sweeps recorded what each arm "
+        "launches with, so it cannot be launched as the sweep would have launched it",
+        remedy=(
+            f"launch arm {arm.label!r} with run_launch, and resume each other arm by its run's job id ('run:<run id>', "
+            "which job_poll on the sweep names)"
+        ),
+    )
+
+
+async def sweep_resume(
+    host: OpsHost, sweep_id: str, scope_id: str, *, max_cost_usd: float | None = None
+) -> JobsStarted:
+    """Take an interrupted sweep up again as the same sweep, and start its job, which keeps the arm schedule.
+
+    A sweep lost (its process gone), cancelled by an operator, or stopped by its own time budget (``timed_out``: a
+    ceiling, not a defect) is taken up again; one still running, completed or failed is not. In the call, before
+    anything is spent:
+
+    - each arm whose run ended ``completed`` or ``failed`` is left alone, and read as it ended;
+    - each arm whose run was lost, cancelled, or stopped by its budget or its account is planned and its launch
+      replayed and compared (:func:`~threetears.evals.run.resume.take_up_arms`);
+    - each arm that never launched is quoted by the launch's own rule, from what the sweep recorded it launches with
+      — one of a sweep stored before sweeps recorded that is refused, naming it.
+
+    Any refusal of any arm refuses the whole take-up, naming every arm's every refusal, with nothing written. Then the
+    sweep's record is reopened under its lease's next epoch, conditionally on the record as read, a new holding opens
+    on it (``EvalSweep.lifetimes``), and its own job runs the arms as its schedule says: an interleaved sweep's in one
+    group under the sweep's original launch group, so the arms take their remaining cells in turn in the order they
+    always had; a sequential sweep's one after another, in order; a concurrent sweep's side by side. Its job supervises
+    every arm as it supervises a launched one, and the sweep ends completed or failed as it would have.
+
+    :param host: The host, whose launcher wires the arms and whose job manager holds them.
+    :ptype host: OpsHost
+    :param sweep_id: The sweep.
+    :ptype sweep_id: str
+    :param scope_id: Its scope.
+    :ptype scope_id: str
+    :param max_cost_usd: The cost cap every arm is taken up or launched under; ``None`` keeps each arm's own. Not
+        part of the measurement: the sweep records it, and each holding records the cap it ran under.
+    :ptype max_cost_usd: float | None
+    :return: The sweep's one job (``sweep:<sweep id>``), whose target is its campaign.
+    :rtype: JobsStarted
+    :raises NotFoundError: There is no such sweep, or an arm's template is gone.
+    :raises ValidationFailedError: The sweep cannot be taken up, it has no arm left to take up or launch, or an arm
+        cannot be (every arm's refusal named).
+    :raises ConflictError: Another take-up of it won, or another writer moved it, while this one prepared; nothing was
+        started.
+    """
+    eval_host, launch = host.eval_host, host.launch
+    storage, manager, leases = eval_host.storage, launch.job_manager, launch.job_leases
+    sweep, etag = await run_blocking(
+        eval_host.blocking_executor, read_to_take_up, storage, SWEEP_JOB, sweep_id, scope_id
+    )
+    if sweep is None:
+        raise NotFoundError("sweep", sweep_id, remedy=FIND_JOB)
+    refuse_a_job_not_taken_up(
+        "sweep",
+        sweep.id,
+        sweep.outcome,
+        sweep.detail,
+        live_here=manager.is_task_active(sweep.id),
+        start_again="sweep_launch",
+    )
+    launched = [arm.run_id for arm in sweep.arms if arm.run_id is not None]
+    runs = {
+        run.id: run
+        for run in await run_blocking(eval_host.blocking_executor, storage.load_eval_runs, launched, scope_id)
+    }
+    shared = sweep.arguments
+    if shared is not None and max_cost_usd is not None:
+        shared = shared.model_copy(update={"max_cost_usd": max_cost_usd})
+    refusals: list[ValidationFailedError] = []
+    ended: dict[str, _ArmEnded] = {}
+    unfinished: list[tuple[str, str]] = []
+    never_launched: list[SweepArmRecord] = []
+    for arm in sweep.arms:
+        run = runs.get(arm.run_id) if arm.run_id is not None else None
+        if arm.run_id is None and (shared is None or arm.arguments is None):
+            refusals.append(_never_launched(sweep, arm))
+        elif arm.run_id is None:
+            never_launched.append(arm)
+        elif run is None:
+            refusals.append(
+                ValidationFailedError(
+                    f"arm {arm.label!r}'s run '{arm.run_id}' is not in scope {scope_id!r}",
+                    remedy="launch the sweep again (sweep_launch)",
+                )
+            )
+        elif run.status in ("completed", "failed"):
+            ended[arm.label] = _ArmEnded(run)
+        else:
+            unfinished.append((arm.label, run.id))
+    planned, refused = await take_up_arms(launch, unfinished, scope_id, max_cost_usd=max_cost_usd)
+    refusals += refused
+    for arm in never_launched:
+        assert shared is not None  # an arm the sweep holds no arguments for was refused above
+        try:
+            await _refuse_what_an_arm_would_refuse(
+                host,
+                template_id=sweep.template_id,
+                subject_id=sweep.subject_id,
+                shared=shared,
+                arm=arm,
+                scope_id=scope_id,
+            )
+        except ValidationFailedError as refusal:
+            refusals.append(refusal)
+    if refusals:
+        raise refused_as_one(f"sweep '{sweep.id}'", refusals)
+    if not planned and not never_launched:
+        raise ValidationFailedError(
+            f"every arm of sweep '{sweep.id}' has ended completed or failed, so there is nothing to take up",
+            remedy="read how each arm ended with job_poll on the sweep",
+        )
+    epoch = next_epoch(sweep.lease, sweep.lost, (lifetime.epoch for lifetime in sweep.lifetimes))
+    # An interleaved sweep stored before it recorded its group carries it on every arm's run.
+    group_id = sweep.launch_group_id
+    if group_id is None and sweep.arm_schedule == "interleaved":
+        group_id = next((run.launch_group_id for run in runs.values() if run.launch_group_id is not None), None)
+    reopened = _reopened(
+        sweep, epoch=epoch, holder=leases.holder_id, shared=shared, group_id=group_id, cap=max_cost_usd
+    )
+    await run_blocking(
+        eval_host.blocking_executor,
+        partial(write_reopened, leases=leases, etag=etag, epoch=epoch),
+        storage,
+        SWEEP_JOB,
+        reopened,
+    )
+    # Every arm's take-up is set here, once: an arm refused ended the call above, so each is ended, taken up or launched.
+    arms: dict[str, _ArmTakeUp] = {}
+    launching = {arm.label for arm in never_launched}
+    for arm in sweep.arms:
+        if arm.label in ended:
+            arms[arm.label] = ended[arm.label]
+        elif arm.label in planned:
+            arms[arm.label] = _ArmTakenUp(planned[arm.label])
+        elif arm.label in launching:
+            arms[arm.label] = _ArmLaunched()
+        else:
+            raise RuntimeError(
+                f"sweep '{sweep.id}' arm {arm.label!r} was neither ended, taken up, launched nor refused"
+            )
+    taking_up = _TakingUp(arms=arms)
+
+    async def work() -> None:
+        await _run_sweep(host, reopened, budget_s=_budget_s(reopened), taking_up=taking_up)
+
+    manager.start_task(
+        reopened.id,
+        work,
+        budget_s=None,
+        key=sweep_key(reopened.id, scope_id),
+        record=(SWEEP_JOB, scope_id),
+        epoch=epoch,
+    )
+    log.info(
+        "eval.sweep_resume sweep=%s scope=%s taken up at epoch %d: %d arm(s) taken up, %d to launch, %d ended",
+        sweep.id,
+        scope_id,
+        epoch,
+        len(planned),
+        len(never_launched),
+        len(ended),
+    )
+    campaign = await run_blocking(eval_host.blocking_executor, storage.load_campaign, sweep.campaign_id, scope_id)
+    return JobsStarted(
+        jobs=[
+            JobHandle(
+                job_id=sweep_job_id(sweep.id),
+                kind="sweep",
+                target_id=sweep.campaign_id,
+                label=campaign.name if campaign is not None else sweep.campaign_id,
+            )
+        ]
+    )
+
+
+def _reopened(
+    sweep: EvalSweep,
+    *,
+    epoch: int,
+    holder: str,
+    shared: SweepLaunchArguments | None,
+    group_id: str | None,
+    cap: float | None,
+) -> EvalSweep:
+    """A sweep as a take-up reopens it: ``running`` again, its ending moved to the holding that ended, a new one open.
+
+    :param sweep: The sweep as stored.
+    :ptype sweep: EvalSweep
+    :param epoch: The lease epoch it is taken up under.
+    :ptype epoch: int
+    :param holder: The process taking it up.
+    :ptype holder: str
+    :param shared: What its arms share, a raised cap carried; ``None`` for a sweep stored before it recorded that.
+    :ptype shared: SweepLaunchArguments | None
+    :param group_id: Its interleaved arms' launch group.
+    :ptype group_id: str | None
+    :param cap: The cap the take-up named, or ``None``.
+    :ptype cap: float | None
+    :return: The reopened record, its lease still the stored one (the take-up's write grants the next).
+    :rtype: EvalSweep
+    """
+    recorded_cap = sweep.arguments.max_cost_usd if sweep.arguments is not None else None
+    first = SweepLifetime(
+        holder=sweep.lease.holder if sweep.lease is not None else None,
+        epoch=epoch - 1,
+        started_at=sweep.created_at,
+        max_cost_usd=recorded_cap,
+    )
+    ended = ended_sweep_lifetimes(
+        sweep.lifetimes or [first],
+        outcome=sweep.outcome,
+        at=sweep.ended_at or utc_now_iso(),
+        detail=sweep.detail,
+        lost=sweep.lost,
+    )
+    holding = SweepLifetime(
+        holder=holder,
+        epoch=epoch,
+        started_at=utc_now_iso(),
+        max_cost_usd=cap if cap is not None else recorded_cap,
+    )
+    return sweep.model_copy(
+        update={
+            **reopened_job_fields(),
+            "arguments": shared,
+            "launch_group_id": group_id,
+            "lifetimes": [*ended, holding],
+        }
+    )
+
+
+async def _run_sweep(host: OpsHost, sweep: EvalSweep, *, budget_s: float, taking_up: _TakingUp | None = None) -> None:
     """Launch the arms as the sweep's schedule says, joining each run to the campaign, and wait for them.
 
     An interleaved sweep prepares every arm into one launch and starts them together
     (:meth:`_SweepRun.launch_together`); any other launches each arm as its own launch, in order,
-    ``max_concurrent_arms`` at once (:meth:`_SweepRun.launch_in_order`).
+    ``max_concurrent_arms`` at once (:meth:`_SweepRun.launch_in_order`). Every arm launches from what the sweep's
+    record says it launches with. A sweep taken up again (``taking_up``) runs the same way: an arm whose run had ended
+    is read as it ended, an arm whose run is taken up again is started as that run, and an arm that never launched is
+    launched.
 
     The sweep's record is written as its arms' runs are created and when the sweep ends, however it ends: a
     cancel — here, or asked on the record from another process — stops the arms in flight (each records
@@ -342,16 +771,17 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
 
     :param host: The launching host.
     :ptype host: OpsHost
-    :param arguments: The sweep.
-    :ptype arguments: SweepArguments
-    :param sweep: Its record, as started.
+    :param sweep: Its record, as started or as reopened.
     :ptype sweep: EvalSweep
     :param budget_s: The sweep's wall-clock budget.
     :ptype budget_s: float
+    :param taking_up: For a sweep taken up again, what it does with each arm; ``None`` for a sweep starting fresh, every
+        arm of which is launched.
+    :ptype taking_up: _TakingUp | None
     """
     manager = host.launch.job_manager
     scope_id = sweep.scope_id
-    run = _SweepRun(host, arguments, sweep)
+    run = _SweepRun(host, sweep, taking_up if taking_up is not None else _TakingUp.fresh(sweep))
 
     def fenced(why: JobFenced) -> None:
         log.warning("eval.sweep sweep=%s scope=%s stopped: %s", sweep.id, scope_id, why)
@@ -365,7 +795,7 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
             await asyncio.gather(*run.in_flight.values())
     except asyncio.CancelledError:
         await run.stop_arms(SWEEP_CANCEL_REASON)
-        sweep.outcome, sweep.detail, sweep.ended_at = "cancelled", "cancelled before every arm ran", utc_now_iso()
+        run.end("cancelled", "cancelled before every arm ran")
         try:
             await run.save()
         except JobFenced as why:
@@ -375,7 +805,7 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
     except EvalJobTimeout as timed_out:
         log.warning("eval.sweep sweep=%s scope=%s timed out: %s", sweep.id, scope_id, timed_out)
         await run.stop_arms(SWEEP_TIMEOUT_REASON)
-        sweep.outcome, sweep.detail, sweep.ended_at = "timed_out", timed_out_detail(timed_out), utc_now_iso()
+        run.end("timed_out", timed_out_detail(timed_out))
         try:
             await run.save()
         except JobFenced as why:
@@ -399,10 +829,11 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
         run.fail(f"the sweep ended on an error: {broke}", broke)
         # Arms already launched are measurements in their own right: they finish and stay members.
         await asyncio.gather(*run.in_flight.values(), return_exceptions=True)
-    sweep.outcome = "failed" if run.failure else "completed"
-    sweep.detail = run.failure[0] if run.failure else "; ".join(run.measured_nothing) or None
     sweep.refusal = run.refusal
-    sweep.ended_at = utc_now_iso()
+    run.end(
+        "failed" if run.failure else "completed",
+        run.failure[0] if run.failure else "; ".join(run.measured_nothing) or None,
+    )
     try:
         await run.save()
     except JobFenced as why:
@@ -413,10 +844,10 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
 class _SweepRun:
     """One sweep's job as it runs: its arms in flight, what failed, and how each schedule launches its arms."""
 
-    def __init__(self, host: OpsHost, arguments: SweepArguments, sweep: EvalSweep) -> None:
+    def __init__(self, host: OpsHost, sweep: EvalSweep, taking_up: _TakingUp) -> None:
         self.host = host
-        self.arguments = arguments
         self.sweep = sweep
+        self.taking_up = taking_up
         self.in_flight: dict[str, asyncio.Task[None]] = {}
         self.failure: list[str] = []
         #: Each arm that measured nothing, said on the sweep's detail when nothing else failed it.
@@ -430,6 +861,11 @@ class _SweepRun:
         self.failure.append(why)
         if isinstance(error, EvalServiceError) and len(self.failure) == 1:
             self.refusal = job_refusal(error)
+
+    def end(self, outcome: SweepOutcome, detail: str | None) -> None:
+        """Set the sweep's ending on its record; its model closes the holding a take-up opened from it."""
+        sweep = self.sweep
+        sweep.outcome, sweep.detail, sweep.ended_at = outcome, detail, utc_now_iso()
 
     async def save(self) -> None:
         eval_host = self.host.eval_host
@@ -483,6 +919,8 @@ class _SweepRun:
                 done.release()
 
     async def join_campaign(self, runs: list[EvalRun]) -> None:
+        if not runs:
+            return
         eval_host = self.host.eval_host
         await run_blocking(
             eval_host.blocking_executor,
@@ -493,20 +931,49 @@ class _SweepRun:
             [run.id for run in runs],
         )
 
-    def _judge(self, spec: SweepArm, pin: str | None) -> str | None:
+    def _recorded(self, arm: SweepArmRecord) -> tuple[SweepLaunchArguments, SweepArmArguments]:
+        """What the sweep records an arm launches with.
+
+        :raises ValidationFailedError: The sweep was stored before it recorded that; a take-up refuses such an arm in
+            its call, so a launch never reaches here without it.
+        """
+        if self.sweep.arguments is None or arm.arguments is None:
+            raise _never_launched(self.sweep, arm)
+        return self.sweep.arguments, arm.arguments
+
+    def _judge(self, arm: SweepArmRecord, pin: str | None) -> str | None:
         # An arm whose own candidate is the pinned judge is left to the launch's pin resolution: no model grades itself.
-        return spec.judge_model or (pin if pin != spec.model else None)
+        own = arm.arguments.judge_model if arm.arguments is not None else None
+        return own or (pin if pin != arm.model else None)
+
+    def _simulator(self, arm: SweepArmRecord, pin: str | None) -> str | None:
+        own = arm.arguments.simulator_model if arm.arguments is not None else None
+        return own or pin
 
     async def launch_in_order(self) -> None:
-        """Launch each arm as its own launch, in order, at most ``max_concurrent_arms`` at once."""
-        arguments, sweep = self.arguments, self.sweep
+        """Launch each arm as its own launch, in order, at most ``max_concurrent_arms`` at once.
+
+        An arm whose run had ended before the sweep was taken up again takes its turn as it ended; an arm whose run is
+        taken up again is started as that run, in its turn.
+        """
+        sweep, taking_up = self.sweep, self.taking_up
         slots = asyncio.Semaphore(sweep.max_concurrent_arms)
-        judge_pin, simulator_pin = arguments.judge_model, arguments.simulator_model
-        for spec, record in zip(arguments.arms, sweep.arms, strict=True):
+        shared = sweep.arguments
+        judge_pin = shared.judge_model if shared is not None else None
+        simulator_pin = shared.simulator_model if shared is not None else None
+        for record in sweep.arms:
             await slots.acquire()
             if self.failure:
                 slots.release()
                 return
+            arm = taking_up.of(record.label)
+            if isinstance(arm, _ArmEnded):
+                # Read as it ended, as a launched arm's run is once it ends: a failure ends the sweep here, as it did.
+                ended = arm.run
+                self.in_flight[ended.id] = asyncio.create_task(self.settle(record.label, ended.id, done=slots))
+                judge_pin = judge_pin or ended.judge_model
+                simulator_pin = simulator_pin or ended.simulator_model
+                continue
             # Fenced BEFORE the arm is launched, not only at the write after it: a sweep whose record reads lost
             # would otherwise pay for one more arm that nothing records, whose run no sweep and no campaign names.
             try:
@@ -515,12 +982,18 @@ class _SweepRun:
                 slots.release()
                 raise
             try:
-                (run,) = await start_run(
-                    self.host.launch,
-                    **self._arm_launch(spec, judge_model=self._judge(spec, judge_pin)),
-                    simulator_model=spec.simulator_model or simulator_pin,
-                    arm_schedule=sweep.arm_schedule,
-                )
+                match arm:
+                    case _ArmTakenUp(resumption=resuming):
+                        run = await start_take_up(self.host.launch, resuming)
+                    case _ArmLaunched():
+                        (run,) = await start_run(
+                            self.host.launch,
+                            **self._arm_launch(record, judge_model=self._judge(record, judge_pin)),
+                            simulator_model=self._simulator(record, simulator_pin),
+                            arm_schedule=sweep.arm_schedule,
+                        )
+                    case unreachable:
+                        assert_never(unreachable)
             # prawduct:ok-broad-except — any refusal of one arm ends the sweep, recorded on its record
             except Exception as refused:
                 contain(refused, log=log, what=f"eval.sweep arm {record.label!r} was refused at its launch")
@@ -531,8 +1004,10 @@ class _SweepRun:
                 )
                 return
             self.in_flight[run.id] = asyncio.create_task(self.settle(record.label, run.id, done=slots))
-            record.run_id = run.id
-            await self.join_campaign([run])
+            if isinstance(arm, _ArmLaunched):
+                # A run taken up again is already the arm's, and already a member.
+                record.run_id = run.id
+                await self.join_campaign([run])
             await self.save()
             # The first arm's resolved instruments hold for every later arm that names none of its own.
             judge_pin = judge_pin or run.judge_model
@@ -542,13 +1017,21 @@ class _SweepRun:
         """Prepare every arm into one interleaved launch and start them together, every run then joining the campaign.
 
         The launch resolves what its arms share once (the subject's snapshot, the case set, the judge's default), so no
-        arm's instruments are pinned from another's run. An arm refused at its launch starts none of them.
+        arm's instruments are pinned from another's run. An arm refused at its launch starts none of them. A sweep
+        taken up again prepares its arms into a group under its original launch group's id, so its arms' cells keep
+        the order they had: an arm whose run is taken up again joins as that run, one that never launched joins anew,
+        and one whose run had ended is read as it ended.
         """
-        arguments, sweep = self.arguments, self.sweep
+        sweep, taking_up = self.sweep, self.taking_up
         await self.require_held()
         group = LaunchGroup(
-            candidate_models=list(dict.fromkeys(spec.model for spec in arguments.arms)), arm_schedule="interleaved"
+            candidate_models=list(dict.fromkeys(arm.model for arm in sweep.arms)),
+            arm_schedule="interleaved",
+            group_id=sweep.launch_group_id,
         )
+        sweep.launch_group_id = group.id
+        going = [record for record in sweep.arms if not isinstance(taking_up.of(record.label), _ArmEnded)]
+        shared = sweep.arguments
         preparing: list[str] = []
 
         async def form() -> tuple[LaunchGroup, None]:
@@ -556,14 +1039,28 @@ class _SweepRun:
 
         async def prepare(group: LaunchGroup, _formed: None) -> list[EvalRun]:
             prepared: list[EvalRun] = []
-            for spec, record in zip(arguments.arms, sweep.arms, strict=True):
+            for record in going:
                 preparing[:] = [record.label]
-                prepared += await start_run(
-                    self.host.launch,
-                    **self._arm_launch(spec, judge_model=self._judge(spec, arguments.judge_model)),
-                    simulator_model=spec.simulator_model or arguments.simulator_model,
-                    launch_group=group,
-                )
+                match taking_up.of(record.label):
+                    case _ArmTakenUp(resumption=resuming):
+                        admitted = await admit_resumed_run(self.host.launch, resuming, launch_group=group)
+                        prepared += await admitted.start()
+                    case _ArmLaunched():
+                        prepared += await start_run(
+                            self.host.launch,
+                            **self._arm_launch(
+                                record,
+                                judge_model=self._judge(record, shared.judge_model if shared is not None else None),
+                            ),
+                            simulator_model=self._simulator(
+                                record, shared.simulator_model if shared is not None else None
+                            ),
+                            launch_group=group,
+                        )
+                    case _ArmEnded():
+                        raise RuntimeError(f"arm {record.label!r} had ended, so it is not among the arms prepared")
+                    case unreachable:
+                        assert_never(unreachable)
             preparing.clear()
             # Asked again once every arm is prepared and before any starts: preparing can be long (a generating
             # launch writes its cases), and a sweep whose record read lost meanwhile would start every arm unowned.
@@ -571,14 +1068,18 @@ class _SweepRun:
             await self.require_held()
             return prepared
 
+        async def reopen(runs: list[EvalRun]) -> None:
+            await write_taken_up(self.host.launch, taking_up.resumptions, runs)
+
         try:
             runs = await launch_as_group(
                 self.host.launch,
-                len(arguments.arms),
+                len(going),
                 settings=self.host.launch.settings(),
                 form=form,
                 prepare=prepare,
                 event="eval.sweep",
+                attach=reopen if taking_up.resumptions else None,
             )
         # prawduct:ok-broad-except — any refusal of one arm ends the sweep, recorded on its record
         except Exception as refused:
@@ -588,28 +1089,39 @@ class _SweepRun:
             contain(refused, log=log, what=f"eval.sweep: {which}")
             self.fail(f"{which}, so no arm was launched: {refused}", refused)
             return
-        for record, run in zip(sweep.arms, runs, strict=True):
+        for record, run in zip(going, runs, strict=True):
             self.in_flight[run.id] = asyncio.create_task(self.settle(record.label, run.id))
             record.run_id = run.id
-        # Members once they exist, as an arm launched on its own joins once its run is created.
-        await self.join_campaign(runs)
+        for label, arm in taking_up.arms.items():
+            if isinstance(arm, _ArmEnded):
+                self.in_flight[arm.run.id] = asyncio.create_task(self.settle(label, arm.run.id))
+        # Members once they exist, as an arm launched on its own joins once its run is created; a run taken up again is
+        # a member already.
+        await self.join_campaign(
+            [
+                run
+                for record, run in zip(going, runs, strict=True)
+                if isinstance(taking_up.of(record.label), _ArmLaunched)
+            ]
+        )
         await self.save()
 
-    def _arm_launch(self, spec: SweepArm, *, judge_model: str | None) -> dict[str, Any]:
-        """What every launch of one arm names, whichever schedule launches it."""
-        arguments = self.arguments
+    def _arm_launch(self, arm: SweepArmRecord, *, judge_model: str | None) -> dict[str, Any]:
+        """What every launch of one arm names, whichever schedule launches it: what the sweep records it launches
+        with."""
+        shared, own = self._recorded(arm)
         return {
-            "template_id": arguments.template_id,
-            "subject_id": arguments.subject_id,
-            "models": [spec.model],
-            "k_runs": arguments.k_runs,
+            "template_id": self.sweep.template_id,
+            "subject_id": self.sweep.subject_id,
+            "models": [arm.model],
+            "k_runs": shared.k_runs,
             "judge_model": judge_model,
-            "overlays": spec.overlays,
-            "apparatus_settings": spec.apparatus_settings,
-            "max_cost_usd": arguments.max_cost_usd,
-            "cell_timeout_s": arguments.cell_timeout_s,
-            "case_set": arguments.case_set,
-            "measure_latency": arguments.measure_latency,
+            "overlays": own.overlays,
+            "apparatus_settings": own.apparatus_settings,
+            "max_cost_usd": shared.max_cost_usd,
+            "cell_timeout_s": shared.cell_timeout_s,
+            "case_set": shared.case_set,
+            "measure_latency": shared.measure_latency,
             "scope_id": self.sweep.scope_id,
         }
 
@@ -621,4 +1133,5 @@ __all__ = [
     "SweepArguments",
     "SweepArm",
     "sweep_launch",
+    "sweep_resume",
 ]

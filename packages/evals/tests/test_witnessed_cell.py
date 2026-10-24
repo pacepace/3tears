@@ -110,7 +110,7 @@ async def _runner_cells() -> tuple[EvalHost, EvalRun, list[EvalTestCase], list[t
         options=RunnerOptions(candidate_kinds={TOY_EXTRACTOR_KIND: lambda _cell: kind}),
         callbacks=RunCallbacks(on_result=on_result),
     )
-    # The runner still mints each cell's own id and stamp at the cell, now passed into the assembly.
+    # The runner still gives each cell its own id (derived from the cell) and stamp, passed into the assembly.
     finished = datetime.now(UTC)
     assert all(started <= datetime.fromisoformat(result.scored_at) <= finished for result, _ in paired)
     assert len({result.id for result, _ in paired}) == len(paired)

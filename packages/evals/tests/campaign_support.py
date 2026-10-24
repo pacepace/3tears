@@ -99,7 +99,7 @@ async def measured_aspect(
     :ptype margin: float | None
     :param floors: The clauses of the floors on it.
     :ptype floors: Sequence[DecisionClause]
-    :param asked_at: When the question was asked; None asks it now, after the runs.
+    :param asked_at: When the aspect was asked and its control named; None asks it now, after its readings.
     :ptype asked_at: str | None
     :param third: The cases a second candidate (:data:`THIRD_LABEL`) passes; None runs none.
     :ptype third: int | None

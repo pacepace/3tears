@@ -7,7 +7,10 @@ starts it (:func:`run_launch`, :func:`sweep_launch`, :func:`analysis_generate`, 
 for one paid model call) prices and admits it in the call and returns a :class:`JobsStarted` naming one job per
 piece of work, and :func:`job_poll` / :func:`job_cancel` take any job id one returned; :func:`await_job` awaits them
 in the foreground instead. A job is the name of the durable record its work writes, so a job id stays answerable
-across a restart.
+across a restart. :func:`job_resume` takes an interrupted run's, sweep's or launch's job up again — lost, cancelled,
+or stopped by a budget or an account — as the same job, a sweep's or launch's as a whole with its arm schedule kept,
+refusing before anything is spent when any of its runs would measure otherwise now; a lost job is otherwise never
+revived.
 
 The operations are named as the actions over them are (``noun_verb``), so a name in the action
 catalogue (:mod:`threetears.evals.actions`) is the operation it calls.
@@ -113,6 +116,7 @@ from threetears.evals.ops.jobs import (
     analysis_job_id,
     generation_key,
     job_cancel,
+    job_resume,
     job_poll,
     parse_job_id,
     run_job_id,
@@ -381,6 +385,7 @@ __all__ = [
     "insight_get",
     "insights_list",
     "job_cancel",
+    "job_resume",
     "judge_case_author",
     "judge_cases_freeze",
     "judge_configs_list",

@@ -247,11 +247,14 @@ class RefusedInput(ValueError):
 
 
 class JobFenced(Exception):
-    """A job's own write found its record ended by someone else — written lost — so the job writes nothing more.
+    """A job's write found its record no longer its own (written lost, or taken up again), so it writes nothing more.
 
     Not an :class:`EvalServiceError`: no caller is told it. It is how a job's work, holding a lease that another
     process found lapsed (or that this process released at shutdown), learns that its record now says it was
     lost, and stops rather than overwrite that with an ending of its own — the record's answer is the one every
-    process has already read. Raised by the job's guarded writes
-    (:func:`~threetears.evals.kernel.job_leases.write_held_record`) and caught at the job's own boundary.
+    process has already read. The same holds for a lease that has passed to another holding of the job (another
+    process, or a later epoch): the record is that holding's to write. Raised by the job's guarded writes
+    (:func:`~threetears.evals.kernel.job_leases.write_held_record`,
+    :meth:`~threetears.evals.kernel.JobLeases.write_own`) and by a run's cell write
+    (:meth:`~threetears.evals.kernel.EvalStorage.save_eval_result`), and caught at the job's own boundary.
     """

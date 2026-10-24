@@ -169,7 +169,12 @@ Naming these is what keeps a shared capability from turning into a platform.
 - **Not an answer engine.** We retrieve information and say where it came from.
   Deciding what it *means* stays with the consumer -- discodon's research tool
   synthesises, samsung's model proposes works. We do not summarise, judge, or
-  conclude.
+  conclude. *Amended 2026-10-22 (owner ruling;
+  [`answers-requirements-design.md`](answers-requirements-design.md)):* this
+  capability still produces no synthesis, but it **may carry a provider's**,
+  when the provider delivers it with citations -- the text as given, the
+  citations as candidates, the spend as spend, and the rendering saying whose
+  synthesis it is. Carrying is not concluding.
 - **Not a search engine.** We do not crawl or index the web.
 - **Not RAG.** Retrieval over the family's *own* content is `agent-memory`'s job.
 - **Not an agent.** We do not decide what to search for. `scrape`'s `page_finder`

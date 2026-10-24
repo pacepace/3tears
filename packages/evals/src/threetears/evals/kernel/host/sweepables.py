@@ -43,8 +43,7 @@ every declaration and :attr:`~Sweepable.confounds` on every apparatus one.
 determines a score.** :func:`threetears.evals.kernel.identity.compute_context_components` enumerates the
 measurement context for a different purpose — per-component hashes, so a comparability mismatch
 can badge *which* condition moved — and it disagrees with this list in both directions, most
-notably by covering the frozen case set and the resolved world seed, which this one cannot
-see. Reconciling them is its own piece of work; what must not happen is a reader taking the
+notably by covering the resolved world seed, which this one cannot see. Reconciling them is its own piece of work; what must not happen is a reader taking the
 sentence above as "these are all of them".
 """
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import sys
 import types
 from collections.abc import AsyncIterator
@@ -220,6 +221,23 @@ class _HeldLock:
         yield  # pragma: no cover - never reached; makes this a generator
 
 
+class _HeldUntil:
+    """a build lock a peer holds until :attr:`free` is set; then it is ours to take."""
+
+    def __init__(self) -> None:
+        self.free = asyncio.Event()
+        self.held_by_us: list[str] = []
+        self._first = True
+
+    @asynccontextmanager
+    async def holding(self, key: str) -> AsyncIterator[None]:
+        if self._first or not self.free.is_set():
+            self._first = False
+            raise BuildLockHeld(key)
+        self.held_by_us.append(key)
+        yield
+
+
 class _FreeLock:
     """a build lock nobody else holds: records each hold and its release."""
 
@@ -265,6 +283,69 @@ class TestTheBuildLockIsInjected:
         assert lock.asked == ["buckets/4"]
         assert collection.compute_calls == []
 
+    def test_a_peer_slower_than_any_fixed_budget_is_waited_for_and_not_duplicated(self) -> None:
+        lock = _HeldUntil()
+        collection = _with_lock(lock)
+        collection.peer_poll_interval = 0.01
+        collection.peer_retake_seconds = 0.02
+
+        async def slow_peer_lands() -> dict[str, Any] | None:
+            fetched = asyncio.create_task(collection.fetch_from_store((6,)))
+            await asyncio.sleep(0.3)
+            collection.store[(6,)] = {"bucket": 6, "value": "from-peer"}
+            lock.free.set()
+            return await fetched
+
+        assert asyncio.run(slow_peer_lands()) == {"bucket": 6, "value": "from-peer"}
+        assert collection.compute_calls == []
+
+    def test_a_peer_that_lets_go_without_the_value_is_taken_over_once(self) -> None:
+        lock = _HeldUntil()
+        collection = _with_lock(lock)
+        collection.peer_poll_interval = 0.01
+        collection.peer_retake_seconds = 0.02
+
+        async def peer_dies() -> dict[str, Any] | None:
+            fetched = asyncio.create_task(collection.fetch_from_store((7,)))
+            await asyncio.sleep(0.1)
+            lock.free.set()  # its lease ran out: nothing landed
+            return await fetched
+
+        assert asyncio.run(peer_dies()) == {"bucket": 7, "value": "derived-7"}
+        assert collection.compute_calls == [(7,)]
+        assert lock.held_by_us == ["buckets/7"]
+
+    def test_a_long_wait_backs_off_its_reads_and_says_it_is_waiting(self, caplog: pytest.LogCaptureFixture) -> None:
+        lock = _HeldUntil()
+        collection = _with_lock(lock)
+        collection.peer_poll_interval = 0.01
+        collection.peer_poll_max_interval = 0.04
+        collection.peer_retake_seconds = 0.02
+        collection.peer_wait_log_seconds = 0.1
+        reads: list[tuple[Any, ...]] = []
+        load_derived = collection.load_derived
+
+        async def counted(key: tuple[Any, ...]) -> dict[str, Any] | None:
+            reads.append(key)
+            return await load_derived(key)
+
+        collection.load_derived = counted  # type: ignore[method-assign,assignment]
+
+        async def slow_peer_lands() -> dict[str, Any] | None:
+            fetched = asyncio.create_task(collection.fetch_from_store((8,)))
+            await asyncio.sleep(0.4)
+            collection.store[(8,)] = {"bucket": 8, "value": "from-peer"}
+            lock.free.set()
+            return await fetched
+
+        with caplog.at_level(logging.INFO, logger="threetears.core.collections.derived"):
+            assert asyncio.run(slow_peer_lands()) == {"bucket": 8, "value": "from-peer"}
+        # a fixed 0.01 s poll reads about forty times in 0.4 s; doubling up to 0.04 s reads about a dozen
+        assert len(reads) <= 16, reads
+        messages = [r.getMessage() for r in caplog.records]
+        assert messages.count("waiting for a peer's derivation") == 1
+        assert 2 <= messages.count("still waiting for a peer's derivation") <= 5, messages
+
     def test_no_client_and_no_lock_derives_without_one(self, collection: _BucketCollection) -> None:
         assert asyncio.run(collection.fetch_from_store((5,))) == {"bucket": 5, "value": "derived-5"}
 
@@ -282,17 +363,26 @@ class _Handle:
 
 
 class _Lease:
-    """KVLease's acquire: a held name is refused fail-fast, as max_wait_seconds=0 asks."""
+    """KVLease's hold: a held name is refused fail-fast, as max_wait_seconds=0 asks; the hold is renewed."""
 
     def __init__(self, held: set[str] | None = None) -> None:
         self.held = held or set()
-        self.acquired: list[tuple[str, int, int]] = []
+        self.acquired: list[tuple[str, float, float, int, float | None]] = []
         self.released: list[str] = []
 
-    async def acquire(self, key: str, ttl_seconds: int = 30, max_wait_seconds: int = 60) -> _Handle:
+    async def hold(
+        self,
+        key: str,
+        *,
+        ttl: float,
+        renew_every: float,
+        max_wait_seconds: int = 0,
+        name: str = "the lease",
+        max_hold: float | None = None,
+    ) -> _Handle:
         if key in self.held:
             raise LeaseUnavailable(key)
-        self.acquired.append((key, ttl_seconds, max_wait_seconds))
+        self.acquired.append((key, ttl, renew_every, max_wait_seconds, max_hold))
         return _Handle(self.released, key)
 
 
@@ -305,7 +395,8 @@ class TestTheLeaseBuildLock:
                 assert lease.released == []
 
         asyncio.run(hold())
-        assert lease.acquired == [("answers/ID_v1_ab", 45, 0)]
+        # held for the whole build and renewed every third of its TTL: a held lock is a live builder
+        assert lease.acquired == [("answers/ID_v1_ab", 45, 15.0, 0, 600.0)]
         assert lease.released == ["answers/ID_v1_ab"]
 
     def test_a_held_lease_is_a_held_build_lock(self) -> None:

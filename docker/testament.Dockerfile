@@ -8,8 +8,11 @@ FROM ghcr.io/astral-sh/uv:0.11.32 AS uv
 # pin deliberately, alongside the dev box.
 FROM python:3.14.6-slim@sha256:7bec7ddcddeff7975d6ba9b4be7dd6f6b2f55e7491539145e2978f7f97ce9144
 
+# build-essential and libzstd-dev: indexed-zstd (3tears-scrape -> camoufox -> fpgen) ships no
+# linux/aarch64 wheel, so on an arm64 runner the setup step builds it from its sdist, against libzstd.
+# Without them every batch planned onto an arm64 runner fails its env build and never reports.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates procps \
+    && apt-get install -y --no-install-recommends git ca-certificates procps build-essential libzstd-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=uv /uv /uvx /usr/local/bin/
@@ -18,7 +21,10 @@ RUN useradd --create-home --shell /bin/bash lane
 USER lane
 
 # PYTHONDONTWRITEBYTECODE is deliberately unset: bytecode caching saves ~31s per collection.
+# CXX: this Python's build config names gcc as its C++ compiler, so setuptools would link a C++
+# extension built from source (indexed-zstd, above) without libstdc++, and it fails at import.
 ENV UV_LINK_MODE=copy \
-    UV_PYTHON_DOWNLOADS=never
+    UV_PYTHON_DOWNLOADS=never \
+    CXX=g++
 
 CMD ["sleep", "infinity"]

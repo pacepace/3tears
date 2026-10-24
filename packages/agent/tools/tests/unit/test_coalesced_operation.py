@@ -133,11 +133,16 @@ async def test_requests_while_a_unit_runs_are_one_more_unit_after_it_and_each_un
         name="enr.reload", description="Reload.", operation=lambda: load.operation, status_tool="enr.load_status"
     )
 
-    assert (await reload.run()).metadata == {"started": True}
+    first = await reload.run()
+    assert first.metadata == {"started": True, "run_id": load.operation.run_id}
     await _entered(unit)
+    queued: set[str] = set()
     for _ in range(3):
         again = await reload.run()
-        assert again.success and again.metadata == {"started": False}
+        assert again.success and again.metadata is not None and again.metadata["started"] is False
+        queued.add(again.metadata["run_id"])
+    # every request made during a run is taken by the one run queued to follow it
+    assert len(queued) == 1 and first.metadata["run_id"] not in queued
     unit.release.set()
     await load.operation.wait()
 
@@ -146,6 +151,9 @@ async def test_requests_while_a_unit_runs_are_one_more_unit_after_it_and_each_un
     # the run that found the request already taken ran nothing, and does not replace the one that ran
     assert last is not None and last.result == Drained(results=({"unit": 1}, {"unit": 2}))
     assert rendered_drain(last.result) == {"runs": 2, "results": [{"unit": 1}, {"unit": 2}]}
+    # yet a caller waiting for the queued run is told it ended: the run before it took its request
+    assert last.run_id == first.metadata["run_id"]
+    assert load.operation.status()["ended_run_ids"] == [*queued, last.run_id]
 
 
 async def test_a_unit_that_fails_leaves_why_and_a_run_with_nothing_left_does_not_hide_it() -> None:

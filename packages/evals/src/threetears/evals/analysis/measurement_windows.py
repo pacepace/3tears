@@ -316,18 +316,19 @@ def _widest_gaps_first(pairs: Sequence[WindowGap]) -> list[WindowGap]:
 
 
 def measurement_window_disclosure(windows: Sequence[MeasurementWindow], *, full: bool = False) -> str | None:
-    """The sentence a comparison must carry when its runs did not share a clock.
+    """The sentence a lens states when the runs it compares did not share a clock: a plain fact.
 
     Descriptive, never a verdict: it states when each run was measured, which pairs did
     not overlap and by how much, and stops there. No threshold decides how far apart is
-    too far, no severity is assigned, and nothing is corrected — how much a gap matters
-    depends on what else moved in it, which this surface cannot see and the operator can.
+    too far, no severity is assigned, and nothing is corrected: a gap is no confound, and a
+    change that decides a result is disclosed where it is recorded.
 
     **It states the quantifier it can defend.** The condition is existential — see
     :func:`disjoint_window_pairs` — so the universal form ("these runs were measured over
     non-overlapping spans") is printed only when every pair really is disjoint. Otherwise
     the sentence counts: *D of the P pairs among these N runs*, with the remainder named
-    as overlapping and the closing attribution scoped to the pairs that earned it.
+    as overlapping. It draws no conclusion from the gap: runs measured apart are one experiment while nothing that
+    decides their result changed (owner, 2026-10-23).
     Rendering the existential as a universal is the defect this exists for — on the
     campaign that motivated the fix, three of six pairs overlapped while the sentence
     denied it, and the generator escalated the denial into a false headline.
@@ -393,18 +394,14 @@ def measurement_window_disclosure(windows: Sequence[MeasurementWindow], *, full:
 
     if len(pairs) == n_pairs:
         lead = f"These runs were {DISJOINT_WINDOWS_CLAUSE} of wall-clock time — every pair of them ({detail})."
-        subject = "a difference between them"
     else:
         lead = (
             f"{len(pairs)} of the {n_pairs} pairs among the {n_runs} runs named here were "
             f"{DISJOINT_WINDOWS_CLAUSE} of wall-clock time; the other {n_pairs - len(pairs)} overlap ({detail})."
         )
-        subject = "a difference between the two runs of a non-overlapping pair"
-    return (
-        f"{lead} {gaps} "
-        "Anything that changed on the machine, the providers or the account between those spans "
-        f"varies with the runs, so {subject} is not attributable to the runs alone."
-    )
+    # A fact, never a verdict on the comparison: runs measured apart are one experiment while nothing that decides
+    # their result changed (owner, 2026-10-23), and a change that did is disclosed where it is recorded.
+    return f"{lead} {gaps}"
 
 
 __all__ = [

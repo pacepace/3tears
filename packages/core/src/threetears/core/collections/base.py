@@ -34,6 +34,7 @@ from sqlalchemy import Column, Float, MetaData, String, Table, Text
 from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.backends.protocol import L3Backend
 from threetears.core.cache import MISSING
+from threetears.core.collections.tier_reads import ReadTier, record_tier_read
 from threetears.core.collections.bypassing_write import BypassingWrite
 from threetears.core.collections.caller_transaction import CallerTransaction, shared_advance_for
 from threetears.core.collections.delete_cascade import (
@@ -1413,7 +1414,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         Every reader **in this class** routes through here. Nothing cached in L1
         ages; the one expiry is the row's own (:attr:`expires_at_column`), data the
         row carries. Callers that repair a miss by pulling through (:meth:`ensure`,
-        :meth:`_resolve_row`, :meth:`_ensure_in_l1`) pass ``expiring=True``; a
+        :meth:`_resolve_row`) pass ``expiring=True``; a
         reporting caller (:meth:`get_row_sync` and the like) does not, since hiding
         a row there turns updating an entity past its expiry into a crash.
 
@@ -2477,16 +2478,6 @@ class BaseCollection(ABC, Generic[EntityT]):
 
     # --- Subscript access (sync, transparent pull-through) ---
 
-    def _ensure_in_l1(self, entity_id: Any) -> dict[str, Any] | None:
-        """Pull entity into L1 via L2/L3 if not already cached. Sync.
-
-        Returns the row data if found, None if not found in any tier.
-        """
-        row = self._select_from_l1(entity_id, expiring=True)
-        if row is not None:
-            return row
-        return sync_await(self._pull_through(entity_id))
-
     async def _pull_through(self, entity_id: Any) -> dict[str, Any] | None:
         """Async pull-through: L2 -> L1, then L3 -> L1+L2. Returns the data or None.
 
@@ -2523,15 +2514,18 @@ class BaseCollection(ABC, Generic[EntityT]):
                     "absence served from an L1 marker",
                     extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name}},
                 )
+                record_tier_read(self.table_name, ReadTier.L1)
                 return None
         # a table dropped in this process leaves its own L2 entries untrusted until each is read
         # through from L3 again; the drop count says whether another drop landed during this read.
         drops_before = self._table_drops
         lookup = await self._l2_lookup(entity_id, distrust_row=self._distrusts_l2(entity_id))
         if lookup.row is not None:
+            record_tier_read(self.table_name, ReadTier.L2)
             if self._l1 is not None and self._l1_fence.still_newest(ticket):
                 self._l1_upsert(lookup.row, self.primary_key_columns)
             return lookup.row
+        record_tier_read(self.table_name, ReadTier.L3)
         pg_data = await self.fetch_from_store(entity_id)
         if pg_data is not None and self._row_is_expired(pg_data):
             pg_data = None
@@ -2798,15 +2792,16 @@ class BaseCollection(ABC, Generic[EntityT]):
         and return it forever -- ``collection[id]`` never reaches the pull-through
         below, whatever max age the collection configured, while ``get()`` beside
         it refreshes. The re-read after the pull-through does NOT expire: it was
-        just written.
+        just written. The read is counted against the tier that answered it, L1 included.
         """
         row = self._select_from_l1(entity_id, expiring=True)
         if row is not None:
+            record_tier_read(self.table_name, ReadTier.L1)
             return row
-        data = self._ensure_in_l1(entity_id)
+        data = sync_await(self._pull_through(entity_id))
         if data is None:
             raise KeyError(f"{self.table_name}[{entity_id!r}]: entity not found")
-        # If L1 exists, re-read from it (ensure_in_l1 populated it)
+        # If L1 exists, re-read from it (the pull-through populated it)
         if self._l1 is not None:
             row = self.get_row_sync(entity_id)
             if row is not None:
@@ -3248,6 +3243,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         row = self._select_from_l1(entity_id, expiring=True)
         if row is not None:
+            record_tier_read(self.table_name, ReadTier.L1)
             return row
         data = await self._pull_through(entity_id)
         return data

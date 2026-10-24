@@ -214,10 +214,6 @@ class TileCollection(DerivedCollection[TileEntity]):
     #: bucket's TTL was sized for, and a bucket pins one TTL for every key.
     build_lock_bucket: ClassVar[str] = "geo-tile-build-locks"
 
-    #: a cold low-zoom build is genuinely slow, so a loser waits accordingly
-    #: rather than duplicating it.
-    peer_wait_seconds: ClassVar[float] = 30.0
-
     def __init__(
         self,
         *args: Any,

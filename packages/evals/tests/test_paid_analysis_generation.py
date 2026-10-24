@@ -45,6 +45,7 @@ from threetears.evals.analysis.generator import (
 )
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.schema.models import utc_now_iso
+from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
@@ -167,7 +168,7 @@ def _admit(client: _Claude) -> Any:
 
 
 class _BrokenContract:
-    """Sends the contract with ``headline`` removed, so no compliant output can carry it."""
+    """Sends the contract with ``summary`` removed, so no compliant output can carry it."""
 
     def __init__(self, inner: _Claude) -> None:
         self._inner = inner
@@ -177,15 +178,15 @@ class _BrokenContract:
         broken = copy.deepcopy(response_format)
         assert broken is not None
         schema = broken["json_schema"]["schema"]
-        schema["required"] = [name for name in schema["required"] if name != "headline"]
-        del schema["properties"]["headline"]
+        schema["required"] = [name for name in schema["required"] if name != "summary"]
+        del schema["properties"]["summary"]
         return await self._inner.generate(system=system, user=user, response_format=broken)
 
 
 async def _generate(client: Any, tally: GenerationTally, admit: Any) -> EvalAnalysis:
     profile = toyhost_profile()
     analysis, _insights = await generate_analysis(
-        toyhost_bundle(profile=profile),
+        campaign_bundle(toyhost_bundle(profile=profile)),
         prompt=EVAL_ANALYSIS_GEN_DEFAULT,
         model=client.model_name,
         client=client,
@@ -219,7 +220,7 @@ async def test_a_real_writer_produces_a_valid_analysis_whose_evidence_resolves()
 
 
 async def test_a_broken_contract_fails_the_lane() -> None:
-    """With ``headline`` gone from the contract, both calls are refused, so the lane cannot pass a broken prompt."""
+    """With ``summary`` gone from the contract, both calls are refused, so the lane cannot pass a broken prompt."""
     client = _Claude(_MODEL)
     tally = GenerationTally()
 
@@ -228,4 +229,4 @@ async def test_a_broken_contract_fails_the_lane() -> None:
 
     assert not _SPEND.refused, f"the ceiling refused a call, which is not the failure under test: {_SPEND.refused}"
     assert tally.calls == 2 and len(tally.refusals) == 2, "the first output and its one repair were both refused"
-    assert "headline" in tally.refusals[0] and "headline" in str(refused.value)
+    assert "summary" in tally.refusals[0] and "summary" in str(refused.value)

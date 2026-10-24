@@ -302,6 +302,7 @@ from threetears.evals.analysis.bundle.schema import (
     FloorContrastReading,
     JudgedArm,
     JudgedMeasure,
+    LateCriterion,
     LeverCoverageInput,
     MeasureMovement,
     MechanismCheck,
@@ -309,7 +310,6 @@ from threetears.evals.analysis.bundle.schema import (
     MeritTier,
     MultipleComparisons,
     PairingCorrelation,
-    QuestionAfterRuns,
     QuestionScope,
     ReadingScope,
     RealizedDesign,
@@ -381,7 +381,9 @@ from threetears.evals.analysis.lenses.frontier import (
     FrontierVerdict,
     SubjectFrontier,
     FrontierBoundaryCheck,
+    PassHatKCellReading,
 )
+from threetears.evals.kernel.scoring import UnpooledReason
 from threetears.evals.analysis.lenses.history import HistoryResult, MeasureSeries, RegressionFlag, SeriesPoint
 from threetears.evals.analysis.lenses.export import ExportFormat, ScoreExport
 from threetears.evals.analysis.service import AnalysisStore
@@ -603,6 +605,8 @@ __all__ = [
     "FrontierPoint",
     "FrontierResult",
     "FrontierVerdict",
+    "UnpooledReason",
+    "PassHatKCellReading",
     "FrozenReporterCase",
     "GenerationError",
     "GenerationTally",
@@ -669,7 +673,7 @@ __all__ = [
     "PreparedGeneration",
     "PreparedReporter",
     "ProjectionExclusions",
-    "QuestionAfterRuns",
+    "LateCriterion",
     "QuestionScope",
     "ReadingScope",
     "RealizedDesign",

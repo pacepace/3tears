@@ -204,12 +204,15 @@ def _disclosure(host: OpsHost, storage: EvalStorage, runs: list[EvalRun], name: 
     return assemble_context_bundle(campaign, storage=storage, profile=host.eval_host.profile).launch_disclosure
 
 
-async def test_a_campaign_says_when_its_arms_were_co_loaded_or_run_one_after_another() -> None:
+async def test_a_campaign_says_when_its_arms_co_loaded_their_providers_and_never_when_they_ran() -> None:
+    """Co-loading changes a provider's capacity per arm, which is said. Time apart is no confound (owner, 2026-10-23):
+    arms run one after another, or taking their turns case by case, are one experiment, and nothing is said."""
     host, storage = off_loop(_host, ScriptedExtractionClient())
 
-    for schedule, says in (("concurrent", "loaded their providers at once"), ("sequential", "one arm after another")):
-        disclosure = off_loop(_disclosure, host, storage, await _launch(host, arm_schedule=schedule), schedule)
-        assert disclosure is not None and says in disclosure
+    concurrent = off_loop(_disclosure, host, storage, await _launch(host, arm_schedule="concurrent"), "concurrent")
+    assert concurrent is not None and "loaded their providers at once" in concurrent
+    sequential = off_loop(_disclosure, host, storage, await _launch(host, arm_schedule="sequential"), "sequential")
+    assert sequential is None, "arms run one after another are one experiment"
     interleaved = off_loop(_disclosure, host, storage, await _launch(host), "interleaved")
     assert interleaved is None, "arms taking their turns case by case need no timing disclosure"
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-object-store"
-version = "0.76.0"
+version = "0.77.0"
 description = "Streaming S3-compatible object store for large binary artifacts (Path-2)"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -28,9 +28,9 @@ classifiers = [
 # directly rather than through aioboto3, whose last release (15.5.0, 2025-10) pins aiobotocore 2.25
 # and with it a boto3 too old for redshift-connector's eval() fix (CVE-2026-8838, needs 2.1.14).
 dependencies = [
-    "3tears>=0.76.0,<0.77.0",
-    "3tears-media-contracts>=0.76.0,<0.77.0",
-    "3tears-observe>=0.76.0,<0.77.0",
+    "3tears>=0.77.0,<0.78.0",
+    "3tears-media-contracts>=0.77.0,<0.78.0",
+    "3tears-observe>=0.77.0,<0.78.0",
     "aiobotocore>=3.9",
     "cryptography>=42",  # AES-256-GCM sealing and scrypt key derivation (object_store.encrypted)
     "pydantic>=2",  # SecretStr for the sealing passphrase (object_store.encrypted)

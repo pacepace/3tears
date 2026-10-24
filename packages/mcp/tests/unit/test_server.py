@@ -154,8 +154,7 @@ class TestDispatchHappyPath:
             registry=_registry_with(tool),
         )
         result = await _call_tool(server, "probe", {"foo": "bar"})
-        # the server returns list[TextContent] and the SDK's call_tool decorator
-        # wraps it in CallToolResult(isError=False, ...) at the protocol layer.
+        # the handler returns a str and the server wraps it in CallToolResult(isError=False, ...)
         assert result.model_dump(by_alias=True)["isError"] is False
         assert len(result.content) == 1
         assert "called with {'foo': 'bar'}" in _content_text(result)
@@ -287,8 +286,8 @@ class TestDispatchHappyPath:
 class TestDispatchErrorPaths:
     """all error paths return ``CallToolResult(isError=True, ...)``.
 
-    rationale: the SDK's ``call_tool`` decorator passes
-    :class:`CallToolResult` returns through verbatim. wrapping
+    rationale: the SDK passes a returned :class:`CallToolResult`
+    through verbatim. wrapping
     errors in plain ``list[TextContent]`` and JSON-encoding
     ``isError`` inside the text body would surface to clients as
     ``isError=False`` at the protocol layer -- the failure signal
@@ -351,9 +350,9 @@ class TestDispatchErrorPaths:
     async def test_a_bug_in_the_identity_provider_is_not_read_as_identity_unavailable(self) -> None:
         """only the Protocol's RuntimeError means "no identity"; any other raise is a bug and propagates.
 
-        the dispatch does not answer it, so it reaches the MCP SDK's own catch-all, which reports the
-        bare exception text rather than this server's ``IDENTITY_UNAVAILABLE`` envelope: mcp 1.x as an
-        ``isError`` result, 2.x as a JSON-RPC error the client raises.
+        the dispatch does not answer it, so it reaches the MCP SDK's own catch-all, which answers the
+        request with a JSON-RPC error the client raises, on either SDK major, rather than this server's
+        ``IDENTITY_UNAVAILABLE`` result.
         """
         provider = MagicMock()
         provider.identify = AsyncMock(side_effect=AttributeError("a bug in the provider"))
@@ -366,12 +365,11 @@ class TestDispatchErrorPaths:
         )
         try:
             result = await _call_tool(server, "probe", {})
-        except BaseException as raised:  # noqa: BLE001 -- mcp 2.x: the client raises the server's JSON-RPC error
+        except BaseException as raised:  # noqa: BLE001 -- the client raises the server's JSON-RPC error
             reported = [str(leaf) for leaf in _leaves(raised) if type(leaf).__name__ in {"MCPError", "McpError"}]
-            assert reported == ["a bug in the provider"], raised
-        else:  # mcp 1.x: the SDK's call_tool decorator answered an isError result
-            assert result.model_dump(by_alias=True)["isError"] is True
-            assert _content_text(result) == "a bug in the provider"
+        else:
+            pytest.fail(f"a bug escaping the dispatch answered a result, not a JSON-RPC error: {result!r}")
+        assert reported == ["a bug in the provider"]
         handler.assert_not_called()
 
     @pytest.mark.asyncio

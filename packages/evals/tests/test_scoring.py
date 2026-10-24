@@ -45,6 +45,7 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.kernel.result_condition import ResultOutcome
 from threetears.evals.kernel.scoring import (
+    PassHatKCell,
     NO_PASS_CRITERION_REASON,
     CellSummary,
     compute_async_delivery_summary,
@@ -56,12 +57,14 @@ from threetears.evals.kernel.scoring import (
     compute_per_case_composites,
     pass_hat_k_at,
     pass_hat_k_cell,
+    pass_hat_k_cell_alone,
+    pass_hat_k_cell_reason,
     percentile,
     pool_pass_hat_k,
     result_composite,
     summarize_completeness,
 )
-from threetears.evals.kernel.identity import IDENTITY_VERSION
+from threetears.evals.kernel.identity import IDENTITY_VERSION, derive_context_identity
 from packages.evals.tests.factories import make_eval_result, make_eval_run, make_scored_result, make_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -730,35 +733,178 @@ class TestPoolingAcrossRuns:
             pool_pass_hat_k([], cell_of_run={}, k=0)
 
 
+def _stamped(run, profile):
+    """``run`` as the launch stamps it: its context identity, derived now, written onto it."""
+    identity = derive_context_identity(run, profile)
+    return run.model_copy(
+        update={
+            "context_key": identity.context_key,
+            "context_components": identity.context_components,
+            "identity_version": identity.identity_version,
+        }
+    )
+
+
+#: What a launched run records beside its context: the digest of what its template measured, and the model the
+#: provider's responses named as answering it. A run that records both pools on its context; one silent on either is
+#: a cell of its own.
+_DIGEST = "measured-digest-1"
+_SERVED = ("served-model-1",)
+
+
+def _launched(run):
+    """``run`` with the template digest a launch freezes on it."""
+    return run.model_copy(update={"template_digest": _DIGEST})
+
+
+def _cell_of(run, profile=None, *, served=_SERVED, served_unrecorded=False):
+    """The cell of ``run`` for a contestant whose responses named ``served`` (and, ``served_unrecorded``, one named none)."""
+    return pass_hat_k_cell(run, profile, served=served, served_unrecorded=served_unrecorded)
+
+
 class TestTheCellARunsAttemptsPoolUnder:
-    """Runs pool only when a recorded context says they held the same conditions fixed."""
+    """Runs pool only when what they recorded says they held the same conditions fixed."""
 
     def test_two_runs_sharing_a_context_key_are_one_cell(self):
-        a = make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION)
-        b = make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION, k_runs=3)
-        assert pass_hat_k_cell(a) == pass_hat_k_cell(b)
+        a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        b = _launched(make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION, k_runs=3))
+        assert _cell_of(a) == _cell_of(b)
 
     def test_a_different_context_is_a_different_cell(self):
-        a = make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION)
-        b = make_eval_run(id="r2", context_key="ctx-2", identity_version=IDENTITY_VERSION)
-        assert pass_hat_k_cell(a) != pass_hat_k_cell(b)
+        a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        b = _launched(make_eval_run(id="r2", context_key="ctx-2", identity_version=IDENTITY_VERSION))
+        assert pass_hat_k_cell_reason(_cell_of(a), _cell_of(b)) == ("changed_context", "context_key")
 
-    def test_one_key_stamped_under_two_predicates_is_two_cells(self):
-        a = make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION)
-        b = make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION - 1)
-        assert pass_hat_k_cell(a) != pass_hat_k_cell(b)
+    def test_without_a_host_one_key_stamped_under_two_predicates_is_two_cells(self):
+        """Nothing re-derives the older stamp, so it cannot be shown to be this build's key."""
+        a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        b = _launched(make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION - 1))
+        assert pass_hat_k_cell_reason(_cell_of(a), _cell_of(b)) == ("changed_context", "identity_version")
+
+    def test_a_run_stamped_before_the_bump_pools_with_one_stamped_after_it(self):
+        """The cell is the context as it resolves at this build's version, never the stamp."""
+        profile = toyhost_profile()
+        after = _launched(_stamped(make_eval_run(id="r1"), profile))
+        before = _launched(
+            make_eval_run(id="r2").model_copy(
+                update={"context_key": "an-older-predicates-key", "identity_version": IDENTITY_VERSION - 1}
+            )
+        )
+        assert _cell_of(before, profile) == _cell_of(after, profile)
+
+    def test_two_runs_over_different_case_sets_are_one_cell(self):
+        """More cases are more samples of one condition, never a condition of their own."""
+        profile = toyhost_profile()
+        a = _launched(_stamped(make_eval_run(id="r1", test_case_ids=["tc1", "tc2"]), profile))
+        b = _launched(_stamped(make_eval_run(id="r2", test_case_ids=["tc2", "tc3", "tc4"]), profile))
+        assert a.context_key == b.context_key
+        assert _cell_of(a, profile) == _cell_of(b, profile)
+
+    def test_a_run_of_another_template_is_another_cell(self):
+        profile = toyhost_profile()
+        a = _launched(_stamped(make_eval_run(id="r1"), profile))
+        b = _launched(_stamped(make_eval_run(id="r2", template_id="tpl-2"), profile))
+        assert pass_hat_k_cell_reason(_cell_of(a, profile), _cell_of(b, profile)) == ("other_template", "template_id")
 
     def test_a_commissioned_and_a_witnessed_run_are_two_cells(self):
-        a = make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION)
-        b = make_eval_run(
-            id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION, apparatus_provenance="witnessed"
+        a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        b = _launched(
+            make_eval_run(
+                id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION, apparatus_provenance="witnessed"
+            )
         )
-        assert pass_hat_k_cell(a) != pass_hat_k_cell(b)
+        assert pass_hat_k_cell_reason(_cell_of(a), _cell_of(b)) == ("changed_context", "apparatus_provenance")
 
     def test_a_run_with_no_recorded_context_pools_with_nothing(self):
-        a, b = make_eval_run(id="r1"), make_eval_run(id="r2")
+        a, b = _launched(make_eval_run(id="r1")), _launched(make_eval_run(id="r2"))
         assert a.context_key is None
-        assert pass_hat_k_cell(a) != pass_hat_k_cell(b)
+        assert pass_hat_k_cell_reason(_cell_of(a, toyhost_profile()), _cell_of(b, toyhost_profile())) == (
+            "no_recorded_context",
+            "recorded",
+        )
+
+    def test_a_run_that_froze_no_template_digest_pools_with_nothing_and_says_so(self):
+        """A silent digest is never evidence of a match: the revision it ran is unknown, so it is a cell of its own."""
+        recorded = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        silent = make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION)
+        assert silent.template_digest is None
+        assert _cell_of(silent).run_id == "r2"
+        assert pass_hat_k_cell_reason(_cell_of(silent), _cell_of(recorded)) == (
+            "no_recorded_template",
+            "template_digest",
+        )
+        assert pass_hat_k_cell_reason(_cell_of(recorded), _cell_of(silent)) == (
+            "no_recorded_template",
+            "template_digest",
+        )
+
+    def test_a_run_whose_responses_named_no_model_pools_with_nothing_and_says_so(self):
+        """A silent served model is never evidence of a match: which model answered is unknown."""
+        a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        b = _launched(make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        silent = _cell_of(b, served=(), served_unrecorded=True)
+        assert silent.run_id == "r2"
+        assert pass_hat_k_cell_alone(silent) == ("no_recorded_served_model", "served")
+        assert pass_hat_k_cell_reason(silent, _cell_of(a)) == ("no_recorded_served_model", "served")
+
+    def test_a_run_some_of_whose_responses_named_no_model_pools_with_nothing(self):
+        """One unnamed response leaves which model answered it unknown, whatever the others named."""
+        a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        b = _launched(make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        partial = _cell_of(b, served_unrecorded=True)
+        assert partial.served == _SERVED and partial.run_id == "r2"
+        assert pass_hat_k_cell_reason(partial, _cell_of(a)) == ("no_recorded_served_model", "served")
+
+    def test_two_runs_whose_candidate_made_no_model_call_pool(self):
+        """No call is a recorded fact, not a silence: the runs pool on everything else."""
+        a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        b = _launched(make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        assert _cell_of(a, served=()) == _cell_of(b, served=())
+        assert pass_hat_k_cell_alone(_cell_of(a, served=())) is None
+
+    def test_a_run_that_made_no_model_call_does_not_pool_with_one_that_called_a_model(self):
+        a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        b = _launched(make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        assert pass_hat_k_cell_reason(_cell_of(a, served=()), _cell_of(b)) == ("other_served_model", "served")
+
+    def test_two_silent_runs_each_stand_apart(self):
+        """Two runs silent alike are no more one cell than a silent run and a recorded one."""
+        a = make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION)
+        b = make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION)
+        assert _cell_of(a) != _cell_of(b)
+        assert pass_hat_k_cell_reason(_cell_of(a), _cell_of(b)) == ("no_recorded_template", "template_digest")
+        quiet_a = _cell_of(_launched(a), served=(), served_unrecorded=True)
+        quiet_b = _cell_of(_launched(b), served=(), served_unrecorded=True)
+        assert quiet_a != quiet_b
+        assert pass_hat_k_cell_reason(quiet_a, quiet_b) == (
+            "no_recorded_served_model",
+            "served",
+        )
+
+    def test_a_silent_run_that_also_ran_another_template_reads_its_silence(self):
+        """It stands apart for what it did not record, whatever else differs."""
+        a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
+        b = make_eval_run(id="r2", template_id="tpl-2", context_key="ctx-1", identity_version=IDENTITY_VERSION)
+        assert pass_hat_k_cell_reason(_cell_of(b), _cell_of(a)) == ("no_recorded_template", "template_digest")
+
+    def test_runs_of_one_cell_over_different_case_sets_cover_the_union_of_their_cases(self):
+        """A top-up over the cases a run missed adds those cases; a case both ran gains depth."""
+        profile = toyhost_profile()
+        a = _launched(_stamped(make_eval_run(id="r1", test_case_ids=["tc1", "tc2"]), profile))
+        b = _launched(_stamped(make_eval_run(id="r2", test_case_ids=["tc2", "tc3"]), profile))
+        results = [
+            _pooled_result("r1", 1, True, test_case_id="tc1"),
+            _pooled_result("r1", 1, True, test_case_id="tc2"),
+            _pooled_result("r2", 1, False, test_case_id="tc2"),
+            _pooled_result("r2", 1, True, test_case_id="tc3"),
+        ]
+        cells = {run.id: _cell_of(run, profile) for run in (a, b)}
+
+        entry = pool_pass_hat_k(results, cell_of_run=cells, k=2)
+
+        assert entry["n_test_cases"] == 3
+        # tc2 alone reached two attempts, one from each run: pass^2 over it is 0.
+        assert _curve(entry) == [(1, pytest.approx(5 / 6), 3), (2, 0.0, 1)]
 
 
 # =============================================================================
@@ -1728,3 +1874,25 @@ class TestWhatAJudgedDimCountsAs:
         faulted = make_scored_result(infra_error="delivery never landed", rubric_scores=(("reply.tone", 5),))
         healthy = make_scored_result(test_case_id="tc2", rubric_scores=(("reply.tone", 3),))
         assert self._dims(faulted, healthy) == {"reply.tone": 3.0}
+
+
+def test_two_cells_that_each_pool_differing_in_any_one_field_are_two_for_a_reason_read_from_that_field() -> None:
+    """Every field two pooling cells can differ in has a reason, and every other field marks a cell of one run whose
+    reason is read off its own record; a field the cell gains as neither fails the import of the scoring module."""
+    differing: dict[str, tuple[Any, Any]] = {
+        "int | None": (1, 2),
+        "tuple[str, ...]": (("model-a",), ("model-b",)),
+        "str | None": ("a", "b"),
+    }
+    marks = {"recorded", "unresolved", "run_id", "served_unrecorded"}
+    base = PassHatKCell(recorded=True)
+    for field in dataclasses.fields(PassHatKCell):
+        if field.name in marks:
+            continue
+        one, other = differing[str(field.type)]
+        cell = dataclasses.replace(base, **{field.name: one})
+        apart = dataclasses.replace(base, **{field.name: other})
+        reason = pass_hat_k_cell_reason(cell, apart)
+        assert reason is not None and reason[1] == field.name, (field.name, reason)
+    alone = dataclasses.replace(base, run_id="r-1", template_digest="d", served_unrecorded=True)
+    assert pass_hat_k_cell_reason(alone, base) == ("no_recorded_served_model", "served")
