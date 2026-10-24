@@ -553,15 +553,16 @@ class TableCell(EvalDocumentModel):
         return said if self.flag is None else f"{said} ({self.flag})"
 
 
-def table_row(values: Mapping[str, CellValue]) -> dict[str, TableCell]:
-    """A table row from its values, each made a :class:`TableCell`.
+def table_row(values: Mapping[str, CellValue | TableCell]) -> dict[str, TableCell]:
+    """A table row from its values, each made a :class:`TableCell`; a value already a cell (one that links, say) is
+    kept as it is.
 
-    :param values: The row's values, by column key.
-    :ptype values: Mapping[str, CellValue]
+    :param values: The row's values, or cells, by column key.
+    :ptype values: Mapping[str, CellValue | TableCell]
     :return: The row's cells, by the same keys, in the same order.
     :rtype: dict[str, TableCell]
     """
-    return {key: TableCell(value=value) for key, value in values.items()}
+    return {key: value if isinstance(value, TableCell) else TableCell(value=value) for key, value in values.items()}
 
 
 class TableBlock(_Block):
@@ -581,6 +582,13 @@ class TableBlock(_Block):
         default=None,
         description=(
             "An anchor on the page the title links to, where the table reads a sentence said there; None for none."
+        ),
+    )
+    shared_scale: bool = Field(
+        default=False,
+        description=(
+            "Whether HTML draws every glyph in one unit on one scale across the table's columns, as a matrix's are, "
+            "each column the same quantity for another arm; otherwise each column has its own."
         ),
     )
 

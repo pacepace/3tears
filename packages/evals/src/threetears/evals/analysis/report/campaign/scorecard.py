@@ -287,7 +287,7 @@ def _change_matrix(
         if not on:
             continue
         cells = {
-            "aspect": TableCell(value=names(aspect.label)),
+            "aspect": names.cell(aspect.label),
             "cases": TableCell(value=_cases([min(row.control_cases, row.arm_cases) for row in on.values()])),
             _arm_column(control): _control_cell(list(on.values()), reports[aspect.label].bundle, control),
         }
@@ -300,6 +300,7 @@ def _change_matrix(
     return TableBlock(
         section="scorecard",
         name=_SCORECARD_TABLE,
+        shared_scale=True,
         title=_MATRIX_TITLE,
         columns=columns,
         rows=rows,
@@ -389,7 +390,7 @@ def _change_rows(readings: CampaignReadings, names: AspectNames) -> TableBlock:
         rows.append(
             table_row(
                 {
-                    "aspect": names(row.aspect),
+                    "aspect": names.cell(row.aspect),
                     "arm": row.arm_label,
                     "cases": min(row.control_cases, row.arm_cases),
                     "control": _counted(row.control_passed, row.control_trials, row.control_cases),
@@ -653,7 +654,7 @@ def settle_blocks(
     rows = [
         table_row(
             {
-                "aspect": names(sizing.aspect),
+                "aspect": names.cell(sizing.aspect),
                 "arm": sizing.arm,
                 "shows": sizing.shows,
                 "decided_by": sizing.decided_by,
@@ -897,7 +898,7 @@ def pair_blocks(
         ahead = pair.ahead_label or "no separation"
         cells = table_row(
             {
-                "aspect": names(pair.aspect),
+                "aspect": names.cell(pair.aspect),
                 "first": pair.first_label,
                 "second": pair.second_label,
                 "cases": min(pair.first_cases, pair.second_cases),
@@ -965,7 +966,7 @@ def _choice_matrix(
             continue
         boards = {board.variant_key: board for board in reports[aspect.label].bundle.scoreboard}
         cells = {
-            "aspect": TableCell(value=names(aspect.label)),
+            "aspect": names.cell(aspect.label),
             "cases": TableCell(value=_cases([boards[arm].usable_cases for arm in arms if arm in boards])),
         }
         for arm in arms:
@@ -979,6 +980,7 @@ def _choice_matrix(
     return TableBlock(
         section="scorecard",
         name=_SCORECARD_TABLE,
+        shared_scale=True,
         title=_MATRIX_TITLE,
         columns=columns,
         rows=rows,
@@ -1097,8 +1099,8 @@ def measure_blocks(
     ]
     rows = []
     for reading in readings.measures:
-        values: dict[str, CellValue] = {
-            "aspect": names(reading.aspect),
+        values: dict[str, CellValue | TableCell] = {
+            "aspect": names.cell(reading.aspect),
             "arm": reading.arm_label,
             "measure": _measure_words(reading, reports),
             "value": _measured(reading.value, reading.passed, reading.trials, reading.cases),
@@ -1181,7 +1183,7 @@ def _measure_matrix(
             held = [reading for reading in readings.measures if reading.aspect == aspect.label and reading.arm == arm]
             if not held:
                 continue
-            cells = {"aspect": TableCell(value=names(aspect.label))}
+            cells = {"aspect": names.cell(aspect.label)}
             if len(arms) > 1:
                 cells["arm"] = TableCell(value=labels[arm])
             for key in measures:
@@ -1191,6 +1193,7 @@ def _measure_matrix(
     return TableBlock(
         section="scorecard",
         name=_SCORECARD_TABLE,
+        shared_scale=True,
         title=_MATRIX_TITLE if len(arms) > 1 else f"{labels[arms[0]]} by aspect",
         columns=columns,
         rows=rows,
@@ -1291,7 +1294,7 @@ def bar_blocks(readings: CampaignReadings, reports: Mapping[str, Report], *, nam
     rows = [
         table_row(
             {
-                "aspect": names(status.aspect),
+                "aspect": names.cell(status.aspect),
                 "arm": status.arm_label,
                 "measure": named(status.aspect, status.measure),
                 "bar": f"{'at most' if status.direction == 'lower_is_better' else 'at least'} {format_number(status.bar)}",

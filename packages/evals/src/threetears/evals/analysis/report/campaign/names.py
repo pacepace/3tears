@@ -19,6 +19,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.report.model import TableCell, fold_ids
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.declaration import printed_aspect_name
 
@@ -44,10 +45,14 @@ class AspectNames:
     :ivar by_label: Each aspect's name, by its label, in the campaign's order.
     :ivar checks: Each aspect's declared check display names (``AnalysisContextBundle.goal_check_names``: a check's
         expression to its name), by the aspect's label.
+    :ivar folds: The id of the section around each aspect's fold on the campaign's page (``aspect-<fold id>``,
+        :func:`~threetears.evals.analysis.report.model.fold_ids`), by the aspect's label: where a cell naming the
+        aspect links.
     """
 
     by_label: Mapping[str, str]
     checks: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    folds: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
     def of(cls, bundles: Iterable[AnalysisContextBundle]) -> AspectNames:
@@ -59,9 +64,11 @@ class AspectNames:
         :rtype: AspectNames
         """
         held = list(bundles)
+        labels = [bundle.aspect for bundle in held]
         return cls(
             {bundle.aspect: aspect_name(bundle) for bundle in held},
             {bundle.aspect: dict(bundle.goal_check_names) for bundle in held},
+            {label: f"aspect-{slug}" for label, slug in zip(labels, fold_ids(labels), strict=True)},
         )
 
     def __call__(self, label: str) -> str:
@@ -73,6 +80,17 @@ class AspectNames:
         :rtype: str
         """
         return self.by_label.get(label, label)
+
+    def cell(self, label: str) -> TableCell:
+        """A table cell naming the aspect labelled ``label``, linked to its fold, so a reader goes from a row to the
+        aspect's own page; unlinked for an aspect the page has no fold for.
+
+        :param label: The aspect's label.
+        :ptype label: str
+        :return: The cell.
+        :rtype: TableCell
+        """
+        return TableCell(value=self(label), ref=self.folds.get(label))
 
     def check_names(self, label: str) -> Mapping[str, str]:
         """The display names the aspect labelled ``label`` declares for its goal checks, by check expression: what a

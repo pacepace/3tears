@@ -62,7 +62,10 @@ the first screen and their detail stated once (a campaign's Design & provenance,
 methods), never one line per aspect or per criterion. `late_criteria_lines` is replaced by `timing_caveats`, and
 `report.decision.floor_warning` is removed. The memo's findings and next steps are their own sections. HTML links
 aspects in a campaign table to their folds, shows a long expression in a table by its start and a visible ellipsis,
-and draws a scorecard matrix's glyphs on one scale.
+and draws a scorecard matrix's glyphs on one scale. Both are the page's own: a cell naming an aspect carries its
+fold's link from where it is built (`AspectNames.cell`, the link in `AspectNames.folds`), and a table drawn on one
+scale says so (`TableBlock.shared_scale`, new, default false); the HTML renders what the block says and reads no
+table's name or cell's text for it. `table_row` keeps a value that is already a cell.
 
 ### evals: a reporter label's form follows its dimension's scale, and may quote the memo passage it is about
 

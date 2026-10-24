@@ -181,9 +181,19 @@ def test_a_matrix_draws_every_column_s_glyphs_on_one_scale_so_they_compare_acros
         TableColumn(key="b", header="b"),
     ]
     rows = [{"aspect": TableCell(value="billing"), "a": cell(1, -2, 4), "b": cell(30, 20, 40)}]
+    # The table says whether it is drawn on one scale; its name decides nothing.
     tables = [
-        TableBlock(section="scorecard", name=name, title="t", columns=columns, rows=rows, order="o", total_rows=1)
-        for name in ("scorecard", "other")
+        TableBlock(
+            section="scorecard",
+            name=name,
+            title="t",
+            columns=columns,
+            rows=rows,
+            order="o",
+            total_rows=1,
+            shared_scale=shared,
+        )
+        for name, shared in (("probe", True), ("other", False))
     ]
 
     def axis(table: TableBlock) -> str:
@@ -195,6 +205,9 @@ def test_a_matrix_draws_every_column_s_glyphs_on_one_scale_so_they_compare_acros
     matrix, other = (axis(table) for table in tables)
     assert matrix.startswith('<p class="axis">Each column drawn from ') and " · " not in matrix
     assert "a drawn from" in other and "b drawn from" in other
+    # The page's own matrix is one.
+    (own,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "scorecard"]
+    assert own.shared_scale
 
 
 #: A check's expression longer than a cell shows whole: 64 characters.
@@ -208,7 +221,26 @@ def _with_table(page: CampaignReport, table: TableBlock) -> str:
     return html[start : html.index("</table>", start)]
 
 
-def test_an_aspect_a_campaign_table_names_links_its_fold_and_a_cell_linking_elsewhere_keeps_its_link() -> None:
+@pytest.mark.parametrize("name", ["s1", "s2", "s3"])
+def test_every_aspect_a_campaign_table_names_links_its_fold_from_the_cell_built_for_it(name: str) -> None:
+    page = SHAPES[name]().page()
+    folds = {fold.aspect: f"aspect-{slug}" for fold, slug in zip(page.aspects, page.fold_ids, strict=True)}
+    named = {fold.aspect for fold in page.aspects}
+    linked = [
+        (row["aspect"].text, row["aspect"].ref)
+        for block in page.blocks
+        if isinstance(block, TableBlock) and any(column.key == "aspect" for column in block.columns)
+        for row in block.rows
+        if row["aspect"].text in named
+    ]
+    assert linked, "the page's tables name its aspects"
+    assert all(ref == folds[aspect] for aspect, ref in linked)
+    html = campaign_report_html(page)
+    assert all(f'<a href="#{folds[aspect]}">{aspect}</a>' in html for aspect, _ in linked)
+    assert "](#aspect-" not in campaign_report_markdown(page), "Markdown links no fold"
+
+
+def test_the_html_links_a_cell_where_the_cell_says_and_reads_no_aspect_from_its_text() -> None:
     page = s1_change().page()
     columns = [TableColumn(key="aspect", header="Aspect"), TableColumn(key="arm", header="Arm")]
     rows = [
@@ -221,7 +253,7 @@ def test_an_aspect_a_campaign_table_names_links_its_fold_and_a_cell_linking_else
             section=section, name="probe", title="Probe", columns=columns, rows=rows, order="o", total_rows=3
         )
         markup = _with_table(page, table)
-        assert '<td><a href="#aspect-billing">billing</a></td>' in markup
+        assert "<td>billing</td>" in markup, "a cell naming an aspect links only where it says so"
         assert '<td><a href="#aspect-billing">tone</a></td>' in markup, "its own link, kept"
         assert "<td>no such aspect</td>" in markup and "<td>v2</td>" in markup, "nothing else is linked"
 

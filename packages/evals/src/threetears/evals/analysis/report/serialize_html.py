@@ -30,7 +30,7 @@ import html
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 
 from threetears.evals.analysis.report.model import (
     FIRST_SCREEN,
@@ -47,7 +47,6 @@ from threetears.evals.analysis.report.model import (
     TextBlock,
     TrialBlock,
 )
-from threetears.evals.analysis.report.campaign.names import aspect_name
 from threetears.evals.analysis.report.serialize_md import RESOLUTION_WORDS, SUMMARY_LEADS, trial_summary
 from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg, interval_glyph_svg
 from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
@@ -253,7 +252,6 @@ def campaign_report_html(report: CampaignReport) -> str:
     """
     head = [block for block in report.blocks if block.section in FIRST_SCREEN]
     slugs = report.fold_ids
-    places = _fold_places(report)
     parts = [
         "<!doctype html>",
         '<html lang="en">',
@@ -268,7 +266,7 @@ def campaign_report_html(report: CampaignReport) -> str:
         "<header>",
         # The title first, then the decision: the question, the answer, then what warns, as consequences.
         f"<h1>{_escape(_one_line(report.title))}</h1>",
-        *(_block(_linked(block, places), index) for index, block in enumerate(head)),
+        *(_block(block, index) for index, block in enumerate(head)),
         "</header>",
     ]
     # What the page reads and the writer says sit before the folds; how the page was made (the methods) after them.
@@ -281,19 +279,19 @@ def campaign_report_html(report: CampaignReport) -> str:
     links += [("glossary", SECTION_TITLES["glossary"])] if report.terms else []
     parts.append("<nav>" + "".join(f'<a href="#{href}">{_escape(text)}</a>' for href, text in links) + "</nav>")
     for section in before:
-        parts += _campaign_section(report, section, places)
+        parts += _campaign_section(report, section)
     for fold, slug in zip(report.aspects, slugs, strict=True):
         parts += _aspect_fold(fold, slug)
     for section in after:
-        parts += _campaign_section(report, section, places)
+        parts += _campaign_section(report, section)
     parts += _glossary(report.terms)
     parts += ["</article>", "</body>", "</html>"]
     return _links_in_sight("\n".join(parts) + "\n")
 
 
-def _campaign_section(report: CampaignReport, section: str, places: Mapping[str, str]) -> list[str]:
+def _campaign_section(report: CampaignReport, section: str) -> list[str]:
     """One section of a campaign's page after its first screen: what it means open, the methods folded."""
-    blocks = [(index, _linked(block, places)) for index, block in enumerate(report.blocks) if block.section == section]
+    blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
     return [
         f'<section id="{section}">',
         *_section(section, report.section_titles[section], _folded(blocks), count=None),
@@ -304,33 +302,6 @@ def _campaign_section(report: CampaignReport, section: str, places: Mapping[str,
 #: An id or a link to one, as the page writes them: every id a fold holds is prefixed, every link to a place in it.
 _ID_ATTRIBUTE = re.compile(r'\b(id|aria-labelledby)="([^"]*)"')
 _LOCAL_LINK = re.compile(r'href="#(?!g-)([^"]*)"')
-
-
-def _fold_places(report: CampaignReport) -> dict[str, str]:
-    """Each aspect as a campaign's page names it in a table, to the id of the section around its fold: by what the
-    page calls it, and by its label."""
-    places: dict[str, str] = {}
-    for fold, slug in zip(report.aspects, report.fold_ids, strict=True):
-        places.setdefault(aspect_name(fold.report.bundle), f"aspect-{slug}")
-        places.setdefault(fold.aspect, f"aspect-{slug}")
-    return places
-
-
-def _linked(block: ReportBlock, places: Mapping[str, str]) -> ReportBlock:
-    """A campaign table with each aspect it names in its aspect column linked to that aspect's fold, where the cell
-    links nowhere else; every other block as it is."""
-    if not isinstance(block, TableBlock) or not any(column.key == "aspect" for column in block.columns):
-        return block
-    rows = [
-        {
-            key: cell.model_copy(update={"ref": places[cell.text]})
-            if key == "aspect" and cell.ref is None and cell.text in places
-            else cell
-            for key, cell in row.items()
-        }
-        for row in block.rows
-    ]
-    return block.model_copy(update={"rows": rows})
 
 
 def _aspect_fold(fold: CampaignAspectFold, slug: str) -> list[str]:
@@ -625,7 +596,7 @@ def _grid(block: TableBlock) -> str:
 
 def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], tuple[float, float]]:
     """The scale each column's glyphs are drawn on, per unit: one for every cell of the column in that unit, or, in a
-    matrix (:data:`_MATRIX_TABLES`), whose columns are one quantity read for each arm, one for every cell of the table
+    table drawn on one scale (``TableBlock.shared_scale``: a matrix), whose columns are one quantity read for each arm, one for every cell of the table
     in that unit, so a glyph compares across columns as well as down them.
 
     The scale holds every interval end, every point and every margin band of the group, and zero where any cell is a
@@ -645,7 +616,7 @@ def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], tuple[float, float
                 group += [-cell.margin, cell.margin]
             if cell.zero_line:
                 group.append(0.0)
-    if block.name in _MATRIX_TABLES:
+    if block.shared_scale:
         by_unit: dict[str, list[float]] = {}
         for (_, unit), figures in ends.items():
             by_unit.setdefault(unit, []).extend(figures)
@@ -656,10 +627,6 @@ def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], tuple[float, float
         pad = (high - low) * 0.05 or abs(high) * 0.05 or 1.0
         scales[group_key] = (low - pad, high + pad)
     return scales
-
-
-#: The tables whose glyph columns share one scale per unit: a matrix, each column the same quantity for another arm.
-_MATRIX_TABLES: frozenset[str] = frozenset({"scorecard"})
 
 
 def _glyph(cell: TableCell, key: str, scales: dict[tuple[str, str], tuple[float, float]]) -> str:
@@ -683,7 +650,7 @@ def _scale_line(block: TableBlock, scales: dict[tuple[str, str], tuple[float, fl
         return ""
     headers = {column.key: column.header for column in block.columns}
     spans: dict[str, list[str]] = {}
-    if block.name in _MATRIX_TABLES:
+    if block.shared_scale:
         # One scale per unit for every column: written once, not once per column.
         scales = {("", unit): scale for (_, unit), scale in scales.items()}
         headers[""] = "Each column"

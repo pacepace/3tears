@@ -27,7 +27,7 @@ from typing import Literal
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, CriterionKind, LateCriterion
 from threetears.evals.analysis.report.campaign.common import named_arms
-from threetears.evals.analysis.report.campaign.names import aspect_name, measure_name_of
+from threetears.evals.analysis.report.campaign.names import AspectNames, aspect_name, measure_name_of
 from threetears.evals.analysis.report.campaign.warnings import listed, where
 from threetears.evals.analysis.report.decision import floor_statement
 from threetears.evals.analysis.report.model import (
@@ -38,7 +38,6 @@ from threetears.evals.analysis.report.model import (
     TableBlock,
     TableCell,
     TableColumn,
-    fold_ids,
 )
 from threetears.evals.analysis.style import ArmName, humanize
 from threetears.evals.kernel.campaign import EvalCampaign
@@ -229,13 +228,13 @@ def provenance_blocks(
     :return: The tables, each only where it has a row.
     :rtype: list[ReportBlock]
     """
-    folds = dict(zip([a.label for a in campaign.aspects], fold_ids([a.label for a in campaign.aspects]), strict=True))
+    folds = AspectNames.of(bundles).folds
     by_name = {aspect_name(bundle): bundle.aspect for bundle in bundles}
 
     def aspects(names: Sequence[str]) -> TableCell:
         # One aspect's cell links its fold; a list of several links none, since a cell links one place.
         one = by_name.get(names[0]) if len(names) == 1 else None
-        return TableCell(value=_aspects_cell(names, len(bundles)), ref=f"aspect-{folds[one]}" if one in folds else None)
+        return TableCell(value=_aspects_cell(names, len(bundles)), ref=folds.get(one) if one is not None else None)
 
     blocks = _criteria_table(bundles, section="provenance", cell=aspects)
     setup: dict[tuple[str, str | int], list[str]] = {}

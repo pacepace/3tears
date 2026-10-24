@@ -65,7 +65,7 @@ def depth_blocks(
     rows = [
         table_row(
             {
-                "aspect": names(depth.aspect),
+                "aspect": names.cell(depth.aspect),
                 "arm": arm,
                 "cases": held.cases,
                 "trials": held.trials,
@@ -103,13 +103,13 @@ def depth_blocks(
         for _, depth in depths
         if depth.said is not None
     ]
-    blocks += _pass_k_depth_blocks(depths, labels)
+    blocks += _pass_k_depth_blocks(depths, labels, names)
     blocks += _precision_blocks(readings, names)
     return blocks
 
 
 def _pass_k_depth_blocks(
-    depths: Sequence[tuple[AnalysisContextBundle, AspectDepth]], labels: Mapping[str, str]
+    depths: Sequence[tuple[AnalysisContextBundle, AspectDepth]], labels: Mapping[str, str], names: AspectNames
 ) -> list[ReportBlock]:
     """Each frontier point's depth beside its pass^k: the planned depth, the cases short of it, and its reading at the
     common depth, the fewest runs any arm gave a shared case; a sentence on the common depth, or that the arms share no
@@ -125,7 +125,7 @@ def _pass_k_depth_blocks(
                 rows.append(
                     table_row(
                         {
-                            "aspect": said.where,
+                            "aspect": TableCell(value=said.where, ref=names.folds.get(bundle.aspect)),
                             "arm": name(point.variant_key),
                             "planned": subject.k,
                             "short": point.n_cases_short_of_k,
@@ -163,7 +163,7 @@ def _pass_k_depth_blocks(
         for _, depth in depths
         for line in depth.pass_k_lines()
     ]
-    return blocks + _model_blocks(depths, labels)
+    return blocks + _model_blocks(depths, labels, names)
 
 
 #: The two arms a precision row compares.
@@ -174,14 +174,14 @@ _MODEL_SAID = f"Each figure here is {MODEL_ASSUMES}. Its arm ran no case that de
 
 
 def _model_blocks(
-    depths: Sequence[tuple[AnalysisContextBundle, AspectDepth]], labels: Mapping[str, str]
+    depths: Sequence[tuple[AnalysisContextBundle, AspectDepth]], labels: Mapping[str, str], names: AspectNames
 ) -> list[ReportBlock]:
     """The opt-in model-based pass^k of each point at a depth it never reached, in a table of its own, labelled a
     model with what it assumes: never beside a measured figure as one."""
     rows = [
         table_row(
             {
-                "aspect": said.where,
+                "aspect": TableCell(value=said.where, ref=names.folds.get(bundle.aspect)),
                 "arm": _label_of(bundle, labels)(point.variant_key),
                 "depth": point.model_pass_hat_k.k,
                 "model": round(100 * point.model_pass_hat_k.pass_hat_k, 1),
@@ -236,7 +236,7 @@ def _precision_blocks(readings: CampaignReadings, names: AspectNames) -> list[Re
         rows.append(
             table_row(
                 {
-                    "aspect": names(aspect),
+                    "aspect": names.cell(aspect),
                     "arms": ARMS_PAIR.format(first=named(first), second=named(second)),
                     "half_width": round(precision.half_width, 1),
                     "first": round(first_width, 1),

@@ -343,7 +343,9 @@ class _Trace:
                     fold="Evidence",
                 )
             )
-        if not any(cell.ref is not None for row in rows for cell in row.values()):
+        # A figure or a trial linking its fold traces the finding; the aspect's own cell links its fold whatever it
+        # cites, so it traces nothing.
+        if not any(row["value"].ref is not None for row in rows):
             blocks.append(
                 DisclosureBlock(section="findings", source="memo", text=UNTRACED, finding=position, fold="Evidence")
             )
@@ -370,7 +372,7 @@ class _Trace:
             figure = evidence_figure(row, ruler)
             rows.append(
                 {
-                    "aspect": TableCell(value=self.names(row.aspect)),
+                    "aspect": self.names.cell(row.aspect),
                     "arm": TableCell(value=self._arm(row.aspect, variant_of_cell_ref(row.cell_ref) or row.cell_ref)),
                     "reading": TableCell(
                         value=ruler.scaled(
@@ -400,7 +402,7 @@ class _Trace:
         aspect, own = where
         arm = next((held.arm for held in self.reports[aspect].bundle.trials if held.trial_id == own), None)
         return {
-            "aspect": TableCell(value=self.names(aspect)),
+            "aspect": self.names.cell(aspect),
             "arm": TableCell(value=self._arm(aspect, arm) if arm is not None else None),
             "reading": TableCell(value="trial"),
             "value": TableCell(value=own, ref=self._fold(aspect) if arm is not None else None),
