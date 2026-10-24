@@ -26,6 +26,7 @@ import pytest
 
 pytest.importorskip("pyarrow")
 
+import duckdb  # noqa: E402
 from sqlalchemy import MetaData  # noqa: E402
 
 from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
@@ -2915,3 +2916,107 @@ async def test_a_write_that_outruns_a_rebuild_with_nothing_to_read_leaves_no_ind
     with snapshot.read() as cursor:
         assert cursor.execute("SELECT count(*) FROM results WHERE state = 'DE'").fetchone() == (10,)
     await snapshot.stop()
+
+
+_BURST = [f"S{n:02d}" for n in range(12)]
+
+
+async def _burst_pair() -> tuple[ScopedSnapshot, ScopedSnapshot, _Pointers, _Store, _L3]:
+    """a writer and a replica over one bucket, store and L3 of twelve scopes, both ready at epoch 1."""
+    pointers, store = _Pointers(), _Store()
+    l3 = _L3([{"county": f"c{scope}", "state": scope, "votes": 1} for scope in _BURST])
+    writer, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    replica, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    l3.epochs = dict.fromkeys(_BURST, 1)
+    await writer.start()
+    await writer.wait_ready(timeout=5)
+    await replica.start()
+    await replica.wait_ready(timeout=5)
+    return writer, replica, pointers, store, l3
+
+
+async def _publish_burst(writer: ScopedSnapshot, l3: _L3) -> None:
+    staged = [
+        await writer.stage(scope, 2, {"results": [{"county": f"c{scope}", "state": scope, "votes": 2}]})
+        for scope in _BURST
+    ]
+    l3.epochs = dict.fromkeys(_BURST, 2)
+    moved, skipped = await writer.publish_staged(staged, carry_at=dict.fromkeys(_BURST, 1))
+    assert (sorted(moved), skipped) == (_BURST, [])
+
+
+async def test_a_burst_of_scopes_published_together_reaches_a_replica_as_one_move() -> None:
+    writer, replica, _, _, l3 = await _burst_pair()
+    moves: list[dict[str, int]] = []
+    replica.on_change(lambda: moves.append(replica.applied_epochs()))
+
+    await _publish_burst(writer, l3)
+    await _until(lambda: replica.applied_epochs() == dict.fromkeys(_BURST, 2), what="the replica at epoch 2")
+
+    assert len(moves) == 1, f"the replica moved {len(moves)} times for one burst: {moves}"
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_writer_checks_its_staged_scopes_side_by_side() -> None:
+    writer, replica, _, store, l3 = await _burst_pair()
+    real_info = store.info
+    in_flight = [0, 0]
+
+    async def slow_info(name: str) -> ObjectInfo | None:
+        in_flight[0] += 1
+        in_flight[1] = max(in_flight[1], in_flight[0])
+        try:
+            await asyncio.sleep(0.01)
+            return await real_info(name)
+        finally:
+            in_flight[0] -= 1
+
+    store.info = slow_info  # type: ignore[method-assign]
+    await _publish_burst(writer, l3)
+    assert in_flight[1] > 1, "the writer checked its staged scopes one after another"
+    await writer.stop()
+    await replica.stop()
+
+
+class _RefusingScope(DuckDBBackend):
+    """a DuckDB L1 that refuses, as a broken key does, any commit carrying one scope's rows."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.refused: str | None = None
+
+    def replace_partitions(self, replacements: Any) -> int:
+        if self.refused is not None and any(r.value == self.refused for r in replacements):
+            raise duckdb.ConstraintException(f"a row of {self.refused} is already held")
+        written: int = super().replace_partitions(replacements)
+        return written
+
+
+async def test_a_burst_the_l1_refuses_one_scope_of_still_applies_the_others() -> None:
+    pointers, store = _Pointers(), _Store()
+    l3 = _L3([{"county": f"c{scope}", "state": scope, "votes": 1} for scope in _BURST])
+    writer, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    refusing = _RefusingScope()
+    metadata = MetaData()
+    _RESULTS.to_sqlalchemy_table(metadata)
+    refusing.initialize(metadata)
+    replica, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3, backend=refusing)
+    l3.epochs = dict.fromkeys(_BURST, 1)
+    await writer.start()
+    await writer.wait_ready(timeout=5)
+    await replica.start()
+    await replica.wait_ready(timeout=5)
+    pointers.put_now("enr.rebuild", b"another replica")  # no rebuild here: only the chunks move the scopes
+    refusing.refused = "S03"
+
+    await _publish_burst(writer, l3)
+    others = dict.fromkeys([scope for scope in _BURST if scope != "S03"], 2)
+    await _until(
+        lambda: {s: e for s, e in replica.applied_epochs().items() if s != "S03"} == others,
+        what="every scope but the refused one at epoch 2",
+    )
+    assert replica.applied_epoch("S03") == 1
+    await _until(lambda: "S03" in replica.status().behind, what="the refused scope shown behind")
+    await writer.stop()
+    await replica.stop()

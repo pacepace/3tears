@@ -50,6 +50,17 @@ the redshift extra installed, importing `threetears.datasources` loads `redshift
 package imports and a Redshift config raises the ImportError naming the extra. The Snowflake and BigQuery drivers
 are stubs and load no backend library.
 
+### core: a burst of scopes reaches a scoped snapshot's readers as one move
+
+**Fixed:** A replica applied a burst of moved scopes one at a time (0.2-1.4 s each, a reader's rows rebuilt after
+each), so an every-state write reached a page over half a minute in many index moves. `ScopedSnapshot` now fetches
+the moved scopes' chunks side by side (`l2_concurrency` at once), takes in the scopes whose pointers move while it
+fetches, and commits them to the L1 in one swap with one change notice (`apply_batch` scopes at most, default 64, so
+memory stays bounded; a larger burst is committed in batches). A batch the L1 refuses is committed scope by scope, so
+one scope that cannot be applied goes behind alone. The writer's `publish_staged` completes, checks and moves its
+staged scopes side by side (`l2_concurrency` at once) and indexes them in one update; every moved pointer is still
+indexed on every way out. Epochs, L3 as the truth, `discard_epoch` and `catch_up_from_l3` are unchanged.
+
 ### nats: a tool pod tells the hub that a CDN-cached index it serves moved
 
 **Added:** `Subjects.hub_cache_index_moved()` (`{ns}.hub.cache.index.moved`), published by a tool pod (its grant) and

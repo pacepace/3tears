@@ -173,6 +173,10 @@ _DEFAULT_L3_CONCURRENCY: Final = 4
 #: What a load holds is these scopes' decoded chunks, never every scope's
 _DEFAULT_L2_CONCURRENCY: Final = 16
 
+#: how many scopes' fetched chunks a replica holds at once to commit them as one move; a burst of more is
+#: committed in batches of this many
+_DEFAULT_APPLY_BATCH: Final = 64
+
 #: how many times a rebuild reads again after a write committed while it read
 _REBUILD_ATTEMPTS: Final = 3
 
@@ -1284,6 +1288,22 @@ class _Sweeper:
         )
 
 
+@dataclass(frozen=True)
+class _Fetched:
+    """one scope's chunks fetched for a batch: what the L1 held when the fetch began, and what it brings.
+
+    :ivar held: the pointer the L1 held the scope at, as the fetch judged against
+    :ivar current: the pointer the chunks belong to
+    :ivar replacements: the scope's new contents
+    :ivar started: when the fetch began, for the change's seconds
+    """
+
+    held: _Pointer | None
+    current: _Pointer
+    replacements: list[PartitionReplacement]
+    started: float
+
+
 class ScopedSnapshot:
     """tables a pod needs whole, held in L2 as chunks per scope and table, loaded into DuckDB.
 
@@ -1312,6 +1332,9 @@ class ScopedSnapshot:
     :ptype retire_batch: int
     :param l2_concurrency: scopes a load holds at once: fetched from L2 beside the one it commits
     :ptype l2_concurrency: int
+    :param apply_batch: scopes whose moved chunks a replica holds at once to commit them in one swap, so a
+        burst of pointers reaches readers as one move; a larger burst is committed in batches of this many
+    :ptype apply_batch: int
     :param l3_concurrency: scopes a rebuild holds at once: read from L3 beside the one it publishes
     :ptype l3_concurrency: int
     :param claim_ttl: how long a rebuild's claim, or a write claim, lasts once its holder stops renewing
@@ -1344,6 +1367,7 @@ class ScopedSnapshot:
         retire: Callable[[list[str]], Awaitable[Any]] | None = None,
         retire_batch: int = MAX_RETIRED_OBJECTS,
         l2_concurrency: int = _DEFAULT_L2_CONCURRENCY,
+        apply_batch: int = _DEFAULT_APPLY_BATCH,
         l3_concurrency: int = _DEFAULT_L3_CONCURRENCY,
         claim_ttl: timedelta = _DEFAULT_CLAIM_TTL,
         recheck: timedelta = _DEFAULT_RECHECK,
@@ -1367,6 +1391,7 @@ class ScopedSnapshot:
         self._settled = settled
         self._ensure_buckets = ensure_buckets
         self._l2_concurrency = l2_concurrency
+        self._apply_batch = max(1, apply_batch)
         self._l3_concurrency = l3_concurrency
         self._claim_ttl = claim_ttl
         self._recheck = recheck
@@ -2240,7 +2265,15 @@ class ScopedSnapshot:
         for scope in index:
             if scope in self._seen and self._foreign_ahead(self._seen[scope], self._applied.get(scope)):
                 self._mark_foreign(scope)
-        await self._apply_pointers(moved, mark_behind=True)
+
+        def still_moved() -> dict[str, _Pointer]:
+            return {
+                scope: self._seen[scope]
+                for scope in self._index or ()
+                if scope in self._seen and self._ahead(self._seen[scope], self._applied.get(scope))
+            }
+
+        await self._apply_pointers(moved, mark_behind=True, more=still_moved)
         # a scope removed before it was ever applied leaves no `behind` entry to report, or to rebuild
         self._behind = _updated(
             self._behind, drop=[scope for scope in self._behind if scope not in index and scope not in self._seen]
@@ -2277,8 +2310,21 @@ class ScopedSnapshot:
         # (L3 below its pointer, or a pointer of other columns it may not load) stays behind
         log.info("scoped snapshot %s: rebuilt %s from L3", self._name, sorted(rebuilt or ()))
 
-    async def _apply_pointers(self, pointers: Mapping[str, _Pointer], *, mark_behind: bool = False) -> dict[str, str]:
-        """fetch each scope's chunks and replace it in this L1, unless the L1 already holds as new.
+    async def _apply_pointers(
+        self,
+        pointers: Mapping[str, _Pointer],
+        *,
+        mark_behind: bool = False,
+        more: Callable[[], Mapping[str, _Pointer]] | None = None,
+    ) -> dict[str, str]:
+        """fetch the scopes' chunks side by side and replace them in this L1 in one swap, unless it already holds as new.
+
+        A burst -- a writer moving many scopes' pointers at once -- reaches readers as one move: the chunks
+        are fetched ``l2_concurrency`` at once, the scopes whose pointers moved meanwhile (``more``) are
+        fetched too, and what was fetched is committed in one transaction, with one change notice. At most
+        ``apply_batch`` scopes' chunks are held at once; a larger burst is committed in batches of that
+        many. A batch the L1 refuses is committed scope by scope, so one scope that cannot be applied does
+        not hold the others back.
 
         A scope whose chunks cannot be read has failed, and with ``mark_behind`` goes on ``behind``, one failure
         more, unless a write moved it on while they were read. That is judged under the L1's lock, which a publish holds from its local commit (which takes
@@ -2289,43 +2335,141 @@ class ScopedSnapshot:
         :ptype pointers: Mapping[str, _Pointer]
         :param mark_behind: whether a failure goes on ``behind`` (a recheck's), or is only returned (a rebuild's)
         :ptype mark_behind: bool
+        :param more: the scopes to apply as they stand now, asked again once a batch is fetched, so pointers that
+            moved while it was fetched join it; ``None`` applies ``pointers`` alone
+        :ptype more: Callable[[], Mapping[str, _Pointer]] | None
         :return: scope -> why its chunks could not be read, for each one no write moved on from, each logged
         :rtype: dict[str, str]
         """
         failed: dict[str, str] = {}
-        for scope, pointer in pointers.items():
+        pending = dict(pointers)
+        # the pointer each scope was fetched at in this call: a scope is fetched again only once it moves past it
+        fetched_at: dict[str, _Pointer] = {}
+        while pending:
+            batch: dict[str, _Fetched] = {}
+            while pending and len(batch) < self._apply_batch:
+                wave = dict(islice(sorted(pending.items()), self._apply_batch - len(batch)))
+                for scope, pointer in wave.items():
+                    del pending[scope]
+                    fetched_at[scope] = pointer
+                batch.update(await self._fetch_wave(wave, failed, mark_behind=mark_behind))
+                if more is not None and not pending:
+                    pending = {
+                        scope: pointer
+                        for scope, pointer in more().items()
+                        if scope not in fetched_at or pointer.supersedes(fetched_at[scope])
+                    }
+            await self._commit_batch(batch)
+        return failed
+
+    async def _fetch_wave(
+        self, pointers: Mapping[str, _Pointer], failed: dict[str, str], *, mark_behind: bool
+    ) -> dict[str, _Fetched]:
+        """fetch the scopes' chunks side by side, ``l2_concurrency`` at once; record each that cannot be read.
+
+        :param pointers: the scopes and their pointers
+        :ptype pointers: Mapping[str, _Pointer]
+        :param failed: where a scope that cannot be read is recorded, with why
+        :ptype failed: dict[str, str]
+        :param mark_behind: whether such a scope goes on ``behind``
+        :ptype mark_behind: bool
+        :return: scope -> what was fetched, for each scope that was
+        :rtype: dict[str, _Fetched]
+        """
+        gate = asyncio.Semaphore(max(1, self._l2_concurrency))
+
+        async def fetch(scope: str, pointer: _Pointer) -> _Fetched | None:
             started = time.perf_counter()
             held = self._applied.get(scope)
             try:
-                current, replacements = await self._fetch_current(scope, pointer, held)
-                async with self._local:
-                    if self._applied.get(scope) is not held:
-                        # what the fetch was judged against moved meanwhile (a publish here): the next
-                        # pass judges the scope again from what the L1 holds now
-                        self._changed.set()
-                        continue
-                    if not current.supersedes(held):
-                        continue
-                    await self._commit_fetched(replacements, [scope], epochs={scope: current.epoch})
-                    self._applied = _updated(self._applied, {scope: current})
+                async with gate:
+                    current, replacements = await self._fetch_current(scope, pointer, held)
             except _Lost as exc:
-                log.warning("scoped snapshot %s: scope %r could not be applied: %s", self._name, scope, exc)
-                async with self._local:
-                    seen = self._seen.get(scope)
-                    if (seen is not None and seen.supersedes(pointer)) or not self._ahead(
-                        pointer, self._applied.get(scope)
-                    ):
-                        # a write moved the scope past the pointer that failed; the next recheck judges the new one
-                        continue
-                    if mark_behind:
-                        self._behind = _updated(
-                            self._behind, {scope: (self._behind.get(scope, (0, ""))[0] + 1, str(exc))}
-                        )
-                failed[scope] = str(exc)
-                continue
+                await self._note_unread(scope, pointer, exc, failed, mark_behind=mark_behind)
+                return None
+            return _Fetched(held=held, current=current, replacements=replacements, started=started)
+
+        fetched = await asyncio.gather(*(fetch(scope, pointer) for scope, pointer in pointers.items()))
+        return {scope: got for scope, got in zip(pointers, fetched, strict=True) if got is not None}
+
+    async def _note_unread(
+        self, scope: str, pointer: _Pointer, exc: _Lost, failed: dict[str, str], *, mark_behind: bool
+    ) -> None:
+        """record a scope whose chunks could not be read or applied, unless a write moved it on meanwhile.
+
+        :return: nothing
+        :rtype: None
+        """
+        log.warning("scoped snapshot %s: scope %r could not be applied: %s", self._name, scope, exc)
+        async with self._local:
+            seen = self._seen.get(scope)
+            if (seen is not None and seen.supersedes(pointer)) or not self._ahead(pointer, self._applied.get(scope)):
+                # a write moved the scope past the pointer that failed; the next recheck judges the new one
+                return
+            if mark_behind:
+                self._behind = _updated(self._behind, {scope: (self._behind.get(scope, (0, ""))[0] + 1, str(exc))})
+        failed[scope] = str(exc)
+
+    async def _commit_batch(self, batch: Mapping[str, _Fetched]) -> None:
+        """commit what a batch fetched in one swap, the scopes in order; scope by scope when the L1 refuses it.
+
+        :param batch: scope -> what was fetched
+        :ptype batch: Mapping[str, _Fetched]
+        :return: nothing
+        :rtype: None
+        """
+        if not batch:
+            return
+        applied: dict[str, _Fetched] = {}
+        async with self._local:
+            fresh = {}
+            for scope in sorted(batch):
+                got = batch[scope]
+                if self._applied.get(scope) is not got.held:
+                    # what the fetch was judged against moved meanwhile (a publish here): the next
+                    # pass judges the scope again from what the L1 holds now
+                    self._changed.set()
+                elif got.current.supersedes(got.held):
+                    fresh[scope] = got
+            try:
+                await self._commit_fetched(
+                    [replacement for got in fresh.values() for replacement in got.replacements],
+                    list(fresh),
+                    epochs={scope: got.current.epoch for scope, got in fresh.items()},
+                )
+                applied = fresh
+            except _Lost:
+                # NOSILENT: one scope's rows were refused; each is committed on its own below, and the one refused
+                # is recorded there
+                applied = {}
+            else:
+                self._applied = _updated(self._applied, {scope: got.current for scope, got in applied.items()})
+        if fresh and not applied:
+            for scope, got in fresh.items():
+                await self._commit_one(scope, got)
+            return
+        if applied:
             self._notify()
-            self._record_change(scope, current, started)
-        return failed
+            for scope, got in applied.items():
+                self._record_change(scope, got.current, got.started)
+
+    async def _commit_one(self, scope: str, got: _Fetched) -> None:
+        """commit one scope's fetched chunks, as a batch the L1 refused is committed.
+
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            async with self._local:
+                if self._applied.get(scope) is not got.held or not got.current.supersedes(got.held):
+                    return
+                await self._commit_fetched(got.replacements, [scope], epochs={scope: got.current.epoch})
+                self._applied = _updated(self._applied, {scope: got.current})
+        except _Lost as exc:
+            await self._note_unread(scope, got.current, exc, {}, mark_behind=True)
+            return
+        self._notify()
+        self._record_change(scope, got.current, got.started)
 
     async def _drop_locally(self, scopes: Sequence[str], *, unless_seen: bool = False) -> None:
         """remove scopes from this L1, in one transaction.
@@ -2989,40 +3133,27 @@ class ScopedSnapshot:
         finished = False
         try:
             try:
-                for scope in staged:
-                    if self._claim_lost(scope):
-                        skipped.append(scope.scope)
-                        continue
-                    completed = await self._completed(scope, int(carry_at.get(scope.scope, 0)), whole=whole)
-                    if completed is None:
-                        skipped.append(scope.scope)
-                        continue
-                    pointer, observed = completed
-                    if not await self._exist(pointer.names()):
-                        # never a pointer onto a missing chunk: the scope is left to the catch-up, which
-                        # republishes it from L3 (it stages it again)
-                        log.error(
-                            "scoped snapshot %s: a chunk staged for scope %r at epoch %d is gone; its pointer is "
-                            "not moved, and the catch-up republishes it from L3",
-                            self._name,
-                            scope.scope,
-                            scope.epoch,
-                        )
-                        skipped.append(scope.scope)
-                        continue
-                    # the claim may have lapsed during the round trips above: checked again, the moment
-                    # before the move, and a lost one skipped like any other
-                    if self._claim_lost(scope):
-                        skipped.append(scope.scope)
-                        continue
-                    if observed is _ANY_ENTRY:
-                        held = await self._move_pointer(pointer)
-                        (moved if held == pointer else superseded).append(scope.scope)
-                    elif await self._move_exactly(pointer, observed):
-                        moved.append(scope.scope)
-                    else:
-                        # what it carried, or filled empty, was judged against an entry that has moved since
-                        skipped.append(scope.scope)
+                # every scope is completed, checked and moved side by side, ``l2_concurrency`` at once: each
+                # is several store round trips, and one after another they held a burst's last pointer back
+                # by all of them. Each records its outcome the moment it has one, so a pointer that moved is
+                # indexed below on every way out; every scope runs to its end even when another raises, and
+                # the first failure is raised after
+                gate = asyncio.Semaphore(max(1, self._l2_concurrency))
+                outcomes = {"moved": moved, "skipped": skipped, "superseded": superseded}
+
+                async def publish_one(scope: StagedScope) -> None:
+                    async with gate:
+                        outcome = await self._publish_one_staged(scope, int(carry_at.get(scope.scope, 0)), whole=whole)
+                    outcomes[outcome].append(scope.scope)
+
+                results = await asyncio.gather(*(publish_one(scope) for scope in staged), return_exceptions=True)
+                failure = next((result for result in results if isinstance(result, BaseException)), None)
+                if failure is not None:
+                    raise failure
+                # in the order the scopes were staged, as one after another they were
+                order = {scope.scope: index for index, scope in enumerate(staged)}
+                for listed in (moved, skipped, superseded):
+                    listed.sort(key=order.__getitem__)
                 finished = True
                 if superseded:
                     log.info(
@@ -3062,6 +3193,47 @@ class ScopedSnapshot:
                 extra={"extra_data": {"scopes": skipped}},
             )
         return moved, skipped
+
+    async def _publish_one_staged(self, scope: StagedScope, carry_at: int, *, whole: bool) -> str:
+        """complete, check and move one staged scope's pointer: what :meth:`publish_staged` does for each.
+
+        :param scope: the stage
+        :ptype scope: StagedScope
+        :param carry_at: its epoch before the write
+        :ptype carry_at: int
+        :param whole: whether the staged scopes are every scope L3 holds
+        :ptype whole: bool
+        :return: ``"moved"``, ``"skipped"`` (left to the catch-up) or ``"superseded"`` (a racing writer is ahead)
+        :rtype: str
+        """
+        if self._claim_lost(scope):
+            return "skipped"
+        completed = await self._completed(scope, carry_at, whole=whole)
+        if completed is None:
+            return "skipped"
+        pointer, observed = completed
+        if not await self._exist(pointer.names()):
+            # never a pointer onto a missing chunk: the scope is left to the catch-up, which
+            # republishes it from L3 (it stages it again)
+            log.error(
+                "scoped snapshot %s: a chunk staged for scope %r at epoch %d is gone; its pointer is "
+                "not moved, and the catch-up republishes it from L3",
+                self._name,
+                scope.scope,
+                scope.epoch,
+            )
+            return "skipped"
+        # the claim may have lapsed during the round trips above: checked again, the moment
+        # before the move, and a lost one skipped like any other
+        if self._claim_lost(scope):
+            return "skipped"
+        if observed is _ANY_ENTRY:
+            held = await self._move_pointer(pointer)
+            return "moved" if held == pointer else "superseded"
+        if await self._move_exactly(pointer, observed):
+            return "moved"
+        # what it carried, or filled empty, was judged against an entry that has moved since
+        return "skipped"
 
     async def _compact(self, scope: str) -> bool:
         """fold a scope's pieces into a new base where they are past the threshold; never raises.
