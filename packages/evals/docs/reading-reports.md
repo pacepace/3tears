@@ -42,9 +42,10 @@ first screen. Top to bottom:
 | 1 | each missed bar, then each broken floor | each missed bar | each missed bar |
 | 2 | title and question | title and question | title and question |
 | 3 | the writer's summary | the writer's summary | the writer's summary |
-| 4 | the writer's recommendation | the writer's recommendation, or no clear winner | **By aspect, measure by measure** |
-| 5 | **By aspect**: each candidate against the control, then **To show no worse than the margin** | **By aspect, pair by pair** | **Bars** |
-| 6 | **Bars**, then the call | **Bars**, then the call | |
+| 4 | the writer's recommendation | the writer's recommendation, or no clear winner | |
+| 5 | the call | the call | |
+
+Code's readings follow the first screen, under **Scorecard** ([below](#the-campaigns-scorecard)).
 
 The warnings are bold, above the title (in HTML each a `<p role="alert">`), and the writer's why sits beside each
 one the recommendation answers. A warning only warns: nothing on the page picks an arm, and the bars and floors decide
@@ -73,18 +74,35 @@ The candidate answers in the house tone far more often but fails billing, so it 
 **Recommended:** production (high confidence)
 
 - Billing is where refunds are lost, and the candidate breaks its floor there.
+```
+
+### The campaign's scorecard
+
+**One matrix, by the campaign's kind.** Its rows are the aspects. A change's columns are its candidates, each cell the
+candidate's change against the control in points, its interval drawn against the aspect's margin in HTML, and what
+it shows; the control's column holds its pass rate. A choice's columns are its arms, each cell the arm's pass rate
+and the arms it is shown ahead of. A measurement's columns are its one arm's measures. The same readings, one row
+per aspect × candidate (or per pair, or per measure) with their counts, are folded under it, and the **Bars** table
+follows for every kind. A change of three candidates on three aspects, one aspect where the control passes nothing:
+
+```markdown
+## Scorecard
 
 **By aspect**
 
-| Aspect | Arm | Cases | ▸ production | Arm passed | Change (pts) | Interval (pts) | Margin (pts) | Reading |
-|---|---|---|---|---|---|---|---|---|
-| billing | candidate | 20 | 54 of 60 | 18 of 60 | -60 | [-90.8, -19.9] | 10 | shown worse |
-| tone | candidate | 20 | 18 of 60 | 57 of 60 | 65 | [24.1, 94.8] | 10 | shown better |
-
-Each interval is read at 97.5%, corrected across each arm's aspects.
-
-Each arm's gains and its drops are each shown wrongly at most 2.5% of the time.
+| Aspect | Cases | ▸ production (%) | v2 (pts) | v3 (pts) | v4 (pts) |
+|---|---|---|---|---|---|
+| billing | 20 | 90 | -60 (shown worse) | -5 (unclear) | 5 (unclear) |
+| tone | 20 | 50 | 40 (shown better; floor unclear) | 0 (unclear) | -10 (unclear; floor broken) |
+| refunds | 20 | 0 (cannot show a drop) | 25 (no worse than the margin) | 0 (unclear) | 10 (unclear) |
 ```
+
+**Marks beside a value.** A cell names its floor's status where the floor reads otherwise than the cell: a floor reads
+every rate its clause names at 95%, the cell the pass rate alone, so v4 above breaks tone's floor on a check while
+its pass rate is unclear. A control that cannot move says so: at or below the margin no drop past it can show, and
+at 100% no gain can. Where an arm ran a case more than once, its passes are counted as trials (`20 of 40 trials`),
+never beside the cases as if they were cases. Where `equal_weight_cells` gives a figure across every aspect, it is
+the matrix's last row, `All aspects (equal weight)`.
 
 **The readings.** A change reads each candidate on each aspect as **shown better** (its gain's interval lies wholly
 above zero), **shown worse** (its drop's interval lies wholly past the aspect's margin), **no worse than the margin**
@@ -105,11 +123,16 @@ level its row was tested at, so a reading and its interval never disagree, and a
 ([why](measuring-soundly.md#one-family-per-candidate)). A row no worse than the margin is not corrected: it is the
 floor's own reading of the pass rate at 95%, so a `RateDrop` floor on the pass rate at the margin's points and the
 row read one interval and say one thing. Where a floor and a row still part, on the points they read against or on
-a check's rate the floor also reads, a line under the table says which.
+a check's rate the floor also reads, the cell is marked with the floor's status. Where a contrast in an aspect's fold
+reads the very per-case values a row reads and reaches another verdict (a row shown better, its contrast not
+separated), one line under the matrix names both and the interval each was read on: the row's is bounded and
+corrected across its arm's aspects, the contrast's a t interval corrected within the aspect's family.
 
-**To settle.** Each unclear row of a change says, in the `To show no worse than the margin` table, how many cases
-would show the candidate no worse than the margin, if no difference and if as observed, with the cost. It is counted
-at 95%, as the floor projection below is, so a floor on the same rate and points gives the same count.
+**To settle.** One table, **To settle**, says for each unclear reading of a change how many cases would settle it, if
+no difference and if as observed, with the cost: a row left unclear against its margin, read on the pass rate, and
+each rate floor left unclear, read on every rate its clause names, with the rate that decides its count named. Both
+are counted at 95%, as the aspect's own floor table is. They agree where the pass rate decides the floor's count, and
+the floor's needs more where a check does.
 
 **The call** is the last line: who decided, which arm, when and why (where runs joined after it, the line counts
 them: `…, over 4 runs; 2 added since.`), then each broken floor and missed bar it overrides,
