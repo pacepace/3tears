@@ -79,6 +79,10 @@ this to High. The cheapest step is the owner answering them before Wave C.
 **Wave B integration, done** (merges 6b11d2c89, 3ae3ef26e, db1b43467): every item above is closed; each is a
 decision line below, prefixed `B:`.
 
+**Main-session read of the merged S1 page (after wave B), to fix in wave C:**
+- To settle prints two identical rows where a floor reads the pass rate at the margin's own points (e.g. billing/v3). One quantity is rendered once, so merge them into one row that says both what it shows and that the floor holds.
+- The level and correction explanation under the matrix is seven one-sentence paragraphs. Make it one short block, saying the same mechanism with no recitation.
+
 **Decisions made mid-build:** (append here, one line each)
 - [DECISION: runs made at 00107a5b7 stay poolable with every later pin of this plan, and no chunk may move a pooling or identity input: IDENTITY_VERSION, CELL_MODEL_VERSION, context/variant keys, apparatus_class_id, measured_template_digest, the content digest, case ids | main session 2026-10-24, before Discodon spends about $100 on runs at 00107a5b7; an investigation verified this with file:line evidence, and chunk 01 pins every such digest to its 00107a5b7 value]
 - [DECISION: Chunk 06's CAMPAIGN_BUNDLE_SHAPE move must keep a reporter case frozen at an earlier shape readable and calibratable (reporter_kind.py:554 refuses it today) | frozen labels are human work; Discodon freezes labels at 00107a5b7, so a shape bump must never void them. 06 adds a read path for earlier frozen shapes or freezes the frame shape-independently, with a test freezing at shape 2 and reading after 06]
