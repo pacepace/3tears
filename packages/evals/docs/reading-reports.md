@@ -130,9 +130,11 @@ corrected across its arm's aspects, the contrast's a t interval corrected within
 
 **To settle.** One table, **To settle**, says for each unclear reading of a change how many cases would settle it, if
 no difference and if as observed, with the cost: a row left unclear against its margin, read on the pass rate, and
-each rate floor left unclear, read on every rate its clause names, with the rate that decides its count named. Both
-are counted at 95%, as the aspect's own floor table is. They agree where the pass rate decides the floor's count, and
-the floor's needs more where a check does.
+each rate floor left unclear, read on every rate its clause names. Each count is the total cases, not cases to add,
+read at 95% over this run's cases and values, as the aspect's own floor table is. The two counts on one arm and
+aspect differ only where the floor reads other rates than the pass rate alone (every rate, or a check it names) or
+reads them against other points than the margin. **Decided by** names the rate deciding the floor's as-observed
+count; its no-difference count may be another rate's.
 
 **The call** is the last line: who decided, which arm, when and why (where runs joined after it, the line counts
 them: `…, over 4 runs; 2 added since.`), then each broken floor and missed bar it overrides,

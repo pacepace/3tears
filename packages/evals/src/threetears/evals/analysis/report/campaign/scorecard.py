@@ -15,8 +15,11 @@ The matrix's form follows the campaign's kind (:func:`~threetears.evals.analysis
 
 A change's or a choice's matrix carries one more row where
 :func:`~threetears.evals.analysis.report.campaign.aggregate.equal_weight_cells` gives it each arm's figure across every
-aspect (:data:`~threetears.evals.analysis.report.campaign.aggregate.EQUAL_WEIGHT_ROW`). Every kind then shows its bars
-table. Beside each aspect's fold, a few words say what code read there (:func:`aspect_shows`).
+aspect (:data:`~threetears.evals.analysis.report.campaign.aggregate.EQUAL_WEIGHT_ROW`), each cell in its column's
+unit, which the cell states (``TableCell.unit``) and the matrix checks: in a change, the control's mean pass rate in
+percent and each candidate's mean change against it in points; in a choice, each arm's mean pass rate in percent. A
+cell in another unit, for an arm with no column, or handed back where no matrix is laid out (a measurement, or a
+change or choice with nothing read) is refused, never dropped. Every kind then shows its bars table. Beside each aspect's fold, a few words say what code read there (:func:`aspect_shows`).
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import reduce
 
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, FamilyComparison
@@ -40,10 +44,9 @@ from threetears.evals.analysis.report.decision import (
     SampleProjection,
     aspect_pass_rate,
     case_cost_usd,
-    floor_projection,
     floor_readings,
-    project_rate,
     projected_cell,
+    rate_projections,
     read_floor,
 )
 from threetears.evals.analysis.report.model import (
@@ -158,13 +161,16 @@ def _with_equal_weight_row(
     readings: CampaignReadings,
     reports: Mapping[str, Report],
     columns: Sequence[TableColumn],
-    arms: Mapping[str, str],
+    arms: Mapping[str, tuple[str, str]],
 ) -> list[dict[str, TableCell]]:
     """The row across every aspect, each aspect weighed alike, with each arm's cell
     (:func:`~threetears.evals.analysis.report.campaign.aggregate.equal_weight_cells`) in that arm's column; no row
-    where no cell is given.
+    where no cell is given. ``arms`` is each arm's column and the unit it holds, by variant key. A figure states its
+    unit, which must be its column's; it is placed without it, since the column's header names it. A withheld figure
+    (no value) carries none.
 
-    :raises ValueError: A cell names an arm the matrix has no column for: the matrix would drop it.
+    :raises ValueError: A cell names an arm the matrix has no column for, holds words, or states a unit other than its
+        column's: the matrix would drop it or print it under the wrong unit.
     """
     across = aggregate.equal_weight_cells(campaign, readings, reports)
     if not across:
@@ -176,8 +182,29 @@ def _with_equal_weight_row(
         )
     row = {column.key: TableCell(value=None) for column in columns}
     row["aspect"] = TableCell(value=aggregate.EQUAL_WEIGHT_ROW)
-    row.update({arms[key]: cell for key, cell in across.items()})
+    for key, cell in across.items():
+        column, unit = arms[key]
+        if cell.value is not None and (not cell.is_number or cell.unit != unit):
+            stated = repr(cell.unit) if cell.is_number else f"the words {cell.value!r}"
+            raise ValueError(
+                f"the {aggregate.EQUAL_WEIGHT_ROW!r} cell for arm {key} states {stated}, and its column holds {unit!r}"
+            )
+        row[column] = cell.model_copy(update={"unit": ""})
     return [row]
+
+
+def _no_equal_weight_row(
+    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], why: str
+) -> None:
+    """Refuse a figure across every aspect where no matrix is laid out to hold it, rather than drop it.
+
+    :raises ValueError: :func:`~threetears.evals.analysis.report.campaign.aggregate.equal_weight_cells` gives a cell.
+    """
+    if across := aggregate.equal_weight_cells(campaign, readings, reports):
+        raise ValueError(
+            f"the {aggregate.EQUAL_WEIGHT_ROW!r} row names arm(s) {', '.join(sorted(across))}, and the scorecard lays "
+            f"out no matrix to hold it: {why}"
+        )
 
 
 # =============================================================================
@@ -201,9 +228,11 @@ def table_blocks(
     :ptype names: AspectNames
     :return: The matrix, its folded rows and its lines; one line where no control was named.
     :rtype: list[ReportBlock]
-    :raises ValueError: The equal-weight row names an arm the matrix has no column for.
+    :raises ValueError: An equal-weight cell cannot be placed: its arm has no column, its unit is not its column's, or
+        no matrix is laid out.
     """
     if readings.control is None:
+        _no_equal_weight_row(campaign, readings, reports, "no control was named")
         return [
             DisclosureBlock(
                 section="scorecard",
@@ -214,6 +243,8 @@ def table_blocks(
     blocks: list[ReportBlock] = []
     if readings.readings:
         blocks += [_change_matrix(campaign, readings, reports, names, readings.control), _change_rows(readings, names)]
+    else:
+        _no_equal_weight_row(campaign, readings, reports, "no candidate was compared on any aspect")
     levels = [
         level
         for row in readings.readings
@@ -258,13 +289,13 @@ def _change_matrix(
         cells = {
             "aspect": TableCell(value=names(aspect.label)),
             "cases": TableCell(value=_cases([min(row.control_cases, row.arm_cases) for row in on.values()])),
-            _arm_column(control): _control_cell(next(iter(on.values()))),
+            _arm_column(control): _control_cell(list(on.values()), reports[aspect.label].bundle, control),
         }
         for arm in candidates:
             row = on.get(arm)
             cells[_arm_column(arm)] = TableCell(value=None) if row is None else _change_cell(row, campaign, readings)
         rows.append(cells)
-    arms = {key: _arm_column(key) for key in (control, *candidates)}
+    arms = {control: (_arm_column(control), PERCENT), **{key: (_arm_column(key), POINTS) for key in candidates}}
     rows += _with_equal_weight_row(campaign, readings, reports, columns, arms)
     return TableBlock(
         section="scorecard",
@@ -277,15 +308,27 @@ def _change_matrix(
     )
 
 
-def _control_cell(row: AspectReading) -> TableCell:
-    """The control's pass rate on an aspect, marked where it cannot move: at or below the aspect's margin no drop past
-    the margin can be shown, and at 100% no gain can."""
+def _control_cell(rows: Sequence[AspectReading], bundle: AnalysisContextBundle, control: str) -> TableCell:
+    """The control's pass rate on an aspect (over its trials, as its count reads), marked where it cannot move.
+
+    A drop is read on per-case shares, so whether one past the margin can show is decided on them too: the largest
+    drop a row's values allow is the mean of the control's shares it reads, and where that is at or below the margin
+    for every row read on shares, no candidate's drop can pass it. Shares and trials differ where cases ran an uneven
+    number of usable trials, so the trial rate alone would mark a control that can still show a drop. At 100% of its
+    trials every share is one, and no gain can show.
+    """
+    row = rows[0]
     if not row.control_trials:
         return TableCell(value=None)
     rate = 100 * row.control_passed / row.control_trials
     marks = []
-    if row.margin is not None and rate <= row.margin:
-        marks.append("cannot show a drop")
+    if row.margin is not None:
+        rates = [aspect_pass_rate(bundle, control, read.arm) for read in rows]
+        shares = [
+            100 * sum(read.samples[0]) / len(read.samples[0]) for read in rates if read is not None and read.samples
+        ]
+        if shares and all(share <= row.margin for share in shares):
+            marks.append("cannot show a drop")
     if row.control_passed == row.control_trials:
         marks.append("cannot show a gain")
     return TableCell(value=round(rate, 1), flag="; ".join(marks) or None)
@@ -386,8 +429,13 @@ def _percent(level: float) -> str:
 def _level_lines(levels: Sequence[float], readings: CampaignReadings) -> list[str]:
     """The level the corrected intervals were read at (``levels``: every reading's but one no worse than the margin,
     whose line is :func:`_within_lines`; none where every reading is), how often an arm is shown better or worse
-    wrongly, and, with several arms, that the correction does not run across them. Each count is the page's own."""
+    wrongly, and, with several arms, that the correction does not run across them. Each count is the page's own, and
+    counts what is corrected together: an arm's gains are its rows with an interval, its drops those with an interval
+    on an aspect with a margin (``drop_interval``), as its two families are read."""
     families = Counter(row.arm for row in readings.readings)
+    gains = Counter(row.arm for row in readings.readings if row.gain_interval is not None)
+    drops = Counter(row.arm for row in readings.readings if row.drop_interval is not None)
+    sizes = {(gains[arm], drops[arm]) for arm in families}
     lines: list[str] = []
     if levels:
         low, high = min(levels), max(levels)
@@ -398,16 +446,23 @@ def _level_lines(levels: Sequence[float], readings: CampaignReadings) -> list[st
                 "floor's is."
             )
         else:
-            sizes = set(families.values())
-            together = f"each arm's {sizes.pop()} readings" if len(sizes) == 1 else "each arm's readings"
+            if len(sizes) > 1:
+                together = "each arm's readings"
+            else:
+                ((gained, dropped),) = sizes
+                together = (
+                    f"each arm's {gained} readings"
+                    if gained == dropped
+                    else f"each arm's gains on {gained} aspects, and its drops on {dropped}, are each"
+                )
             lines.append(
-                f"Intervals here are wider than a plain {_percent(INTERVAL_LEVEL)} interval, because {together} are "
-                "corrected together."
+                f"Intervals here are wider than a plain {_percent(INTERVAL_LEVEL)} interval, because {together}"
+                f"{'' if together.endswith(' each') else ' are'} corrected together."
             )
             read_at = _percent(low) if round(low, 4) == round(high, 4) else f"{_percent(low)} to {_percent(high)}"
             lines.append(f"Each is read at {read_at}, and the reading beside it always agrees with it.")
     half = readings.alpha / 2
-    where = " on some aspect" if any(size > 1 for size in families.values()) else ""
+    where = " on some aspect" if any(max(size) > 1 for size in sizes) else ""
     lines.append(
         f"For any one arm, the chance of being wrongly shown better{where} is at most {_percent(half)}, and likewise "
         "for wrongly shown worse."
@@ -570,10 +625,12 @@ def settle_blocks(
 ) -> list[ReportBlock]:
     """One table of what would settle each unclear reading of a change, aspect by aspect and arm by arm: a row left
     unclear against its margin, read on the pass rate alone; and each rate floor left unclear, read on every rate its
-    clause names, its count decided by the rate that needs the most. Each count is the independent cases that would
-    show it, if the arms do not differ and if they differ as observed, read at the nominal level. Two counts on one
-    arm and aspect differ only where a floor reads more rates than the pass rate, or other points, and the table names
-    which rate decides each. A row on an aspect with no margin has nothing to show it within, and a settled reading
+    clause names, joining each rate's count side by side as the aspect's own floor table does. Each count is the total
+    independent cases, not cases to add, at which the interval would show it, if the arms do not differ and if they
+    differ as observed, read at the nominal level over the same cases and values. So the two counts on one arm and
+    aspect differ only where the floor reads other rates than the pass rate alone (every rate, or a check it names) or
+    reads them against other points than the margin. The floor's row names the rate deciding its as-observed count;
+    its no-difference count may be another rate's. A row on an aspect with no margin has nothing to show it within, and a settled reading
     nothing left to show, so neither is a row here.
 
     :param campaign: The campaign, a change.
@@ -662,39 +719,29 @@ def _sizings(
         if not isinstance(clause, RateDrop):
             continue
         verdict = read_floor(floor, figures, control=readings.control_label, candidate=row.arm_label)
-        deciding = _deciding_rate(verdict.rates, figures.fewest_cases(), clause.max_points, per_case)
+        # One source for the count and the rate deciding it: where any unclear rate cannot be projected, neither is.
+        rates = rate_projections(verdict, per_case_usd=per_case)
+        deciding = None if rates is None else _deciding_rate(rates)
         found.append(
             _Sizing(
                 aspect=row.aspect,
                 arm=row.arm_label,
                 shows=f"the {format_number(clause.max_points)}-point floor holds",
                 decided_by=None if deciding is None else _rate_words(deciding),
-                why="" if deciding is None else deciding.reason,
-                projection=floor_projection(verdict, per_case_usd=per_case),
+                why=verdict.reason if deciding is None else deciding.reason,
+                projection=None if rates is None else reduce(SampleProjection.joined, (one for _, one in rates)),
                 floor=True,
             )
         )
     return found
 
 
-def _deciding_rate(
-    rates: Sequence[RateVerdict], cases: int | None, margin: float, per_case_usd: float | None
-) -> RateVerdict | None:
-    """Of the rates a floor left unclear, the one whose count decides the floor's as observed, the column a decision
-    reads first: the one needing the most there, then with no difference, the first of equals. A floor's count joins
-    its rates' side by side (:meth:`SampleProjection.joined`), so its no-difference count may be another rate's."""
-    unclear = [rate for rate in rates if rate.outcome == "unclear"]
-    if cases is None or cases < 1 or not unclear:
-        return None
-    projected = [
-        (rate, projection)
-        for rate in unclear
-        if (projection := project_rate(rate.rate, cases=cases, margin=margin, per_case_usd=per_case_usd)) is not None
-    ]
-    if not projected:
-        return None
-    best, chosen = projected[0]
-    for rate, projection in projected[1:]:
+def _deciding_rate(rates: Sequence[tuple[RateVerdict, SampleProjection]]) -> RateVerdict:
+    """Of a floor's unclear rates and their projections (:func:`~threetears.evals.analysis.report.decision.
+    rate_projections`), the one deciding the floor's as-observed count, the column a decision reads first: the one
+    needing the most there, then with no difference, the first of equals."""
+    best, chosen = rates[0]
+    for rate, projection in rates[1:]:
         if _more(projection.if_observed, chosen.if_observed) or (
             projection.if_observed == chosen.if_observed and _more(projection.if_none, chosen.if_none)
         ):
@@ -725,8 +772,8 @@ def _settle_note(sizings: Sequence[_Sizing]) -> str:
     ]
     floors = any(sizing.floor for sizing in sizings)
     said = [
-        f"Each count is the new cases a {_percent(INTERVAL_LEVEL)} interval needs to rule out a drop past the margin "
-        "or the floor's points.",
+        f"Each count is the cases a {_percent(INTERVAL_LEVEL)} interval needs in all, not cases to add, to rule out a "
+        "drop past the margin or the floor's points.",
         "The no-difference count assumes the arms truly do not differ, and the as-observed count that they differ as "
         "this run saw.",
     ]
@@ -833,7 +880,8 @@ def pair_blocks(
     :ptype names: AspectNames
     :return: The matrix, the pairs and their lines.
     :rtype: list[ReportBlock]
-    :raises ValueError: The equal-weight row names an arm the matrix has no column for.
+    :raises ValueError: An equal-weight cell cannot be placed: its arm has no column, its unit is not its column's, or
+        no matrix is laid out.
     """
     columns = [
         TableColumn(key="aspect", header="Aspect", term="aspect"),
@@ -872,6 +920,8 @@ def pair_blocks(
     blocks: list[ReportBlock] = []
     if readings.pairs:
         blocks.append(_choice_matrix(campaign, readings, reports, names))
+    else:
+        _no_equal_weight_row(campaign, readings, reports, "no pair of arms was read on any aspect")
     blocks.append(
         TableBlock(
             section="scorecard",
@@ -930,7 +980,9 @@ def _choice_matrix(
             rate = None if board is None or not board.usable else round(100 * board.passed / board.usable, 1)
             cells[_arm_column(arm)] = TableCell(value=rate, flag=_ahead_marks(arm, pairs))
         rows.append(cells)
-    rows += _with_equal_weight_row(campaign, readings, reports, columns, {arm: _arm_column(arm) for arm in arms})
+    rows += _with_equal_weight_row(
+        campaign, readings, reports, columns, {arm: (_arm_column(arm), PERCENT) for arm in arms}
+    )
     return TableBlock(
         section="scorecard",
         name=_SCORECARD_TABLE,
@@ -1034,6 +1086,7 @@ def measure_blocks(
     :ptype names: AspectNames
     :return: The matrix, the measures and their lines.
     :rtype: list[ReportBlock]
+    :raises ValueError: An equal-weight cell is given: a measurement's matrix has no arm columns to hold it.
     """
     rigs: dict[str, set[str]] = {}
     for reading in readings.measures:
@@ -1062,6 +1115,7 @@ def measure_blocks(
         if by_rig:
             values["setup"] = "every setup" if reading.rig is None else short_digest(reading.rig)
         rows.append(table_row(values))
+    _no_equal_weight_row(campaign, readings, reports, "a measurement's matrix holds its one arm's measures")
     blocks: list[ReportBlock] = []
     if readings.measures:
         blocks.append(_measure_matrix(campaign, readings, names))

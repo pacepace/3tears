@@ -135,6 +135,20 @@ this to High. The cheapest step is the owner answering them before Wave C.
 - 04: [DECISION: one assertion each in `test_campaign_page.py` and `test_one_memo_per_decision.py` reads the Scorecard
   instead of the first screen | neither file is a parallel chunk's; the behaviour moved per R1]
 
+- 04: [DECISION: the control's base rate and n sit in their own `▸ <control> (%)` and `Cases` columns, not in the row
+  header | a cell holds one value, and a number in its own column sorts and reads as a number; a "63% · n=60" header
+  cell would be a key=value-shaped label, which the style rules bar. Recorded late: the Critic flagged it unrecorded]
+- 04: [DECISION: `decision.rate_projections` (new) gives each unclear rate's projection, which `floor_projection`
+  joins and To settle names its deciding rate from | one owner for a floor's count and its decider (Critic R-5);
+  this goes past "projection kinds and projected_cell only" in 04's ownership of `decision.py`]
+- 04: [DECISION: an equal-weight cell states its unit (`TableCell.unit`), which the matrix checks against its
+  column and then drops, since the header names it: a change's control column `%`, candidates `pts`, a choice's
+  arms `%`; a cell where no matrix holds arms is refused | `aggregate.py` is 06's, so the contract rides the cell it
+  already returns (Critic R-6)]
+- 04: [DECISION: "cannot show a drop" is decided on the control's per-case shares the row's values read (every row's
+  mean at or below the margin), the gain mark on its trials (exact at 100%) | the drop is read on shares; trials
+  and shares part where cases ran uneven trials (Critic R-1)]
+
 ## Advisory: what I would do differently
 
 - **Split into two plans at the Wave C boundary.** Wave A-B (schema, names, page structure, scorecard) is renderer and

@@ -963,15 +963,40 @@ def floor_projection(verdict: FloorVerdict, *, per_case_usd: float | None = None
         return project_sample(
             half_width=(high - low) / 2, cases=fewest, margin=0.0, observed=(low + high) / 2, per_case_usd=per_case_usd
         )
+    found = rate_projections(verdict, per_case_usd=per_case_usd)
+    return None if found is None else reduce(SampleProjection.joined, (projection for _, projection in found))
+
+
+def rate_projections(
+    verdict: FloorVerdict, *, per_case_usd: float | None = None
+) -> tuple[tuple[RateVerdict, SampleProjection], ...] | None:
+    """Each rate an unclear rate floor left unclear, with the cases that would show it holds: what
+    :func:`floor_projection` joins into the floor's count, so a reader naming the rate that decides the count reads the
+    very projections the count is made of.
+
+    :param verdict: The floor as read on one candidate.
+    :ptype verdict: FloorVerdict
+    :param per_case_usd: What one case costs over every arm (:func:`case_cost_usd`); None where unpriced.
+    :ptype per_case_usd: float | None
+    :return: Each unclear rate and its projection, in the floor's order; None for a floor broken or held, a cost
+        floor, where the cases were not counted, where no rate is unclear, and where any unclear rate carries nothing
+        to project from (so the floor has no count).
+    :rtype: tuple[tuple[RateVerdict, SampleProjection], ...] | None
+    """
+    readings = verdict.readings
+    fewest = readings.fewest_cases() if readings is not None else None
+    clause = verdict.floor.clause
+    if verdict.outcome != "unclear" or fewest is None or fewest < 1 or not isinstance(clause, RateDrop):
+        return None
     found = [
-        project_rate(read.rate, cases=fewest, margin=clause.max_points, per_case_usd=per_case_usd)
+        (read, project_rate(read.rate, cases=fewest, margin=clause.max_points, per_case_usd=per_case_usd))
         for read in verdict.rates
         if read.outcome == "unclear"
     ]
-    projections = [projection for projection in found if projection is not None]
-    if not projections or len(projections) < len(found):
+    projected = tuple((read, projection) for read, projection in found if projection is not None)
+    if not projected or len(projected) < len(found):
         return None
-    return reduce(SampleProjection.joined, projections)
+    return projected
 
 
 def floors_projection(
@@ -1084,5 +1109,6 @@ __all__ = [
     "projected_cell",
     "projected_usd",
     "projection_note",
+    "rate_projections",
     "read_floor",
 ]

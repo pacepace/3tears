@@ -22,8 +22,10 @@ floor on one rate. The level and error-rate lines are reworded and counted off t
 no longer say the recommendation does not rest on the correction. Where a fold's contrast reads a row's own per-case
 values to another verdict, one line under the matrix names both and the interval each was read on. The matrix's last
 row, `All aspects (equal weight)`, holds what `equal_weight_cells` gives each arm, and a cell for an arm the matrix has
-no column for is refused, never dropped. `settle_blocks` takes the campaign and each aspect's page, which a floor's
-count is read from.
+no column for is refused, never dropped. Each such cell states its unit, which must be its column's (a change's
+control `%`, its candidates `pts`, a choice's arms `%`), and a cell handed back where no matrix holds arms is
+refused. `settle_blocks` takes the campaign and each aspect's page, which a floor's count is read from;
+`decision.rate_projections` (new) is each unclear rate's projection a floor's count joins.
 
 ### evals: a reporter label's form follows its dimension's scale, and may quote the memo passage it is about
 

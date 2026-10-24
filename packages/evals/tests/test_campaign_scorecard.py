@@ -6,6 +6,7 @@ frontier."""
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 
 import pytest
 
@@ -19,6 +20,7 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.bundle.schema import FamilyComparison
 from threetears.evals.analysis.lenses.frontier import FrontierCostDecision, FrontierCostTie, FrontierVerdict
+from threetears.evals.analysis.quantities import PERCENT, POINTS
 from threetears.evals.analysis.report.campaign import aggregate
 from threetears.evals.analysis.report.campaign_page import CHOICE_NOTE, AspectNames, campaign_verdict
 from threetears.evals.analysis.report.model import (
@@ -190,7 +192,7 @@ async def test_a_page_whose_every_row_is_no_worse_still_states_the_error_rate_an
     assert "that is not a gain shown: a gain is read on the corrected interval, which reaches zero." in said
 
 
-async def test_a_floor_held_beside_a_row_left_unclear_says_the_two_read_different_points() -> None:
+async def test_a_floor_held_beside_a_row_left_unclear_is_marked_on_its_cell_and_only_the_row_is_to_settle() -> None:
     # The same interval against a 10-point margin is unclear while the 20-point floor holds.
     page = await page_of("steady", margins={"steady": 10.0})
     (row,) = page.readings.on_aspect("steady")
@@ -207,7 +209,10 @@ async def test_a_floor_held_beside_a_row_left_unclear_says_the_two_read_differen
     ]
     note = page.blocks[page.blocks.index(settle) + 1]
     assert isinstance(note, DisclosureBlock)
-    assert note.text.startswith("Each count is the new cases a 95% interval needs to rule out a drop past the margin")
+    # A count is the cases the interval needs in all, this run's repeated to that many: not cases to add to it.
+    assert note.text.startswith(
+        "Each count is the cases a 95% interval needs in all, not cases to add, to rule out a drop past the margin"
+    )
     # A18: the sentence promising a floor's count and a row's agree held only for a floor reading one rate.
     assert "same count" not in note.text
 
@@ -463,6 +468,84 @@ async def test_a_control_passing_every_trial_cannot_show_a_gain() -> None:
     assert _by_arm(matrix, row)[CONTROL_LABEL].text == "100 (cannot show a gain)"
 
 
+def _uneven_control(shares: list[float], passed: int, trials: int) -> Shape:
+    """S4 with a 6-point margin and its control's pass rate read over uneven trials per case: ``shares`` its per-case
+    shares on ten cases, ``passed`` of ``trials`` its trial count; v2 fails every case."""
+    shape = s4_change()
+    bundle = shape.bundles["billing"]
+    contrasts = [
+        contrast.model_copy(
+            update={"case_values": (shares, [0.0] * len(shares)), "case_trials": None, "case_passed": None}
+        )
+        if contrast.reading == "trial"
+        else contrast
+        for contrast in bundle.floor_contrasts
+    ]
+    changed = bundle.model_copy(update={"floor_contrasts": contrasts})
+    (row,) = shape.readings.readings
+    read = row.model_copy(
+        update={"margin": 6.0, "control_passed": passed, "control_trials": trials, "control_cases": 10}
+    )
+    return replace(
+        shape,
+        readings=shape.readings.model_copy(update={"readings": [read]}),
+        reports={"billing": shape.reports["billing"].model_copy(update={"bundle": changed})},
+    )
+
+
+def test_cannot_show_a_drop_is_decided_on_the_per_case_shares_a_drop_is_read_on() -> None:
+    """The review's case: ten control cases on a 6-point margin, one with a single trial that passed and nine with two
+    failing trials each. Its trial rate is 1 of 19, about 5.3%, at or below the margin, but its per-case shares
+    average 10%, so a candidate failing every case drops 10 points: a drop past the margin can show, and the cell is
+    not marked. With every share nought, none can."""
+    uneven = _uneven_control([1.0] + [0.0] * 9, passed=1, trials=19)
+    (row,) = _table(uneven.page(), "scorecard").rows
+    assert _by_arm(_table(uneven.page(), "scorecard"), row)["production"].text == "5.3"
+    nothing = _uneven_control([0.0] * 10, passed=0, trials=19)
+    matrix = _table(nothing.page(), "scorecard")
+    assert _by_arm(matrix, matrix.rows[0])["production"].text == "0 (cannot show a drop)"
+
+
+def test_a_floor_whose_unclear_rate_has_nothing_to_project_names_no_rate_and_no_count() -> None:
+    """S1's billing floor reads every rate. With v4's `reply.cites_policy` contrast carrying no per-case values, that
+    rate cannot be projected, so the floor has no count, and the table names no deciding rate beside blank counts."""
+    shape = s1_change()
+    key = shape.key("v4")
+    bundle = shape.bundles["billing"]
+    families = [
+        family.model_copy(
+            update={
+                "comparisons": [
+                    comparison.model_copy(update={"case_values": None, "bounded_interval": None})
+                    if comparison.name.endswith("reply.cites_policy") and comparison.contrast.variant_key == key
+                    else comparison
+                    for comparison in family.comparisons
+                ]
+            }
+        )
+        for family in bundle.multiple_comparisons.families
+    ]
+    changed = bundle.model_copy(
+        update={"multiple_comparisons": bundle.multiple_comparisons.model_copy(update={"families": families})}
+    )
+    reports = {**shape.reports, "billing": shape.reports["billing"].model_copy(update={"bundle": changed})}
+    page = build_campaign_report(shape.campaign, shape.readings, reports, None)
+    rows = {(row["aspect"].text, row["arm"].text, row["shows"].text): row for row in _table(page, "to_settle").rows}
+    floor = rows[("billing", "v4", "the 10-point floor holds")]
+    assert (floor["decided_by"].value, floor["none"].value, floor["observed"].value) == (None, None, None)
+    assert floor["why"].value  # the floor's own reason, so the row still says why it is open
+
+
+async def test_the_level_line_counts_only_the_readings_corrected_together() -> None:
+    """With no margin on billing, v2's drops are read on tone alone while its gains are read on both: the line says
+    each family's own size."""
+    said = _scorecard(await page_of("billing", "tone", margins={"billing": None}))
+    assert (
+        "Intervals here are wider than a plain 95% interval, because each arm's gains on 2 aspects, and its drops on 1, "
+        "are each corrected together." in said
+    )
+
+
 def test_cases_and_trials_are_stated_apart_where_an_arm_ran_a_case_more_than_once() -> None:
     """A17: v3 ran tone twice per case, so its passes are of 40 trials over the row's 20 cases; every other arm ran
     once, and its count reads as before. A choice's pairs say it the same way."""
@@ -603,13 +686,15 @@ def test_the_equal_weight_row_closes_the_matrix_each_arm_s_cell_in_its_own_colum
 ) -> None:
     shape = SHAPES[name]()
     figures = {arm.label: float(index) for index, arm in enumerate(shape.arms)}
-    cells = {shape.key(label): TableCell(value=value) for label, value in figures.items()}
+    cells = {shape.key(label): TableCell(value=value, unit=_unit(shape, label)) for label, value in figures.items()}
     monkeypatch.setattr(aggregate, "equal_weight_cells", lambda campaign, readings, reports: cells)
     matrix = _table(shape.page(), "scorecard")
     *aspects, across = matrix.rows
     assert [row["aspect"].text for row in aspects] == [aspect.label for aspect in shape.campaign.aspects]
     assert across["aspect"].text == aggregate.EQUAL_WEIGHT_ROW and across["cases"].value is None
     assert {arm: cell.value for arm, cell in _by_arm(matrix, across).items()} == figures
+    # Each figure is placed under the header that names its unit, so it prints as the column's other cells do.
+    assert {cell.unit for cell in _by_arm(matrix, across).values()} == {""}
     # The long form holds no such row: the figure across aspects is the matrix's alone.
     folded = _table(shape.page(), "aspects" if name == "s1" else "pairs")
     assert aggregate.EQUAL_WEIGHT_ROW not in {row["aspect"].text for row in folded.rows}
@@ -623,6 +708,54 @@ def test_an_equal_weight_cell_for_an_arm_the_matrix_has_no_column_for_is_refused
     cells = {shape.arms[0].variant_key: TableCell(value=1.0), "not-an-arm": TableCell(value=2.0)}
     monkeypatch.setattr(aggregate, "equal_weight_cells", lambda campaign, readings, reports: cells)
     with pytest.raises(ValueError, match="names arm\\(s\\) not-an-arm"):
+        shape.page()
+
+
+def _unit(shape: Shape, label: str) -> str:
+    """The unit an arm's column holds: a change's control and a choice's arms a pass rate in percent, a change's
+    candidates a change in points."""
+    control = next((arm.label for arm in shape.arms if arm.role == "control"), None)
+    return PERCENT if shape.readings.kind == "choice" or label == control else POINTS
+
+
+@pytest.mark.parametrize(("name", "label"), [("s1", "production"), ("s1", "v2"), ("s2", "alpha")])
+def test_an_equal_weight_cell_in_another_unit_than_its_column_is_refused(
+    name: str, label: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pass rate under a change's points column, or a change under a percent column, would print under the wrong
+    unit: the matrix refuses it, and refuses a cell stating none or holding words."""
+    shape = SHAPES[name]()
+    wrong = POINTS if _unit(shape, label) == PERCENT else PERCENT
+    for cell in (TableCell(value=1.0, unit=wrong), TableCell(value=1.0), TableCell(value="about 5")):
+        monkeypatch.setattr(
+            aggregate, "equal_weight_cells", lambda campaign, readings, reports, c=cell: {shape.key(label): c}
+        )
+        with pytest.raises(ValueError, match=f"cell for arm {shape.key(label)} states"):
+            shape.page()
+    # A figure withheld carries no value and no unit, and is placed as a dash.
+    withheld = TableCell(value=None, flag="withheld")
+    monkeypatch.setattr(
+        aggregate, "equal_weight_cells", lambda campaign, readings, reports: {shape.key(label): withheld}
+    )
+    matrix = _table(shape.page(), "scorecard")
+    assert _by_arm(matrix, matrix.rows[-1])[label].text == "— (withheld)"
+
+
+@pytest.mark.parametrize("name", ["s1", "s2", "s3"])
+def test_an_equal_weight_cell_where_no_matrix_holds_arms_is_refused_not_dropped(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A measurement's matrix holds measures, and a change or a choice with nothing read lays out none: a figure
+    across aspects handed back there is refused."""
+    shape = SHAPES[name]()
+    if shape.readings.kind != "measurement":
+        emptied = shape.readings.model_copy(update={"readings": [], "pairs": [], "floors": []})
+        shape = replace(shape, readings=emptied)
+    key = shape.arms[0].variant_key
+    monkeypatch.setattr(
+        aggregate, "equal_weight_cells", lambda campaign, readings, reports: {key: TableCell(value=1.0, unit=PERCENT)}
+    )
+    with pytest.raises(ValueError, match="lays out no matrix to hold it"):
         shape.page()
 
 
