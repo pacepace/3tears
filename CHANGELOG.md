@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.77.1 -- 2026-10-23
+
 ### evals: a resumed run is not refused when its candidate kind or deadlines moved
 
 0.77.0 refused a take-up whose `candidate_kind`, `cell_timeout_s` or `turn_budget_s` differed from the stored run.
