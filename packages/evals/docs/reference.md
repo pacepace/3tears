@@ -689,7 +689,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`AS_RECORDED_MODEL`** · constant (str) · The candidate model name the as-recorded candidate runs under.
   <br>`= 'as-recorded'`
 - **`CELL_MODEL_VERSION`** · *host contract* · constant (int) · The cell model this module implements, stamped onto every analysis generated under it (`GenerationProvenance.cell_model_version`).
-  <br>`= 13`
+  <br>`= 14`
 - **`EVAL_ANALYSIS_GEN_DEFAULT`** · *host contract* · constant (str) · The analysis generator's default system prompt.
 - **`GATE_TOKENS`** · constant (tuple) · Every token, in the order the module docstring lists them.
 - **`GLOSSARY`** · constant (dict) · Every term of art a page may use, in one plain sentence each.
@@ -1091,6 +1091,7 @@ Everything the engine knows about one consuming product.
 | `listing_elisions` | `frozenset[str]` | `frozenset()` | Paths inside `EvalRun.host_payload` that a read LISTING many runs leaves out. |
 | `release_label` | `str \| None` | `None` | The `label` sweepable whose value names the BUILD of the product that ran — an app version. |
 | `analysis_writer_models` | `tuple[str, ...]` | `()` | The model ids this host allows to write a campaign's analysis. Empty: any model. |
+| `model_pass_hat_k` | `bool` | `False` | Whether the frontier also reads a model-based pass^k for each contestant at a depth it never reached. |
 | `sweepables` | `SweepableRegistry` | derived | Every input this host's runs carry: `host_sweepables` plus each kind contract's levers. |
 
 <a id="documents"></a>
@@ -1211,7 +1212,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schema_version` | `int` | `62` | Bundle-shape version, for future evolution + fingerprint clarity. |
+| `schema_version` | `int` | `64` | Bundle-shape version, for future evolution + fingerprint clarity. |
 | `campaign_id` | `str` | required | The campaign this bundle summarises. |
 | `subject_id` | `str` | required | The analysed subject's stable id. |
 | `subject_kind` | `str` | `''` | Discriminator; data, never a code branch. |
@@ -1284,8 +1285,8 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `arm_mechanisms` | `list[ArmMechanismReading]` | `[]` | Each arm's mean of every covariate read as an observed mechanism (today the candidate's reasoning share, `reasoning_ratio`), sorted by arm then covariate. |
 | `arm_served_models` | `list[ArmServedModel]` | `[]` | Which model the provider's responses named as having answered each arm's candidate calls, sorted by arm. |
 | `arm_production_footings` | `dict[str, PooledProductionFooting]` | `{}` | Arm (variant key) -> what each of its runs set away from the subject's production configuration, read off the host's sweepable declarations: `runs` maps run id -> that run's footing (`moved` with levels, `unchecked`, `held`; null for a run nobody could check). |
-| `cell_model_version` | `int` | `13` | Which definition of a cell produced `cells`. |
-| `host_declarations_digest` | `str` | required | sha256 of the host's declared sweepables (each one's name, role and blank rule) and world dimension names — the declarations that partition observations into apparatus classes and arms (`host_declarations_digest`). |
+| `cell_model_version` | `int` | `14` | Which definition of a cell produced `cells`. |
+| `host_declarations_digest` | `str` | required | sha256 of the host's declared sweepables (each one's name, role, blank rule and whether it is a dimension of the rig, `Sweepable.rig_dimension`) and world dimension names — the declarations that partition observations into apparatus classes and arms (`host_declarations_digest`). |
 | `cells` | `list[Cell]` | `[]` | Every (variant, apparatus class) that any observation landed in, with how many observations pooled there and over how many cases and repeats per case. |
 | `variant_index` | `list[VariantIndexEntry]` | `[]` | One entry per keyed variant — the variant key and the resolved lever map it was digested from. |
 | `refused_merges` | `list[RefusedMerge]` | `[]` | Same-variant cells that did NOT pool, and which rule kept them apart. |
@@ -1998,6 +1999,7 @@ The engine's own measures (`METRIC_DESCRIPTORS`), grouped by family in the order
 | `n_no_criterion_excluded` | — | — | iterations | Iterations left out of pass^k because they carried nothing for it to conjoin: no goal-state check and no judge, as a classifier scored only against its expected label. |
 | `pass_hat_k_unmeasured_reason` | — | — | — | Why pass_hat_k is null when the reason is that no iteration carried a pass criterion; null otherwise. |
 | `n_cases_at_k` | — | — | cases | The cases pass_hat_k averages over: those scored at least k times. |
+| `n_cases_short_of_k` | — | — | cases | The scored cases pass_hat_k leaves out because each was scored fewer than k times; with n_cases_at_k they make n_test_cases, so a shallow case is counted rather than dropped unsaid. |
 | `mean_total_ms` | lower | — | ms | Average end-to-end wall-clock over the cells that MEASURE the candidate — a cell an apparatus fault produced is excluded, since a clock stopped by a cassette miss or a judge error times the harness. |
 | `median_total_ms` | lower | — | ms | Typical end-to-end wall-clock, less sensitive to one slow outlier than the mean. |
 | `p95_total_ms` | lower | — | ms | Tail end-to-end wall-clock: as likely above the true 95th percentile as below it. |

@@ -341,6 +341,15 @@ class HostProfile:
     find out which models belong here. Ids are compared exactly, as the host's client is asked for them.
     """
 
+    model_pass_hat_k: bool = False
+    """Whether the frontier also reads a model-based pass^k for each contestant at a depth it never reached.
+
+    Off by default, and a model when on: a beta-binomial over the per-case pass chance, fitted to the cases the
+    contestant ran (:func:`~threetears.evals.analysis.depth.model_pass_hat_k`), carried as
+    ``FrontierPoint.model_pass_hat_k`` with ``basis: "model"`` and what it assumes. Nothing ranks, gates or bars on
+    it.
+    """
+
     sweepables: SweepableRegistry = field(init=False, repr=False, compare=False)
     """Every input this host's runs carry: :attr:`host_sweepables` plus each kind contract's levers.
 

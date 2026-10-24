@@ -6,7 +6,70 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-## v0.77.1 -- 2026-10-23
+## v0.78.0 -- 2026-10-24
+
+### evals: code no longer reads the memo writer's prose; the page prints it as written
+
+**Changed:** Code checks code, and a model's prose is a model's to check: the page prints every memo sentence as
+written, and the generator's repair round refuses on structure only. The page no longer drops a sentence discounting
+a reading for when its runs ran (#919) or proposing a sample size or cost of its own (#846), no longer replaces a
+sentence disputing a floor's reading or a title restating a measured number with code's words, no longer drops
+meta-prose or the repeated question, and no longer rewrites a raw model id into its arm's label. The generator no
+longer refuses a finding title in an English null phrasing or one naming an arm its finding cites nothing of. Every
+such rule stays in the seeded writer prompt and the facts behind them stay in the writer view. A host's reporter eval can
+measure them, on the dimensions its rubric declares (the package ships none), in whatever language a memo is written. Gone from Methods: the lines `The memo said "…", which
+discounts a reading for when its runs ran, so the page does not print it.`, `…, a sample size or cost no code
+computed, …`, `…, which disputes a difference a floor read either way; …` and `N memo sentence(s) restated a measured
+number, …`; the `Style` fold; and the `Memo style` row. Gone from the first screen: the line for an arm whose label a
+comparative word in it contradicts. The seeded writer prompt changed, so hosts push the new seed
+(`eval_prompt_reset`). No bundle, writer-view or page JSON shape moves. See `packages/evals/MIGRATIONS.toml`.
+
+### evals: the spend ceiling splits no test setup, so arms launched at two caps pair and read an interval
+
+**Fixed:** Two launches on one template that differed only in the `max_cost_usd` they were given read as two test
+setups, so their arms shared no rig and read "no interval could be read: ... ran under no test setup in common". The
+cap decides when a run may stop, never what a case scored, so it is no longer a dimension of the rig
+(`Sweepable.no_rig_coordinate`, new): such runs pool in one cell per arm, pair and read an interval, and no confound
+list names a cap difference. The quick path's share of an `Eval`'s cap per arm splits nothing either. The cap stays a
+declared apparatus input that a kind seats; the bisection and each run's summary still state it, and a run it stopped
+part-way is still marked by its status and completeness. The bundle shape moves from 62 to 63 and the cell model from
+13 to 14, so every apparatus class id and fingerprint moves: a stored analysis reads as needing regeneration
+(`AnalysisLine.needs_regeneration`) and its report is refused until it is generated again; nothing else is dropped.
+See `packages/evals/MIGRATIONS.toml`.
+
+**Changed (rig):** `Sweepable.rig_dimension` and `SweepableRegistry.rig_dimensions` are the one rule for which inputs
+split a cell, read by the apparatus class, registration and the host declarations digest, whose per-input flag is
+now `rig_dimension`, so every such digest moves once. A role pin declaring `no_rig_coordinate` is refused.
+
+### evals: each arm's depth is stated beside every reading, and a comparison of pass^k names the depth every arm reached
+
+**Added:** Runs pooled forward leave arms measured to different depths, across arms and across the cases of one arm,
+and nothing said so. Every arm's scoreboard, every pass-rate reading (both arms) and every frontier point now carry a
+`Depth`: its cases, trials and repeats per case, fewest, median and most. A frontier subject names its common depth,
+the fewest runs any arm gave a case every arm shares, over every shared case (a case some arm never ran is left out
+and counted), and reads
+each point there over all its runs (`C(c, k) / C(n, k)`, exact, no model); a depth an arm ran no case to is
+`unmeasured_for` it, and the pass^k row counts the cases short of `k`. A pass-rate reading's `precision` states each
+side's own half-width, which side limits the interval, and the share of the difference's variance that lies between
+cases, which extra repeats cannot lower. Nothing read changes: the frontier still ranks at the planned `k`, and every
+interval, change and count is as it was. The bundle shape moves from 63 to 64. See `packages/evals/MIGRATIONS.toml`.
+
+**Added (surfaces):** The campaign page states depth in three tables, `Depth`, `Pass^k depth` and `Precision`, each
+with one plain sentence under it ("v2 was run twice on character, the others once; that tightens v2's own estimate,
+not the comparison much."), and its Methods say that a pass-rate interval weighs each shared case equally while the
+counts beside it pool every trial. The writer's view carries the same depths as structure: each arm's, the sentence
+to say once, and per frontier subject the common depth, whether the arms share no case, and the arms pass^k at the
+planned depth is unmeasured for. The seeded writer prompt's rule 5 asks the memo to say the depth sentence once and
+never compare arms on pass^k above the common depth, so hosts push the new seed; no code checks the memo's prose for
+it (owner, 2026-10-24). Page JSON shape 4; campaign bundle shape 2.
+
+**Added (floors):** A floor's status now carries its margin, its worst case and how far it is `short_by`, and the
+writer's view lists each arm's pass-rate verdict on each aspect before the floors, each floor naming the one rate it
+speaks for. The seeded prompt says an unclear floor is not yet shown within the margin, never failed.
+
+**Added (opt-in):** `HostProfile.model_pass_hat_k` asks the frontier for a model-based pass^k at a depth a contestant
+never reached: a beta-binomial over the per-case pass chance, carried as `basis: "model"` with what it assumes, shown
+in its own table and never ranked, barred or gated on. Off by default.
 
 ### evals: a resumed run is not refused when its candidate kind or deadlines moved
 

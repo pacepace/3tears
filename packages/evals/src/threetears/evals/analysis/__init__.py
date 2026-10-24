@@ -133,6 +133,7 @@ from threetears.evals.analysis.campaigns import (
     update_campaign,
 )
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics
+from threetears.evals.analysis.depth import Depth, ModelPassHatK, Precision
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.generator import (
     CallAdmission,
@@ -607,6 +608,7 @@ __all__ = [
     "FrontierVerdict",
     "UnpooledReason",
     "PassHatKCellReading",
+    "Precision",
     "FrozenReporterCase",
     "GenerationError",
     "GenerationTally",
@@ -791,4 +793,6 @@ __all__ = [
     "tier_sentence",
     "update_campaign",
     "variant_key_of_run",
+    "Depth",
+    "ModelPassHatK",
 ]

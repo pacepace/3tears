@@ -450,7 +450,7 @@ arm) is dated now and named on the page where that is later than its aspect's fi
 
 | Key | Holds |
 |---|---|
-| `kind`, `shape` | `"campaign"` and the shape's version (`CAMPAIGN_JSON_SHAPE`, 2) |
+| `kind`, `shape` | `"campaign"` and the shape's version (`CAMPAIGN_JSON_SHAPE`) |
 | `campaign_id`, `basis`, `analysis_id` | the campaign; `analysis` or `code_only`; the memo's analysis, or null |
 | `readings` | code's readings (`CampaignReadings`): the `kind`, `alpha`, the control, and `readings` (a change's rows), `pairs` (a choice's), `measures` (a measurement's), `floors` and `bars`, each row with its interval and reason. Every float is to twelve significant figures (a declared one, like `alpha`, a bar or a margin, has fewer and is unchanged), so one campaign serves the same JSON across Python builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary |
 | `recommendation` | the writer's `arm` (its label, for display), its `variant_key` (the key the analysis recorded for that arm, which a call's `variant_key` is compared to) and `confidence`, or null |

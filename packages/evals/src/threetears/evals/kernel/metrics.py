@@ -1338,6 +1338,19 @@ _SEED: tuple[MetricDescriptor, ...] = (
         ),
     ),
     _d(
+        name="n_cases_short_of_k",
+        reader_name="Cases scored fewer than k times",
+        data_type="numeric",
+        family="mechanical",
+        transferability_class="scenario_bound",
+        attribution_scope="end_to_end",
+        unit="cases",
+        description=(
+            "The scored cases pass_hat_k leaves out because each was scored fewer than k times; with "
+            "n_cases_at_k they make n_test_cases, so a shallow case is counted rather than dropped unsaid."
+        ),
+    ),
+    _d(
         name="mean_total_ms",
         reader_name="Mean turn time",
         data_type="numeric",

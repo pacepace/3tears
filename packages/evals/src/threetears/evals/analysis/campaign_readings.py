@@ -59,6 +59,7 @@ from typing import Literal
 from pydantic import Field, field_validator
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.depth import Depth, Precision, precision
 from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.report.decision import (
@@ -245,6 +246,27 @@ class AspectReading(EvalDocumentModel):
             "`question_declared`), whenever it was asked. False reads it as a lead, which the page says."
         ),
     )
+    control_depth: Depth | None = Field(
+        default=None,
+        description="How deep the control was measured on the aspect, over every rig (`ArmScoreboard.depth`).",
+    )
+    arm_depth: Depth | None = Field(
+        default=None, description="How deep the candidate was measured on the aspect, over every rig."
+    )
+    depth_differs: int | None = Field(
+        default=None,
+        description=(
+            "Of the paired cases the intervals read, those the two arms ran a different number of times. None where "
+            "the cases are unpaired or no trials per case were carried."
+        ),
+    )
+    precision: Precision | None = Field(
+        default=None,
+        description=(
+            "What limits the change's interval at the nominal level: each arm's own half-width, the arm limiting it, "
+            "and the between-case share of its variance that extra repeats cannot lower. None with no interval."
+        ),
+    )
 
 
 class FloorStatus(EvalDocumentModel):
@@ -270,6 +292,27 @@ class FloorStatus(EvalDocumentModel):
         )
     )
     reason: str = Field(description="Why, in one plain sentence, with the counts it rests on.")
+    margin: float | None = Field(
+        default=None,
+        description="A rate floor's margin, in points: the most the candidate's rate may drop. None for a cost floor.",
+    )
+    worst_drop: float | None = Field(
+        default=None,
+        description=(
+            "The largest drop in points the deciding rate's interval allows: the worst case the floor is read against. "
+            "None for a cost floor, or with no interval."
+        ),
+    )
+    short_by: float | None = Field(
+        default=None,
+        description=(
+            "For an unclear floor only: how far the worst case lies past the margin, in points (`worst_drop` less "
+            "`margin`), which is how far the floor is from being shown held. None for a held floor, for a broken one "
+            "(its breach is the interval and reason it carries, not this figure: `worst_drop` is the far end of the "
+            "interval, not how far the floor is broken), where the worst case lies within the margin, and for a cost "
+            "floor. A floor speaks for the one rate it read, never its whole aspect."
+        ),
+    )
 
 
 class PairReading(EvalDocumentModel):
@@ -326,6 +369,26 @@ class PairReading(EvalDocumentModel):
     first_trials: int = Field(ge=0, description="Trials the first arm was measured on.")
     second_passed: int = Field(ge=0, description="Trials the second arm passed.")
     second_trials: int = Field(ge=0, description="Trials the second arm was measured on.")
+    first_depth: Depth | None = Field(
+        default=None, description="How deep the first arm was measured on the aspect, over every rig."
+    )
+    second_depth: Depth | None = Field(
+        default=None, description="How deep the second arm was measured on the aspect, over every rig."
+    )
+    depth_differs: int | None = Field(
+        default=None,
+        description=(
+            "Of the paired cases the interval reads, those the two arms ran a different number of times. None where "
+            "the cases are unpaired or no trials per case were carried."
+        ),
+    )
+    precision: Precision | None = Field(
+        default=None,
+        description=(
+            "What limits the interval at the nominal level: each arm's own half-width (by variant key), the arm "
+            "limiting it, and the between-case share of its variance. None with no interval."
+        ),
+    )
 
 
 class BarStatus(EvalDocumentModel):
@@ -492,6 +555,7 @@ class _Row:
     rigs: list[str]
     levels: dict[float, RateReading]
     drops: dict[float, tuple[FloorOutcome, str]]
+    depths: Mapping[str, Depth | None]
 
     def at(self, confidence: float) -> RateReading:
         """The pass rate with its bounded interval at ``confidence``, computed again from the same per-case values a
@@ -845,6 +909,7 @@ def campaign_readings(
                     rigs=_shared_rigs(bundle, control_key, arm.variant_key),
                     levels={},
                     drops={},
+                    depths=_depths(bundle),
                 )
             )
 
@@ -919,6 +984,10 @@ def campaign_readings(
                     within_reason,
                 ),
                 confirmatory=row.confirmatory,
+                control_depth=row.depths.get(row.control_key),
+                arm_depth=row.depths.get(row.arm.variant_key),
+                depth_differs=_depth_differs(row.rate),
+                precision=_precision(row.rate, (row.control_key, row.arm.variant_key)),
             )
         )
     floors = [
@@ -959,6 +1028,7 @@ class _Pair:
     confirmatory: bool
     rigs: list[str]
     levels: dict[float, RateReading]
+    depths: Mapping[str, Depth | None]
 
     def at(self, confidence: float) -> RateReading:
         """The pass rate's bounded interval at ``confidence``, computed once per level."""
@@ -1018,6 +1088,7 @@ def _pair_readings(
                         confirmatory=bundle.question_declared,
                         rigs=_shared_rigs(bundle, low.variant_key, high.variant_key),
                         levels={},
+                        depths=_depths(bundle),
                     )
                 )
     family = [index for index, pair in enumerate(pairs) if pair.rate.interval is not None]
@@ -1063,6 +1134,11 @@ def _pair_readings(
                 first_trials=firsts[1],
                 second_passed=seconds[0],
                 second_trials=seconds[1],
+                first_depth=pair.depths.get(pair.first.variant_key),
+                second_depth=pair.depths.get(pair.second.variant_key),
+                depth_differs=_depth_differs(pair.rate),
+                # The rate reads the arm first in key order as its control.
+                precision=_precision(pair.rate, tuple(sorted((pair.first.variant_key, pair.second.variant_key)))),
             )
         )
     return read
@@ -1222,6 +1298,33 @@ def _snapped(
     it back by ``k``, which in floating point can land a hair above α (``(0.05 / 11) * 11``), so a host filtering on
     ``p_holm <= α`` would disagree with the reading."""
     return {index: min(p, alpha) if decided[index].shown else p for index, p in zip(family, adjusted, strict=True)}
+
+
+def _depths(bundle: AnalysisContextBundle) -> dict[str, Depth | None]:
+    """Each arm's depth on the aspect, over every rig, as its scoreboard counts it."""
+    return {board.variant_key: board.depth for board in bundle.scoreboard}
+
+
+def _depth_differs(rate: RateReading) -> int | None:
+    """The paired cases the two arms ran a different number of times; None unpaired or with no trials carried."""
+    if not rate.paired or rate.trials is None:
+        return None
+    return sum(1 for first, second in zip(*rate.trials, strict=True) if first != second)
+
+
+def _precision(rate: RateReading, keys: tuple[str, ...]) -> Precision | None:
+    """What limits a pass rate's interval at the nominal level it was read at (:func:`~threetears.evals.analysis.
+    depth.precision`), its sides named by ``keys`` in its samples' order; None with no per-case shares."""
+    if rate.samples is None:
+        return None
+    return precision(
+        rate.samples,
+        rate.trials,
+        passes=rate.passes,
+        keys=(keys[0], keys[1]),
+        interval=rate.interval,
+        paired=rate.paired,
+    )
 
 
 def _points(rate: RateReading | None) -> tuple[float, float] | None:

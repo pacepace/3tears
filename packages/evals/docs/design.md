@@ -59,8 +59,8 @@ recorded as witnessed rather than left to chance. See [the world model](evaluati
 **Code checks facts, a judge assesses judgment, and people check the judge; the three never swap.**
 Code never grades a model's prose: a deterministic gate over free text never converges, because each
 generation finds a phrasing it does not parse. The verdict and every count on a report are code's, a recommendation
-names the findings it rests on, and a null claim in a finding's title is checked against that finding's evidence
-structurally; only whether a title uses one of a few null phrasings is read off its words
+names the findings it rests on, and code reads no word of a finding's title: a title stating a null its evidence did not
+establish is the prompt's rule to prevent
 ([Having a model write the analysis](reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence)).
 A judge never grades a count or order code can check, and a prompt never coaches toward a grader's words, which
 measures obedience.
@@ -198,8 +198,9 @@ this concept? Every product has a model, a judge, a simulator and a cost ceiling
 shared; the shape is the host's.
 
 **Rejected: opaque inputs.** An engine whose inputs are bare hashes writes analyses saying "component 3
-moved". So a registration carries prose, and apparatus without `confounds` prose is refused: "a bare name
-is a label". The same rule applies one level out: an engine-owned field meaning repeats to one consumer
+moved". So a registration carries prose, and apparatus that is a dimension of the rig without `confounds` prose
+is refused: "a bare name is a label". An apparatus input taken out of the rig (`no_rig_coordinate`, the spend
+ceiling) states why instead, and splits no cell. The same rule applies one level out: an engine-owned field meaning repeats to one consumer
 and a retrieval window to another became `intended_repetitions`, and the engine's caveat kinds are open
 to host additions.
 
@@ -464,15 +465,15 @@ trials, while the word "truncated" appeared nowhere a reader would look. Most of
 the report's first screen — the basis, the verdict and each arm's census of passed, failed and lost trials, by cause
 — is written by code from the bundle, and the memo authors findings and recommendations only, each recommendation
 pinned to its findings and each finding to its trials. (The campaign page later gave the writer one sentence on its
-first screen, the summary across the aspects, below every warning code raised; see below.) The null check moved onto
-finding titles: a title in one of a short list of null phrasings (`analysis/null_claims.py`) is refused when its
-finding cites no reading the bundle established alike. Only "does this title say the arms are alike" is read off the
-words; nothing is parsed, so a reworded null passes, and the judge measures the rest.
+first screen, the summary across the aspects, below every warning code raised; see below.) The null rule moved onto
+finding titles, where a phrase list once refused a title saying arms are alike over no established null. Code reads
+no prose now (owner, 2026-10-24: "Bad judgment is fixed by improved prompts and/or oversight and calibration, not by
+code"): the rule is the prompt's, and a host's reporter eval can measure it on the rubric dimensions it declares.
 
 **The memo's summary opens the campaign's page, after code's warnings** (2026-10, #864). The owner asked for a
 holistic summary first, then the recommendation, then the aspects. A measurement's memo and a no-clear-winner
 choice's held no prose reading across the aspects at all, so every kind's memo carries one `summary`, held to the
-reference and style rules a finding's body is, and the page reads warnings, question, summary, recommendation, then
+reference rules a finding's body is, and the page reads warnings, question, summary, recommendation, then
 code's readings by aspect. The verdict, the readings and every number stay code's.
 
 The judge's noise exceeds the effects being ranked, so rubric criteria are removed before any are added.

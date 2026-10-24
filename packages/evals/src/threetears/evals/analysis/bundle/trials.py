@@ -44,6 +44,7 @@ from threetears.evals.analysis.bundle.caps import (
     capped_text,
     tail_text,
 )
+from threetears.evals.analysis.depth import depth_of
 from threetears.evals.analysis.bundle.schema import (
     ArmScoreboard,
     FailCause,
@@ -285,6 +286,7 @@ def _census(arm: str, results: Sequence[EvalResult], readings: Mapping[str, Tria
         test_cost_usd=sum(priced) if priced else None,
         n_cost_unpriced=len(results) - len(priced),
         reply_cost_usd=sum(replies) / len(replies) if replies else None,
+        depth=depth_of(Counter(result.test_case_id for result in usable).values()),
     )
 
 
