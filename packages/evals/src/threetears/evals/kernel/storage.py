@@ -1412,6 +1412,32 @@ class EvalStorage:
         )
         return {str(item["id"]): item.get("archived") is True for item in items}
 
+    def load_reported_analysis(self, campaign_id: str, scope_id: str) -> EvalAnalysis | None:
+        """The campaign's newest analysis that is not archived — the one its page reports — hydrating it alone.
+
+        The store picks it: one read filtered on the archived flag (``false`` or absent), newest ``created_at`` first,
+        limited to one document, so a campaign's archived analyses, each holding every aspect's frozen bundle, are
+        never shipped or read to find it. :meth:`list_analyses_by_campaign` names the same analysis first among the
+        campaign's live ones.
+
+        :param campaign_id: The campaign.
+        :ptype campaign_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :return: The analysis, or ``None`` when the campaign has none that is not archived.
+        :rtype: EvalAnalysis | None
+        """
+        items = self._store.by_doc_type(
+            "eval_analysis",
+            scope_id,
+            campaign_id=campaign_id,
+            field_in={"archived": [False, None]},
+            order_by="created_at",
+            descending=True,
+            limit=1,
+        )
+        return self._hydrate(EvalAnalysis, items[0]) if items else None
+
     def list_analyses_by_campaign(self, campaign_id: str, scope_id: str) -> list[EvalAnalysis]:
         """Return every analysis attached to a campaign, newest first."""
         items = self._store.by_doc_type(

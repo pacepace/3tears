@@ -163,6 +163,11 @@ class AnalysisStore(CampaignReadStore, JobRecordStore, Protocol):
         """Every analysis of one campaign, newest first."""
         ...
 
+    def load_reported_analysis(self, campaign_id: str, scope_id: str, /) -> EvalAnalysis | None:
+        """The campaign's newest analysis that is not archived — the one its page reports — read alone, never by
+        loading the campaign's other analyses; ``None`` when it has none."""
+        ...
+
     def list_analysis_attempts_by_campaign(self, campaign_id: str, scope_id: str, /) -> list[EvalAnalysisAttempt]:
         """Every generation attempt recorded against one campaign, newest first."""
         ...
@@ -1609,7 +1614,9 @@ def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Campaign
     A campaign of one aspect has one fold, holding that aspect's page. A particular analysis, archived ones included,
     is read by its id through :func:`analysis_report`.
 
-    Costs no model call either way: the code-only page is storage reads and arithmetic.
+    Costs no model call either way: the code-only page is storage reads and arithmetic. It reads one analysis however
+    many the campaign holds: the store picks the newest not archived
+    (:meth:`AnalysisStore.load_reported_analysis`), so a read's memory does not grow with the analyses archived.
 
     :param host: The host: where the campaign and its analyses are read, and the vocabulary its evidence is
         assembled in when there is no analysis.
@@ -1623,9 +1630,9 @@ def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Campaign
     :raises NotFoundError: No campaign with that id in the scope.
     """
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
-    live = [analysis for analysis in list_analyses(host.storage, campaign_id, scope_id) if not analysis.archived]
-    if live:
-        return _analysis_page(live[0], campaign)
+    reported = host.storage.load_reported_analysis(campaign_id, scope_id)
+    if reported is not None:
+        return _analysis_page(reported, campaign)
     return _code_only_page(host, campaign)
 
 
@@ -1798,10 +1805,11 @@ def _reported_analysis(storage: AnalysisStore, campaign_id: str, scope_id: str, 
         )
     if named.archived:
         raise ValidationFailedError(f"analysis {analysis_id} is archived, so no page reports it", remedy=remedy)
-    live = [analysis for analysis in list_analyses(storage, campaign_id, scope_id) if not analysis.archived]
-    if live[0].id != analysis_id:
+    reported = storage.load_reported_analysis(campaign_id, scope_id)
+    if reported is None or reported.id != analysis_id:
         raise ValidationFailedError(
-            f"analysis {analysis_id} is not campaign {campaign_id}'s report: its page reports {live[0].id}",
+            f"analysis {analysis_id} is not campaign {campaign_id}'s report: its page reports "
+            f"{reported.id if reported is not None else 'no analysis'}",
             remedy=remedy,
         )
     return named
