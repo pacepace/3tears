@@ -1,0 +1,650 @@
+---
+artifact: build-plan
+version: 1
+scope: evals-senior-report
+branch: evals/senior-report
+depends_on: []
+governed_by: []
+partition: "delegated in waves, isolated worktrees, at most 3 at once: A = 00 || 02; B = 01 || 03 || 04; C = 05 || 06; D = 07 then 08. Chunk 02 splits campaign_page.py and test_campaign_page.py so 03/04/05/06 own disjoint modules"
+last_validated: 2026-10-24
+---
+
+# Build plan: a senior campaign report, for any eval shape
+
+## Goals
+
+**Response taken:** Proceed, citing it. The owner said "Fable's review is great. I agree with it all" (relayed
+2026-10-24), and gave scope and limits in the same message (quoted under Constraints). Two more rulings arrived while
+this plan was drafted, also 2026-10-24: reporter label form (chunk 00), and caveats stated once (rule 4b).
+
+**Product.** The campaign page, and the memo the writer produces over it, should read like a senior analyst's work for
+whatever subject a host evaluates. That covers a model swap, a judge calibration, a latency study, one arm or many,
+with or without a control, floors or k>1. The evidence is one review of one memo
+(`memo-review.md`, round 1 of the Kairo persona campaign). It is evidence, never the target: no change here may only
+make sense for that campaign.
+
+**Architecture: what must hold.**
+- Code reports, the writer recommends, a person decides. The page keeps the three apart.
+- Code checks the **structure** of LLM output, never its prose. Writer judgment is fixed through prompt, view and
+  calibration. No word lists, no prose gates (memory: no-code-checking-prose).
+- Package-authored page text stays one template per sentence, so a later locale can supply it. No casing or
+  word-count rules over host strings, because they break French and Arabic hosts.
+- Every number on the page has one owner and one spelling. A sentence points at the number. It does not restate it.
+- Names are declared, never derived. The fallback is the full label or expression.
+
+**Constraints (owner, verbatim, relayed).**
+- "we can't templatize the memo at a detailed level; other memos will be about wildly different topics. To the
+  extent there's a template or fixed requirements it needs to be at a very high level of abstraction that can adapt
+  to wildly different subject matters and eval shapes."
+- Use "one or more subagents to address fable's issues, focusing on generalizability and not optimizing for this one
+  report at all."
+- Aggregates such as "production spend" can be produced, with stated assumptions about how scenarios are weighted:
+  equal weight for now ("in the future we might measure weighting from logs"). "That also unblocks charts for
+  aggregate values, like cost/quality frontier."
+- 2026-10-24: "Any date concerns should be flagged as a caveat to the whole report, not repeated over and over to add
+  'but what if we're cheating ourselves' uncertainty each individual finding." Also: "Recommended: September (high
+  confidence)" passes on confidence. A post-hoc declaration does not by itself lower a recommendation's confidence.
+- 2026-10-24, reporter labels: a label's form matches its dimension's scale. The owner rejected a 5-to-2 mapping
+  and rejected moving the dimensions to ordinal.
+- Standing rulings that bind:
+  - evals-only (nothing outside `packages/evals`, CHANGELOG excepted);
+  - no version bumps in PRs;
+  - calibration is mechanism only;
+  - no pooling by assumption (a silent field is a difference);
+  - the report style rules (short headers, numbers in tables, one sentence of commentary, no meta-prose, terms
+    defined once), tested on package-authored text only;
+  - onboarding joy (every change removes more than it adds where it can).
+
+**Tradeoffs accepted.**
+- The writer prompt is at 24,297 of 24,300 characters (`PROMPT_CHAR_BUDGET`, which only falls). Every prompt clause
+  added here is paid for by one removed. *Inferred:* the owner would rather cut than raise the budget, because the
+  view now carries facts the prompt used to describe. Open question Q1.
+- The cost/quality chart is descriptive (points with intervals). It is not a tested dominance reading. Revisit when
+  an owner wants a tested aggregate frontier (Q3).
+- Reconciling A19 explains two interval machines in place. It does not unify them (Q2).
+
+**Level:** Medium. The renderer and view changes are well understood from the code. Two things are not settled. One
+is the prompt budget (Q1). The other is whether the aggregate needs a tested reading (Q3). Settling Q1 and Q3 raises
+this to High. The cheapest step is the owner answering them before Wave C.
+
+**Decisions made mid-build:** (append here, one line each)
+
+## Advisory: what I would do differently
+
+- **Split into two plans at the Wave C boundary.** Wave A-B (schema, names, page structure, scorecard) is renderer and
+  schema work. Wave C-D (aggregates, writer view, prompt) needs a re-recording and an owner answer on Q1 and Q3. Nine
+  chunks will not ship in three sessions, and the planning guide calls that a program. I kept them in one file so the
+  owner sees the whole item map once. *Recommendation:* when Wave B lands, archive this plan and draw
+  `build-plan-senior-report-writer.md` for chunks 05-08.
+- **Cut the review's named-set mechanism and its Markdown casing rule** (see Rejected). Both would add machinery to
+  fix what consolidation (rule 3) already removes, and the casing rule is English-only.
+- **The biggest risk the review does not price** is that two of its "writer" failures are the package's own bugs.
+  - A12: the view's `cases_to_settle` is the run's case count, not a sizing.
+  - A6: the view's `change` is spelled at four figures, beside a page that prints one decimal.
+  These are fixed in code (chunk 07). Any reporter label that blames the writer for them should be revisited on the
+  Discodon side.
+
+## General principles (subject-agnostic)
+
+The skeleton below holds for every campaign kind. Each section appears only when its content exists (rule 2).
+
+1. **Answer.** Title, the question, code's verdict, the writer's summary and recommendation. A measurement has no
+   recommendation.
+2. **Warnings.** One plain line per arm per warning kind (bars missed, floors broken, guardrails), each a consequence.
+   Absent when nothing warns.
+3. **Report caveat.** At most one line per report-wide disclosure (rule 4b).
+4. **Scorecard.** The form follows the kind's shape (rule 2):
+   - change: aspects × candidates;
+   - choice: aspects × arms, with the arm shown ahead marked;
+   - measurement: aspects × measures for the one arm.
+   An equal-weight aggregate row and the cost/quality chart are added where there are two or more aspects and two or
+   more arms.
+5. **Findings.** The writer's, each with its Evidence fold.
+6. **Next.** The writer's steps, sized by code.
+7. **Design & provenance.** Arms and control, margins, floors, depth, when each criterion was set, test-setup
+   disclosures. All of it as data.
+8. **Detail.** One fold per aspect, as now.
+9. **Methods and Glossary.**
+
+The rules that produce it. Rules 1-7 are the review's, restated for any shape. Rules 4b and 8-10 generalise owner
+rulings and review findings.
+
+- **R1. The first screen is the decision.** Title, question, answer, warnings as consequences. Nothing a
+  decision-maker does not need. This holds for every kind: a measurement's answer is its standing against its bars.
+- **R2. Form follows the content's shape.**
+  - Two categorical axes and one number make a matrix.
+  - Intervals against a threshold make glyphs with the threshold drawn.
+  - One fact is a sentence.
+  - A table whose rows all carry one value set collapses to one sentence. A column empty on every row is dropped.
+  - A chart is never drawn for one point.
+- **R3. Every quantity is rendered once, in one place.** Prose points at it and says what it means. Two tables never
+  print different numbers for one cell unless the page says why, beside them. A figure handed to the writer is spelled
+  as the page spells it.
+- **R4. A caveat is a consequence, not a fact.** "Because X, the page cannot Y; Z would fix it." Dates, levels, k and
+  corrections are data in Design & provenance.
+- **R4b. A caveat is stated once, at the level it applies to** (owner, 2026-10-24).
+  - A report-wide disclosure gets at most one report-level caveat line plus its Design & provenance row. Examples:
+    declaration timing, latency not compared, settings undecided.
+  - It is never recited per aspect or per finding, in the page or in the writer's view.
+  - It does not by itself lower a recommendation's confidence.
+- **R5. One name per entity, defined once, used everywhere.**
+  - An aspect has a declared short name, and a check has a declared display name.
+  - The full label appears once, in a legend or a header.
+  - Code font is for identifiers and expressions only.
+  - The fallback is the full label or expression, never a derivation.
+- **R6. Progressive disclosure.** Summary, then finding, then evidence fold, then per-aspect detail, then trials.
+  Nothing heavy above the fold.
+- **R7. Two readings of one quantity that disagree are shown with their reason, in one place.** A disagreement is
+  never left for a reader to find by scrolling.
+- **R8. A reading that cannot move is said to be uninformative, structurally.**
+  - A control at or below the margin cannot show a drop past it.
+  - A control at 100% cannot show a gain.
+  - A check every arm passes, or none does, cannot separate them.
+  Code states these as facts, never as prose judgments. Generalises A20.
+- **R9. The writer's view hands facts at the altitude the writer makes claims.**
+  - Campaign-wide and per-arm rollups beside per-aspect cells.
+  - Each field named for what it holds.
+  - Each sizing carried with its kind.
+  - Each report-wide disclosure handed once.
+  Generalises review item 11 and the two view bugs.
+- **R10. Aggregates state their weighting.** A cross-aspect figure carries its weighting basis (`equal` today).
+  - It is withheld, with the aspects that lack it named, when any aspect lacks the figure. Never a partial mean
+    (no pooling by assumption).
+  - It never decides a reading, a floor or a bar.
+
+## Review claims checked against the code
+
+| Item | Review said | Code says | Result |
+|---|---|---|---|
+| A6 | RENDERER, `prose_refs` printed 53.33 | `prose_number` spells ≥10 whole, so a figure reference renders 53, and no figure reference resolves a campaign reading's change. The view carries `change` through `_figure` at 4 significant figures (`campaign_bundle.py`, `pass_rate_verdicts` and `readings`) | **Wrong source.** The writer typed a figure from the view. Fix is WRITER-VIEW (R3: view spells as the page), chunk 07 |
+| A12 | WRITER invented 115 and 60 | `readings[].cases_to_settle` is `reading.projection.cases`, the usable cases the interval was read over (115 and 60 for qwen), not `if_none`/`if_observed` | **Wrong source.** The view handed the writer those exact numbers under a sizing name. WRITER-VIEW bug, chunk 07 |
+| A2 | WRITER-VIEW, medium: no rollup | Confirmed: `writer_view` carries per-aspect `scoreboard` cost only. No per-arm or campaign figure exists | Confirmed |
+| A16 | `_which` returns "pass rate" | Confirmed: `_floor_beside_lines` first loop prints "reads its pass rate … while its row reads only the pass rate" when `status.reading is None` | Confirmed |
+| A17 | mixed denominators | Confirmed: `cases` is `min(control_cases, arm_cases)` and `passed` is `arm_passed of arm_trials` | Confirmed |
+| A18 | note false for multi-rate floors | Confirmed. The row projects the pass rate alone (`project_rate`). `floor_projection` joins every unclear rate (`SampleProjection.joined`). The note's "same count" holds only for a floor reading the pass rate alone | Confirmed |
+| A19 | medium on cause | Confirmed in `report.html`, 63.3%→78.3% on the same 60 paired cases. The row is a bounded interval, Holm across the arm's aspects (99.2%): [3.1, 37.6], shown better. The fold contrast is a t interval within the aspect's family (99.8%): [−7.7, 37.7], not separated | Confirmed |
+| §4 rewrite of "Nothing corrects across arms" | "the floors and the recommendation do not rest on it" | The generator refuses a candidate with no confirmatory `better` reading unless every floor held, so a recommendation **can** rest on a corrected gain | **Rewrite is wrong in one clause.** Use the rest and drop that clause, chunk 04 |
+| A14 | view hands latency once per aspect | Confirmed: `_DISCLOSURES` (incl. `latency_contended`, `request_settings_disclosure`) are read per aspect in `_untrimmed` | Confirmed |
+| A10 dup | page prints timing four times plus memo | Confirmed: `late_criteria_lines` in the campaign header, the aspect header (`build.py` `_heading_blocks`) and the listing line (`analysis_verdict`), plus rule 11 asking the summary to say it | Confirmed. Superseded by R4b |
+| Chart count | 8 figures and glyphs | Only `ChartKind = outcome_bar \| interval_rows` exist. Glyphs are table cells | Consistent with review |
+| §3.2 humanize path exists | yes | `style.measure_name` returns `code(expression)` for any goal check, never a reader name. The catalog's `reader_name` exists but is ignored for checks | Path exists for measures, not for checks. Chunk 01 adds it |
+| `lenses/frontier.py` | (owner asked) | It ranks one subject's contestants per aspect bundle on pass^k × production cost × latency, with dominance decided by test, and draws no chart. The campaign page prints one line per aspect (`_frontier_blocks`, choice kind only). Nothing aggregates across aspects | The aggregate and chart are new (chunk 06). Reuse `lenses/aggregation.WEIGHTING_EQUAL_PER_SCENARIO` vocabulary |
+
+## Item → chunk map
+
+Chunks: 00 reporter labels · 01 names · 02 split and scaffold · 03 first screen and provenance · 04 scorecard ·
+05 depth collapse · 06 aggregates and chart · 07 writer view · 08 writer prompt.
+
+### Accuracy findings
+
+| Item | Rule | Chunk / disposition |
+|---|---|---|
+| A1 title/evidence aspect mismatch | R5 (near-collision names), R9 | 01 (short names), 08 (rule 9 clause names the aspect it cites), Discodon labels |
+| A2 one aspect's cost as the arm's | R9, R10 | 06 (equal-weight cost per arm), 07 (rollup in view, cheaper/dearer counts) |
+| A3 garbled term | R5 | 07: the view names cost by its page name, not `production_replicating_cost` (the key appears verbatim in the recorded bundle). Writer otherwise, Discodon labels |
+| A4 omitted unclear floor | R9 | 07 (per-arm floor rollup). Writer otherwise |
+| A5 "queueing" too wide | R5 | 01 (distinct short names), writer, Discodon labels |
+| A6 53.33 | R3 | **07** (correction above) |
+| A7 "safety" floors | R5 | Writer only, Discodon labels. No code change |
+| A8 firmer than an unclear floor | R9 | 07 (floor status beside each check reading cited). Writer otherwise |
+| A9 "gain" on within-margin | R9 | 08 (rule 11: "gain"/"improves" only for `better`/`improved`). Discodon labels |
+| A10 overbroad late clause | **R4b** | 03 (one report caveat line), 07 (handed once), 08 (rule 11 clause removed). Supersedes the review's "names the aspects it covers" |
+| A11 object of confidence | **R4b** | **No change.** The owner ruled the line passes, and a post-hoc declaration does not lower confidence. 08 checks the prompt for any timing-based confidence rule (rule 6 has none today, rule 11's clause is removed) |
+| A12 115/60 | R9 | **07** (bug fix: carry `if_none`/`if_observed` with kind) and 08 (rule 12: `never` means a candidate change) |
+| A13 next step with no stated effect | R9 | 08 (rule 12 already asks; tighten wording within budget). Discodon labels |
+| A14 latency next step filler | R4b, R9 | 07 (report-wide disclosures handed once, campaign level) |
+| A15 raw expressions in headline | R1, R5 | 01 (check display names), 03 (warnings under the title, short names) |
+| A16 self-contradictory floor-beside line | R7 | 04 (Floor mark in the scorecard; sentences deleted) |
+| A17 mixed denominators | R3 | 04 (cases and trials stated apart where they differ) |
+| A18 two sizing tables | R3, R7 | 04 (one table, "pass rate" and "every check" side by side, the deciding check named) |
+| A19 shown better vs not separated | R7 | 04 (one reconciliation line where a fold contrast's per-case values equal the row's pass-rate values and the verdicts differ). Unification is Q2 |
+| A20 degenerate control | R8 | 04 (scorecard marks the cell "cannot show a drop"), 07 (view flag) |
+
+### Prioritised change list
+
+| Item | Rule | Chunk / disposition |
+|---|---|---|
+| 1 Title first; plain warning line per arm; drop `role="alert"` | R1 | 03 |
+| 2 Timing lines to Design & provenance; drop rule-11 clause | R4, **R4b** | 03 (renderer: one caveat line plus a provenance table; per-aspect recitations dropped from campaign header, aspect header and listing line), 08 (clause removed, not replaced) |
+| 3 Collapse degenerate sections | R2 | 05 |
+| 4 Floor-beside fix or Floor column | R2, R7 | 04 (Floor column, sentences deleted) |
+| 5 Rewrite level/within/settle notes; remove "same count" | R3, R4 | 04 (§4 rewrites, parametrised by counts; the one wrong clause dropped) |
+| 6 Reconcile sizing tables | R3 | 04 |
+| 7 Scorecard matrix | R2 | 02 (cell fields), 04 (matrix per kind) |
+| 8 Reconcile shown better vs not separated | R7 | 04 |
+| 9 Prose figures formatted as tables | R3 | 07 (the source was the view, see A6). `prose_refs` unchanged |
+| 10 Short names, display names | R5 | 01 (fields, bundle, `measure_name`), 03/04 consume, 07 hands to writer |
+| 11a cost rollup | R9, R10 | 06 computes, 07 hands |
+| 11b per-arm floor rollup | R9 | 07 |
+| 11c campaign-wide disclosures once | **R4b** | 07, generalised: every report-wide disclosure, late criteria included, handed once at campaign level, never per aspect |
+| 11d degenerate control flag | R8 | 07 (flag), 04 (page) |
+| 11e sizing with its kind | R9 | 07 |
+| 12 Prompt clauses | R9 | 08, within budget. The late-criteria sentence clause is **dropped** per R4b, not added |
+| 13 Reporter calibration cases | - | **Discodon side** |
+
+### Other review sections and owner additions
+
+| Item | Rule | Chunk / disposition |
+|---|---|---|
+| §2 diagnosis: machinery order | R1, R6 | 02 (section ids), 03 (order) |
+| §2 "senior version of THIS memo" content | - | **Rejected as a target**: campaign-specific. Used as evidence only |
+| §2 subject-agnostic skeleton | R1-R7 | 02/03 (sections appear by content, per kind) |
+| §2 per-aspect summary template "How sure" restates the row | R3 | 08 (rule 11 aspect-summary wording, within budget). The three slots stay structural |
+| §3.1 aspect short name | R5 | 01. Discodon declares the names on seeds |
+| §3.2 check display name | R5 | 01 (field on the template). Fallback is the full expression (Q4 for long ones) |
+| §3.3 code font only for identifiers; aspect links in HTML | R5 | 03 |
+| §3.3 Markdown casing rule (Title Case arms, lowercase aspects) | - | **Rejected**: an English casing rule over host strings (no-code-checking-prose: French/Arabic). Names print as declared |
+| §3.4 named sets | R3 | **Rejected as a mechanism.** Naming a set automatically is a derivation, and the recurrences the review counted (timing ×4, floors ×3, depth ×8) are removed by consolidation in 03/04/05 |
+| §3 "≤3 words" | R5 | **Modified**: a character cap (32), since a word count is language-bound (Q5) |
+| §3 the campaign's own short names | - | **Discodon side** |
+| §4 statistical rewrites | R4 | 04 (levels, within, floor-beside, settle), 05 (depth sentences), 03 (timing becomes one caveat line, superseding §4's timing rewrite per R4b). Each rewrite is parametrised by the page's counts, never "eight" or "four" |
+| §2 lessons from Claude artifact generation | R1, R2, R6 | 02-05 (conditional sections, form by content, legend) |
+| Page weight (7 MB trials, 1,775 folds) | R6 | **Not in this plan, flagged**: no review item asks for it. It belongs in the backlog |
+| Owner: equal-weight aggregates incl. cost | R10 | 06 (computed in readings), 04 consumes (scorecard aggregate row), 07 (view) |
+| Owner: aggregate cost/quality frontier chart | R2, R10 | 06 (new chart kind with hidden table). Per-aspect `lenses/frontier.py` verdicts unchanged |
+| Owner 2026-10-24: caveats once (R4b) | R4b | 03 (page), 07 (view), 08 (prompt). Mapped above under A10, A11, A14, 2, 11c, 12 |
+| Owner 2026-10-24: reporter label form | - | 00 |
+| Owner 2026-10-24: `memo_excerpt` | - | 00 |
+
+## Shape-bearing constants (what the consumer re-pins on)
+
+| Constant | Where | Moves in | To |
+|---|---|---|---|
+| `DURABLE_SCHEMA_MINOR` (+ v16.2 ledger line) | `schema/versioning.py` | 00 (reporter labels), extended by 01 (`Aspect.short_name`, `EvalTemplate.goal_check_names`) | 2. v16.1 shipped in 0.75.0, so this is a new minor |
+| Aspect bundle `schema_version` (+ `CORE_PINNED` row, shape-only) | `bundle/schema.py` `AnalysisContextBundle.schema_version`; `tests/test_hostneutral_sweepables.py` | 01 (declared short name, check reader names in `measure_catalog`) | 65/14 |
+| `CAMPAIGN_JSON_SHAPE` | `report/model.py` | 02 (section ids, cell fields, chart kind), extended by 03-06 within the same unreleased shape | 5 |
+| `CAMPAIGN_BUNDLE_SHAPE` | `campaign_bundle.py` | 06 (`readings.aggregate`) | 3 |
+| `EVAL_ANALYSIS_GEN_DEFAULT` (seed; hosts `eval_prompt_reset`) | `gen_prompt.py`; ledger `GEN_PROMPT_RULES.md` | 08 | moves; `PROMPT_CHAR_BUDGET` only falls |
+| Writer recording `tests/fixtures/generate_analysis/recordings/` (`llm_analysis.jsonl`, `.bundle.json`, `.prompt.txt`) | replayed by `test_generate_analysis_fixture.py` | stale after 01 (bundle), 06 (readings), 07 (view), 08 (prompt) | **re-recorded once, by the main session, after 08** |
+| `api/surface.json`, `docs/reference.md` | regenerated | 00 (`ReporterLabel` is host-contract), 01, 06 | the main session regenerates at integration, never a builder |
+
+No other `*_SHAPE` constant exists in the package (`ASPECT_BUNDLE_SHAPE = 59` is a floor for refusal, not the current
+shape).
+
+## Chunks
+
+Builder brief, every chunk:
+- Read `/prawduct:methodology building`; work in an isolated worktree off this branch; evals-only.
+- Tight single-file or `-k` test selections, one at a time, never a suite or `check-all.sh` (memory:
+  subagents-no-heavy-tests). Lint and typecheck by reading.
+- Never touch `.prawduct/`, `api/surface.json` or `docs/reference.md`.
+- Append to `CHANGELOG.md` and the `unreleased` MIGRATIONS notes. The main session reconciles them.
+- No version bumps. No agent attribution anywhere.
+- A sentence a test pins may change only where this plan changes that behaviour, with the reason in the commit.
+  Tests are contracts.
+
+**Shared fixtures.** Chunk 02 creates new `tests/report_shapes_support.py`, built on `campaign_support.py`. It provides
+four campaign shapes that every later chunk's tests run against. A behaviour test passes on at least two of them:
+
+- **S1 change.** A control and three candidates, three aspects, k=1 with one arm at k=2 on one aspect. Floors include
+  a check-reading floor. One aspect has the control at 0%.
+- **S2 choice.** Three arms, no control, one aspect, k=3, bars, no floors. Priced and timed, latency-study-like.
+- **S3 measurement.** One arm, two aspects, judged dimensions, a bar.
+- **S4 change.** One candidate, one aspect, no floors, no margin.
+
+### Chunk 00: Reporter label form and memo excerpt
+
+Landed first: Discodon holds a label freeze on it. Independent of every report file.
+
+**Owns:**
+- `analysis/reporter_kind.py` (`ReporterLabel`, `LabelDirection`, `LABEL_BANDS`, `reporter_case_payload`)
+- `analysis/reporter_bank.py` (`label_agrees`, `LabelReading`, the calibration read)
+- `analysis/service.py`: only `freeze_reporter_case` and `_label_set`
+- `ops/reporter.py`
+- the label description in `actions/engine.py`
+- `schema/versioning.py` (v16.2)
+- tests: `test_hostneutral_reporter_bank.py`, `test_reporter_case_actions.py`, `test_reporter_case_freeze_attested.py`,
+  `reporter_case_support.py`, and new `test_reporter_label_form.py`
+
+**Deliverables.**
+- `ReporterLabel` gains `verdict: Literal["pass", "fail"] | None`. `direction` becomes optional.
+  - Exactly one of the two is set. Model-level, structural.
+  - A label stored before reads as it did: direction set, no verdict.
+  - `verdict` is written to the payload only when set, as `reader`/`collected_by` are. So a direction label is
+    stored byte-identically to v16.1.
+- `label_agrees(label, score)`:
+  - an ordinal score reads `direction` against `LABEL_BANDS`, as now;
+  - a pass/fail score reads `verdict == ("pass" if score passes else "fail")`;
+  - a form that does not match its score's scale (a stored legacy direction on pass/fail) stays `None`, as today.
+  - The owner rejected any 5-to-2 mapping, so none is added.
+- The freeze (`freeze_reporter_case`, and the `reporter_case_freeze` operation through it) refuses a label whose form
+  does not match its dimension's scale. The scale is read from the criterion the freeze stamps (`LabelCriterion.scale`:
+  `pass_fail` needs `verdict`, `ordinal` needs `direction`). Validation error, nothing written. Never applied on read,
+  so a stored mismatched label keeps reading.
+- `memo_excerpt: str | None` on `ReporterLabel`.
+  - The freeze refuses it unless it is a substring of the case's `recorded_memo` (Q8: exact, after collapsing runs of
+    whitespace on both sides).
+  - A label with an excerpt on a case pinning no memo is refused.
+  - It is written only when set, and dropped in `_label_set` beside `reader`/`collected_by`, so it is not part of case
+    identity.
+  - `LabelReading` gains `verdict` and `memo_excerpt`, so the calibration read shows the excerpt beside the quote.
+- Durable v16.2 ledger line (ends with `MINOR_ADDITIVITY_SENTENCE`). The rolling-deploy note follows the v16.1
+  pattern: a v16.1 pod cannot read a case with a verdict or excerpt label, so the template stops there until it
+  upgrades.
+
+**Behavioural tests.**
+- A pass/fail case with verdict labels yields agreement `True`/`False`, not `None`.
+- The ordinal path is unchanged.
+- The freeze refuses: a direction on pass/fail, a verdict on ordinal, both, neither, an excerpt not in the memo, an
+  excerpt with no memo.
+- `labelled_case_v16_0.json` still reads, and re-stores byte-identically.
+- Re-freezing the same verdicts with a different excerpt names the stored case.
+- Run against the 14 labels in `reporter-labels-draft.json` reshaped. Note: in that draft `quote` holds memo text; the
+  memo passage belongs in `memo_excerpt` and the reader's words in `quote`. Tell Discodon.
+
+**Acceptance.** Every refusal is structural (form, substring), never semantic. No bundle or campaign shape moves.
+
+### Chunk 01: Declared names (aspect short name, check display name)
+
+Depends on 00 (`schema/versioning.py`, v16.2 entry).
+
+**Owns:**
+- `kernel/declaration.py` (`Aspect`)
+- `schema/models.py` (`EvalTemplate`)
+- `run/definition_digests.py` (`_UNMEASURED_TEMPLATE_FIELDS`)
+- `analysis/aspects.py`
+- `analysis/bundle/schema.py` (shape 65), plus the bundle assembly that fills `measure_catalog` for goal checks (the
+  builder finds it, from `bundle/surface.py` and `bundle/trials.py`)
+- `analysis/style.py` (`measure_name`)
+- new `report/campaign/names.py`, the one naming helper; 02 creates it as a pass-through
+- the campaign declare/adopt actions' argument descriptions
+- `tests/test_hostneutral_sweepables.py` (CORE_PINNED row)
+- new `tests/test_declared_names.py`
+
+**Deliverables.**
+- `Aspect.short_name: str | None`.
+  - Unique within the campaign, at most 32 characters (Q5), not blank.
+  - Default None, written only when set.
+  - Copied by adoption (`aspects_from`).
+  - Not in any identity, fingerprint or staleness digest. The builder verifies a short-name edit marks no analysis
+    stale.
+- `EvalTemplate.goal_check_names: dict[str, str]`.
+  - Expression to display name, keys must be declared checks.
+  - Excluded from `measured_template_digest`, because presentation does not change what a run measures.
+  - It flows into the goal check's `MetricDescriptor.reader_name`. `measure_name` uses it when set, and otherwise
+    `code(expression)` in full.
+- `AspectDeclaration.short_name` carried into the bundle. Shape 65, `CORE_PINNED` (65, 14), shape-only.
+- `names.py`: `aspect_name(bundle)` returns the short name or the full label, and `legend(...)` gives the pairs for
+  one legend row.
+
+**Tests.**
+- S1 with and without names: the page uses short names in every table cell, and the full label appears once in the
+  legend and fold header.
+- An undeclared name falls back to the full label or expression unchanged, never truncated.
+- A duplicate or over-long short name is refused at declare.
+- A template with names has an unchanged measured digest.
+
+**Acceptance.** No derivation anywhere. Floor keys and every identifier still use `label`.
+
+### Chunk 02: Split the campaign page and scaffold the skeleton
+
+A cleanup plus a small schema change. No behaviour change except the JSON shape.
+
+**Owns:**
+- `report/campaign_page.py`, which becomes a facade re-exporting today's `__all__`
+- new `report/campaign/` package. Each module is owned by one later chunk:
+
+  | Module | Holds | Owner |
+  |---|---|---|
+  | `page.py` | `build_campaign_report`, section order, one call per section | 02 |
+  | `warnings.py` | warning lines | 03 |
+  | `provenance.py` | late criteria and design | 03 |
+  | `scorecard.py` | table, pair, measure and bar blocks; notes; settle | 04 |
+  | `depth_blocks.py` | depth, pass^k, model, precision | 05 |
+  | `aggregate.py` | stub returning `[]` | 06 |
+  | `memo_blocks.py` | memo, trace, summaries, recommendation | unowned after 02 |
+  | `names.py` | pass-through | 01 |
+
+- `report/model.py`:
+  - section ids `answer`, `warnings`, `scorecard`, `findings`, `next`, `provenance` beside today's, with titles of at
+    most 3 words;
+  - `TableCell.flag` (a short code-authored marker such as the floor status or "cannot show a drop", rendered beside
+    the value);
+  - `ChartKind` gains `cost_quality`;
+  - `CAMPAIGN_JSON_SHAPE` 5.
+- split `tests/test_campaign_page.py` along the same modules, tests moved verbatim
+- new `tests/report_shapes_support.py` (S1-S4)
+
+**Acceptance.**
+- Every moved test passes unchanged, apart from `CAMPAIGN_JSON_SHAPE == 5`.
+- `git diff` of rendered HTML and Markdown for S1-S4 before and after is empty.
+
+Verification: render S1-S4 to HTML and Markdown and diff.
+
+### Chunk 03: First screen, caveats once, Design & provenance
+
+Depends on 01, 02.
+
+**Owns:**
+- `report/campaign/warnings.py`, `report/campaign/provenance.py`
+- `report/serialize_html.py`, `report/serialize_md.py`
+- `report/build.py`: only `_heading_blocks`, `_floor_warning_blocks` and `analysis_verdict`
+- the `answer`/`warnings`/`provenance` order in `page.py`, by patch to the slot list only
+- the moved warnings and provenance test files
+
+**Deliverables.**
+- The title comes first. `role="alert"` and the above-title placement go.
+- Warnings sit under the question, one plain line per arm per kind, named with short and display names. Example
+  shape: "<arm> breaks the <m>-point floor on <n> of <N> aspects: <short names>".
+- Report-wide disclosures (R4b) become **one** caveat line each at report level, worded as a consequence, plus rows in
+  a Design & provenance table (Criterion · Set on · Aspects whose results existed). Applies to:
+  - criteria set after their readings;
+  - latency not compared;
+  - settings undecided;
+  - untimed results.
+- `late_criteria_lines` per-aspect recitations are removed from the campaign header, the aspect header and the listing
+  line (`analysis_verdict` keeps at most the one caveat line).
+- HTML: every aspect mention links to its fold. Code font only for expressions. An expression past a length renders
+  as a visible-ellipsis summary with the full text in its fold (Q4).
+
+**Tests** (S1, S2, S4):
+- The first element after `<h1>` is the question.
+- No header block precedes the title.
+- A campaign with late criteria on k of N aspects prints exactly one timing line, and the provenance table lists the
+  k aspects.
+- An aspect page and the listing line carry no per-aspect timing recitation.
+- S2 has no warnings section.
+
+**Acceptance.** Style lint (`style.lint_page`) passes on every new package sentence.
+
+### Chunk 04: Scorecard, floors beside it, sizing, reconciliation
+
+Depends on 01, 02.
+
+**Owns:**
+- `report/campaign/scorecard.py`
+- `report/decision.py` (projection kinds and `projected_cell` only)
+- `report/svg.py`: only if the matrix glyph needs it; the cost chart is 06's
+- the moved scorecard test files, `tests/test_report_projected_sample.py`
+
+**Deliverables.**
+- The matrix per kind (R2):
+  - change: rows are aspects, columns candidates. Each cell is the change in points, the glyph against the margin
+    band, the reading word, and `flag` for a floor whose status differs from the row. The row header carries the
+    control's base rate and n.
+  - choice: rows are aspects, columns arms, with the ahead-of marks.
+  - measurement: rows are aspects, columns measures.
+  - The long per-row table moves to a fold.
+- Cases and trials stated apart where they differ (A17).
+- `_floor_beside_lines` deleted for the Floor flag (A16).
+- One sizing table per unclear arm and aspect: the pass rate, every check (with the deciding check named), each with
+  its kind. The false "same count" sentence goes (A18).
+- §4 rewrites of the level and within notes, parametrised by arm and aspect counts. The clause "the recommendation
+  does not rest on it" is dropped (wrong).
+- One reconciliation line per aspect where a fold contrast's per-case values equal the row's pass-rate values and
+  their verdicts differ, naming both methods (A19).
+- R8 flags: a control rate at or below the margin, or at 100%, marks the cell "cannot show a drop" or "cannot show a
+  gain".
+- An S4-shaped single aspect and single candidate renders as a one-row matrix, never a chart.
+
+**Tests:**
+- Matrix dimensions per kind on S1-S4.
+- A16, A17, A18 regressions on S1.
+- The A19 line appears only on matching case values.
+- The R8 flag on S1's 0% aspect, and not when control > margin.
+
+### Chunk 05: Degenerate sections collapse
+
+Depends on 02.
+
+**Owns:**
+- `report/campaign/depth_blocks.py`
+- `analysis/depth.py` (sentence templates), `analysis/depth_reading.py`
+- `tests/test_depth_surfaces.py`, `test_depth_disclosure.py`, `test_depth_review.py`, `depth_support.py`
+
+**Deliverables:**
+- The Depth table collapses to one sentence where every arm's repeats are equal on every aspect but a few, which the
+  sentence names (§4 wording).
+- No Pass^k table at a common depth of 1 on every aspect: one campaign-level sentence instead of one per aspect.
+- A Precision column empty on every row is dropped.
+- Precision at k=1 on every arm moves under Methods.
+- `REPEATS_FLOOR` is said once, in Design & provenance.
+
+**Tests:**
+- S1 (mostly k=1): one sentence and no table.
+- S2 (k=3): tables kept.
+- The writer view's `depth.said` is unchanged for 07 to consume.
+
+### Chunk 06: Equal-weight aggregates and the cost/quality chart
+
+Depends on 02. Answers to Q3 shape the reading.
+
+**Owns:**
+- `analysis/campaign_readings.py` (new `ArmAggregate` / `CampaignAggregate` on `CampaignReadings`)
+- `report/campaign/aggregate.py`
+- `report/svg.py` (`cost_quality` chart)
+- `campaign_bundle.py`: only `CAMPAIGN_BUNDLE_SHAPE`
+- new `tests/test_campaign_aggregate.py`
+
+**Deliverables.**
+- Per arm, over aspects, with `weighting: {"basis": "equal", "weights": {aspect: w}}`:
+  - the mean pass rate and, with a control, the mean paired change, each with an interval (aspects assumed
+    independent, stated);
+  - the mean production cost per reply, with an interval from each aspect's cost SEM;
+  - counts of aspects where the arm is cheaper or dearer.
+- Withheld, naming the missing aspects, when any aspect lacks the figure (R10). No reading word.
+- The chart: one point per arm, cost on x, aggregate pass rate on y, both intervals, with a visually hidden table of
+  every figure.
+  - Drawn for 2+ arms.
+  - On one aspect it is that aspect's values, with no aggregate row.
+  - Never for a measurement.
+- The scorecard's "All aspects (equal weight)" row is emitted from here (consumed by 04's slot) once 2+ aspects exist.
+
+**Shape:** `CAMPAIGN_BUNDLE_SHAPE` 3.
+
+**Tests:**
+- S1 aggregate equals the hand mean.
+- An unpriced arm on one aspect withholds cost and names it.
+- S2 draws a chart.
+- S3 and S4 draw none.
+- The weights sum to 1 and are stated in the JSON.
+
+### Chunk 07: The writer's view
+
+Depends on 01 and 06.
+
+**Owns:**
+- `analysis/campaign_bundle.py` (`writer_view`, `_untrimmed`, `_DISCLOSURES` handling)
+- `tests/test_campaign_bundle_budget.py`, `tests/test_bundle_growing_lists.py`
+- new `tests/test_writer_view_rollups.py`
+
+**Deliverables:**
+- `aggregate` per arm (from 06), with the weighting.
+- A per-arm floor rollup: the arm, then the aspects broken, unclear and held, each with the check it read.
+- Report-wide disclosures handed **once** at campaign level (R4b, 11c generalised). This covers `late_criteria`,
+  `latency_contended`, `request_settings_disclosure` and any disclosure equal across every aspect. None of them is
+  repeated per aspect.
+- Per-aspect `control_floor` flags (R8).
+- Each reading's `cases_to_settle` is replaced by `to_settle: {if_none: {kind, cases}, if_observed: {kind, cases}}`
+  for the pass rate, and the same per floor. **This fixes the A12 bug.**
+- `change` and the other point figures are spelled as the page prints them (A6).
+- `short_name` per aspect, and check display names in `cells`/`measures`.
+- Cost named by its page name (A3).
+
+**Tests** (S1 and S2):
+- No disclosure key repeats across aspect parts.
+- `to_settle` carries kinds.
+- `never` appears for an observed drop past the margin.
+- The budget tests hold.
+
+### Chunk 08: The writer prompt
+
+Depends on 07.
+
+**Owns:** `analysis/gen_prompt.py`, `GEN_PROMPT_RULES.md`, `tests/test_gen_prompt_budget.py`.
+
+**Deliverables**, within `PROMPT_CHAR_BUDGET` (it only falls):
+- **Remove** rule 11's "`summary` also says once that each `late_criteria` entry was set after…" clause and its
+  ledger reason (R4b).
+- Keep "Never discount a reading for when its runs ran".
+- Confirm no rule lowers confidence on timing alone (rule 6 has none).
+- The "WHAT THE BUNDLE HOLDS" paragraph names the new fields (`aggregate`, the floor rollup, `to_settle`, campaign
+  disclosures, `short_name`) and drops the descriptions they replace.
+- Rule 11: "gain"/"improves" name only `better`/`improved` readings. An arm's unclear floors are listed from the floor
+  rollup.
+- Rule 12: quote `to_settle` with its kind; `never` means a change to the candidate, not more cases.
+- Rule 9: a control the view flags (R8) is a validity finding raised first. Name an aspect by its `short_name`.
+- Every added clause names the words it replaces in the ledger row.
+
+**Tests:** the budget test and ledger match.
+
+**Main-session step, not a builder's:** re-record the writer fixture once, here, with `RECORD=1`.
+- `llm_analysis.py` is wired to `claude-haiku-5-5` via `ANTHROPIC_API_KEY` from env. That is the ceiling the memory
+  rule allows for a Claude-specific path: provider anthropic, no temperature.
+- If the fixture is not meant to prove a Claude path, record on a cheaper OpenRouter model (GLM / DeepSeek / Gemini
+  flash-lite) instead.
+- Hosts push the new seed (`eval_prompt_reset`).
+
+## Verification strategy
+
+Each builder:
+- renders S1-S4 to HTML and Markdown and reads the first screen as a decider would;
+- checks R1-R10 by hand against its chunk;
+- runs its own tight test selections.
+
+The main session:
+- integrates;
+- regenerates `api/surface.json` and `docs/reference.md`;
+- runs `check-all.sh` once per integration head, in the background, telling Discodon first;
+- runs `test-integration.sh -rs` before any PR;
+- re-records the writer fixture after 08;
+- re-renders the Kairo campaign as a smoke test only, never as a test target.
+
+## Governance checkpoints
+
+- After Wave A (00 and 02): the label freeze is unblocked for Discodon, and the split is proven behaviour-neutral.
+- After Wave B: whole-trajectory review of the page on S1-S4 against R1-R7. Archive the plan and redraw Waves C-D
+  (advisory).
+- Before PR: `/prawduct:critic` cumulative.
+
+## Open questions for the owner (recommendation first)
+
+1. **Q1 prompt budget.** *Recommend:* stay within 24,300 by cutting what the view and page now carry (the late
+   criteria clause, descriptions the new fields replace). Raise the budget only if 08 cannot fit rule 12's sizing
+   clause.
+2. **Q2 A19.** *Recommend:* explain the two methods in one line where they disagree. Do not unify the
+   campaign-row and contrast interval machines in this plan, because that is a statistics change with its own
+   review.
+3. **Q3 aggregate reading.** *Recommend:* descriptive only, with intervals, no "shown better/worse" word and no
+   tested dominance line on the chart. The per-aspect frontier stays the tested reading.
+4. **Q4 long expressions with no display name.** *Recommend:* full expression in code font. Past a length, HTML
+   shows its start with a visible ellipsis and the full text one click away. That is not a silent derivation.
+   Markdown prints it in full.
+5. **Q5 short-name cap.** *Recommend:* 32 characters, not "≤3 words", because a word count is language-bound.
+6. **Q6 home of check display names.** *Recommend:* the template (`goal_check_names`), so a name follows its check
+   across campaigns. The alternative is per-aspect on the campaign.
+7. **Q7 plan split.** *Recommend:* archive this plan after Wave B and draw a writer-side plan for 05-08.
+8. **Q8 excerpt matching.** *Recommend:* exact substring after collapsing whitespace runs on both sides, since the
+   page prints memo text whitespace-collapsed. No other normalisation.
+
+## Status
+
+- [ ] Chunk 00: reporter label form and memo excerpt
+- [ ] Chunk 01: declared names
+- [ ] Chunk 02: split and scaffold
+- [ ] Chunk 03: first screen, caveats once, provenance
+- [ ] Chunk 04: scorecard and reconciliation
+- [ ] Chunk 05: degenerate collapse
+- [ ] Chunk 06: aggregates and chart
+- [ ] Chunk 07: writer view
+- [ ] Chunk 08: writer prompt (then the main session re-records)
