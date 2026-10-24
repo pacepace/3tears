@@ -77,6 +77,7 @@ from threetears.core.collections.schema_backed import (
     encode_jsonb,
     spans_partitions,
 )
+from threetears.core.collections.tier_reads import tier_reads_total
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 
 if TYPE_CHECKING:
@@ -157,4 +158,5 @@ __all__ = [
     "spans_partitions",
     "read_delete_cascade",
     "tables_with_write_generation",
+    "tier_reads_total",
 ]

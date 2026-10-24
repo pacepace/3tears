@@ -555,7 +555,7 @@ async def test_a_launch_shut_down_and_taken_up_twice_holds_a_higher_epoch_each_t
         lease_epoch=1,
     )
     with pytest.raises(JobFenced):
-        off_loop(holder.eval_host.storage.save_eval_result, stale, None, run_cell=True)
+        off_loop(holder.eval_host.storage.save_run_cell, stale, None)
     gate.set()
     assert (await settled(current, job.job_id)).state == "completed"
 

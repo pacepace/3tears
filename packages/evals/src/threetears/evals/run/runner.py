@@ -3977,7 +3977,7 @@ async def execute_run(
             if cell_trace.result_id != over.id:
                 cell_trace = cell_trace.model_copy(update={"id": eval_trace_doc_id(over.id), "result_id": over.id})
         saving = asyncio.ensure_future(
-            run_blocking(host.blocking_executor, host.storage.save_eval_result, result, cell_trace, run_cell=True)
+            run_blocking(host.blocking_executor, host.storage.save_run_cell, result, cell_trace)
         )
         cancelled_while_saving = await wait_through_cancellation(saving)
         try:

@@ -321,6 +321,29 @@ def test_a_take_up_that_would_measure_otherwise_names_every_difference_and_no_la
     assert _measured_otherwise(stored, unlabelled, template, toyhost_profile()) is None
 
 
+@pytest.mark.parametrize(
+    ("field", "moved"),
+    [("candidate_kind", "single_shot"), ("cell_timeout_s", 7.0), ("turn_budget_s", 3.0)],
+)
+def test_a_take_up_whose_cells_would_run_under_another_kind_or_deadline_is_refused_naming_it(
+    field: str, moved: object
+) -> None:
+    stored = make_eval_run(
+        cell_timeout_s=30.0,
+        cell_timeout_s_origin="kind",
+        turn_budget_s=10.0,
+        variant_levers={},
+        identity_version=1,
+        created_at="2026-06-01T00:00:00+00:00",
+    )
+    template = make_template(created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00")
+    assert getattr(stored, field) != moved
+
+    said = _measured_otherwise(stored, stored.model_copy(update={field: moved}), template, toyhost_profile())
+
+    assert said is not None and said.startswith(f"{field} ("), said
+
+
 def test_a_take_up_whose_launch_would_run_other_cases_is_refused_naming_them_and_a_reordered_set_is_not() -> None:
     """The case set reaches no key, so the take-up holds it equal itself: as a set, in any order."""
     stored = make_eval_run(
@@ -532,11 +555,14 @@ async def test_a_run_its_budget_stopped_is_taken_up_only_under_a_cap_above_its_s
     spent = sum(row.cost_usd or 0.0 for row in _rows(holder, run_id))
     resumer = other_process(holder)
 
-    with pytest.raises(ValidationFailedError, match="max_cost_usd above"):
+    with pytest.raises(ValidationFailedError, match="max_cost_usd above") as refused:
         await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
     with pytest.raises(ValidationFailedError, match="max_cost_usd above"):
         await resume_run(resumer.launch, run_id, TOYHOST_SCOPE, max_cost_usd=spent)
     assert off_loop(_run, holder, run_id) == stopped, "a refused take-up writes nothing"
+    # The listing a host offers at boot notes the very refusal the take-up makes, by the same rule.
+    (offered,) = off_loop(resumable_jobs, holder.eval_host.storage, [TOYHOST_SCOPE]).jobs
+    assert offered.note == f"{refused.value.message}: {refused.value.remedy}"
 
     # Just above what it spent: what it spent counts toward the cap, so the first cell it lands stops it again —
     # counted from nothing, it would have run every cell left.
@@ -1086,6 +1112,9 @@ async def test_a_run_its_metered_ceiling_stopped_is_taken_up_only_under_a_ceilin
         await resume_run(launching, launched.id, TOYHOST_SCOPE)
     assert "max_metered_calls" in refused.value.remedy
     assert off_loop(storage.load_eval_run, launched.id, TOYHOST_SCOPE) == stopped, "a refused take-up writes nothing"
+    # The listing a host offers at boot notes the very refusal the take-up makes, by the same rule.
+    (offered,) = off_loop(resumable_jobs, storage, [TOYHOST_SCOPE]).jobs
+    assert offered.note == f"{refused.value.message}: {refused.value.remedy}"
 
     # Just above what it landed: its landed calls count, so the first cells it lands stop it again — counted from
     # nothing, it would have run every cell left.

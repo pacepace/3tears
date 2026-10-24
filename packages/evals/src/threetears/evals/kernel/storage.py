@@ -2145,10 +2145,33 @@ class EvalStorage:
     # EvalResult
     # =========================================================================
 
-    def save_eval_result(self, result: EvalResult, trace: EvalTrace | None = None, *, run_cell: bool = False) -> None:
-        """Persist an eval result, and its trace payload as a sibling document.
+    def save_eval_result(self, result: EvalResult, trace: EvalTrace | None = None) -> None:
+        """Persist an eval result, and its trace payload as a sibling document: an upsert by id.
 
-        **A run's own cell is written once per holding of the run** (``run_cell``). Its id is derived from the cell
+        For a host recording a witnessed cell, a fixture, and any other write that is not a run's own cell, which
+        :meth:`save_run_cell` writes. The trace is written first, then the result, and ``has_trace`` records that the
+        cell produced one. Writing the result first would leave a window where a reader sees ``has_trace=True`` and no
+        document to fetch, so the payload is written first. Recording the same result id again replaces both documents.
+
+        A failed trace write does not fail the result (:meth:`save_run_cell` says why).
+
+        :param result: The result to persist. Never mutated — the marker is applied to a copy.
+        :ptype result: EvalResult
+        :param trace: The sibling payload, or ``None`` for a cell that produced none; an entirely empty trace writes no
+            document.
+        :ptype trace: EvalTrace | None
+        :raises StorageError: The RESULT was not persisted. A trace-write failure is logged and reads as ``missing``
+            through ``has_trace``, not raised.
+        """
+        document = self._marked(result, trace)
+        if trace is not None and document["has_trace"]:
+            self._save_trace(result, trace)
+        self._save(document)
+
+    def save_run_cell(self, result: EvalResult, trace: EvalTrace | None = None) -> None:
+        """Persist a run's own cell, fenced by the run's lease, and its trace payload as a sibling document.
+
+        **A run's own cell is written once per holding of the run.** Its id is derived from the cell
         (:func:`~threetears.evals.schema.models.cell_result_id`), so the cell has one row, and the row is written by
         this rule rather than over whatever is stored:
 
@@ -2164,11 +2187,6 @@ class EvalStorage:
         The result lands first and its trace after it, so a refused result writes no trace either, and a trace never
         replaces the payload of a row its result did not replace. Between the two writes the row reads as a cell
         whose trace is ``missing``, the same reading a failed trace write leaves.
-
-        **Any other write — a host recording a witnessed cell, a fixture — is an upsert by id**, the trace first,
-        then the result, and ``has_trace`` records that the cell produced one. Writing the result first would leave
-        a window where a reader sees ``has_trace=True`` and no document to fetch, so the payload is written first.
-        Recording the same result id again replaces both documents.
 
         **A failed trace write does not fail the result, and is not hidden either.**
         :func:`~threetears.evals.run.runner.execute_run` treats a raise here as a lost cell
@@ -2190,12 +2208,25 @@ class EvalStorage:
             fetch, and a row per empty payload is the row count this split
             exists to keep down.
         :ptype trace: EvalTrace | None
-        :param run_cell: The result is a cell of a run, written by the process holding the run under the epoch the
-            result carries: written by the rule above. ``False`` for any other write.
-        :ptype run_cell: bool
-        :raises JobFenced: ``run_cell`` and the rule above refused the write; nothing was written.
+        :raises JobFenced: The rule above refused the write; nothing was written.
         :raises StorageError: The RESULT was not persisted — a cell's row included, when every attempt lost its race.
             A trace-write failure is logged and reads as ``missing`` through ``has_trace``, not raised.
+        """
+        document = self._marked(result, trace)
+        self._write_cell_row(result, document)
+        if trace is not None and document["has_trace"]:
+            self._save_trace(result, trace)
+
+    @staticmethod
+    def _marked(result: EvalResult, trace: EvalTrace | None) -> dict[str, Any]:
+        """A result as it is written: ``has_trace`` set to whether its cell produced a trace with anything in it.
+
+        :param result: The result; not mutated.
+        :ptype result: EvalResult
+        :param trace: Its trace, or ``None``.
+        :ptype trace: EvalTrace | None
+        :return: The document to write.
+        :rtype: dict[str, Any]
         """
         produced = trace is not None and bool(
             trace.trace
@@ -2204,18 +2235,10 @@ class EvalStorage:
             or trace.call_ledger is not None
             or trace.end_state is not None
         )
-        document = result.model_copy(update={"has_trace": produced}).to_dict()
-        if run_cell:
-            self._write_cell_row(result, document)
-            if trace is not None and produced:
-                self._save_trace(result, trace)
-            return
-        if trace is not None and produced:
-            self._save_trace(result, trace)
-        self._save(document)
+        return result.model_copy(update={"has_trace": produced}).to_dict()
 
     def _write_cell_row(self, result: EvalResult, document: dict[str, Any]) -> None:
-        """Write a run cell's result row by :meth:`save_eval_result`'s cell rule.
+        """Write a run cell's result row by :meth:`save_run_cell`'s rule.
 
         :raises JobFenced: The run's record was written lost or is held at a later epoch, or the cell's stored row was
             written at the result's epoch or a later one.

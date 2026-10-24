@@ -45,6 +45,7 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.kernel.result_condition import ResultOutcome
 from threetears.evals.kernel.scoring import (
+    PassHatKCell,
     NO_PASS_CRITERION_REASON,
     CellSummary,
     compute_async_delivery_summary,
@@ -1873,3 +1874,25 @@ class TestWhatAJudgedDimCountsAs:
         faulted = make_scored_result(infra_error="delivery never landed", rubric_scores=(("reply.tone", 5),))
         healthy = make_scored_result(test_case_id="tc2", rubric_scores=(("reply.tone", 3),))
         assert self._dims(faulted, healthy) == {"reply.tone": 3.0}
+
+
+def test_two_cells_that_each_pool_differing_in_any_one_field_are_two_for_a_reason_read_from_that_field() -> None:
+    """Every field two pooling cells can differ in has a reason, and every other field marks a cell of one run whose
+    reason is read off its own record; a field the cell gains as neither fails the import of the scoring module."""
+    differing: dict[str, tuple[Any, Any]] = {
+        "int | None": (1, 2),
+        "tuple[str, ...]": (("model-a",), ("model-b",)),
+        "str | None": ("a", "b"),
+    }
+    marks = {"recorded", "unresolved", "run_id", "served_unrecorded"}
+    base = PassHatKCell(recorded=True)
+    for field in dataclasses.fields(PassHatKCell):
+        if field.name in marks:
+            continue
+        one, other = differing[str(field.type)]
+        cell = dataclasses.replace(base, **{field.name: one})
+        apart = dataclasses.replace(base, **{field.name: other})
+        reason = pass_hat_k_cell_reason(cell, apart)
+        assert reason is not None and reason[1] == field.name, (field.name, reason)
+    alone = dataclasses.replace(base, run_id="r-1", template_digest="d", served_unrecorded=True)
+    assert pass_hat_k_cell_reason(alone, base) == ("no_recorded_served_model", "served")

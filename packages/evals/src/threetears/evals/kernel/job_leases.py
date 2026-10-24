@@ -60,7 +60,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Literal, cast
+from typing import Any, Literal, Protocol, cast
 
 from pydantic import ValidationError
 
@@ -522,6 +522,101 @@ def write_held_record[R: EvalDocumentModel](
         f"{kind.name} job '{_leased(record).id}' kept changing while its own write was being made",
         remedy="read it again with job_poll",
     )
+
+
+class _Reopened(Protocol):
+    """A job record a take-up reopens: its lease is the one field the take-up's write sets."""
+
+    lease: JobLease | None
+
+
+def read_to_take_up[R: EvalDocumentModel](
+    store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str
+) -> tuple[R | None, str | None]:
+    """A job record as a take-up reads it: settled as every reader settles it, then read with the token its reopen is
+    written conditionally on (:func:`write_reopened`).
+
+    :param store: Where the record lives.
+    :ptype store: LeaseStore
+    :param kind: Its type.
+    :ptype kind: LeasedJobKind[R]
+    :param record_id: The record.
+    :ptype record_id: str
+    :param scope_id: Its scope.
+    :ptype scope_id: str
+    :return: The record, or ``None`` when there is none, and its token.
+    :rtype: tuple[R | None, str | None]
+    """
+    settle_job_record(store, kind, record_id, scope_id)
+    return store.load_job_record(kind.model, record_id, scope_id)
+
+
+def taken_up_meanwhile(kind: LeasedJobKind[Any], record_id: str) -> ConflictError:
+    """The refusal of a take-up whose record moved after it was read: another take-up of it won, or another writer
+    moved it.
+
+    :param kind: The record's type.
+    :ptype kind: LeasedJobKind[Any]
+    :param record_id: The record.
+    :ptype record_id: str
+    :return: The refusal, for the caller to raise from the store's conflict.
+    :rtype: ConflictError
+    """
+    return ConflictError(
+        f"{kind.name} '{record_id}' changed while it was being taken up — another take-up of it won, or another writer "
+        "moved it — so this one started nothing",
+        remedy="read it with job_poll; call job_resume again if it is still not running",
+    )
+
+
+def write_reopened[R: EvalDocumentModel](
+    store: JobRecordStore,
+    kind: LeasedJobKind[R],
+    record: R,
+    *,
+    leases: JobLeases | None,
+    etag: str | None,
+    epoch: int,
+) -> None:
+    """Write a reopened job record under a lease at its next epoch, conditionally on the record the take-up read.
+
+    :param store: Where the record lives.
+    :ptype store: JobRecordStore
+    :param kind: Its type.
+    :ptype kind: LeasedJobKind[R]
+    :param record: The record as the take-up reopened it; its lease is set here, so the job that runs it holds it.
+    :ptype record: R
+    :param leases: The leases of the process taking it up; ``None`` writes it with no lease.
+    :ptype leases: JobLeases | None
+    :param etag: The token the take-up read it with (:func:`read_to_take_up`).
+    :ptype etag: str | None
+    :param epoch: The epoch it is taken up under.
+    :ptype epoch: int
+    :raises ConflictError: The record moved since it was read: another take-up won, or another writer wrote it.
+    """
+    cast(_Reopened, record).lease = leases.grant(epoch) if leases is not None else None
+    try:
+        store.save_job_record(_document(record), if_match=etag)
+    except ConflictError as moved:
+        raise taken_up_meanwhile(kind, _leased(record).id) from moved
+
+
+def reopened_job_fields() -> dict[str, Any]:
+    """What a take-up clears on a sweep's or a launch's record to reopen it: ``running`` again, its ending, its loss,
+    its refusal and its cancel request cleared.
+
+    :return: The fields, for the record's ``model_copy(update=...)``; a new mapping on each call.
+    :rtype: dict[str, Any]
+    """
+    return {
+        "outcome": "running",
+        "detail": None,
+        "ended_at": None,
+        "lost": None,
+        "refusal": None,
+        "cancel_requested_at": None,
+        "cancel_request_reason": None,
+    }
 
 
 def _note_fault(store: LeaseStore, kind: LeasedJobKind[Any], record_id: str, scope_id: str, entry: str) -> bool:
@@ -1371,8 +1466,12 @@ __all__ = [
     "LeasedJobKind",
     "RenewalVerdict",
     "lease_lapsed",
+    "read_to_take_up",
+    "reopened_job_fields",
     "request_job_cancel",
     "require_held",
     "settle_job_record",
+    "taken_up_meanwhile",
     "write_held_record",
+    "write_reopened",
 ]

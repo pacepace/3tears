@@ -17,6 +17,7 @@ from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
 from datetime import timedelta
 
 from pydantic import BaseModel, SerializerFunctionWrapHandler, ValidationError, model_serializer, model_validator
+from threetears.core.collections.tier_reads import hold_tier_reads_timer, release_tier_reads_timer
 from threetears.core.wire import TolerantWireModel
 
 from threetears.agent.audit import AuditEvent, publish_audit
@@ -1352,6 +1353,9 @@ class ToolServer:
         self._nc: "NatsClient | None" = nats_client
         self._owns_nats_connection: bool = nats_client is None
         self._heartbeat_task: asyncio.Task[None] | None = None
+        #: whether this server holds the process's timer that logs the collections' reads by tier once a minute
+        #: (``threetears.core.collections.tier_reads``); the counters are the process's, so the timer is too
+        self._holds_tier_reads_timer = False
         self._running = False
         self._owned_jwks_provider: CachedHubJwksProvider | None = None
         # the proxy-assertion replay guard is REQUIRED at verify time (a guardless pod must NOT
@@ -2055,6 +2059,8 @@ class ToolServer:
         self._ready_event.set()
 
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        hold_tier_reads_timer()
+        self._holds_tier_reads_timer = True
 
         # credential renewal: ONLY on the self-owned connection the auth-callout minted a user JWT
         # for. an injected (agent-owned) connection is renewed by its owner, so the pod must not
@@ -4065,6 +4071,10 @@ class ToolServer:
             if self._heartbeat_task is not None:
                 await cancel_and_wait(self._heartbeat_task)
                 self._heartbeat_task = None
+            if self._holds_tier_reads_timer:
+                self._holds_tier_reads_timer = False
+                # the last holder in the process logs the reads since the last line, so its last minute is not lost
+                await release_tier_reads_timer()
 
             if self._owned_jwks_provider is not None:
                 await self._owned_jwks_provider.stop()

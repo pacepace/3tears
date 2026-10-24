@@ -52,7 +52,13 @@ from threetears.evals.kernel.campaign import EvalSweep
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.identity import LeverCoordinateError, resolve_context_identity, resolve_variant_identity
-from threetears.evals.kernel.job_leases import RUN_JOB, JobLeases, LeasedJobKind, settle_job_record
+from threetears.evals.kernel.job_leases import (
+    RUN_JOB,
+    read_to_take_up,
+    reopened_job_fields,
+    taken_up_meanwhile,
+    write_reopened,
+)
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.remedies import FIND_JOB, FIND_RUN
 from threetears.evals.kernel.storage import EvalStorage
@@ -62,7 +68,7 @@ from threetears.evals.run.launch import LaunchGroup, LaunchHost, admit_group, ad
 from threetears.evals.run.launch_job import LAUNCH_JOB, EvalLaunch, resumed_launch_work
 from threetears.evals.run.metering import MeteredCallLedger
 from threetears.evals.run.runner import StoredCells
-from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
+from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.job_lease import JobLease, JobLoss
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import (
@@ -80,31 +86,89 @@ from threetears.evals.schema.models import (
 
 log = get_logger(__name__)
 
-#: The fields of a run's judge and simulator, of its apparatus, and of what it froze of its template, a take-up holds
-#: equal: what scored its cells, what its cells were set up with, and what they were graded against. Most also reach
-#: the context key; each is named on its own so a refusal says which moved. The frozen case set reaches no key (more
-#: cases are more samples of one condition), so :func:`_resume_drift` holds it equal on its own, as a set.
-_PINNED_FIELDS: tuple[str, ...] = (
-    "judge_model",
-    "judge_config_ids",
-    "effective_judges",
-    "judge_asked_settings",
-    "judge_temperature",
-    "simulator_model",
-    "simulator_asked_settings",
-    "apparatus_settings",
-    "overlays",
-    "kind_spec",
-    "cassette_mode",
-    "cassette_corpus_id",
-    "resolved_world_seed",
-    "resolved_ambient_perturbation_turns",
-    "resolved_tools_allowed",
-    "rubric_scales",
-    "goal_check_proofs",
-    "goal_check_proof_rules",
-    "refused_goal_checks",
+#: The fields of a run a take-up does not hold equal field by field, each for its reason. Every other field is pinned
+#: (:data:`_PINNED_FIELDS`), so a field a later build adds to the run is pinned unless it is left out here on purpose.
+_UNPINNED_FIELDS: frozenset[str] = frozenset(
+    {
+        # The record's own: which document it is, in which scope, written when.
+        "id",
+        "doc_type",
+        "schema_version",
+        "schema_minor",
+        "scope_id",
+        "created_at",
+        # Held by :func:`_resume_drift` in its own way: the context identity read at the current identity version, the
+        # variant levers, the case set as a set, and the template's measured content.
+        "context_key",
+        "context_components",
+        "identity_version",
+        "variant_levers",
+        "test_case_ids",
+        "template_digest",
+        # Replayed as the run recorded them by the take-up's launch (``admit_resumed_run``), so equal by construction:
+        # its template, its candidate, its repeats, its margins, its latency declaration and its arm order. The case
+        # set's name is a label on the case ids, which are held.
+        "template_id",
+        "candidate_model",
+        "k_runs",
+        "declared_margins",
+        "measure_latency",
+        "arm_schedule",
+        "case_set",
+        # Who was measured: its id is replayed, its component levels reach the variant levers and the context's
+        # subject state, and its labels identify and determine nothing.
+        "subject_snapshot",
+        # The host's own payload, which the engine never reads.
+        "host_payload",
+        # How the pinned roles, apparatus and cell deadline were arrived at, not what they are: those are pinned.
+        "apparatus_provenance",
+        "model_role_provenance",
+        "effective_judges_source",
+        "judge_config_provenance",
+        "cell_timeout_s_origin",
+        # What generation asked for and kept: a take-up generates nothing.
+        "variation_counts",
+        # How a reader reads the host's measures, never what a cell measured.
+        "declared_measures",
+        # Derived from the seed the run froze and its subject's carriers, which the seed, the subject state and the
+        # seeded world component hold.
+        "world_placements",
+        # How many cells ran at once: each result stamps the execution mode it ran under.
+        "cell_concurrency",
+        # The ceilings a holding runs under, which a take-up may raise and each holding records.
+        "max_cost_usd",
+        "max_cost_usd_origin",
+        "max_metered_calls",
+        "max_metered_calls_origin",
+        "metered_calls_refused",
+        # When it ran beside its sibling arms: scheduling, not measurement.
+        "launch_group_id",
+        # How the run stands and ended, which a take-up reopens, and its curation.
+        "status",
+        "completeness",
+        "progress",
+        "cancellation_reason",
+        "budget_stop_reason",
+        "budget_stops",
+        "failed_because",
+        "error_details",
+        "completed_at",
+        "archived",
+        "labels",
+        "lease",
+        "cancel_requested_at",
+        "cancel_request_reason",
+        "lost",
+        "faults",
+        "lifetimes",
+    }
 )
+
+#: The fields of a run's judge and simulator, of its apparatus, of what it froze of its template, its candidate kind and
+#: the deadlines its cells and turns ran under, a take-up holds equal: every field but :data:`_UNPINNED_FIELDS`, in the
+#: run's own order. Most also reach the context key; each is named on its own so a refusal says which moved. The deadlines
+#: reach no key, and the run records one value of each for every holding, so a holding under another is refused.
+_PINNED_FIELDS: tuple[str, ...] = tuple(name for name in EvalRun.model_fields if name not in _UNPINNED_FIELDS)
 
 
 def _run_again(row: EvalResult) -> bool:
@@ -438,23 +502,29 @@ class RunResumption:
             calls=sum(row.metered_calls or 0 for row in self.rows),
             refused=sum(row.metered_calls_refused or 0 for row in self.rows),
         )
-        if metered.ceiling_reached:
-            run = self.run
-            # A take-up names a cost cap and never a metered-call ceiling: one the run inherited moves with the host's
-            # setting, and one its launch chose moves only with a new launch.
-            remedy = (
-                "launch its template again (run_launch) with a higher max_metered_calls: a resume keeps the ceiling "
-                "the run's launch chose, and cannot raise it"
-                if run.max_metered_calls_origin == "chosen"
-                else f"raise the host's max_metered_calls above {metered.landed_calls} and call job_resume again; a "
-                "resume cannot raise a metered-call ceiling itself"
-            )
-            raise ValidationFailedError(
-                f"run '{run.id}' has landed {metered.landed_calls} metered call(s) against its metered-call ceiling of "
-                f"{metered.ceiling}, so taking it up would run nothing — at least that many, since a row stored "
-                "before rows counted their metered calls counts none",
-                remedy=remedy,
-            )
+        if metered.ceiling_reached and metered.ceiling is not None:
+            raise _metered_ceiling_reached(self.run, landed=metered.landed_calls, ceiling=metered.ceiling)
+
+
+def _metered_ceiling_reached(run: EvalRun, *, landed: int, ceiling: int) -> ValidationFailedError:
+    """The refusal of a run whose stored cells have landed the metered calls its ceiling allows.
+
+    A take-up names a cost cap and never a metered-call ceiling: one the run inherited moves with the host's setting,
+    and one its launch chose moves only with a new launch.
+    """
+    remedy = (
+        "launch its template again (run_launch) with a higher max_metered_calls: a resume keeps the ceiling the run's "
+        "launch chose, and cannot raise it"
+        if run.max_metered_calls_origin == "chosen"
+        else f"raise the host's max_metered_calls above {landed} and call job_resume again; a resume cannot raise a "
+        "metered-call ceiling itself"
+    )
+    return ValidationFailedError(
+        f"run '{run.id}' has landed {landed} metered call(s) against its metered-call ceiling of {ceiling}, so taking "
+        "it up would run nothing — at least that many, since a row stored before rows counted their metered calls "
+        "counts none",
+        remedy=remedy,
+    )
 
 
 @dataclass(frozen=True)
@@ -474,8 +544,7 @@ def _read(storage: EvalStorage, run_id: str, scope_id: str) -> _Read:
 
     :raises NotFoundError: There is no such run in the scope.
     """
-    settle_job_record(storage, RUN_JOB, run_id, scope_id)
-    run, etag = storage.load_job_record(EvalRun, run_id, scope_id)
+    run, etag = read_to_take_up(storage, RUN_JOB, run_id, scope_id)
     if run is None:
         raise NotFoundError("run", run_id, remedy=FIND_RUN)
     rows = storage.query_eval_results_by_run(run_id, scope_id)
@@ -493,62 +562,111 @@ def _read(storage: EvalStorage, run_id: str, scope_id: str) -> _Read:
     )
 
 
-def _refuse_a_status_not_resumable(run: EvalRun) -> None:
-    """Refuse a run whose status is not one :data:`_RESUMABLE_RUN_STATUSES` names, saying why its status is not.
-
-    :raises ValidationFailedError: Always.
-    """
+def _status_not_resumable(run: EvalRun) -> ValidationFailedError:
+    """The refusal of a run whose status is not one :data:`_RESUMABLE_RUN_STATUSES` names, saying why its status is
+    not."""
     if run.status not in TERMINAL_RUN_STATUSES:
         holder = f" by process {run.lease.holder} until {run.lease.expires_at}" if run.lease is not None else ""
-        raise ValidationFailedError(
+        return ValidationFailedError(
             f"run '{run.id}' is still {run.status}{holder}; a live run is never taken up",
             remedy="cancel it (job_cancel) or wait for it to end, then call job_resume",
         )
     if run.status == "failed":
-        raise ValidationFailedError(
+        return ValidationFailedError(
             f"run '{run.id}' failed ({run.failed_because or 'see its error_details'}); taking it up again would run "
             "what failed it again",
             remedy="fix what failed it, which run_get names, and launch its template again (run_launch)",
         )
-    raise ValidationFailedError(
+    return ValidationFailedError(
         f"run '{run.id}' {run.status}; there is nothing left of it to run",
         remedy="launch its template again (run_launch) to measure again",
     )
 
 
-def _refuse_what_cannot_be_taken_up(read: _Read, *, cap: float | None, live_here: bool) -> None:
-    """Refuse a run that cannot be taken up, with how to proceed.
+def _why_not_taken_up(
+    run: EvalRun,
+    rows: Sequence[EvalResult],
+    *,
+    cap: float | None,
+    metered_ceiling: int | None,
+    live_here: bool = False,
+    missing_cases: Sequence[str] = (),
+) -> list[ValidationFailedError]:
+    """Why a run cannot be taken up as it stands, each with how to proceed: the one rule a take-up refuses by and a
+    listing of resumable runs notes.
 
-    :raises ValidationFailedError: The run is live, completed, failed, stopped by its budget under a cap its spend has
-        reached, or its cases are gone.
+    :param run: The run, settled.
+    :ptype run: EvalRun
+    :param rows: Every row stored for it.
+    :ptype rows: Sequence[EvalResult]
+    :param cap: The cost cap it would be taken up under.
+    :ptype cap: float | None
+    :param metered_ceiling: The metered-call ceiling it would be taken up under; ``None`` when none bounds it.
+    :ptype metered_ceiling: int | None
+    :param live_here: Whether its job in this process is still unwinding.
+    :ptype live_here: bool
+    :param missing_cases: The cases it froze that its scope no longer holds.
+    :ptype missing_cases: Sequence[str]
+    :return: Every reason, in the order a take-up meets them; empty when it can be taken up. A run whose status is not
+        resumable has that reason alone.
+    :rtype: list[ValidationFailedError]
     """
-    run = read.run
     if run.status not in _RESUMABLE_RUN_STATUSES:
-        _refuse_a_status_not_resumable(run)
+        return [_status_not_resumable(run)]
+    reasons: list[ValidationFailedError] = []
     if live_here:
-        raise ValidationFailedError(
-            f"run '{run.id}' ended, and its job in this process is still unwinding",
-            remedy="call job_resume again once its job has stopped (job_poll reads it done)",
+        reasons.append(
+            ValidationFailedError(
+                f"run '{run.id}' ended, and its job in this process is still unwinding",
+                remedy="call job_resume again once its job has stopped (job_poll reads it done)",
+            )
         )
-    spent = sum(amount for amount in _counted_spend(read.rows) if amount is not None)
+    spent = sum(amount for amount in _counted_spend(rows) if amount is not None)
     if run.status == "budget_stopped" and cap is not None and spent >= cap:
-        raise ValidationFailedError(
-            f"run '{run.id}' was stopped by its budget ({run.budget_stop_reason}), and its stored rows have spent "
-            f"${spent:.4f} — at least that, since a cell in flight when it stopped may have spent more — against a "
-            f"cap of ${cap:.4f}",
-            remedy=f"call job_resume with max_cost_usd above ${spent:.4f}",
+        reasons.append(
+            ValidationFailedError(
+                f"run '{run.id}' was stopped by its budget ({run.budget_stop_reason}), and its stored rows have spent "
+                f"${spent:.4f} — at least that, since a cell in flight when it stopped may have spent more — against "
+                f"a cap of ${cap:.4f}",
+                remedy=f"call job_resume with max_cost_usd above ${spent:.4f}",
+            )
         )
     if run.template_id is None:
-        raise ValidationFailedError(
-            f"run '{run.id}' is ad hoc, so there is no template to launch it from again",
-            remedy="only a run launched from a template is resumed (job_resume); run this eval again to measure again",
+        reasons.append(
+            ValidationFailedError(
+                f"run '{run.id}' is ad hoc, so there is no template to launch it from again",
+                remedy="only a run launched from a template is resumed (job_resume); run this eval again to measure "
+                "again",
+            )
         )
-    if read.missing_cases:
-        raise ValidationFailedError(
-            f"run '{run.id}' froze case(s) {', '.join(read.missing_cases)}, which scope {run.scope_id!r} no longer "
-            "holds, so its cells cannot run",
-            remedy="launch its template again (run_launch) over the cases the scope holds",
+    if missing_cases:
+        reasons.append(
+            ValidationFailedError(
+                f"run '{run.id}' froze case(s) {', '.join(missing_cases)}, which scope {run.scope_id!r} no longer "
+                "holds, so its cells cannot run",
+                remedy="launch its template again (run_launch) over the cases the scope holds",
+            )
         )
+    landed = sum(row.metered_calls or 0 for row in rows)
+    if metered_ceiling is not None and landed >= metered_ceiling:
+        reasons.append(_metered_ceiling_reached(run, landed=landed, ceiling=metered_ceiling))
+    return reasons
+
+
+def _refuse_what_cannot_be_taken_up(read: _Read, *, cap: float | None, live_here: bool) -> None:
+    """Refuse a run that cannot be taken up, with how to proceed (:func:`_why_not_taken_up`).
+
+    Its metered-call ceiling is the launch's to resolve, so it is refused when the launch seeds the ceiling's ledger
+    (:meth:`RunResumption.seed`), by the same rule.
+
+    :raises ValidationFailedError: The run is live, completed, failed, stopped by its budget under a cap its spend has
+        reached, ad hoc, or its cases are gone: the first reason a take-up meets.
+    """
+    reasons = _why_not_taken_up(
+        read.run, read.rows, cap=cap, metered_ceiling=None, live_here=live_here, missing_cases=read.missing_cases
+    )
+    if reasons:
+        raise reasons[0]
 
 
 async def _run_resumption(
@@ -754,7 +872,7 @@ async def write_taken_up(host: LaunchHost, resumptions: Sequence[RunResumption],
     def write() -> None:
         for run in runs:
             if (resuming := by_run.get(run.id)) is not None:
-                _write_reopened(eval_host.storage, leases, run, resuming.etag, resuming.epoch)
+                write_reopened(eval_host.storage, RUN_JOB, run, leases=leases, etag=resuming.etag, epoch=resuming.epoch)
 
     await run_blocking(eval_host.blocking_executor, write)
 
@@ -805,30 +923,6 @@ def refuse_a_job_not_taken_up(
         )
 
 
-def _write_reopened(storage: EvalStorage, leases: JobLeases | None, run: EvalRun, etag: str | None, epoch: int) -> None:
-    """Write the reopened run under a lease at its next epoch, conditionally on the record the take-up read.
-
-    :raises ConflictError: The record moved since it was read: another take-up won, or another writer wrote it.
-    """
-    run.lease = leases.grant(epoch) if leases is not None else None
-    try:
-        storage.save_eval_run(run, if_match=etag)
-    except ConflictError as moved:
-        raise ConflictError(
-            f"run '{run.id}' changed while it was being taken up — another take-up of it won, or another writer moved "
-            "it — so this one started nothing",
-            remedy="read it with job_poll; call job_resume again if it is still not running",
-        ) from moved
-
-
-def _settled_with_etag[R: EvalDocumentModel](
-    storage: EvalStorage, kind: LeasedJobKind[R], record_id: str, scope_id: str
-) -> tuple[R | None, str | None]:
-    """A job record as every reader settles it, then read with the token its reopen is written conditionally on."""
-    settle_job_record(storage, kind, record_id, scope_id)
-    return storage.load_job_record(kind.model, record_id, scope_id)
-
-
 async def resume_launch(
     host: LaunchHost, launch_id: str, scope_id: str, *, max_cost_usd: float | None = None
 ) -> EvalLaunch:
@@ -864,7 +958,7 @@ async def resume_launch(
     eval_host, manager = host.eval_host, host.job_manager
     storage = eval_host.storage
     launch, etag = await run_blocking(
-        eval_host.blocking_executor, _settled_with_etag, storage, LAUNCH_JOB, launch_id, scope_id
+        eval_host.blocking_executor, read_to_take_up, storage, LAUNCH_JOB, launch_id, scope_id
     )
     if launch is None:
         raise NotFoundError("launch", launch_id, remedy=FIND_JOB)
@@ -925,27 +1019,13 @@ async def resume_launch(
         event="eval.resume_launch",
         attach=reopen,
     )
-    reopened = launch.model_copy(
-        update={
-            "outcome": "running",
-            "detail": None,
-            "ended_at": None,
-            "lost": None,
-            "refusal": None,
-            "cancel_requested_at": None,
-            "cancel_request_reason": None,
-        }
-    )
+    reopened = launch.model_copy(update=reopened_job_fields())
     epoch = next_epoch(launch.lease, launch.lost)
     work = resumed_launch_work(host, admitted, reopened, epoch=epoch, etag=etag)
     try:
         started = await start_job_work(manager, work, store=storage, executor=eval_host.blocking_executor)
     except ConflictError as moved:
-        raise ConflictError(
-            f"launch '{launch.id}' changed while it was being taken up — another take-up of it won, or another writer "
-            "moved it — so this one started nothing",
-            remedy="read it with job_poll; call job_resume again if it is still not running",
-        ) from moved
+        raise taken_up_meanwhile(LAUNCH_JOB, launch.id) from moved
     log.info(
         "eval.resume_launch launch=%s scope=%s taken up at epoch %d: %d run(s) taken up",
         launch.id,
@@ -1072,27 +1152,11 @@ def _offered(run: EvalRun, template_id: str, rows: Sequence[EvalResult]) -> Resu
     spend = _counted_spend(rows)
     spent = sum(amount for amount in spend if amount is not None)
     cap = run.max_cost_usd
-    note = None
-    # The same rule the take-up refuses by: a cap its stored rows have reached.
-    if run.status == "budget_stopped" and cap is not None and spent >= cap:
-        note = (
-            f"stopped at its cost cap of ${cap:.4f} with ${spent:.4f} spent: resume it with max_cost_usd above "
-            f"${spent:.4f}"
-        )
-    # And a metered-call ceiling its stored cells have reached, against the ceiling the run recorded: one it inherited
-    # moves with the host's setting, which a take-up reads afresh.
-    landed = sum(row.metered_calls or 0 for row in rows)
-    if run.max_metered_calls_origin != "none_declared" and run.max_metered_calls and landed >= run.max_metered_calls:
-        metered = (
-            f"its stored cells have landed {landed} metered call(s) against its metered-call ceiling of "
-            f"{run.max_metered_calls}: "
-            + (
-                "launch its template again (run_launch) with a higher max_metered_calls"
-                if run.max_metered_calls_origin == "chosen"
-                else f"raise the host's max_metered_calls above {landed}, then resume it"
-            )
-        )
-        note = f"{note}; {metered}" if note is not None else metered
+    # The take-up's own rules, against the cap and the metered-call ceiling the run recorded: one it inherited moves
+    # with the host's setting, which a take-up reads afresh. Its cases and its job's state are not read here.
+    ceiling = run.max_metered_calls if run.max_metered_calls_origin != "none_declared" else None
+    reasons = _why_not_taken_up(run, rows, cap=cap, metered_ceiling=ceiling or None)
+    note = "; ".join(f"{reason.message}: {reason.remedy}" for reason in reasons) or None
     return ResumableJob(
         # The run job's id, in the shape job_poll and job_resume read.
         job_id=f"run:{run.id}",

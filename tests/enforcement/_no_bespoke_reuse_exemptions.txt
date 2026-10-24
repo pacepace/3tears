@@ -27,3 +27,6 @@ packages/evals/src/threetears/evals/providers/model.py:*:_Live
 
 # rationale: BackgroundDispatch's '_in_flight' tracks the fires it has handed off (running tasks and their pending outcome writes), not a buffer of writes awaiting a flush, and the sleep the fingerprint pairs it with is join's asyncio.sleep(0): one yield so a finished fire's done-callback can remove it, not a periodic timer. ConversationWriteBuffer is a write-behind buffer over a Collection and has no meaning for a task registry. Flagged once metallm's join fix (5aef89feb) added that yield.
 packages/scheduled-jobs/src/threetears/scheduled_jobs/background.py:*:BackgroundDispatch
+
+# rationale: DerivedCollection's '_inflight' maps a key to the in-process asyncio.Lock that makes one derivation per pod (single-flight), not a buffer of pending writes; the sleep loop the fingerprint pairs it with is _await_peer_derivation polling the durable tier for a peer pod's value while that peer still holds the build lock. Nothing is buffered or flushed, so ConversationWriteBuffer names no reachable change. Flagged once the bounded for-loop became a wait for as long as the peer's lease is held.
+packages/core/src/threetears/core/collections/derived.py:*:DerivedCollection

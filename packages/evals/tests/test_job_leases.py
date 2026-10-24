@@ -1517,3 +1517,22 @@ def test_the_kernel_keeps_its_leases_by_the_numbers_the_schema_defines() -> None
     assert leases.renew_every_s == schema.DEFAULT_JOB_LEASE_S * schema.JOB_LEASE_RENEWAL_FRACTION
     assert job_leases.LEASE_POOL_WORKERS is schema.LEASE_POOL_WORKERS, "the pool's width is the schema's"
     assert not {"DEFAULT_JOB_LEASE_S", "LEASE_POOL_WORKERS"} & set(kernel.__all__), "defined once, exported from schema"
+
+
+def test_a_take_up_writes_its_reopened_record_under_a_new_lease_only_while_the_record_is_as_it_read_it() -> None:
+    """The one read and the one write every take-up makes, of a run, a sweep or a launch."""
+    storage = EvalStorage(InMemoryDocumentStore())
+    leases = JobLeases(storage)
+    storage.save_eval_run(make_eval_run(id="r-1", scope_id=TOYHOST_SCOPE, status="cancelled"))
+
+    read, etag = job_leases.read_to_take_up(storage, RUN_JOB, "r-1", TOYHOST_SCOPE)
+    assert read is not None and etag is not None
+    job_leases.write_reopened(storage, RUN_JOB, read, leases=leases, etag=etag, epoch=3)
+
+    assert read.lease is not None and (read.lease.holder, read.lease.epoch) == (leases.holder_id, 3)
+    stored = storage.load_eval_run("r-1", TOYHOST_SCOPE)
+    assert stored is not None and stored.lease == read.lease
+    with pytest.raises(ConflictError, match="run 'r-1' changed while it was being taken up") as moved:
+        job_leases.write_reopened(storage, RUN_JOB, read, leases=leases, etag=etag, epoch=4)
+    assert moved.value.remedy.startswith("read it with job_poll")
+    assert job_leases.reopened_job_fields() is not job_leases.reopened_job_fields(), "a new mapping each call"

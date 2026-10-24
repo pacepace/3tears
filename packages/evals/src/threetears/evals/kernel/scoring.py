@@ -38,6 +38,8 @@ know no eval model at all.
 
 from __future__ import annotations
 
+import dataclasses
+
 import math
 from collections.abc import Collection, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -690,16 +692,47 @@ class PassHatKCell:
     served_unrecorded: bool = False
 
 
+#: The reason two cells that each pool are two, by the field of :class:`PassHatKCell` they differ in first.
+_REASON_OF_CELL_FIELD: dict[str, UnpooledReason] = {
+    "template_id": "other_template",
+    "template_digest": "other_template",
+    "context_key": "changed_context",
+    "identity_version": "changed_context",
+    "apparatus_provenance": "changed_context",
+    "served": "other_served_model",
+}
+
+#: The fields of :class:`PassHatKCell` that mark a cell of one run, which :func:`pass_hat_k_cell_alone` reads: never
+#: compared between two cells that each pool.
+_ALONE_CELL_FIELDS: frozenset[str] = frozenset({"recorded", "unresolved", "run_id", "served_unrecorded"})
+
+
+def _cell_field_reasons() -> tuple[tuple[str, UnpooledReason], ...]:
+    """The fields two cells that each pool can differ in, in the cell's own order, which is the reading order, each
+    with its reason.
+
+    Read off the cell's fields, so the reading order is the cell's, and a field the cell gains that is neither given a
+    reason nor named as marking a cell of one run fails the import of this module, before any two runs can be split
+    on it with no reason to give.
+
+    :return: ``(field, reason)`` for every field of the cell but :data:`_ALONE_CELL_FIELDS`.
+    :rtype: tuple[tuple[str, UnpooledReason], ...]
+    :raises TypeError: A field of the cell is neither, a field is both, or a reason or a mark names no field of it.
+    """
+    fields = [field.name for field in dataclasses.fields(PassHatKCell)]
+    named = set(_REASON_OF_CELL_FIELD) | _ALONE_CELL_FIELDS
+    if set(fields) != named or set(_REASON_OF_CELL_FIELD) & _ALONE_CELL_FIELDS:
+        raise TypeError(
+            f"PassHatKCell's fields and their reasons disagree: neither a reason nor a mark for "
+            f"{sorted(set(fields) - named)}, named but no field {sorted(named - set(fields))}, both "
+            f"{sorted(set(_REASON_OF_CELL_FIELD) & _ALONE_CELL_FIELDS)}"
+        )
+    return tuple((name, _REASON_OF_CELL_FIELD[name]) for name in fields if name not in _ALONE_CELL_FIELDS)
+
+
 #: The fields two cells that each pool can differ in, in the order :func:`pass_hat_k_cell_reason` reads them, and the
 #: reason two cells differing first in it are two.
-_CELL_FIELD_REASONS: tuple[tuple[str, UnpooledReason], ...] = (
-    ("template_id", "other_template"),
-    ("template_digest", "other_template"),
-    ("context_key", "changed_context"),
-    ("identity_version", "changed_context"),
-    ("apparatus_provenance", "changed_context"),
-    ("served", "other_served_model"),
-)
+_CELL_FIELD_REASONS: tuple[tuple[str, UnpooledReason], ...] = _cell_field_reasons()
 
 
 def pass_hat_k_cell(

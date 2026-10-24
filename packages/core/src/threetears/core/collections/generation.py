@@ -378,6 +378,26 @@ class GenerationMarks:
             return None
         return f"{mark.incarnation}:{mark.accounted}"
 
+    def pending(self, table_name: str) -> tuple[str, ...]:
+        """the advances beyond the mark this pod has heard rows of but cannot yet count, as tokens, for a log line.
+
+        An advance waits here while one before it is unheard: the mark moves past an advance only once every one
+        before it is accounted for.
+
+        :param table_name: the followed table
+        :ptype table_name: str
+        :return: each waiting advance as ``incarnation:count (rows heard/rows)``, in count order; empty when the
+            table is not followed or nothing waits
+        :rtype: tuple[str, ...]
+        """
+        mark = self._tables.get(table_name)
+        if mark is None:
+            return ()
+        return tuple(
+            f"{incarnation}:{count} ({heard.rows}/{heard.of})"
+            for (incarnation, count), heard in sorted(mark.heard.items(), key=lambda item: item[0][1])
+        )
+
     def hear(self, table_name: str, token: str, bump_rows: int) -> None:
         """record one row broadcast of the advance that wrote ``token``.
 
