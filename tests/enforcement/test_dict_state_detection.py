@@ -326,6 +326,16 @@ _ALLOWLIST = (
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/testing/kv.py",
         class_name="FakeKvBucket",
+        attr_name="_marker_expiry",
+        rationale=(
+            "when each marker given a lifetime (delete's marker_ttl) is removed, on the double's own "
+            "clock -- the lifetime half of _markers, cleared with it. Same test-double rationale as "
+            "FakeKvBucket._entries above"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/kv.py",
+        class_name="FakeKvBucket",
         attr_name="_key_watchers",
         rationale=(
             "the asyncio queues of each open watch_key iterator, keyed by the key it watches, "

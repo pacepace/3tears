@@ -128,7 +128,13 @@ class _Pointers:
         self.ttls[key] = ttl
         return self._put(key, value)
 
-    async def delete(self, *, key: str, revision: int | None = None) -> bool:
+    async def delete(
+        self,
+        *,
+        key: str,
+        revision: int | None = None,
+        marker_ttl: timedelta | None = None,  # noqa: ARG002
+    ) -> bool:
         entry = self.entries.get(key)
         if entry is None or (revision is not None and entry[1] != revision):
             return False

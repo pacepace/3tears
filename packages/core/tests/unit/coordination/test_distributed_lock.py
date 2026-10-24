@@ -18,7 +18,7 @@ from datetime import timedelta
 import pytest
 from nats.errors import ConnectionClosedError as NatsConnectionClosedError
 from nats.errors import TimeoutError as NatsTimeoutError
-from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
+from nats.js.errors import APIError, KeyNotFoundError, KeyWrongLastSequenceError
 
 from threetears.core.coordination import LockHeld, LockHold, LockLossReason, LockLost, nats_distributed_lock
 from threetears.nats import NatsKvBucket
@@ -143,6 +143,9 @@ class _FakeKv:
 
 # parity-exempt: the JetStream context a bucket's self-heal re-opens through, on a broker that answers nothing: the re-open fails as an unreachable one does
 class _UnreachableJetStream:
+    def __init__(self, kv: _FakeKv | None = None) -> None:
+        self._kv = kv
+
     async def add_stream(self, config: object) -> None:
         del config
         raise NatsTimeoutError()
@@ -151,11 +154,30 @@ class _UnreachableJetStream:
         del name
         raise NatsTimeoutError()
 
+    async def publish(
+        self, subject: str, payload: bytes = b"", *, headers: dict[object, str] | None = None, msg_ttl: float
+    ) -> object:
+        """a release's lapsing purge marker, the one raw publish a lock makes: applied to the fake KV as the
+        delete it stands for, its expected revision fenced as the server fences it (a stale one is refused
+        with the server's wrong-last-sequence code)."""
+        del payload, msg_ttl
+        assert self._kv is not None, "a raw publish through a bucket built with no fake KV behind it"
+        expected = {f"{getattr(name, 'value', name)}": value for name, value in (headers or {}).items()}
+        assert expected.get("KV-Operation") == "PURGE", f"an unexpected raw publish: {expected}"
+        last = expected.get("Nats-Expected-Last-Subject-Sequence")
+        try:
+            await self._kv.delete(subject.split(".", 2)[2], last=int(last) if last else None)
+        except KeyWrongLastSequenceError:
+            raise APIError(code=400, err_code=10071, description="wrong last sequence") from None
+        except KeyNotFoundError:
+            pass
+        return object()
+
 
 # parity-exempt: the NatsClient a bucket holds for its self-heal; its re-open never reaches the broker, so a failed operation surfaces as KvError
 class _UnreachableNats:
-    def __init__(self) -> None:
-        self._js = _UnreachableJetStream()
+    def __init__(self, kv: _FakeKv | None = None) -> None:
+        self._js = _UnreachableJetStream(kv)
         # the connection a re-opened bucket records, and follows across a credential renewal
         self.raw = object()
 
@@ -187,7 +209,7 @@ class _FakeClient:
         del storage, create_if_missing, history
         self.kv_bucket_calls.append((name, ttl))
         return NatsKvBucket(
-            client=_UnreachableNats(),  # type: ignore[arg-type]
+            client=_UnreachableNats(self._fake_kv),  # type: ignore[arg-type]
             full_name=f"itest-{name}",
             kv=self._fake_kv,  # type: ignore[arg-type]
             ttl=ttl,
@@ -427,7 +449,7 @@ async def test_ttl_mismatch_against_existing_bucket_raises() -> None:
             # the cached bucket.
             if self._cached is None:
                 self._cached = NatsKvBucket(
-                    client=_UnreachableNats(),  # type: ignore[arg-type]
+                    client=_UnreachableNats(fake_kv),  # type: ignore[arg-type]
                     full_name=f"itest-{name}",
                     kv=fake_kv,  # type: ignore[arg-type]
                     ttl=ttl,
@@ -482,7 +504,7 @@ async def test_ttl_match_against_existing_bucket_acquires() -> None:
             self.kv_bucket_calls.append((name, ttl))
             if self._cached is None:
                 self._cached = NatsKvBucket(
-                    client=_UnreachableNats(),  # type: ignore[arg-type]
+                    client=_UnreachableNats(fake_kv),  # type: ignore[arg-type]
                     full_name=f"itest-{name}",
                     kv=fake_kv,  # type: ignore[arg-type]
                     ttl=ttl,
@@ -1117,7 +1139,7 @@ class _OldReleaseLock:
 
 def _bucket_over(fake_kv: _FakeKv) -> NatsKvBucket:
     return NatsKvBucket(
-        client=_UnreachableNats(), full_name="itest-scheduler-locks", kv=fake_kv, ttl=timedelta(seconds=60)
+        client=_UnreachableNats(fake_kv), full_name="itest-scheduler-locks", kv=fake_kv, ttl=timedelta(seconds=60)
     )  # type: ignore[arg-type]
 
 

@@ -8,6 +8,38 @@ packages (bumped in lock-step).
 
 ## v0.78.0 -- 2026-10-24
 
+### core, nats: a released lease leaves nothing in its bucket
+
+**Fixed:** `KVLease` release filled the shared `{ns}-leases` bucket until every lease write on the platform was
+refused. A KV delete publishes a marker, and the bucket keeps one revision per key with no expiry, so each released
+key kept its marker forever. A host that takes a lease per unique key (the reports pod's answer build locks, one per
+computed answer) grew the bucket by one marker per answer until it hit its byte bound; from then on every lease
+write failed with "maximum bytes exceeded": refresh leases, load-scope asks, announcements, build locks. A release
+now removes its key with a purge marker that lapses after 5 seconds, still fenced on the holder's revision, so a
+released key leaves nothing. The lifetime is the marker's own message's, not the key's: a lease another holder takes
+over the marker replaces it and lives as long as its own TTL says. This is not a cache TTL and not a safety net; the
+release has already landed when the marker's lifetime starts.
+
+**Added:** `NatsKvBucket.delete(marker_ttl=)`: the removal's marker lapses after that lifetime (a `KV-Operation:
+PURGE` marker with a subject rollup and `Nats-TTL`, fenced by the expected-last-subject-sequence header when a
+revision is given). A stream that refuses it (no `allow_msg_ttl`, no rollups) gets the plain fenced delete and keeps
+its marker, logged at WARNING. `KvBucketLike.delete` and `FakeKvBucket.delete` take the same keyword; the double
+removes a lapsed marker on its own clock (`advance_clock`) and reports `stored_messages` and `stored_bytes`. A test
+double of a bucket that a `KVLease` releases through must accept `marker_ttl`.
+
+**Added:** `NatsKvBucket.purge_removal_markers(apply=True)`: the bucket owner's one-time sweep of the markers a
+bucket already holds. It lists each key's latest message (headers only, through a named consumer) and purges each
+marker's exact subject below its own sequence plus one, so a write that lands on the key after the sweep read the
+marker is kept. A stream purge is a management verb only the owner (the hub) is granted. The hub runs it over
+`{ns}-leases` at startup and on demand (hub `scripts/purge-lease-markers.sh`).
+
+### core: the moving-scope burst test is deterministic
+
+**Fixed:** `test_a_scope_that_keeps_moving_never_holds_a_burst_back` failed on CI's slower runner (9 fetches against
+a bound of 8). The writer's own reads of the moved scope were counted with the replica's, and how far the publish had
+got when the replica's pass began varied with scheduling. The replica now reads through a store view of its own, and
+each fetch of the moving scope waits for the whole burst to land.
+
 ### every package: nothing is imported inside a function on a serving path
 
 **Changed:** Owner ruling, 2026-10-24: lazy imports are banned in serving code. An import inside a function ran

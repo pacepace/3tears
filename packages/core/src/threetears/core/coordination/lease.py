@@ -95,6 +95,16 @@ log = get_logger(__name__)
 #: waiting longer -- the TTL, as a release once did -- stretches every owner's shutdown by that much.
 RENEWAL_ANSWER_WAIT_SECONDS: Final[float] = 10.0
 
+#: how long the marker a release leaves lives before the server removes it. A KV delete publishes a
+#: marker, and on the shared ``leases`` bucket (one revision, no expiry) that marker was the released
+#: key's one message forever: a host that takes a lease per unique key (a build lock per computed
+#: answer) filled the bounded bucket with them until every lease write on the platform was refused.
+#: This is the marker's lifetime, not a cache's freshness and not a lease's: the release has already
+#: landed when it starts, and an acquire that lands on the key before it lapses replaces it. Long
+#: enough for an acquire racing the release (a create that finds the marker and swaps against its
+#: revision) to finish against it; short enough that a bucket holds a few seconds of releases at most.
+_RELEASED_MARKER_TTL: Final[timedelta] = timedelta(seconds=5)
+
 #: why a held lease was lost (:attr:`HeldLease.lost_reason`): the one vocabulary
 #: :func:`~threetears.core.coordination.nats_distributed_lock` reports too, so it is that enum, under the name
 #: this module's callers read.
@@ -1557,8 +1567,10 @@ class KVLease:
         # check delete cannot evict a successor's freshly reclaimed
         # entry. KvBucketLike.delete returns False on revision mismatch
         # which is treated as "raced with another writer; entry
-        # effectively gone from our view" -- diagnostic-only here.
-        deleted = await bucket.delete(key=handle.key, revision=revision)
+        # effectively gone from our view" -- diagnostic-only here. its
+        # marker lapses (_RELEASED_MARKER_TTL), so a released key leaves
+        # nothing in the bucket.
+        deleted = await bucket.delete(key=handle.key, revision=revision, marker_ttl=_RELEASED_MARKER_TTL)
         if not deleted:
             # a write landed after the read: another holder's, or a renewal of this one's that is not
             # recognisably its own -- either way not provably this holder's to delete

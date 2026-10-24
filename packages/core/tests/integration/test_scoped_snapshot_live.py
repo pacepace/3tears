@@ -695,8 +695,8 @@ class _HeldPointers:
     def arm(self) -> None:
         self._armed = True
 
-    async def delete(self, *, key: str, revision: int | None = None) -> bool:
-        result = await self._inner.delete(key=key, revision=revision)
+    async def delete(self, *, key: str, revision: int | None = None, marker_ttl: timedelta | None = None) -> bool:
+        result = await self._inner.delete(key=key, revision=revision, marker_ttl=marker_ttl)
         if self._armed and key == self._key and not self.deleted.is_set():
             self.deleted.set()
             await self.release_delete.wait()
