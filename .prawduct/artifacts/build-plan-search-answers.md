@@ -119,14 +119,13 @@ Out of scope for slice 1: the Brave adapter, the SSE and tag parsers, `answer.py
 
 ## Status
 
-- [ ] Chunk 01: Contracts + StreamingTransport + standalone streaming (design §12 slice 1)
+- [x] Chunk 01: Contracts + StreamingTransport + standalone streaming (design §12 slice 1)
 - [ ] Chunk 02: BraveAnswersAdapter + answer.py + bind_answer.py + enforcement rows (slice 2)
 - [ ] Chunk 03: agent-tools `threetears.web_answer` builtin (slice 3)
 - [ ] Chunk 04: discodon `fact_check` on Answers (slice 4, discodon's repo)
 - [ ] Chunk 05: discodon `research__ask_web` behind its flag (slice 5, discodon's repo)
-Context: Plan cut 2026-10-23 on `search/answers-slice-1`, stacked on
-`docs/answers-requirements-design` (PR #930). Slice 0 (the live capture) is a prerequisite of
-Chunk 02, not of Chunk 01, and has not run. Next: Chunk 01.
+Context: Chunk 01 merged onto `docs/answers-requirements-design` (PR #930) as #935. Slice 0
+ran 2026-10-24 (design §4.2). Chunk 02 builds on `search/answers-slice-2`. Next: Chunk 02.
 
 ## Scaffolding
 
@@ -211,11 +210,43 @@ transport's (AR-F2). The answer contracts import nothing beyond the existing con
 ### Chunk 02: BraveAnswersAdapter + answer.py + bind_answer.py
 
 - **Description:** The one provider, the call layer and the prose/metadata render (design §10.2-
-  §10.4), with `ANSWER_METADATA_KEY` and its enforcement row (§10.6). Ships in a MINOR release (AR-H3).
-- **Depends on:** Chunk 01, and slice 0's recorded fixture (AR-I2)
-- **Foreign API:** brave-answers (live capture first)
+  §10.4), with `ANSWER_METADATA_KEY` and its enforcement row (§10.6). Ships in a MINOR release
+  (AR-H3); the PR bumps nothing.
+- **Depends on:** Chunk 01, and slice 0's recorded fixture (AR-I2), both on the area branch.
+- **Foreign API:** brave-answers. Slice 0 ran 2026-10-24; its facts are design §4.2 "Verified
+  live", and the recordings are `packages/search/src/threetears/search/testing/recordings/`.
+- **Artifacts consumed:** design §4.2, §8 (AD5-AD10, AD12), §9 A-E, G, I-K, §10.2-§10.4, §10.6.
+- **Deliverables:**
+  - `contracts/metadata.py`: `ANSWER_METADATA_KEY = "answer"`, `ANSWER_SCHEMA_VERSION`,
+    `AnswerMetadata`, beside the search key's;
+  - `adapters/brave_answers.py`: `BraveAnswersAdapter` (an `AnswerProvider`) per §10.2: the SSE
+    reader and the tag state machine (outside / `<citation>` / `<usage>` / unknown tag, buffered
+    across SSE events and chunk boundaries), the spend reader (AD10; cost numbers decoded as
+    `Decimal`), the error mapping (one `ErrorResponse` envelope keyed by `error.code`; a 422
+    `SUBSCRIPTION_TOKEN_INVALID` is an auth refusal, not a malformed request; 429 `RateLimited`;
+    the credit-limit code `QuotaExhausted`), capabilities registered with `kind="answer"`;
+  - `answer.py`: the call layer, mirroring `call.search` (§10.3);
+  - `bind_answer.py`: `bind_answer` and `RenderedAnswer` (§10.4), the answer key's one
+    construction site, AR-G2's first line, AR-A3's zero-source first line;
+  - `testing/`: a recorded streaming transport (the `recorded.py` shape) that replays the
+    recordings, and an `AnswerConformanceSuite` the Brave adapter passes against them;
+  - `GroundedAnswer` refuses an anchor past the end of `text`, or one naming no source;
+  - `tests/enforcement/test_one_search_result_shape.py` generalised to `(key, sanctioned site)`
+    rows with the answer key's row; exports in `__init__.py`; `docs/search-spec.md` names the
+    new modules.
+- **Tests:** against the recordings: text equals the stripped stream, anchors are the recorded
+  points in code points (the non-ASCII capture pins character, not byte, units), sources in
+  citation order with `content=None` and the snippet carried, `provider_ids` keeping `number`
+  and the non-text facts, spend equal to the usage tag's own total. Synthetic streams for the
+  edges: a tag split across events and mid-UTF-8 chunk, an unknown tag (AR-A5), no `<usage>`
+  (AR-C1), unparseable tag JSON and missing cost keys (AR-E2), zero citations (AR-A3), a break
+  after the first byte (AR-E1, never retried), each error envelope. Call layer: budget check
+  before, record after, pacing, dispositions. Bind: first line, sources list, metadata
+  round-trip, failure metadata.
+- **Acceptance criteria:** the search suite, lint, `typecheck.sh search`, and the enforcement
+  files pass. `test_public_api_has_a_caller` turns green for the slice-1 names. The one held red
+  is `test_api_growth_requires_a_minor_bump`.
 - **Done when:**
-  0. verify-api: slice 0's capture settles the three (verify live) items; `Anchor` finalised
   1. Acceptance criteria met and tests pass
   2. `/prawduct:critic` run and blocking findings resolved
   3. Committed and chunk marked `[x]` in Status

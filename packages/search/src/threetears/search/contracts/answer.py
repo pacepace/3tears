@@ -100,22 +100,22 @@ class AnswerRequest(ContractModel):
 class Anchor(ContractModel):
     """Where in the answer text one source is cited (AR-A1, AR-A4).
 
-    **Provisional: the units of** ``start`` **and** ``end`` **are not yet
-    fixed.** Whether a provider's offsets count characters or bytes, and
-    whether they index the text before or after its citation tags are removed,
-    is settled by the live capture in ``answers-requirements-design.md`` §12
-    slice 0, and this field's meaning is finalised from that capture, not
-    before. Until then the only promise is the shape: a half-open span
-    ``[start, end)`` into :attr:`GroundedAnswer.text` naming one source.
+    ``start`` and ``end`` are a half-open span ``[start, end)`` of code points
+    into :attr:`GroundedAnswer.text`, the text with every tag already removed:
+    ``text[start:end]`` in Python. A provider may cite a point rather than a
+    span, ``start == end``, which marks the position after the claim it
+    supports; Brave's answers cite only points, and several sources often
+    share one. Byte offsets, or offsets into the text before its tags were
+    removed, are an adapter's to convert before it builds an anchor.
 
     An anchor is never inferred by searching the text for the cited words
     (AR-A4): an answer whose provider gave no usable offsets carries no
     anchors and a notice saying so.
     """
 
-    #: where the cited span begins. Units provisional -- see the class.
+    #: where the cited span begins, in code points into the stripped text.
     start: int = Field(ge=0)
-    #: where the cited span ends, exclusive. Units provisional -- see the class.
+    #: where the cited span ends, exclusive; equal to ``start`` for a point.
     end: int = Field(ge=0)
     #: index into :attr:`GroundedAnswer.sources` of the source cited here.
     source_index: int = Field(ge=0)
@@ -154,7 +154,7 @@ class GroundedAnswer(ContractModel):
     #: the cited sources, in citation order (AD7, AR-A2).
     sources: tuple[Candidate, ...] = ()
     #: where in ``text`` each source is cited; empty when the provider gave no
-    #: usable offsets (AR-A4). Units provisional -- see :class:`Anchor`.
+    #: usable offsets (AR-A4). Code points -- see :class:`Anchor`.
     anchors: tuple[Anchor, ...] = ()
     #: the answer's own origin (SR-A3): provider instance, the question as
     #: ``query``, retrieval time, egress, producer class. Each source carries

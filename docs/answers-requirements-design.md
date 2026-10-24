@@ -192,11 +192,32 @@ Read from Brave's documentation on 2026-10-22; field names verbatim.
 - **Auth:** `X-Subscription-Token` header (or Bearer). discodon's SearXNG
   secret already holds `BRAVE_ANSWERS_API_KEY`, provisioned and unused.
 
-**(verify live)** Whether `start_index`/`end_index` are character or byte
-offsets, and whether they index the answer text before or after the tags are
-stripped; and whether `snippet` is the cited page's own text or model-written.
-Both change a contract field and both are a five-minute check with the key
-discodon already holds.
+**Verified live (slice 0, 2026-10-24).** Two streamed single-mode answers,
+recorded under `packages/search/src/threetears/search/testing/recordings/`:
+
+- **Offsets are code points into the text with every tag removed.** A citation
+  is a zero-width point, `start_index == end_index`, at the end of the claim it
+  supports; several citations share one point. In the non-ASCII capture the
+  last point is 83, the stripped text's length in characters (its UTF-8 length
+  is 94), and indexing the text before stripping lands nowhere meaningful.
+- **`snippet` is the cited page's own text**, extracted: Markdown headings,
+  `…` elisions, a page's JSON caption. It is not model-written, so AR-G1's
+  standing for it is the SERP snippet's, as designed.
+- **No tag straddled an SSE event** in either capture: each `<citation>` and
+  the `<usage>` arrived whole in one `delta.content`. The parser still buffers
+  across events (AR-F2); the provider promises nothing.
+- **Usage keys are as documented**, inside the stream, absent from the
+  response headers. The cost values are JSON numbers, not strings, so they are
+  parsed with `Decimal` at JSON-decode time (AR-C2). The response's `model` is
+  `brave-pro` for a request naming `brave`.
+- **Errors share one envelope**, `{"type": "ErrorResponse", "error": {"code",
+  "detail", "status", "meta"}}` as `application/json`. An invalid key is a
+  **422** `SUBSCRIPTION_TOKEN_INVALID`, not a 401; a malformed body is a 422
+  `VALIDATION`. The credit-limit refusal could not be provoked; it is mapped
+  by `error.code` from Brave's published codes and stays unverified.
+
+One capture cost $0.057 by the provider's own total: 10,463 tokens in, at
+$5/M, is most of it.
 
 ## 5. Who consumes this
 
@@ -376,8 +397,9 @@ notice that says so (SR-J2 shape; AG2). The prose rendering states it in the
 first line, not a footnote.
 
 **AR-A4 (MUST).** `anchors` are empty when the provider gave no usable offsets,
-and a notice says so. They are never inferred by string search.
-**(verify live)** before the offset semantics are fixed (§12).
+and a notice says so. They are never inferred by string search. Units, from
+slice 0: code points into `text`, and Brave's anchors are zero-width
+(`start == end`), a point after the cited claim.
 
 **AR-A5 (SHOULD).** Unknown `<name>{json}</name>` tags in single mode are
 removed from `text`, kept verbatim under `provenance.provider_ids`, and named
@@ -539,7 +561,7 @@ Layer names stay module vocabulary (`search-spec.md` §2): no type is called
 - `AnswerRequest(ContractModel)`: `question`, `criteria`, `budget_scope_tags`.
   Canonical form registered beside `SearchRequest`'s.
 - `Anchor(ContractModel)`: `start: int`, `end: int`, `source_index: int`.
-  Units fixed after §12's live check; documented on the field.
+  Code points into the stripped text (§4.2, slice 0); documented on the field.
 - `GroundedAnswer(ContractModel)`: per AR-A1.
 - `AnswerCapabilities(ContractModel)`: per AR-B2, registered through the same
   module-level registry pattern as `ProviderCapabilities` (one registry,
@@ -654,7 +676,8 @@ PR into `develop` as before.
    key: one single-mode streamed answer with citations, saved as the recorded
    fixture (AR-I2). Settles the three **(verify live)** items: offset units,
    pre/post-strip indexing, and whether `snippet` is page text. The `Anchor`
-   field and AR-A4 are finalised from this, not before.
+   field and AR-A4 are finalised from this, not before. **Done 2026-10-24**:
+   the results are in §4.2.
 1. **Contracts + `StreamingTransport` + the standalone streaming transport**
    (AD11, AR-F1..F3), with the transport's pins. The transport moves bytes;
    SSE parsing is slice 2's adapter (AR-F2). Reaches `develop` with slice 2,
