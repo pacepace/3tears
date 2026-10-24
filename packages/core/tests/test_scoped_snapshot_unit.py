@@ -2921,12 +2921,20 @@ async def test_a_write_that_outruns_a_rebuild_with_nothing_to_read_leaves_no_ind
 _BURST = [f"S{n:02d}" for n in range(12)]
 
 
-async def _burst_pair() -> tuple[ScopedSnapshot, ScopedSnapshot, _Pointers, _Store, _L3]:
-    """a writer and a replica over one bucket, store and L3 of twelve scopes, both ready at epoch 1."""
+async def _burst_pair(
+    replica_store: _Store | None = None,
+) -> tuple[ScopedSnapshot, ScopedSnapshot, _Pointers, _Store, _L3]:
+    """a writer and a replica over one bucket, store and L3 of twelve scopes, both ready at epoch 1.
+
+    :param replica_store: the replica's own view of the store, sharing its objects, so a test can watch the
+        replica's reads alone; ``None`` gives both the one store
+    """
     pointers, store = _Pointers(), _Store()
+    if replica_store is not None:
+        replica_store.objects = store.objects
     l3 = _L3([{"county": f"c{scope}", "state": scope, "votes": 1} for scope in _BURST])
     writer, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
-    replica, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    replica, _, _, _ = _snapshot(pointers=pointers, store=replica_store or store, l3=l3)
     l3.epochs = dict.fromkeys(_BURST, 1)
     await writer.start()
     await writer.wait_ready(timeout=5)
@@ -3060,12 +3068,22 @@ async def test_a_rebuild_whose_l1_refuses_a_published_scope_is_not_declared_read
 async def test_a_scope_that_keeps_moving_never_holds_a_burst_back() -> None:
     """S00's pointer moves again each time its chunk is fetched: the burst still commits in a bounded number of
     fetches, the newest S00 a join caught among it, and S00 catches up on the next pass once it stops."""
-    writer, replica, pointers, store, l3 = await _burst_pair()
+    # the replica reads through a store of its own (sharing the objects), so only ITS fetches move S00 and are
+    # counted: the writer watches the same pointers, and its reads of the moved S00 counted too, by however the
+    # runner interleaved the two
+    store = _Store()
+    writer, replica, pointers, _, l3 = await _burst_pair(replica_store=store)
     real_get = store.get
     s00_fetches = [0]
     keep_moving = [True]
+    # every fetch of S00 waits for the whole burst to land: however the runner schedules the publish against the
+    # replica's watch, the batch S00 is in sees all twelve pointers by its first join, so what the bound below
+    # measures is the joins, not how far the publish had got when the replica's pass began
+    burst_landed = asyncio.Event()
 
     async def moving_get(name: str) -> bytes:
+        if name.startswith("enr/S00/") and keep_moving[0]:
+            await burst_landed.wait()
         data = await real_get(name)
         if name.startswith("enr/S00/") and keep_moving[0]:
             s00_fetches[0] += 1
@@ -3089,6 +3107,7 @@ async def test_a_scope_that_keeps_moving_never_holds_a_burst_back() -> None:
     replica.on_change(moved)
 
     await _publish_burst(writer, l3)
+    burst_landed.set()
     others = dict.fromkeys(_BURST[1:], 2)
     await _until(
         lambda: {s: e for s, e in replica.applied_epochs().items() if s != "S00"} == others,
