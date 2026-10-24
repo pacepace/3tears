@@ -62,12 +62,14 @@ from threetears.evals.kernel.metrics import (
     rule_rates,
 )
 from threetears.evals.schema.models import (
+    DECLARED_NAME_CHARS,
     RESERVED_DIM_IDS,
     SCALES,
     ApparatusProvenance,
     EvalResult,
     EvalTemplate,
     RubricScale,
+    declared_name,
     utc_now_iso,
 )
 
@@ -886,6 +888,17 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
             "floor key's parts. A campaign stored before aspects existed reads as one aspect labelled with its behavior."
         ),
     )
+    short_name: str | None = Field(
+        default=None,
+        # Presentation only: written only when declared, so an aspect naming none is stored as it was before the field.
+        exclude_if=lambda name: name is None,
+        description=(
+            f"What a page prints for this aspect in table cells and sentences, at most {DECLARED_NAME_CHARS} "
+            "characters; the label is printed once beside it. No two aspects of a campaign print alike. None = the "
+            "label is printed whole. No part of any identity, key or fingerprint, so naming an aspect changes no "
+            "reading."
+        ),
+    )
     template_id: str | None = Field(
         default=None,
         description="Reference to an existing eval_template this aspect's runs were gathered on; None names none.",
@@ -953,6 +966,18 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
                 "without one"
             )
         return label
+
+    @model_validator(mode="after")
+    def _a_short_name_is_short(self) -> Aspect:
+        """Refuse a short name that is blank or longer than :data:`~threetears.evals.schema.models.DECLARED_NAME_CHARS`.
+
+        :return: The validated aspect.
+        :rtype: Aspect
+        :raises ValueError: The short name is blank or too long.
+        """
+        if self.short_name is not None:
+            declared_name(self.short_name, what=f"aspect {self.label!r}")
+        return self
 
 
 class Floor(EvalDocumentModel, CoreShapeModel):

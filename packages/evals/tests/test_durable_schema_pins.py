@@ -61,8 +61,8 @@ PINNED_DURABLE_SCHEMA_MINOR = 2
 DURABLE_SHAPE_DIGESTS: dict[str, str] = {
     "calibration_rating": "e24bc22bfd73f88dc1f5fc1f849d575beb9e859d8f30210b8e2687b65c32ef04",
     "case_set": "89cbb898ff56ae17778337e234ab181ba634c413235eb7e999894b0818b303ac",
-    "eval_campaign": "28faa35b80c8b30660c4f66e311950012a875e7c4051bd4b6835ceba2217d28b",
-    "eval_template": "3468eb84bebb869f98e273c039174c4a37c665951c5c76d99a87833f6eb1c7ad",
+    "eval_campaign": "84b3b8076b59e0ea2467d0d3eec34f926431d57661df7808c14640cec8b49983",
+    "eval_template": "7f28bea927dd43a2f8b615a9cf86122d6268710881d9b63d72b5a3da3079678b",
     "eval_test_case": "6ea617cdfbe185d37f8d478172842025095dec9ac0fb418afcd27cc51bfca14a",
     "judge_config": "2143b53733234c4dc71c5377bb40183608a9a3f8673918752fc3c216b43401b0",
     "judge_config_tombstone": "2b73824d117090a9106f5ba97fda95b602493adfb09b9b06cdd17b096b1cd078",

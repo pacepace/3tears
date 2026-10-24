@@ -7,7 +7,8 @@ or a timestamp, since a reset writes the same content under a new id and revisio
 is not itself content. A field at its default is left out of the pre-image, so a field a later minor adds (default
 None) moves no digest of a record written before it.
 
-- A template, a rubric dim and a judge config digest their declared fields less the record's own (:data:`RECORD_FIELDS`).
+- A template, a rubric dim and a judge config digest their declared fields less the record's own (:data:`RECORD_FIELDS`),
+  a template less its goal checks' display names too (:data:`_PRESENTATION_FIELDS`).
 - A judge case digests as the frozen case it is (``JudgeCase.content_digest``), which a stored case already carries
   as its ``content_hash``.
 - A template's own case digests what its corpus file states of it: its ``variation_params``, its ``host_payload`` and
@@ -43,15 +44,23 @@ RECORD_FIELDS: frozenset[str] = frozenset(
 )
 
 
-def _content(document: BaseModel) -> dict[str, object]:
-    """A definition's declared content fields, each left out at its default."""
-    declared = set(type(document).model_fields) - RECORD_FIELDS
+#: The fields of a template that say how a page prints it, never what it is: left out of its content digest as well as
+#: its measured one. A drift between a seed and the store in these alone would otherwise read stale, and a reset write
+#: a new revision, whose results never pool with the last one's, for a change no run can see. A name is edited in
+#: place instead (``template_update``), which keeps the template's id and revision.
+_PRESENTATION_FIELDS: frozenset[str] = frozenset({"goal_check_names"})
+
+
+def _content(document: BaseModel, *, leave_out: frozenset[str] = frozenset()) -> dict[str, object]:
+    """A definition's declared content fields, each left out at its default, and ``leave_out`` left out always."""
+    declared = set(type(document).model_fields) - RECORD_FIELDS - leave_out
     return document.model_dump(mode="json", include=declared, exclude_defaults=True)
 
 
 def template_digest(template: EvalTemplate) -> str:
-    """The digest of a template's content, as stored (its ``kind_spec`` as the kind's spec model resolved it)."""
-    return canonical_digest({"eval_template": _content(template)})
+    """The digest of a template's content, as stored (its ``kind_spec`` as the kind's spec model resolved it), less
+    how a page prints it (:data:`_PRESENTATION_FIELDS`)."""
+    return canonical_digest({"eval_template": _content(template, leave_out=_PRESENTATION_FIELDS)})
 
 
 #: The fields of a template that cannot change what a run of it measures, each for its reason; every other field —
@@ -65,6 +74,8 @@ _UNMEASURED_TEMPLATE_FIELDS: frozenset[str] = RECORD_FIELDS | {
     "description",
     # Whether it is archived: curation, deciding only whether a new launch is offered.
     "archived",
+    # What a page calls each goal check (`_PRESENTATION_FIELDS`): read by no judge, simulator or candidate.
+    *_PRESENTATION_FIELDS,
 }
 
 

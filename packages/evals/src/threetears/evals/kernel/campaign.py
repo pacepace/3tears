@@ -260,16 +260,25 @@ class EvalCampaign(DurableDocumentModel):
 
     @model_validator(mode="after")
     def _aspects_hold_their_runs_alone(self) -> Self:
-        """Each aspect's label is unique, and each run is held once, by one aspect.
+        """Each aspect's label is unique, so is what a page prints for it, and each run is held once, by one aspect.
 
         :return: The validated campaign.
         :rtype: EvalCampaign
-        :raises ValueError: Two aspects share a label, or a run is held twice — by one aspect or by two.
+        :raises ValueError: Two aspects share a label or would print alike, or a run is held twice — by one aspect or
+            by two.
         """
         labels = [aspect.label for aspect in self.aspects]
         if repeated := sorted({label for label in labels if labels.count(label) > 1}):
             raise ValueError(
                 f"aspect label(s) {', '.join(map(repr, repeated))} name more than one aspect; label each once"
+            )
+        # What a page prints for each aspect: its short name, else its label. Two aspects printed alike could not be
+        # told apart in a table, whichever of the two each one prints.
+        printed = [aspect.short_name or aspect.label for aspect in self.aspects]
+        if alike := sorted({name for name in printed if printed.count(name) > 1}):
+            raise ValueError(
+                f"aspect name(s) {', '.join(map(repr, alike))} would print for more than one aspect (a short name is "
+                "printed in place of its label); give each aspect a short name no other aspect prints"
             )
         holder: dict[str, str] = {}
         for aspect in self.aspects:
