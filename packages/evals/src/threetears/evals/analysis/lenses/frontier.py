@@ -63,6 +63,7 @@ from threetears.evals.kernel.scoring import (
     result_composite,
 )
 from threetears.evals.analysis.completeness import completeness_disclosure
+from threetears.evals.analysis.depth import Depth, common_depth, depth_of, pass_hat_k_over
 from threetears.evals.analysis.reporting import (
     place_results,
     served_reading,
@@ -525,6 +526,23 @@ class FrontierPoint(EvalBaseModel):
     #: Why ``pass_hat_k`` is None when the reason is that no attempt carried a pass criterion: the point has
     #: no pass^k, not one of 0, and so no cost per acceptable outcome either. None otherwise.
     pass_hat_k_unmeasured_reason: str | None = None
+    #: The depth this point DELIVERED on its headline cell: its scored cases, its scored attempts, and its attempts
+    #: per case, fewest, median and most. The planned ``k`` says what its runs were commissioned to; this says
+    #: what they measured. ``None`` with no scored attempt.
+    depth: Depth | None = None
+    #: The scored cases ``pass_hat_k`` leaves out for being scored fewer than ``k`` times: counted, never dropped
+    #: unsaid. ``n_pass_cases`` plus this is every scored case.
+    n_cases_short_of_k: int = 0
+    #: This point's pass^k at the subject's common depth (:attr:`SubjectFrontier.common_depth`), over the cases
+    #: every point measured that deep, each case's ``C(c, k) / C(n, k)`` over all its attempts: what this point
+    #: reads in a comparison every point can enter. Disclosed beside ``pass_hat_k``, never ranked on. ``None`` with
+    #: no common depth, or no case every point measured that deep.
+    common_pass_hat_k: float | None = None
+    #: The cases ``common_pass_hat_k`` averages over: the same cases on every point.
+    n_common_cases: int = 0
+    #: This point's scored cases the common-depth reading leaves out: some point measured them fewer times, or not
+    #: at all.
+    n_cases_left_out: int = 0
     #: How this point's pass^k reads against the bar, decided by its interval the way every campaign bar is
     #: (:func:`~threetears.evals.analysis.stats.interval_clears`): ``cleared``, ``missed``, ``undecided`` (the
     #: interval straddles the bar — neither a pass nor a failure), ``no_interval`` (fewer than two cases, not
@@ -773,6 +791,15 @@ class SubjectFrontier(EvalBaseModel):
     #: different quantities, and ranking one contestant on each ranks the depths. A contestant
     #: measured deeper keeps its extra depth as precision (and on its curve), not as a harder bar.
     k: int = 1
+    #: The depth every point can be compared at, decided per case: the shallowest of the points' deepest cases,
+    #: a case counting there only where every point measured it that deep (:func:`~threetears.evals.analysis.depth.
+    #: common_depth`). A deeper point is read there over all its attempts (``FrontierPoint.common_pass_hat_k``). At
+    #: 1 a comparison is of pass rates, not reliability. ``None`` when no point scored an attempt. Disclosed beside
+    #: ``k``, which the ranking still reads.
+    common_depth: int | None = None
+    #: The variant keys of the points that scored no case ``k`` times: pass^k at ``k`` is unmeasured for each, said
+    #: rather than left to a missing figure.
+    unmeasured_for: list[str] = []
     points: list[FrontierPoint] = []
     verdict: FrontierVerdict | None = None
     n_cleared_bar: int = 0
@@ -936,7 +963,9 @@ def _frontier_point(
     unit_estimates: list[float] = []
     unit_attempts = 0
     pass_by_case: dict[str, list[float]] = {}
+    scored: dict[str, list[bool]] = {}
     for (_, _, _, test_case_id), case_attempts in attempts.items():
+        scored.setdefault(test_case_id, []).extend(case_attempts)
         estimate = case_pass_hat_k(case_attempts, k)
         if estimate is None:
             continue
@@ -1059,6 +1088,7 @@ def _frontier_point(
         pass_hat_k=_case_means((case, value) for case, values in pass_by_case.items() for value in values),
         production_replicating_cost=_case_means(priced),
         mean_total_ms=_case_means(timed),
+        scored=scored,
     )
     point = FrontierPoint(
         cassette_mode_disclosure=cassette_mode_disclosure(contributing_modes),
@@ -1083,6 +1113,8 @@ def _frontier_point(
         pass_hat_k_ci_high=None if pass_interval is None else pass_interval[1],
         n_pass_no_criterion=pooled["n_no_criterion_excluded"],
         pass_hat_k_unmeasured_reason=pooled["pass_hat_k_unmeasured_reason"],
+        depth=depth_of(len(tries) for tries in scored.values()),
+        n_cases_short_of_k=pooled["n_cases_short_of_k"],
         mean_composite=mean_composite,
         composite_sem=composite_sem,
         composite_basis=pooled_composite_basis(results) if mean_composite is not None else None,
@@ -1360,6 +1392,29 @@ class _ContestantCases(NamedTuple):
     pass_hat_k: dict[str, Fraction]
     production_replicating_cost: dict[str, Fraction]
     mean_total_ms: dict[str, Fraction]
+    #: The headline cell's scored attempts per test case, every cell unit of one case together: what the common
+    #: depth is decided over.
+    scored: dict[str, list[bool]]
+
+
+def _place_common_depth(points: Sequence[FrontierPoint], cases: Sequence[_ContestantCases]) -> int | None:
+    """Read every point at the subject's common depth (:func:`~threetears.evals.analysis.depth.common_depth`): each
+    point's pass^k there over the cases every point measured that deep, and what it leaves out. Nothing ranked reads
+    it; it is the comparison every point can enter, stated beside the headline.
+
+    :return: The common depth; None when no point scored an attempt.
+    """
+    keyed = {str(index): contestant.scored for index, contestant in enumerate(cases)}
+    common = common_depth(keyed)
+    if common.k is None:
+        return None
+    for index, point in enumerate(points):
+        if not cases[index].scored:
+            continue
+        point.common_pass_hat_k = pass_hat_k_over(cases[index].scored, common.cases, common.k)
+        point.n_common_cases = len(common.cases)
+        point.n_cases_left_out = common.left_out.get(str(index), 0)
+    return common.k
 
 
 #: The domination axes, each a :class:`FrontierPoint` headline with its :class:`_ContestantCases` field of
@@ -1978,6 +2033,7 @@ def compute_frontier(
                 if point.variant_key == earlier_control.variant_key:
                     point.earlier_control = earlier_control_mark(earlier_control)
         _decide_dominance(points, point_cases)
+        common = _place_common_depth(points, point_cases)
         boundary_dimensions, boundary_pillar = _decide_boundary_pillar(
             points,
             [members for _, _, members in built],
@@ -2068,6 +2124,12 @@ def compute_frontier(
                 subject_id=resolved,
                 subject_label=subject_labels.get(resolved, ""),
                 k=subject_k,
+                common_depth=common,
+                unmeasured_for=[
+                    point.variant_key
+                    for point in points
+                    if point.depth is not None and point.depth.repeats_max < subject_k
+                ],
                 points=points,
                 verdict=verdict,
                 n_cleared_bar=n_cleared_bar,

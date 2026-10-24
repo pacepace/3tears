@@ -40,6 +40,7 @@ from threetears.evals.analysis.cells import (
     SubjectKeyInstability,
 )
 from threetears.evals.analysis.aspects import AspectDeclaration
+from threetears.evals.analysis.depth import Depth
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.remainder import RemainderState, remainder_state
 from threetears.evals.analysis.reporting import served_model_state
@@ -1896,6 +1897,28 @@ class FloorContrast(EvalDocumentModel):
             "what a floor's interval, and an aspect reading's, is computed from."
         )
     )
+    case_trials: tuple[list[int], list[int]] | None = Field(
+        default=None,
+        description=(
+            "The control's and the arm's usable trials per case, aligned with `case_values`: each case's depth, "
+            "which its share weighs equally whatever it is. Carried on the overall pass rate; None on cost."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _trials_line_up(self) -> FloorContrast:
+        """Refuse trials per case that do not line up with the shares they sit beside.
+
+        :raises ValueError: A side's trials and values differ in length, or a case has no usable trial.
+        """
+        if self.case_trials is None:
+            return self
+        values, trials = self.case_values, self.case_trials
+        if (len(trials[0]), len(trials[1])) != (len(values[0]), len(values[1])):
+            raise ValueError("case_trials must line up with case_values, case for case on each side")
+        if any(count < 1 for side in trials for count in side):
+            raise ValueError("a case carried in case_trials has at least one usable trial")
+        return self
 
 
 class MultipleComparisons(EvalDocumentModel):
@@ -2385,6 +2408,13 @@ class ArmScoreboard(EvalDocumentModel):
         default=None,
         description="The candidate's spend per trial that took a turn — what the model costs per reply; None unmeasured.",
     )
+    depth: Depth | None = Field(
+        default=None,
+        description=(
+            "How deep the arm was measured over every rig: its usable cases and trials, and its usable trials per "
+            "case, fewest, median and most. None with no usable trial."
+        ),
+    )
 
     @model_validator(mode="after")
     def _the_census_adds_up(self) -> ArmScoreboard:
@@ -2484,8 +2514,12 @@ class AnalysisContextBundle(EvalDocumentModel):
     # own; a frontier point's pass^k reads its headline cell alone and lists every cell with its own reading and
     # reason (`pass_hat_k_cells`), so pass^k and its curve move over unchanged runs; a comparison set's case-set fingerprint digests the run's frozen case ids
     # and is never None.
+    # 63: depth is stated, nothing read changes: each arm's `scoreboard[].depth` (usable cases, trials, and trials per
+    # case fewest, median and most), each overall pass-rate floor contrast's `case_trials` beside its shares, and each
+    # frontier point's delivered `depth`, `n_cases_short_of_k`, common-depth reading (`common_pass_hat_k`,
+    # `n_common_cases`, `n_cases_left_out`) and each subject's `common_depth` and `unmeasured_for`.
     schema_version: int = Field(
-        default=62, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=63, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---

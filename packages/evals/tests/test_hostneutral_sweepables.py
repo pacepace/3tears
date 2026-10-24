@@ -258,6 +258,20 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
             "simulator_sent_settings",
         },
     ),
+    # 63/13: each arm's depth is stated (the scoreboard, the pass-rate floor contrasts' trials per case, each frontier
+    # point's delivered depth and its subject's common depth). A shape-only bump: the apparatus set and the cell model
+    # hold.
+    (
+        (63, 13),
+        _CORE_V24
+        | {
+            "judge_request_settings",
+            "simulator_request_settings",
+            "judge_temperature",
+            "judge_sent_settings",
+            "simulator_sent_settings",
+        },
+    ),
 )
 
 

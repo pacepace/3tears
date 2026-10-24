@@ -516,13 +516,17 @@ def _pass_hat_k_entry(
     curve = _pass_hat_k_curve(attempts_by_case.values())
     headline = pass_hat_k_at(curve, k)
     scored = any(attempts_by_case.values())
+    n_test_cases = sum(1 for attempts in attempts_by_case.values() if attempts)
     return {
         "pass_hat_k": headline["pass_hat_k"],
         "k": k,
         "n_cases_at_k": headline["n_cases"],
+        # The scored cases the headline leaves out for being measured fewer than k times: counted, so a shallow case
+        # is never dropped unsaid.
+        "n_cases_short_of_k": n_test_cases - headline["n_cases"],
         "pass_hat_k_curve": curve,
         # Counts stay counts: zero scored cases is a true zero, and the rate beside it is None.
-        "n_test_cases": sum(1 for attempts in attempts_by_case.values() if attempts),
+        "n_test_cases": n_test_cases,
         # Iterations left out because the judge could not tell on a rubric dim — the one exclusion
         # that is not a fault, so it is counted on its own rather than vanishing.
         "n_cannot_tell_excluded": n_cannot_tell,
@@ -570,7 +574,7 @@ def compute_pass_hat_k(
         ``k_iteration`` attempted — the run's planned k on a run that finished its matrix.
     :ptype k: int | None
     :return: ``{(model, eval_run_id): {"pass_hat_k": float | None, "k": int, "n_cases_at_k": int,
-        "pass_hat_k_curve": [{"k", "pass_hat_k", "n_cases"}, ...], "n_test_cases": int,
+        "n_cases_short_of_k": int, "pass_hat_k_curve": [{"k", "pass_hat_k", "n_cases"}, ...], "n_test_cases": int,
         "n_cannot_tell_excluded": int, "n_no_criterion_excluded": int,
         "pass_hat_k_unmeasured_reason": str | None}}``.
 
@@ -580,7 +584,8 @@ def compute_pass_hat_k(
 
         ``pass_hat_k`` is the curve's value at ``k`` and ``n_cases_at_k`` the cases it averages:
         ``None`` and 0 when no case was scored that deep — nothing was measured there, which is
-        not a pass rate of zero. The curve runs from 1 to the deepest scored case and is empty
+        not a pass rate of zero. ``n_cases_short_of_k`` counts the scored cases left out for being
+        measured fewer than ``k`` times, so ``n_cases_at_k + n_cases_short_of_k == n_test_cases``. The curve runs from 1 to the deepest scored case and is empty
         when nothing was scored. ``n_test_cases`` counts the cases with at least one scored
         attempt. A ``(model, run)`` whose every result was excluded still appears, with zero
         cases, rather than vanishing.

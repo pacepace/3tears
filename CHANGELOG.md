@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: each arm's depth is stated beside every reading, and a comparison of pass^k names the depth every arm reached
+
+**Added:** Runs pooled forward leave arms measured to different depths, across arms and across the cases of one arm,
+and nothing said so. Every arm's scoreboard, every pass-rate reading (both arms) and every frontier point now carry a
+`Depth`: its cases, trials and repeats per case, fewest, median and most. A frontier subject names its common depth,
+the deepest every arm reached, counted per case (a case counts only where every arm measured it that deep), and reads
+each point there over all its runs (`C(c, k) / C(n, k)`, exact, no model); a depth an arm never reached is
+`unmeasured_for` it, and the pass^k row counts the cases short of `k`. A pass-rate reading's `precision` states each
+side's own half-width, which side limits the interval, and the share of the difference's variance that lies between
+cases, which extra repeats cannot lower. Nothing read changes: the frontier still ranks at the planned `k`, and every
+interval, change and count is as it was. The bundle shape moves from 62 to 63. See `packages/evals/MIGRATIONS.toml`.
+
 ### evals: runs that record their template revision and served model pool across case sets and an identity bump; a run kept out of a pool is named (#919)
 
 **Changed:** `IDENTITY_VERSION` 25: the case set leaves the context key. `ContextComponents.case_basis` digests the
