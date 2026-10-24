@@ -486,6 +486,9 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # background-work record and payload without naming either, so a host noun arriving here would
     # be one host's tool read by every host's run loop.
     "run/runner.py",
+    # Taking a run, a sweep or a launch up again: a holding, an epoch, a cell done or run again, a drift between two
+    # launches of one run. A host noun here would be one host's restart story written into every host's resume.
+    "run/resume.py",
     # The runner's completed-cell assembly, called for a cell a host witnessed rather than ran. Born
     # host-neutral: a host noun here would be one host's session shape written into every host's capture.
     "run/witnessed.py",

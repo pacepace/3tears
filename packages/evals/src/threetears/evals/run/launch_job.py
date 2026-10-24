@@ -141,7 +141,6 @@ def launch_job_work(
     :return: The work; its record is the launch, its id the launch group's.
     :rtype: JobWork[EvalLaunch]
     """
-    manager = host.job_manager
     record = EvalLaunch(
         id=admitted.group.id,
         scope_id=scope_id,
@@ -152,11 +151,46 @@ def launch_job_work(
         n_variations=n_variations,
         arm_schedule=arm_schedule,
     )
+    return _launch_work(host, admitted, record)
+
+
+def resumed_launch_work(
+    host: LaunchHost, admitted: AdmittedLaunch, record: EvalLaunch, *, epoch: int, etag: str | None
+) -> JobWork[EvalLaunch]:
+    """A launch taken up again as work: its runs taken up in one group under its id, started and waited for.
+
+    The work is a launch's (:func:`launch_job_work`), over the launch's own record reopened: it starts the group
+    ``admitted`` holds, waits for every run the launch names — those that had ended included, which it reads as they
+    ended — and ends as a launch ends.
+
+    :param host: The launching host.
+    :ptype host: LaunchHost
+    :param admitted: The take-up's group, admitted under the launch's id
+        (:func:`~threetears.evals.run.resume.resume_launch`).
+    :ptype admitted: AdmittedLaunch
+    :param record: The launch's record, reopened: ``running``, its ending cleared.
+    :ptype record: EvalLaunch
+    :param epoch: The lease epoch it is taken up under.
+    :ptype epoch: int
+    :param etag: The token its stored record was read with; its reopen is written conditionally on it.
+    :ptype etag: str | None
+    :return: The work.
+    :rtype: JobWork[EvalLaunch]
+    """
+    return _launch_work(host, admitted, record, epoch=epoch, etag=etag)
+
+
+def _launch_work(
+    host: LaunchHost, admitted: AdmittedLaunch, record: EvalLaunch, *, epoch: int = 0, etag: str | None = None
+) -> JobWork[EvalLaunch]:
+    """The work every launch's job runs: start the admitted group, record its runs, wait for every one, and end."""
+    manager, scope_id = host.job_manager, record.scope_id
 
     async def launch(recorder: JobRecorder[EvalLaunch]) -> EvalLaunch:
         async with host.job_timeout_factory(LAUNCH_PREPARATION_BUDGET_S):
             runs = await admitted.start()
-        run_ids = [run.id for run in runs]
+        # A launch taken up again names its runs already, in arm order; those it took up are among them.
+        run_ids = list(dict.fromkeys([*recorder.record.run_ids, *(run.id for run in runs)]))
         try:
             await recorder.save(recorder.record.model_copy(update={"run_ids": run_ids}))
             await manager.wait_for(run_ids)
@@ -175,7 +209,22 @@ def launch_job_work(
         return end_record(recorder.record, "completed")
 
     # No budget over the whole: the preparation bounds itself above, and each run its own wait (see the module).
-    return JobWork(kind=LAUNCH_JOB, record=record, run=launch, budget_s=None, discard=admitted.discard)
+    return JobWork(
+        kind=LAUNCH_JOB,
+        record=record,
+        run=launch,
+        budget_s=None,
+        discard=admitted.discard,
+        epoch=epoch,
+        etag=etag,
+    )
 
 
-__all__ = ["LAUNCH_CANCEL_REASON", "LAUNCH_JOB", "LAUNCH_PREPARATION_BUDGET_S", "EvalLaunch", "launch_job_work"]
+__all__ = [
+    "LAUNCH_CANCEL_REASON",
+    "LAUNCH_JOB",
+    "LAUNCH_PREPARATION_BUDGET_S",
+    "EvalLaunch",
+    "launch_job_work",
+    "resumed_launch_work",
+]

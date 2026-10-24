@@ -794,11 +794,11 @@ class CampaignArm(EvalDocumentModel, CoreShapeModel):
     named_at: str | None = Field(
         default=None,
         description=(
-            "When the arm was addressed from its run (ISO-8601). A control named after an aspect's first result dates "
-            "that aspect's question no earlier than the naming, which its page discloses as set after the runs: what "
-            "its comparisons are read against was chosen once the evidence existed. "
-            "Named after its runs were launched and before any result landed, it was named before anything was seen. "
-            "None = not recorded (an arm upgraded from a campaign stored before arms existed)."
+            "When the arm was addressed from its run (ISO-8601). A control named after an aspect's first result is "
+            "disclosed on that aspect's pages as a criterion set after its readings were visible: what its comparisons "
+            "are read against was chosen once the evidence existed. Named after its runs were launched and before any "
+            "result landed, it was named before anything was seen. None = not recorded (an arm upgraded from a "
+            "campaign stored before arms existed), which the pages say."
         ),
     )
 
@@ -875,7 +875,8 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
 
     A campaign asks one question of its arms, and an aspect is where that question is measured: one behavior's
     template, the runs gathered on it, and the design they were gathered under. Each aspect is read on its own
-    (shown better, shown worse or unclear against the control) and the campaign's recommendation reads them all.
+    (shown better, shown worse, no worse than the margin or unclear against the control) and the campaign's
+    recommendation reads them all.
     """
 
     label: str = Field(
@@ -919,19 +920,19 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
     asked_at: str | None = Field(
         default=None,
         description=(
-            "When the question this aspect is asked was asked in full (ISO-8601): its pre-registration time, which "
-            "the aspect's pages disclose where it is later than its first run, without changing any reading. An "
-            "adopted aspect keeps its source's, so adopting it never re-dates it. None = no time recorded, disclosed "
-            "as possibly set after the runs."
+            "When this aspect was put to the campaign's question (ISO-8601), and so when its bars, and a margin or "
+            "floor declared with it, were set: its pre-registration time. Each such criterion is disclosed on the "
+            "aspect's pages where it is later than the aspect's first stored result, without changing any reading. "
+            "An adopted aspect keeps its source's, so adopting it never re-dates it. None = no time recorded, which "
+            "the pages say."
         ),
     )
     margin_declared_at: str | None = Field(
         default=None,
         description=(
             "When `margin` was declared (ISO-8601), where that was after `asked_at`: a margin added when the aspect "
-            "was adopted is dated then, and reads as declared after the evidence where that is later than the "
-            "aspect's first result. "
-            "None = declared with the aspect's question."
+            "was adopted is dated then, and is disclosed as set after its readings were visible where that is later "
+            "than the aspect's first stored result. None = declared with the aspect (`asked_at`)."
         ),
     )
 
@@ -970,10 +971,10 @@ class Floor(EvalDocumentModel, CoreShapeModel):
     declared_at: str | None = Field(
         default=None,
         description=(
-            "When this floor was declared (ISO-8601), where that was after its aspect's question was asked: a floor "
-            "added when the aspect was adopted is dated then, and reads as declared after the evidence where that is "
-            "later than the aspect's first result, while the aspect's own readings keep their time. None = declared "
-            "with the aspect's question."
+            "When this floor was declared (ISO-8601), where that was after its aspect was put to the question: a "
+            "floor added when the aspect was adopted is dated then, and is disclosed as set after its readings were "
+            "visible where that is later than the aspect's first stored result. None = declared with the aspect "
+            "(`asked_at`)."
         ),
     )
 

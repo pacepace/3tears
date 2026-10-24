@@ -831,7 +831,7 @@ class ScoreRecord(EvalBaseModel):
 
     **The sentence above is an obligation, not a description of every surface that
     reads one.** The lenses that gate are ``frontier`` and ``history``, which group
-    through :func:`_contestant_key` and carry the version in the key — but neither of
+    through :func:`contestant_key` and carry the version in the key — but neither of
     those reads a ``ScoreRecord`` at all. The surface that reads this row is ``pivot``,
     whose axis set is deliberately open: ``_axis_value`` reads any declared coordinate by
     name, so ``row_factor="variant_key"`` groups the raw digest. The pivot does not gate

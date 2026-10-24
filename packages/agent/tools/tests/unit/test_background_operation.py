@@ -437,9 +437,11 @@ async def test_the_request_tool_records_a_request_and_starts_the_operation() -> 
     second = await tool.run()
 
     assert requests == ["asked", "asked"], "a request was not recorded"
-    assert first.success and first.metadata == {"started": True}
-    # a request while the operation runs is not refused: the run in progress takes it
-    assert second.success and second.metadata == {"started": False}
+    assert first.success and first.metadata == {"started": True, "run_id": operation.run_id}
+    # a request while the operation runs is not refused: the run that follows the one in progress takes it
+    assert second.success and second.metadata is not None
+    assert second.metadata["started"] is False
+    assert second.metadata["run_id"] not in (None, operation.run_id)
     assert "after the run in progress" in second.content
     body.release.set()
     await operation.wait()
@@ -487,7 +489,8 @@ async def test_a_request_made_after_the_drains_last_check_still_runs() -> None:
     finish.set()
     await operation.wait()
 
-    assert late.success and late.metadata == {"started": False}
+    assert late.success and late.metadata is not None and late.metadata["started"] is False
+    assert operation.last is not None and late.metadata["run_id"] == operation.last.run_id, "the run that took it"
     assert wanted == 0, "a request was recorded and no run took it"
     assert taken == [1, 1]
 
@@ -554,6 +557,7 @@ async def test_a_replica_that_ran_nothing_reports_the_run_another_replica_finish
         "finished_at": ran.last.finished_at.isoformat(),
         "result": {"rows": 3},
         "error": None,
+        "run_id": ran.last.run_id,
         "replica": "replica-a",
         "other_replica": True,
     }
@@ -709,6 +713,7 @@ async def test_beside_a_replica_that_writes_no_record_a_replica_reports_its_own_
         "finished_at": older.last.finished_at.isoformat(),
         "result": {"rows": 3},
         "error": None,
+        "run_id": older.last.run_id,
     }
     assert "another replica" not in old_answer.content
 
@@ -859,7 +864,7 @@ async def test_an_operation_that_shares_nothing_reports_across_replicas_exactly_
     across = await operation.status_across_replicas()
 
     assert across == operation.status()
-    assert set(across["last"]) == {"started_at", "finished_at", "result", "error"}
+    assert set(across["last"]) == {"started_at", "finished_at", "result", "error", "run_id"}
     answer = await status.run()
     assert answer.metadata == across
     assert answer.content == status.answer(operation).content
@@ -1319,3 +1324,89 @@ async def test_progress_reported_with_no_run_in_progress_here_is_not_shown_as_a_
     assert progress.reported() is None
     body.release.set()
     await operation.wait()
+
+
+# -- each run's id: a caller waits for exactly the run that took its call ---------------------------
+
+
+async def test_a_waiter_tells_its_own_run_from_another_replicas_that_ended_later() -> None:
+    """two replicas and no shared record: the status a caller reads may be the other replica's."""
+    calls: list[str] = []
+
+    async def request() -> None:
+        calls.append("asked")
+
+    mine_body, theirs_body = _gate(), _gate()
+    mine = BackgroundOperation("refresh", mine_body, request=request)
+    theirs = BackgroundOperation("refresh", theirs_body, request=request)
+    asked = RequestOperationTool(name="enr.reload", description="Reload.", operation=lambda: mine, status_tool="s")
+    status_mine = OperationStatusTool(name="s", description="Report.", operation=lambda: mine)
+    status_theirs = OperationStatusTool(name="s", description="Report.", operation=lambda: theirs)
+
+    # the other replica's run began first; the caller's request starts a run here
+    assert theirs.start()
+    answer = await asked.run()
+    assert answer.metadata is not None and answer.metadata["started"] is True
+    run_id = answer.metadata["run_id"]
+    assert isinstance(run_id, str) and run_id == mine.run_id
+
+    # the other replica's run ends while the caller's still runs, and that replica answers the status
+    theirs_body.release.set()
+    await theirs.wait()
+    other = (await status_theirs.run()).metadata
+    assert other is not None and other["state"] == "succeeded"
+    assert other["last"]["run_id"] != run_id and run_id not in other["ended_run_ids"], "not the caller's run"
+
+    # this replica says the caller's run is the one in progress, then that it ended
+    running = (await status_mine.run()).metadata
+    assert running is not None and running["run_id"] == run_id and running["last"] is None
+    mine_body.release.set()
+    await mine.wait()
+    ended = (await status_mine.run()).metadata
+    assert ended is not None and ended["run_id"] is None
+    assert ended["last"]["run_id"] == run_id and ended["ended_run_ids"] == [run_id]
+
+
+async def test_the_start_tool_answers_the_id_of_the_run_it_started() -> None:
+    body = _gate()
+    operation = BackgroundOperation("load", body)
+    start, status = _tools(operation)
+
+    started = await start.run()
+    assert started.metadata == {"started": True, "run_id": operation.run_id}
+    body.release.set()
+    await operation.wait()
+    assert operation.last is not None and operation.last.run_id == started.metadata["run_id"]
+    assert (await status.run()).metadata["last"]["run_id"] == started.metadata["run_id"]  # type: ignore[index]
+
+
+async def test_the_shared_record_carries_the_run_id_and_one_written_without_it_reads_as_none() -> None:
+    client = FakeNatsClient()
+    body = _gate()
+    operation, status, shared = _replica(client, "replica-a", body)
+    _, other_status, _ = _replica(client, "replica-b", _gate())
+
+    await _finish(operation, body)
+    assert operation.last is not None and operation.last.run_id is not None
+    recorded = await shared.read()
+    assert recorded is not None and recorded.outcome.run_id == operation.last.run_id
+    elsewhere = (await other_status.run()).metadata
+    assert elsewhere is not None and elsewhere["last"]["run_id"] == operation.last.run_id
+
+    # a record written by code that gave runs no ids
+    await (await _bucket(client)).put(
+        key=_OUTCOME_KEY,
+        value=json.dumps(
+            {
+                "replica": "replica-c",
+                "started_at": "2099-01-01T00:00:00+00:00",
+                "finished_at": "2099-01-01T00:00:05+00:00",
+                "result": {"rows": 1},
+                "error": None,
+            }
+        ).encode(),
+    )
+    older = await shared.read()
+    assert older is not None and older.replica == "replica-c" and older.outcome.run_id is None
+    reported = (await other_status.run()).metadata
+    assert reported is not None and reported["last"]["replica"] == "replica-c" and reported["last"]["run_id"] is None

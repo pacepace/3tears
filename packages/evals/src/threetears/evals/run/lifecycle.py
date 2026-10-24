@@ -1,5 +1,9 @@
 """The run lifecycle: reading a run, cancelling it, reclaiming abandoned ones, re-judging a result, and recording completeness.
 
+A run reclaimed here is settled, never continued: it reads lost, and its lease is never revived. The one way back is
+an explicit resume under its lease's next epoch (:func:`~threetears.evals.run.resume_run`); what a resume would take
+up is listed by :func:`~threetears.evals.run.resumable_jobs`, which a host offers to an operator at boot.
+
 What happens to a run after its launch, over the run's own storage. Each operation is a function
 whose dependencies are parameters — the store, the job manager that can see live tasks, and, for a
 re-judge, the judge client factory and the subject the judge reads — the shape the curation family
@@ -27,7 +31,7 @@ from threetears.evals.kernel.result_condition import ResultOutcome, classify_res
 from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import LeaseStore, NonTerminalRunScan
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
-from threetears.evals.kernel.job_leases import RUN_JOB, request_job_cancel, settle_job_record
+from threetears.evals.kernel.job_leases import RUN_JOB, JobLeases, request_job_cancel, settle_job_record
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.run.rejudge import apply_rejudge, failed_judge_dims, reproducible_judge_inputs
 from threetears.evals.run.run_document import fault_entry, record_run_faults, update_eval_run
@@ -219,6 +223,11 @@ def sweep_abandoned_runs(storage: ReclaimStore, scopes: Iterable[str]) -> Abando
     storage-unavailable error from this call, logs at ERROR and continues, since a database that cannot be reached
     at boot must not take the admin surface down with it. This function refuses to lie about what it swept; its
     caller decides whether an unswept database is worth refusing to start over.
+
+    **It settles a run; it never continues one.** A host offers that at boot, after this sweep: it lists what a
+    resume would take up (:func:`~threetears.evals.run.resumable_jobs`, the ``jobs_resumable`` action, over the
+    same scopes) and offers each to an operator, and a run is resumed only when someone asks
+    (:func:`~threetears.evals.run.resume_run`, the ``job_resume`` action). Nothing resumes on its own.
 
     A row that cannot be *reconstructed* is a third case, and it is not a storage failure: the database answered,
     and the answer is a document this build's model cannot express. Tolerated per row in two places rather than
@@ -522,6 +531,7 @@ def record_completeness(
     cells: Sequence[CellSummary],
     *,
     metered: MeteredCallTally | None = None,
+    leases: JobLeases | None = None,
 ) -> None:
     """Stamp how much of its matrix a run's loop delivered, and what bounded it.
 
@@ -575,6 +585,11 @@ def record_completeness(
         tally belongs to the run's ledger, not to whichever document
         version this write lands on.
     :ptype metered: MeteredCallTally | None
+    :param leases: The leases of the process running the run, so the record is the holder's own write
+        (:func:`update_eval_run`): declined, and nothing written, once the run's lease has lapsed or passed to another
+        holding of the run — another process, or a later epoch, which counts the cells itself. ``None`` for a run held
+        under no lease.
+    :ptype leases: JobLeases | None
     """
     record: RunCompleteness | None = None
 
@@ -600,7 +615,7 @@ def record_completeness(
         return data
 
     try:
-        outcome = update_eval_run(storage, run_id, scope_id, _stamp)
+        outcome = update_eval_run(storage, run_id, scope_id, _stamp, leases=leases)
     # prawduct:ok-broad-except — any storage fault here would mislabel a run that succeeded
     except Exception as broke:
         contain(
@@ -620,8 +635,8 @@ def record_completeness(
         return
     if outcome == "declined":
         log.warning(
-            "eval.completeness run=%s scope=%s not recorded by its loop: the run was written lost, and its "
-            "completeness is the one reconstructed then",
+            "eval.completeness run=%s scope=%s not recorded by its loop: the run was written lost, or passed to "
+            "another holding of it, and its completeness is the one recorded there",
             run_id,
             scope_id,
         )

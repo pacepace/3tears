@@ -496,8 +496,8 @@ def test_the_resolver_refuses_a_campaign_the_scope_does_not_hold() -> None:
 def _controlled() -> tuple[Any, Report]:
     """The toy campaign with its control declared beside its question, before the runs.
 
-    Not named afterwards through ``set_campaign_control``: a control chosen once the runs exist is dated then, which
-    dates the question it is read against after the runs, and the page says so (``test_campaign_aspects.py``).
+    Not named afterwards through ``set_campaign_control``: a control chosen once the results exist is dated then,
+    and the page names it as set after its readings were visible (``test_campaign_aspects.py``).
     """
     host, campaign = toy_campaign_host()
     named = set_campaign_control(

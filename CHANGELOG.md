@@ -6,6 +6,199 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.77.0 -- 2026-10-23
+
+### mcp: a host app serves MCP on its own app, with tool metadata, structured tool errors and a live tool set
+
+**Added:** `McpTool` and `register_tool` take optional `output_schema`, `title` and `annotations`
+(`McpToolAnnotations(read_only_hint=, destructive_hint=, idempotent_hint=, open_world_hint=)`), and
+`tools/list` emits `outputSchema`, `title` and `annotations` with only the hints that are set. An output
+schema's `type` is `"object"`, checked at construction. While a tool declares one, a successful call
+whose `structuredContent` is missing or doesn't validate answers `OUTPUT_VALIDATION_ERROR` in place of
+the result, and error results are exempt. The check sees the JSON the client receives, so a UUID or a
+datetime is a string. The handler has already run by then, so the refusal's ERROR log carries the
+refused `structuredContent`, cut to 4000 characters.
+
+`tool_error(error)` builds a tool-execution error for a handler to return: `isError: true`, with the
+object as `structuredContent` and as serialized JSON in a text block. It is passed through unlogged and
+isn't mapped to a framework code.
+
+`McpServer(tool_provider=)` is an alternative to `registry=`, which is now optional: exactly one of
+the two is given. The provider is called on every `tools/list` and `tools/call`, so a tool set that
+changes at runtime is served as it stands. A provider that raises, or that answers two tools with one
+name, makes a call answer `TOOLS_UNAVAILABLE` and makes `tools/list` fail with a JSON-RPC error whose
+message is "the server's tool set could not be read". The provider's own error is logged, not sent.
+
+`McpServer.build_http_transport()` returns an `McpHttpTransport` (`routes`, `endpoint`, `lifespan()`)
+for a host that serves MCP inside its own Starlette app, where a mounted sub-app's lifespan never runs.
+A request that arrives before the lifespan is entered gets a 503 naming it, instead of the SDK's
+"Task group is not initialized". `build_http_app()` is now built on the same transport.
+
+**Changed:** on mcp 1.x, `McpServer` registers its `tools/call` handler directly instead of through
+the SDK's `call_tool` decorator. The decorator validated arguments against a cache of an earlier
+`tools/list`, which goes stale under a live provider, and on a cache miss it called the provider outside
+dispatch, so a provider failure reached the client as the exception's own text. On both majors the
+input-validation refusal reads as before.
+
+**Changed on mcp 1.x:** an exception that escapes `McpServer`'s dispatch now reaches the client as a
+JSON-RPC error, as it already did on 2.x. The decorator turned it into an `isError` result. Dispatch
+answers every refusal and handler failure itself, so only a bug escapes it, such as an
+`IdentityProvider` raising something other than `RuntimeError`. A 1.x client that read that `isError`
+result now gets a protocol error instead.
+
+### evals: runs that record their template revision and served model pool across case sets and an identity bump; a run kept out of a pool is named (#919)
+
+**Changed:** `IDENTITY_VERSION` 25: the case set leaves the context key. `ContextComponents.case_basis` digests the
+subject and the template, no longer the frozen `test_case_ids`, so two runs of one variant and context over different
+case sets (a run over more cases, or a hand top-up over the cases another missed) are one pass^k cell: a case's
+attempts pool across them, and pass^k averages over the union of their cases. The cell is the context as it resolves
+at this build's identity version, so a run stamped before the bump that froze its template digest and named its
+served model pools with one after it, by re-derivation; a frontier contestant
+whose run recorded its lever map is placed at this build's version when today's predicate reproduces its key (frontier
+and history alike). The cell also splits on the template revision (the run's frozen `template_digest`, since an edit
+in place keeps the id) and on the model the provider's responses named as answering the candidate's calls
+(`served_model`). A run that froze no digest, or made a candidate call whose response named no model, is a cell of
+its own, named with what it did not record: a silence is never evidence of a match, so only runs that record both
+pool. Every run stored by v0.76.0 or earlier froze no digest, so each stands apart. A run whose candidate made no
+model call recorded that, and pools on its other fields. A candidate requested by a floating alias that the response
+echoes back, or through a client that reports no served model, stands apart too: request a concrete model id, or
+report the served model, for its runs to pool. A point's pass^k,
+interval, bar and verdict read its headline cell alone, chosen in the order `PassHatKCellReading` states; the arm's
+tables, composite, cost and latency still pool every run of the variant under one rig. Across both #919 entries the bundle shape moves from 60, which v0.76.0 shipped, to 62: a stored analysis
+frozen over a shape-60 bundle is listed as needing regeneration (`AnalysisLine.needs_regeneration`), and its report
+is refused until it is generated again; nothing else is dropped.
+
+**Added:** `FrontierPoint.pass_hat_k_cells` (`PassHatKCellReading`) lists every pass^k cell behind a point, the
+headline first, each other one with its own pass^k and its reason (`UnpooledReason`: `changed_context`,
+`no_recorded_template`, `other_template`, `no_recorded_served_model`, `other_served_model` or `no_recorded_context`),
+read off the first field of the kernel's typed cell record (`PassHatKCell`) in which it differs from the headline, or,
+for a run that left part of its cell unrecorded, off what it did not record. A headline that is itself such a run says
+so where other cells are kept out beside it. The frontier text and the report page's run disclosures name each cell,
+and the campaign bundle's writer view (`pass_k_unpooled`, keyed by arm) names them in at most one line per reason,
+after one sentence saying what kept out covers. A run whose stored context can no longer be re-derived is a cell of its own,
+named, instead of failing the read. One case-set comparison over sorted ids, `case_set_fingerprint`, serves comparisons
+and history, and a take-up compares the same sorted ids: one whose launch would run other cases is refused naming
+them, and a reordered set is not.
+A comparison set's case-set fingerprint is never None, and `case_set_unresolved` is gone. See
+`packages/evals/MIGRATIONS.toml`.
+
+### evals: past runs that are still valid count as evidence; a criterion set after its readings is named, data age never (#919)
+
+**Changed:** A campaign that adopts another's aspects over runs which are still valid (`aspects_from`) reads exactly
+as the one that declared them: the writer's input, the page and its confidence wording differ only in ids and dates.
+Criterion-selection risk is disclosed per criterion and only where it is true: the aspect and its control (where a
+question asks it), its margin, bars, guardrails' margins and floors are each read on their
+own time against the first stored result of the aspect's runs, and one set later gets one line, "The margin on billing
+was set on 20 Oct 2026, after its readings were visible.", grouped across aspects; one stored by an older build says
+its time is not recorded. Runs added to an aspect with `campaign_runs_add` whose results predate its criteria name
+those criteria, truly, as set after their readings. No line names the question or when the runs began, and a memo
+sentence discounting a reading for when its runs ran is dropped and listed. Time apart is no confound either: runs
+started in separate launches, or arms run one after another, are no longer flagged, and the lens tools state
+non-overlapping spans as a plain fact. An eval's campaign is dated when its call launched its arms; one filed
+before this release reads as it did unless it declared judged guardrail margins, which it dated at filing. `ReadingScope.question_after_runs` (`QuestionAfterRuns`) is replaced by
+`ReadingScope.late_criteria` (`LateCriterion`); `measurement_window_disclosure` leaves the bundle (the bundle shape is in the entry above);
+page JSON shape 3. The seeded writer prompt changed, so hosts push the new seed. Known gap: an aspect adopted from a
+campaign that asked no question is not named when the adopting campaign first puts it to a question. See
+`packages/evals/MIGRATIONS.toml`.
+
+### evals: a row no worse than the margin says so in the headline table
+
+**Fixed:** A change's `By aspect` row read only `shown better`, `shown worse` or `unclear`, so an aspect whose floor
+held at the margin read `unclear` in the headline beside a `held` floor, and its `To show no worse than the margin`
+row said no more cases were needed. A row neither shown better nor shown worse now reads `no worse than the margin`
+(`within_margin` in the JSON) where the floor's own reading of its pass rate, at 95% and uncorrected, keeps the drop
+within the margin, since the claim it feeds holds only when every asked aspect holds and needs no correction; the
+cases that would settle an unclear row are counted at that same level, so the row's count is its floor's. A floor and
+a row that still part, on the points they read against or on a check's rate the floor also reads, get a line under the
+table saying which. The seeded writer prompt names the new reading, so a host pushes the new seed to its store
+(`eval_prompt_reset`).
+
+### evals: resume an interrupted run, sweep or launch (#918)
+
+**Added:** `job_resume` takes up a run (`run:<id>`) that was lost, cancelled by an operator, or stopped by its budget
+or its provider account, as the same run. Only the cells it has not measured run, in its own order, and it ends as
+an uninterrupted run would have, `completed` with pass^k over its whole case set. A sweep (`sweep:<id>`) or a
+multi-arm launch (`launch:<id>`) resumes as a whole: interleaved arms resume as one group in their original order,
+sequential arms in order, and a sweep's never-launched arms launch from the arguments it now stores. A run its cost
+cap stopped resumes with a `max_cost_usd` above what it has spent, which counts every attempt once; a run the wall
+clock stopped resumes as it is. Its metered-call ceiling counts the calls its stored cells landed, and a run that
+has reached it is refused until the ceiling is raised. An `exhausted` run's account-refused cells run again. A resume
+is refused, naming every difference, when a launch of the run now would measure otherwise, its candidate kind and its
+cells' and turns' deadlines (`cell_timeout_s`, `turn_budget_s`) included. It is never refused for
+host labels or for a template edit that changes nothing measured; both are recorded on the run's new `lifetimes`
+(`RunLifetime`), one entry per process lifetime. `completed` and `failed` runs are never resumed. `jobs_resumable`
+lists what `job_resume` would take up, with spend and cap, for a host to offer at boot. Nothing resumes on its own.
+
+**Changed:** Core schema v15.7, additive: `JobLease.epoch`, `JobLoss.epoch`, `EvalResult.lease_epoch`,
+`superseded_spend_usd`, `metered_calls` and `account_refused`, `EvalRun.lifetimes` and `template_digest`, and on
+`EvalSweep` its launch arguments, `launch_group_id` and `lifetimes`. A run's cell result id is derived from (run, case,
+model, k), so each cell has one row however many processes write it, and readers order results by insertion, never by
+id. Each lease carries an epoch, and a holder writes a cell or the run record only under the epoch it holds: a run's own
+cell through `EvalStorage.save_run_cell`, which refuses a write from a holding that is over, and every other result
+through `save_eval_result`, an upsert by id as before.
+`job_resume` replays the kind's launcher in its call so that drift is refused before any spend, so a launcher must make
+no model request when it rebuilds a stored run. A pod from before epochs, still alive during a rolling deploy, does not
+enforce the fencing.
+
+**Fixed:** A holder fenced or shut down after its run was written lost no longer writes `cancelled` rows into that
+run as its in-flight cells unwind. A lost or superseded holder writes nothing more, and a graceful shutdown no longer
+writes lost over a run whose lease has passed to another holding. See `packages/evals/MIGRATIONS.toml`.
+
+### agent-tools: a caller waits for exactly the run its start or request began
+
+**Added:** each `BackgroundOperation` run has an id, a UUIDv7 string given when it starts:
+`OperationOutcome.run_id`, `BackgroundOperation.run_id` (the run in progress) and
+`BackgroundOperation.request_run()`, which requests as `request()` does and returns `(started, run_id)`, naming
+the run that takes the request (every request made during a run is taken by the one run queued to
+follow it). `StartOperationTool` and `RequestOperationTool` answer `run_id` in their metadata beside `started`.
+`OperationStatusTool` reports `run_id` (of the run in progress), `last.run_id`, and `ended_run_ids`: the ids of the
+last 16 runs that ended on the replica answering, newest first, a run that did nothing included (it is never
+`last`, because the run before it took its request). `SharedOutcome` records carry `run_id` too. A
+`RequestOperationTool` producer with several replicas and no `SharedOutcome` answers the status from whichever
+replica the call reaches, so a caller comparing times could take another replica's run, ended later, for its own;
+it now matches its run by id. A field that is absent or None (a record or a replica on earlier code) means the
+caller falls back to what it did before.
+
+### core: a derived value's peer waits while the peer holds the build lock, and takes over only when the peer lets go
+
+**Fixed:** a pod that lost a derivation's build lock waited a fixed budget (`peer_wait_seconds`: 5 s,
+`VersionedAnswers` 15 s, geo tiles 30 s) and then derived the value itself, whether or not the peer was still
+working. A derivation longer than the budget was computed twice: on cobalt dev (2026-10-23) a 78 s report
+page ran on both tool pods, each freezing in turn. Now the waiter re-reads the durable tier for as long as the
+peer holds the build lock, first after `peer_poll_interval` (0.1 s) and then twice as long each time up to
+`peer_poll_max_interval` (new, 2 s). It logs "waiting for a peer's derivation" at INFO when the wait begins and
+"still waiting for a peer's derivation" every `peer_wait_log_seconds` (new, 30 s) while it lasts. Every
+`peer_retake_seconds` (1 s) it tries the lock; taking it means the peer let go without the value landing, and the waiter derives under it.
+`LeaseBuildLock` holds its lease renewed (`KVLease.hold`, every third of `ttl_seconds`) for the whole build, so
+a held lock is a live builder and a builder that dies hands the lock on within `ttl_seconds`; renewal stops
+past `max_hold_seconds` (new, default 600 s), the lease's rule for a wedged holder.
+
+**Changed:** `DerivedCollection.peer_wait_seconds` is removed (and the overrides on `VersionedAnswers` and
+`threetears.geo`'s `TileCollection`): the wait follows the lock, not a timer. A subclass that set it sets nothing now.
+
+### core: every collection key read is counted by the tier that answered it
+
+**Added:** `threetears.core.collections.tier_reads` (`ReadTier`, `record_tier_read`, `hold_tier_reads_timer`,
+`release_tier_reads_timer`, `tier_reads_total`, the last also from `threetears.core.collections`).
+`tier_reads_total()` returns every key read since the process started, table -> tier (`l1`, `l2`, `l3`) -> reads,
+without starting the counts again, for a pod to serve on request; the once-a-minute line keeps its own counts since its
+last line. A read that found no row counts at the tier that answered it.
+`BaseCollection.ensure`, a subscript read (`collection[key]`) and every key read built on them count each read as
+L1 (this process, an absence marker included), L2 (the shared cache) or L3 (the store), by table. The counters are
+the process's, and one timer, owned by the event loop the process serves on, logs them once a minute at INFO, as
+one line naming each table's reads, only when a read happened: every tool server on the loop holds the timer, and
+the last to stop logs the reads since its last line. This is the measure of whether a pod's reads stay at L1 or keep reaching L2 and
+L3. A reports tool pod on cobalt dev was found reading `namespaces` from L3 on every read, its L1 dropped about
+every 40 s, with nothing to show it but the drops.
+
+### core: a table dropped for a missed or replaced write generation names what the judgement saw
+
+**Added:** when `CollectionRegistry.settle_generation` drops a table, it logs "write generation judged: the table
+is dropped" at INFO with the table, the verdict, the generation read, the registry's recorded mark and the
+advances heard past a gap that are still waiting (`GenerationMarks.pending(table)`, each as
+`incarnation:count (rows/of)`). A drop now says whether an advance was never heard, heard out of order, or was
+this registry's own write left unaccounted.
+
 ## v0.76.0 -- 2026-10-23
 
 **Release order: the hub first.** `l3.truncate`, `l3.tx.copy` and `l3.load_files` are answered by the hub's

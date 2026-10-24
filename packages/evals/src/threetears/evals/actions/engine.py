@@ -21,7 +21,7 @@ from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, SCHEMA_REMEDY
 from threetears.evals.actions import render
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller, ConformanceStage
 from threetears.evals.schema import EvalRunStatus
-from threetears.evals.kernel import ResultOutcome, ValidationFailedError
+from threetears.evals.kernel import EvalStorage, ResultOutcome, ValidationFailedError
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema import KnownOutOfRunPurpose
 from threetears.evals.ops import (
@@ -100,6 +100,8 @@ from threetears.evals.ops import (
     insights_list,
     job_cancel,
     job_poll,
+    job_resume,
+    run_job_id,
     judge_drift_check,
     judge_second,
     judge_second_estimate,
@@ -156,8 +158,10 @@ from threetears.evals.run import (
     JudgeCaseFreezeReport,
     JudgeTemperatureEstimate,
     Regrade,
+    ResumableJobs,
     SecondJudgeEstimate,
     regrade,
+    resumable_jobs,
     run_blocking,
 )
 
@@ -354,6 +358,15 @@ class JobCancelParams(EvalBaseModel):
 
     job_id: JobId
     reason: Reason = None
+
+
+class JobResumeParams(EvalBaseModel):
+    """``job_resume``."""
+
+    job_id: JobId
+    # The launch's own cap, so the name means one thing on the tool: a resume's cap is held to the host's ceiling as a
+    # launch's is.
+    max_cost_usd: Annotated[float | None, LaunchArguments.model_fields["max_cost_usd"]] = None
 
 
 class RunArchiveParams(EvalBaseModel):
@@ -916,6 +929,15 @@ async def _job_poll(host: OpsHost, caller: Caller, params: JobParams) -> JobStat
 
 async def _job_cancel(host: OpsHost, caller: Caller, params: JobCancelParams) -> JobStatus:
     return await job_cancel(host, params.job_id, caller.scope_id, reason=params.reason)
+
+
+async def _job_resume(host: OpsHost, caller: Caller, params: JobResumeParams) -> JobsStarted:
+    return await job_resume(host, params.job_id, caller.scope_id, max_cost_usd=params.max_cost_usd)
+
+
+async def _jobs_resumable(host: OpsHost, caller: Caller, params: NoParams) -> ResumableJobs:
+    eval_host = host.eval_host
+    return await run_blocking(eval_host.blocking_executor, resumable_jobs, eval_host.storage, [caller.scope_id])
 
 
 async def _run_archive(host: OpsHost, caller: Caller, params: RunArchiveParams) -> RunLine:
@@ -1536,6 +1558,37 @@ async def _judge_temperature_path(stage: ConformanceStage) -> Mapping[str, Any]:
     return {"run_id": await stage.finished_run(), "selection": "all", "repeats": 2}
 
 
+def _cancelled_before_its_cells(storage: EvalStorage, run_id: str, scope_id: str) -> None:
+    """Leave a finished run as an operator's cancel before any of its cells landed would have left it.
+
+    A resume needs a run with cells left to run. Interrupting a live run to get one races its cells — a cancel landing
+    after the last of them leaves nothing to resume — so the sample's finished run is written as that cancel leaves a
+    run instead: its rows gone, and its record ``cancelled`` with nothing persisted. Only the host's store is touched.
+    """
+    for row in storage.query_eval_results_by_run(run_id, scope_id):
+        storage.delete_eval_result(row.id, scope_id)
+    run, etag = storage.load_eval_run_with_etag(run_id, scope_id)
+    assert run is not None  # the stage's run finished, so its record is stored
+    cancelled = run.model_copy(
+        update={
+            "status": "cancelled",
+            "cancellation_reason": "the jobs conformance kit cancelled it before its cells ran",
+            "completeness": None,
+            "progress": {},
+        }
+    )
+    storage.save_eval_run(cancelled, if_match=etag)
+
+
+async def _job_resume_path(stage: ConformanceStage) -> Mapping[str, Any]:
+    run_id = await stage.finished_run()
+    eval_host = stage.host.eval_host
+    await run_blocking(
+        eval_host.blocking_executor, _cancelled_before_its_cells, eval_host.storage, run_id, stage.caller.scope_id
+    )
+    return {"job_id": run_job_id(run_id)}
+
+
 # --- the catalogue -----------------------------------------------------------------------------------
 
 #: The help index's groups, in the order a piece of work meets them.
@@ -1708,8 +1761,8 @@ def engine_actions() -> tuple[Action, ...]:
                 "out-of-run cap and are outside every run's cost cap. job_poll on the launch's job names its runs "
                 "once they start (run_ids) and counts them finished; the job ends when every run has, and one "
                 "job_cancel stops them all. Several models are interleaved by default (arm_schedule): every arm runs "
-                "at once, their cases taken in turn under one width, so a provider's bad minute lands on every arm "
-                "alike; each run records the schedule it ran under."
+                "at once, their cases taken in turn under one width, which costs nothing and absorbs a provider's bad "
+                "minute across every arm; each run records the schedule it ran under."
             ),
         ),
         Action(
@@ -1756,6 +1809,55 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_job_cancel,
             render=render.render_job_status,
             example={"job_id": f"run:{run_id}", "reason": "wrong template"},
+        ),
+        Action(
+            name="job_resume",
+            summary="Resume an interrupted run, sweep or launch as itself: lost, cancelled, or stopped by a budget.",
+            workflow=RUN,
+            permission="spend",
+            params=JobResumeParams,
+            result=JobsStarted,
+            handler=_job_resume,
+            happy_path=_job_resume_path,
+            example={"job_id": f"run:{run_id}"},
+            long_running=True,
+            detail=(
+                "Takes a job id as jobs_resumable lists it: 'run:<run id>', 'sweep:<sweep id>' or 'launch:<launch id>'. "
+                "A run continues as itself: only the cells it has not measured run (a cell a cancel cut short runs "
+                "again), in its own order, its spend so far counting toward its cost cap, and it ends completed with "
+                "pass^k over its whole case set. A sweep or a launch continues as a whole: each arm's unfinished run "
+                "continues as itself, each arm of a sweep that never launched is launched as the sweep would have, an "
+                "arm that ended is left alone, and the arm schedule is kept (interleaved arms take their cells in turn "
+                "in their original order). Refused in the call, with nothing spent, when the job completed, failed or "
+                "is still live, and when a launch of any of its runs now would measure otherwise than it did (what "
+                "it froze of its template, a context component, a variant lever, a judge or simulator pin, the "
+                "apparatus): every difference of every arm is named. A deploy that changes only the host's labels, "
+                "and a template edit that changes nothing a run measures, are no difference; the run records each. A run its budget stopped at its cap needs max_cost_usd above what it spent; given for "
+                "a sweep or a launch, it caps every arm. Each resume is recorded as a new lifetime on each run, and on "
+                "a sweep. Nothing is ever resumed without this call."
+            ),
+        ),
+        Action(
+            name="jobs_resumable",
+            summary="List the interrupted runs, sweeps and launches job_resume would take up, with how each ended.",
+            workflow=RUN,
+            permission="read",
+            params=NoParams,
+            result=ResumableJobs,
+            handler=_jobs_resumable,
+            render=render.render_model,
+            example={},
+            detail=(
+                "Each run in the scope that was lost, cancelled by an operator, or stopped by its budget or its "
+                "provider account; never one that completed or failed, or is still live. For each: its job id for "
+                "job_resume, how it ended and why, its cells done and expected, what it has spent and its cost cap, "
+                "and how many process lifetimes it has spanned. A run its budget stopped at its cap carries a note "
+                "naming the max_cost_usd it needs. Each sweep and launch that was lost, cancelled or timed out is "
+                "listed once, under groups, with each arm's state and each run a resume takes up with it; those runs "
+                "are not listed again on their own. Whether a run would still measure as it did is not checked here: "
+                "job_resume checks it before anything is spent. Spends nothing and resumes nothing; a host reads it "
+                "at boot to offer resumes."
+            ),
         ),
         Action(
             name="run_get",

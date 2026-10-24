@@ -1,7 +1,7 @@
 """The ``Report`` — the one page every door into a campaign's report renders, and the evidence it was computed from.
 
 **One page, result first.** A report is an ordered list of blocks in its sections: the first screen (the title — the
-campaign's name —, the question declared quoted, when it was set where that was after the runs, and the subhead under
+campaign's name —, the question declared quoted, each criterion set after the readings it judges, and the subhead under
 it, the arms line, the verdict line, the scoreboard and the caveats under it that change how the verdict is read, in normal weight; every other
 qualification is a step down, in the sections), the floors clause by clause where any is declared, what it
 means (the memo's findings, each a table code built and one sentence, then the contrasts against the control), the
@@ -155,8 +155,8 @@ TextRole = Literal[
 #: Who a disclosure speaks for. ``arms``: the first screen's arms line, each arm named in full once by the version
 #: that answered it, the control marked, and the design (``30 cases × 3 repeats``). ``caveat``: a line under the
 #: scoreboard that changes how the verdict is read, in normal weight: the case floor, an arm's label that its own row
-#: contradicts. ``basis``: the question declared, quoted whole under the title. ``timing``: under it, that the question
-#: was set after the runs, with when each happened, or that it carries no date. ``floor``: on the first
+#: contradicts. ``basis``: the question declared, quoted whole under the title. ``timing``: under it, each criterion
+#: set after the readings it judges were visible, with when, or that its time is not recorded. ``floor``: on the first
 #: screen, a broken floor's warning, the page's first line; in the Decision section, the lines under the floors table
 #: saying a floor warns and never decides, and how the cases that would settle one were counted. ``verdict``: the
 #: verdict line. ``design``, ``charts`` and
@@ -950,8 +950,8 @@ class Report(EvalDocumentModel):
 
 
 #: The shape of a campaign page's JSON (:meth:`CampaignReport.json_document`), raised whenever a reader of the old
-#: shape would misread the new one.
-CAMPAIGN_JSON_SHAPE = 2
+#: shape would misread the new one. 3: each aspect's `question_after_runs` is replaced by `late_criteria`.
+CAMPAIGN_JSON_SHAPE = 3
 
 
 class CampaignAspectFold(EvalDocumentModel):
@@ -1160,8 +1160,8 @@ class CampaignReport(EvalDocumentModel):
     def json_document(self) -> dict[str, object]:
         """The page's machine form, tagged ``kind: campaign`` at shape :data:`CAMPAIGN_JSON_SHAPE`: code's readings,
         the writer's recommendation (its arm's label and variant key, and how sure) where there is a memo, the call,
-        and each aspect's bundle by its fingerprint and shape, with what of its question was set after its runs and
-        when (``question_after_runs``, null where nothing was), since its readings read as asked either way.
+        and each aspect's bundle by its fingerprint and shape, with each criterion set after its readings were visible
+        and when (``late_criteria``, empty where none was), since its readings read the same either way.
 
         Every float in it is served to twelve significant figures (:func:`~threetears.evals.schema.hashing.round_floats`):
         a figure code computed carries bits past that which two Python builds compute differently, so one campaign
@@ -1193,10 +1193,9 @@ class CampaignReport(EvalDocumentModel):
                     "aspect": fold.aspect,
                     "bundle_fingerprint": fold.report.source.bundle_fingerprint,
                     "bundle_schema_version": fold.report.bundle.schema_version,
-                    "question_after_runs": None if late is None else late.to_dict(),
+                    "late_criteria": [late.to_dict() for late in fold.report.bundle.reading_scope.late_criteria],
                 }
                 for fold in self.aspects
-                for late in [fold.report.bundle.reading_scope.question_after_runs]
             ],
         }
         served: dict[str, object] = round_floats(document)

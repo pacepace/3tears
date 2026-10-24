@@ -73,6 +73,7 @@ from threetears.evals.run.authoring import (
 )
 from threetears.evals.run.budget import EvalRunCostCap
 from threetears.evals.run.case_sets import resolve_case_set
+from threetears.evals.run.definition_digests import measured_template_digest
 from threetears.evals.run.ceilings import CeilingRaisedError, refuse_raised_ceiling
 from threetears.evals.kernel.cassettes import CassetteMode
 from threetears.evals.run.jobs import (
@@ -105,6 +106,7 @@ from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RUN, FIND_TEMPLATE
 
 if TYPE_CHECKING:
+    from threetears.evals.run.resume import RunResumption
     from threetears.evals.schema.subject import SubjectSnapshot
     from threetears.evals.kernel.host.sweepables import SweepableRegistry
     from threetears.evals.schema.models import JudgeConfig, VariationCounts
@@ -815,8 +817,14 @@ class LaunchGroup:
         before): ``asked_schedule``, or its default for whether the members declare latency under test.
     """
 
-    def __init__(self, candidate_models: Sequence[str], *, arm_schedule: ArmSchedule | None = None) -> None:
-        """Mint the group's id; it is stamped on every member run.
+    def __init__(
+        self,
+        candidate_models: Sequence[str],
+        *,
+        arm_schedule: ArmSchedule | None = None,
+        group_id: str | None = None,
+    ) -> None:
+        """Mint the group's id, or take the one given; it is stamped on every member run.
 
         :param candidate_models: Every candidate model the launch names. Required, because the judge is
             chosen against it: a group built without it could hand the launch a judge that is one
@@ -825,8 +833,11 @@ class LaunchGroup:
         :param arm_schedule: How the members share time; ``None`` interleaves them, or runs them one after another
             when they declare latency under test (:func:`~threetears.evals.run.arm_schedule.resolve_arm_schedule`).
         :ptype arm_schedule: ArmSchedule | None
+        :param group_id: The id of the launch whose runs this group takes up again, so its members' cells keep the
+            order that launch's id gave them, and a member it launches anew joins that launch; ``None`` mints one.
+        :ptype group_id: str | None
         """
-        self.id = str(uuid.uuid7())
+        self.id = group_id if group_id is not None else str(uuid.uuid7())
         self.candidate_models = list(candidate_models)
         self.asked_schedule = arm_schedule
         self.arm_schedule: ArmSchedule | None = None
@@ -1061,6 +1072,10 @@ class LaunchRequest:
     :ivar margins: The margins the launch declared on core rate measures, already checked
         (:func:`~threetears.evals.kernel.metrics.run_margin_refusal`), which the run records
         (``EvalRun.declared_margins``); empty when it declared none.
+    :ivar resuming: For a stored run taken up again, the run and what it already holds
+        (:class:`~threetears.evals.run.resume.RunResumption`): the launcher freezes the run's own cases
+        (:meth:`cases_or`), and :func:`launch_run` hands the group the stored run in place of the one it assembles,
+        refusing when the two would not measure alike. ``None`` for a launch.
     """
 
     template: EvalTemplate
@@ -1093,15 +1108,19 @@ class LaunchRequest:
     margins: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
     measure_latency: bool = False
     generation: AdmittedGeneration | None = None
+    resuming: RunResumption | None = None
 
     def cases_or(self, template_cases: Sequence[EvalTestCase]) -> list[EvalTestCase]:
-        """The cases this arm freezes: the case set's, when the launch names one, else the kind's own.
+        """The cases this arm freezes: a run taken up again's own, else the case set's when the launch names one,
+        else the kind's own.
 
         :param template_cases: The cases the kind plays when the launch names no set.
         :ptype template_cases: Sequence[EvalTestCase]
         :return: The cases, in the order the run freezes them.
         :rtype: list[EvalTestCase]
         """
+        if self.resuming is not None:
+            return list(self.resuming.cases)
         return list(self.case_set_cases) if self.case_set is not None else list(template_cases)
 
     def overlays_as(self, model: type[_Validated]) -> _Validated:
@@ -1947,7 +1966,7 @@ async def start_run(
     :ptype measure_latency: bool
     :param arm_schedule: How the launch's arms share time (:mod:`threetears.evals.run.arm_schedule`):
         ``interleaved`` runs every arm at once and takes their cells in turn, case by case, under one width shared
-        by the launch, so a provider's bad minute lands on every arm alike; ``sequential`` runs one arm after
+        by the launch, which absorbs a provider's bad minute across every arm; ``sequential`` runs one arm after
         another; ``concurrent`` runs every arm side by side at its own width, co-loading their providers. ``None``
         (the default) is ``interleaved``, or ``sequential`` when latency is under test, which takes no other. Every
         run records it (``EvalRun.arm_schedule``). Ignored with ``launch_group``, whose caller built the group with
@@ -2087,6 +2106,78 @@ async def admit_launch(
         margins=margins,
         measure_latency=measure_latency,
         arm_schedule=arm_schedule,
+    )
+
+
+async def admit_resumed_run(
+    host: LaunchHost,
+    resuming: RunResumption,
+    *,
+    attach: Callable[[list[EvalRun]], Awaitable[None]] | None = None,
+    launch_group: LaunchGroup | None = None,
+) -> AdmittedLaunch:
+    """Admit a stored run taken up again as its own launch would be admitted now, from the arguments it recorded.
+
+    The inverse of what :func:`launch_run` stamps: the run's template, subject, model, repeats, cassette, overlays,
+    apparatus settings, margins, latency declaration and arm schedule, each as the run recorded it, and every role
+    pin it recorded replayed as chosen — its judge, the judge configs it was judged by (by id, so a config the scope
+    has since replaced is still the one replayed), and its simulator — so the launch makes every refusal a launch
+    makes, prices the arm, and the kind's launcher wires it as it would now. Its cost cap is the take-up's
+    (:attr:`RunResumption.max_cost_usd`); a metered-call ceiling or a deadline the run's launch named is replayed, and
+    one it inherited is inherited again.
+    It generates nothing: the run's cases are its own
+    (:attr:`LaunchRequest.resuming`). What the launcher assembles is compared with the stored run at the launch tail
+    (:func:`launch_run`).
+
+    :param host: The host.
+    :ptype host: LaunchHost
+    :param resuming: The run taken up again, and what it already holds.
+    :ptype resuming: RunResumption
+    :param attach: Records the run before its group starts: the take-up's own write of it. ``None`` with
+        ``launch_group``, whose caller records its members.
+    :ptype attach: Callable[[list[EvalRun]], Awaitable[None]] | None
+    :param launch_group: Prepare the run into this group, beside the other arms its caller takes up or launches with
+        it, instead of starting it in a group of its own; the caller admits and starts the group.
+    :ptype launch_group: LaunchGroup | None
+    :return: The admitted launch of the one run; prepared only, with ``launch_group``.
+    :rtype: AdmittedLaunch
+    :raises ValidationFailedError: The run is ad hoc (no template), or any refusal a launch of it would make now.
+    :raises NotFoundError: Its template is gone.
+    :raises AdmissionRefusedError: The run would pass the host's admission ceiling.
+    """
+    run = resuming.run
+    if run.template_id is None:
+        raise ValidationFailedError(
+            f"run '{run.id}' is ad hoc, so there is no template to launch it from again",
+            remedy="only a run launched from a template is resumed (job_resume); run this eval again to measure again",
+        )
+    return await _admit_run(
+        host,
+        host.settings(),
+        template_id=run.template_id,
+        subject_id=run.subject_snapshot.subject_id,
+        models=[run.candidate_model],
+        k_runs=run.k_runs,
+        n_variations=0,
+        variation_model=None,
+        judge_model=run.judge_model,
+        judge_config_ids=dict(run.judge_config_ids) if run.judge_config_ids else None,
+        simulator_model=run.simulator_model,
+        cassette_mode=run.cassette_mode,
+        cassette_corpus_id=run.cassette_corpus_id,
+        overlays=run.overlays,
+        apparatus_settings=run.apparatus_settings,
+        max_cost_usd=resuming.max_cost_usd,
+        max_metered_calls=run.max_metered_calls if run.max_metered_calls_origin == "chosen" else None,
+        scope_id=run.scope_id,
+        launch_group=launch_group,
+        admission=None,
+        cell_timeout_s=run.cell_timeout_s if run.cell_timeout_s_origin == "launch" else None,
+        margins=run.declared_margins,
+        measure_latency=bool(run.measure_latency),
+        arm_schedule=run.arm_schedule,
+        resuming=resuming,
+        attach=attach,
     )
 
 
@@ -2286,11 +2377,15 @@ async def _admit_run(
     margins: Mapping[str, float] | None = None,
     measure_latency: bool = False,
     arm_schedule: ArmSchedule | None = None,
+    resuming: RunResumption | None = None,
+    attach: Callable[[list[EvalRun]], Awaitable[None]] | None = None,
 ) -> AdmittedLaunch:
     """:func:`admit_launch` under a settings snapshot its caller read.
 
     Its parameters and refusals are :func:`start_run`'s; ``settings`` is the one read every refusal and every arm's
-    tail is made under.
+    tail is made under. ``resuming`` carries a stored run taken up again onto its one arm's request
+    (:attr:`LaunchRequest.resuming`), and ``attach`` records the prepared runs before they start
+    (:func:`admit_group`).
 
     :return: The admitted launch: every refusal made and every arm priced, no launcher run.
     :rtype: AdmittedLaunch
@@ -2363,6 +2458,7 @@ async def _admit_run(
             max_metered_calls=max_metered_calls,
             cell_timeout_s=cell_timeout_s,
             measure_latency=measure_latency,
+            resuming=resuming,
         )
         if declared_margins:
             requests = [replace(request, margins=declared_margins) for request in requests]
@@ -2418,7 +2514,8 @@ async def _admit_run(
         form=form,
         prepare=prepare,
         admission=admission,
-        event="eval.start_run",
+        event="eval.start_run" if resuming is None else "eval.resume_run",
+        attach=attach,
     )
 
 
@@ -2541,6 +2638,7 @@ def _arm_requests(
     max_metered_calls: int | None,
     cell_timeout_s: float | None = None,
     measure_latency: bool = False,
+    resuming: RunResumption | None = None,
 ) -> list[LaunchRequest]:
     """One request per arm — per model, or one on the kind's default when the launch names none.
 
@@ -2586,6 +2684,8 @@ def _arm_requests(
     :ptype cell_timeout_s: float | None
     :param measure_latency: Whether the launch declared latency under test.
     :ptype measure_latency: bool
+    :param resuming: The stored run its one arm takes up again, or ``None`` for a launch.
+    :ptype resuming: RunResumption | None
     :return: The requests, in arm order, with no arm plan yet.
     :rtype: list[LaunchRequest]
     """
@@ -2635,6 +2735,7 @@ def _arm_requests(
             case_set=dispatched.case_set[0] if dispatched.case_set is not None else None,
             case_set_cases=dispatched.case_set[1] if dispatched.case_set is not None else (),
             measure_latency=measure_latency,
+            resuming=resuming,
         )
         for arm_model in arm_models
     ]
@@ -3739,8 +3840,11 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
        cassette mode, overlays, spec, apparatus settings, world seed, tool bound, ceilings — and only what the kind
        resolved comes from the wiring.
     3. Stamp the world placements, then the context identity that hashes them, then the
-       variant levers, all from the assembled run.
-    4. Build the cost cap and the ONE metered-call ledger from the same settings read.
+       variant levers, all from the assembled run. For a run taken up again (``request.resuming``), the
+       assembled run is compared with the stored one here — a difference in what they would measure refuses the
+       launch, naming every one — and the stored run, reopened, goes on in its place, over its own cases.
+    4. Build the cost cap and the ONE metered-call ledger from the same settings read. A run taken up again
+       has its cap seeded with what its stored rows spent.
     5. Build the runner options and the work function — whose ``finally`` records completeness
        and then releases the wiring's ``teardown`` — and hand them to the request's group under a
        backstop sized to the matrix. The group starts them with the run's sibling arms.
@@ -3758,10 +3862,11 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
     :ptype request: LaunchRequest
     :param wiring: What the kind's launcher resolved for the arm.
     :ptype wiring: KindWiring
-    :return: The run (status ``pending``), held by the request's group.
+    :return: The run (status ``pending``; a run taken up again, ``running`` and reopened), held by the request's
+        group.
     :rtype: EvalRun
     :raises ValidationFailedError: The request named no candidate model and the kind has no default, or
-        the assembled run does not validate.
+        the assembled run does not validate, or a run taken up again would not measure as it did.
     :raises ValueError: The wiring contradicts the request — a subject other than the one named, a case
         in another scope or of another template, a model other than the one the request pinned,
         a generation count other than the one it asked for, a generation written by a model
@@ -3952,6 +4057,9 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
         # comparable runs in a query, with the components kept alongside so a
         # mismatch can name which condition moved.
         identity = derive_context_identity(run, host.eval_host.profile)
+        # What the template said that the run measures, frozen: the template is editable, and a take-up of the run
+        # refuses one edited in it since.
+        run.template_digest = measured_template_digest(template)
         run.context_key = identity.context_key
         run.context_components = identity.context_components
         run.identity_version = identity.identity_version
@@ -3963,6 +4071,10 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
         # analysed across a bump lost the description of every one of its arms while their keys
         # stayed authoritative for pooling. Recorded here, nothing has to be reconstructed.
         run.variant_levers = variant_levers_of_run(run, host.eval_host.profile)
+        if request.resuming is not None:
+            # Assembled as the stored run's own launch would assemble it now, so a difference between the two is a
+            # difference in what they measure: refused, naming every one. The stored run goes on in its place.
+            run, test_cases = request.resuming.take_up(run, template, host.eval_host.profile)
 
         # Per-run cost cap: bounds THIS run's spend only. Pure in-memory
         # arithmetic seeded from the ceilings resolved above (or the validated per-run
@@ -3988,6 +4100,10 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
             configured_max_metered_calls=configured_max_metered_calls,
             enforcement_enabled=eval_enforcement_enabled,
         )
+        if request.resuming is not None:
+            # What the run's earlier holdings spent and landed counts toward its ceilings, as it would have had the run
+            # never stopped; one whose ceiling its stored cells have already reached is refused, running nothing.
+            request.resuming.seed(cost_cap, metered_calls)
 
         job_manager = host.job_manager
         options = RunnerOptions(
@@ -4018,6 +4134,8 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
             # The width the run records, so what it executed at and what it says it did are one value.
             max_concurrent_cells=run.cell_concurrency,
             cell_executor=host.cell_executor,
+            # A run taken up again keeps the order it was ordered in: an interleaved launch's, shared with its arms.
+            cell_order_seed=request.resuming.cell_order_seed if request.resuming is not None else None,
         )
 
         # The loop the work function runs, bound now rather than looked up when the job starts it:
@@ -4052,6 +4170,7 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                     budget_gate=cost_cap.check,
                     on_cost=cost_cap.record,
                     cell_sink=cells,
+                    stored=request.resuming.stored if request.resuming is not None else None,
                 )
             finally:
                 try:
@@ -4070,6 +4189,7 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                             run.scope_id,
                             cells,
                             metered=metered_calls.tally(),
+                            leases=job_manager.leases,
                         )
                     )
                     cancelled_while_recording = await wait_through_cancellation(recording)
@@ -4114,7 +4234,9 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
             n_results,
             options.cell_timeout_s,
         )
-        run.launch_group_id = launch_group.id
+        if request.resuming is None:
+            # A run taken up again keeps the launch it was started in.
+            run.launch_group_id = launch_group.id
         launch_group.add(run, work, job_timeout_s, teardown)
     except BaseException:
         # The work function never ran, so its teardown never will.

@@ -267,6 +267,7 @@ def create_campaign(
     profile: HostProfile,
     exploratory: bool = False,
     aspects_from: Sequence[str | Mapping[str, Any]] = (),
+    declared_at: str | None = None,
 ) -> EvalCampaign:
     """Create and persist a campaign: one question, its arms, its aspects and its floors.
 
@@ -292,7 +293,10 @@ def create_campaign(
     re-dates it. What is added is dated now, by itself: a margin (``Aspect.margin_declared_at``), a floor
     (``Floor.declared_at``), a control or candidate arm not already the source's (``CampaignArm.named_at``), and a
     question (the campaign's ``declared_at``). With no question given, the sources' questions are joined, each once.
-    Two adopted aspects under one label, or a run two sources hold, are refused naming them.
+    Two adopted aspects under one label, or a run two sources hold, are refused naming them. Each criterion's time is
+    read against the first stored result of its aspect, never against when the runs ran or this campaign was
+    declared, so adopting runs that are still valid reads as declaring before them; a criterion set here over runs
+    whose results are stored already is disclosed as set after its readings were visible.
 
     **Arms are addressed from runs** (:class:`ArmDefinition`): the variant key and lever map are the server's, read
     from the arm's first run, and every other run named for it must carry the same key, or the create is refused,
@@ -318,6 +322,11 @@ def create_campaign(
     :param aspects_from: The campaigns whose aspects this one adopts, in order: each an id, or an
         :class:`AspectSource` (or its fields) relabelling a campaign's one aspect.
     :ptype aspects_from: Sequence[str | Mapping[str, Any]]
+    :param declared_at: When the caller fixed what this create declares (its own aspects, the arms it names, its
+        question, a margin or floor it adds), where that was before now: an eval fixes its design and its control in
+        the call that launches its arms, then files them once they have run. ISO-8601 with an offset. None dates them
+        now. A server-side keyword, never a field of the ``campaign_create`` action.
+    :ptype declared_at: str | None
     :return: The persisted :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
     :rtype: EvalCampaign
     :raises NotFoundError: A source campaign, or a template an aspect names, is not in the scope.
@@ -343,7 +352,7 @@ def create_campaign(
         ]
     except ValidationError as e:
         raise ValidationFailedError(f"invalid campaign definition: {e}", remedy=SCHEMA_REMEDY) from e
-    now = utc_now_iso()
+    now = utc_now_iso() if declared_at is None else _caller_s_time(declared_at)
     sources = _sources(storage, named_sources, scope_id)
     question = authored.question or QUESTION_SEPARATOR.join(
         dict.fromkeys(source.question for source in sources if source.question)
@@ -431,6 +440,20 @@ def create_campaign(
         created_by,
     )
     return campaign
+
+
+def _caller_s_time(stamp: str) -> str:
+    """``stamp``, a time a create's caller fixed its declaration at, once it is shown to be one that can be ordered.
+
+    :raises ValidationFailedError: It is not an ISO-8601 time with an offset, so no criterion could be read against it.
+    """
+    try:
+        aware_instant(stamp, "the create's declared_at")
+    except ValueError as unordered:
+        raise ValidationFailedError(
+            str(unordered), remedy="pass declared_at as an ISO-8601 time with an offset, or leave it out to date it now"
+        ) from unordered
+    return stamp
 
 
 #: What a campaign is when it is not declared, said once for every refusal that asks the caller to choose.
@@ -1642,9 +1665,8 @@ def _with_control(
     """``arms`` with the control addressed from a member run first, named now, or with no control.
 
     When it is named is recorded on the arm (``named_at``): a control named after an aspect's first result was
-    chosen once the evidence existed, so its bundle dates the aspect's question no earlier than the naming, which
-    the aspect's pages disclose as set after the runs; one named after the arms launched and before a result landed
-    was not.
+    chosen once the evidence existed, which the aspect's pages disclose as a criterion set after its readings were
+    visible; one named after the arms launched and before a result landed was not.
 
     :raises ValidationFailedError: The run is not a member of the campaign.
     """

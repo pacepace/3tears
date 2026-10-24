@@ -459,7 +459,7 @@ def _identity_pooling_disclosure(cells: Sequence[PivotCell]) -> str | None:
     """Name every cell that pools more than one identity version of the key it is grouped on.
 
     The frontier's reason in the pivot's terms: two keys stamped at different versions cannot be shown from
-    the stamp alone to describe one contestant, so the frontier ranks them apart (:func:`_contestant_key`).
+    the stamp alone to describe one contestant, so the frontier ranks them apart (:func:`contestant_key`).
     The pivot's axes are open, so it does not split; it says which cells pool and how to read them apart.
 
     :param cells: The table's cells.

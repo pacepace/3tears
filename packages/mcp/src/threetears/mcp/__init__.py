@@ -10,11 +10,11 @@ modules:
   wrapper over the official ``mcp.server.Server``; v1 stdio +
   v2 Streamable-HTTP entry points)
 - :mod:`threetears.mcp.http_server` -- v2 Streamable-HTTP transport
-  (:func:`build_mcp_http_app`, :func:`serve_mcp_http`,
+  (:class:`McpHttpTransport`, :func:`build_mcp_http_app`, :func:`serve_mcp_http`,
   :func:`current_bearer_token`) running the SAME wired SDK server over
   HTTP
-- :mod:`threetears.mcp.tool` -- :class:`McpTool`, :class:`ToolRegistry`,
-  :func:`register_tool` decorator
+- :mod:`threetears.mcp.tool` -- :class:`McpTool`, :class:`McpToolAnnotations`,
+  :class:`ToolRegistry`, :data:`ToolProvider`, :func:`register_tool` decorator
 - :mod:`threetears.mcp.http_client` -- :class:`PlatformHttpClient`
   (typed httpx with JWT login + refresh-on-401; used by both MCP
   servers and CLI scripts)
@@ -66,14 +66,17 @@ from threetears.mcp.auth import (
 )
 from threetears.mcp.http_client import PlatformHttpClient, PlatformHttpError
 from threetears.mcp.http_server import (
+    McpHttpTransport,
     build_mcp_http_app,
     current_bearer_token,
     serve_mcp_http,
 )
-from threetears.mcp.server import McpServer
+from threetears.mcp.server import McpServer, tool_error
 from threetears.mcp.tool import (
     McpTool,
+    McpToolAnnotations,
     ToolHandler,
+    ToolProvider,
     ToolRegistry,
     register_tool,
 )
@@ -96,8 +99,10 @@ __all__ = [
     "Identity",
     "IdentityProvider",
     "LocalGrantAuthorizer",
+    "McpHttpTransport",
     "McpServer",
     "McpTool",
+    "McpToolAnnotations",
     "McpToolGrantCollection",
     "McpToolGrantEntity",
     "PlatformHttpClient",
@@ -105,12 +110,14 @@ __all__ = [
     "PrincipalType",
     "TokenSource",
     "ToolHandler",
+    "ToolProvider",
     "ToolRegistry",
     "build_mcp_http_app",
     "current_bearer_token",
     "mcp_tool_grants_table",
     "register_tool",
     "serve_mcp_http",
+    "tool_error",
 ]
 
 
