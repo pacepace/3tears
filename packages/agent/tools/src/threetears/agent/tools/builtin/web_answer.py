@@ -25,6 +25,7 @@ reads before trusting a claim; the prose says so in its first line (AR-G2).
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.tools import StructuredTool
@@ -53,8 +54,11 @@ def create_web_answer_tool(config: dict[str, Any], description: str) -> Structur
     Optional config keys, all deployment facts rather than per-call choices:
     ``transport`` (a prebuilt
     :class:`~threetears.search.contracts.transport.StreamingTransport`),
-    ``budget``, ``limiter`` and ``timeout_seconds``; and ``_user_timezone``,
-    the zone of the person the turn is with, which a host injects.
+    ``budget``, ``limiter`` and ``timeout_seconds``; ``usd_per_search`` and
+    ``usd_per_million_tokens``, this account's Brave rates, given together or
+    not at all, which price the estimate a budget checks before the call
+    (AR-C3); and ``_user_timezone``, the zone of the person the turn is with,
+    which a host injects.
 
     :param config: tool configuration; ``api_key`` is required
     :ptype config: dict[str, Any]
@@ -62,7 +66,8 @@ def create_web_answer_tool(config: dict[str, Any], description: str) -> Structur
     :ptype description: str
     :return: the wrapped tool
     :rtype: StructuredTool
-    :raises ValueError: when ``api_key`` is absent
+    :raises ValueError: when ``api_key`` is absent, or one rate is given
+        without the other
     """
     from threetears.agent.tools.langchain_adapter import to_langchain_tool
 
@@ -76,6 +81,8 @@ def create_web_answer_tool(config: dict[str, Any], description: str) -> Structur
             timeout_seconds=config.get("timeout_seconds"),
             budget=config.get("budget"),
             limiter=config.get("limiter"),
+            usd_per_search=_rate(config.get("usd_per_search")),
+            usd_per_million_tokens=_rate(config.get("usd_per_million_tokens")),
             zone=config.get("_user_timezone") or None,
         ),
         description=description,
@@ -112,6 +119,8 @@ class WebAnswerTool(TearsTool):
         timeout_seconds: float | None = None,
         budget: BudgetPort | None = None,
         limiter: RateLimiterPort | None = None,
+        usd_per_search: Decimal | None = None,
+        usd_per_million_tokens: Decimal | None = None,
         zone: str | None = None,
     ) -> None:
         """initialize web answer tool against one configured Brave key.
@@ -138,19 +147,32 @@ class WebAnswerTool(TearsTool):
             leaves the call unpaced. Brave's two-per-second default is this
             limiter's configuration
         :ptype limiter: RateLimiterPort | None
+        :param usd_per_search: what this account pays per Brave search, if the
+            host knows; with ``usd_per_million_tokens`` it prices the budget's
+            pre-call estimate. Unset is unpriced, not free
+        :ptype usd_per_search: Decimal | None
+        :param usd_per_million_tokens: what this account pays per million
+            tokens; given with ``usd_per_search`` or not at all
+        :ptype usd_per_million_tokens: Decimal | None
         :param zone: the IANA zone of the person the agent works for; a
             source's time of day is shown in it
         :ptype zone: str | None
         :return: nothing
         :rtype: None
-        :raises ValueError: when ``api_key`` is empty
+        :raises ValueError: when ``api_key`` is empty, or one rate is given
+            without the other
         """
         if transport is None:
             from threetears.search.standalone import StandaloneTransport
 
             transport = StandaloneTransport()
         self._transport = transport
-        self._provider = BraveAnswersAdapter(api_key=api_key, transport=transport)
+        self._provider = BraveAnswersAdapter(
+            api_key=api_key,
+            transport=transport,
+            usd_per_search=usd_per_search,
+            usd_per_million_tokens=usd_per_million_tokens,
+        )
         self._timeout_seconds = timeout_seconds
         self._budget = budget
         self._limiter = limiter
@@ -219,6 +241,19 @@ class WebAnswerTool(TearsTool):
         :rtype: str
         """
         return "1.0"
+
+
+def _rate(value: object) -> Decimal | None:
+    """Read a configured rate as a Decimal, through its text so no float rounding reaches money.
+
+    :param value: the config value -- a Decimal, a number or a numeric string -- or None
+    :ptype value: object
+    :return: the rate, or None when the config states none
+    :rtype: Decimal | None
+    """
+    if value is None or isinstance(value, Decimal):
+        return value
+    return Decimal(str(value))
 
 
 def _refused(message: str) -> ToolResult:

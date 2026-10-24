@@ -10,6 +10,7 @@ granted only by its own name, never by ``web``.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
+from decimal import Decimal
 from importlib.resources import files
 from types import TracebackType
 from typing import Self
@@ -25,6 +26,9 @@ from threetears.search.contracts import (
     ANSWER_METADATA_KEY,
     EGRESS_DIRECT,
     AnswerMetadata,
+    BudgetDecision,
+    BudgetPort,
+    Spend,
     StreamedResponse,
     StreamingTransport,
 )
@@ -289,3 +293,79 @@ def test_answers_is_its_own_alias_and_web_does_not_grant_it() -> None:
     assert "threetears.web_answer" not in WEB_TOOLS
     assert "threetears.web_answer" not in expand_selectors(["web"])
     assert GROUP_ALIASES["web"] == frozenset({"threetears.web_search", "threetears.web_fetch"})
+
+
+class _MoneyCap(BudgetPort):
+    """A budget that refuses any call whose estimate costs more than its cap."""
+
+    def __init__(self, cap: Decimal) -> None:
+        """Set the cap.
+
+        :param cap: the most one call may be estimated to cost
+        :ptype cap: Decimal
+        """
+        self._cap = cap
+        self.estimates: list[Spend] = []
+
+    async def check(self, estimate: Spend, *, scope_tags: tuple[str, ...]) -> BudgetDecision:
+        """Refuse an estimate over the cap.
+
+        :param estimate: the call's estimate
+        :ptype estimate: Spend
+        :param scope_tags: ignored
+        :ptype scope_tags: tuple[str, ...]
+        :return: the decision
+        :rtype: BudgetDecision
+        """
+        self.estimates.append(estimate)
+        if estimate.money > self._cap:
+            return BudgetDecision(allowed=False, scope="money-cap", reason="over the money cap")
+        return BudgetDecision(allowed=True)
+
+    async def record(self, spend: Spend, *, scope_tags: tuple[str, ...]) -> None:
+        """Nothing to keep.
+
+        :param spend: ignored
+        :ptype spend: Spend
+        :param scope_tags: ignored
+        :ptype scope_tags: tuple[str, ...]
+        """
+
+
+async def test_a_stated_rate_card_lets_a_money_cap_refuse_before_the_call() -> None:
+    """AR-C3: with the rates in config, the pre-call estimate is priced, and a cap below it refuses unsent."""
+    transport = _FakeStreamingTransport(_capture("brave_answers_single.sse"))
+    budget = _MoneyCap(Decimal("0.001"))
+    tool = create_web_answer_tool(
+        {
+            "api_key": "k",
+            "transport": transport,
+            "budget": budget,
+            "usd_per_search": "0.004",
+            "usd_per_million_tokens": 5,
+        },
+        "answer questions",
+    )
+
+    content = await tool.ainvoke({"question": "what is the largest rodent?"})
+
+    assert budget.estimates[0].money == Decimal("0.004")
+    assert transport.bodies == [], "a refused call is never sent"
+    assert "local-cap-exceeded" in str(content)
+
+
+async def test_with_no_rate_card_the_estimate_is_unpriced_and_the_same_cap_lets_it_through() -> None:
+    transport = _FakeStreamingTransport(_capture("brave_answers_single.sse"))
+    budget = _MoneyCap(Decimal("0.001"))
+    result = await WebAnswerTool(api_key="k", transport=transport, budget=budget).execute(question="q")
+
+    assert result.success
+    assert budget.estimates[0].money == Decimal(0)
+    assert len(transport.bodies) == 1
+
+
+def test_one_rate_without_the_other_is_refused_at_construction() -> None:
+    with pytest.raises(ValueError, match="together or not at all"):
+        create_web_answer_tool(
+            {"api_key": "k", "transport": _FakeStreamingTransport(b""), "usd_per_search": "0.004"}, "answer"
+        )
