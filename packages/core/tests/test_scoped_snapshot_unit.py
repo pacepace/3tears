@@ -857,20 +857,19 @@ async def test_a_stuck_scope_whose_later_pointer_carries_other_columns_stays_beh
     pointers.put_now("enr.s.TX", json.dumps(foreign).encode())
     await _until(lambda: "TX" in snapshot.status().behind, what="TX shown behind")
 
-    # and a look at every turn of the loop, so between every step of every rebuild, while the test
-    # waits on the rebuilds themselves rather than on a budget a loaded runner's pauses can use up
-    async def look_at_every_turn() -> None:
-        while looking:
-            look()
-            await asyncio.sleep(0)
-
+    # and a look at every poll in between. Never a spin on asyncio.sleep(0): a loop that never waits
+    # keeps the GIL from the rebuild's export, whose DuckDB threads need it to read the rows from Arrow
+    # (with 32 DuckDB threads one export took 4.96 s under the spin, and 4 ms without it)
     first, looking = takes[0], True
-    watching = asyncio.create_task(look_at_every_turn())
+
+    def rebuilt_three_more_times() -> bool:
+        look()
+        return takes[0] >= first + 3
+
     try:
-        await _until(lambda: takes[0] >= first + 3, what="TX rebuilt again and again")
+        await _until(rebuilt_three_more_times, what="TX rebuilt again and again")
     finally:
         looking = False
-        await watching
 
     assert current == [], [(look.phase, sorted(look.behind)) for look in current][:3]
     assert snapshot.applied_epoch("TX") == 1
