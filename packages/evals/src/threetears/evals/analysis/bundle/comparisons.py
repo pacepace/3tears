@@ -22,6 +22,7 @@ from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     bounded_difference_interval,
     composite_significance,
+    contrast_cases,
     contrast_samples,
     difference_interval,
     equivalence_untested_reason,
@@ -275,10 +276,11 @@ def _family_readings(
 _TRIAL_PASS_RANGE = (0.0, 1.0)
 
 
-def _trial_pass_values(
+def _trial_pass_counts(
     members: list[EvalResult], *, rubric_threshold: int, catalog: Mapping[str, MetricDescriptor]
-) -> dict[str, float]:
-    """One cell's overall pass rate, one value per case: the share of the case's usable trials that passed.
+) -> dict[str, tuple[int, int]]:
+    """One cell's overall pass rate per case, as counts: each case's usable trials passed and its usable trials, the
+    case's share passed being the one over the other.
 
     Each trial ends as the scoreboard reads it (:func:`~threetears.evals.analysis.bundle.trials.read_trial`), so a
     case's value and the census are one classification. A lost trial says nothing about the candidate and is in no
@@ -293,8 +295,8 @@ def _trial_pass_values(
     :ptype rubric_threshold: int
     :param catalog: The bundle's measure catalog, which says which checks a trial is graded on.
     :ptype catalog: Mapping[str, MetricDescriptor]
-    :return: ``{test_case_id: share passed}`` over the cases with a usable trial.
-    :rtype: dict[str, float]
+    :return: ``{test_case_id: (passed, usable)}`` over the cases with a usable trial.
+    :rtype: dict[str, tuple[int, int]]
     """
     by_case: dict[str, list[bool]] = defaultdict(list)
     graded = False
@@ -305,7 +307,7 @@ def _trial_pass_values(
             graded = graded or not reading.no_criterion
     if not graded:
         return {}
-    return {case_id: sum(passed) / len(passed) for case_id, passed in sorted(by_case.items())}
+    return {case_id: (sum(passed), len(passed)) for case_id, passed in sorted(by_case.items())}
 
 
 def _test_samples(
@@ -665,7 +667,7 @@ def _multiple_comparisons(
     margin**: the margin is how far the pass rate may fall, so the pass rate is a hypothesis the question
     asks and its family grows by one, every adjusted p in it moving with it. It never joins the exploratory family,
     whose size it would move over unchanged runs. Each case's value is the share of its usable trials that passed
-    (:func:`_trial_pass_values`), tested and bounded as a check's pass rate is, on its 0-1 range.
+    (:func:`_trial_pass_counts`), tested and bounded as a check's pass rate is, on its 0-1 range.
 
     **The floors read their own values, whatever the family compares** (:class:`FloorContrast`): each arm against the
     control under each rig, on the overall pass rate and on the cost per reply, per case, so a floor's interval, read
@@ -699,7 +701,7 @@ def _multiple_comparisons(
         reason a comparison or a guardrail on elapsed time could not be read, where it could not.
     :ptype contended: Collection[_CellKey]
     :param rubric_threshold: The 1–5 level a judged dimension must reach for a trial to pass, which the overall pass
-        rate's per-case shares read (:func:`_trial_pass_values`), as the scoreboard does.
+        rate's per-case shares read (:func:`_trial_pass_counts`), as the scoreboard does.
     :ptype rubric_threshold: int
     :return: The aspect's question's family; the exploratory family over every reading when no question is
         asked; or none, with the reason, when no control resolved. Beside it, every guardrail decided for each arm
@@ -734,13 +736,16 @@ def _multiple_comparisons(
     for record in records:
         judged_rows.setdefault(record.result_id, []).append(record)
     values: dict[_CellKey, dict[tuple[ComparisonReading, str], dict[str, float]]] = {}
+    # Each cell's usable trials per case on the overall pass rate, carried beside its shares so a reading states each
+    # side's depth case by case.
+    trials: dict[_CellKey, dict[str, tuple[int, int]]] = {}
     for key, members in results_by_cell.items():
         values[key] = {
             reading: by_case for reading, by_case in _per_case_values(members, judged_rows, profile=profile).items()
         }
-        values[key][("trial", TRIAL_PASS_NAME)] = _trial_pass_values(
-            members, rubric_threshold=rubric_threshold, catalog=catalog
-        )
+        counts = _trial_pass_counts(members, rubric_threshold=rubric_threshold, catalog=catalog)
+        values[key][("trial", TRIAL_PASS_NAME)] = {case: passed / usable for case, (passed, usable) in counts.items()}
+        trials[key] = counts
     pairs = [
         (control_key, contrast_key)
         for control_key in sorted(values)
@@ -821,6 +826,7 @@ def _multiple_comparisons(
             reading,
             (control_key, values[control_key].get(reading, {})),
             (contrast_key, values[contrast_key].get(reading, {})),
+            trials=(trials[control_key], trials[contrast_key]) if reading[0] == "trial" else None,
         )
         for reading in (("trial", TRIAL_PASS_NAME), ("measure", FLOOR_COST_MEASURE))
         for control_key, contrast_key in sorted(pairs, key=lambda pair: (pair[0][1], pair[1][0]))
@@ -842,13 +848,22 @@ def _choice_contrasts(
     :return: One contrast per pair of cells under one rig with two cases a side, in variant-key order.
     :rtype: list[FloorContrast]
     """
-    values = {
-        key: _trial_pass_values(members, rubric_threshold=rubric_threshold, catalog=catalog)
+    counts = {
+        key: _trial_pass_counts(members, rubric_threshold=rubric_threshold, catalog=catalog)
         for key, members in results_by_cell.items()
     }
+    values = {
+        key: {case: passed / usable for case, (passed, usable) in by_case.items()} for key, by_case in counts.items()
+    }
+    trials = counts
     keys = sorted(values)
     contrasts = [
-        _floor_contrast(("trial", TRIAL_PASS_NAME), (first, values[first]), (second, values[second]))
+        _floor_contrast(
+            ("trial", TRIAL_PASS_NAME),
+            (first, values[first]),
+            (second, values[second]),
+            trials=(trials[first], trials[second]),
+        )
         for index, first in enumerate(keys)
         for second in keys[index + 1 :]
         if first[1] == second[1] and values[first] and values[second]
@@ -860,14 +875,22 @@ def _floor_contrast(
     reading: tuple[ComparisonReading, str],
     control: tuple[_CellKey, dict[str, float]],
     contrast: tuple[_CellKey, dict[str, float]],
+    *,
+    trials: tuple[Mapping[str, tuple[int, int]], Mapping[str, tuple[int, int]]] | None = None,
 ) -> FloorContrast | None:
     """One arm against the control under one rig on a reading a floor reads, its samples as a comparison's would be
-    (:func:`_test_samples`); None where a side has fewer than two cases, which no interval reads."""
+    (:func:`_test_samples`), and, where ``trials`` gives each side's passed and usable trials per case, both case for
+    case beside them; None where a side has fewer than two cases, which no interval reads."""
     (control_key, control_values), (contrast_key, contrast_values) = control, contrast
     a, b, paired = _test_samples(control_values, contrast_values)
     if len(a) < 2 or len(b) < 2:
         return None
     kind, name = reading
+    case_trials = case_passed = None
+    if trials is not None:
+        cases_a, cases_b, _ = contrast_cases(control_values, contrast_values)
+        case_trials = ([trials[0][case][1] for case in cases_a], [trials[1][case][1] for case in cases_b])
+        case_passed = ([trials[0][case][0] for case in cases_a], [trials[1][case][0] for case in cases_b])
     return FloorContrast(
         reading="trial" if kind == "trial" else "measure",
         name=name,
@@ -887,6 +910,8 @@ def _floor_contrast(
         ),
         test="paired" if paired else "unpaired",
         case_values=(list(a), list(b)),
+        case_trials=case_trials,
+        case_passed=case_passed,
     )
 
 

@@ -325,9 +325,10 @@ def test_a_take_up_that_would_measure_otherwise_names_every_difference_and_no_la
     ("field", "moved"),
     [("candidate_kind", "single_shot"), ("cell_timeout_s", 7.0), ("turn_budget_s", 3.0)],
 )
-def test_a_take_up_whose_cells_would_run_under_another_kind_or_deadline_is_refused_naming_it(
+def test_a_take_up_runs_under_the_kind_and_deadlines_its_launch_wires_now_and_is_not_refused_for_them(
     field: str, moved: object
 ) -> None:
+    """A take-up's launch wires its kind and deadlines as a launch would now, so a moved one is not a refusal."""
     stored = make_eval_run(
         cell_timeout_s=30.0,
         cell_timeout_s_origin="kind",
@@ -339,9 +340,7 @@ def test_a_take_up_whose_cells_would_run_under_another_kind_or_deadline_is_refus
     template = make_template(created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00")
     assert getattr(stored, field) != moved
 
-    said = _measured_otherwise(stored, stored.model_copy(update={field: moved}), template, toyhost_profile())
-
-    assert said is not None and said.startswith(f"{field} ("), said
+    assert _measured_otherwise(stored, stored.model_copy(update={field: moved}), template, toyhost_profile()) is None
 
 
 def test_a_take_up_whose_launch_would_run_other_cases_is_refused_naming_them_and_a_reordered_set_is_not() -> None:

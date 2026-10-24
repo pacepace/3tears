@@ -34,7 +34,7 @@ from __future__ import annotations
 import functools
 import math
 import random
-from collections.abc import Hashable, Mapping, Sequence
+from collections.abc import Collection, Hashable, Mapping, Sequence
 from fractions import Fraction
 from functools import lru_cache
 from statistics import NormalDist
@@ -1369,12 +1369,27 @@ def contrast_samples(
         sorted order otherwise.
     :rtype: tuple[list[float], list[float], bool]
     """
-    shared = sorted(set(control_values) & set(contrast_values))
-    paired = len(shared) >= 2
-    # Unpaired, each side in its cases' sorted order too: a bounded test bets in an order fixed before the values.
-    a = [control_values[case] for case in (shared if paired else sorted(control_values))]
-    b = [contrast_values[case] for case in (shared if paired else sorted(contrast_values))]
+    cases_a, cases_b, paired = contrast_cases(control_values, contrast_values)
+    a = [control_values[case] for case in cases_a]
+    b = [contrast_values[case] for case in cases_b]
     return a, b, paired
+
+
+def contrast_cases(control: Collection[str], contrast: Collection[str]) -> tuple[list[str], list[str], bool]:
+    """The cases each side of a contrast reads, in the order :func:`contrast_samples` reads them, and whether they
+    pair: so a figure carried per case beside the samples (a case's trials) lines up with them.
+
+    :param control: The cases the control carries a value on.
+    :ptype control: Collection[str]
+    :param contrast: The cases the contrast carries one on.
+    :ptype contrast: Collection[str]
+    :return: ``(control's cases, contrast's cases, paired)``: the shared cases on both sides when they share at least
+        two, each side's own cases otherwise, sorted.
+    :rtype: tuple[list[str], list[str], bool]
+    """
+    shared = sorted(set(control) & set(contrast))
+    # Unpaired, each side in its cases' sorted order too: a bounded test bets in an order fixed before the values.
+    return (shared, shared, True) if len(shared) >= 2 else (sorted(control), sorted(contrast), False)
 
 
 #: The fewest paired cases a between-arm correlation is reported over. Two points always lie on a line, so a
@@ -1490,6 +1505,32 @@ def _bounded_mean_interval(
     lower = bounded_mean_lower_bound(values, value_range, alpha=alpha)
     upper = -bounded_mean_lower_bound([-exact_decimal(v) for v in values], (-high, -low), alpha=alpha)
     return lower, upper
+
+
+def bounded_mean_interval(
+    values: Sequence[float | Fraction], value_range: tuple[float, float], *, confidence: float = INTERVAL_LEVEL
+) -> tuple[float, float] | None:
+    """The two-sided interval on one bounded mean, each end the test by betting's one-sided bound at
+    ``(1 − confidence) / 2``: what one arm's own per-case values pin its mean to, on the rule
+    :func:`bounded_difference_interval` reads a difference by.
+
+    :param values: One arm's per-case values, in a fixed case order.
+    :ptype values: Sequence[float | Fraction]
+    :param value_range: The reading's declared inclusive bounds.
+    :ptype value_range: tuple[float, float]
+    :param confidence: The two-sided coverage.
+    :ptype confidence: float
+    :return: ``(low, high)``, or None below two values: too few to bound a mean.
+    :rtype: tuple[float, float] | None
+    :raises ValueError: A value lies outside ``value_range``: a defect in the caller's data, never an absent interval.
+    """
+    low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
+    exact = [exact_decimal(v) for v in values]
+    if any(not low <= v <= high for v in exact):
+        raise ValueError(f"a value lies outside the declared range {value_range}: {list(values)}")
+    if len(values) < 2:
+        return None
+    return _bounded_mean_interval(exact, (float(low), float(high)), alpha=(1.0 - confidence) / 2.0)
 
 
 def bounded_difference_interval(
@@ -2831,12 +2872,14 @@ __all__ = [
     "clustered_standard_error",
     "cohen_kappa",
     "composite_significance",
+    "contrast_cases",
     "contrast_samples",
     "difference_interval",
     "equivalence_untested_reason",
     "exact_decimal",
     "bounded_cases_to_clear",
     "bounded_difference_interval",
+    "bounded_mean_interval",
     "interval_permits_separation",
     "bounded_mean_lower_bound",
     "guardrail_decision",

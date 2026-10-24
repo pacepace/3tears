@@ -1,5 +1,5 @@
-"""An aspect's page lays out the writer's summary of it in full, after its summary across the campaign, holds the
-writer's whys to the style pass, reads the writer's trial ids as its own bundle's, and leads a finding's evidence with
+"""An aspect's page lays out the writer's summary of it in full, after its summary across the campaign, prints the
+writer's whys as written, reads the writer's trial ids as its own bundle's, and leads a finding's evidence with
 its aspect where the campaign holds several. The reporter reads the memo as written, its summary first.
 """
 
@@ -32,16 +32,15 @@ async def test_the_writer_s_summary_of_the_aspect_is_laid_out_in_full() -> None:
     assert changed < markdown.index("**How sure:** Not shown either way.") < markdown.index("Worth a second look.")
 
 
-async def test_a_why_for_an_overridden_floor_goes_through_the_style_pass() -> None:
+async def test_a_why_for_an_overridden_floor_is_printed_as_written() -> None:
     _, analysis, _ = await toy_report()
     over = FloorOverride(floor="toy/rate_drop/*", why="The memo rests on tone. Refunds are rare this quarter.")
     recommended = analysis.document.recommended()
     assert recommended is not None
     recommendation = recommended.model_copy(update={"floors_overridden": [over]})
     markdown = report_markdown(build_report(_with_document(analysis, recommendation=[recommendation])))
-    # A sentence carrying a banned phrase is dropped; the rest is printed as written.
-    assert "toy/rate_drop/*: Refunds are rare this quarter." in markdown
-    assert "rests on tone" not in markdown
+    # The page reads none of the writer's words: a phrase the page's own lint bans is the writer's to avoid.
+    assert "toy/rate_drop/*: The memo rests on tone. Refunds are rare this quarter." in markdown
 
 
 async def test_the_writer_s_trial_ids_are_read_as_the_page_s_own() -> None:

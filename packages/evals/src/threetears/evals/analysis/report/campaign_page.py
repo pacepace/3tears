@@ -33,16 +33,19 @@ changed, how sure, what it means) when there is one, then the aspect's own page 
 :func:`~threetears.evals.analysis.report.build.build_code_only_report` built it, which the serializers lay out in the
 fold without its title, its question, its late criteria, its broken floors or its verdict line.
 
-Every arm is named by its label, never by its role; every line is held to :mod:`~threetears.evals.analysis.style`.
+Every arm is named by its label, never by its role; every line code writes is held to
+:mod:`~threetears.evals.analysis.style`, and the memo's words are printed as written.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from threetears.evals.analysis.arms import arm_names, short_digest
 from threetears.evals.analysis.cells import variant_of_cell_ref
+from threetears.evals.analysis.depth import MODEL_ASSUMES, REPEATS_FLOOR, Precision
+from threetears.evals.analysis.depth_reading import PAIRING_METHOD, AspectDepth, aspect_depth
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, CriterionKind, LateCriterion
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.campaign_readings import (
@@ -56,7 +59,6 @@ from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.quantities import PERCENT, POINTS
 from threetears.evals.analysis.report.decision import floor_statement, projected_cell
 from threetears.evals.analysis.report.figures import report_rulers
-from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
 from threetears.evals.analysis.report.model import (
     CampaignAspectFold,
     CampaignReport,
@@ -83,7 +85,7 @@ from threetears.evals.analysis.report.words import (
     evidence_figure,
     reading_heading,
 )
-from threetears.evals.analysis.style import ArmName, arm_name, code, humanize, measure_name, sentences
+from threetears.evals.analysis.style import ArmName, arm_name, code, humanize, measure_name
 from threetears.evals.kernel.authored import AspectSummary, AuthoredCampaignAnalysis, Finding
 from threetears.evals.kernel.campaign import EvalCampaign, FindingResolution
 from threetears.evals.kernel.declaration import (
@@ -170,11 +172,10 @@ def build_campaign_report(
             f"the memo recommends {recommendation.arm}, and the page is given no variant key for that arm",
             remedy="pass the key the analysis recorded for its recommended arm (EvalAnalysis.recommended_variant_key)",
         )
-    style = _CampaignStyle.over(campaign, readings, reports)
     kind = readings.kind
     blocks: list[ReportBlock] = [
-        *_bar_warnings(readings, memo, style),
-        *_floor_warnings(campaign, readings, memo, style),
+        *_bar_warnings(readings, memo),
+        *_floor_warnings(campaign, readings, memo),
         *_guardrail_warnings(campaign, readings, reports),
     ]
     if campaign.question.strip():
@@ -184,33 +185,35 @@ def build_campaign_report(
     bundles = [reports[aspect.label].bundle for aspect in campaign.aspects]
     blocks += [DisclosureBlock(section="header", source="timing", text=line) for line in late_criteria_lines(bundles)]
     # The writer's read across every aspect, then what it recommends, then the aspects code read them on.
-    blocks += _memo_summary_blocks(memo, style)
+    blocks += _memo_summary_blocks(memo)
     if kind != "measurement":
-        blocks += _recommendation_blocks(memo, style, kind)
+        blocks += _recommendation_blocks(memo, kind)
     if kind == "change":
         blocks += _table_blocks(campaign, readings)
         blocks += _settle_blocks(readings)
     elif kind == "choice":
         blocks += _pair_blocks(campaign, readings, reports)
-        blocks += _behind_on(memo, style)
+        blocks += _behind_on(memo)
         blocks += _frontier_blocks(campaign, readings, reports)
     else:
         blocks += _measure_blocks(campaign, readings, reports)
+    blocks += _depth_blocks(campaign, readings, reports)
     blocks += _bar_blocks(readings, reports)
     if kind != "measurement" or call is not None:
         blocks += _call_blocks(campaign, readings, call)
-    blocks += _memo_blocks(memo, style, _Trace.over(campaign, readings, reports, resolutions, trial_ids or {}))
+    blocks += _memo_blocks(memo, _Trace.over(campaign, readings, reports, resolutions, trial_ids or {}))
     summaries = {summary.aspect: summary for summary in (memo.aspect_summaries if memo is not None else [])}
     folds = [
         CampaignAspectFold(
             aspect=aspect.label,
             shows=_shows(readings, aspect.label),
-            summary=_summary_blocks(summaries.get(aspect.label), style),
+            summary=_summary_blocks(summaries.get(aspect.label)),
             report=reports[aspect.label],
         )
         for aspect in campaign.aspects
     ]
-    blocks += style.methods()
+    if readings.readings or readings.pairs:
+        blocks.append(DisclosureBlock(section="methods", source="comparisons", text=PAIRING_METHOD))
     return CampaignReport(
         basis="analysis" if memo is not None else "code_only",
         title=campaign.name or f"Campaign {campaign.id}",
@@ -268,16 +271,14 @@ def _floor_words(floor: Floor | None, status: FloorStatus) -> str:
     return f"{floor_statement(floor.clause, candidate=status.arm_label)} on {status.aspect}"
 
 
-def _bar_warnings(
-    readings: CampaignReadings, memo: AuthoredCampaignAnalysis | None = None, style: _CampaignStyle | None = None
-) -> list[ReportBlock]:
+def _bar_warnings(readings: CampaignReadings, memo: AuthoredCampaignAnalysis | None = None) -> list[ReportBlock]:
     """One loud line per bar an arm misses, the page's first, as loud as a broken floor, for every kind; each followed
     at once by the writer's why where the memo recommends that arm below that bar (``bars_missed``)."""
     recommendation = memo.recommended() if memo is not None else None
     answers: dict[tuple[str, str], list[ReportBlock]] = {}
-    if recommendation is not None and style is not None:
+    if recommendation is not None:
         for missed in recommendation.bars_missed:
-            if why := style.prose(missed.why).strip():
+            if why := _as_written(missed.why):
                 answers.setdefault((missed.aspect, missed.measure), []).append(
                     TextBlock(
                         section="header", role="override", body=why, facts=[Fact(name="Arm", value=recommendation.arm)]
@@ -328,9 +329,9 @@ def _guardrail_warnings(
     return blocks
 
 
-def _behind_on(memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle) -> list[ReportBlock]:
+def _behind_on(memo: AuthoredCampaignAnalysis | None) -> list[ReportBlock]:
     """The writer's why for each aspect a choice's recommended arm is shown behind on, set beside the pairs: what the
-    recommendation answers there (``behind_on``), styled."""
+    recommendation answers there (``behind_on``), as written."""
     recommendation = memo.recommended() if memo is not None else None
     if recommendation is None:
         return []
@@ -345,7 +346,7 @@ def _behind_on(memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle) -> 
             ],
         )
         for behind in recommendation.behind_on
-        if (why := style.prose(behind.why).strip())
+        if (why := _as_written(behind.why))
     ]
 
 
@@ -353,13 +354,12 @@ def _floor_warnings(
     campaign: EvalCampaign,
     readings: CampaignReadings,
     memo: AuthoredCampaignAnalysis | None = None,
-    style: _CampaignStyle | None = None,
 ) -> list[ReportBlock]:
     """One loud line per floor a candidate breaks, the page's first, worded as an aspect's page words it: the aspect,
     the arm, the rate that broke it and the interval it broke on; each followed at once by the writer's why, where the
     memo recommends the arm over that floor. Past :data:`_WARNINGS_APART` of them, one line per candidate names every
     floor it breaks, so the warnings stay readable, its whys after it."""
-    recommended, overrides = _overrides(memo, style)
+    recommended, overrides = _overrides(memo)
 
     def answered(status: FloorStatus) -> list[ReportBlock]:
         # The why answers the recommended arm's breaking of the floor, never another arm's breaking of the same one.
@@ -500,18 +500,16 @@ def _floor_lines(floors: Sequence[Floor], readings: CampaignReadings) -> list[tu
     ]
 
 
-def _overrides(
-    memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle | None
-) -> tuple[str | None, dict[str, list[ReportBlock]]]:
+def _overrides(memo: AuthoredCampaignAnalysis | None) -> tuple[str | None, dict[str, list[ReportBlock]]]:
     """The arm the memo recommends, and the writer's why for each broken floor it is recommended over, by the floor's
-    key, styled; no arm and nothing with no recommendation."""
+    key, as written; no arm and nothing with no recommendation."""
     recommendation = memo.recommended() if memo is not None else None
-    if recommendation is None or style is None:
+    if recommendation is None:
         return None, {}
     found: dict[str, list[ReportBlock]] = {}
     arm = recommendation.arm
     for override in recommendation.floors_overridden:
-        if why := style.prose(override.why).strip():
+        if why := _as_written(override.why):
             found.setdefault(override.floor, []).append(
                 TextBlock(section="header", role="override", body=why, facts=[Fact(name="Arm", value=arm)])
             )
@@ -554,26 +552,23 @@ def _points(value: float) -> str:
     return format_number(round(value, 1))
 
 
-def _memo_summary_blocks(memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle) -> list[ReportBlock]:
-    """The writer's read across every aspect, held to the style pass (:meth:`_CampaignStyle.summary`), the first thing
-    the page says after code's warnings and the question, for every kind; nothing with no memo, or where the summary
-    proposed a sample size or cost no code computed."""
-    if memo is None or not (said := style.summary(memo.summary)):
+def _memo_summary_blocks(memo: AuthoredCampaignAnalysis | None) -> list[ReportBlock]:
+    """The writer's read across every aspect, as written, the first thing the page says after code's warnings and the
+    question, for every kind; nothing with no memo."""
+    if memo is None or not (said := _as_written(memo.summary)):
         return []
     return [TextBlock(section="header", role="summary", body=said)]
 
 
-def _recommendation_blocks(
-    memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle, kind: str
-) -> list[ReportBlock]:
-    """The writer's recommendation, the arm and how sure, then each reason in its words, styled; one line with no
+def _recommendation_blocks(memo: AuthoredCampaignAnalysis | None, kind: str) -> list[ReportBlock]:
+    """The writer's recommendation, the arm and how sure, then each reason in its words, as written; one line with no
     memo, and one by the campaign's kind where the memo recommends nothing."""
     if memo is None:
         return [DisclosureBlock(section="header", source="memo", text=NO_RECOMMENDATION)]
     recommendation = memo.recommended()
     if recommendation is None:
         return [DisclosureBlock(section="header", source="memo", text=NO_RECOMMENDATION_WORDS[kind])]
-    reasons = [style.prose(reason, plans=True) for reason in recommendation.reasons]
+    reasons = [_as_written(reason) for reason in recommendation.reasons]
     return [
         TextBlock(
             section="header",
@@ -853,8 +848,8 @@ def _settle_blocks(readings: CampaignReadings) -> list[ReportBlock]:
             source="comparisons",
             text=(
                 "A count is the independent cases that would show the arm no worse than the control by more than the "
-                f"aspect's margin, read at {_percent(INTERVAL_LEVEL)} as a floor's count is, so a floor on the same "
-                "rate and points gives the same count. It would not show the arm better, so its row stays unclear "
+                f"aspect's margin, read at {_percent(INTERVAL_LEVEL)}. A floor on the same rate and points gives the "
+                "same count. It would not show the arm better, so its row stays unclear "
                 "unless its gain clears too. Each count reads the interval again over this run's cases repeated to "
                 "that many; repeats of a case narrow it far less than new cases."
             ),
@@ -928,22 +923,22 @@ def _date(stamp: str) -> str:
 # =============================================================================
 
 
-def _memo_blocks(memo: AuthoredCampaignAnalysis | None, style: _CampaignStyle, trace: _Trace) -> list[ReportBlock]:
-    """The memo's findings, each its headline and body and, folded, its trace; then its next steps, every word through
-    the style pass; nothing with no memo."""
+def _memo_blocks(memo: AuthoredCampaignAnalysis | None, trace: _Trace) -> list[ReportBlock]:
+    """The memo's findings, each its headline and body and, folded, its trace; then its next steps, every word as
+    written; nothing with no memo."""
     if memo is None:
         return []
     blocks: list[ReportBlock] = []
     for position, finding in enumerate(memo.findings):
-        title = style.title(finding.title)
+        title = _as_written(finding.title)
         blocks.append(
             TextBlock(section="memo", role="finding_title", body=title, finding=position, anchor=f"F{position + 1}")
         )
-        if body := style.prose(finding.body):
+        if body := _as_written(finding.body):
             blocks.append(TextBlock(section="memo", role="finding_body", body=body, finding=position))
         blocks += trace.blocks(position, finding)
     for step in memo.next:
-        if title := style.sentence(step.title, plans=True):
+        if title := _as_written(step.title):
             blocks.append(TextBlock(section="memo", role="next_step", body=title))
     return blocks
 
@@ -1072,14 +1067,14 @@ class _Trace:
         return f"aspect-{fold_ids(labels)[labels.index(aspect)]}"
 
 
-def _summary_blocks(summary: AspectSummary | None, style: _CampaignStyle) -> list[ReportBlock]:
-    """The writer's summary of one aspect: what changed, how sure, what it means, styled; nothing with none."""
+def _summary_blocks(summary: AspectSummary | None) -> list[ReportBlock]:
+    """The writer's summary of one aspect: what changed, how sure, what it means, as written; nothing with none."""
     if summary is None:
         return []
     parts: tuple[tuple[TextRole, str], ...] = (
-        ("what_changed", style.prose(summary.what_changed)),
-        ("how_sure", style.prose(summary.how_sure)),
-        ("means", style.prose(summary.means, plans=True)),
+        ("what_changed", _as_written(summary.what_changed)),
+        ("how_sure", _as_written(summary.how_sure)),
+        ("means", _as_written(summary.means)),
     )
     return [TextBlock(section="memo", role=role, body=body) for role, body in parts if body.strip()]
 
@@ -1231,6 +1226,231 @@ def _frontier_blocks(
                 )
             )
     return lines
+
+
+def _label_of(bundle: AnalysisContextBundle, labels: Mapping[str, str]) -> Callable[[str], str]:
+    """What the page calls the arm a variant key names on one aspect: the campaign's label, else its variant's name."""
+    names = _names(bundle, labels)
+    return lambda key: names[key].label if key in names else f"unplaced arm {short_digest(key)}"
+
+
+def _depth_blocks(
+    campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]
+) -> list[ReportBlock]:
+    """How deep each arm ran on each aspect, what pass^k compares at, and what limits each comparison's interval:
+    tables, with one sentence under each where the arms differ."""
+    labels = readings.arm_labels()
+    depths = [
+        (
+            reports[aspect.label].bundle,
+            aspect_depth(reports[aspect.label].bundle, _label_of(reports[aspect.label].bundle, labels)),
+        )
+        for aspect in campaign.aspects
+    ]
+    rows = [
+        table_row(
+            {
+                "aspect": depth.aspect,
+                "arm": arm,
+                "cases": held.cases,
+                "trials": held.trials,
+                "fewest": held.repeats_min,
+                "median": held.repeats_median,
+                "most": held.repeats_max,
+            }
+        )
+        for _, depth in depths
+        for arm, held in depth.arms.items()
+    ]
+    if not rows:
+        return []
+    blocks: list[ReportBlock] = [
+        TableBlock(
+            section="scoreboard",
+            name="depth",
+            title="Depth",
+            columns=[
+                TableColumn(key="aspect", header="Aspect", term="aspect"),
+                TableColumn(key="arm", header="Arm"),
+                TableColumn(key="cases", header="Cases", term="cases"),
+                TableColumn(key="trials", header="Trials", term="usable"),
+                TableColumn(key="fewest", header="Fewest repeats", term="depth"),
+                TableColumn(key="median", header="Median repeats", term="depth"),
+                TableColumn(key="most", header="Most repeats", term="depth"),
+            ],
+            rows=rows,
+            order="aspect by aspect, each arm",
+            total_rows=len(rows),
+        )
+    ]
+    blocks += [
+        DisclosureBlock(section="scoreboard", source="comparisons", text=depth.said)
+        for _, depth in depths
+        if depth.said is not None
+    ]
+    blocks += _pass_k_depth_blocks(depths, labels)
+    blocks += _precision_blocks(readings)
+    return blocks
+
+
+def _pass_k_depth_blocks(
+    depths: Sequence[tuple[AnalysisContextBundle, AspectDepth]], labels: Mapping[str, str]
+) -> list[ReportBlock]:
+    """Each frontier point's depth beside its pass^k: the planned depth, the cases short of it, and its reading at the
+    common depth, the fewest runs any arm gave a shared case; a sentence on the common depth, or that the arms share no
+    case, and on each arm pass^k is unmeasured for. Every subject of every aspect."""
+    rows: list[dict[str, TableCell]] = []
+    for bundle, depth in depths:
+        name = _label_of(bundle, labels)
+        subjects = [subject for subject in bundle.frontier.subjects if subject.points]
+        for subject, said in zip(subjects, depth.subjects, strict=True):
+            if not said.compared:
+                continue
+            for point in subject.points:
+                rows.append(
+                    table_row(
+                        {
+                            "aspect": said.where,
+                            "arm": name(point.variant_key),
+                            "planned": subject.k,
+                            "short": point.n_cases_short_of_k,
+                            "common": subject.common_depth,
+                            "reading": None
+                            if point.common_pass_hat_k is None
+                            else round(100 * point.common_pass_hat_k, 1),
+                            "left_out": point.n_cases_left_out,
+                        }
+                    )
+                )
+    if not rows:
+        return []
+    blocks: list[ReportBlock] = [
+        TableBlock(
+            section="scoreboard",
+            name="pass_k_depth",
+            title="Pass^k depth",
+            columns=[
+                TableColumn(key="aspect", header="Aspect", term="aspect"),
+                TableColumn(key="arm", header="Arm"),
+                TableColumn(key="planned", header="Planned depth", term="depth"),
+                TableColumn(key="short", header="Cases short", term="cases"),
+                TableColumn(key="common", header="Common depth", term="common depth"),
+                TableColumn(key="reading", header="Pass^k there (%)"),
+                TableColumn(key="left_out", header="Cases left out", term="cases"),
+            ],
+            rows=rows,
+            order="aspect by aspect, each arm as the frontier lists it",
+            total_rows=len(rows),
+        )
+    ]
+    blocks += [
+        DisclosureBlock(section="scoreboard", source="comparisons", text=line)
+        for _, depth in depths
+        for line in depth.pass_k_lines()
+    ]
+    return blocks + _model_blocks(depths, labels)
+
+
+#: The two arms a precision row compares.
+ARMS_PAIR = "{first} and {second}"
+
+#: What the page says under the model's table: what the figures are, and that nothing ranks on them.
+_MODEL_SAID = f"Each figure here is {MODEL_ASSUMES}. Its arm ran no case that deep, so nothing ranks on it."
+
+
+def _model_blocks(
+    depths: Sequence[tuple[AnalysisContextBundle, AspectDepth]], labels: Mapping[str, str]
+) -> list[ReportBlock]:
+    """The opt-in model-based pass^k of each point at a depth it never reached, in a table of its own, labelled a
+    model with what it assumes: never beside a measured figure as one."""
+    rows = [
+        table_row(
+            {
+                "aspect": said.where,
+                "arm": _label_of(bundle, labels)(point.variant_key),
+                "depth": point.model_pass_hat_k.k,
+                "model": round(100 * point.model_pass_hat_k.pass_hat_k, 1),
+            }
+        )
+        for bundle, depth in depths
+        for subject, said in zip([sub for sub in bundle.frontier.subjects if sub.points], depth.subjects, strict=True)
+        for point in subject.points
+        if point.model_pass_hat_k is not None
+    ]
+    if not rows:
+        return []
+    return [
+        TableBlock(
+            section="scoreboard",
+            name="model_pass_k",
+            title="Model-based pass^k",
+            columns=[
+                TableColumn(key="aspect", header="Aspect", term="aspect"),
+                TableColumn(key="arm", header="Arm"),
+                TableColumn(key="depth", header="Depth", term="depth"),
+                TableColumn(key="model", header="Model pass^k (%)"),
+            ],
+            rows=rows,
+            order="aspect by aspect, each arm the depth is unreached for",
+            total_rows=len(rows),
+        ),
+        DisclosureBlock(
+            section="scoreboard",
+            source="comparisons",
+            text=_MODEL_SAID,
+        ),
+    ]
+
+
+def _precision_blocks(readings: CampaignReadings) -> list[ReportBlock]:
+    """What limits each pass-rate comparison's interval: its half-width, each arm's own, the arm limiting it and the
+    between-case share of its variance, with the one sentence saying what extra repeats can and cannot lower."""
+    compared: list[tuple[str, Precision]] = [(row.aspect, row.precision) for row in readings.readings if row.precision]
+    compared += [(pair.aspect, pair.precision) for pair in readings.pairs if pair.precision]
+    if not compared:
+        return []
+    labels = readings.arm_labels()
+
+    def named(key: str) -> str:
+        return labels.get(key, f"unplaced arm {short_digest(key)}")
+
+    rows: list[dict[str, TableCell]] = []
+    for aspect, precision in compared:
+        # The sides in the order the comparison read them: the control, or the arm first in key order, first.
+        (first, first_width), (second, second_width) = precision.half_widths.items()
+        rows.append(
+            table_row(
+                {
+                    "aspect": aspect,
+                    "arms": ARMS_PAIR.format(first=named(first), second=named(second)),
+                    "half_width": round(precision.half_width, 1),
+                    "first": round(first_width, 1),
+                    "second": round(second_width, 1),
+                    "limited_by": named(precision.limited_by) if precision.limited_by else None,
+                    "between": None if precision.between_share is None else round(100 * precision.between_share),
+                }
+            )
+        )
+    return [
+        TableBlock(
+            section="scoreboard",
+            name="precision",
+            title="Precision",
+            columns=[
+                TableColumn(key="aspect", header="Aspect", term="aspect"),
+                TableColumn(key="arms", header="Arms"),
+                TableColumn(key="half_width", header="Half-width (pts)", term="interval"),
+                TableColumn(key="first", header="First arm's own (pts)", term="interval"),
+                TableColumn(key="second", header="Second arm's own (pts)", term="interval"),
+                TableColumn(key="limited_by", header="Limited by"),
+                TableColumn(key="between", header="Between cases (%)", term="between cases"),
+            ],
+            rows=rows,
+            order="aspect by aspect, each comparison as the readings list it",
+            total_rows=len(rows),
+        ),
+        DisclosureBlock(section="scoreboard", source="comparisons", text=REPEATS_FLOOR),
+    ]
 
 
 def _frontier_words(aspect: str, named: str, tied: Sequence[str], decision: str | None) -> str:
@@ -1402,97 +1622,14 @@ def _unread_without_control_lines(campaign: EvalCampaign, reports: Mapping[str, 
 
 
 # =============================================================================
-# The style pass over the memo
+# The memo's words
 # =============================================================================
 
 
-@dataclass
-class _CampaignStyle:
-    """The memo's words held to the style an aspect's page holds them to (:class:`MemoStyle`), over every aspect.
-
-    The first aspect's pass fixes and lints each sentence and records what it dropped; every aspect's names the arms
-    and knows the numbers its bundle measured, so a sentence restating a number any aspect measured is dropped, and a
-    sentence on what to run next is dropped only where no aspect's projections state the count it proposes.
-    """
-
-    styles: list[MemoStyle]
-
-    @classmethod
-    def over(cls, campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report]) -> _CampaignStyle:
-        """One pass per aspect, every arm named by its campaign label, every unclear row's projection known."""
-        labels = readings.arm_labels()
-        samples = tuple(row.projection for row in readings.readings if row.projection is not None)
-        question = " ".join(campaign.question.split()) or None
-        return cls(
-            styles=[
-                MemoStyle(
-                    bundle=reports[aspect.label].bundle,
-                    names=_names(reports[aspect.label].bundle, labels),
-                    question=question,
-                    samples=samples,
-                )
-                for aspect in campaign.aspects
-            ]
-        )
-
-    @property
-    def primary(self) -> MemoStyle:
-        return self.styles[0]
-
-    def _named(self, text: str) -> str:
-        for style in self.styles:
-            text = style.names_arms(text)
-        return text
-
-    def _unplanned(self, text: str) -> str:
-        kept = []
-        for part in sentences(text):
-            if all(style.proposes_sample(part) for style in self.styles):
-                self.primary.proposed.append(part)
-                continue
-            kept.append(part)
-        return " ".join(kept)
-
-    def sentence(self, text: str, *, plans: bool = False) -> str:
-        """One sentence the memo stands on (a title, a next step), held to every rule."""
-        named = self._named(" ".join(text.split()))
-        if plans and not (named := self._unplanned(named)):
-            return ""
-        return self.primary.sentence(named)
-
-    def prose(self, text: str, *, plans: bool = False) -> str:
-        """A paragraph (a reason, a finding's body, a summary, an override's why), each sentence held to every rule."""
-        kept = []
-        for part in sentences(self._named(text)):
-            if plans and all(style.proposes_sample(part) for style in self.styles):
-                self.primary.proposed.append(part)
-                continue
-            if any(style.holds_measured(part) for style in self.styles[1:]):
-                self.primary.dropped += 1
-                continue
-            kept.append(part)
-        return self.primary.prose(" ".join(kept)) if kept else ""
-
-    def title(self, text: str) -> str:
-        """A finding's title held to every rule; where that would leave none of it, kept as written and not counted as
-        dropped, since the page prints it: a finding is never laid out without its headline."""
-        return self.primary.or_as_written(lambda: self.sentence(text), self._named(text))
-
-    def summary(self, text: str) -> str:
-        """The memo's one sentence across the aspects, as :meth:`MemoStyle.summary` holds it, over every aspect: kept as
-        written where the pass would leave none of it, unless it proposed a sample or cost no aspect projects."""
-        return self.primary.or_as_written(lambda: self.prose(text, plans=True), self._named(text))
-
-    def methods(self) -> list[ReportBlock]:
-        """What the memo said that the page did not print as written, and what still breaks a rule: the methods."""
-        blocks: list[ReportBlock] = [
-            DisclosureBlock(section="methods", source="memo", text=text) for text in decision_disclosures(self.primary)
-        ]
-        blocks += [
-            DisclosureBlock(section="methods", source="memo", text=text, fold="Style")
-            for text in self.primary.offending()
-        ]
-        return blocks
+def _as_written(text: str) -> str:
+    """The writer's words as the page prints them: as written, on one line. Code reads none of them: whether they
+    keep the prompt's rules is for a host's reporter eval to measure, in whatever language they are written."""
+    return " ".join(text.split())
 
 
 def _names(bundle: AnalysisContextBundle, labels: Mapping[str, str]) -> dict[str, ArmName]:

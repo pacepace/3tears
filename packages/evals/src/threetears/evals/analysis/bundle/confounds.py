@@ -117,8 +117,8 @@ def _apparatus_confound_reasons(profile: HostProfile) -> dict[str, str]:
     """
     reasons = {
         declared.name: declared.confounds
-        for declared in profile.sweepables.declarations
-        if declared.role == "apparatus" and declared.confounds is not None
+        for declared in profile.sweepables.rig_dimensions
+        if declared.confounds is not None
     }
     if profile.world is not None:
         reasons.update(

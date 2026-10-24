@@ -40,6 +40,7 @@ from threetears.evals.analysis.cells import (
     SubjectKeyInstability,
 )
 from threetears.evals.analysis.aspects import AspectDeclaration
+from threetears.evals.analysis.depth import Depth
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.remainder import RemainderState, remainder_state
 from threetears.evals.analysis.reporting import served_model_state
@@ -1896,6 +1897,41 @@ class FloorContrast(EvalDocumentModel):
             "what a floor's interval, and an aspect reading's, is computed from."
         )
     )
+    case_trials: tuple[list[int], list[int]] | None = Field(
+        default=None,
+        description=(
+            "The control's and the arm's usable trials per case, aligned with `case_values`: each case's depth, "
+            "which its share weighs equally whatever it is. Carried on the overall pass rate; None on cost."
+        ),
+    )
+    case_passed: tuple[list[int], list[int]] | None = Field(
+        default=None,
+        description=(
+            "The control's and the arm's usable trials passed per case, aligned with `case_trials`: each case's share "
+            "is its passed over its trials. Carried with `case_trials`, None without them."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _trials_line_up(self) -> FloorContrast:
+        """Refuse trials per case that do not line up with the shares they sit beside.
+
+        :raises ValueError: A side's trials and values differ in length, or a case has no usable trial.
+        """
+        if self.case_trials is None:
+            return self
+        values, trials = self.case_values, self.case_trials
+        if (len(trials[0]), len(trials[1])) != (len(values[0]), len(values[1])):
+            raise ValueError("case_trials must line up with case_values, case for case on each side")
+        if any(count < 1 for side in trials for count in side):
+            raise ValueError("a case carried in case_trials has at least one usable trial")
+        passed = self.case_passed
+        if passed is not None and not all(
+            len(counts) == len(side) and all(0 <= hit <= of for hit, of in zip(counts, side, strict=True))
+            for counts, side in zip(passed, trials, strict=True)
+        ):
+            raise ValueError("case_passed must line up with case_trials, each case passing at most its trials")
+        return self
 
 
 class MultipleComparisons(EvalDocumentModel):
@@ -2385,6 +2421,13 @@ class ArmScoreboard(EvalDocumentModel):
         default=None,
         description="The candidate's spend per trial that took a turn — what the model costs per reply; None unmeasured.",
     )
+    depth: Depth | None = Field(
+        default=None,
+        description=(
+            "How deep the arm was measured over every rig: its usable cases and trials, and its usable trials per "
+            "case, fewest, median and most. None with no usable trial."
+        ),
+    )
 
     @model_validator(mode="after")
     def _the_census_adds_up(self) -> ArmScoreboard:
@@ -2484,8 +2527,18 @@ class AnalysisContextBundle(EvalDocumentModel):
     # own; a frontier point's pass^k reads its headline cell alone and lists every cell with its own reading and
     # reason (`pass_hat_k_cells`), so pass^k and its curve move over unchanged runs; a comparison set's case-set fingerprint digests the run's frozen case ids
     # and is never None.
+    # 63: the spend ceiling (`max_cost_usd`) is no dimension of the rig (`Sweepable.no_rig_coordinate`): runs that
+    # differ only in the cap they were given are one apparatus class and so one cell, and no confound list, coverage
+    # row, divergence or factor-aliasing read names a cap difference, so every apparatus class id, cell and fingerprint
+    # moves over unchanged runs (`CELL_MODEL_VERSION` 14). The host declarations digest reads whether each sweepable is
+    # a dimension of the rig.
+    # 64: depth is stated, nothing read changes: each arm's `scoreboard[].depth` (usable cases, trials, and trials per
+    # case fewest, median and most), each overall pass-rate floor contrast's `case_trials` and `case_passed` beside its shares, and each
+    # frontier point's delivered `depth`, `n_cases_short_of_k`, common-depth reading (`common_pass_hat_k`,
+    # `n_common_cases`, `n_cases_left_out`) and each subject's `common_depth`, `shares_no_case` and `unmeasured_for`; a point's opt-in
+    # `model_pass_hat_k` (`basis: "model"`), None unless the host asks for it.
     schema_version: int = Field(
-        default=62, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=64, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -3077,7 +3130,8 @@ class AnalysisContextBundle(EvalDocumentModel):
     host_declarations_digest: str = Field(
         min_length=1,
         description=(
-            "sha256 of the host's declared sweepables (each one's name, role and blank rule) and world dimension "
+            "sha256 of the host's declared sweepables (each one's name, role, blank rule and whether it is a "
+            "dimension of the rig, `Sweepable.rig_dimension`) and world dimension "
             "names — the declarations that partition observations into apparatus classes and arms "
             "(:func:`host_declarations_digest`). Derived from the declarations at assembly, never kept by hand, "
             "so a host that adds, removes or renames one moves it without bumping anything. Two bundles whose "
@@ -3559,8 +3613,10 @@ def host_declarations_digest(profile: HostProfile) -> str:
     fingerprint, and the same holds for a world dimension; a lever is a coordinate of every arm. A host adding,
     removing or renaming one moves every fingerprint over unchanged runs, and the package's own versions
     cannot say so — they are the package's. This digest is computed from the registry the bundle was assembled
-    under, so it moves exactly when those declarations do: each sweepable's name, role and blank rule (whether
-    a blank means "never recorded", which decides whether a level can be compared at all), and each world
+    under, so it moves exactly when those declarations do: each sweepable's name, role, blank rule (whether
+    a blank means "never recorded", which decides whether a level can be compared at all) and whether it is a
+    dimension of the rig at all (:attr:`~threetears.evals.kernel.host.sweepables.Sweepable.rig_dimension`: an
+    apparatus input carrying ``no_rig_coordinate`` splits no cell), and each world
     dimension's name. The core's declarations are in it too, because the registry a host extends carries them;
     a core change also moves :attr:`AnalysisContextBundle.schema_version`, which is read first.
 
@@ -3573,14 +3629,15 @@ def host_declarations_digest(profile: HostProfile) -> str:
     :rtype: str
     """
     sweepables = sorted(
-        (declared.name, declared.role, declared.indeterminate_when_blank)
+        (declared.name, declared.role, declared.indeterminate_when_blank, declared.rig_dimension)
         for declared in profile.sweepables.declarations
     )
     world = sorted(profile.world.names) if profile.world is not None else []
     return canonical_digest(
         {
             "sweepables": [
-                {"name": name, "role": role, "indeterminate_when_blank": blank} for name, role, blank in sweepables
+                {"name": name, "role": role, "indeterminate_when_blank": blank, "rig_dimension": rig}
+                for name, role, blank, rig in sweepables
             ],
             "world": world,
         }

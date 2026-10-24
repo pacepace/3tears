@@ -42,7 +42,7 @@ import pytest
 
 from threetears.evals.actions import Caller, MountedTool, eval_catalogue, standard_tools
 from threetears.evals.analysis import LabelCriterion, ReporterLabel
-from threetears.evals.analysis.reporter_kind import reporter_case_of
+from threetears.evals.analysis.reporter_kind import reporter_case_of, reporter_case_payload
 from threetears.evals.kernel import EvalServiceError, ValidationFailedError
 from threetears.evals.ops import (
     FrozenReporterCase,
@@ -374,6 +374,18 @@ def test_a_case_stored_before_readers_were_recorded_reads_with_none() -> None:
     case = reporter_case_of(stored)
 
     assert case is not None and [(label.reader, label.collected_by) for label in case.labels] == [(None, None)]
+
+
+def test_a_case_stored_before_verdicts_existed_reads_as_a_direction_and_re_stores_byte_identically() -> None:
+    """A label stored before a label's form followed its scale holds a direction and no verdict or excerpt, and the
+    payload a build writes for it is the one it was read from, key for key."""
+    _, stored, _ = _frozen_store()
+    case = reporter_case_of(stored)
+    assert case is not None
+
+    ((direction, verdict, excerpt),) = [(label.direction, label.verdict, label.memo_excerpt) for label in case.labels]
+    assert direction is not None and (verdict, excerpt) == (None, None)
+    assert json.dumps(reporter_case_payload(case), sort_keys=True) == json.dumps(stored.host_payload, sort_keys=True)
 
 
 def test_an_attested_re_freeze_of_its_verdicts_returns_the_stored_case_without_supersedes() -> None:
