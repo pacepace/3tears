@@ -28,8 +28,11 @@ closes that seam by injecting nothing and answering over a socket.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
+import textwrap
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -50,6 +53,9 @@ from threetears.search.extract import (
     EXTRACTOR_UNAVAILABLE_SCOPE,
 )
 from threetears.search.testing import LocalHttpServer, Reply
+
+#: the checkout root, from which ``packages.agent.tools.tests`` imports in a fresh interpreter.
+_REPO_ROOT = Path(__file__).resolve().parents[6]
 
 _BASE_URL = "http://searxng.internal:8080"
 _PAGE_URL = "https://example.test/article"
@@ -465,10 +471,7 @@ class TestWebFetchFailsTyped:
 
         assert tool.name == "threetears.web_fetch"
 
-    @pytest.mark.asyncio
-    async def test_a_whole_run_refusal_carries_the_typed_record_not_just_prose(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_a_whole_run_refusal_carries_the_typed_record_not_just_prose(self) -> None:
         """The refusal this tool's own docstring is about, read as a consumer reads it.
 
         ``extract`` raises for a refusal that applies to the whole run --
@@ -476,24 +479,65 @@ class TestWebFetchFailsTyped:
         structure-reading consumer must not have to parse prose for, and it
         was the one path with no test: the projection was built from an empty
         candidate set, which never populates ``failure``.
+
+        The extractor is imported when the search leaf loads, so a host without
+        the extra is simulated in a fresh interpreter that blocks ``trafilatura``
+        before anything imports it.
         """
-        # a host without the extra: trafilatura cannot be imported, so the shipped loader refuses.
-        monkeypatch.setitem(sys.modules, "trafilatura", None)
-        tool = WebFetchTool(transport=_StubFetchTransport())
+        probe = textwrap.dedent(
+            """
+            import asyncio
+            import json
+            import sys
 
-        result = await tool.execute(url=_PAGE_URL)
+            sys.modules["trafilatura"] = None
+            sys.modules["trafilatura.metadata"] = None
 
-        assert result.success is False
-        projection = _projection(result)
-        assert projection.failure is not None, "a refusal must reach the border as a record"
-        assert projection.failure.failure_class
-        assert projection.failure.scope == EXTRACTOR_UNAVAILABLE_SCOPE
+            from packages.agent.tools.tests.unit.tools import test_web_tools_on_the_leaf as t
+
+
+            async def main() -> None:
+                tool = t.WebFetchTool(transport=t._StubFetchTransport())
+                result = await tool.execute(url=t._PAGE_URL)
+                projection = t._projection(result)
+                failure = projection.failure
+                print(
+                    json.dumps(
+                        {
+                            "success": result.success,
+                            "last_line": result.content.splitlines()[-1],
+                            "failure": None
+                            if failure is None
+                            else {
+                                "failure_class": failure.failure_class,
+                                "scope": failure.scope,
+                                "remediation": failure.remediation,
+                            },
+                        }
+                    )
+                )
+
+
+            asyncio.run(main())
+            """
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", probe], capture_output=True, text=True, timeout=120, check=False, cwd=_REPO_ROOT
+        )
+        assert proc.returncode == 0, proc.stderr
+        outcome = json.loads(proc.stdout.strip().splitlines()[-1])
+
+        assert outcome["success"] is False
+        failure = outcome["failure"]
+        assert failure is not None, "a refusal must reach the border as a record"
+        assert failure["failure_class"]
+        assert failure["scope"] == EXTRACTOR_UNAVAILABLE_SCOPE
         # the shipped loader names the extra that installs the extractor. The stand-in this test
         # used to patch over it said "[fetch]" instead, so the assertion pinned the stand-in's
         # wording rather than what a host without the extractor is actually told. Pinned whole,
         # in the record AND in the prose the model reads, so a reworded or re-pointed extra fails.
-        assert projection.failure.remediation == "install 3tears-search[extract]"
-        assert result.content.splitlines()[-1] == "install 3tears-search[extract]"
+        assert failure["remediation"] == "install 3tears-search[extract]"
+        assert outcome["last_line"] == "install 3tears-search[extract]"
 
     @pytest.mark.asyncio
     async def test_a_missing_url_also_answers_with_a_readable_projection(self) -> None:

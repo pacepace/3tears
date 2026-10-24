@@ -60,7 +60,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 
 from pydantic import ValidationError
 
@@ -68,7 +68,6 @@ from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep
 from threetears.evals.kernel.errors import ConflictError, JobFenced, StorageError
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.scoring import reconstruct_completeness
-from threetears.evals.kernel.storage import RUN_LOST_STATUS, JobRecordStore, LeaseStore
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.job_lease import (
     DEFAULT_JOB_LEASE_S,
@@ -81,6 +80,10 @@ from threetears.evals.schema.job_lease import (
 )
 from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, EvalRun
 from threetears.evals.schema.logs import contain, get_logger
+
+if TYPE_CHECKING:
+    # The store settles what it reads through this module, so its ports are named for the checker alone.
+    from threetears.evals.kernel.storage import JobRecordStore, LeaseStore
 
 log = get_logger(__name__)
 
@@ -99,6 +102,10 @@ CONTENDED_BACKOFF_S = (0.5, 2.0)
 
 #: The lost cause a graceful shutdown writes on every job its process holds.
 SHUTDOWN_CAUSE = "process shut down"
+
+#: The status a run written lost takes (:data:`RUN_JOB`): what a run that stopped without finishing has always read,
+#: its cause on ``cancellation_reason`` and ``lost``.
+RUN_LOST_STATUS: Final = "cancelled"
 
 
 @dataclass(frozen=True, kw_only=True)

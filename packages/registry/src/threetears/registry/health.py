@@ -34,6 +34,11 @@ from threetears.nats import Subjects
 from threetears.nats.errors import KvError
 from threetears.observe import PeriodicTask, contain, get_logger
 from threetears.registry.catalog import ToolCatalog
+from threetears.registry.config import (
+    get_heartbeat_check_interval,
+    get_heartbeat_max_misses,
+    get_heartbeat_timeout,
+)
 from threetears.registry.entities import HeartbeatEntity
 from threetears.registry.heartbeat_collection import HeartbeatCollection
 
@@ -108,12 +113,6 @@ class HeartbeatSubscriber:
             heartbeat revives it without re-registration
         :ptype max_consecutive_misses: int | None
         """
-        from threetears.registry.config import (
-            get_heartbeat_check_interval,
-            get_heartbeat_max_misses,
-            get_heartbeat_timeout,
-        )
-
         self._catalog = catalog
         self._collection = collection
         self._namespace = namespace

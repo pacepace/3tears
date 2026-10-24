@@ -258,6 +258,34 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
             "simulator_sent_settings",
         },
     ),
+    # 63/14: the spend ceiling leaves the rig (`no_rig_coordinate`): it is still declared apparatus, so a kind seats
+    # it, but a cell id no longer digests it, so runs that differ only in their cap pool. The set moved, so the cell
+    # model moves with the bundle.
+    (
+        (63, 14),
+        (_CORE_V24 - {"max_cost_usd"})
+        | {
+            "judge_request_settings",
+            "simulator_request_settings",
+            "judge_temperature",
+            "judge_sent_settings",
+            "simulator_sent_settings",
+        },
+    ),
+    # 64/14: each arm's depth is stated (the scoreboard, the pass-rate floor contrasts' trials and passes per case,
+    # each frontier point's delivered depth and its subject's common depth). A shape-only bump: the apparatus set and
+    # the cell model hold.
+    (
+        (64, 14),
+        (_CORE_V24 - {"max_cost_usd"})
+        | {
+            "judge_request_settings",
+            "simulator_request_settings",
+            "judge_temperature",
+            "judge_sent_settings",
+            "simulator_sent_settings",
+        },
+    ),
 )
 
 
@@ -269,7 +297,9 @@ class TestTheCoresApparatusSetIsPinnedToTheVersionsThatNameIt:
         assert CORE_PINNED[-1][0] == current
 
     def test_the_cores_apparatus_declarations_are_the_pinned_set(self) -> None:
-        assert frozenset(d.name for d in CORE_SWEEPABLES if d.role == "apparatus") == CORE_PINNED[-1][1]
+        """The pinned set is what a cell id digests: every core apparatus dimension of the rig."""
+        rig = frozenset(d.name for d in CORE_SWEEPABLES if d.role == "apparatus" and d.no_rig_coordinate is None)
+        assert rig == CORE_PINNED[-1][1]
 
     def test_a_set_change_moves_both_versions(self) -> None:
         """Every row after the baseline moves the bundle version, and the cell model too when the set moved."""

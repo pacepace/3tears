@@ -98,11 +98,7 @@ from threetears.evals.schema.models import (
 from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
 from threetears.evals.schema.store_port import DocumentStore, StoreClock, StoreConflict, refuse_on_event_loop
 from threetears.evals.schema.logs import get_logger
-
-
-#: The status a run written lost takes (:data:`~threetears.evals.kernel.job_leases.RUN_JOB`): what a run that stopped
-#: without finishing has always read, its cause on ``cancellation_reason`` and ``lost``.
-RUN_LOST_STATUS: Final = "cancelled"
+from threetears.evals.kernel.job_leases import RUN_LOST_STATUS, lease_lapsed, leased_kind_of, settle_tolerantly
 
 log = get_logger(__name__)
 
@@ -881,8 +877,6 @@ class EvalStorage:
         fail it: a result that cannot be read leaves the lost run's completeness unknown, named in its
         ``error_details``, rather than refusing the write.
         """
-        from threetears.evals.kernel.job_leases import lease_lapsed, leased_kind_of, settle_tolerantly
-
         kind = leased_kind_of(model_cls) if issubclass(model_cls, EvalDocumentModel) else None
         if kind is None:
             return records

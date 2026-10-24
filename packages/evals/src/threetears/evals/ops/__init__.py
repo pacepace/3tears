@@ -116,13 +116,13 @@ from threetears.evals.ops.jobs import (
     analysis_job_id,
     generation_key,
     job_cancel,
-    job_resume,
     job_poll,
     parse_job_id,
     run_job_id,
     SWEEP_JOB_PREFIX,
     sweep_job_id,
 )
+from threetears.evals.ops.resume import job_resume
 from threetears.evals.ops.sweeps import SweepArguments, SweepArm, SweepSettings, sweep_launch
 from threetears.evals.analysis import (
     FrontierResult,

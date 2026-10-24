@@ -72,7 +72,14 @@ from threetears.evals.kernel.capped_completion import CappedCompletion, call_cei
 from threetears.evals.kernel.cassettes import CellCassettes
 from threetears.evals.kernel.inner_ceilings import generation_ceiling_s, judge_phase_ceiling_s
 from threetears.evals.kernel.host.eval_host import EvalHost
-from threetears.evals.schema.models import DimName, EvalTestCase, JudgedArtifact, JudgeEvidence, RubricDim
+from threetears.evals.schema.models import (
+    DimName,
+    EvalTestCase,
+    JudgedArtifact,
+    JudgeEvidence,
+    RubricDim,
+    RubricScale,
+)
 from threetears.evals.schema.completion import CompletionGenerator, CompletionResult, RequestCeiling
 from threetears.evals.kernel.provider import describe_failure, log_provider_failure
 from threetears.evals.kernel.text_block import one_line, under
@@ -144,8 +151,11 @@ def reporter_cell_timeout_s(
 #: Where a person reading a memo places it on a rubric dimension, low to high.
 LabelDirection = Literal["low", "low_mid", "mid", "mid_high", "high"]
 
-#: The 1-5 judge scores each label direction agrees with, inclusive. A calibration read counts a
-#: dimension as agreeing when the judge's score falls inside its label's band.
+#: What a person reading a memo says of it on a pass/fail rubric dimension.
+LabelVerdict = Literal["pass", "fail"]
+
+#: The 1-5 judge scores each label direction agrees with, inclusive. A calibration read counts an
+#: ordinal dimension as agreeing when the judge's score falls inside its label's band.
 LABEL_BANDS: dict[LabelDirection, tuple[int, int]] = {
     "low": (1, 2),
     "low_mid": (2, 3),
@@ -167,7 +177,13 @@ class LabelCriterion(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     description: str = Field(description="The dimension's description, as the template stated it at freeze time.")
-    scale: str = Field(description="How the dimension was answered at freeze time: 'ordinal' (1-5) or 'pass_fail'.")
+    scale: RubricScale = Field(
+        description=(
+            "How the dimension was answered at freeze time: 'ordinal' (1-5) or 'pass_fail'. A stored criterion naming "
+            "any other scale is refused on read, so its case is listed as unreadable by name rather than read as one "
+            "it is not."
+        )
+    )
     scoring_guide: dict[str, str] = Field(
         default_factory=dict,
         description="The scoring guide, level to descriptor, at freeze time. Empty when the dimension had none.",
@@ -188,8 +204,11 @@ class LabelCriterion(BaseModel):
 class ReporterLabel(BaseModel):
     """One reader's written verdict on a recorded memo, mapped to the dimension it bears on.
 
-    A direction, never a number: the reads these come from never gave one. Plain ``BaseModel``
-    because ``quote`` is someone's words verbatim.
+    Its form is its dimension's scale: a ``direction`` on an ordinal (1-5) dimension, never a number, since the reads
+    these come from never gave one; a ``verdict`` of pass or fail on a pass/fail dimension. Exactly one is set. The
+    freeze refuses a form that does not match the scale its criterion states; a label stored before verdicts existed
+    holds a direction and reads as it did. Plain ``BaseModel`` because ``quote`` and ``memo_excerpt`` are words
+    verbatim.
 
     A verdict is read as a person's (the judge's agreement with readers), so the ``reporter_case_freeze``
     operation names its ``reader`` only as the host attests them (``EvalHost.attests_person``) and records the caller
@@ -203,8 +222,25 @@ class ReporterLabel(BaseModel):
     dimension: DimName = Field(
         description="The rubric dimension name the verdict bears on, e.g. 'reporter.groundedness'."
     )
-    direction: LabelDirection = Field(description="Where the reader places the memo on that dimension.")
-    quote: str = Field(description="The reader's own words, verbatim — the evidence for the direction.")
+    direction: LabelDirection | None = Field(
+        default=None,
+        description="Where the reader places the memo on an ordinal dimension; None on a label carrying a verdict.",
+    )
+    verdict: LabelVerdict | None = Field(
+        default=None,
+        description="Whether the reader passes or fails the memo on a pass/fail dimension; None on a label carrying a "
+        "direction.",
+    )
+    quote: str = Field(description="The reader's own words, verbatim — the evidence for the direction or verdict.")
+    memo_excerpt: str | None = Field(
+        default=None,
+        description=(
+            "The passage of the recorded memo the verdict is about, verbatim. The freeze refuses one that is not in "
+            "the case's recorded memo, compared after collapsing each run of whitespace to one space on both sides "
+            "and trimming the excerpt's ends. None = the label quotes no passage. No part of the verdict: a re-freeze "
+            "quoting other passages than the pair's live case is refused unless it supersedes that case."
+        ),
+    )
     note: str | None = Field(default=None, description="Why the quote maps to this dimension, when not self-evident.")
     reader: str | None = Field(
         default=None,
@@ -235,17 +271,28 @@ class ReporterLabel(BaseModel):
 
     @model_validator(mode="after")
     def _a_relay_names_its_reader(self) -> ReporterLabel:
-        """Refuse a blank reader or relay, and a relay with no reader.
+        """Refuse a label holding both a direction and a verdict, or neither; a blank reader, relay or excerpt; and a
+        relay with no reader.
 
-        ``quote`` is kept verbatim, so this model strips nothing; a name that is only whitespace names no one. A relay
-        records who carried a named reader's verdict, so it has no meaning without one, as a rating's ``source`` and
-        ``collected_by`` are set together.
+        ``quote`` and ``memo_excerpt`` are kept verbatim, so this model strips nothing; a name that is only whitespace
+        names no one, and an excerpt that is only whitespace quotes nothing. A relay records who carried a named
+        reader's verdict, so it has no meaning without one, as a rating's ``source`` and ``collected_by`` are set
+        together.
 
-        :raises ValueError: ``reader`` or ``collected_by`` is blank, or ``collected_by`` is set without ``reader``.
+        :raises ValueError: ``direction`` and ``verdict`` are both set or both unset; ``reader``, ``collected_by`` or
+            ``memo_excerpt`` is blank; or ``collected_by`` is set without ``reader``.
         """
+        if (self.direction is None) == (self.verdict is None):
+            held = "both a direction and a verdict" if self.direction is not None else "neither"
+            raise ValueError(
+                f"a reporter label on {self.dimension!r} holds a direction (an ordinal dimension) or a verdict (a "
+                f"pass/fail one), exactly one, and this one holds {held}"
+            )
         for name, value in (("reader", self.reader), ("collected_by", self.collected_by)):
             if value is not None and not value.strip():
                 raise ValueError(f"a reporter label's {name} names who it is, and {value!r} is blank")
+        if self.memo_excerpt is not None and not self.memo_excerpt.strip():
+            raise ValueError(f"a reporter label's memo_excerpt quotes a passage, and {self.memo_excerpt!r} is blank")
         if self.collected_by is not None and self.reader is None:
             raise ValueError(
                 f"a reporter label relayed by {self.collected_by!r} names the reader whose verdict it relays"
@@ -396,7 +443,9 @@ def reporter_case_payload(case: ReporterCase) -> dict[str, Any]:
 
     A label's ``reader`` and ``collected_by`` are written only when set, so a label naming neither is stored exactly
     as a build at durable v16.0 stored it, and that build, whose ``ReporterLabel`` refuses a key it does not declare,
-    still reads the case: ``host_payload`` is opaque, so no newer-minor tolerance reaches it.
+    still reads the case: ``host_payload`` is opaque, so no newer-minor tolerance reaches it. ``direction``,
+    ``verdict`` and ``memo_excerpt`` are written only when set on the same terms, so a direction label quoting no
+    passage is stored exactly as v16.1 stored it.
 
     :param case: The case to store.
     :ptype case: ReporterCase
@@ -405,7 +454,7 @@ def reporter_case_payload(case: ReporterCase) -> dict[str, Any]:
     """
     frozen = case.model_dump(mode="json")
     for label in frozen["labels"]:
-        for added in ("reader", "collected_by"):
+        for added in ("direction", "verdict", "memo_excerpt", "reader", "collected_by"):
             if label[added] is None:
                 del label[added]
     return {REPORTER_CASE_KEY: frozen}
@@ -1242,6 +1291,7 @@ __all__ = [
     "AsRecordedReporterKind",
     "LabelCriterion",
     "LabelDirection",
+    "LabelVerdict",
     "PreparedReporter",
     "ReporterCase",
     "ReporterKind",

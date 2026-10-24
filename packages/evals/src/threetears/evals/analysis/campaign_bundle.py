@@ -58,6 +58,8 @@ from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
 from threetears.evals.analysis.cells import cell_ref
+from threetears.evals.analysis.depth import REPEATS_FLOOR, Depth, Precision
+from threetears.evals.analysis.depth_reading import aspect_depth
 from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines_bounded
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import CellAddress, campaign_cell_aliases
@@ -72,8 +74,9 @@ from threetears.evals.schema.logs import get_logger
 log = get_logger(__name__)
 
 #: The campaign bundle's own shape: what :meth:`CampaignBundle.from_dict` and :meth:`CampaignBundle.from_frame`
-#: accept, and the only one. A frozen copy of another shape is refused with a remedy, never read.
-CAMPAIGN_BUNDLE_SHAPE = 1
+#: accept, and the only one. A frozen copy of another shape is refused with a remedy, never read. 2: each reading and
+#: pair states both arms' depth, the paired cases that differ in it, and what limits its interval (`precision`).
+CAMPAIGN_BUNDLE_SHAPE = 2
 
 #: The most characters one aspect's part of the writer's user message may take, as compact JSON. A campaign's message
 #: grows with its aspects, at most this much each, and the system prompt is budgeted apart
@@ -239,10 +242,14 @@ class CampaignBundle(EvalDocumentModel):
         """
         shape = data.get("schema_version")
         if "readings" not in data or shape != CAMPAIGN_BUNDLE_SHAPE:
+            when = (
+                "before one memo covered a campaign's every aspect"
+                if "readings" not in data
+                else "by a build whose readings carried another shape"
+            )
             raise RefusedInput(
                 f"{what} holds evidence of shape {shape} that is not a campaign bundle of this build's shape "
-                f"({CAMPAIGN_BUNDLE_SHAPE}): it was frozen before one memo covered a campaign's every aspect, so this "
-                "build cannot read it",
+                f"({CAMPAIGN_BUNDLE_SHAPE}): it was frozen {when}, so this build cannot read it",
                 remedy=remedy,
             )
 
@@ -580,6 +587,7 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
                     f"{pair.second_passed} of {pair.second_trials}",
                 ],
                 "why": pair.reason,
+                "precision": _precision(pair.precision, namer),
             }
             for pair in bundle.readings.pairs
         ]
@@ -619,6 +627,12 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
         ]
     view |= {
         "arms": _arms(bundle, namer),
+        # Each arm's verdict on each aspect's pass rate first, then each floor apart: a floor speaks for the one rate it
+        # read (a check's, or the pass rate's), never for its whole aspect, and an unclear floor is not a broken one.
+        "pass_rate_verdicts": [
+            {"aspect": row.aspect, "arm": row.arm_label, "reading": row.reading, "change": _figure(row.change)}
+            for row in bundle.readings.readings
+        ],
         "floors": [
             {
                 "floor": status.floor,
@@ -626,7 +640,12 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
                 "arm": status.arm_label,
                 "status": status.status,
                 "reading": status.reading,
+                "speaks_for": status.reading
+                or ("the pass rate" if status.margin is not None else "the cost per reply"),
                 "interval": _figures(status.interval),
+                "worst_drop": _figure(status.worst_drop),
+                "margin": status.margin,
+                "short_by": _figure(status.short_by),
                 "reason": status.reason,
             }
             for status in floors
@@ -802,9 +821,11 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
                 "cases_to_settle": reading.projection.cases if reading.projection is not None else None,
                 "confirmatory": reading.confirmatory,
                 "why": reading.reason,
+                "precision": _precision(reading.precision, namer),
             }
             for reading in bundle.readings.on_aspect(label)
         ],
+        "depth": _depth(aspect, namer),
         "scoreboard": [_figured(row, _SCOREBOARD_FIGURES) for row in namer.walk(payload["scoreboard"], label)],
         "design": namer.walk(payload["design"], label),
         "runs": [
@@ -893,6 +914,77 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
             for criterion in late
         ]
     return view
+
+
+def _repeats(depth: Depth) -> dict[str, Any]:
+    """One arm's depth as the writer reads it: its cases, trials and repeats per case, fewest, median and most."""
+    return {
+        "cases": depth.cases,
+        "trials": depth.trials,
+        "repeats_per_case": [depth.repeats_min, depth.repeats_median, depth.repeats_max],
+    }
+
+
+def _depth(aspect: AnalysisContextBundle, namer: _Namer) -> dict[str, Any]:
+    """The aspect's depths: each arm's, the sentence to say once where they differ, and per frontier subject the depth
+    pass^k compares at (``common_depth``, the fewest runs any arm gave a shared case), above which no comparison of
+    pass^k may rank; ``unmeasured_for`` names the arms that ran no case the planned ``k`` times."""
+    depth = aspect_depth(aspect, namer.arm)
+    view: dict[str, Any] = {
+        "arms": {label: _repeats(held) for label, held in depth.arms.items()},
+        "differ": depth.differ,
+    }
+    if depth.said is not None:
+        view["said"] = depth.said
+    if depth.compared:
+        # One entry per frontier subject, each with the sentences to say: pass^k compares at `common_depth`, nothing
+        # where `shares_no_case`, and is unmeasured at the planned `k` for each arm `unmeasured_for` names.
+        view["pass_k"] = [
+            {
+                "where": subject.where,
+                "k": subject.k,
+                "common_depth": subject.common_depth,
+                "shares_no_case": subject.shares_no_case,
+                "unmeasured_for": subject.unmeasured_for,
+                "said": subject.lines(),
+            }
+            for subject in depth.subjects
+            if subject.compared
+        ]
+    # Keyed by subject (`where`, as each `pass_k` entry is) then arm: an aspect with two subjects holds an arm modelled
+    # on both, and a figure with no subject would be one the writer cannot place.
+    modelled = {
+        said.where: {
+            namer.arm(point.variant_key): {
+                "k": point.model_pass_hat_k.k,
+                "pass_hat_k": _figure(point.model_pass_hat_k.pass_hat_k),
+                "basis": point.model_pass_hat_k.basis,
+                "assumes": point.model_pass_hat_k.assumes,
+            }
+            for point in subject.points
+            if point.model_pass_hat_k is not None
+        }
+        for subject, said in zip([sub for sub in aspect.frontier.subjects if sub.points], depth.subjects, strict=True)
+    }
+    modelled = {where: arms for where, arms in modelled.items() if arms}
+    if modelled:
+        # A model, never a measurement: carried labelled, and no comparison may rank on it.
+        view["pass_k_model"] = modelled
+    return view
+
+
+def _precision(precision: Precision | None, namer: _Namer) -> dict[str, Any] | None:
+    """What limits a comparison's interval, as the writer reads it: its half-width and each arm's own in points, the arm
+    limiting it, and the between-case share of its variance, with what that share means."""
+    if precision is None:
+        return None
+    return {
+        "half_width": _figure(precision.half_width),
+        "own_half_width": {namer.arm(key): _figure(width) for key, width in precision.half_widths.items()},
+        "limited_by": namer.arm(precision.limited_by) if precision.limited_by is not None else None,
+        "between_case_share": _figure(precision.between_share),
+        "means": REPEATS_FLOOR,
+    }
 
 
 def _cells(aspect: AnalysisContextBundle, namer: _Namer) -> list[dict[str, Any]]:

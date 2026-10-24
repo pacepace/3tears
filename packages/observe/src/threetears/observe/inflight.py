@@ -46,12 +46,16 @@ usage::
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import Any, Iterator
 
 from threetears.observe.logging import get_logger
 
-if TYPE_CHECKING:
-    from prometheus_client import CollectorRegistry
+try:
+    from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Gauge, generate_latest
+
+    _PROMETHEUS = True
+except ImportError:  # NOSILENT: the prometheus extra is optional; the gauge is disabled without it (logged)
+    _PROMETHEUS = False
 
 __all__ = ["InflightRequestsGauge"]
 
@@ -129,9 +133,7 @@ class InflightRequestsGauge:
         :return: nothing
         :rtype: None
         """
-        try:
-            from prometheus_client import CollectorRegistry, Gauge
-        except ImportError:
+        if not _PROMETHEUS:
             log.debug("prometheus_client not installed -- in-flight gauge disabled")
             return
         self._registry = registry if registry is not None else CollectorRegistry()
@@ -209,7 +211,5 @@ class InflightRequestsGauge:
         if not self._available or self._registry is None:
             result: tuple[str, bytes] = (_FALLBACK_CONTENT_TYPE, b"")
         else:
-            from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-
             result = (CONTENT_TYPE_LATEST, generate_latest(self._registry))
         return result

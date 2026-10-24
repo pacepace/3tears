@@ -73,14 +73,17 @@ from threetears.agent.acl.entities import (
     RoleEntity,
     row_scope_for_customer,
 )
+from threetears.agent.acl.evaluator import evaluate_decision
 from threetears.agent.acl.types import (
     MAX_GROUP_MEMBERSHIP_DEPTH,
+    EvaluationContext,
     GroupMembership,
     MemberType,
     Role,
     RoleAssignment,
     ScopeType,
 )
+from threetears.agent.acl.types import Namespace as AclNamespace
 
 log = get_logger(__name__)
 
@@ -2717,17 +2720,6 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
             for row in rows
         ]
-        # local imports keep this collection module free of a
-        # circular dep on the evaluator stack: types -> cache ->
-        # collections -> evaluator -> types would close the loop if
-        # we imported at module scope. the per-call cost is one
-        # attribute lookup, dwarfed by the fetch above.
-        from threetears.agent.acl.evaluator import evaluate_decision  # noqa: PLC0415
-        from threetears.agent.acl.types import (  # noqa: PLC0415
-            EvaluationContext,
-            Namespace as AclNamespace,
-        )
-
         for entity in candidates:
             data = entity.to_dict()
             ns = AclNamespace(

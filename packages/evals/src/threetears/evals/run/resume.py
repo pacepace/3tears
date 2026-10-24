@@ -135,6 +135,13 @@ _UNPINNED_FIELDS: frozenset[str] = frozenset(
         "world_placements",
         # How many cells ran at once: each result stamps the execution mode it ran under.
         "cell_concurrency",
+        # Wired by the kind's launcher as it would wire them now (`admit_resumed_run`): a deadline the launch named is
+        # replayed and one it inherited is inherited again, so a take-up runs under the host's current bounds rather
+        # than being refused when they moved. The kind is the template's, which `kind_spec` and the template digest
+        # hold.
+        "candidate_kind",
+        "cell_timeout_s",
+        "turn_budget_s",
         # The ceilings a holding runs under, which a take-up may raise and each holding records.
         "max_cost_usd",
         "max_cost_usd_origin",
@@ -164,10 +171,9 @@ _UNPINNED_FIELDS: frozenset[str] = frozenset(
     }
 )
 
-#: The fields of a run's judge and simulator, of its apparatus, of what it froze of its template, its candidate kind and
-#: the deadlines its cells and turns ran under, a take-up holds equal: every field but :data:`_UNPINNED_FIELDS`, in the
-#: run's own order. Most also reach the context key; each is named on its own so a refusal says which moved. The deadlines
-#: reach no key, and the run records one value of each for every holding, so a holding under another is refused.
+#: The fields of a run's judge and simulator, of its apparatus and of what it froze of its template, a take-up holds
+#: equal: every field but :data:`_UNPINNED_FIELDS`, in the run's own order. Most also reach the context key; each is
+#: named on its own so a refusal says which moved.
 _PINNED_FIELDS: tuple[str, ...] = tuple(name for name in EvalRun.model_fields if name not in _UNPINNED_FIELDS)
 
 

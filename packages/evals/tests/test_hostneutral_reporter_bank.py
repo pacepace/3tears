@@ -231,22 +231,26 @@ class TestReadingCalibration:
         def score(value: int) -> RubricScore:
             return RubricScore(dim="x.d", score=value, scale="ordinal", axis="capability", judge_temperature=0.0)
 
-        assert label_agrees(direction, score(low)) and label_agrees(direction, score(high))
-        assert label_agrees(direction, score(inside))
-        assert not label_agrees(direction, score(outside))
+        label = _label("x.d", direction)
+        assert label_agrees(label, score(low)) and label_agrees(label, score(high))
+        assert label_agrees(label, score(inside))
+        assert not label_agrees(label, score(outside))
 
-    def test_a_pass_fail_dimension_has_no_band_and_does_not_abort_the_read(self) -> None:
+    def test_a_direction_on_a_pass_fail_dimension_has_no_band_and_does_not_abort_the_read(self) -> None:
         """Five directions onto two answers would be a calibration rule nobody ratified, and a raise here
-        would abandon every other dimension's reading after the run was paid for."""
+        would abandon every other dimension's reading after the run was paid for. A direction is the form a
+        label stored before verdicts existed holds, so it stays readable, its agreement unread."""
         assert (
             label_agrees(
-                "high", RubricScore(dim="x.d", scale="pass_fail", score=1, axis="capability", judge_temperature=0.0)
+                _label("x.d", "high"),
+                RubricScore(dim="x.d", scale="pass_fail", score=1, axis="capability", judge_temperature=0.0),
             )
             is None
         )
         assert (
             label_agrees(
-                "high", RubricScore(dim="x.d", score=5, scale="ordinal", axis="capability", judge_temperature=0.0)
+                _label("x.d", "high"),
+                RubricScore(dim="x.d", score=5, scale="ordinal", axis="capability", judge_temperature=0.0),
             )
             is True
         )

@@ -4,8 +4,9 @@ enforcement: what a collection may say about its write generation, and what foll
 A table's write generation tells a pod that its cache of the table is behind. That only holds
 while three things stay true across the family, and each is a rule here:
 
-1. **A declaration is one of three things, and an opt-out says why.** ``write_generation`` in a
-   class body is ``WRITE_GENERATION``, ``WRITE_GENERATION_UNDECLARED`` or
+1. **A declaration is one of four things, and an opt-out says why.** ``write_generation`` in a
+   class body is ``WRITE_GENERATION``, ``L2_WRITE_GENERATION`` (a table kept in L2 alone, whose
+   generation is kept there too), ``WRITE_GENERATION_UNDECLARED`` or
    ``NoWriteGeneration(reason="...")`` with a non-empty literal reason. ``BaseCollection`` refuses
    anything else when the class is defined; this walker is for the reader, who should be able to
    find every opt-out and its reason with a search, never behind a variable or a computed string.
@@ -56,7 +57,7 @@ _SRC_GLOBS = ("packages/*/src", "packages/agent/*/src")
 
 _DECLARATION = "write_generation"
 _SWITCHED_ON = "WRITE_GENERATION"
-_NAMED_DECLARATIONS = frozenset({_SWITCHED_ON, "WRITE_GENERATION_UNDECLARED"})
+_NAMED_DECLARATIONS = frozenset({_SWITCHED_ON, "L2_WRITE_GENERATION", "WRITE_GENERATION_UNDECLARED"})
 _OPT_OUT = "NoWriteGeneration"
 _PASSES = frozenset({"generation_catchup_tick", "follow_generation_key"})
 
@@ -145,7 +146,7 @@ def _name_of(value: ast.expr) -> str | None:
 
 
 def _declaration_problem(value: ast.expr) -> str | None:
-    """why a ``write_generation`` value is not one of the three declarations, written out.
+    """why a ``write_generation`` value is not one of the four declarations, written out.
 
     :param value: the assigned expression
     :ptype value: ast.expr
@@ -166,13 +167,13 @@ def _declaration_problem(value: ast.expr) -> str | None:
             return None
         return "NoWriteGeneration takes reason=<a non-empty string literal>, written where it is declared"
     return (
-        "write_generation is WRITE_GENERATION, WRITE_GENERATION_UNDECLARED or "
+        "write_generation is WRITE_GENERATION, L2_WRITE_GENERATION, WRITE_GENERATION_UNDECLARED or "
         "NoWriteGeneration(reason=...), named directly"
     )
 
 
 def find_unreadable_declarations(repo_root: Path) -> list[Violation]:
-    """every ``write_generation`` assignment that is not one of the three declarations, written out.
+    """every ``write_generation`` assignment that is not one of the four declarations, written out.
 
     :param repo_root: the repository, or a planted tree shaped like one
     :ptype repo_root: Path
@@ -300,7 +301,7 @@ class TestTheFamily:
         ]
         assert defaults == ["WRITE_GENERATION_UNDECLARED"]
 
-    def test_every_declaration_is_one_of_the_three_and_an_opt_out_says_why(self) -> None:
+    def test_every_declaration_is_one_of_the_four_and_an_opt_out_says_why(self) -> None:
         _assert_clean(find_unreadable_declarations(_REPO_ROOT))
 
     def test_no_switched_on_collection_announces_a_row_without_its_advance(self) -> None:
@@ -350,9 +351,10 @@ class TestTheWalkersBite:
         root = _plant(tmp_path, "hidden.py", "class Hot(Base):\n    write_generation = NoWriteGeneration(reason=WHY)\n")
         assert [v.symbol for v in find_unreadable_declarations(root)] == ["Hot"]
 
-    def test_the_three_declarations_pass(self, tmp_path: Path) -> None:
+    def test_the_four_declarations_pass(self, tmp_path: Path) -> None:
         source = (
             "class A(Base):\n    write_generation = WRITE_GENERATION\n\n\n"
+            "class L2(Base):\n    write_generation = L2_WRITE_GENERATION\n\n\n"
             "class B(Base):\n    write_generation = generation.WRITE_GENERATION_UNDECLARED\n\n\n"
             'class C(Base):\n    write_generation = NoWriteGeneration(reason="append-only; nothing reads a row by key")\n'
         )
