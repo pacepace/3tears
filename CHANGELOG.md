@@ -34,6 +34,28 @@ app that imported `threetears.core`, `threetears.nats` or `threetears.agent.acl`
 on `3tears-iam` must now declare them itself. Every import path is unchanged. This ships in a minor
 release.
 
+### iam: the GitHub device flow, and PKCE for GitHub sign-in
+
+**Added (iam):** the GitHub device flow (RFC 8628), for a CLI on a machine with no browser.
+`HttpxGithubOAuth2Client.request_device_code(scopes=)` returns a `GithubDeviceCode` (`device_code`,
+`user_code`, `verification_uri`, `expires_in`, `interval`). `wait_for_device_token(client, device)`
+polls at the interval, adds five seconds on each `slow_down` (or takes GitHub's longer interval),
+stops once the next poll would pass `expires_in`, and returns the access token for `fetch_profile`.
+`poll_device_token` is the single poll, answering `DeviceToken` or `DevicePending`. A terminal answer
+raises `GithubDeviceCodeExpiredError`, `GithubAccessDeniedError` or `GithubDeviceFlowDisabledError`
+(the OAuth app needs "Enable Device Flow"), and any other `error` raises their base,
+`GithubDeviceFlowError`, a `GithubOAuth2Error`. `HttpxGithubOAuth2Client`'s `client_secret` and
+`redirect_uri` are now optional, since the device flow sends neither; `exchange_code` raises
+`GithubOAuth2Error` when they are missing.
+
+**Added (iam):** `github.authorize_url(code_challenge=)` sends an S256 PKCE challenge with
+`code_challenge_method=S256`, and `exchange_code(code, code_verifier=)` sends the matching verifier.
+Both are recommended, and optional only because GitHub Enterprise Server 3.21 does not accept them.
+
+**Breaking (iam):** `GithubOAuth2Client` gains `request_device_code` and `poll_device_token`, and its
+`exchange_code` takes a keyword `code_verifier`. An implementation of the Protocol outside this package
+adds them.
+
 ### iam: the in-memory stores are bounded, and supported for a single-process service
 
 **Changed (iam):** `stores.memory` sweeps expired entries on each write, in expiry order, instead of

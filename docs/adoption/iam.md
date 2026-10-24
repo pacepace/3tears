@@ -27,7 +27,8 @@ during an incident.
   k-anonymity breach screening.
 - **OAuth2 and OIDC** -- RFC 7636 PKCE (S256 only, never `plain`), OIDC
   discovery and `id_token` verification, and a GitHub client for the one major
-  provider that is not an OIDC IdP.
+  provider that is not an OIDC IdP: the redirect flow with optional PKCE, and the
+  RFC 8628 device flow for a CLI on a machine with no browser.
 - **SAML** -- service-provider metadata resolution and assertion identity
   extraction, behind an extra so nobody inherits `xmlsec1` for free.
 - **Session tokens** -- one claim vocabulary over EdDSA or HS256, with the

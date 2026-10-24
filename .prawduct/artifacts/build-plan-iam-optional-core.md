@@ -56,6 +56,18 @@ API-growth enforcement goes red for the new leaf's names until the maintainer's 
 - [DECISION: the boundary walker counts imports inside module-level try/if/with/class bodies,
   unlike search's top-level-only reader | a guarded import still runs at import time]
 - [DECISION: README "all 30 packages" made relational | it was already stale at 32]
+- [DECISION: the device-flow loop is a module function, wait_for_device_token(client, device), over
+  the Protocol's single-poll poll_device_token, with injectable sleep and clock | keeps the
+  Protocol a thin HTTP seam and the pacing testable without waiting]
+- [DECISION: HttpxGithubOAuth2Client's client_secret and redirect_uri became optional; exchange_code
+  raises GithubOAuth2Error without them | the device flow sends neither, and a headless client holds
+  no secret. Inferred, not covered by the brief]
+- [DECISION: MemoryAttemptLimiter also sweeps lapsed windows, with no cap | the docstring now
+  supports single-process production use, which an unbounded limiter would contradict; a cap
+  that refused to count failures would stop limiting them. Inferred]
+- [DECISION: the device-flow URL and grant type are private constants | no in-repo caller, and the
+  public-API gate holds new names to one; the error, outcome and code types are ledgered for
+  testament, which has not written its caller yet]
 
 **Level:** High.
 
@@ -91,7 +103,7 @@ MemoryAttemptLimiter round trip run; dpop, attempt_limiter and seal_seed raise n
 probe per base module); `test_package_boundaries.py` (AST: no module-level core/agent/nats import
 outside the named `[core]` modules); iam moved into `_DEPENDENCY_FLOORS` with its rationale.
 
-### 03 -- testament's three asks: device flow, memory stores, PKCE  [ ]
+### 03 -- testament's three asks: device flow, memory stores, PKCE  [x]
 Owner-approved scope addition (coordinator, 2026-10-24), built after 01-02 are committed; the
 last #943 comment states what was promised.
 - **A. Device flow (RFC 8628)** in `iam.github`: a device-code request (client_id, scopes) returning
@@ -123,4 +135,4 @@ Product check: wheels built and installed bare into a throwaway venv; `nats`, `n
 
 - [x] 01 the contracts leaf
 - [x] 02 iam's optional core
-- [ ] 03 device flow, memory stores, PKCE
+- [x] 03 device flow, memory stores, PKCE

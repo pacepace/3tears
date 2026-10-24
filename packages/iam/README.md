@@ -86,7 +86,13 @@ from threetears.iam.stores.nats_kv import state_store, ticket_store
   `BreachCorpus` for k-anonymity breach screening. argon2id for new hashes,
   bcrypt verify-then-upgrade for migrated ones, NFKC normalization always.
 - **OAuth2 / OIDC** (`.pkce`, `.oidc`, `.github`) -- `PkceChallenge` and the RFC 7636 verifier, `OidcDiscoveryClient`,
-  `verify_id_token`, `OidcIdentity`, `GithubOAuth2Client`, `GithubProfile`.
+  `verify_id_token`, `OidcIdentity`, `GithubOAuth2Client`, `GithubProfile`. GitHub sign-in takes an optional
+  PKCE S256 `code_challenge` on `authorize_url` and the matching `code_verifier` on `exchange_code`; use them
+  (they are optional only because GitHub Enterprise Server 3.21 lacks them). For a machine with no browser,
+  the RFC 8628 device flow: `request_device_code`, then `wait_for_device_token`, which honours the interval
+  and `slow_down` and stops at `expires_in`, and raises `GithubAccessDeniedError`,
+  `GithubDeviceCodeExpiredError` or `GithubDeviceFlowDisabledError` (the OAuth app needs "Enable Device
+  Flow"). Its token goes through the same `fetch_profile`.
 - **SAML** (`.saml`, extra: `saml`) -- `SamlMetadataResolver`, assertion identity
   extraction, relay-state validation.
 - **Sessions** (`.tokens`, `.rotation`) -- `SessionClaims`, `mint_session_token`,
