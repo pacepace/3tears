@@ -184,9 +184,7 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   page. A failure cause beside checks and the judge heads its own column (`Model failed`) where it is the only one;
   the outcome bar under the table names each where there are several (in Markdown, its table only where it splits a
   cause the scoreboard lumps together). Under it, in normal weight, never bold, never first, the facts that change
-  how the verdict is read and nothing else, in this order: the case floor; an arm's label that its own row
-  contradicts (`'cheaper candidate' is not cheaper: it cost more per reply than production.`, latency only where it
-  was read serially); an arm whose every trial failed. A "too few" line says what is withheld and why, in the
+  how the verdict is read and nothing else, in this order: the case floor; an arm whose every trial failed. A "too few" line says what is withheld and why, in the
   reader's terms, never a bare count — and what is withheld is only the interval, never the gap, which is measured
   and stated: `Usable cases: v4.1-flash 3, v4-flash 1. Under 5 independent cases a rate is shown as a count, and
   whether the arms' gap holds on more cases is not estimated.` Everything else is a step down: what was not charted
@@ -239,7 +237,7 @@ heading.
   readings it chose (a check's pass rate as a count, `11 of 12`; money as `$`); its confidence, trials and caveats
   sit in a closed `Evidence` fold, one row with a column per fact so each header links its definition. Findings are
   evidence: one that names no reading is not a finding, so it is not laid out here but noted in one line under Not
-  tested (`The analysis also noted: …`). The memo's words are held to the page's style (below).
+  tested (`The analysis also noted: …`). The memo's words are printed as written (below).
   A campaign's summary and recommendation are on its first screen, not in a fold; the writer's summary of the aspect
   opens the fold ([one memo per campaign](#having-a-model-write-the-analysis-over-frozen-evidence)).
   **Each finding traces to its evidence, in HTML.** Each figure in its table links to a cell printing the same
@@ -288,17 +286,12 @@ heading.
 about the page ("rests on", "written by", "a count, not a ranking"), no hedge on a measured fact ("no measurable"),
 no `key=value`, no chain of dashes, no sentence over 28 words or with more than three numbers (that is a table), no
 header over three words, and the declared question only on its own quoted line. `humanize` is the one seam an
-identifier passes on its way to a reader. A memo's sentence breaking a rule code can fix is dropped or replaced (a title
-restating a measured number becomes the table's own row); one saying the evidence cannot confirm a difference a
-floor read broken or held becomes code's counts on that reading, the size of the difference left to more cases, and
-is disclosed in Methods. No floor rewrites a memo's recommendation: a floor only warns, and the page's first line is
-the warning. Where the memo says what to run next (a next step and its `Why`, the summary, a reason, an aspect
-summary's meaning), it states no sample size or cost of its own: a sentence proposing more cases at a count the `To
-show the floors hold` table does not state, or naming a cost it does not price, becomes code's sentence on the cases
-showing the floors hold needs once and is dropped after
-(a next step it replaces keeps none of the writer's facts, and one with nothing projected goes); each is listed in
-Methods. A count the run itself reached (`the 3 cases the candidate missed`) is a fact, not a proposal. What
-is left is counted there (`style: N violations`) and listed.
+identifier passes on its way to a reader. Those rules hold the text code writes. The memo's words are printed as
+written, whitespace aside: code checks code, and a model's prose is measured by a model, a host's reporter eval on the dimensions its rubric declares, calibrated
+by people, in whatever language the memo is written. The writer's prompt states the same rules (no restated numbers,
+no sample size or cost of its own, no dispute of a floor code settled, no discount of a reading for when its runs
+ran), and the writer view carries the facts they rest on (`cases_to_settle`, each run's `k_runs`, `late_criteria`).
+No floor rewrites a memo's recommendation: a floor only warns, and the page's first line is the warning.
 
 ### The marks
 
@@ -615,9 +608,8 @@ across every aspect in a sentence, required of every kind and laid out after the
 each naming in `trials` the trials it is drawn from; at most one recommendation (`Recommendation`: an arm, reasons,
 confidence, the findings it `rests_on`); one summary per aspect (what changed, how sure, what it means here), laid out
 at the top of that aspect's fold; and next steps. The summary is prose like a finding's body: a number in it is a
-figure reference code renders, an empty one is refused through the one repair round, and the page holds it to the
-style pass. It is one sentence, so where the pass would leave none of it the page keeps it as written, as it keeps a
-finding's title; a summary proposing a sample size or cost no code computed is dropped and listed in Methods. Code holds the recommendation to the campaign's kind, refusing it through the one repair round:
+figure reference code renders, an empty one is refused through the one repair round, and the page prints it as
+written. Code holds the recommendation to the campaign's kind, refusing it through the one repair round:
 
 | Kind | The writer must | The writer may not |
 |---|---|---|
@@ -629,22 +621,12 @@ Every kind answers its pick's warnings, each once and each with a why: a broken 
 missed bar in `bars_missed`. A switch rests on at least one finding; keeping the control may rest on none. The page
 sets each why beside the warning it answers, and a floor the memo overrides still opens the page.
 
-**A finding's title never states a null its evidence did not establish.** "Halving the budget does not change
-latency, cost or delivery" decides as surely as a measured result does, and over a contrast that did not separate it
-asserts a result the campaign never measured. The bundle establishes a null in two places only: a contrast reading
-`equivalent` (the equivalence test against a declared margin) and a guardrail reading `held`. The generator refuses
-a title in a common null phrasing ("does not change", "no difference", "no effect", "no worse", "was unchanged",
-"about the same", and a few more, listed in `analysis/null_claims.py`) when its finding cites no reading the bundle
-established alike. The join is structural; only the phrase is read off the words, so a reworded null passes, and
-the reporter eval measures the rest.
-
-**A finding's title names only arms its evidence reads.** A title naming an arm none of the finding's readings or
-trials is taken at states a result the reader is shown nothing of: a production memo titled a finding "GPT-6 Luna
-Pro and Ling 3.1 Flash quadrupled evaluation cost" over readings at two other arms. The generator refuses such a
-title, naming the arm. Which arms a title names is read off the names the bundle gives each arm (each model's id,
-and any other distinguishing level spelled with a letter and a digit), matched case-insensitively with spaces,
-hyphens and dots alike, the longer name winning where two overlap (`analysis/arm_mentions.py`). A shortened name
-("Luna Pro" for `gpt-6-luna-pro`) passes, and the reporter eval measures the rest.
+**A finding's title never states a null its evidence did not establish, and names only arms its evidence reads.**
+"Halving the budget does not change latency, cost or delivery" decides as surely as a measured result does, and over
+a contrast that did not separate it asserts a result the campaign never measured; a title naming an arm none of its
+finding's readings is taken at states a result the reader is shown nothing of. Both are the prompt's rule 9, and a host's
+reporter eval can measure them on the dimensions its rubric declares. The generator once refused such titles by an English phrase list and by matching arm
+names in the title; it reads no prose now (owner, 2026-10-24).
 
 **The analysis keeps its evidence.** A stored analysis carries the bundle it was written over (`EvalAnalysis.bundle`),
 so its report is laid out over that frozen evidence, whatever is archived or re-run afterwards.

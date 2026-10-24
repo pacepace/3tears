@@ -98,7 +98,10 @@ class RateReading:
     None where the bundle carries no per-case values for the rate. ``measure`` is the measure's key, None for the
     trials' own pass rate. ``samples`` are the control's and the arm's per-case values, higher better, which a
     projection reads again at more cases (:func:`project_rate`); ``paired`` whether they are one-to-one; ``rig`` the
-    test setup (apparatus class) they were read under, None with no per-case values.
+    test setup (apparatus class) they were read under, None with no per-case values. ``trials`` are each side's usable
+    trials per case, aligned with ``samples``, and ``passes`` each side's trials passed per case: carried on the overall
+    pass rate, None elsewhere. Each case's share
+    weighs the same in the interval whatever its trials, while the passed-of-measured counts pool every trial.
     """
 
     name: str
@@ -114,6 +117,8 @@ class RateReading:
     paired: bool = True
     confidence: float | None = None
     rig: str | None = None
+    trials: tuple[tuple[int, ...], tuple[int, ...]] | None = None
+    passes: tuple[tuple[int, ...], tuple[int, ...]] | None = None
 
     def drop_bounds(self) -> tuple[float, float]:
         """The arm's drop from the control in points, at best and at worst for the arm."""
@@ -230,36 +235,6 @@ class FloorVerdict:
         return 100 * low, 100 * high
 
 
-def settles(verdicts: Sequence[FloorVerdict], rate: RateReading) -> bool:
-    """Whether a rate floor read ``rate`` (by its measure) either way: broken or held on it. A rate read and left
-    unclear, or one no floor read, is not settled, however far its counts fell.
-
-    :param verdicts: The floors as read on one candidate.
-    :ptype verdicts: Sequence[FloorVerdict]
-    :param rate: The rate.
-    :ptype rate: RateReading
-    :return: True where a floor settled it.
-    :rtype: bool
-    """
-    return any(
-        read.outcome != "unclear" and read.rate.measure == rate.measure
-        for verdict in verdicts
-        if isinstance(verdict.floor.clause, RateDrop)
-        for read in verdict.rates
-    )
-
-
-def settles_cost(verdicts: Sequence[FloorVerdict]) -> bool:
-    """Whether a cost floor was read either way, broken or held.
-
-    :param verdicts: The floors as read on one candidate.
-    :ptype verdicts: Sequence[FloorVerdict]
-    :return: True where one was.
-    :rtype: bool
-    """
-    return any(isinstance(verdict.floor.clause, CostLower) and verdict.outcome != "unclear" for verdict in verdicts)
-
-
 def _reading_words(reading: str, readings: FloorReadings | None) -> str:
     """A reading a floor names, as the page names it: the rate's own name where the arms carry it, else a key in
     words, else a check's text as code."""
@@ -338,7 +313,16 @@ def evaluate_floor(
     from threetears.evals.analysis.campaign_readings import FloorStatus  # this module is read by that one
 
     verdict = read_floor(floor, readings, control=control_label, candidate=arm_label)
+    margin = floor.clause.max_points if isinstance(floor.clause, RateDrop) else None
+    worst = verdict.rate.worst_drop() if margin is not None and verdict.rate is not None else None
     return FloorStatus(
+        margin=margin,
+        worst_drop=worst,
+        short_by=(
+            worst - margin
+            if verdict.outcome == "unclear" and worst is not None and margin is not None and worst > margin
+            else None
+        ),
         floor=floor.key,
         aspect=floor.aspect,
         arm=arm,
@@ -611,6 +595,11 @@ def _read_on(
     interval = bounded_difference_interval(
         control, contrast, paired=paired, value_range=_RATE_RANGE, confidence=confidence
     )
+    trials = comparison.case_trials if isinstance(comparison, FloorContrast) else None
+    passes = comparison.case_passed if isinstance(comparison, FloorContrast) else None
+    # Trials that do not line up with the shares they sit beside are none: no depth is read off them.
+    if trials is not None and (len(trials[0]), len(trials[1])) != (len(control), len(contrast)):
+        trials = passes = None
     return replace(
         rate,
         interval=interval,
@@ -618,6 +607,8 @@ def _read_on(
         paired=paired,
         confidence=confidence,
         rig=comparison.control.apparatus_class_id,
+        trials=None if trials is None else (tuple(trials[0]), tuple(trials[1])),
+        passes=None if passes is None or trials is None else (tuple(passes[0]), tuple(passes[1])),
     )
 
 
@@ -1013,53 +1004,6 @@ def projected_usd(value: float) -> str:
     return format_number(round(value, places), prefix="$")
 
 
-def _count_words(need: CasesNeeded, *, cases: int, short: bool) -> str:
-    """One count as the projection sentence says it: ``about 107 independent cases`` (``about 107`` when ``short``),
-    ``this run's 12 cases``, ``more than 10000 independent cases``."""
-    if need.kind == "enough":
-        return f"this run's {cases} cases"
-    said = f"more than {format_number(need.cases)}" if need.kind == "beyond" else f"about {need.cases}"
-    return said if short else f"{said} independent cases"
-
-
-def projection_sentence(projection: SampleProjection) -> str:
-    """The cases showing the floors hold needs in one sentence, the Decision section's and a next step's: ``Showing the
-    floors hold needs about 107 independent cases if the arms do not differ, about 205 if they differ as observed; it
-    counts cases, not repeats.``
-
-    Where the interval already keeps the drop within the margin as observed, the lost trials are what stand in the
-    way, and the sentence says so instead.
-
-    :param projection: The candidate's projection (:func:`floors_projection`).
-    :ptype projection: SampleProjection
-    :return: The sentence, held to the page's numeral and length limits.
-    :rtype: str
-    """
-    none, observed, cases = projection.if_none, projection.if_observed, projection.cases
-    if observed.kind == "lost":
-        return (
-            "This run's interval already keeps the drop within the margin as observed: re-running its lost trials, "
-            "not more cases, would settle it."
-        )
-    tail = "; it counts cases, not repeats."
-    if none.kind != "never" and observed.kind != "never":
-        return (
-            f"Showing the floors hold needs {_count_words(none, cases=cases, short=False)} if the arms do not differ, "
-            f"{_count_words(observed, cases=cases, short=True)} if they differ as observed{tail}"
-        )
-    if none.kind != "never":
-        return (
-            f"Showing the floors hold needs {_count_words(none, cases=cases, short=False)} if the arms do not differ, "
-            f"and none would if they differ as observed{tail}"
-        )
-    if observed.kind != "never":
-        return (
-            f"Showing the floors hold needs {_count_words(observed, cases=cases, short=False)} if the arms differ as "
-            f"observed, and none would if they do not differ{tail}"
-        )
-    return "No number of new cases would show the floors hold, whether the arms do not differ or differ as observed."
-
-
 def projected_cell(projection: SampleProjection, need: CasesNeeded) -> str:
     """One side of a projection as a table cell says it, with its cost: ``107 cases, $2.7``, ``this run's 12 cases``,
     ``re-run the lost trials``, ``more than 10000 cases`` or ``none would``."""
@@ -1140,8 +1084,5 @@ __all__ = [
     "projected_cell",
     "projected_usd",
     "projection_note",
-    "projection_sentence",
     "read_floor",
-    "settles",
-    "settles_cost",
 ]

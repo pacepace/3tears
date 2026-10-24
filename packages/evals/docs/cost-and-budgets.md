@@ -114,9 +114,10 @@ the host's action dispatcher (`MeteredCallLedger.admit`). It counts landed calls
 counts only the one refusal that remains.
 
 **An uncapped run** (the host's cost enforcement off) records `max_cost_usd` as null and
-`max_cost_usd_origin` as `uncapped`. When an analysis or a bisection compares spend ceilings, it reads that
+`max_cost_usd_origin` as `uncapped`. When a bisection compares spend ceilings, it reads that
 run's ceiling as the level `uncapped`, so two uncapped runs agree and an uncapped run differs from a capped
-one. Only a run that recorded no ceiling and no origin is undecided.
+one. Only a run that recorded no ceiling and no origin is undecided. Either way it is a plain fact about the runs: the
+ceiling is no dimension of the rig, so it splits no cell and no confound list names it.
 
 **The quick path's cap.** An `Eval` runs uncapped unless given `max_cost_usd=`, and the summary
 says which. The cap is the per-run cap above, counting each result's reported spend (the runner's, and the
