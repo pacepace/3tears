@@ -18,3 +18,5 @@ packages/evals/src/threetears/evals/run/__init__.py:ResumableJob  # hosts readin
 packages/evals/src/threetears/evals/run/resume.py:ResumableEnding  # defined here and re-exported from threetears.evals.run for the hosts the run/__init__.py entry names: the type of ResumableJob.ended
 packages/evals/src/threetears/evals/run/resume.py:ResumableGroup  # defined here and re-exported from threetears.evals.run for the hosts the run/__init__.py entry names: the element type of ResumableJobs.groups
 packages/evals/src/threetears/evals/run/resume.py:ResumableJob  # defined here and re-exported from threetears.evals.run for the hosts the run/__init__.py entry names: the element type of ResumableJobs.jobs
+packages/core/src/threetears/core/collections/tier_reads.py:tier_reads_total  # bluelabsio/14-eng-ai-bot-agent-reports: the reports tool pod serves it in enr.load_status (src/aibots_reports/pod), after its re-pin to 0.77.0
+packages/core/src/threetears/core/collections/__init__.py:tier_reads_total  # bluelabsio/14-eng-ai-bot-agent-reports: the reports tool pod imports it from threetears.core.collections to serve in enr.load_status, after its re-pin to 0.77.0

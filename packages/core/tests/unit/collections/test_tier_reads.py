@@ -70,3 +70,26 @@ async def test_the_timer_logs_the_reads_each_period(caplog: pytest.LogCaptureFix
 async def test_releasing_a_timer_nothing_holds_is_refused() -> None:
     with pytest.raises(RuntimeError, match="released more times than it was held"):
         await release_tier_reads_timer()
+
+
+@pytest.mark.asyncio
+async def test_the_total_since_the_process_started_is_read_without_starting_the_counts_again() -> None:
+    from threetears.core.collections import tier_reads_total
+
+    before = tier_reads_total().get("totals-table", {})
+    record_tier_read("totals-table", ReadTier.L1)
+    record_tier_read("totals-table", ReadTier.L1)
+    record_tier_read("totals-table", ReadTier.L2)
+    after = tier_reads_total()["totals-table"]
+    assert after == {
+        "l1": before.get("l1", 0) + 2,
+        "l2": before.get("l2", 0) + 1,
+        **({"l3": before["l3"]} if "l3" in before else {}),
+    }
+    assert tier_reads_total()["totals-table"] == after, "a read of the total starts nothing again"
+
+    drained = await _drained()
+    assert drained["totals-table"] == {"l1": 2, "l2": 1}, "the line keeps its own counts since its last line"
+    assert tier_reads_total()["totals-table"] == after, "and the line starts none of the total again"
+    record_tier_read("totals-table", ReadTier.L3)
+    assert tier_reads_total()["totals-table"] == {**after, "l3": before.get("l3", 0) + 1}

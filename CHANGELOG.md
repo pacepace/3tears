@@ -172,7 +172,10 @@ past `max_hold_seconds` (new, default 600 s), the lease's rule for a wedged hold
 ### core: every collection key read is counted by the tier that answered it
 
 **Added:** `threetears.core.collections.tier_reads` (`ReadTier`, `record_tier_read`, `hold_tier_reads_timer`,
-`release_tier_reads_timer`).
+`release_tier_reads_timer`, `tier_reads_total`, the last also from `threetears.core.collections`).
+`tier_reads_total()` returns every key read since the process started, table -> tier (`l1`, `l2`, `l3`) -> reads,
+without starting the counts again, for a pod to serve on request; the once-a-minute line keeps its own counts since its
+last line. A read that found no row counts at the tier that answered it.
 `BaseCollection.ensure`, a subscript read (`collection[key]`) and every key read built on them count each read as
 L1 (this process, an absence marker included), L2 (the shared cache) or L3 (the store), by table. The counters are
 the process's, and one timer, owned by the event loop the process serves on, logs them once a minute at INFO, as

@@ -30,7 +30,7 @@ from typing import Final
 from threetears.observe import get_logger
 from threetears.observe.background import cancel_and_wait
 
-__all__ = ["ReadTier", "hold_tier_reads_timer", "record_tier_read", "release_tier_reads_timer"]
+__all__ = ["ReadTier", "hold_tier_reads_timer", "record_tier_read", "release_tier_reads_timer", "tier_reads_total"]
 
 log = get_logger(__name__)
 
@@ -52,6 +52,8 @@ class ReadTier(StrEnum):
 
 
 _counts: Counter[tuple[str, str]] = Counter()
+#: every read since the process started, never started again: what :func:`tier_reads_total` reads
+_totals: Counter[tuple[str, str]] = Counter()
 _lock = threading.Lock()
 
 
@@ -67,6 +69,30 @@ def record_tier_read(table: str, tier: ReadTier) -> None:
     """
     with _lock:
         _counts[(table, tier.value)] += 1
+        _totals[(table, tier.value)] += 1
+
+
+def _by_table(counts: Counter[tuple[str, str]]) -> dict[str, dict[str, int]]:
+    """counts keyed by (table, tier), as table -> tier -> reads, in table then tier order."""
+    by_table: dict[str, dict[str, int]] = {}
+    for (table, tier), reads in sorted(counts.items()):
+        by_table.setdefault(table, {})[tier] = reads
+    return by_table
+
+
+def tier_reads_total() -> dict[str, dict[str, int]]:
+    """every key read since the process started, by table then tier, without starting the counts again.
+
+    For a pod to serve on request; the once-a-minute line keeps its own counts since its last line. A read that found
+    no row is counted at the tier that answered it, L3 when nothing held it. Thread-safe, and as cheap as a copy of
+    one counter per (table, tier).
+
+    :return: table -> tier (``l1``, ``l2``, ``l3``) -> reads; a tier no read reached is absent
+    :rtype: dict[str, dict[str, int]]
+    """
+    with _lock:
+        totals = Counter(_totals)
+    return _by_table(totals)
 
 
 def _take_tier_reads() -> dict[str, dict[str, int]]:
@@ -76,12 +102,9 @@ def _take_tier_reads() -> dict[str, dict[str, int]]:
     :rtype: dict[str, dict[str, int]]
     """
     with _lock:
-        taken = dict(_counts)
+        taken = Counter(_counts)
         _counts.clear()
-    by_table: dict[str, dict[str, int]] = {}
-    for (table, tier), reads in sorted(taken.items()):
-        by_table.setdefault(table, {})[tier] = reads
-    return by_table
+    return _by_table(taken)
 
 
 def _log_tier_reads() -> dict[str, dict[str, int]]:
