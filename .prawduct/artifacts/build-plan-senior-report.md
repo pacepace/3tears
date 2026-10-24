@@ -132,6 +132,45 @@ this to High. The cheapest step is the owner answering them before Wave C.
 - 01: [DECISION: two templates naming one check differently print it whole and log `eval.check_names_differ`; the stored read drops a name whose check is gone (logged) | never a silent first pick; a v16.1 pod renaming or dropping a named check would otherwise leave a template this build refuses on every read]
 - 01: [DECISION: presentation fields are named once per model (`ASPECT_PRESENTATION_FIELDS`, `TEMPLATE_PRESENTATION_FIELDS`), and every exclusion (`_NOT_EVIDENCE`, `_evidence_of`, both template digests, the `updated_at` rule) is derived from them; the printed-name rule is `printed_aspect_name`, read by the uniqueness check and `names.aspect_name` | Critic: three hand-kept lists and two copies of one rule]
 
+- 04: [DECISION: the scorecard (matrix, folded rows, its lines, To settle, bars, frontier lines) sits in the headed
+  `scorecard` section, off the first screen | R1, and the frozen model: `FIRST_SCREEN` excludes `scorecard`, headed
+  "Scorecard". Seven assertions in 03's `test_campaign_first_screen.py` and `test_campaign_memo_blocks.py` that put
+  code's table on the first screen go red, for 03 or the integrator to move]
+- 04: [DECISION: a matrix cell's reading word rides `flag`, with any differing floor status after it ("unclear; floor
+  broken") | a cell holds one value, the number its glyph draws, and `model.py` is frozen; Markdown draws no glyph]
+- 04: [DECISION: the R8 mark sits once on the control's cell per aspect, and "cannot show a drop" only where a margin is
+  declared | it is the control's property, said once at its level (R4b); with no margin the page already says no arm
+  is shown worse there. The check-level R8 case stays in the "Why unclear" reason, as it is not in 04's list]
+- 04: [DECISION: a cell's floor mark reads rate floors only, combined as floors are read (broken if any, held if all)
+  against the status its reading implies | a cost floor reads no pass rate, and its breach is a warning already]
+- 04: [DECISION: To settle is one row per aspect, arm and what the count would show (the margin, or a floor holding),
+  the floor's row naming the rate deciding its as-observed count | "each with its kind" read as what the count shows;
+  built from the fold's own functions, so a floor's counts equal the fold's]
+- 04: [DECISION: A19 reconciles any fold contrast on a higher-is-better reading whose per-case values equal the row's
+  and whose verdict differs (shown better/worse against improved/regressed), skipping untested ones; a contrast
+  regressed beside a row not worse adds the margin | the review's case in general form; S1 has none, so the test builds
+  one]
+- 04: [DECISION: the equal-weight seam refuses (ValueError naming the key) a cell for an arm the matrix has no column
+  for, and is called through the `aggregate` module | never drop silently; a test stands a figure in where 06 will]
+- 04: [DECISION: `settle_blocks(campaign, readings, reports, *, names)`, one call line in `page.py` | a floor's count
+  reads each aspect's evidence. `decision.py` is unchanged: `projected_cell` already says each kind]
+- 04: [DECISION: one assertion each in `test_campaign_page.py` and `test_one_memo_per_decision.py` reads the Scorecard
+  instead of the first screen | neither file is a parallel chunk's; the behaviour moved per R1]
+
+- 04: [DECISION: the control's base rate and n sit in their own `▸ <control> (%)` and `Cases` columns, not in the row
+  header | a cell holds one value, and a number in its own column sorts and reads as a number; a "63% · n=60" header
+  cell would be a key=value-shaped label, which the style rules bar. Recorded late: the Critic flagged it unrecorded]
+- 04: [DECISION: `decision.rate_projections` (new) gives each unclear rate's projection, which `floor_projection`
+  joins and To settle names its deciding rate from | one owner for a floor's count and its decider (Critic R-5);
+  this goes past "projection kinds and projected_cell only" in 04's ownership of `decision.py`]
+- 04: [DECISION: an equal-weight cell states its unit (`TableCell.unit`), which the matrix checks against its
+  column and then drops, since the header names it: a change's control column `%`, candidates `pts`, a choice's
+  arms `%`; a cell where no matrix holds arms is refused | `aggregate.py` is 06's, so the contract rides the cell it
+  already returns (Critic R-6)]
+- 04: [DECISION: "cannot show a drop" is decided on the control's per-case shares the row's values read (every row's
+  mean at or below the margin), the gain mark on its trials (exact at 100%) | the drop is read on shares; trials
+  and shares part where cases ran uneven trials (Critic R-1)]
+
 ## Advisory: what I would do differently
 
 - **Split into two plans at the Wave C boundary.** Wave A-B (schema, names, page structure, scorecard) is renderer and

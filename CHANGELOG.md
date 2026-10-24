@@ -25,6 +25,27 @@ before, no run loses its template's criteria, rejudging or take-up, and a templa
 stored byte for byte as before. Two templates naming one check differently print it whole, logged. Durable v16.2:
 declare no name until every pod reading the store runs this build. See `packages/evals/MIGRATIONS.toml`.
 
+### evals: a campaign's Scorecard is one matrix per kind, with each floor and each control that cannot move marked in place
+
+**Changed:** what code read across a campaign's aspects moves off the first screen into its `scorecard` section,
+headed **Scorecard**. Its first table (`scorecard`) is one matrix with a row per aspect: a change's columns are its
+candidates, each cell the change in points with its interval against the margin and the reading; a choice's are its
+arms, each cell the pass rate and the arms it is shown ahead of; a measurement's are its one arm's measures. The
+per-row tables (`aspects`, `pairs`, `measures`) are folded under it, unchanged in their keys. A cell names its floor's
+status where the floor reads otherwise (`unclear; floor broken`), and the sentences that said so under the table are
+gone. A control at or below the margin is marked `cannot show a drop`, one at 100% `cannot show a gain`. A count over
+repeats reads `20 of 40 trials` wherever trials are not the cases beside them. **To settle** (`to_settle`, retitled from
+"To show no worse than the margin") holds a row's count on the pass rate and each unclear rate floor's on every rate
+it reads, naming the rate that decides each; the sentence promising the two agree is gone, since it held only for a
+floor on one rate. The level and error-rate lines are reworded and counted off the page's own arms and aspects, and
+no longer say the recommendation does not rest on the correction. Where a fold's contrast reads a row's own per-case
+values to another verdict, one line under the matrix names both and the interval each was read on. The matrix's last
+row, `All aspects (equal weight)`, holds what `equal_weight_cells` gives each arm, and a cell for an arm the matrix has
+no column for is refused, never dropped. Each such cell states its unit, which must be its column's (a change's
+control `%`, its candidates `pts`, a choice's arms `%`), and a cell handed back where no matrix holds arms is
+refused. `settle_blocks` takes the campaign and each aspect's page, which a floor's count is read from;
+`decision.rate_projections` (new) is each unclear rate's projection a floor's count joins.
+
 ### evals: a reporter label's form follows its dimension's scale, and may quote the memo passage it is about
 
 **Changed:** A reporter label on a pass/fail rubric dimension now takes a `verdict` (`pass` or `fail`), and one on an
