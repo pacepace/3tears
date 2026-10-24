@@ -311,6 +311,7 @@ def build_code_only_report(
     campaign_name: str | None = None,
     arm_labels: Mapping[str, str] | None = None,
     writer: str | None = None,
+    bundle_fingerprint: str | None = None,
 ) -> Report:
     """Lay a campaign's evidence out as its page, when no analysis exists to report through.
 
@@ -332,6 +333,11 @@ def build_code_only_report(
     :param writer: Who wrote the memo of the campaign page this page is a fold of, as the methods name a writer; None
         says no analysis was written. The memo is the campaign page's: this page lays out none of its words.
     :ptype writer: str | None
+    :param bundle_fingerprint: The bundle's fingerprint in the current version
+        (:meth:`~threetears.evals.analysis.bundle.schema.AnalysisContextBundle.fingerprint`), where the caller has
+        just checked it against the bundle — a stored analysis's page, whose frame names it — so the bundle is not
+        hashed a second time; None hashes it.
+    :ptype bundle_fingerprint: str | None
     :return: The report, ``basis="code_only"``.
     :rtype: Report
     """
@@ -341,7 +347,7 @@ def build_code_only_report(
         scope_id=bundle.scope_id,
         behavior=bundle.behavior,
         generated_at=assembled_at,
-        bundle_fingerprint=bundle.fingerprint(),
+        bundle_fingerprint=bundle_fingerprint if bundle_fingerprint is not None else bundle.fingerprint(),
     )
     memo = _question_blocks(bundle)
     return _page(

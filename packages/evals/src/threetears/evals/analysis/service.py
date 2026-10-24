@@ -31,7 +31,7 @@ import contextlib
 import json
 import re
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
@@ -59,7 +59,7 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_case_of,
     reporter_case_payload,
 )
-from threetears.evals.analysis.bundle.schema import BundleInspection
+from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleInspection
 from threetears.evals.analysis.report import CampaignReport, Verdict, build_campaign_report, build_code_only_report
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
 from threetears.evals.schema.base import EvalBaseModel
@@ -1499,6 +1499,7 @@ def _campaign_page(
     *,
     assembled_at: str,
     analysis: EvalAnalysis | None = None,
+    fingerprints: Mapping[str, str] | None = None,
 ) -> CampaignReport:
     """Lay a campaign bundle out as the campaign's page: code's readings, the memo where there is one, the call.
 
@@ -1513,14 +1514,23 @@ def _campaign_page(
     :ptype assembled_at: str
     :param analysis: The stored analysis whose memo the page lays out; None for a code-only page.
     :ptype analysis: EvalAnalysis | None
+    :param fingerprints: Each aspect's bundle fingerprint in the current version, by label, where it was just checked
+        against the bundle; an aspect not named is hashed.
+    :ptype fingerprints: Mapping[str, str] | None
     :return: The page.
     :rtype: CampaignReport
     """
     labels = bundle.readings.arm_labels()
     writer = analysis_writer(analysis) if analysis is not None else None
+    checked = fingerprints or {}
     reports = {
         aspect.aspect: build_code_only_report(
-            aspect, assembled_at=assembled_at, campaign_name=campaign.name, arm_labels=labels, writer=writer
+            aspect,
+            assembled_at=assembled_at,
+            campaign_name=campaign.name,
+            arm_labels=labels,
+            writer=writer,
+            bundle_fingerprint=checked.get(aspect.aspect),
         )
         for aspect in bundle.aspects
     }
@@ -1570,11 +1580,21 @@ def _as_analysed(analysis: EvalAnalysis, campaign: EvalCampaign | None) -> EvalC
 
 def _analysis_page(analysis: EvalAnalysis, campaign: EvalCampaign | None) -> CampaignReport:
     """A stored analysis laid out as its campaign's page, over everything frozen with it."""
+    bundle = analysis_campaign_bundle(analysis)
+    # Putting the bundle back together refused it unless each aspect's entry in the frame is that aspect's bundle
+    # fingerprint in the entry's version, so an entry in the current version is the one each fold's source names.
+    entries = analysis.campaign_bundle.get("aspects")
+    fingerprints = {
+        str(entry["aspect"]): str(entry["fingerprint"])
+        for entry in (entries if isinstance(entries, list) else [])
+        if isinstance(entry, dict) and str(entry.get("fingerprint", "")).startswith(FINGERPRINT_PREFIX)
+    }
     return _campaign_page(
         _as_analysed(analysis, campaign),
-        analysis_campaign_bundle(analysis),
+        bundle,
         assembled_at=analysis.generation.bundle_assembled_at,
         analysis=analysis,
+        fingerprints=fingerprints,
     )
 
 

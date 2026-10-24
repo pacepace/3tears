@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import campaign_report, record_campaign_call, serialize_report
+from threetears.evals.analysis import AnalysisContextBundle, campaign_report, record_campaign_call, serialize_report
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.ops import analysis_generate
@@ -195,3 +195,23 @@ async def test_a_reads_peak_memory_does_not_grow_with_the_analyses_archived() ->
 
     # Hydrating two dozen archived analyses held each one's bundles at once: several times the read's own peak.
     assert beside_history < alone * 1.25, (alone, beside_history)
+
+
+async def test_each_fold_names_its_bundle_by_the_fingerprint_checked_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    fixture, analysis = await _generated(InMemoryDocumentStore())
+    hashed: list[str] = []
+    fingerprint = AnalysisContextBundle.fingerprint
+
+    def counted(bundle: AnalysisContextBundle, *, like: str | None = None) -> str:
+        hashed.append(bundle.aspect)
+        return fingerprint(bundle, like=like)
+
+    monkeypatch.setattr(AnalysisContextBundle, "fingerprint", counted)
+    page = off_loop(campaign_report, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE)
+
+    # Putting the frozen bundle back together checks each aspect's fingerprint; the fold's source line reuses it.
+    assert hashed == [aspect.label for aspect in analysis.aspects]
+    monkeypatch.undo()
+    assert [fold.report.source.bundle_fingerprint for fold in page.aspects] == [
+        fold.report.bundle.fingerprint() for fold in page.aspects
+    ]
