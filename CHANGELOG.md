@@ -50,6 +50,16 @@ the redshift extra installed, importing `threetears.datasources` loads `redshift
 package imports and a Redshift config raises the ImportError naming the extra. The Snowflake and BigQuery drivers
 are stubs and load no backend library.
 
+### datasources: a paged read of a Postgres relation keyed by a timestamp reads its second page
+
+**Fixed:** The datasource rail carries a timestamp (and a date, a time, a UUID, a decimal) as its text, and a paged
+read hands its last row's key back as the next page's parameters in that form. The asyncpg driver bound by the type
+Postgres declares for each placeholder and refused the text (`DataError`), so a read of a relation whose key held a
+timestamp failed on its second page. When asyncpg refuses a parameter, the driver now reads the statement's declared
+types and binds each text value as its type (`timestamp`, `timestamptz`, `date`, `time`, `uuid`, `numeric`, the
+integers and floats) once more; only a refused bind pays that round trip. Text that does not parse as its type is
+still refused.
+
 ### agent-acl: a caller cache of any answer type binds to the access tables
 
 **Fixed:** `bind_caller_cache_to_access_tables` takes a `CallerAccessCache[V]` of any answer type; it was typed

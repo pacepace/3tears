@@ -151,7 +151,10 @@ import dataclasses
 import functools
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
-from typing import Any, Final
+from datetime import date, datetime, time
+from decimal import Decimal
+from typing import Any, Final, TypeVar
+from uuid import UUID
 
 import asyncpg
 
@@ -449,6 +452,90 @@ def _get_cancellation_fired_counter() -> Any:
 #: an ``agent_internal`` datasource) before it gives up with a timeout: well under a datasource
 #: client's deadline, so nothing runs after its caller stopped waiting
 BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS: Final = 5.0
+
+
+#: how a parameter's text becomes the value asyncpg binds, by the type Postgres declared for it. The datasource
+#: rail carries every value JSON cannot (a timestamp, a date, a UUID, a decimal) as its text, and a page's last
+#: key comes back as a parameter in that form; asyncpg binds by the declared type and refuses text for these
+_FROM_TEXT: Final[dict[str, Callable[[str], Any]]] = {
+    "timestamp": datetime.fromisoformat,
+    "timestamptz": datetime.fromisoformat,
+    "date": date.fromisoformat,
+    "time": time.fromisoformat,
+    "timetz": time.fromisoformat,
+    "uuid": UUID,
+    "numeric": Decimal,
+    "int2": int,
+    "int4": int,
+    "int8": int,
+    "float4": float,
+    "float8": float,
+}
+
+_BoundT = TypeVar("_BoundT")
+
+
+async def _as_declared(conn: Any, sql: str, params: Sequence[Any]) -> tuple[Any, ...] | None:
+    """``params`` with each text value converted to the type Postgres declares for its placeholder.
+
+    :param conn: the connection the statement runs on
+    :ptype conn: Any
+    :param sql: the statement, ``$N`` placeholders
+    :ptype sql: str
+    :param params: its parameters
+    :ptype params: Sequence[Any]
+    :return: the converted parameters; ``None`` when no text value has a type to convert to, or one does
+        not parse as it (the caller's own refusal then stands)
+    :rtype: tuple[Any, ...] | None
+    """
+    if not any(isinstance(value, str) for value in params):
+        return None
+    statement = await conn.prepare(sql)
+    converted = list(params)
+    changed = False
+    for index, (value, declared) in enumerate(zip(params, statement.get_parameters(), strict=False)):
+        convert = _FROM_TEXT.get(declared.name)
+        if not isinstance(value, str) or convert is None:
+            continue
+        try:
+            converted[index] = convert(value)
+        except ValueError, ArithmeticError:
+            # NOSILENT: not this type's text; the caller re-raises the driver's own refusal of it
+            return None
+        changed = True
+    return tuple(converted) if changed else None
+
+
+async def _bound_as_declared(
+    conn: Any,
+    sql: str,
+    params: Sequence[Any],
+    run: Callable[[Sequence[Any]], Awaitable[_BoundT]],
+) -> _BoundT:
+    """run a statement; when asyncpg refuses a text parameter, once more with each converted to its declared type.
+
+    Only a refused bind pays the extra round trip that reads the declared types. The refusal is raised
+    before the statement is executed, so a transaction it runs in is unharmed.
+
+    :param conn: the connection
+    :ptype conn: Any
+    :param sql: the statement
+    :ptype sql: str
+    :param params: its parameters
+    :ptype params: Sequence[Any]
+    :param run: runs the statement with the parameters it is given
+    :ptype run: Callable[[Sequence[Any]], Awaitable[_BoundT]]
+    :return: what ``run`` returns
+    :rtype: _BoundT
+    :raises asyncpg.exceptions.DataError: when the parameters do not bind even as their declared types
+    """
+    try:
+        return await run(params)
+    except asyncpg.exceptions.DataError:
+        declared = await _as_declared(conn, sql, params)
+        if declared is None:
+            raise
+        return await run(declared)
 
 
 class AsyncpgDriver(Driver):
@@ -1000,7 +1087,7 @@ class AsyncpgDriver(Driver):
         # consistent across drivers.
         translated = translate_placeholders(sql, "asyncpg")
         records = await self._acquire_and_run(
-            lambda conn: conn.fetch(translated, *params),
+            lambda conn: _bound_as_declared(conn, translated, params, lambda bound: conn.fetch(translated, *bound)),
             timeout_seconds=timeout_seconds,
         )
         result: list[dict[str, Any]] = [dict(r) for r in records]
@@ -1039,7 +1126,9 @@ class AsyncpgDriver(Driver):
         async def _bounded(conn: Any) -> Any:
             # a cursor lives in a transaction; nested in the timeout's own one, this is a savepoint
             async with conn.transaction():
-                cursor = await conn.cursor(translated, *params)
+                cursor = await _bound_as_declared(
+                    conn, translated, params, lambda bound: conn.cursor(translated, *bound)
+                )
                 return await cursor.fetch(max_rows)
 
         records = await self._acquire_and_run(_bounded, timeout_seconds=timeout_seconds)
@@ -1071,7 +1160,7 @@ class AsyncpgDriver(Driver):
             build_set_local_statement_timeout_sql(timeout_seconds)
         translated = translate_placeholders(sql, "asyncpg")
         await self._acquire_and_run(
-            lambda conn: conn.execute(translated, *params),
+            lambda conn: _bound_as_declared(conn, translated, params, lambda bound: conn.execute(translated, *bound)),
             timeout_seconds=timeout_seconds,
         )
 
@@ -1147,7 +1236,9 @@ class AsyncpgDriver(Driver):
         translated = translate_placeholders(sql, "asyncpg")
         await self._apply_transaction_timeout(checkout, timeout_seconds)
         records = await self._with_cancellation(
-            lambda: checkout.conn.fetch(translated, *params),
+            lambda: _bound_as_declared(
+                checkout.conn, translated, params, lambda bound: checkout.conn.fetch(translated, *bound)
+            ),
             cancel_callback=self._observe_cancellation,
         )
         result: list[dict[str, Any]] = [dict(r) for r in records]
@@ -1179,7 +1270,9 @@ class AsyncpgDriver(Driver):
         translated = translate_placeholders(sql, "asyncpg")
         await self._apply_transaction_timeout(checkout, timeout_seconds)
         await self._with_cancellation(
-            lambda: checkout.conn.execute(translated, *params),
+            lambda: _bound_as_declared(
+                checkout.conn, translated, params, lambda bound: checkout.conn.execute(translated, *bound)
+            ),
             cancel_callback=self._observe_cancellation,
         )
 
@@ -1268,7 +1361,9 @@ class AsyncpgDriver(Driver):
             async with conn.transaction():
                 # ``Connection.cursor`` returns a server-side cursor;
                 # this is the WHOLE reason we override the ABC default.
-                async for record in conn.cursor(translated, *params):
+                # a stream's first bind is inside its iteration, so its text values are converted before it
+                bound = await _as_declared(conn, translated, params) or params
+                async for record in conn.cursor(translated, *bound):
                     yield dict(record)
 
     # -------------------------------------------------------------------
