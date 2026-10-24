@@ -109,6 +109,7 @@ __all__ = [
     "GivenAnswer",
     "VersionedAnswer",
     "VersionedAnswers",
+    "answer_json",
 ]
 
 log = get_logger(__name__)
@@ -289,6 +290,61 @@ class VersionedAnswer(BaseEntity):
     """one answer: ``version``, ``request`` (a digest), ``body`` (base64 gzip)."""
 
     primary_key_field: str = "request"
+
+
+#: how many list items :func:`answer_json` writes per encoder call
+_JSON_PIECE: Final = 256
+
+
+def answer_json(answer: Any) -> str:
+    """``json.dumps(answer, default=str)``, the same text, written a piece at a time.
+
+    The C JSON encoder holds the interpreter lock for its whole call, so an answer of megabytes written in
+    one call holds every other thread for as long, the event loop among them, whichever thread writes it.
+    Written a mapping's value and a few hundred list items at a time, each call is short and the loop runs
+    between them. A mapping with a key that is not text is written whole, as ``json.dumps`` writes its keys.
+
+    :param answer: the answer
+    :ptype answer: Any
+    :return: its JSON, exactly as ``json.dumps(answer, default=str)`` writes it
+    :rtype: str
+    """
+    if isinstance(answer, dict) and all(type(key) is str for key in answer):
+        text = "{" + ", ".join(f"{json.dumps(key)}: {answer_json(value)}" for key, value in answer.items()) + "}"
+    elif isinstance(answer, (list, tuple)) and len(answer) > _JSON_PIECE:
+        pieces = (
+            json.dumps(list(answer[start : start + _JSON_PIECE]), default=str)[1:-1]
+            for start in range(0, len(answer), _JSON_PIECE)
+        )
+        text = "[" + ", ".join(pieces) + "]"
+    else:
+        text = json.dumps(answer, default=str)
+    return text
+
+
+def _gzipped(text: str) -> bytes:
+    """an answer's text gzipped with no time in its header, so equal answers are equal bytes.
+
+    Run on a worker thread (``asyncio.to_thread``), never the event loop: a large answer takes tens of
+    milliseconds, and zlib lets go of the interpreter lock while it compresses.
+
+    :param text: the answer's text
+    :ptype text: str
+    :return: the gzip bytes
+    :rtype: bytes
+    """
+    return gzip.compress(text.encode("utf-8"), mtime=0)
+
+
+def _row_body(text: str) -> str:
+    """an answer's text as its row keeps it: gzipped (:func:`_gzipped`), base64. Run on a worker thread.
+
+    :param text: the answer's text
+    :ptype text: str
+    :return: the row's ``body``
+    :rtype: str
+    """
+    return base64.b64encode(_gzipped(text)).decode("ascii")
 
 
 def _answers_schema(table_name: str) -> TableSchema:
@@ -589,7 +645,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         refused = await self._recorded(version, key[1], order)
         if refused is not None:
             # retired, older than what was retired, or the index unreachable: answered, not stored
-            return GivenAnswer(gzip.compress((await compute()).encode("utf-8"), mtime=0), refused)
+            return GivenAnswer(await asyncio.to_thread(_gzipped, await compute()), refused)
         pending = _Pending(compute)
         token = _PENDING.set(pending)
         try:
@@ -1043,8 +1099,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         pending.after_peer = self.deriving_after_peer()
         version, digest = self.normalize_pk(entity_id)
         text = await pending.compute()
-        body = gzip.compress(text.encode("utf-8"), mtime=0)
-        return {"version": version, "request": digest, "body": base64.b64encode(body).decode("ascii")}
+        return {"version": version, "request": digest, "body": await asyncio.to_thread(_row_body, text)}
 
     async def save_to_store(self, data: dict[str, Any], original_timestamp: Any = None, *, conn: Any = None) -> int:
         """write the answer to L2 while the computing replica still holds the key's build lock.

@@ -29,6 +29,12 @@ replica that missed a broadcast drops its L1 copy at the next pass. `threetears.
 pass too and no longer reads these tables from the epoch bucket. `VersionedAnswers` and its index declare it; a host
 schedules the pass. The collection census and the declaration walker accept it.
 
+**Fixed:** `VersionedAnswers` compresses an answer on a worker thread (`asyncio.to_thread`), where it stores one and
+where it answers one uncached, never on the event loop: a large answer held the loop for tens of milliseconds.
+`answer_json(answer)` (new, `threetears.core.collections.versioned_answers`) writes `json.dumps(answer, default=str)`'s
+exact text a mapping value and 256 list items per encoder call, so no one call holds the interpreter lock for a whole
+large answer.
+
 **Fixed:** A derived collection's miss that a value already in its store answers -- a peer's, found while waiting on
 the peer's build lock -- counts against the tier that store is (`DerivedCollection.derived_values_tier`; L2 for
 `VersionedAnswers`), not L3; only a miss that computes counts L3 (`BaseCollection.fetch_from_store_with_tier`).
