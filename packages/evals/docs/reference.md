@@ -689,7 +689,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`AS_RECORDED_MODEL`** · constant (str) · The candidate model name the as-recorded candidate runs under.
   <br>`= 'as-recorded'`
 - **`CELL_MODEL_VERSION`** · *host contract* · constant (int) · The cell model this module implements, stamped onto every analysis generated under it (`GenerationProvenance.cell_model_version`).
-  <br>`= 13`
+  <br>`= 14`
 - **`EVAL_ANALYSIS_GEN_DEFAULT`** · *host contract* · constant (str) · The analysis generator's default system prompt.
 - **`GATE_TOKENS`** · constant (tuple) · Every token, in the order the module docstring lists them.
 - **`GLOSSARY`** · constant (dict) · Every term of art a page may use, in one plain sentence each.
@@ -1211,7 +1211,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schema_version` | `int` | `62` | Bundle-shape version, for future evolution + fingerprint clarity. |
+| `schema_version` | `int` | `63` | Bundle-shape version, for future evolution + fingerprint clarity. |
 | `campaign_id` | `str` | required | The campaign this bundle summarises. |
 | `subject_id` | `str` | required | The analysed subject's stable id. |
 | `subject_kind` | `str` | `''` | Discriminator; data, never a code branch. |
@@ -1284,7 +1284,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `arm_mechanisms` | `list[ArmMechanismReading]` | `[]` | Each arm's mean of every covariate read as an observed mechanism (today the candidate's reasoning share, `reasoning_ratio`), sorted by arm then covariate. |
 | `arm_served_models` | `list[ArmServedModel]` | `[]` | Which model the provider's responses named as having answered each arm's candidate calls, sorted by arm. |
 | `arm_production_footings` | `dict[str, PooledProductionFooting]` | `{}` | Arm (variant key) -> what each of its runs set away from the subject's production configuration, read off the host's sweepable declarations: `runs` maps run id -> that run's footing (`moved` with levels, `unchecked`, `held`; null for a run nobody could check). |
-| `cell_model_version` | `int` | `13` | Which definition of a cell produced `cells`. |
+| `cell_model_version` | `int` | `14` | Which definition of a cell produced `cells`. |
 | `host_declarations_digest` | `str` | required | sha256 of the host's declared sweepables (each one's name, role and blank rule) and world dimension names — the declarations that partition observations into apparatus classes and arms (`host_declarations_digest`). |
 | `cells` | `list[Cell]` | `[]` | Every (variant, apparatus class) that any observation landed in, with how many observations pooled there and over how many cases and repeats per case. |
 | `variant_index` | `list[VariantIndexEntry]` | `[]` | One entry per keyed variant — the variant key and the resolved lever map it was digested from. |

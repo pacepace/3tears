@@ -58,6 +58,19 @@
 # callers.
 
 [[release]]
+version = "unreleased"
+since = "v0.77.0"
+summary = """
+The spend ceiling is no dimension of the rig: two launches on one template that differ only in the `max_cost_usd` they
+were given are one test setup, so their arms pool, pair and read an interval. No public name has moved or been removed
+since 0.77.0, and no judge wording changed. The bundle shape and the cell model move; see `notes`.
+"""
+notes = [
+    "`max_cost_usd` stays a core apparatus declaration, so a kind still seats it (`JUDGE_KIND_CONTRACT`, the reporter's seats), but it carries the new `Sweepable.no_rig_coordinate` (prose: why the input contributes no coordinate to the rig) and no longer `confounds`. An apparatus input carrying it is left out of the apparatus class, so runs that differ only in their cap (two launches at 0.75 and 3 dollars, or an `Eval` arm capped at a half and at a third of one figure) are one cell, and no confound list (`apparatus_confounds`, `coverage[].confounded_by`, a divergence's), factor-aliasing read or confound catalog names a cap difference, an unrecorded cap included. The bisection still compares the cap as a plain fact, each run's summary still states it, and a run the cap stopped part-way is still marked by its status and completeness. A run resumed with a raised cap (`job_resume`) no longer moves to another rig. Registration refuses `no_rig_coordinate` on a lever or a label, blank, or beside `confounds`; `SweepableRegistry.confound_reason` raises `KeyError` for such an input, as for any that states no reason.",
+    "The bundle shape moves from 62, which v0.77.0 shipped, to 63, and `CELL_MODEL_VERSION` from 13 to 14: every apparatus class id, cell and bundle fingerprint moves over unchanged runs, and `host_declarations_digest` reads whether each sweepable is a dimension of the rig, so it moves for every host. A stored analysis frozen over a shape-62 bundle still loads and is listed, with `AnalysisLine.needs_regeneration` set and its verdict reading `Needs regeneration: ...`; its report and page are refused, naming the bundle's shape, until it is generated again (`analysis_generate`). A host regenerates each such analysis and drops nothing else: `REGENERABLE_SCHEMA_VERSION` stays 13, so insights and judge profiles keep reading. A frozen reporter case holding a shape-62 bundle is refused on rebuild and is frozen again.",
+]
+
+[[release]]
 version = "0.77.0"
 since = "v0.76.0"
 summary = """

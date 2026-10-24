@@ -860,7 +860,8 @@ def _apparatus_levels(
     :ptype results_by_run: dict[str, list[EvalResult]]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
-    :return: ``{dimension: {run_id: level_key}}`` over the host's apparatus sweepables and — under
+    :return: ``{dimension: {run_id: level_key}}`` over the host's apparatus sweepables that are dimensions of the
+        rig (none carrying :attr:`~threetears.evals.kernel.host.sweepables.Sweepable.no_rig_coordinate`) and — under
         :func:`world_dimension_key` — its world dimensions, whose level is the placement this run
         derived for each. A ``None`` level key means the value
         cannot be compared at all — the dimension declares that a blank means "nobody
@@ -881,7 +882,14 @@ def _apparatus_levels(
     levels: dict[str, dict[str, str | None]] = {}
     sweepables = profile.sweepables
     values_by_run = {run.id: sweepables.read_all(run, results_by_run.get(run.id, [])) for run in runs}
-    apparatus = [declared for declared in sweepables.declarations if declared.role == "apparatus"]
+    # Only the rig's dimensions. An apparatus input carrying `no_rig_coordinate` (the spend ceiling) is read by the
+    # bisection and disclosed on each run's summary, and is left out here, so it reaches neither the apparatus class
+    # nor any confound scan, lever cohort, divergence or factor-aliasing read that takes these levels.
+    apparatus = [
+        declared
+        for declared in sweepables.declarations
+        if declared.role == "apparatus" and declared.no_rig_coordinate is None
+    ]
     # ONE decision per dimension, taken over EVERY arm's value before any of them is stored.
     #
     # A dimension this host does not HAVE is omitted rather than read, so it reaches neither the
