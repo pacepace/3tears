@@ -557,7 +557,7 @@ async def test_the_page_json_carries_each_aspect_s_late_criteria_beside_its_read
     page = await _page("billing", "tone", bundle=_set_late(("margin", None, _SET)))
     aspects = page.json_document()["aspects"]
     assert isinstance(aspects, list)
-    assert CAMPAIGN_JSON_SHAPE == 3
+    assert CAMPAIGN_JSON_SHAPE == 4
     assert [aspect["late_criteria"] for aspect in aspects] == [
         [{"criterion": "margin", "name": None, "set_at": _SET}],
         [],
@@ -755,7 +755,7 @@ async def test_a_floor_held_beside_a_row_left_unclear_says_the_two_read_differen
     assert [cells["aspect"].text for cells in settle.rows] == ["steady"]
     note = page.blocks[page.blocks.index(settle) + 1]
     assert isinstance(note, DisclosureBlock)
-    assert "read at 95% as a floor's count is, so a floor on the same rate and points gives the same count" in note.text
+    assert "margin, read at 95%. A floor on the same rate and points gives the same count." in note.text
 
 
 async def test_a_code_only_page_refuses_a_fold_that_renders_an_analysis() -> None:

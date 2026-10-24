@@ -20,7 +20,11 @@ contributes through these steps, in order:
    more, new, another, settle) at a count the projections do not state, or that names a cost they do not price, is
    replaced by code's sentence on the projected sample, once, and otherwise dropped; each is disclosed in the methods.
    A count the run itself reaches (``the 3 cases the candidate missed``) is a measured fact, not a proposal.
-5. **Settled differences.** Where a floor read broken or held reads a finding's reading, a finding's sentence saying
+5. **Unreached depths.** A sentence comparing arms on pass^k at a depth some arm never reached (above the aspect's
+   common depth, :class:`~threetears.evals.analysis.depth_reading.AspectDepth`) is dropped and listed in the methods:
+   a deeper arm is read at the common depth over all its runs, and above it there is nothing measured to compare.
+   Comparing is naming two arms, or a word that ranks (``better``, ``ahead``, ``than``).
+6. **Settled differences.** Where a floor read broken or held reads a finding's reading, a finding's sentence saying
    the evidence cannot confirm, establish or show the difference (:data:`_HEDGES`, a narrow set) disputes the floor:
    it is replaced by code's sentence on that reading, which states the counts and, under the case floor, that only
    whether the gap would hold on more cases is not estimated. That replacement is disclosed in the methods too.
@@ -39,6 +43,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.depth_reading import AspectDepth, aspect_depth
 from threetears.evals.analysis.report.decision import FloorVerdict, SampleProjection, projection_sentence
 from threetears.evals.analysis.style import (
     ArmName,
@@ -114,6 +119,19 @@ _ACQUIRE = re.compile(
 #: An amount of money in words: ``$0.40``, ``0.20 USD``, ``2 dollars``.
 _MONEY = re.compile(r"\$\s?(\d[\d,]*(?:\.\d+)?)|(\d[\d,]*(?:\.\d+)?)\s*(?:USD|dollars?)\b", re.I)
 
+#: pass^k named at a depth: ``pass^3``, ``pass^k``, ``pass_hat_k``, ``pass hat 2``.
+_PASS_K = re.compile(r"\bpass\s*(?:\^|_hat_|\s+hat\s+)\s*(\d+|k)\b", re.I)
+
+#: A depth named for ``k``: ``pass^k at k=3``, ``k of 2``.
+_K_IS = re.compile(r"\bk\s*(?:=|of|at)\s*(\d+)\b", re.I)
+
+#: A word that ranks or compares arms.
+_COMPARES = re.compile(
+    r"\b(?:better|worse|ahead|behind|beats?|outperform\w*|than|leads?|rank\w*|best|worst|highest|lowest|higher|"
+    r"lower|more reliable|less reliable|wins?|loses?)\b",
+    re.I,
+)
+
 _NUMBER = re.compile(r"(?<![\w.])\$?(\d+(?:\.\d+)?)(?![\w])")
 _N_OF_M = re.compile(r"\b(\d+) (?:of|out of|/) ?(\d+)\b")
 
@@ -132,12 +150,49 @@ class MemoStyle:
     hedged: list[str] = field(default_factory=list)
     proposed: list[str] = field(default_factory=list)
     aged: list[str] = field(default_factory=list)
+    unreached: list[str] = field(default_factory=list)
     dropped: int = 0
 
     def __post_init__(self) -> None:
         self._ids = self._model_ids()
         self._decimals, self._pairs = self._measured()
         self._counts, self._reached, self._repeats, self._costs = self._projected()
+        self._depth: AspectDepth | None = None
+
+    @property
+    def depth(self) -> AspectDepth:
+        """The aspect's depths (:func:`~threetears.evals.analysis.depth_reading.aspect_depth`), read once, when first
+        asked: only a sentence naming pass^k needs them."""
+        if self._depth is None:
+            self._depth = aspect_depth(self.bundle, lambda key: self.names[key].label if key in self.names else key)
+        return self._depth
+
+    def compares_unreached(self, text: str) -> bool:
+        """Whether ``text`` compares arms on pass^k at a depth some arm never reached on this aspect.
+
+        A depth is read off ``pass^N``; ``pass^k`` is the depth a ``k=N`` beside it names, else the frontier's planned
+        one. Comparing is naming two of the arms, or a word that ranks.
+
+        :param text: One sentence.
+        :ptype text: str
+        :return: True where it does.
+        :rtype: bool
+        """
+        if not _PASS_K.search(text):
+            return False
+        depths: list[int] = []
+        for found in _PASS_K.finditer(text):
+            if found.group(1).isdigit():
+                depths.append(int(found.group(1)))
+            elif (named := _K_IS.search(text)) is not None:
+                depths.append(int(named.group(1)))
+            elif self.depth.k is not None:
+                depths.append(self.depth.k)
+        if not any(self.depth.lacks(k) for k in depths):
+            return False
+        labels = {name.label for name in self.names.values()}
+        arms = sum(1 for label in labels if re.search(rf"(?<![\w-]){re.escape(label)}(?![\w-])", text))
+        return arms >= 2 or _COMPARES.search(text) is not None
 
     def _model_ids(self) -> list[tuple[re.Pattern[str], str]]:
         """Each arm's raw model id, with and without its vendor, longest first, and the label it becomes."""
@@ -308,6 +363,9 @@ class MemoStyle:
         named = self.names_arms(" ".join(text.split()))
         if self._aged(named):
             return fallback or ""
+        if self.compares_unreached(named):
+            self.unreached.append(named)
+            return fallback or ""
         if plans and not (named := self._planned(named)):
             return ""
         if settled is not None and _HEDGES.search(named):
@@ -360,6 +418,9 @@ class MemoStyle:
                 continue
             if self._aged(part):
                 continue
+            if self.compares_unreached(part):
+                self.unreached.append(part)
+                continue
             if settled is not None and _HEDGES.search(part):
                 self.hedged.append(part)
                 if settled not in (said or "") and settled not in kept:
@@ -404,10 +465,10 @@ class MemoStyle:
         :return: The sentence to print; empty only where the pass recorded it as proposing a sample or cost.
         :rtype: str
         """
-        proposed, aged, dropped = len(self.proposed), len(self.aged), self.dropped
+        proposed, aged, unreached, dropped = len(self.proposed), len(self.aged), len(self.unreached), self.dropped
         if said := styled().strip():
             return said
-        if len(self.proposed) > proposed or len(self.aged) > aged:
+        if len(self.proposed) > proposed or len(self.aged) > aged or len(self.unreached) > unreached:
             return ""
         self.dropped = dropped
         return self.kept(written)
@@ -453,6 +514,11 @@ def decision_disclosures(style: MemoStyle) -> Sequence[str]:
     lines += [
         f"The memo said “{said}”, which discounts a reading for when its runs ran, so the page does not print it."
         for said in style.aged
+    ]
+    lines += [
+        f"The memo said “{said}”, which compares arms on pass^k at a depth some arm never reached, so the page does "
+        "not print it."
+        for said in style.unreached
     ]
     if style.dropped:
         lines.append(

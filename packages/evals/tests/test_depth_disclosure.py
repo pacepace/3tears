@@ -11,12 +11,8 @@ Every expected value below is worked by hand from the fixture's attempts.
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
-from threetears.evals.analysis import assemble_context_bundle, campaign_readings
-from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.depth import (
     Depth,
     common_depth,
@@ -29,112 +25,9 @@ from threetears.evals.analysis.depth import (
     unmeasured_sentence,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, bounded_mean_interval, contrast_cases, contrast_samples
-from threetears.evals.kernel.declaration import CampaignArm
-from threetears.evals.kernel.identity import IDENTITY_VERSION, derive_context_identity, derive_variant_identity
 from threetears.evals.kernel.scoring import compute_pass_hat_k
-from threetears.evals.schema.models import EvalResult, EvalRun, RoleUsage
-from packages.evals.tests.factories import (
-    make_aspect_campaign,
-    make_eval_run,
-    make_scored_result,
-    minimal_aspect_design,
-)
-from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
-from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-
-PROFILE = toyhost_profile()
-
-#: The four cases every fixture arm runs.
-CASES = ["tc1", "tc2", "tc3", "tc4"]
-
-
-def _launched(run_id: str, model: str, k: int) -> EvalRun:
-    """A run of one arm (its candidate model) at planned depth ``k``, stamped as the launch stamps it."""
-    run = make_eval_run(
-        id=run_id, status="completed", template_digest="digest-1", candidate_model=model, k_runs=k, test_case_ids=CASES
-    )
-    context = derive_context_identity(run, PROFILE)
-    variant = derive_variant_identity(run=run, profile=PROFILE)
-    return run.model_copy(
-        update={
-            "context_key": context.context_key,
-            "context_components": context.context_components,
-            "identity_version": IDENTITY_VERSION,
-            "variant_levers": variant.levers,
-        }
-    )
-
-
-def _key(run: EvalRun) -> str:
-    return derive_variant_identity(run=run, profile=PROFILE).variant_key
-
-
-def _results(run: EvalRun, outcomes: dict[str, tuple[bool, ...]]) -> list[EvalResult]:
-    """One result per attempt, each case's attempts in order, every candidate call naming the model that answered."""
-    usage = [
-        RoleUsage(
-            role="candidate", model=run.candidate_model, cost_usd=0.01, call_count=1, served_model=run.candidate_model
-        )
-    ]
-    return [
-        make_scored_result(
-            test_case_id=case, run_id=run.id, k=k, goal_passes=(passed,), model=run.candidate_model
-        ).model_copy(
-            update={
-                "variant_key": _key(run),
-                "identity_version": IDENTITY_VERSION,
-                "scope_id": run.scope_id,
-                "usage": usage,
-            }
-        )
-        for case, attempts in outcomes.items()
-        for k, passed in enumerate(attempts, start=1)
-    ]
-
-
-class _Arms:
-    """Two arms on one aspect: ``A`` the control, ``B`` the candidate, each one run with its own attempts."""
-
-    def __init__(
-        self,
-        a: dict[str, tuple[bool, ...]],
-        b: dict[str, tuple[bool, ...]],
-        *,
-        k_a: int,
-        k_b: int,
-    ) -> None:
-        self.run_a, self.run_b = _launched("run-a", "sonnet", k_a), _launched("run-b", "haiku", k_b)
-        self.key_a, self.key_b = _key(self.run_a), _key(self.run_b)
-        self.results = {self.run_a.id: _results(self.run_a, a), self.run_b.id: _results(self.run_b, b)}
-        self.arms = [
-            CampaignArm(label="A", role="control", variant_key=self.key_a),
-            CampaignArm(label="B", role="candidate", variant_key=self.key_b),
-        ]
-        self.campaign = make_aspect_campaign(
-            label="character",
-            run_ids=[self.run_a.id, self.run_b.id],
-            question="Is B better on character?",
-            design=minimal_aspect_design(merit_axes=[]),
-            margin=10.0,
-            control=self.arms[0],
-            scope_id=self.run_a.scope_id,
-            subject_id=self.run_a.subject_snapshot.subject_id,
-            behavior="b",
-        )
-        self.bundle = assemble_context_bundle(
-            self.campaign, storage=ToyhostStorage([self.run_a, self.run_b], self.results), profile=PROFILE
-        )
-
-    def readings(self, bundle: AnalysisContextBundle | None = None) -> Any:
-        return campaign_readings(self.campaign, {"character": bundle or self.bundle}, arms=self.arms)
-
-    def point(self, key: str) -> Any:
-        return next(point for point in self.bundle.frontier.subjects[0].points if point.variant_key == key)
-
-
-#: Arm A run twice on every case, arm B once: the shares A 1, 1/2, 0, 1 and B 1, 0, 1, 1.
-_TWICE = {"tc1": (True, True), "tc2": (True, False), "tc3": (False, False), "tc4": (True, True)}
-_ONCE = {"tc1": (True,), "tc2": (False,), "tc3": (True,), "tc4": (True,)}
+from packages.evals.tests.depth_support import ONCE, TWICE, TwoArms
+from packages.evals.tests.factories import make_scored_result
 
 
 # =============================================================================
@@ -187,7 +80,7 @@ def test_the_sentences_say_the_depths_in_plain_words() -> None:
     )
     assert common_depth_sentence(2, left_out=1) == (
         "pass^k is compared at depth 2, the deepest every arm reached, each arm read over all its runs; 1 case some "
-        "arm measured fewer times are left out."
+        "arm measured fewer times is left out."
     )
     assert unmeasured_sentence(2, ["B"]) == "pass^2 is unmeasured for B, which ran no case twice."
     assert unmeasured_sentence(2, []) is None
@@ -213,7 +106,7 @@ def test_a_pass_hat_k_entry_counts_the_cases_short_of_k() -> None:
 
 
 def test_each_arm_s_depth_is_on_the_scoreboard_and_its_trials_beside_its_shares() -> None:
-    arms = _Arms(_TWICE, _ONCE, k_a=2, k_b=1)
+    arms = TwoArms(TWICE, ONCE, k_a=2, k_b=1)
     boards = {board.variant_key: board for board in arms.bundle.scoreboard}
 
     assert boards[arms.key_a].depth == Depth(cases=4, trials=8, repeats_min=2, repeats_median=2.0, repeats_max=2)
@@ -226,7 +119,7 @@ def test_each_arm_s_depth_is_on_the_scoreboard_and_its_trials_beside_its_shares(
 
 
 def test_a_reading_states_both_arms_depths_and_what_limits_its_interval() -> None:
-    arms = _Arms(_TWICE, _ONCE, k_a=2, k_b=1)
+    arms = TwoArms(TWICE, ONCE, k_a=2, k_b=1)
 
     [row] = arms.readings().readings
 
@@ -254,7 +147,7 @@ def test_a_reading_states_both_arms_depths_and_what_limits_its_interval() -> Non
 
 
 def test_a_frontier_point_states_the_depth_it_delivered_and_its_subject_the_common_depth() -> None:
-    arms = _Arms(_TWICE, _ONCE, k_a=2, k_b=1)
+    arms = TwoArms(TWICE, ONCE, k_a=2, k_b=1)
     subject = arms.bundle.frontier.subjects[0]
     a, b = arms.point(arms.key_a), arms.point(arms.key_b)
 
@@ -269,7 +162,7 @@ def test_a_frontier_point_states_the_depth_it_delivered_and_its_subject_the_comm
 
 def test_a_depth_above_an_arm_s_reach_is_unmeasured_for_it_and_the_common_depth_falls_to_its_reach() -> None:
     # Both planned k = 2, but B's run stopped after one attempt at each case.
-    arms = _Arms(_TWICE, _ONCE, k_a=2, k_b=2)
+    arms = TwoArms(TWICE, ONCE, k_a=2, k_b=2)
     subject = arms.bundle.frontier.subjects[0]
     a, b = arms.point(arms.key_a), arms.point(arms.key_b)
 
@@ -284,8 +177,8 @@ def test_a_depth_above_an_arm_s_reach_is_unmeasured_for_it_and_the_common_depth_
 
 def test_depths_mixed_within_one_arm_are_stated_and_its_short_case_is_counted() -> None:
     # A's tc3 was cut to one attempt: three cases twice, one once.
-    mixed = {**_TWICE, "tc3": (False,)}
-    arms = _Arms(mixed, _TWICE, k_a=2, k_b=2)
+    mixed = {**TWICE, "tc3": (False,)}
+    arms = TwoArms(mixed, TWICE, k_a=2, k_b=2)
     a, b = arms.point(arms.key_a), arms.point(arms.key_b)
     subject = arms.bundle.frontier.subjects[0]
 
@@ -302,7 +195,7 @@ def test_depths_mixed_within_one_arm_are_stated_and_its_short_case_is_counted() 
 
 def test_a_campaign_run_once_on_every_case_states_one_depth_and_compares_pass_rates() -> None:
     once_a = {"tc1": (True,), "tc2": (True,), "tc3": (False,), "tc4": (True,)}
-    arms = _Arms(once_a, _ONCE, k_a=1, k_b=1)
+    arms = TwoArms(once_a, ONCE, k_a=1, k_b=1)
     subject = arms.bundle.frontier.subjects[0]
     [row] = arms.readings().readings
 
@@ -324,7 +217,7 @@ _ADDED = {"control_depth", "arm_depth", "depth_differs", "precision"}
 
 
 def test_no_existing_reading_value_moves_and_none_reads_the_depth_facts() -> None:
-    arms = _Arms(_TWICE, _ONCE, k_a=2, k_b=1)
+    arms = TwoArms(TWICE, ONCE, k_a=2, k_b=1)
     stripped = arms.bundle.model_copy(
         update={
             "scoreboard": [board.model_copy(update={"depth": None}) for board in arms.bundle.scoreboard],
@@ -351,7 +244,7 @@ def test_no_existing_reading_value_moves_and_none_reads_the_depth_facts() -> Non
 
 
 def test_no_existing_frontier_value_moves() -> None:
-    arms = _Arms(_TWICE, _ONCE, k_a=2, k_b=2)
+    arms = TwoArms(TWICE, ONCE, k_a=2, k_b=2)
     a, b = arms.point(arms.key_a), arms.point(arms.key_b)
 
     # pass^k still reads the planned depth on each point's own cases, and its curve every depth a case reached.
@@ -379,7 +272,7 @@ def test_contrast_cases_are_the_cases_contrast_samples_reads() -> None:
 def test_a_floor_contrast_refuses_trials_that_do_not_line_up_with_its_shares() -> None:
     [passed] = [
         contrast
-        for contrast in _Arms(_TWICE, _ONCE, k_a=2, k_b=1).bundle.floor_contrasts
+        for contrast in TwoArms(TWICE, ONCE, k_a=2, k_b=1).bundle.floor_contrasts
         if contrast.reading == "trial"
     ]
     data = passed.model_dump(mode="json")

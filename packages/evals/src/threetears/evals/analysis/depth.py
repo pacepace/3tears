@@ -224,7 +224,8 @@ def common_depth_sentence(k: int | None, *, left_out: int) -> str | None:
     else:
         said = f"pass^k is compared at depth {k}, the deepest every arm reached, each arm read over all its runs"
     if left_out:
-        said += f"; {left_out} case{'' if left_out == 1 else 's'} some arm measured fewer times are left out"
+        cases = "1 case" if left_out == 1 else f"{left_out} cases"
+        said += f"; {cases} some arm measured fewer times {'is' if left_out == 1 else 'are'} left out"
     return said + "."
 
 

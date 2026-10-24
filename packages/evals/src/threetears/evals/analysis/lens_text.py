@@ -9,6 +9,7 @@ from __future__ import annotations
 
 
 from threetears.evals.analysis.arms import short_digest
+from threetears.evals.analysis.depth import common_depth_sentence, times, unmeasured_sentence
 
 
 from threetears.evals.analysis.numbers import format_number
@@ -16,7 +17,13 @@ from threetears.evals.analysis.report.verdict import MIN_CASES
 
 
 from threetears.evals.analysis.reporting import ProjectionExclusions
-from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, FrontierResult, pass_hat_k_cell_lines
+from threetears.evals.analysis.lenses.frontier import (
+    PASS_HAT_K_CELL_READING,
+    FrontierPoint,
+    FrontierResult,
+    SubjectFrontier,
+    pass_hat_k_cell_lines,
+)
 
 
 def exclusion_lines(exclusions: ProjectionExclusions) -> list[str]:
@@ -47,6 +54,36 @@ def _pass_hat_k_text(k: int, value: float, n_cases: int, low: float | None, high
     return f"pass^{k} {format_number(value)}{interval} over {n_cases} case(s)"
 
 
+def _depth_lines(subject: SubjectFrontier) -> list[str]:
+    """What depth a subject's pass^k compares at, and each contestant it is unmeasured for at its planned ``k``."""
+    lines: list[str] = []
+    if len(subject.points) > 1:
+        left_out = max((point.n_cases_left_out for point in subject.points), default=0)
+        lines.append(common_depth_sentence(subject.common_depth, left_out=left_out) or "")
+    unmeasured = [
+        _contestant(point.model, point.variant_key)
+        for point in subject.points
+        if point.variant_key in subject.unmeasured_for
+    ]
+    lines.append(unmeasured_sentence(subject.k, unmeasured) or "")
+    return [line for line in lines if line]
+
+
+def _point_depth(point: FrontierPoint, subject: SubjectFrontier) -> str | None:
+    """One contestant's delivered depth, and its pass^k at the subject's common depth where it differs from ``k``."""
+    if point.depth is None:
+        return None
+    said = f"ran each case {times(point.depth)} over {point.depth.cases} case(s)"
+    if point.n_cases_short_of_k:
+        said += f", {point.n_cases_short_of_k} short of k={subject.k}"
+    if subject.common_depth is not None and subject.common_depth != subject.k and point.common_pass_hat_k is not None:
+        said += (
+            f"; pass^{subject.common_depth} {format_number(point.common_pass_hat_k)} over {point.n_common_cases} "
+            "case(s) at the common depth"
+        )
+    return said
+
+
 def frontier_text(result: FrontierResult) -> str:
     """A frontier as text: each subject's variants, best pass^k first, with each one's axes and the verdict."""
     bar = "no bar, so no verdict" if result.bar is None else f"bar {format_number(result.bar)} on pass^k"
@@ -61,6 +98,7 @@ def frontier_text(result: FrontierResult) -> str:
         lines.append(f"## subject {subject.subject_label or subject.subject_id}, pass^k at k={subject.k}")
         if subject.boundary_pillar:
             lines.append(subject.boundary_pillar)
+        lines += _depth_lines(subject)
         for point in subject.points:
             quality = (
                 _pass_hat_k_text(
@@ -97,6 +135,8 @@ def frontier_text(result: FrontierResult) -> str:
                 f"- {_contestant(point.model, point.variant_key)}: {quality}{cleared}; {cost}; {latency}"
                 + (f"; {standing}" if standing else "")
             )
+            if (depth := _point_depth(point, subject)) is not None:
+                lines.append(f"  {depth}")
             cell_lines = [line for cell in point.pass_hat_k_cells for line in pass_hat_k_cell_lines(cell)]
             if cell_lines and not said_reading:
                 lines.append(f"  {PASS_HAT_K_CELL_READING}")

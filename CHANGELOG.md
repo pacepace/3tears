@@ -18,6 +18,14 @@ side's own half-width, which side limits the interval, and the share of the diff
 cases, which extra repeats cannot lower. Nothing read changes: the frontier still ranks at the planned `k`, and every
 interval, change and count is as it was. The bundle shape moves from 62 to 63. See `packages/evals/MIGRATIONS.toml`.
 
+**Added (surfaces):** The campaign page states depth in three tables, `Depth`, `Pass^k depth` and `Precision`, each
+with one plain sentence under it ("v2 was run twice on character, the others once; that tightens v2's own estimate,
+not the comparison much."), and its Methods say that a pass-rate interval weighs each shared case equally while the
+counts beside it pool every trial. The writer's view carries the same depths and the sentence to say, and code holds
+the memo to them: a sentence comparing arms on pass^k at a depth some arm never reached is dropped and listed, and a
+memo that never says its arms ran to different depths is named in the Methods. The seeded writer prompt's rule 5
+says so, so hosts push the new seed. Page JSON shape 4; campaign bundle shape 2.
+
 ### evals: runs that record their template revision and served model pool across case sets and an identity bump; a run kept out of a pool is named (#919)
 
 **Changed:** `IDENTITY_VERSION` 25: the case set leaves the context key. `ContextComponents.case_basis` digests the

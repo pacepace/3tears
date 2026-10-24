@@ -171,6 +171,12 @@ GLOSSARY: dict[str, str] = {
     "interval": "The range the true value likely lies in; a wide one means the run measured it loosely.",
     "change": "The arm's value minus the control's: in points for a rate, in the reading's own unit otherwise.",
     "cases": "How many independent cases are behind a figure; paired means both arms ran the same ones.",
+    "depth": "How many times an arm ran each case; more repeats steady its own figure, not the comparison much.",
+    "common depth": "The deepest depth every arm reached, where pass^k compares arms over cases all ran that deep.",
+    "between cases": (
+        "The share of a comparison's noise that comes from cases differing, which only more cases lower, never "
+        "more repeats."
+    ),
     "control mean": "The control's figure on the reading, over the cases the test read.",
     "arm mean": "The arm's figure on the reading, over the same cases as the control's.",
     "Hedges' g": (

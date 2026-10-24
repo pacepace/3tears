@@ -4783,7 +4783,7 @@
     },
     "threetears.evals.analysis.CampaignBundle": {
       "kind": "model",
-      "signature": "CampaignBundle(schema_version: int = 1, campaign_id: str, scope_id: str, name: str, subject_id: str, subject_kind: str, behavior: str, declaration: CampaignDeclaration, arms: list[CampaignArm], readings: CampaignReadings, aspects: list[AnalysisContextBundle])",
+      "signature": "CampaignBundle(schema_version: int = 2, campaign_id: str, scope_id: str, name: str, subject_id: str, subject_kind: str, behavior: str, declaration: CampaignDeclaration, arms: list[CampaignArm], readings: CampaignReadings, aspects: list[AnalysisContextBundle])",
       "tier": "stable"
     },
     "threetears.evals.analysis.CampaignKind": {
