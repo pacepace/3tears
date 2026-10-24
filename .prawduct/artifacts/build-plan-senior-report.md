@@ -114,8 +114,12 @@ this to High. The cheapest step is the owner answering them before Wave C.
 - 01: [DECISION: `template_digest` (seed drift) leaves `goal_check_names` out as well as `measured_template_digest` | a drift in names alone would read a seeded template stale and a reset would write a new revision, whose results never pool with the old; a stored template is named in place with `template_update`]
 - 01: [DECISION: the short name sits on `AspectView` and the bundle's top level, not on `AspectDeclaration` | an exploratory aspect has no declaration and still has a name]
 - 01: [DECISION: `campaign_update` gains `short_names` (label to name or null), outside `_DECLARATION_FIELDS`, so a campaign holding runs can be named | otherwise naming an existing campaign means re-creating it; a name asks nothing of the runs, like `name`]
-- 01: [DECISION: printed names are unique per campaign (a short name may not equal another aspect's short name or label), refused on `EvalCampaign`; check names are unique per template; both under one 32-character cap (`DECLARED_NAME_CHARS`) | two aspects printing alike cannot be told apart in a table; Q5's cap applied to both names, as the brief asks for a length cap]
+- 01: [DECISION: printed names are unique per campaign (a short name may not equal another aspect's short name or label, whether or not that aspect is named), refused on `EvalCampaign`; check names are unique per template; both under one 32-character cap (`DECLARED_NAME_CHARS`) | two aspects printing alike cannot be told apart in a table; Q5's cap applied to both names, as the brief asks for a length cap]
 - 01: [DECISION: the campaign fingerprint and `campaign_evidence_digest` drop `declaration.aspects[].short_name` from their pre-image (`campaign_bundle._evidence_of`) | the frame carries the declaration snapshot, and a reporter case or inspection must not read a rename as moved evidence]
+- 01: [DECISION: a `template_update` writing only `TEMPLATE_PRESENTATION_FIELDS` leaves `updated_at` | Critic BLOCKING: `updated_at` decides judge-criterion readability, rejudging, take-up and intent for every earlier run, so a names-only stamp cut them all off and moved the fingerprint through the judge profile; the readability rule for measured edits is unchanged]
+- 01: [DECISION: `style.measure_name` takes a check's name as `declared=` and never reads a goal check's reader name; the aspect page, the campaign bars table, its timing lines and the evidence trace pass it | Critic: no page printed a declared name; one explicit door, no guessed second path. A check site 03/04 add passes `declared=bundle.check_name(measure)` or calls `names.measure_name_of`]
+- 01: [DECISION: two templates naming one check differently print it whole and log `eval.check_names_differ`; the stored read drops a name whose check is gone (logged) | never a silent first pick; a v16.1 pod renaming or dropping a named check would otherwise leave a template this build refuses on every read]
+- 01: [DECISION: presentation fields are named once per model (`ASPECT_PRESENTATION_FIELDS`, `TEMPLATE_PRESENTATION_FIELDS`), and every exclusion (`_NOT_EVIDENCE`, `_evidence_of`, both template digests, the `updated_at` rule) is derived from them; the printed-name rule is `printed_aspect_name`, read by the uniqueness check and `names.aspect_name` | Critic: three hand-kept lists and two copies of one rule]
 
 ## Advisory: what I would do differently
 
@@ -261,7 +265,7 @@ Chunks: 00 reporter labels · 01 names · 02 split and scaffold · 03 first scre
 | 7 Scorecard matrix | R2 | 02 (cell fields), 04 (matrix per kind) |
 | 8 Reconcile shown better vs not separated | R7 | 04 |
 | 9 Prose figures formatted as tables | R3 | 07 (the source was the view, see A6). `prose_refs` unchanged |
-| 10 Short names, display names | R5 | 01 (fields, bundle, `measure_name`), 03/04 consume, 07 hands to writer |
+| 10 Short names, display names | R5 | 01 (fields, bundle, `measure_name(declared=)`, the aspect page and the campaign page's existing check sites), 03/04 pass `declared=` at any check site they add, 07 hands to writer |
 | 11a cost rollup | R9, R10 | 06 computes, 07 hands |
 | 11b per-arm floor rollup | R9 | 07 |
 | 11c campaign-wide disclosures once | **R4b** | 07, generalised: every report-wide disclosure, late criteria included, handed once at campaign level, never per aspect |
@@ -299,7 +303,7 @@ Chunks: 00 reporter labels · 01 names · 02 split and scaffold · 03 first scre
 | Constant | Where | Moves in | To |
 |---|---|---|---|
 | `DURABLE_SCHEMA_MINOR` (+ v16.2 ledger line) | `packages/evals/src/threetears/evals/schema/versioning.py` | 00 (reporter labels), extended by 01 (`Aspect.short_name`, `EvalTemplate.goal_check_names`) | 2. v16.1 shipped in 0.75.0, so this is a new minor |
-| Aspect bundle `schema_version` (+ `CORE_PINNED` row, shape-only) | `packages/evals/src/threetears/evals/analysis/bundle/schema.py` `AnalysisContextBundle.schema_version`; `packages/evals/tests/test_hostneutral_sweepables.py` | 01 (declared short name, check reader names in `measure_catalog`) | 65/14 |
+| Aspect bundle `schema_version` (+ `CORE_PINNED` row, shape-only) | `packages/evals/src/threetears/evals/analysis/bundle/schema.py` `AnalysisContextBundle.schema_version`; `packages/evals/tests/test_hostneutral_sweepables.py` | **does not move in 01**: `short_name` and `goal_check_names` are written only when set and kept out of every fingerprint, so an unnamed bundle is shape 64 byte for byte; `measure_catalog` is unchanged | 64/14, no new `CORE_PINNED` row |
 | `CAMPAIGN_JSON_SHAPE` | `packages/evals/src/threetears/evals/analysis/report/model.py` | 02 (section ids, cell fields, chart kind), extended by 03-06 within the same unreleased shape | 5 |
 | `CAMPAIGN_BUNDLE_SHAPE` | `packages/evals/src/threetears/evals/analysis/campaign_bundle.py` | 06 (`readings.aggregate`) | 3 |
 | `EVAL_ANALYSIS_GEN_DEFAULT` (seed; hosts `eval_prompt_reset`) | `packages/evals/src/threetears/evals/analysis/gen_prompt.py`; ledger `packages/evals/src/threetears/evals/analysis/GEN_PROMPT_RULES.md` | 08 | moves; `PROMPT_CHAR_BUDGET` only falls |
@@ -391,15 +395,14 @@ Depends on 00 (`packages/evals/src/threetears/evals/schema/versioning.py`, v16.2
 - `packages/evals/src/threetears/evals/schema/models.py` (`EvalTemplate`)
 - `packages/evals/src/threetears/evals/run/definition_digests.py` (`_UNMEASURED_TEMPLATE_FIELDS`)
 - `packages/evals/src/threetears/evals/analysis/aspects.py`
-- `packages/evals/src/threetears/evals/analysis/bundle/schema.py` (shape 65), plus the bundle assembly that fills `measure_catalog` for goal checks (the
-  builder finds it, from `packages/evals/src/threetears/evals/analysis/bundle/surface.py` and `packages/evals/src/threetears/evals/analysis/bundle/trials.py`)
+- `packages/evals/src/threetears/evals/analysis/bundle/schema.py` (shape stays 64: `short_name`, `goal_check_names`, `check_name`), plus the bundle assembly
+  (`packages/evals/src/threetears/evals/analysis/bundle/assemble.py`, `_check_names`); `measure_catalog` is not touched
 - `packages/evals/src/threetears/evals/analysis/style.py` (`measure_name`)
 - `packages/evals/src/threetears/evals/analysis/report/campaign/names.py`, the one naming helper (02 created it as a pass-through, and every part already names
   aspects through it). 01 fills `aspect_name` from the declared short name and adds `legend`. It edits no other
   part's module
 - the campaign declare/adopt actions' argument descriptions
-- `packages/evals/tests/test_hostneutral_sweepables.py` (CORE_PINNED row)
-- new `packages/evals/tests/test_declared_names.py`
+- new `packages/evals/tests/test_declared_names.py` (no `CORE_PINNED` row: the shape does not move)
 
 **Deliverables.**
 - `Aspect.short_name: str | None`.
@@ -410,11 +413,15 @@ Depends on 00 (`packages/evals/src/threetears/evals/schema/versioning.py`, v16.2
     stale.
 - `EvalTemplate.goal_check_names: dict[str, str]`.
   - Expression to display name, keys must be declared checks.
-  - Excluded from `measured_template_digest`, because presentation does not change what a run measures.
-  - It flows into the goal check's `MetricDescriptor.reader_name`. `measure_name` uses it when set, and otherwise
-    `code(expression)` in full.
-- `AspectDeclaration.short_name` carried into the bundle. Shape 65, `CORE_PINNED` (65, 14), shape-only.
-- `packages/evals/src/threetears/evals/analysis/report/campaign/names.py`: `aspect_name(bundle)` returns the short name or the full label. `AspectNames.of` reads it for every
+  - Excluded from `measured_template_digest` and `template_digest`, because presentation does not change what a run
+    measures; a `template_update` of it alone leaves `updated_at`.
+  - It rides on the bundle (`AnalysisContextBundle.goal_check_names`, `.check_name(measure)`), never in
+    `measure_catalog`. `style.measure_name(..., declared=)` prints it when passed, and otherwise `code(expression)` in
+    full; `names.measure_name_of(bundle, measure)` is the door for a part holding a bundle.
+- The short name carried into the bundle (`AspectView.short_name`, `AnalysisContextBundle.short_name`). Bundle shape
+  stays 64, no `CORE_PINNED` row.
+- `packages/evals/src/threetears/evals/analysis/report/campaign/names.py`: `aspect_name(bundle)` returns `kernel.declaration.printed_aspect_name`, the one statement of
+  "the short name, else the full label". `AspectNames.of` reads it for every
   part, so every table cell and sentence follows without other edits, depth's sentences included (via
   `aspect_depth(name=)`). `legend(...)` gives the pairs for one legend row, and 03 places it.
 

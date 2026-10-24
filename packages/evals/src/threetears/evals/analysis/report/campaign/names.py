@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.style import measure_name
-from threetears.evals.kernel.metrics import goal_check_of
+from threetears.evals.kernel.declaration import printed_aspect_name
 
 __all__ = ["AspectNames", "aspect_name", "legend", "measure_name_of"]
 
@@ -33,7 +33,7 @@ def aspect_name(bundle: AnalysisContextBundle) -> str:
     :return: The aspect's name on the page.
     :rtype: str
     """
-    return bundle.short_name or bundle.aspect
+    return printed_aspect_name(bundle.aspect, bundle.short_name)
 
 
 @dataclass(frozen=True)
@@ -95,7 +95,7 @@ def measure_name_of(bundle: AnalysisContextBundle, measure: str) -> str:
     :return: Its name on the page.
     :rtype: str
     """
-    check = goal_check_of(measure)
-    declared = bundle.goal_check_names.get(check) if check is not None else None
     described = bundle.measure_catalog.get(measure)
-    return measure_name(measure, declared or (described.reader_name if described is not None else None))
+    return measure_name(
+        measure, described.reader_name if described is not None else None, declared=bundle.check_name(measure)
+    )

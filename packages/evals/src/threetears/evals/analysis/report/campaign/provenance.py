@@ -8,10 +8,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, CriterionKind, LateCriterion
-from threetears.evals.analysis.report.campaign.names import aspect_name
+from threetears.evals.analysis.report.campaign.names import aspect_name, measure_name_of
 from threetears.evals.analysis.report.decision import floor_statement
 from threetears.evals.analysis.report.model import DisclosureBlock, ReportBlock
-from threetears.evals.analysis.style import humanize, measure_name
+from threetears.evals.analysis.style import humanize
 from threetears.evals.kernel.campaign import EvalCampaign
 
 __all__ = ["late_criteria_lines", "provenance_blocks", "question_blocks", "timing_blocks"]
@@ -95,8 +95,7 @@ def _criterion_words(bundle: AnalysisContextBundle, late: LateCriterion) -> str:
     """Which criterion of its kind ``late`` is, as a line names it: a bar by its measure, a guardrail by its dimension,
     a floor by what it says."""
     if late.criterion == "bar" and late.name is not None:
-        described = bundle.measure_catalog.get(late.name)
-        return measure_name(late.name, described.reader_name if described is not None else None)
+        return measure_name_of(bundle, late.name)
     if late.criterion == "guardrail" and late.name is not None:
         return humanize("dimension", late.name)
     if late.criterion == "floor" and bundle.declared is not None:

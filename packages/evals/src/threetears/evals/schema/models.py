@@ -1672,6 +1672,13 @@ class CalibrationRating(DurableDocumentModel):
 #: characters rather than of words, since what a word is differs from one language to the next.
 DECLARED_NAME_CHARS: Final[int] = 32
 
+#: The fields of a template that say only how a page prints it, never what a run of it measures or reads: the one
+#: list every reader that must not see them reads. Left out of both template digests
+#: (:func:`~threetears.evals.run.definition_digests.template_digest`, ``measured_template_digest``), out of every
+#: bundle fingerprint (a bundle carries them under the same names), and an edit of these alone leaves the template's
+#: ``updated_at`` as it was, since that stamp decides which runs still read the template's criteria and intent.
+TEMPLATE_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"goal_check_names"})
+
 
 def declared_name(name: str, *, what: str) -> str:
     """Refuse a declared display name that is blank or longer than :data:`DECLARED_NAME_CHARS`.
@@ -1897,6 +1904,34 @@ class EvalTemplate(DurableDocumentModel):
                 "writes a new value for every case; nominate an `enum` or `sample` axis"
             )
         return axes
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Self:
+        """The stored read, which drops a goal check's display name once the check itself is gone.
+
+        A build that predates the names (durable v16.1) keeps them opaquely and writes them back, and may rename or drop
+        a check while it does: the name it writes back then names no check. The stored read leaves such a name out,
+        logged, and the next write drops it, rather than refusing the whole template for how a page would have
+        printed a check it no longer has. Every other field is read as strictly as construction reads it, and an
+        author naming a check the template does not declare is still refused.
+
+        :param data: The stored document, as the store returned it.
+        :ptype data: dict[str, Any]
+        :return: The template.
+        :rtype: Self
+        :raises ValidationError: As :meth:`~threetears.evals.schema.base.CoreDocumentModel.from_dict`.
+        """
+        if isinstance(data, Mapping) and isinstance(names := data.get("goal_check_names"), Mapping):
+            checks = data.get("goal_state_checks")
+            held = set(checks) if isinstance(checks, list) else set()
+            if orphaned := sorted(check for check in names if check not in held):
+                log.warning(
+                    "eval.template_read template=%s dropped goal_check_names for %s: no such goal check now",
+                    data.get("id"),
+                    ", ".join(map(repr, orphaned)),
+                )
+                data = {**data, "goal_check_names": {check: name for check, name in names.items() if check in held}}
+        return super().from_dict(data)
 
     @model_validator(mode="after")
     def _names_its_own_checks_once(self) -> Self:

@@ -497,7 +497,11 @@ def _separated(bundle: AnalysisContextBundle, arm: Callable[[str], str], *, aske
         for comparison in family.comparisons:
             if comparison.verdict in _SEPARATED:
                 heading = bundle.measure_catalog.get(comparison.name)
-                reading = measure_name(comparison.name, heading.reader_name if heading is not None else None)
+                reading = measure_name(
+                    comparison.name,
+                    heading.reader_name if heading is not None else None,
+                    declared=bundle.check_name(comparison.name),
+                )
                 if comparison.reading == "judged":
                     reading = f"{humanize('dimension', comparison.name)} (judged)"
                 elif comparison.reading == "trial":

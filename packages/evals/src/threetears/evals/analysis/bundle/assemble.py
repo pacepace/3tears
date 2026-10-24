@@ -86,6 +86,7 @@ from threetears.evals.kernel.metrics import (
     MetricDescriptor,
     declaration_of,
 )
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import (
     CalibrationRating,
     EvalResult,
@@ -165,6 +166,9 @@ if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime i
     from threetears.evals.kernel.campaign import EvalCampaign
     from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
     from threetears.evals.schema.models import EvalCaseStratum, EvalRun, EvalTemplate, JudgeEvidence
+
+
+log = get_logger(__name__)
 
 
 class CampaignReadStore(Protocol):
@@ -886,17 +890,28 @@ def _criteria(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) ->
 def _check_names(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) -> dict[str, str]:
     """Each goal check's display name as the member runs' templates declare it, by the check's expression.
 
-    Read as :func:`_criteria` reads a criterion: a template that no longer resolves names nothing, and a check two
-    templates name differently keeps the first template's name, by id. A check no template names is absent, and is
-    printed as its expression.
+    A template that no longer resolves names nothing, and a check no template names is absent, printed as its
+    expression. A check two templates name differently is absent too, so it prints whole rather than under a name one
+    template chose, and the warning log names the check and each template's name for it: picking one would print a
+    name the other template's author never gave it.
     """
-    names: dict[str, str] = {}
+    given: dict[str, dict[str, str]] = {}
     for template_id in sorted({run.template_id for run in runs if run.template_id}):
         template = templates.get(template_id)
         if template is None:
             continue
         for check, name in template.goal_check_names.items():
-            names.setdefault(check, name)
+            given.setdefault(check, {})[template_id] = name
+    names: dict[str, str] = {}
+    for check, by_template in given.items():
+        if len(set(by_template.values())) == 1:
+            names[check] = next(iter(by_template.values()))
+        else:
+            log.warning(
+                "eval.check_names_differ check=%r names=%s: printed as its expression until its templates name it alike",
+                check,
+                ", ".join(f"{template_id}={name!r}" for template_id, name in sorted(by_template.items())),
+            )
     return names
 
 

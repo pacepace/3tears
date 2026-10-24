@@ -199,10 +199,13 @@ def reading_name(name: str) -> str:
     return ENGINE_WORDS.get(name, name)
 
 
-def reading_heading(surface: DecisionSurface, name: str, reading: str = "measure") -> str:
+def reading_heading(
+    surface: DecisionSurface, name: str, reading: str = "measure", *, declared: str | None = None
+) -> str:
     """A reading as the page heads it, in a column, a row or a chart's title.
 
-    A goal check by its expression, verbatim as code (:func:`~threetears.evals.analysis.style.measure_name`); how
+    A goal check by its declared display name, else its expression, verbatim as code
+    (:func:`~threetears.evals.analysis.style.measure_name`); how
     each trial ended (a ``trial`` reading) as a floor names it, "the pass rate"; any other reading by the
     surface's heading, a reserved judge axis by its plain name (:func:`reading_name`).
 
@@ -213,13 +216,16 @@ def reading_heading(surface: DecisionSurface, name: str, reading: str = "measure
     :param reading: ``judged`` for a judged dimension, ``trial`` for the overall pass rate; anything else reads a
         measure.
     :ptype reading: str
+    :param declared: A goal check's declared display name (``AnalysisContextBundle.check_name``), printed in place of
+        its expression; None for none declared.
+    :ptype declared: str | None
     :return: The heading.
     :rtype: str
     """
     if reading == "trial":
         return "the pass rate"
     if reading != "judged" and goal_check_of(name) is not None:
-        return measure_name(name)
+        return measure_name(name, declared=declared)
     return reading_name(surface.measure_heading(name, reading))
 
 

@@ -30,7 +30,9 @@ from threetears.evals.analysis.campaign_bundle import (
     campaign_evidence_digest,
 )
 from threetears.evals.analysis.campaign_readings import campaign_readings
+from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis.campaigns import create_campaign, update_campaign
+from threetears.evals.analysis.judge_profiles import judged_criteria
 from threetears.evals.analysis.cells import CELL_MODEL_VERSION
 from threetears.evals.analysis.report.campaign.names import AspectNames, aspect_name, legend, measure_name_of
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
@@ -46,7 +48,10 @@ from threetears.evals.kernel.identity import (
     derive_variant_identity,
 )
 from threetears.evals.kernel.metrics import goal_check_measure
+from threetears.evals.run import SeedCorpus, definition_drift, seed_eval_definitions
+from threetears.evals.run.authoring import update_template
 from threetears.evals.run.definition_digests import measured_template_digest, template_digest
+from threetears.evals.run.rejudge import judged_template
 from threetears.evals.schema.models import EvalTemplate, GoalStateOutcome, RoleUsage
 from threetears.evals.schema.versioning import DURABLE_SCHEMA_MINOR, DURABLE_SCHEMA_VERSION
 from packages.evals.tests.campaign_support import ASKED_AT, ASSEMBLED_AT, QUESTION
@@ -56,11 +61,15 @@ from packages.evals.tests.factories import (
     make_eval_result,
     make_eval_run,
     make_template,
+    memory_storage,
     minimal_aspect_design,
 )
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture
+from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.fixtures.toyhost.run import toyhost_template
+from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture
 
 #: The fixture's two goal checks, each long enough that a page shortening one would show.
 CHECKS = ("state.shop.cart.length >= 1", "state.chat.messages.length >= 2")
@@ -342,6 +351,7 @@ class TestAnAspectsShortName:
         [
             pytest.param(("Queue", "Queue"), id="two alike"),
             pytest.param(("Empty", None), id="one printing the other's label"),
+            pytest.param(("Q", "Full"), id="another named aspect's label"),
         ],
     )
     def test_two_aspects_printed_alike_are_refused(self, names: tuple[str | None, str | None]) -> None:
@@ -350,7 +360,7 @@ class TestAnAspectsShortName:
             aspect.model_copy(update={"label": label, "short_name": name})
             for aspect, label, name in zip(campaign.aspects, ("Full", "Empty"), names, strict=True)
         ]
-        with pytest.raises(ValidationError, match="would print for more than one aspect"):
+        with pytest.raises(ValidationError, match="would name more than one aspect"):
             EvalCampaign.model_validate({**campaign.model_dump(), "aspects": [a.model_dump() for a in aspects]})
 
 
@@ -549,6 +559,264 @@ class TestAnUndeclaredNameFallsBackWhole:
 
     def test_measure_name_prints_a_declared_name_and_never_the_rate_name(self) -> None:
         measure = goal_check_measure(CHECKS[0])
-        assert measure_name(measure, "Cart filled") == "Cart filled"
+        assert measure_name(measure, declared="Cart filled") == "Cart filled"
+        assert measure_name(measure, "Cart filled") == f"`{CHECKS[0]}`", "a reader name is never read for a check"
         assert measure_name(measure, f"Pass rate of {CHECKS[0]}") == f"`{CHECKS[0]}`"
         assert measure_name(measure) == f"`{CHECKS[0]}`"
+
+
+# --- a names-only edit moves no run's reading of its template -----------------------------------------------------
+
+
+class TestNamingAStoredTemplateCutsNoRunOff:
+    """``updated_at`` decides which runs still read a template's criteria and intent, and which may be rejudged or
+    taken up again; an edit of its names alone leaves it, and every reading of every earlier run, where it was."""
+
+    @staticmethod
+    def _stored() -> tuple[Any, EvalTemplate, list[Any]]:
+        """The toy campaign's judged runs, each pointed at the toy template, stored as of the runs' launch."""
+        fixture = ops_fixture()
+        host = fixture.host.eval_host
+        (aspect,) = fixture.campaign.aspects
+        runs = [run for run_id in aspect.run_ids if (run := host.storage.load_eval_run(run_id, TOYHOST_SCOPE))]
+        template = toyhost_template().model_copy(update={"scope_id": TOYHOST_SCOPE})
+        assert template.goal_state_checks, "the toy template declares a goal check"
+        host.storage.save_template(template)
+        runs = [run.model_copy(update={"template_id": template.id}) for run in runs]
+        for run in runs:
+            host.storage.save_eval_run(run)
+        assert runs and all(template.updated_at <= run.created_at for run in runs), "every run reads its template"
+        return fixture, template, runs
+
+    @staticmethod
+    def _readings(fixture: Any, template_id: str, runs: list[Any]) -> dict[str, Any]:
+        host = fixture.host.eval_host
+        template = host.storage.load_template(template_id, TOYHOST_SCOPE)
+        assert template is not None
+        results = {run.id: host.storage.query_eval_results_by_run(run.id, TOYHOST_SCOPE) for run in runs}
+        rejudgeable = []
+        for run in runs:
+            try:
+                judged_template(host.storage, run, TOYHOST_SCOPE)
+            except ValidationFailedError:
+                rejudgeable.append(False)
+            else:
+                rejudgeable.append(True)
+        campaign = host.storage.load_campaign(fixture.campaign.id, TOYHOST_SCOPE)
+        assert campaign is not None
+        return {
+            "updated_at": template.updated_at,
+            "criteria": judged_criteria(runs, results, {template.id: template}),
+            "rejudgeable": rejudgeable,
+            "taken up as read": [template.updated_at <= run.created_at for run in runs],
+            "fingerprint": assemble_context_bundle(campaign, storage=host.storage, profile=host.profile).fingerprint(),
+        }
+
+    def test_naming_a_check_leaves_criteria_rejudging_take_up_and_fingerprint_as_they_were(self) -> None:
+        fixture, template, runs = self._stored()
+        before = self._readings(fixture, template.id, runs)
+
+        named = update_template(
+            fixture.host.eval_host,
+            template.id,
+            TOYHOST_SCOPE,
+            {"goal_check_names": {template.goal_state_checks[0]: "Every field"}},
+        )
+
+        assert named.goal_check_names == {template.goal_state_checks[0]: "Every field"}
+        after = self._readings(fixture, template.id, runs)
+        assert after == before
+        assert all(before["rejudgeable"]), "a run launched after its template's last edit may be rejudged"
+
+    def test_a_measured_edit_still_cuts_every_earlier_run_off(self) -> None:
+        fixture, template, runs = self._stored()
+        before = self._readings(fixture, template.id, runs)
+
+        update_template(fixture.host.eval_host, template.id, TOYHOST_SCOPE, {"intent": f"{template.intent} Twice."})
+
+        after = self._readings(fixture, template.id, runs)
+        assert after["updated_at"] > before["updated_at"]
+        assert not any(after["rejudgeable"]) and not any(after["taken up as read"])
+
+    def test_names_beside_a_measured_edit_still_stamp_it(self) -> None:
+        fixture, template, _ = self._stored()
+        edited = update_template(
+            fixture.host.eval_host,
+            template.id,
+            TOYHOST_SCOPE,
+            {"goal_check_names": {template.goal_state_checks[0]: "Every field"}, "description": "renamed"},
+        )
+        assert edited.updated_at > template.updated_at
+
+
+# --- names reach the page --------------------------------------------------------------------------------------------
+
+
+class TestANamedCheckPrintsByNameOnThePage:
+    def test_every_check_the_template_names_prints_by_its_name(self) -> None:
+        _, page = _page(named=True)
+        markdown = campaign_report_markdown(page)
+        for check, name in CHECK_NAMES.items():
+            assert name in markdown, name
+            assert f"| `{check}` |" not in markdown, f"{check} still heads a row by its expression"
+
+    def test_with_no_name_each_check_prints_its_whole_expression(self) -> None:
+        _, page = _page(named=False)
+        markdown = campaign_report_markdown(page)
+        assert all(f"`{check}`" in markdown for check in CHECKS)
+        assert not any(name in markdown for name in CHECK_NAMES.values())
+
+
+# --- names on a campaign, through every write ----------------------------------------------------------------------
+
+
+def _two_aspect_campaign() -> tuple[Any, EvalCampaign]:
+    fixture = ops_fixture()
+    host = fixture.host.eval_host
+    created = create_campaign(
+        host.storage,
+        {
+            "name": "two",
+            "subject_id": fixture.campaign.subject_id,
+            "behavior": fixture.campaign.behavior,
+            "aspects": [{"label": "one"}, {"label": "two"}],
+        },
+        scope_id=TOYHOST_SCOPE,
+        created_by="op",
+        profile=host.profile,
+        exploratory=True,
+    )
+    return fixture, created
+
+
+def _update(fixture: Any, campaign_id: str, updates: dict[str, Any]) -> EvalCampaign:
+    host = fixture.host.eval_host
+    return update_campaign(host.storage, campaign_id, TOYHOST_SCOPE, updates, updated_by="op", profile=host.profile)
+
+
+class TestShortNamesThroughEveryWrite:
+    def test_short_names_beside_aspects_is_refused(self) -> None:
+        fixture, created = _two_aspect_campaign()
+        with pytest.raises(ValidationFailedError, match="both declares the aspects and names them"):
+            _update(
+                fixture, created.id, {"aspects": [{"label": "one"}, {"label": "two"}], "short_names": {"one": "One"}}
+            )
+
+    @pytest.mark.parametrize(
+        "short_names",
+        [
+            pytest.param({"one": "two"}, id="another aspect's label"),
+            pytest.param({"one": "Same", "two": "Same"}, id="another aspect's short name"),
+        ],
+    )
+    def test_a_name_another_aspect_has_is_refused_on_update(self, short_names: dict[str, str]) -> None:
+        fixture, created = _two_aspect_campaign()
+        with pytest.raises(ValidationFailedError, match="would name more than one aspect"):
+            _update(fixture, created.id, {"short_names": short_names})
+
+    def test_a_short_name_equal_to_another_named_aspects_label_is_refused(self) -> None:
+        fixture, created = _two_aspect_campaign()
+        _update(fixture, created.id, {"short_names": {"two": "Second"}})
+        with pytest.raises(ValidationFailedError, match="would name more than one aspect"):
+            _update(fixture, created.id, {"short_names": {"one": "two"}})
+
+    async def test_the_update_action_sets_a_name_and_clears_it_with_null(self) -> None:
+        fixture, created = off_loop(_two_aspect_campaign)
+        tool = eval_catalogue().mount_all(standard_tools())[0]
+
+        named = await tool.call(
+            {"action": "campaign_update", "campaign_id": created.id, "short_names": {"one": "First"}},
+            host=fixture.host,
+            caller=CALLER,
+        )
+        assert not named.is_error, named.text
+        stored = off_loop(fixture.host.eval_host.storage.load_campaign, created.id, TOYHOST_SCOPE)
+        assert stored is not None and [aspect.short_name for aspect in stored.aspects] == ["First", None]
+
+        cleared = await tool.call(
+            {"action": "campaign_update", "campaign_id": created.id, "short_names": {"one": None}},
+            host=fixture.host,
+            caller=CALLER,
+        )
+        assert not cleared.is_error, cleared.text
+        stored = off_loop(fixture.host.eval_host.storage.load_campaign, created.id, TOYHOST_SCOPE)
+        assert stored is not None and [aspect.short_name for aspect in stored.aspects] == [None, None]
+        assert stored.to_dict()["aspects"] == created.to_dict()["aspects"], "cleared, it is stored as before"
+
+
+# --- check names across templates, a seed, and an older build's write-back ------------------------------------------
+
+
+class TestCheckNamesAcrossTemplatesAndBuilds:
+    @staticmethod
+    def _assembled(templates: list[EvalTemplate]) -> AnalysisContextBundle:
+        runs = [
+            make_eval_run(id=f"run-{index}", status="completed", template_id=f"tpl-{index}", created_at=STAMP)
+            for index in range(2)
+        ]
+        campaign = make_aspect_campaign(
+            label="mixed",
+            run_ids=[run.id for run in runs],
+            design=None,
+            scope_id=runs[0].scope_id,
+            subject_id=runs[0].subject_snapshot.subject_id,
+        )
+        return assemble_context_bundle(
+            campaign,
+            storage=ToyhostStorage(runs, {run.id: [] for run in runs}, templates=templates),
+            profile=toyhost_profile(),
+        )
+
+    @staticmethod
+    def _templates(*names: str) -> list[EvalTemplate]:
+        return [
+            make_template(
+                id=f"tpl-{index}",
+                name=f"template {index}",
+                goal_state_checks=[CHECKS[0]],
+                goal_check_names={CHECKS[0]: name},
+            )
+            for index, name in enumerate(names)
+        ]
+
+    def test_two_templates_naming_a_check_alike_name_it(self) -> None:
+        assert self._assembled(self._templates("Cart filled", "Cart filled")).goal_check_names == {
+            CHECKS[0]: "Cart filled"
+        }
+
+    def test_two_templates_naming_a_check_apart_print_it_whole_and_say_so(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level("WARNING"):
+            bundle = self._assembled(self._templates("Cart filled", "Basket filled"))
+        assert bundle.goal_check_names == {}
+        assert any(
+            "check_names_differ" in record.getMessage() and "'Basket filled'" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_a_template_that_no_longer_resolves_names_nothing(self) -> None:
+        assert self._assembled([]).goal_check_names == {}
+
+    def test_a_seed_adding_names_alone_reads_as_no_change(self) -> None:
+        storage, _ = memory_storage()
+        template = toyhost_template()
+        seed_eval_definitions(toyhost_host(storage=storage), SeedCorpus(scope_id=TOYHOST_SCOPE, templates=(template,)))
+        named = template.model_copy(update={"goal_check_names": {template.goal_state_checks[0]: "Every field"}})
+        drift = definition_drift(toyhost_host(storage=storage), SeedCorpus(scope_id=TOYHOST_SCOPE, templates=(named,)))
+        states = {reading.key: reading.state for reading in drift.readings}
+        assert states[f"eval_template/{template.name}"] == "current"
+
+    def test_a_name_whose_check_an_older_build_dropped_is_dropped_on_read(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        stored = _template(named=True).to_dict()
+        # What a build before the names writes back after dropping the second check: the names kept, opaquely.
+        stored["goal_state_checks"] = [CHECKS[0]]
+        with caplog.at_level("WARNING"):
+            read = EvalTemplate.from_dict(stored)
+        assert read.goal_check_names == {CHECKS[0]: CHECK_NAMES[CHECKS[0]]}
+        assert "goal_check_names" in read.to_dict() and CHECKS[1] not in read.to_dict()["goal_check_names"]
+        assert any("dropped goal_check_names" in record.getMessage() for record in caplog.records)
+        with pytest.raises(ValidationError, match="is not a goal check"):
+            EvalTemplate.model_validate(stored)

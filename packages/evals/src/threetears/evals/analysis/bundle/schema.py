@@ -42,6 +42,7 @@ from threetears.evals.analysis.cells import (
 from threetears.evals.analysis.aspects import AspectDeclaration
 from threetears.evals.analysis.depth import Depth
 from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.style import declared_check_name
 from threetears.evals.analysis.remainder import RemainderState, remainder_state
 from threetears.evals.analysis.reporting import served_model_state
 from threetears.evals.analysis.measurement_windows import MeasurementWindow
@@ -54,6 +55,7 @@ from threetears.evals.analysis.stats import (
 )
 from threetears.evals.kernel.analysis_measures import BarAdjudication, MeasureCollection
 from threetears.evals.kernel.campaign import CampaignWindow, EvalInsight, VariantIndexEntry
+from threetears.evals.kernel.declaration import ASPECT_PRESENTATION_FIELDS
 from threetears.evals.kernel.covariates import REASONING_RATIO_KEY
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.result_condition import ExclusionCause
@@ -69,6 +71,7 @@ from threetears.evals.kernel.metrics import (
 )
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.models import (
+    TEMPLATE_PRESENTATION_FIELDS,
     ApparatusProvenance,
     CaseSetRef,
     ClientRequestSettings,
@@ -3341,6 +3344,17 @@ class AnalysisContextBundle(EvalDocumentModel):
         """Whether the campaign asks this aspect a question, as the reading scope derived it."""
         return self.reading_scope.questions_declared
 
+    def check_name(self, measure: str) -> str | None:
+        """The display name the aspect's template declares for the goal check ``measure`` reads, for
+        :func:`~threetears.evals.analysis.style.measure_name`'s ``declared``.
+
+        :param measure: Any measure key.
+        :ptype measure: str
+        :return: The declared name; None for a measure that is no goal check's, or a check no template names.
+        :rtype: str | None
+        """
+        return declared_check_name(self.goal_check_names, measure)
+
     def fingerprint(self, *, like: str | None = None) -> str:
         """Return the bundle's fingerprint — a stable A/B key: ``v2:`` and the sha256 of its identity JSON.
 
@@ -3374,8 +3388,11 @@ class AnalysisContextBundle(EvalDocumentModel):
 
 
 #: The bundle fields :meth:`AnalysisContextBundle.fingerprint` leaves out: what built the bundle, when its results
-#: were written, and what a page calls its aspect and its checks, not what it read.
-_NOT_EVIDENCE: frozenset[str] = frozenset({"package_version", "first_result_at", "short_name", "goal_check_names"})
+#: were written, and how a page prints its aspect and its checks (the presentation fields of the aspect and the
+#: template, which the bundle carries under their own names), not what it read.
+_NOT_EVIDENCE: frozenset[str] = (
+    frozenset({"package_version", "first_result_at"}) | ASPECT_PRESENTATION_FIELDS | TEMPLATE_PRESENTATION_FIELDS
+)
 
 #: What a fingerprint of the current version starts with. Version 1 had no prefix: the bare sha256 of the canonical
 #: JSON, floats at full precision. Version 2 rounds every float to twelve significant figures first, so one

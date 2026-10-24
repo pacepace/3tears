@@ -628,10 +628,17 @@ DURABLE_SCHEMA_VERSION: int = 16
 #:   empty), each name at most 32 characters, and each is written only when set, so a campaign or a template naming
 #:   nothing is stored exactly as v16.1 stored it. Neither is in any identity, key, digest or fingerprint a run, a
 #:   cell, a pool, a pairing, an analysis or a reporter case is read by (``measured_template_digest`` and
-#:   ``template_digest`` leave a template's names out), so naming an aspect or a check changes no reading, stales no
-#:   analysis and reads no seeded template as drifted. Unlike the reporter label above, the sentence below holds of
-#:   these fields in full: a v16.1 build reading a campaign or template at this minor keeps the names opaquely,
-#:   writes them back, and prints each label and expression whole.
+#:   ``template_digest`` leave a template's names out), and a template edit of its names alone leaves its
+#:   ``updated_at``, so naming an aspect or a check changes no reading, stales no analysis, reads no seeded template as
+#:   drifted, and cuts no run off from its template's criteria, rejudging or take-up. A v16.1 build reading a campaign
+#:   or template at this minor keeps the names opaquely, writes them back, and prints each label and expression whole.
+#:   Two of its writes can leave a name that no longer fits: renaming or dropping a named goal check, after which this
+#:   build's stored read drops the name its check lost (logged) rather than refusing the template; and adopting an
+#:   aspect whose label is another adopted aspect's short name, which this build refuses on read, by the name the two
+#:   share. **Reach on a build at durable 16.2 before the names** (an unreleased pre-release, such as ``00107a5b7``): it
+#:   reads 16.2 strictly, so it refuses every campaign or template that names something, and one such document refuses
+#:   that scope's whole campaign listing (``list_campaigns``) or template query (``query_templates``), which hydrate
+#:   every row of the scope. So declare no name until every pod reading the store runs this build.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 DURABLE_SCHEMA_MINOR: int = 2
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""

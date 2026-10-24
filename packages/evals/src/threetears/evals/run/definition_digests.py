@@ -8,7 +8,8 @@ is not itself content. A field at its default is left out of the pre-image, so a
 None) moves no digest of a record written before it.
 
 - A template, a rubric dim and a judge config digest their declared fields less the record's own (:data:`RECORD_FIELDS`),
-  a template less its goal checks' display names too (:data:`_PRESENTATION_FIELDS`).
+  a template less how a page prints it too
+  (:data:`~threetears.evals.schema.models.TEMPLATE_PRESENTATION_FIELDS`).
 - A judge case digests as the frozen case it is (``JudgeCase.content_digest``), which a stored case already carries
   as its ``content_hash``.
 - A template's own case digests what its corpus file states of it: its ``variation_params``, its ``host_payload`` and
@@ -25,7 +26,13 @@ from collections.abc import Iterable, Sequence
 from pydantic import BaseModel
 
 from threetears.evals.schema.hashing import canonical_digest
-from threetears.evals.schema.models import CatalogRubricDim, EvalTemplate, JudgeConfig, current_revision
+from threetears.evals.schema.models import (
+    TEMPLATE_PRESENTATION_FIELDS,
+    CatalogRubricDim,
+    EvalTemplate,
+    JudgeConfig,
+    current_revision,
+)
 
 #: The fields that say which record a definition is and how it was written, never what it says: left out of every
 #: definition digest.
@@ -44,13 +51,6 @@ RECORD_FIELDS: frozenset[str] = frozenset(
 )
 
 
-#: The fields of a template that say how a page prints it, never what it is: left out of its content digest as well as
-#: its measured one. A drift between a seed and the store in these alone would otherwise read stale, and a reset write
-#: a new revision, whose results never pool with the last one's, for a change no run can see. A name is edited in
-#: place instead (``template_update``), which keeps the template's id and revision.
-_PRESENTATION_FIELDS: frozenset[str] = frozenset({"goal_check_names"})
-
-
 def _content(document: BaseModel, *, leave_out: frozenset[str] = frozenset()) -> dict[str, object]:
     """A definition's declared content fields, each left out at its default, and ``leave_out`` left out always."""
     declared = set(type(document).model_fields) - RECORD_FIELDS - leave_out
@@ -59,8 +59,13 @@ def _content(document: BaseModel, *, leave_out: frozenset[str] = frozenset()) ->
 
 def template_digest(template: EvalTemplate) -> str:
     """The digest of a template's content, as stored (its ``kind_spec`` as the kind's spec model resolved it), less
-    how a page prints it (:data:`_PRESENTATION_FIELDS`)."""
-    return canonical_digest({"eval_template": _content(template, leave_out=_PRESENTATION_FIELDS)})
+    how a page prints it (:data:`~threetears.evals.schema.models.TEMPLATE_PRESENTATION_FIELDS`).
+
+    A drift between a seed and the store in those alone would otherwise read stale, and a reset write a new revision,
+    whose results never pool with the last one's, for a change no run can see. A name is edited in place instead
+    (``template_update``), which keeps the template's id, revision and ``updated_at``.
+    """
+    return canonical_digest({"eval_template": _content(template, leave_out=TEMPLATE_PRESENTATION_FIELDS)})
 
 
 #: The fields of a template that cannot change what a run of it measures, each for its reason; every other field —
@@ -74,8 +79,8 @@ _UNMEASURED_TEMPLATE_FIELDS: frozenset[str] = RECORD_FIELDS | {
     "description",
     # Whether it is archived: curation, deciding only whether a new launch is offered.
     "archived",
-    # What a page calls each goal check (`_PRESENTATION_FIELDS`): read by no judge, simulator or candidate.
-    *_PRESENTATION_FIELDS,
+    # How a page prints it (`TEMPLATE_PRESENTATION_FIELDS`): read by no judge, simulator or candidate.
+    *TEMPLATE_PRESENTATION_FIELDS,
 }
 
 

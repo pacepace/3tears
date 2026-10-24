@@ -128,8 +128,8 @@ ASPECTS_DESCRIPTION = (
     "Where the question is measured, each {label?, short_name?, template_id?, margin?, design?, run_ids?}. label "
     "omitted names the aspect after the campaign's behavior, each / written - (tools/search is tools-search, as "
     "aspect_label_for writes it); one aspect at most omits it. short_name is what a page prints for the aspect in "
-    f"table cells and sentences, at most {DECLARED_NAME_CHARS} characters and printed by no other aspect; omitted, the "
-    "label is printed whole. design is what the aspect sets out to learn: axes (at least one: {axis_id, values: [{content, display}], rationale?}, each axis_id a lever "
+    f"table cells and sentences, at most {DECLARED_NAME_CHARS} characters and no other aspect's label or short name; "
+    "omitted, the label is printed whole. design is what the aspect sets out to learn: axes (at least one: {axis_id, values: [{content, display}], rationale?}, each axis_id a lever "
     "or open-family member this host declares), held_fixed ({stimulus: controlled|uncontrolled, stimulus_reason "
     "(required when uncontrolled), apparatus: commissioned|witnessed}), and optionally merit_axes, bars "
     "([{measure_id, threshold, direction}], no looser than the registered ones), guardrail_margins, merit_priority and "
@@ -166,7 +166,7 @@ ASPECTS_FROM_DESCRIPTION = (
 #: What naming a campaign's aspects is, said once.
 SHORT_NAMES_DESCRIPTION = (
     "An aspect's label to its short name, what a page prints for it in table cells and sentences (at most "
-    f"{DECLARED_NAME_CHARS} characters, printed by no other aspect), or to null to print its label whole. An aspect "
+    f"{DECLARED_NAME_CHARS} characters, no other aspect's label or short name), or to null to print its label whole. An aspect "
     "not named keeps its own. Editable once runs have joined, since it changes nothing any run measures; refused "
     "beside aspects, whose own short_name says it."
 )

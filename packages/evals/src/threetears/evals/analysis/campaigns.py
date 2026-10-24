@@ -199,7 +199,7 @@ class AspectDefinition(EvalBaseModel):
         default=None,
         description=(
             f"What a page prints for the aspect in place of its label, at most {DECLARED_NAME_CHARS} characters, "
-            "printed by no other aspect of the campaign. Omitted, the label is printed whole."
+            "and no other aspect's label or short name. Omitted, the label is printed whole."
         ),
     )
     template_id: str | None = Field(

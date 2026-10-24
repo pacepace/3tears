@@ -142,6 +142,7 @@ from threetears.evals.analysis.style import (
     ArmName,
     arm_name,
     code,
+    declared_check_name,
     humanize,
     measure_name,
 )
@@ -468,8 +469,10 @@ def _page(
     arm = _namer(names)
     cell_name = _cell_namer(surface, names)
     charts = _ChartLedger(bundle, arm)
-    guardrails_read = guardrail_verdicts(surface, bundle.guardrails, cell_name, rulers)
-    bars_read = bar_verdicts(surface, cell_name)
+    guardrails_read = guardrail_verdicts(
+        surface, bundle.guardrails, cell_name, rulers, check_names=bundle.goal_check_names
+    )
+    bars_read = bar_verdicts(surface, cell_name, check_names=bundle.goal_check_names)
     contrasts_read = contrast_verdicts(bundle, surface, arm_labels=arm_labels)
     written = memo(charts, names)
     # What the memo says with the methods (its coverage map) or with what was not tested (a finding standing on
@@ -1724,7 +1727,7 @@ def _question_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     catalog = bundle.measure_catalog
     exploratory = [
         *(
-            measure_name(name, catalog[name].reader_name if name in catalog else None)
+            measure_name(name, catalog[name].reader_name if name in catalog else None, declared=bundle.check_name(name))
             for name in scope.exploratory_measures
         ),
         *(f"{name} (judged)" for name in scope.exploratory_dimensions),
@@ -1783,7 +1786,7 @@ def _contrast_blocks(
     blocks.extend(_comparison_blocks(bundle, surface, contrasts_read, charts, arm, rulers))
     blocks.extend(_readings_blocks(bundle, surface, names, rulers))
     blocks.extend(_guardrail_blocks(surface, bundle.guardrails, guardrails_read, rulers))
-    blocks.extend(_strata_blocks(surface, names, rulers))
+    blocks.extend(_strata_blocks(surface, names, rulers, check_names=bundle.goal_check_names))
     blocks.extend(_label_blocks(surface, names, rulers))
     return blocks
 
@@ -1854,7 +1857,7 @@ def _guardrail_heading(bundle: AnalysisContextBundle, name: str, reading: str) -
     """A guardrail as a reader reads it: a measure by its reader name, a judged dimension by its own."""
     descriptor = bundle.measure_catalog.get(name) if reading == "measure" else None
     if reading == "measure" and goal_check_of(name) is not None:
-        return measure_name(name)
+        return measure_name(name, declared=bundle.check_name(name))
     return (descriptor.reader_name if descriptor is not None else None) or reading_name(name)
 
 
@@ -2076,7 +2079,9 @@ def contrast_verdicts(
     verdicts = []
     for family in bundle.multiple_comparisons.families:
         for comparison in family.comparisons:
-            heading = reading_heading(surface, comparison.name, comparison.reading)
+            heading = reading_heading(
+                surface, comparison.name, comparison.reading, declared=bundle.check_name(comparison.name)
+            )
             margin = _contrast_margin(bundle, comparison)
             ruler = rulers.of(comparison.name, comparison.reading)
             reason, detail = _contrast_reason(comparison)
@@ -2303,7 +2308,7 @@ def _comparison_blocks(
     blocks.extend(_note(family.disclosure) for family in comparisons.families)
     unranged = sorted(
         {
-            reading_heading(surface, comparison.name, comparison.reading)
+            reading_heading(surface, comparison.name, comparison.reading, declared=bundle.check_name(comparison.name))
             for family in comparisons.families
             for comparison in family.comparisons
             if comparison.equivalence_untested_reason is not None
@@ -2422,11 +2427,14 @@ def guardrail_verdicts(
     guardrails: GuardrailReadings | None,
     arm: Callable[[str, str], str],
     rulers: Rulers | None = None,
+    *,
+    check_names: Mapping[str, str] | None = None,
 ) -> list[Verdict]:
     """Each guardrail check as a typed verdict, in the guardrails table's row order; the table prints their words.
 
     An undecided check whose interval straddles its line says why on ``rulers`` (the surface's own where None), the
-    ruler the guardrails table states that reading on.
+    ruler the guardrails table states that reading on. ``check_names`` (``AnalysisContextBundle.goal_check_names``)
+    heads a goal check by its declared display name.
     """
     if guardrails is None or guardrails.withheld is not None:
         return []
@@ -2450,7 +2458,9 @@ def guardrail_verdicts(
                 reason_detail=check.undecided_reason,
                 reading=check.reading,
                 name=check.name,
-                heading=reading_heading(surface, check.name, check.reading),
+                heading=reading_heading(
+                    surface, check.name, check.reading, declared=declared_check_name(check_names or {}, check.name)
+                ),
                 arm=arm(check.contrast.variant_key, check.contrast.apparatus_class_id),
                 variant_key=check.contrast.variant_key,
                 apparatus_class_id=check.contrast.apparatus_class_id,
@@ -2480,8 +2490,11 @@ def guardrail_verdicts(
     return verdicts
 
 
-def bar_verdicts(surface: DecisionSurface, arm: Callable[[str, str], str]) -> list[Verdict]:
-    """Each adjudicated bar's reading on each arm as a typed verdict, bar by bar in the surface's order."""
+def bar_verdicts(
+    surface: DecisionSurface, arm: Callable[[str, str], str], *, check_names: Mapping[str, str] | None = None
+) -> list[Verdict]:
+    """Each adjudicated bar's reading on each arm as a typed verdict, bar by bar in the surface's order; a bar on a
+    goal check headed by its declared display name in ``check_names`` (``AnalysisContextBundle.goal_check_names``)."""
     reasons: dict[str, VerdictReason] = {
         "cleared": "interval_clears",
         "missed": "interval_misses",
@@ -2503,7 +2516,12 @@ def bar_verdicts(surface: DecisionSurface, arm: Callable[[str, str], str]) -> li
                     reason=reasons[read.decision],
                     reading=reading,
                     name=bar.measure_id,
-                    heading=reading_heading(surface, bar.measure_id, reading),
+                    heading=reading_heading(
+                        surface,
+                        bar.measure_id,
+                        reading,
+                        declared=declared_check_name(check_names or {}, bar.measure_id),
+                    ),
                     arm=arm(read.variant_key, read.apparatus_class_id),
                     variant_key=read.variant_key,
                     apparatus_class_id=read.apparatus_class_id,
@@ -2695,13 +2713,15 @@ def _readings_blocks(
             and not measures[name].texts
             and not measures[name].categories
         ]
-        for name in sorted(readings, key=lambda name: reading_heading(surface, name)):
+        for name in sorted(readings, key=lambda name: reading_heading(surface, name, declared=bundle.check_name(name))):
             summary = measures[name]
             places.append((cell, name, "measure", summary.rate if summary.rate is not None else summary.mean))
             rows.append(
                 {
                     "arm": label,
-                    "reading": rulers.of(name, "measure").scaled(reading_heading(surface, name)),
+                    "reading": rulers.of(name, "measure").scaled(
+                        reading_heading(surface, name, declared=bundle.check_name(name))
+                    ),
                     "value": _value_text(summary, rulers.of(name, "measure")),
                     "cases": summary.n_independent or None,
                 }
@@ -2764,7 +2784,9 @@ def _figure_text(mean: float, sem: float | None, ruler: MeasureRuler) -> str:
     return f"{_mean_text(mean, ruler)}{spread}"
 
 
-def _strata_blocks(surface: DecisionSurface, arms: dict[str, ArmName], rulers: Rulers) -> list[ReportBlock]:
+def _strata_blocks(
+    surface: DecisionSurface, arms: dict[str, ArmName], rulers: Rulers, *, check_names: Mapping[str, str]
+) -> list[ReportBlock]:
     """Each arm's figures per stratum beside its pooled figure — or nothing, when no case declares a stratum."""
     control = surface.control_variant_key
     cells = surface_order(
@@ -2803,7 +2825,7 @@ def _strata_blocks(surface: DecisionSurface, arms: dict[str, ArmName], rulers: R
                 plural = "" if stratum.n_cases == 1 else "s"
                 thin.append(f"{_stratum_word(name)} in {arm.removeprefix('▸ ')} ({stratum.n_cases} case{plural})")
         rows.append(cases)
-        rows.extend(_measure_rows(arm, cell, by_name, columns, surface, rulers))
+        rows.extend(_measure_rows(arm, cell, by_name, columns, surface, rulers, check_names=check_names))
         rows.extend(_judged_rows(arm, cell, by_name, columns, rulers))
     blocks: list[ReportBlock] = [
         TableBlock(
@@ -2854,6 +2876,8 @@ def _measure_rows(
     columns: dict[str | None, str],
     surface: DecisionSurface,
     rulers: Rulers,
+    *,
+    check_names: Mapping[str, str],
 ) -> list[dict[str, CellValue]]:
     """One row per measure the arm or any of its strata holds — every one but a text measure."""
     pooled = {summary.name: summary for summary in cell.measures.measures}
@@ -2879,7 +2903,9 @@ def _measure_rows(
 
         row: dict[str, CellValue] = {
             "arm": arm,
-            "reading": ruler.labelled(reading_heading(surface, measure)),
+            "reading": ruler.labelled(
+                reading_heading(surface, measure, declared=declared_check_name(check_names, measure))
+            ),
             "all": figure(pooled, cell),
         }
         for name in columns:
@@ -3189,15 +3215,19 @@ def _marks(trials: Sequence[TrialRow]) -> str:
     return marks
 
 
-def _trial_why(trial: TrialRow) -> str | None:
-    """Which check or judged dimension failed a trial, or why it was lost, on one line; None for a passed trial."""
+def _trial_why(trial: TrialRow, check_names: Mapping[str, str]) -> str | None:
+    """Which check or judged dimension failed a trial, or why it was lost, on one line; None for a passed trial. A
+    check by its declared display name in ``check_names``, else its expression."""
     if trial.state == "passed":
         return None
     if trial.state == "lost":
         return f"lost: {cause_short(trial.cause or 'unknown')}"
     if trial.cause == "check" and trial.failed_checks:
-        # A check is code: named by its expression, never humanized, and never a "pass rate" on one trial.
-        return "check: " + ", ".join(code(check.expression) for check in trial.failed_checks)
+        # A check is named by its declared name, else as code, by its expression: never humanized, and never a
+        # "pass rate" on one trial.
+        return "check: " + ", ".join(
+            check_names.get(check.expression) or code(check.expression) for check in trial.failed_checks
+        )
     if trial.cause == "judged":
         under = [entry.dim for entry in trial.judge if entry.scale == "pass_fail" and entry.score == 0]
         return "judge: " + ", ".join(humanize("dimension", dim) for dim in under) if under else "failed by the judge"
@@ -3258,7 +3288,7 @@ def _trial_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> l
             )
         else:
             words = fail_words(trial.cause or "unknown")
-        why = _trial_why(trial)
+        why = _trial_why(trial, bundle.goal_check_names)
         rows.append(
             {
                 "trial": trial.trial_id,
@@ -3281,7 +3311,13 @@ def _trial_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> l
                 why=why,
                 first_input=trial.first_input,
                 excerpt=trial.excerpt,
-                failed_checks=list(trial.failed_checks),
+                # The trial's own record keeps the rate name; the page prints a declared name beside the expression.
+                failed_checks=[
+                    check.model_copy(update={"name": bundle.goal_check_names[check.expression]})
+                    if check.expression in bundle.goal_check_names
+                    else check
+                    for check in trial.failed_checks
+                ],
                 judge=list(trial.judge),
                 error_words=trial.error_words,
                 result_id=trial.result_id,
@@ -3377,7 +3413,7 @@ def _not_tested_blocks(
             said.append(f"{arm(board.variant_key)} has no usable trial of {named}.")
     for proof in bundle.goal_check_proofs:
         if proof.proof != "proven":
-            said.append(_unproven_check_sentence(proof))
+            said.append(_unproven_check_sentence(proof, bundle.goal_check_names.get(proof.check)))
     blocks: list[ReportBlock] = [DisclosureBlock(section="not_tested", source="not_tested", text=text) for text in said]
     blocks += _no_margin_blocks(bundle)
     blocks += [
@@ -3448,9 +3484,10 @@ def _calibration_sentences(tiers: Sequence[JudgeEvidenceTier]) -> list[str]:
     return said
 
 
-def _unproven_check_sentence(proof: GoalCheckProofReading) -> str:
-    """A goal check not shown to beat doing nothing: what it is, and what its pass rate is not."""
-    check = code(proof.check)
+def _unproven_check_sentence(proof: GoalCheckProofReading, declared: str | None) -> str:
+    """A goal check not shown to beat doing nothing: what it is, and what its pass rate is not. Named by its declared
+    display name, else its expression."""
+    check = declared if declared is not None else code(proof.check)
     if proof.refused is not None:
         return (
             f"Goal check {check} is {CHECK_REFUSED_UNDER_CURRENT_GRAMMAR} ({proof.refused}), so no arm was graded on "
@@ -3494,7 +3531,11 @@ def _no_margin_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
         return "cannot: the engine owns its description"
 
     rows: list[dict[str, CellValue]] = [
-        {"reading": measure_name(name, catalog[name].reader_name), "declare": declaring(name)} for name in names
+        {
+            "reading": measure_name(name, catalog[name].reader_name, declared=bundle.check_name(name)),
+            "declare": declaring(name),
+        }
+        for name in names
     ]
     return [
         DisclosureBlock(
@@ -3655,7 +3696,10 @@ def _uncarried(bundle: AnalysisContextBundle) -> list[str]:
     ]
     catalog = bundle.measure_catalog
     return list(
-        dict.fromkeys(measure_name(name, catalog[name].reader_name if name in catalog else None) for name in names)
+        dict.fromkeys(
+            measure_name(name, catalog[name].reader_name if name in catalog else None, declared=bundle.check_name(name))
+            for name in names
+        )
     )
 
 
