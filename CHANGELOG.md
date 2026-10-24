@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: code no longer reads the memo writer's prose; the page prints it as written
+
+**Changed:** Code checks code, and a model's prose is a model's to check: the page prints every memo sentence as
+written, and the generator's repair round refuses on structure only. The page no longer drops a sentence discounting
+a reading for when its runs ran (#919) or proposing a sample size or cost of its own (#846), no longer replaces a
+sentence disputing a floor's reading or a title restating a measured number with code's words, no longer drops
+meta-prose or the repeated question, and no longer rewrites a raw model id into its arm's label. The generator no
+longer refuses a finding title in an English null phrasing or one naming an arm its finding cites nothing of. Every
+such rule stays in the seeded writer prompt, the facts behind them stay in the writer view, and the reporter eval
+measures them, in whatever language a memo is written. Gone from Methods: the lines `The memo said "…", which
+discounts a reading for when its runs ran, so the page does not print it.`, `…, a sample size or cost no code
+computed, …`, `…, which disputes a difference a floor read either way; …` and `N memo sentence(s) restated a measured
+number, …`; the `Style` fold; and the `Memo style` row. Gone from the first screen: the line for an arm whose label a
+comparative word in it contradicts. The seeded writer prompt changed, so hosts push the new seed
+(`eval_prompt_reset`). No bundle, writer-view or page JSON shape moves. See `packages/evals/MIGRATIONS.toml`.
+
 ### evals: the spend ceiling splits no test setup, so arms launched at two caps pair and read an interval
 
 **Fixed:** Two launches on one template that differed only in the `max_cost_usd` they were given read as two test

@@ -98,7 +98,6 @@ from threetears.evals.analysis.report.model import (
 )
 from threetears.evals.analysis.report.decision import (
     FloorVerdict,
-    RateReading,
     SampleProjection,
     case_cost_usd,
     floor_projection,
@@ -108,15 +107,12 @@ from threetears.evals.analysis.report.decision import (
     projected_cell,
     projection_note,
     read_floor,
-    settles,
-    settles_cost,
 )
 from threetears.evals.analysis.report.campaign_page import (
     campaign_verdict,
     campaign_warnings,
     late_criteria_lines,
 )
-from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures, row_words
 from threetears.evals.analysis.report.verdict import (
     MIN_CASES,
     CauseWords,
@@ -140,9 +136,8 @@ from threetears.evals.analysis.report.words import (
     reading_name,
     stands_on_words,
 )
-from threetears.evals.analysis.reporting import METRIC_TOTAL_MS, self_judging_text
+from threetears.evals.analysis.reporting import self_judging_text
 from threetears.evals.analysis.style import (
-    LABEL_CLAIMS,
     ArmName,
     arm_name,
     code,
@@ -240,7 +235,6 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) ->
     """
     generation = analysis.generation
     bundle = analysis_bundle(analysis)
-    style = _memo_style(bundle, analysis)
     source = ReportSource(
         analysis_id=analysis.id,
         campaign_id=analysis.campaign_id,
@@ -256,10 +250,9 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) ->
         bundle,
         basis="analysis",
         source=source,
-        memo=lambda charts, names: _memo_blocks(analysis, bundle, charts, names, style),
+        memo=lambda charts, names: _memo_blocks(analysis, bundle, charts, names),
         finding_count=len(analysis.document.findings),
         writer=analysis_writer(analysis),
-        style=style,
     )
 
 
@@ -276,38 +269,6 @@ def analysis_writer(analysis: EvalAnalysis) -> str:
     return (
         f"{generation.generator_model}, prompt {generation.prompt_id} version {generation.prompt_version}, "
         f"{_date(generation.generated_at)}"
-    )
-
-
-def _memo_style(bundle: AnalysisContextBundle, analysis: EvalAnalysis) -> MemoStyle:
-    """The style pass a stored memo's words go through, with the declared question and the floors' readings to hold
-    them to."""
-    names = {**_arm_names(bundle), **_arm_names(bundle, _only_aspect(analysis).variant_index)}
-    namer = _namer(names)
-    per_case = case_cost_usd(bundle)
-    floors: list[FloorVerdict] = []
-    sample = None
-    samples: list[SampleProjection] = []
-    # Every arm's cases showing its floors hold needs, as the "To show the floors hold" table states them, which the
-    # memo may cite and may not guess at; with one other arm its floors also settle the readings a finding may not
-    # dispute.
-    candidates = _candidates(bundle)
-    for read in _floor_verdicts(bundle, namer).values():
-        if (joined := floors_projection(read, per_case_usd=per_case)) is not None:
-            samples += [joined] + [
-                projection
-                for verdict in read
-                if (projection := floor_projection(verdict, per_case_usd=per_case)) is not None
-            ]
-        if len(candidates) == 1:
-            floors, sample = list(read), joined
-    return MemoStyle(
-        bundle=bundle,
-        names=names,
-        question=_question(bundle),
-        floors=tuple(floors),
-        sample=sample,
-        samples=tuple(samples),
     )
 
 
@@ -489,7 +450,6 @@ def _page(
     memo: Callable[[_ChartLedger, dict[str, ArmName]], list[ReportBlock]],
     finding_count: int,
     writer: str | None,
-    style: MemoStyle | None = None,
     arm_labels: Mapping[str, str] | None = None,
 ) -> Report:
     """The page every door renders: the same screens, from one bundle, whatever wrote the memo.
@@ -519,11 +479,6 @@ def _page(
     contrasts += _bar_blocks(surface, bars_read, rulers)
     notes = [block for block in contrasts if block.section == "methods"]
     contrasts = [block for block in contrasts if block.section != "methods"]
-    if style is not None:
-        notes += [_note(text, "memo") for text in decision_disclosures(style)]
-        notes += [
-            DisclosureBlock(section="methods", source="memo", text=text, fold="Style") for text in style.offending()
-        ]
     if (not_charted := charts.sentence()) is not None:
         notes.append(_note(not_charted, "charts"))
     name = source.campaign_name or f"Campaign {source.campaign_id}"
@@ -561,7 +516,6 @@ def _page(
             writer=writer,
             tables=folded,
             memo_disclosures=notes,
-            style=style,
         ),
     ]
     # In reading order, each section's blocks in the order laid out (a code-only page's unasked readings are said
@@ -835,8 +789,7 @@ def _scoreboard_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str])
     """The scoreboard table, its outcome bar, then only what changes how the verdict is read, in normal weight.
 
     A fact that changes how the verdict should be read belongs on the first screen, and nothing else does: the case
-    floor, then an arm's label that its own row contradicts (``'cheaper candidate' is not cheaper: it cost more per
-    reply than production.``), then an arm whose every trial failed. Everything else that qualifies the table is a
+    floor, then an arm whose every trial failed. Everything else that qualifies the table is a
     step down: what was not charted and where a cost is a floor are in the methods; a failure cause the scoreboard
     counts apart from checks and the judge heads its own column where it is the only one, and the outcome bar names
     each where there are several.
@@ -915,7 +868,6 @@ def _scoreboard_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str])
         DisclosureBlock(section="scoreboard", source="caveat", text=line, term="case floor")
         for line in caveat_lines(bundle, arm)
     ]
-    blocks += [DisclosureBlock(section="scoreboard", source="caveat", text=line) for line in _label_claims(bundle, arm)]
     if bundle.all_failed_cells:
         every_failed = list(dict.fromkeys(arm(cell.variant_key) for cell in bundle.all_failed_cells))
         blocks.append(
@@ -967,53 +919,6 @@ def _unpriced_cost_line(bundle: AnalysisContextBundle, arm: Callable[[str], str]
         + "; ".join(f"{arm(board.variant_key)}, {board.n_cost_unpriced} of {board.ran}" for board in unpriced)
         + "."
     )
-
-
-def _label_claims(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[str]:
-    """One line for each arm whose label claims, in a word :data:`~threetears.evals.analysis.style.LABEL_CLAIMS`
-    lists, what its own row against the control contradicts: ``'cheaper candidate' is not cheaper: it cost more per
-    reply than production.`` A fact that changes how the verdict reads, so it sits on the first screen.
-
-    Cost is read on the scoreboard's cost per reply. Latency is read on each arm's turn time, only where every cell of
-    both arms read it serially (the page compares no contended latency), and contradicts a label only when every cell
-    of the arm sits on the other side of every cell of the control.
-    """
-    control = _control_key(bundle)
-    boards = {board.variant_key: board for board in bundle.scoreboard}
-    if control is None:
-        return []
-    contended = {cell.variant_key for cell in bundle.latency_contended_cells}
-    latencies: dict[str, list[float | None]] = {}
-    for cell in bundle.cell_measures:
-        summary = next((m for m in cell.measures.measures if m.name == METRIC_TOTAL_MS), None)
-        latencies.setdefault(cell.variant_key, []).append(summary.mean if summary is not None else None)
-
-    def clean(key: str) -> list[float] | None:
-        read = latencies.get(key, [])
-        if key in contended or not read or any(value is None for value in read):
-            return None
-        return [value for value in read if value is not None]
-
-    lines: list[str] = []
-    for key, board in boards.items():
-        if key == control:
-            continue
-        label = arm(key)
-        for word, claims, way in LABEL_CLAIMS:
-            if not re.search(rf"(?<![\w-]){re.escape(word)}(?![\w-])", label, re.I):
-                continue
-            contrary = None
-            if claims == "cost":
-                ours, theirs = boards[control].reply_cost_usd, board.reply_cost_usd
-                if ours is not None and theirs is not None and (theirs > ours if way == "lower" else theirs < ours):
-                    contrary = f"it cost {'more' if way == 'lower' else 'less'} per reply than {arm(control)}"
-            elif (ours_read := clean(control)) is not None and (theirs_read := clean(key)) is not None:
-                longer, shorter = min(theirs_read) > max(ours_read), max(theirs_read) < min(ours_read)
-                if longer if way == "lower" else shorter:
-                    contrary = f"its replies took {'longer' if way == 'lower' else 'less time'} than {arm(control)}'s"
-            if contrary is not None:
-                lines.append(f"'{label}' is not {word}: {contrary}.")
-    return lines
 
 
 def _outcome_bar(board: ArmScoreboard, arm: Callable[[str], str]) -> OutcomeBar:
@@ -1292,14 +1197,13 @@ def _memo_blocks(
     bundle: AnalysisContextBundle,
     charts: _ChartLedger,
     names: dict[str, ArmName],
-    style: MemoStyle,
 ) -> list[ReportBlock]:
     """The memo: the writer's summary across the campaign, its summary of the aspect, the findings, the recommendation
     and the next steps.
 
     A finding is one sentence its writer wrote and a table code built from the readings the writer chose; everything
-    else it carries sits in a closed ``Evidence`` fold. Every word the memo contributes passes ``style`` first
-    (:mod:`~threetears.evals.analysis.report.memo_style`). A finding is cited by its headline, never by a number.
+    else it carries sits in a closed ``Evidence`` fold. The memo's words are printed as written (:func:`_as_written`):
+    code reads none of them. A finding is cited by its headline, never by a number.
 
     Findings are evidence: one that names no reading (its resolution's tier is ``none``) is not a finding, so it is
     not laid out here but noted in one line with what was not tested (``The analysis also noted: …``). The coverage
@@ -1311,35 +1215,29 @@ def _memo_blocks(
     arm = _ref_namer(held.decision_surface, {**names, **_arm_names(bundle, held.variant_index)})
     axes = _question_axes(bundle)
     blocks: list[ReportBlock] = []
-    if said := style.summary(document.summary):
+    if said := _as_written(document.summary):
         # The writer's read across the campaign leads its memo here as it leads the campaign's page.
         blocks.append(TextBlock(section="memo", role="summary", body=said))
     for summary in document.aspect_summaries:
         if summary.aspect != held.label:
             continue
-        # What changed and how sure, then what it means: the writer's three parts, each through the style pass.
+        # What changed and how sure, then what it means: the writer's three parts, as written.
         parts: tuple[tuple[TextRole, str], ...] = (
             ("what_changed", summary.what_changed),
             ("how_sure", summary.how_sure),
         )
         for role, said in parts:
-            if part := style.prose(said):
+            if part := _as_written(said):
                 blocks.append(TextBlock(section="memo", role=role, body=part))
-        proposed = len(style.proposed)
-        body = style.sentence(summary.means, plans=True)
-        if not body and len(style.proposed) > proposed:
-            # Every sentence of it proposed a sample size code did not compute, and none was projected: the methods
-            # list what it said.
-            continue
-        blocks.append(TextBlock(section="memo", role="answer", body=body))
+        blocks.append(TextBlock(section="memo", role="answer", body=_as_written(summary.means)))
     resolutions: list[FindingResolution | None] = (
         list(analysis.resolutions) if analysis.resolutions else [None] * len(document.findings)
     )
-    headlines = [style.names_arms(" ".join(finding.title.split())) for finding in document.findings]
+    headlines = [_as_written(finding.title) for finding in document.findings]
     noted: list[ReportBlock] = []
     for position, (finding, resolution) in enumerate(zip(document.findings, resolutions, strict=True)):
         if resolution is not None and resolution.evidence_tier == "none":
-            if (title := style.sentence(finding.title)).strip():
+            if title := _as_written(finding.title):
                 noted.append(
                     DisclosureBlock(
                         section="not_tested", source="memo", text=f"The analysis also noted: {title.rstrip('.')}."
@@ -1354,18 +1252,12 @@ def _memo_blocks(
             resolution,
             arm,
             charts,
-            style,
             exploratory=exploratory,
             headlines=headlines,
             bundle=bundle,
-            names=names,
-        )
-        # A finding is cited by the headline the page prints for it.
-        headlines[position] = next(
-            block.body for block in found if isinstance(block, TextBlock) and block.role == "finding_title"
         )
         blocks.extend(found)
-    blocks.extend(_recommendation_blocks(analysis, bundle, style))
+    blocks.extend(_recommendation_blocks(analysis, bundle))
     coverage_status = {row.name: row.status for row in held.coverage.levers}
     steps: list[str] = []
     # A lever no comparison exercised is no lever, so no step measures it, whatever the writer proposed.
@@ -1373,17 +1265,7 @@ def _memo_blocks(
     exercised = [step for step in document.next if step.lever not in unexercised]
     kept: list[NextStep] = []
     for step in exercised:
-        proposed = len(style.proposed)
-        title = style.sentence(step.title, plans=True)
-        if len(style.proposed) > proposed:
-            # A step whose title proposed a sample size code did not compute says code's projection instead, once,
-            # with none of the writer's facts or why, which were about the step it replaced; with no projection, or
-            # once said, the step is not printed.
-            if title and title not in steps:
-                kept.append(step.model_copy(update={"lever": ""}))
-                steps.append(title)
-                blocks.append(TextBlock(section="memo", role="next_step", body=title))
-            continue
+        title = _as_written(step.title)
         facts = [Fact(name="Leverage", value=step.leverage)]
         if step.lever:
             status = coverage_status.get(step.lever) or "no coverage row"
@@ -1392,19 +1274,17 @@ def _memo_blocks(
         kept.append(step)
         steps.append(title)
         blocks.append(TextBlock(section="memo", role="next_step", body=steps[-1], facts=facts))
-        if (why := style.prose(step.why, plans=True)).strip():
+        if why := _as_written(step.why):
             blocks.append(TextBlock(section="memo", role="next_step_why", body=why, fold="Why"))
         blocks.append(_facts_table(facts, name="next_step_facts", fold="Why"))
     blocks.extend(_coverage_blocks(analysis, kept, steps))
     return [*blocks, *noted]
 
 
-def _recommendation_blocks(
-    analysis: EvalAnalysis, bundle: AnalysisContextBundle, style: MemoStyle
-) -> list[ReportBlock]:
+def _recommendation_blocks(analysis: EvalAnalysis, bundle: AnalysisContextBundle) -> list[ReportBlock]:
     """The writer's one recommendation: the arm, its reasons, how sure, and what it is made over.
 
-    The reasons are the writer's words, through ``style``; the arm, its guardrails' standing, the floors it is made
+    The reasons are the writer's words, as written; the arm, its guardrails' standing, the floors it is made
     over and the cases its findings show are code's facts beside them. A recommendation of a candidate over an
     undecided guardrail is never read as shown safe: the standing says so.
     """
@@ -1432,7 +1312,7 @@ def _recommendation_blocks(
             Fact(
                 name="Floors overridden",
                 value="; ".join(
-                    f"{override.floor}: {style.prose(override.why)}" for override in recommended.floors_overridden
+                    f"{override.floor}: {_as_written(override.why)}" for override in recommended.floors_overridden
                 ),
             )
         )
@@ -1464,7 +1344,7 @@ def _recommendation_blocks(
         TextBlock(
             section="memo",
             role="recommendation",
-            body=style.prose(" ".join(recommended.reasons), plans=True),
+            body=_as_written(" ".join(recommended.reasons)),
             rests_on=list(recommended.rests_on),
             facts=[Fact(name="Disposition", value=f"recommend {named}")],
         ),
@@ -1661,18 +1541,14 @@ def _finding_blocks(
     resolution: FindingResolution | None,
     arm: Callable[[str], str],
     charts: _ChartLedger,
-    style: MemoStyle,
     *,
     exploratory: bool,
     headlines: Sequence[str] = (),
     bundle: AnalysisContextBundle | None = None,
-    names: dict[str, ArmName] | None = None,
 ) -> list[ReportBlock]:
     """One finding: its one sentence, the table code built from its readings, their charts, then a closed fold.
 
-    A title restating a number the bundle measured is replaced by the table's own row in words: a measured fact is
-    stated by code, flatly. Where a floor read broken or held reads the finding's one reading, that row is
-    :func:`_settled_sentence`, which also replaces any of the finding's sentences disputing the settled difference.
+    Every sentence is the writer's, as written; the table is code's.
     """
     facts = [Fact(name="Confidence", value=CONFIDENCE_WORDS[finding.confidence])]
     if exploratory:
@@ -1686,18 +1562,7 @@ def _finding_blocks(
     if finding.invalidates:
         facts.append(Fact(name="Overturns", value=_cited(headlines, finding.invalidates)))
     table = _evidence_table(analysis, position, resolution, arm, charts) if resolution and resolution.evidence else None
-    fallback = settled = None
-    readings = [column for column in table.columns if column.key.startswith("reading_")] if table is not None else []
-    if table is not None and readings:
-        reading = readings[0]
-        values = [(str(row["arm"].value), row[reading.key].text) for row in table.rows]
-        settled = _settled_sentence(bundle, names or {}, resolution, values, style)
-        fallback = (
-            settled
-            or _row_sentence(bundle, names or {}, resolution, reading.header, values)
-            or row_words(reading.header, values)
-        )
-    title = style.sentence(finding.title, fallback=fallback, settled=settled)
+    title = _as_written(finding.title)
     blocks: list[ReportBlock] = [
         # The facts ride on the block for a program; the page prints them once, in the finding's fold.
         TextBlock(
@@ -1712,14 +1577,10 @@ def _finding_blocks(
     if table is not None:
         blocks.append(table)
     blocks.append(_facts_table(facts, name="finding_facts", finding=position))
-    # Code's sentence on a settled difference is printed once: a later sentence disputing it is dropped.
-    printed = [title]
-    if (body := style.prose(finding.body, settled=settled, said=" ".join(printed))).strip():
-        printed.append(body)
+    if body := _as_written(finding.body):
         blocks.append(TextBlock(section="memo", role="finding_body", finding=position, body=body, fold="Evidence"))
     for caveat in finding.caveats:
-        if (said := style.prose(caveat.text, settled=settled, said=" ".join(printed))).strip():
-            printed.append(said)
+        if said := _as_written(caveat.text):
             blocks.append(
                 TextBlock(
                     section="memo",
@@ -1730,144 +1591,17 @@ def _finding_blocks(
                     fold="Evidence",
                 )
             )
-    if (durable := style.prose(finding.durable, settled=settled, said=" ".join(printed))).strip():
+    if durable := _as_written(finding.durable):
         blocks.append(
             TextBlock(section="memo", role="carried_forward", finding=position, body=durable, fold="Evidence")
         )
     return blocks
 
 
-def _row_sentence(
-    bundle: AnalysisContextBundle | None,
-    names: dict[str, ArmName],
-    resolution: FindingResolution | None,
-    reading: str,
-    values: Sequence[tuple[str, str]],
-) -> str | None:
-    """A finding's one reading on the control and one candidate as a plain sentence, candidate first.
-
-    ``cheaper candidate cost $0.003301 per reply to production's $0.003092; the difference did not separate.`` None
-    where the table is not one reading on the control and one other arm.
-    """
-    if bundle is None or resolution is None or len(values) != 2:
-        return None
-    control = _control_key(bundle)
-    label = _namer(names)
-    if control is None or label(control) not in {arm for arm, _ in values}:
-        return None
-    (ours,) = [value for arm, value in values if arm == label(control)]
-    ((candidate, theirs),) = [(arm, value) for arm, value in values if arm != label(control)]
-    measures = {row.measure_id for row in resolution.evidence}
-    if len(measures) != 1:
-        return None
-    (measure,) = measures
-    said = (
-        f"{candidate} cost {theirs} {_per_reply(bundle)} to {label(control)}'s {ours}"
-        if measure == "production_replicating_cost"
-        else f"{reading}: {candidate} {theirs} to {label(control)}'s {ours}"
-    )
-    verdicts = {
-        comparison.verdict
-        for family in bundle.multiple_comparisons.families
-        for comparison in family.comparisons
-        if comparison.name == measure
-        and comparison.control.variant_key == control
-        and label(comparison.contrast.variant_key) == candidate
-    }
-    if verdicts == {"not_separated"}:
-        said += "; the difference did not separate"
-    elif verdicts and verdicts <= set(_SEPARATED):
-        said += "; the difference separated"
-    return f"{said[:1].upper()}{said[1:]}."
-
-
-def _settled_sentence(
-    bundle: AnalysisContextBundle | None,
-    names: dict[str, ArmName],
-    resolution: FindingResolution | None,
-    values: Sequence[tuple[str, str]],
-    style: MemoStyle,
-) -> str | None:
-    """A finding's one reading, which a floor read broken or held, as code says it: the two values plainly,
-    candidate first, then under the case floor one sentence of what is not estimated and why.
-
-    ``Cheaper candidate passed 6 of 12 on `call_count("inventory.place_order") >= 2` to production's 11. Whether that
-    gap holds on more cases is not estimated below 5 independent cases.`` The gap is measured and stated; what the
-    floor withholds is its interval. None where no floor read either way reads the finding's one reading on the control
-    and the candidate.
-    """
-    floors = style.floors
-    if not floors or bundle is None or resolution is None or len(values) != 2:
-        return None
-    control = _control_key(bundle)
-    label = _namer(names)
-    measures = {row.measure_id for row in resolution.evidence}
-    if control is None or label(control) not in {arm for arm, _ in values} or len(measures) != 1:
-        return None
-    (measure,) = measures
-    (ours,) = [value for arm, value in values if arm == label(control)]
-    ((candidate, theirs),) = [(arm, value) for arm, value in values if arm != label(control)]
-    if measure == "production_replicating_cost" and settles_cost(floors):
-        said = f"{candidate} cost {theirs} {_per_reply(bundle)} to {label(control)}'s {ours}"
-    elif (rate := _rate_of(bundle, style, measure, control, candidate, label)) is not None and settles(floors, rate):
-        said = (
-            f"{candidate} passed {rate.candidate_passed} of {rate.candidate_n} on {rate.name} to {label(control)}'s "
-            f"{rate.control_passed}" + ("" if rate.control_n == rate.candidate_n else f" of {rate.control_n}")
-        )
-    else:
-        return None
-    said = said[:1].upper() + said[1:]
-    readings = floors[0].readings
-    fewest = readings.fewest_cases() if readings is not None else None
-    if fewest is None or fewest >= MIN_CASES:
-        return f"{said}."
-    return f"{said}. Whether that gap holds on more cases is not estimated below {MIN_CASES} independent cases."
-
-
-def _rate_of(
-    bundle: AnalysisContextBundle,
-    style: MemoStyle,
-    measure: str,
-    control: str,
-    candidate: str,
-    label: Callable[[str], str],
-) -> RateReading | None:
-    """``measure``'s pass rate on the control and the arm named ``candidate``: the floors' own reading where they read
-    one, else a goal check's held count on each arm's one cell (its rate times its observations, as the finding's
-    table counts it), with the trials each arm lost as the floors count them. None where neither is there."""
-    readings = style.floors[0].readings if style.floors else None
-    rates = readings.rates if readings is not None else ()
-    if (read := next((rate for rate in rates if rate.measure == measure), None)) is not None:
-        return read
-    keys = [board.variant_key for board in bundle.scoreboard if board.variant_key != control]
-    key = next((key for key in keys if label(key) == candidate), None)
-    if key is None or goal_check_of(measure) is None:
-        return None
-    held: dict[str, tuple[int, int]] = {}
-    for cell in bundle.cell_measures:
-        summary = next((m for m in cell.measures.measures if m.name == measure), None)
-        if cell.variant_key not in (control, key) or summary is None or summary.mean is None or summary.n <= 0:
-            continue
-        count = summary.n_true if summary.n_true is not None else summary.mean * summary.n
-        if cell.variant_key in held or abs(count - round(count)) > 1e-6:
-            return None  # an arm over several cells, or a count that is not whole, is not read here
-        held[cell.variant_key] = (round(count), summary.n)
-    if set(held) != {control, key}:
-        return None
-    lost = {board.variant_key: sum(board.lost.values()) for board in bundle.scoreboard}
-    descriptor = bundle.measure_catalog.get(measure)
-    return RateReading(
-        measure_name(measure, descriptor.reader_name if descriptor is not None else None),
-        *held[control],
-        *held[key],
-        lost.get(control, 0),
-        lost.get(key, 0),
-        measure=measure,
-    )
-
-
-#: The contrast verdicts that separated from the control.
-_SEPARATED = ("improved", "regressed")
+def _as_written(text: str) -> str:
+    """The writer's words as the page prints them: as written, on one line. Code reads none of them: whether they
+    keep the prompt's rules is the reporter eval's to measure, in whatever language they are written."""
+    return " ".join(text.split())
 
 
 def _evidence_table(
@@ -2038,8 +1772,7 @@ def _contrast_blocks(
 ) -> list[ReportBlock]:
     """The contrasts against the control, their charts, the guardrails, and the readings by stratum and label.
 
-    An arm's label that its own row against the control contradicts is on the first screen (:func:`_label_claims`),
-    not here. Engine text that explains how they were tested goes to the methods' closed ``Disclosures`` fold.
+    Engine text that explains how they were tested goes to the methods' closed ``Disclosures`` fold.
     """
     arm = _namer(names)
     blocks: list[ReportBlock] = []
@@ -3781,11 +3514,10 @@ def _method_blocks(
     writer: str | None,
     tables: Sequence[ReportBlock] = (),
     memo_disclosures: Sequence[ReportBlock] = (),
-    style: MemoStyle | None = None,
 ) -> list[ReportBlock]:
     """How everything on the page was measured and made: a table, the memo's folded tables (its coverage map,
     ``tables``), then the engine's disclosures and the memo's (``memo_disclosures``) in one closed fold."""
-    blocks: list[ReportBlock] = [_methods_table(bundle, names, source=source, writer=writer, style=style), *tables]
+    blocks: list[ReportBlock] = [_methods_table(bundle, names, source=source, writer=writer), *tables]
 
     def say(source_of: DisclosureSource, text: str | None) -> None:
         if text and text.strip():
@@ -3842,7 +3574,6 @@ def _methods_table(
     *,
     source: ReportSource,
     writer: str | None,
-    style: MemoStyle | None = None,
 ) -> TableBlock:
     """Models, judge, settings sent, cost, the analysis's writer and the bundle, one row each."""
     rows: list[tuple[str, str]] = []
@@ -3876,9 +3607,6 @@ def _methods_table(
         )
     )
     rows.append(("Analysis", writer or NO_ANALYSIS))
-    if style is not None:
-        offending = style.offending()
-        rows.append(("Memo style", f"style: {len(offending)} violations" if offending else "no violations left"))
     rows.append(("Date", _date(source.generated_at)))
     if unshown := _uncarried(bundle):
         rows.append(("Readings not shown", f"{len(unshown)} carried by no trial: {_listed(unshown)}"))

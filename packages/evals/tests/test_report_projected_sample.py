@@ -1,4 +1,4 @@
-"""An unclear floor states the cases that would show it holds, computed, and a memo never guesses at them.
+"""An unclear floor states the cases that would show it holds, computed, so a memo has no need to guess at them.
 
 Discodon's character campaign (2026-10-17, 12 cases × 3) left its 10-point no-worse clause unsettled, and its memo's
 next step proposed "Expanding the case suite to 30 cases … would formally settle question q1 for roughly $0.40" (#846).
@@ -9,13 +9,12 @@ cases that scaling overstates the bounded interval's need by up to about twice. 
 contrasts table's t interval, which never reads a floor, and is deliberately not what code computes. At the 97.5% of a
 family of two, the character-shaped fixture below needs 121 cases with no true difference and 223 as observed, where
 scaling would have said 158 and 302; a floor reads it at the nominal 95%, uncorrected, where it needs 72 and 197. A
-floor broken or held projects nothing, a count is always more than the run had, and the style gate replaces a sample
-size or a cost the writer proposes with code's.
+floor broken or held projects nothing, and a count is always more than the run had. The writer's prompt says it states
+no sample size or cost of its own; the page prints its words as written.
 """
 
 from __future__ import annotations
 
-import json
 from collections import Counter
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import replace
@@ -27,17 +26,13 @@ from threetears.evals.analysis import (
     Report,
     assemble_context_bundle,
     build_code_only_report,
-    build_report,
-    generate_analysis,
     get_campaign,
     report_markdown,
 )
 from threetears.evals.analysis.bundle.schema import ArmScoreboard, MultipleComparisons
 from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
-from packages.evals.tests.campaign_bundle_support import memo as authored_memo
-from threetears.evals.analysis.references import cell_aliases
-from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TextBlock
+from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.analysis.report.decision import (
     CasesNeeded,
     FloorReadings,
@@ -50,10 +45,8 @@ from threetears.evals.analysis.report.decision import (
     project_sample,
     projected_cell,
     projection_note,
-    projection_sentence,
     read_floor,
 )
-from threetears.evals.analysis.report.memo_style import MemoStyle, decision_disclosures
 from threetears.evals.analysis import stats
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import (
@@ -71,7 +64,6 @@ import pytest
 from packages.evals.tests.aspect_support import redeclared
 from packages.evals.tests.g2_support import G2_QUESTION
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient
 
 #: The character campaign's floor: one 10-point no-worse clause on the pass rate.
 RULE: tuple[DecisionClause, ...] = (RateDrop(max_points=10),)
@@ -208,12 +200,6 @@ def test_a_character_shaped_floor_projects_its_cases_with_their_cost() -> None:
     assert floors_projection([verdict], per_case_usd=PER_CASE) == projection
     assert projected_cell(projection, projection.if_none) == "121 cases, $3.1"
     assert projected_cell(projection, projection.if_observed) == "223 cases, $5.7"
-    sentence = projection_sentence(projection)
-    assert sentence == (
-        "Showing the floors hold needs about 121 independent cases if the arms do not differ, about 223 if they differ "
-        "as observed; it counts cases, not repeats."
-    )
-    assert lint_prose(sentence) == []
 
 
 def test_the_note_says_each_count_is_about_and_more_than_the_run_used() -> None:
@@ -237,10 +223,6 @@ def test_a_drop_past_the_margin_says_no_number_of_cases_shows_it_within() -> Non
     assert projection is not None and projection.if_observed == CasesNeeded("never")
     assert projection.if_none.kind == "more" and projection.if_none.cases > 12
     assert projected_cell(projection, projection.if_observed) == "none would"
-    assert projection_sentence(projection) == (
-        f"Showing the floors hold needs about {projection.if_none.cases} independent cases if the arms do not differ, "
-        "and none would if they differ as observed; it counts cases, not repeats."
-    )
 
 
 def test_a_floor_kept_open_by_lost_trials_says_so_never_fewer_cases_than_the_run() -> None:
@@ -274,10 +256,6 @@ def test_a_floor_kept_open_by_lost_trials_says_so_never_fewer_cases_than_the_run
     assert (projection.if_none, projection.if_observed) == (CasesNeeded("enough", 60), CasesNeeded("lost"))
     assert projected_cell(projection, projection.if_none) == "this run's 60 cases"
     assert projected_cell(projection, projection.if_observed) == "re-run the lost trials"
-    assert projection_sentence(projection) == (
-        "This run's interval already keeps the drop within the margin as observed: re-running its lost trials, not "
-        "more cases, would settle it."
-    )
     # A count is always past the run's own: a search that clears below it reads as more than the run, at the floor.
     assert project_sample(half_width=4.0, cases=12, margin=10.0, observed=8.0).if_observed == CasesNeeded("more", 48)
     assert project_sample(half_width=1.0, cases=3, margin=10.0, observed=0.0).if_none == CasesNeeded("more", 5)
@@ -347,10 +325,6 @@ def test_an_open_cost_floor_beside_an_open_rate_floor_needs_the_most_either_need
     projection = floors_projection(verdicts)
     assert projection is not None
     assert (projection.if_none, projection.if_observed) == (CasesNeeded("never"), CasesNeeded("more", 223))
-    assert projection_sentence(projection) == (
-        "Showing the floors hold needs about 223 independent cases if the arms differ as observed, and none would if "
-        "they do not differ; it counts cases, not repeats."
-    )
     note = projection_note([projection], run_cases=12, cost_clause=True)
     assert "A cost floor has no margin, so arms that do not differ are never shown cheaper" in note
     assert note.endswith("This run used 12 cases; showing the floors hold needs about 223, more than it ran.")
@@ -474,176 +448,6 @@ async def test_a_broken_page_tables_no_projection() -> None:
     assert report_markdown(report).startswith("**Floor broken on ")
     assert _projection_table(report) is None
     assert "Showing the floors hold" not in report_markdown(report)
-
-
-# =============================================================================
-# 4. What the memo says to run next states no sample size or cost of its own
-# =============================================================================
-
-
-#: The character memo's next step, as Discodon's writer put it.
-THIRTY = "Expand the case suite to 30 cases, which would formally settle question q1 for roughly $0.40."
-
-#: The character clause's projection, 121 and 223 cases at $0.02557 a case.
-PROJECTED = SampleProjection(
-    cases=12, if_none=CasesNeeded("more", 121), if_observed=CasesNeeded("more", 223), per_case_usd=PER_CASE
-)
-
-
-def _style(sample: SampleProjection | None) -> MemoStyle:
-    return MemoStyle(bundle=_priced(12, PER_CASE), names={}, sample=sample, samples=() if sample is None else (sample,))
-
-
-def test_a_summary_restating_only_a_measured_number_is_kept_as_written_and_not_counted_dropped() -> None:
-    """The memo's one sentence across its aspects is what the page opens on: where the pass would leave none of it, it
-    is kept as written, and the methods never say the tables said it instead."""
-    style = _style(None)
-    restated = "Both arms passed 36 of 36, so cost decides it."
-    assert style.holds_measured(restated)
-    assert style.summary(restated) == restated
-    assert style.dropped == 0
-    assert decision_disclosures(style) == []
-
-
-def test_a_summary_proposing_its_own_sample_size_is_dropped_and_listed() -> None:
-    style = _style(None)
-    assert style.summary(THIRTY) == ""
-    assert style.proposed == [THIRTY]
-
-
-def test_a_next_step_proposing_its_own_sample_size_is_code_s_projection_instead() -> None:
-    style = _style(PROJECTED)
-    assert style.sentence(THIRTY, plans=True) == projection_sentence(PROJECTED)
-    assert style.proposed == [THIRTY]
-    assert any(
-        "a sample size or cost no code computed" in line and "30 cases" in line for line in decision_disclosures(style)
-    )
-    # A step's why loses the sentence proposing a size, and keeps the rest.
-    why = "Run 30 more cases for under $1. It would show whether the drop is real."
-    assert style.prose(why, plans=True) == "It would show whether the drop is real."
-    # Every way a size or a cost of its own is said is one.
-    for said in (
-        "Add at least 30 independent test cases.",
-        "Run 60 cases for approximately 0.20 USD.",
-        "Grow the suite to 40.",
-        "Run 30-60 more cases.",
-        "Write thirty more cases.",
-        "Write thirty-five more cases.",
-        "Double the cases.",
-        "Run 3x more cases.",
-        "Add 30+ cases.",
-        "Build a 50-case suite.",
-        "Draw a sample of 30.",
-        "Run another 50 trials.",
-        "Add dozens of new scenarios.",
-        "Raise k to 10.",
-        "Expand the suite for roughly $0.40.",
-        # A cost of its own with no count is still the writer's guess at what settling costs (#846's "or cost"); until
-        # this the gate let it stand.
-        "Repeat the run at a cost of $0.40.",
-        "Run the new prompt for $0.",
-    ):
-        assert style.proposes_sample(said), said
-
-
-def test_a_sentence_citing_the_projection_or_the_run_s_own_cases_stands() -> None:
-    style = _style(PROJECTED)
-    for said in (
-        "Write about 121 new cases before the next run.",
-        "Write 121 to 223 new cases, about $3.1 to $5.7.",
-        "Each new case costs about $0.02557.",
-        "Read the 3 cases the candidate missed.",
-        "Inspect the 10 paired cases.",
-        "Every arm needs at least 5 cases.",
-        "Rerun case 4 with a longer turn limit.",
-        "Check the suite of 3 checks.",
-        "Rerun the 12 cases with the new prompt.",
-    ):
-        assert not style.proposes_sample(said), said
-        assert style.sentence(said, plans=True) == said
-    assert style.proposed == []
-    # Off what to run next the gate does not read: a finding's title is held to its own rules.
-    assert style.sentence(THIRTY) == THIRTY
-
-
-def test_with_no_projection_a_sample_size_of_its_own_is_not_printed() -> None:
-    style = _style(None)
-    assert style.sentence(THIRTY, plans=True) == ""
-    assert style.proposed == [THIRTY]
-
-
-async def _memo(comparison: Result, bundle: AnalysisContextBundle, memo: dict[str, Any]) -> Report:
-    analysis, _ = await generate_analysis(
-        campaign_bundle(bundle),
-        prompt=PROMPT,
-        model=MODEL,
-        client=FixturedClient(json.dumps(memo)),
-        prompt_id=PROMPT_ID,
-        bundle_assembled_at="2026-10-17T12:00:00+00:00",
-        profile=comparison.host.profile,
-    )
-    return build_report(analysis, campaign_name="character")
-
-
-def _next(title: str, why: str = "", lever: str = "") -> dict[str, Any]:
-    return {"title": title, "why": why, "leverage": "high", "lever": lever}
-
-
-async def test_a_thirty_case_next_step_and_answer_do_not_survive_the_style_gate_on_the_page() -> None:
-    comparison, bundle = await _ruled()
-    finding = {
-        "title": "The candidate skipped the queue on some cases",
-        "body": "",
-        "confidence": "low",
-        "axes": [],
-        "evidence": [
-            {"cell": alias, "measure_id": "match", "reading": "measure"} for alias in cell_aliases(bundle.cell_measures)
-        ],
-        "trials": [],
-        "caveats": [],
-        "invalidates": [],
-        "durable": "",
-    }
-    memo = authored_memo(
-        bundle,
-        [finding],
-        means="Too few cases to tell. Thirty more cases would settle it for $0.40.",
-        reasons=["After 30 more cases. When the drop is shown either way."],
-        next=[_next(THIRTY, "At least 30 independent test cases would settle it. It also tells the arms apart.")],
-    )
-    report = await _memo(comparison, bundle, memo)
-    said = projection_sentence(
-        SampleProjection(cases=12, if_none=CasesNeeded("more", NOMINAL[0]), if_observed=CasesNeeded("more", NOMINAL[1]))
-    )
-    (answer,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "answer"]
-    assert answer.body == f"Too few cases to tell. {said}"
-    (step,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "next_step"]
-    assert step.body == said and step.facts == []
-    # The writer's why and facts were about the step it replaced: they go with its title.
-    assert not [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "next_step_why"]
-    assert not [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "next_step_facts"]
-    (recommendation,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "recommendation"]
-    assert recommendation.body == "When the drop is shown either way."
-    page = report_markdown(report).split("## Methods")
-    assert "30 cases" not in page[0] and "$0.40" not in page[0] and "Thirty" not in page[0]
-    assert "a sample size or cost no code computed" in page[1]
-
-
-async def test_with_two_candidates_a_next_step_may_cite_either_arm_s_projected_cases() -> None:
-    """Each arm has its own "To show the floors hold" row, and a step citing one of them is citing code, not
-    guessing."""
-    comparison, bundle = await _ruled(third=True)
-    table = _projection_table(_page(bundle))
-    assert table is not None and len(table.values()) == 2
-    cited = str(next(iter(table.values()))["none"]).split(" cases")[0]
-    title = f"Write about {cited} new cases before the next run."
-    report = await _memo(
-        comparison,
-        bundle,
-        authored_memo(bundle, [], means="Too few cases.", next=[_next(title)]),
-    )
-    (step,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "next_step"]
-    assert step.body == title
 
 
 def _writer_message(bundle: Any) -> str:
