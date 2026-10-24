@@ -8,6 +8,18 @@ packages (bumped in lock-step).
 
 ## v0.78.0 -- 2026-10-24
 
+### agent-acl: a delegated agent call's namespaces are asked with the call's own credential
+
+**Fixed:** `CallerNamespaces.names_for` refused every agent call to a tool pod that proves delegation. The registry
+sends such a pod the call's delegated token in place of the agent's identity token and the person's assertion, and
+`names_for` asked `namespace.discover` only with those two, which were empty, so a scoped read through an agent was
+refused (closed; nothing leaked). `names_for(credential=)` now takes the call's door credential
+(`ToolCallScope.door_credential()`) and asks discovery with its token, and with its proof when it holds the pod's
+key. The delegated token names both the agent and the person, so the hub's answer is still the person's grants
+narrowed by the agent's: an agent granted every state acting for a Virginia-only person sees Virginia only. A call
+carrying no credential is still refused without asking. `NamespaceDiscovery.discover` takes `credential=`, as
+`NamespaceDiscoveryClient.discover` already does. Callers: pass `credential=scope.door_credential()`.
+
 ### core, nats: a released lease leaves nothing in its bucket
 
 **Fixed:** `KVLease` release filled the shared `{ns}-leases` bucket until every lease write on the platform was
