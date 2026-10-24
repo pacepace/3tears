@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from threetears.search.adapters.brave_answers import BraveAnswersAdapter
 from threetears.search.contracts import AnswerProvider, Criterion, StreamingTransport
-from threetears.search.testing import AnswerConformanceCase, AnswerConformanceSuite
+from packages.search.tests.answer_conformance import AnswerConformanceCase, AnswerConformanceSuite
 from packages.search.tests.brave_answers_payloads import (
     INVALID_TOKEN_BODY,
     RATE_LIMITED_BODY,

@@ -106,8 +106,8 @@ threetears/search/
   standalone.py     # bare-httpx transport impl   [standalone] -- the sanctioned path (D19)
   limiter.py        # in-process pacing (D8; the port is contract vocabulary, §3.1)
   replay.py         # record/replay over the store port (Phase 3)
-  testing/          # provider- and answer-conformance suites, parity-declared fakes, recorded
-                    # pages and streams; recordings/ holds the live Brave captures (SR-O5, AR-I2)
+  testing/          # provider-conformance suite + parity-declared fakes (SR-O5); recordings/ holds
+                    # the live Brave captures as package data, replayed by the package's own tests (AR-I2)
 ```
 
 Layer names (Adapter, Call, Aggregate, Extract, Select, Bind) are **module

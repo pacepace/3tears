@@ -25,7 +25,8 @@ from threetears.search.contracts import (
     QuotaExhausted,
     Spend,
 )
-from threetears.search.testing import FakeBudgetPort, RecordedStream, RecordedStreamingTransport
+from threetears.search.testing import FakeBudgetPort
+from packages.search.tests.recorded_streams import RecordedStream, RecordedStreamingTransport
 from packages.search.tests.brave_answers_payloads import (
     INVALID_TOKEN_BODY,
     SINGLE,

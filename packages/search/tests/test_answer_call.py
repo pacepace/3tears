@@ -30,12 +30,8 @@ from threetears.search.contracts import (
     Spend,
     TransportFailed,
 )
-from threetears.search.testing import (
-    FakeBudgetPort,
-    FakeRateLimiterPort,
-    RecordedStream,
-    RecordedStreamingTransport,
-)
+from threetears.search.testing import FakeBudgetPort, FakeRateLimiterPort
+from packages.search.tests.recorded_streams import RecordedStream, RecordedStreamingTransport
 from packages.search.tests.brave_answers_payloads import SINGLE, SINGLE_TOTAL_COST
 from packages.search.tests.search_instances import GROUNDED_ANSWER
 

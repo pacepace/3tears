@@ -39,7 +39,7 @@ from threetears.search.contracts import (
     TransportFailed,
     get_capabilities,
 )
-from threetears.search.testing import RecordedStream, RecordedStreamingTransport
+from packages.search.tests.recorded_streams import RecordedStream, RecordedStreamingTransport
 from packages.search.tests.brave_answers_payloads import (
     INVALID_TOKEN_BODY,
     NON_ASCII,

@@ -21,8 +21,13 @@ whichever answers provider it was handed:
    declaration, and a pushdown that reached the wire (SR-B2, SR-B3).
 
 **How to run it.** Subclass :class:`AnswerConformanceSuite` in a test module,
-set ``case``, and name the subclass ``Test*``. No pytest import, for the
-reason the provider suite has none.
+set ``case``, and name the subclass ``Test*``.
+
+Kept with the package's tests rather than shipped in ``threetears.search.testing``
+beside the provider suite: that suite ships because consumers write search
+providers, and no consumer writes an answers provider. A shipped suite with no
+caller would be public API that exists only for a test; it moves to
+``testing/`` when a host writes a second answers adapter.
 """
 
 from __future__ import annotations
@@ -46,7 +51,7 @@ from threetears.search.contracts import (
     StreamingTransport,
     TransportFailed,
 )
-from threetears.search.testing.recorded import RecordedStream, RecordedStreamingTransport
+from packages.search.tests.recorded_streams import RecordedStream, RecordedStreamingTransport
 
 __all__ = ["AnswerConformanceCase", "AnswerConformanceSuite"]
 

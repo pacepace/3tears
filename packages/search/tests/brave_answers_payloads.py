@@ -1,7 +1,7 @@
 """Brave Answers streams and error bodies: the live captures, and synthetic edges in their shape.
 
 The captures are the fixture (AR-I2): what Brave really sent on 2026-10-24,
-read through :func:`threetears.search.testing.recording`. The facts each pin
+read through :func:`packages.search.tests.recorded_streams.recording`. The facts each pin
 relies on are stated here once, beside the capture they describe, so a test
 that reads "eighty-three" reads it from the capture's own record.
 
@@ -17,7 +17,7 @@ import json
 from decimal import Decimal
 from typing import Any
 
-from threetears.search.testing import recording
+from packages.search.tests.recorded_streams import recording
 
 __all__ = [
     "CITATION_FAVICON",
