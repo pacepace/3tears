@@ -109,8 +109,10 @@ from threetears.iam.stores.nats_kv import state_store, ticket_store
   scope must not slip past the cross-tenant check as an unknown string.
 - **Storage seams** (`.stores`) -- `SingleUseTicketStore` and `StateStore` Protocols,
   `hash_ticket`/`new_ticket_secret`, the `threetears.iam.stores.nats_kv` implementations with
-  their `state_store`/`ticket_store` factories, and in-memory doubles in
-  `threetears.iam.stores.memory` for consumer tests.
+  their `state_store`/`ticket_store` factories, and the in-memory stores in
+  `threetears.iam.stores.memory`: the double for consumer tests, and supported for a single-process
+  service with one event loop (state is lost on restart; not thread-safe). Expired entries are swept
+  on write, and `max_entries` refuses new ones past a cap with `MemoryStoreFullError`.
 
 ## Install
 

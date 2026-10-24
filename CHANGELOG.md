@@ -34,6 +34,15 @@ app that imported `threetears.core`, `threetears.nats` or `threetears.agent.acl`
 on `3tears-iam` must now declare them itself. Every import path is unchanged. This ships in a minor
 release.
 
+### iam: the in-memory stores are bounded, and supported for a single-process service
+
+**Changed (iam):** `stores.memory` sweeps expired entries on each write, in expiry order, instead of
+dropping one only when it is read, so abandoned sign-in state no longer accumulates.
+`MemoryStateStore` and `MemoryTicketStore` take `max_entries`, and a write that would add a live entry
+past it raises `MemoryStoreFullError`. `MemoryAttemptLimiter` sweeps lapsed windows the same way.
+Redemption and the injectable clock are unchanged. The stores are now supported for a single-process
+service with one event loop. State is lost on restart, and the stores are not thread-safe.
+
 ### access-contracts: a new dependency-free leaf for the vocabulary iam and agent-acl share
 
 **Added:** `3tears-access-contracts` (`threetears.access.contracts`) depends on nothing and holds

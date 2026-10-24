@@ -14,7 +14,12 @@ from threetears.iam.stores import (
     hash_ticket,
     new_ticket_secret,
 )
-from threetears.iam.stores.memory import MemoryAttemptLimiter, MemoryStateStore, MemoryTicketStore
+from threetears.iam.stores.memory import (
+    MemoryAttemptLimiter,
+    MemoryStateStore,
+    MemoryStoreFullError,
+    MemoryTicketStore,
+)
 
 
 class _Clock:
@@ -169,3 +174,121 @@ async def test_state_store_get_honours_the_ttl() -> None:
     await store.put("state-1", {"nonce": "n"}, ttl=timedelta(minutes=5))
     clock.advance(301)
     assert await store.get("state-1") is None
+
+
+# --- bounded memory: expired entries are swept on write, and max_entries caps the live ones ---
+
+
+async def test_the_state_store_cap_refuses_a_new_key_past_it() -> None:
+    store = MemoryStateStore(max_entries=2)
+    await store.put("a", {"n": 1}, ttl=timedelta(minutes=5))
+    await store.put("b", {"n": 2}, ttl=timedelta(minutes=5))
+
+    with pytest.raises(MemoryStoreFullError) as refused:
+        await store.put("c", {"n": 3}, ttl=timedelta(minutes=5))
+
+    assert refused.value.max_entries == 2
+    # refused, not evicted: both in-flight entries survive
+    assert await store.get("a") == {"n": 1}
+    assert await store.get("b") == {"n": 2}
+    assert await store.get("c") is None
+
+
+async def test_overwriting_a_live_key_at_the_cap_is_not_refused() -> None:
+    store = MemoryStateStore(max_entries=1)
+    await store.put("a", {"n": 1}, ttl=timedelta(minutes=5))
+    await store.put("a", {"n": 2}, ttl=timedelta(minutes=5))
+    assert await store.take("a") == {"n": 2}
+
+
+async def test_an_abandoned_state_entry_is_swept_by_a_later_write() -> None:
+    """Issue, abandon, expire, write again: the abandoned entry no longer holds a slot.
+
+    Nothing ever reads the abandoned key, so only a sweep on write can free it -- the cap of
+    one is what makes the sweep visible from outside.
+    """
+    clock = _Clock()
+    store = MemoryStateStore(clock=clock, max_entries=1)
+    await store.put("abandoned", {"n": 1}, ttl=timedelta(seconds=10))
+
+    clock.advance(11)
+    await store.put("next", {"n": 2}, ttl=timedelta(seconds=10))
+
+    assert await store.get("next") == {"n": 2}
+    assert await store.get("abandoned") is None
+
+
+async def test_a_ticket_cap_frees_as_tickets_expire_and_holds_while_they_are_live() -> None:
+    clock = _Clock()
+    store = MemoryTicketStore(clock=clock, max_entries=2)
+    first = await store.issue({"n": 1}, ttl=timedelta(seconds=10))
+    clock.advance(5)
+    second = await store.issue({"n": 2}, ttl=timedelta(seconds=10))
+    with pytest.raises(MemoryStoreFullError):
+        await store.issue({"n": 3}, ttl=timedelta(seconds=10))
+
+    clock.advance(6)  # the first has expired, the second has not
+    third = await store.issue({"n": 3}, ttl=timedelta(seconds=10))
+    with pytest.raises(MemoryStoreFullError):
+        await store.issue({"n": 4}, ttl=timedelta(seconds=10))
+
+    assert await store.redeem(first.secret) is None
+    assert await store.redeem(second.secret) == {"n": 2}
+    assert await store.redeem(third.secret) == {"n": 3}
+    # redeeming freed both slots
+    await store.issue({"n": 5}, ttl=timedelta(seconds=10))
+    await store.issue({"n": 6}, ttl=timedelta(seconds=10))
+
+
+async def test_a_rewritten_key_is_not_swept_at_its_first_expiry() -> None:
+    """The sweep must not drop a key whose first write expired but whose rewrite is still live."""
+    clock = _Clock()
+    store = MemoryStateStore(clock=clock)
+    await store.put("k", {"v": 1}, ttl=timedelta(seconds=10))
+    clock.advance(5)
+    await store.put("k", {"v": 2}, ttl=timedelta(seconds=60))
+    clock.advance(10)  # past the first write's expiry
+    await store.put("other", {"v": 3}, ttl=timedelta(seconds=60))  # a write, so a sweep
+    assert await store.get("k") == {"v": 2}
+
+
+async def test_many_short_lived_entries_cycle_through_a_small_cap() -> None:
+    """Far more writes than the cap, each expiring before the next: never refused."""
+    clock = _Clock()
+    store = MemoryStateStore(clock=clock, max_entries=3)
+    for n in range(500):
+        await store.put(f"k{n}", {"n": n}, ttl=timedelta(seconds=1))
+        clock.advance(1)
+    assert await store.get("k499") is None
+    await store.put("last", {"n": -1}, ttl=timedelta(seconds=1))
+    assert await store.get("last") == {"n": -1}
+
+
+def test_a_cap_below_one_is_refused() -> None:
+    with pytest.raises(ValueError, match="max_entries"):
+        MemoryStateStore(max_entries=0)
+
+
+async def test_redemption_and_the_injected_clock_are_unchanged_by_the_sweep() -> None:
+    clock = _Clock()
+    store = MemoryTicketStore(clock=clock)
+    ticket = await store.issue({"user_id": "u1"}, ttl=timedelta(seconds=10))
+    clock.advance(9)
+    await store.issue({"user_id": "u2"}, ttl=timedelta(seconds=10))  # a write, so a sweep
+    assert await store.redeem(ticket.secret) == {"user_id": "u1"}
+    assert await store.redeem(ticket.secret) is None
+
+
+async def test_the_attempt_limiter_resets_a_lapsed_window_after_other_keys_write() -> None:
+    clock = _Clock()
+    limiter = MemoryAttemptLimiter(max_attempts=2, window=timedelta(seconds=10), clock=clock)
+    await limiter.record_failure("victim")
+    await limiter.record_failure("victim")
+    assert (await limiter.check("victim")).limited
+
+    clock.advance(11)
+    await limiter.record_failure("someone-else")  # sweeps the lapsed window
+    assert (await limiter.check("victim")).count == 0
+    window = await limiter.record_failure("victim")
+    assert window.count == 1
+    assert not window.limited

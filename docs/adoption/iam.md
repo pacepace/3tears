@@ -52,7 +52,9 @@ about persistence in every way that matters -- one is NATS-RPC-native over a
 multi-tenant Postgres schema, the other a FastAPI app with its own control
 plane -- and unifying that would have produced an abstraction neither could
 use. State therefore sits behind narrow Protocols, with a NATS-KV
-implementation supplied for the common case and an in-memory one for tests.
+implementation supplied for the common case and an in-memory one for tests and
+for a single-process service (one event loop; state lost on restart; expired
+entries swept on write, with an optional cap).
 
 **The one shared serialisable surface is where "fails closed" is false.**
 Cross-repo RPC payloads are normally declared independently on each side, since
