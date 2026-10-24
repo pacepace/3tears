@@ -2,13 +2,13 @@
 artifact: build-plan
 version: 2
 scope: search-answers
-branch: search/answers-slice-1
+branch: search/answers-slice-2
 depends_on:
   - artifact: answers-requirements-design   # docs/answers-requirements-design.md
   - artifact: search-requirements           # docs/search-requirements.md
   - artifact: search-spec                   # docs/search-spec.md
 partition: "serial -- each slice stacks on the last (contracts, then the adapter against the fixture, then the agent-tools builtin, then discodon), and slice 1 is one risk surface (the transport seam) small enough that a second agent would spend more on coordination than it saves"
-last_validated: 2026-10-23
+last_validated: 2026-10-24
 ---
 
 ## Requirements Confidence
@@ -117,15 +117,51 @@ Out of scope for slice 1: the Brave adapter, the SSE and tag parsers, `answer.py
   nothing when it ends on a refusal of the transport's own (guard, cap) or a cancellation | a
   call that recovered on retry is the upstream working | user can veto]
 
+**Decisions taken in slices 2 and 3** (the design left these open):
+- [DECISION: `AnswerProvider` gains `estimate(request) -> Spend`, the figure `answer.py` hands
+  `BudgetPort.check` | AR-C3's money rates are the configured instance's, which no capability
+  declaration carries; recorded in design §10.1 | user can veto]
+- [DECISION: the money estimate is the search at `usd_per_search`, plus the completion-token cap
+  at `usd_per_million_tokens` when the request sets one; the two rates are given together or not
+  at all | prompt tokens are unknowable before the call, so the estimate is a floor | user can veto]
+- [DECISION: Brave's namespaced criteria are `brave:country`, `brave:safesearch`,
+  `brave:search-context-size`, `brave:max-completion-tokens`; language rides the well-known
+  `language` key | the criterion key grammar refuses underscores, and one name per parameter]
+- [DECISION: a tag is `<name>` followed by `{`; any other `<` is answer text | prose holds `<`, and
+  a tag reader that waited on every one would hold the answer hostage to a closer never sent]
+- [DECISION: `RATE_LIMITED` and `QUOTA_LIMITED` map by Brave's published codes, marked in code as
+  documentation rather than capture | the credit limit could not be provoked live]
+- [DECISION: a stream ending without `[DONE]` is `MalformedResponse` | a cut-off answer must not
+  read as complete]
+- [DECISION: `bind_answer` declares `RenderedAnswer` and `bind_answer` only; it builds
+  `AnswerMetadata` itself, stamping the version | the key's one construction site owns the shape]
+- [DECISION: the answer key's literal guard covers dict-literal keys in `packages/search` and
+  `packages/agent` | its value is the English word "answer", which evals uses for its own payloads]
+- [DECISION: `create_web_answer_tool(config, description)` takes `api_key`, `transport`, `budget`,
+  `limiter`, `timeout_seconds` from `config` | the `web_search` factory's shape, which the
+  registry calls]
+- [DECISION: the built-in pod serves `web_answer` when `THREETEARS_BRAVE_ANSWERS_API_KEY` is set and
+  reports the skip otherwise | `web_search`'s pod path, mirrored; the leaf itself reads no
+  environment | user can veto]
+- [DECISION: `ANSWER_TOOLS` and `create_web_answer_tool` stay out of their modules' `__all__` | the
+  alias map and the registry's by-name import are their only callers]
+- [RULING (owner, 2026-10-24): slices 1-3 reach `develop` together on this area branch; the answer
+  conformance suite and the stream replay live in `packages/search/tests/`; the `answers` alias
+  stands; research mode stays out of v1; no trigger is tracked for LLM Context; `fact_check`
+  grounds on citations alone. Design §14]
+
 ## Status
 
 - [x] Chunk 01: Contracts + StreamingTransport + standalone streaming (design §12 slice 1)
-- [ ] Chunk 02: BraveAnswersAdapter + answer.py + bind_answer.py + enforcement rows (slice 2)
-- [ ] Chunk 03: agent-tools `threetears.web_answer` builtin (slice 3)
+- [x] Chunk 02: BraveAnswersAdapter + answer.py + bind_answer.py + enforcement rows (slice 2)
+- [x] Chunk 03: agent-tools `threetears.web_answer` builtin (slice 3)
 - [ ] Chunk 04: discodon `fact_check` on Answers (slice 4, discodon's repo)
 - [ ] Chunk 05: discodon `research__ask_web` behind its flag (slice 5, discodon's repo)
 Context: Chunk 01 merged onto `docs/answers-requirements-design` (PR #930) as #935. Slice 0
-ran 2026-10-24 (design §4.2). Chunk 02 builds on `search/answers-slice-2`. Next: Chunk 02.
+ran 2026-10-24 (design §4.2). Chunks 02 and 03 are built on `search/answers-slice-2`, which
+merges onto the area branch; slices 1-3 then reach `develop` together (design §14). Every name
+this area adds has a `src` caller. Next: Critic on Chunks 02-03, the area PR, then Chunk 04 in
+discodon after the MINOR release.
 
 ## Scaffolding
 
@@ -228,8 +264,11 @@ transport's (AR-F2). The answer contracts import nothing beyond the existing con
   - `answer.py`: the call layer, mirroring `call.search` (§10.3);
   - `bind_answer.py`: `bind_answer` and `RenderedAnswer` (§10.4), the answer key's one
     construction site, AR-G2's first line, AR-A3's zero-source first line;
-  - `testing/`: a recorded streaming transport (the `recorded.py` shape) that replays the
-    recordings, and an `AnswerConformanceSuite` the Brave adapter passes against them;
+  - the recordings shipped as package data under `testing/recordings/` and read through
+    `importlib.resources`; a recorded streaming transport (the `recorded.py` shape) that replays
+    them, and an `AnswerConformanceSuite` the Brave adapter passes against them, both in
+    `packages/search/tests/` (owner ruling, design §14: no consumer writes an answers provider,
+    and nothing in `src` replays a stream);
   - `GroundedAnswer` refuses an anchor past the end of `text`, or one naming no source;
   - `tests/enforcement/test_one_search_result_shape.py` generalised to `(key, sanctioned site)`
     rows with the answer key's row; exports in `__init__.py`; `docs/search-spec.md` names the
@@ -244,8 +283,8 @@ transport's (AR-F2). The answer contracts import nothing beyond the existing con
   before, record after, pacing, dispositions. Bind: first line, sources list, metadata
   round-trip, failure metadata.
 - **Acceptance criteria:** the search suite, lint, `typecheck.sh search`, and the enforcement
-  files pass. `test_public_api_has_a_caller` turns green for the slice-1 names. The one held red
-  is `test_api_growth_requires_a_minor_bump`.
+  files pass. `test_public_api_has_a_caller` is green for every name this area adds once Chunk
+  03 is on the branch. The one held red is `test_api_growth_requires_a_minor_bump`.
 - **Done when:**
   1. Acceptance criteria met and tests pass
   2. `/prawduct:critic` run and blocking findings resolved
@@ -253,8 +292,25 @@ transport's (AR-F2). The answer contracts import nothing beyond the existing con
 
 ### Chunk 03: agent-tools `threetears.web_answer`
 
-- **Description:** Design §10.5 and AD13 (opt-in alias, owner may veto the name).
+- **Description:** Design §10.5 and AD13 (the `answers` alias; the owner confirmed the name).
+  Built on the same branch as Chunk 02, because Chunk 02's names have their first caller here.
 - **Depends on:** Chunk 02
+- **Deliverables:**
+  - `builtin/web_answer.py`: `WebAnswerTool(TearsTool)` mirroring `web_search` -- `question` in,
+    `RenderedAnswer.content` on `content`, the projection on `metadata[ANSWER_METADATA_KEY]`, a
+    failed `ToolResult` carrying the failure record -- and `create_web_answer_tool(config,
+    description)` taking `api_key`, `transport`, `budget`, `limiter`, `timeout_seconds`;
+  - registered in `builtin/__init__.py`'s list, and served by the built-in pod when
+    `THREETEARS_BRAVE_ANSWERS_API_KEY` is set, with the skip reported otherwise;
+  - `aliases.py`: `answers` → `{"threetears.web_answer"}`; `web` unchanged;
+  - the agent-tools README's builtin list and alias table.
+- **Tests:** the tool over a parity-declared fake streaming transport replaying the live
+  capture (first line, projection, sent body), a refusal as a failed result with its record,
+  an empty question refused before sending, the factory's key requirement, registry and pod
+  registration, and the alias (`answers` grants it, `web` does not).
+- **Acceptance criteria:** `TESTAMENT=off ./scripts/test.sh agent/tools -q`,
+  `./scripts/typecheck.sh agent/tools`, lint, and the enforcement files pass;
+  `test_public_api_has_a_caller` is green for every name this area adds.
 - **Done when:** tests pass; `/prawduct:critic` run; committed and marked.
 
 ### Chunk 04: discodon `fact_check` on Answers
@@ -282,3 +338,4 @@ bump versions; the maintainer bundles the MINOR bump.
 
 - After Chunk 01: the transport seam reviewed before an adapter is written against it.
 - Before Chunk 02: slice 0's live capture.
+- After Chunk 03: one Critic over Chunks 02-03, then the area PR carrying slices 1-3.
