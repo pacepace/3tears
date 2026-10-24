@@ -43,6 +43,7 @@ from packages.evals.tests.campaign_page_support import (
     SUMMARY,
     campaign_fixture,
     choice_memo,
+    first_screen_markdown,
     kind_fixture,
     kind_page_of,
     page_of,
@@ -218,8 +219,11 @@ async def test_a_floor_held_beside_a_row_left_unclear_is_marked_on_its_cell_and_
 
 
 async def test_with_no_question_every_reading_is_a_lead() -> None:
-    said = _scorecard(await page_of("billing", "tone", question=""))
-    assert "No question was declared, so every reading is a lead." in said
+    page = await page_of("billing", "tone", question="")
+    # Asking nothing is the whole report's caveat: said once, in the question's place on the first screen.
+    lead = "No question was declared, so every reading is a lead."
+    assert lead in first_screen_markdown(page)
+    assert lead not in _scorecard(page) and campaign_report_markdown(page).count(lead) == 1
 
 
 async def test_a_choice_shows_an_arm_ahead_on_one_aspect_and_no_separation_on_another() -> None:

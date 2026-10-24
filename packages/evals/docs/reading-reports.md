@@ -39,22 +39,31 @@ first screen. Top to bottom:
 
 | | A change (control and candidates) | A choice (arms, no control) | A measurement (one arm) |
 |---|---|---|---|
-| 1 | each missed bar, then each broken floor | each missed bar | each missed bar |
-| 2 | title and question | title and question | title and question |
-| 3 | the writer's summary | the writer's summary | the writer's summary |
-| 4 | the writer's recommendation | the writer's recommendation, or no clear winner | |
-| 5 | the call | the call | |
+| 1 | title and question | title and question | title and question |
+| 2 | the writer's summary | the writer's summary | the writer's summary |
+| 3 | the writer's recommendation | the writer's recommendation, or no clear winner | |
+| 4 | what warns: each arm missing a bar, each candidate breaking a floor, each arm a guardrail leaves unsafe | each arm missing a bar or left unsafe by a guardrail | the arm missing a bar |
+| 5 | each report-wide caveat, once | each report-wide caveat, once | each report-wide caveat, once |
+| 6 | code's readings, then the call | code's readings, then the call | code's readings |
 
 Code's readings follow the first screen, under **Scorecard** ([below](#the-campaigns-scorecard)).
 
-The warnings are bold, above the title (in HTML each a `<p role="alert">`), and the writer's why sits beside each
-one the recommendation answers. A warning only warns: nothing on the page picks an arm, and the bars and floors decide
-nothing. The summary is the memo's one sentence across every aspect, written for every kind, so a measurement and a
+What warns is one bold line per arm and kind, under the answer and never above the title (in HTML each a
+`<p class="warning">`, never announced with `role="alert"`), saying what it means for the arm (`Adopting candidate
+overrides the 10-point floor it breaks on billing.`) and naming the aspects, never a rate, an expression or an
+interval: the tables print those. The writer's why sits right after each line the recommendation answers. A warning
+only warns: nothing on the page picks an arm, and the bars and floors decide nothing.
+
+A disclosure that holds across the report (criteria set after their readings were visible, results with no ordered
+time, latency read under concurrency, request settings not confirmed) is one plain line after the warnings, naming
+where it holds, and its detail is a row of **Design & provenance**, stated there once: which criterion was set and
+when, and each aspect's own sentence for the test setup, verbatim. No aspect's fold repeats it, and it never lowers a
+reading or a recommendation. An aspect's own page says the same line under its verdict, its detail in its methods. The summary is the memo's one sentence across every aspect, written for every kind, so a measurement and a
 choice with no clear winner open on what they found too. A page with no memo has no summary, and says where the
 recommendation goes that none was written (a measurement, which recommends nothing, says nothing there).
 
 `analyses_list` lists each stored analysis by the same warnings, word for word and without the writer's why, then
-its verdict: the aspect page's verdict line for one aspect, what code read on each aspect for several
+the line on when its criteria were set where one holds, then its verdict: the aspect page's verdict line for one aspect, what code read on each aspect for several
 (`billing: candidate shown worse; tone: candidate shown better`). With no missed bar and no broken floor, the line is
 the verdict alone.
 
@@ -62,10 +71,6 @@ A change of two aspects, one regressing past its floor and one improving, with a
 opens:
 
 ```markdown
-**Bar missed on tone: candidate misses the bar on Measuring spend, all roles: its whole interval is on the bad side of the bar.**
-
-**Floor broken on billing: candidate's pass rate falls past the 10-point margin on its whole interval, a drop of 24.6 to 88 points.**
-
 # support queue
 "Does the candidate answer support requests as well as production?"
 
@@ -87,6 +92,10 @@ follows for every kind. A change of three candidates on three aspects, one aspec
 
 ```markdown
 ## Scorecard
+
+**Adopting candidate overrides the bar it misses on tone.**
+
+**Adopting candidate overrides the 10-point floor it breaks on billing.**
 
 **By aspect**
 
@@ -167,25 +176,22 @@ v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
 ```
 
 A campaign that asks a question opens on its name, then the question quoted on its own line,
-then the arms line and the verdict. Where a candidate broke a floor, the warning comes first, above the title. A
-declared triage campaign whose v2 broke its 5-point floor renders:
+then the arms line and the verdict. Where a candidate broke a floor, its line comes under the verdict, never above
+the title. A declared triage campaign whose v2 broke its 5-point floor renders:
 
 ```markdown
-**Floor broken on routing: v2's pass rate falls past the 5-point margin on its whole interval, a drop of 19.2 to 78.3 points.**
-
 # triage v2
 "Does v2 route tickets as well as v1?"
 
 v1 (control) vs v2 · 18 Oct 2026 · 20 cases × 2 repeats
 
 **Declared question: v2 worse than v1 on Accuracy; v2 worse than v1 on the pass rate.**
+
+**Adopting v2 overrides the 5-point floor it breaks on routing.**
 ```
 
 The first screen carries the minimum a reader needs to grasp the result; every caveat and nuance is one step down.
 
-- **A broken floor**, where one is: the page's first line, bold, above the title (in HTML a
-  `<p class="floor" role="alert">`), one per broken floor, naming the aspect, the arm, the margin and the interval.
-  A floor warns and never decides: the verdict below it still says what the contrasts came to.
 - **Title**: a name — the campaign's (`triage v2`), with what it compares where no question was asked
   (`invoices: does v2 do better than v1?`). A declared question is never cut down to a title.
 - **The question**, where one is asked: quoted alone on the line under the title. It is the
@@ -203,6 +209,13 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   `Exploratory:` (linked to the glossary) and what separated, or `nothing separated v2 from v1 on any reading`,
   never "no difference". A guardrail an arm is not shown safe on is the second sentence: `Not yet shown safe: v2 on
   no invented total.` No floor writes this line.
+- **A broken floor**, where one is: one bold line per candidate under the verdict, never above the title (in HTML a
+  `<p class="warning">`, never `role="alert"`): `Adopting v2 overrides the 5-point floor it breaks on routing.` The
+  rate that broke it and its interval are the Floors section's. A floor warns and never decides: the verdict above
+  it still says what the contrasts came to.
+- **A report-wide caveat**, where one holds, once: criteria set after their readings were visible, results with no
+  ordered time, latency read under concurrency, request settings not confirmed. Its detail is in the Methods, once:
+  when each criterion was set (**Criteria set late**), and the test setup's own sentence.
 - **Scoreboard**: a bare table of counts and the cost per reply (per 1,000 replies when a reply costs under a cent).
   A trial passed when every check passed (a goal check, and on the quick path a `bool` grader or a field grader) and
   every judged dimension cleared its bar, and a case passed when every trial of it did, on the console as on the
@@ -263,7 +276,9 @@ heading.
   sit in a closed `Evidence` fold, one row with a column per fact so each header links its definition. Findings are
   evidence: one that names no reading is not a finding, so it is not laid out here but noted in one line under Not
   tested (`The analysis also noted: …`). The memo's words are printed as written (below).
-  A campaign's summary and recommendation are on its first screen, not in a fold; the writer's summary of the aspect
+  On a campaign's page the findings are a section of their own, **Findings**, and the next steps another,
+  **Next steps**, both before the aspect folds. A campaign's summary and recommendation are on its first screen, not
+  in a fold; the writer's summary of the aspect
   opens the fold ([one memo per campaign](#having-a-model-write-the-analysis-over-frozen-evidence)).
   **Each finding traces to its evidence, in HTML.** Each figure in its table links to a cell printing the same
   figure of the same reading on the same arm: a contrast's arm or control, a guardrail's mean, a one-arm page's

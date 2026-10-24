@@ -463,7 +463,8 @@ async def test_a_broken_page_tables_no_projection() -> None:
     """Twenty cases a side, the candidate failing half outright: the drop's whole interval is past the margin."""
     _, bundle = await _ruled(control=[3] * 20, candidate=[3] * 10 + [0] * 10)
     report = _page(bundle)
-    assert report_markdown(report).startswith("**Floor broken on ")
+    assert report_markdown(report).startswith("# ")
+    assert "\n**Adopting candidate overrides the 10-point floor it breaks on " in report_markdown(report)
     assert _projection_table(report) is None
     assert "Showing the floors hold" not in report_markdown(report)
 

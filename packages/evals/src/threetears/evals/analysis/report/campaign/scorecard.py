@@ -259,7 +259,6 @@ def table_blocks(
     ]
     notes += _reconciled_lines(readings, reports, names)
     notes += _unread_lines(campaign, readings, names)
-    notes += _no_question_lines(campaign)
     blocks += [DisclosureBlock(section="scorecard", source="comparisons", text=note) for note in notes if note]
     return blocks
 
@@ -597,11 +596,6 @@ def _unread_lines(campaign: EvalCampaign, readings: CampaignReadings, names: Asp
         elif aspect.margin is None:
             lines.append(f"No margin was declared on {names(aspect.label)}, so no arm is ever shown worse there.")
     return lines
-
-
-def _no_question_lines(campaign: EvalCampaign) -> list[str]:
-    """The line under code's readings where the campaign asks no question: every reading is a lead."""
-    return [] if campaign.question.strip() else ["No question was declared, so every reading is a lead."]
 
 
 @dataclass(frozen=True)
@@ -946,7 +940,6 @@ def pair_blocks(
         for pair in readings.pairs
         if pair.rig is not None
     ]
-    notes += _no_question_lines(campaign)
     notes += _unread_without_control_lines(campaign, reports)
     blocks += [DisclosureBlock(section="scorecard", source="comparisons", text=note) for note in notes if note]
     return blocks
@@ -1135,7 +1128,7 @@ def measure_blocks(
             text="One arm is measured, so nothing is compared and no arm is recommended; its bars are its standard.",
         ),
     ]
-    notes = _no_question_lines(campaign) + _unread_without_control_lines(campaign, reports)
+    notes = _unread_without_control_lines(campaign, reports)
     notes += _unread_until_candidate_lines(campaign, names)
     blocks += [DisclosureBlock(section="scorecard", source="comparisons", text=note) for note in notes]
     return blocks

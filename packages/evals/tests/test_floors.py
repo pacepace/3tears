@@ -250,26 +250,31 @@ async def test_the_aspect_pass_rate_is_the_trials_own_with_what_a_projection_rea
 
 
 # =============================================================================
-# The page: a broken floor first, loud; a held one quiet
+# The page: a broken floor under the verdict, set apart; a held one quiet
 # =============================================================================
 
 
-async def test_a_broken_floor_s_warning_is_the_first_line_of_the_page() -> None:
+async def test_a_broken_floor_s_warning_is_one_line_under_the_verdict_never_above_the_title() -> None:
+    """Owner ruling (2026-10-24): the first screen is the decision, on every page. The title is the first line; the
+    broken floor is a line under the verdict saying what it means for the candidate, its interval left to the Floors
+    section, and nothing announces it over the title."""
     bundle, _, _ = await _shape(14)
     report = _page(bundle)
     (warning,) = _warnings(report)
-    assert warning.startswith(
-        f"Floor broken on {bundle.aspect}: candidate's pass rate falls past the 10-point margin on its whole interval, "
-        "a drop of "
-    ), warning
+    assert warning == f"Adopting candidate overrides the 10-point floor it breaks on {bundle.aspect}."
     assert lint_prose(warning) == []
-    first = report.blocks[0]
-    assert isinstance(first, DisclosureBlock) and first.text == warning
+    header = [block for block in report.blocks if block.section == "header"]
+    sources = [block.source for block in header if isinstance(block, DisclosureBlock)]
+    assert sources.index("verdict") + 1 == sources.index("floor"), "the warning is the line under the verdict"
     markdown = report_markdown(report)
-    assert markdown.splitlines()[0] == f"**{warning}**", "above the title"
-    assert markdown.splitlines()[2] == f"# {report.title}"
+    lines = markdown.splitlines()
+    assert lines[0] == f"# {report.title}"
+    verdict = next(block.text for block in header if isinstance(block, DisclosureBlock) and block.source == "verdict")
+    assert lines.index(f"**{warning}**") == lines.index(f"**{verdict}**") + 2
     page = report_html(report)
-    assert page.index('<p class="floor" role="alert">') < page.index("<h1>")
+    header_html = page[page.index("<header>") : page.index("</header>")]
+    assert header_html.index("<h1>") < header_html.index(f'<p class="warning"><strong>{warning}</strong></p>')
+    assert 'role="alert"' not in page
     assert lint_page(markdown, question=QUESTION) == []
 
 

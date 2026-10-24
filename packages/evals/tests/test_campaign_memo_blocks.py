@@ -3,6 +3,7 @@ summary, the findings, and the call, each as written."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 
 import pytest
 
@@ -11,6 +12,7 @@ from threetears.evals.analysis import (
     build_code_only_report,
     build_campaign_report,
     campaign_readings,
+    campaign_report_html,
     campaign_report_markdown,
 )
 from threetears.evals.analysis.report.campaign_page import NO_CALL, NO_RECOMMENDATION
@@ -20,6 +22,7 @@ from threetears.evals.analysis.report.model import (
 )
 from threetears.evals.analysis.report.words import NO_RECOMMENDATION_WORDS
 from threetears.evals.kernel.authored import (
+    AuthoredCampaignAnalysis,
     BehindOn,
 )
 from threetears.evals.kernel.declaration import CampaignCall, OverriddenBar
@@ -71,7 +74,32 @@ async def test_the_writer_s_summary_of_each_aspect_opens_its_fold() -> None:
     assert "**How sure:** Shown worse past the margin." in billing
     assert "**What it means:** Adopting v2 would lose refunds." in billing
     assert "v2 shown worse." in billing
-    assert "## What it means" in markdown and "v2 resolves tone and breaks billing." in markdown
+    findings = markdown[markdown.index("## Findings") : markdown.index("## billing")]
+    assert "v2 resolves tone and breaks billing." in findings and "## What it means" not in markdown
+
+
+@pytest.mark.parametrize("memo_of", [two_aspect_memo, lambda: recommending_nothing("Nothing is ahead.")])
+async def test_the_memo_s_findings_and_next_steps_are_their_own_sections_before_the_folds(
+    memo_of: Callable[[], AuthoredCampaignAnalysis],
+) -> None:
+    page = await page_of("billing", "tone", memo=memo_of())
+    by_role = {block.role: block.section for block in page.blocks if isinstance(block, TextBlock)}
+    assert (by_role["finding_title"], by_role["finding_body"], by_role["next_step"]) == ("findings", "findings", "next")
+    assert by_role["summary"] == "answer"
+    trace = [block for block in page.blocks if block.finding is not None and block.fold == "Evidence"]
+    assert trace and {block.section for block in trace} == {"findings"}
+    markdown = campaign_report_markdown(page)
+    order = [markdown.index(mark) for mark in ("## Findings", "**v2 resolves tone", "## Next steps", "**Next:** Fix")]
+    assert order == sorted(order) and order[-1] < markdown.index("## billing")
+    html = campaign_report_html(page)
+    assert html.index('<section id="findings">') < html.index('<section id="next">') < html.index('id="aspect-')
+    assert '<a href="#findings">Findings</a>' in html and '<a href="#next">Next steps</a>' in html
+
+
+async def test_a_code_only_page_has_no_findings_and_no_next_steps() -> None:
+    page = await page_of("billing", "tone")
+    assert not [block for block in page.blocks if block.section in ("findings", "next")]
+    assert "## Findings" not in campaign_report_markdown(page)
 
 
 async def test_a_recorded_call_says_who_decided_and_the_broken_floor_it_overrides() -> None:
@@ -97,8 +125,10 @@ async def test_a_call_that_keeps_the_control_overrides_nothing() -> None:
     control = billing.campaign.control
     assert control is not None
     call = CampaignCall(arm=CONTROL_LABEL, variant_key=control.variant_key, called_by="brooks")
-    first = first_screen_markdown(await page_of("billing", "tone", call=call))
-    assert "Called: keep production" in first and "overrides" not in first
+    page = await page_of("billing", "tone", call=call)
+    called = [block.text for block in page.blocks if isinstance(block, DisclosureBlock) and block.source == "call"]
+    # The floor's warning says adopting v2 overrides it; no line of the call says it overrides anything.
+    assert "Called: keep production" in first_screen_markdown(page) and not any("overrides" in line for line in called)
 
 
 async def test_a_choice_with_no_clear_winner_opens_on_its_summary_then_says_so_then_the_pairs() -> None:
@@ -107,9 +137,13 @@ async def test_a_choice_with_no_clear_winner_opens_on_its_summary_then_says_so_t
     assert page.readings.kind == "choice" and page.recommendation is None
     assert opening(page) == [("text", "summary"), ("memo", NO_RECOMMENDATION_WORDS["choice"])]
     first = first_screen_markdown(page)
-    assert first.index(summary) < first.index("No clear winner") < first.index("**By aspect, pair by pair**")
+    assert first.index(summary) < first.index("No clear winner")
+    # The pairs are code's readings, laid out after the answer wherever the scorecard puts them.
+    markdown, html = campaign_report_markdown(page), campaign_report_html(page)
+    assert markdown.index("No clear winner") < markdown.index("By aspect, pair by pair")
     header = header_html(page)
-    assert header.index("<h1>") < header.index('data-role="summary"') < header.index('data-table="pairs"')
+    assert header.index("<h1>") < header.index('data-role="summary"')
+    assert html.index('data-role="summary"') < html.index('data-table="pairs"')
 
 
 async def test_the_memo_s_words_are_printed_as_written_in_any_language() -> None:
@@ -130,7 +164,9 @@ async def test_the_memo_s_words_are_printed_as_written_in_any_language() -> None
     ]
 
 
-async def test_a_choice_s_why_for_an_arm_shown_behind_sits_beside_the_pairs() -> None:
+async def test_a_choice_s_why_for_an_arm_shown_behind_answers_under_the_recommendation() -> None:
+    """The why is the writer's answer to a reading that is not a warning: it belongs to the answer, under the
+    recommendation it explains, on the first screen, wherever the pairs it answers are laid out."""
     memo = choice_memo("beta")
     recommended = memo.recommended()
     assert recommended is not None
@@ -138,9 +174,12 @@ async def test_a_choice_s_why_for_an_arm_shown_behind_sits_beside_the_pairs() ->
     recommendation = recommended.model_copy(update={"behind_on": [behind]})
     page = await kind_page_of("tone", "billing", memo=memo.model_copy(update={"recommendation": [recommendation]}))
     first = first_screen_markdown(page)
-    pairs = first.index("**By aspect, pair by pair**")
     why = first.index("**The memo recommends beta over alpha, ahead on tone:** Tone matters less than cost here.")
-    assert first.index("**Recommended:** beta") < pairs < why
+    assert first.index("**Recommended:** beta") < why
+    (block,) = [b for b in page.blocks if isinstance(b, TextBlock) and b.role == "override"]
+    assert block.section == "answer"
+    markdown = campaign_report_markdown(page)
+    assert markdown.index("**The memo recommends beta over alpha") < markdown.index("By aspect, pair by pair")
 
 
 async def test_a_recorded_call_names_each_missed_bar_it_overrides_and_each_it_does_not() -> None:

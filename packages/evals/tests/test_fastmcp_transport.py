@@ -84,11 +84,10 @@ async def test_an_agent_lists_launches_polls_and_reads_a_report() -> None:
         )
         assert not is_error and document is not None and document["format"] == "markdown"
         assert (document["basis"], document["analysis_id"]) == ("analysis", analysis_status["analysis_id"])
-        # The title opens the page, below only its loud lines: each broken floor and missed bar, and the memo's why
-        # beside one.
-        title = report.index("\n# ")
-        loud = [line for line in report[:title].splitlines() if line]
-        assert loud and all(line.startswith(("**Floor broken on ", "**Bar missed on ", "**The memo ")) for line in loud)
+        # The title opens the page; what warns (each broken floor and missed bar, and the memo's why beside one)
+        # follows the question and the answer, never above the title.
+        assert report.startswith("# ")
+        assert "**Adopting " in report[: report.index("\n## ")]
         assert "| Analysis | " in report and "none written" not in report
 
 
