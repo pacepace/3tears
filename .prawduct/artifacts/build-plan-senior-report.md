@@ -67,6 +67,15 @@ make sense for that campaign.
 is the prompt budget (Q1). The other is whether the aggregate needs a tested reading (Q3). Settling Q1 and Q3 raises
 this to High. The cheapest step is the owner answering them before Wave C.
 
+**Wave B integration to-do (main session, when 01, 03 and 04 merge):**
+- Route the remaining goal-check sites through the declared name: report/decision.py:668 (floor readings), report/words.py:333 (evidence_rows), and 04's scorecard.py:521 (`_reconciled`: pass `declared=reports[aspect].bundle.check_name(comparison.name)`) and :1213 (`named()` becomes `measure_name_of`). Add a test that every page site naming a goal check goes through it, then fix the CHANGELOG overclaim.
+- test_one_memo_per_decision.py:438-440 raises once 04 moves "By aspect" under Scorecard; reconcile 03's and 04's hunks.
+- test_campaign_skeleton.py `_UNFILLED` empties after the merge; drop the parametrised guard or give it its remaining rows so it never runs over nothing.
+- page.py: the textual conflict between 04's settle_blocks call and 03's removal of behind_on_blocks.
+- `_MATRIX_TABLES={"scorecard"}` in serialize_html depends on 04's private `_SCORECARD_TABLE`; give it a public seam.
+- The model.py CampaignReport docstring still describes code's table on the first screen.
+- 04's docs/reading-reports.md shows the old first screen; 03 rewrites the same file.
+
 **Decisions made mid-build:** (append here, one line each)
 - [DECISION: runs made at 00107a5b7 stay poolable with every later pin of this plan, and no chunk may move a pooling or identity input: IDENTITY_VERSION, CELL_MODEL_VERSION, context/variant keys, apparatus_class_id, measured_template_digest, the content digest, case ids | main session 2026-10-24, before Discodon spends about $100 on runs at 00107a5b7; an investigation verified this with file:line evidence, and chunk 01 pins every such digest to its 00107a5b7 value]
 - [DECISION: Chunk 06's CAMPAIGN_BUNDLE_SHAPE move must keep a reporter case frozen at an earlier shape readable and calibratable (reporter_kind.py:554 refuses it today) | frozen labels are human work; Discodon freezes labels at 00107a5b7, so a shape bump must never void them. 06 adds a read path for earlier frozen shapes or freezes the frame shape-independently, with a test freezing at shape 2 and reading after 06]
