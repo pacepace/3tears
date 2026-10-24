@@ -13,12 +13,13 @@ from threetears.nats.errors import PublishError
 from threetears.core.collections.generation import (
     GenerationMarks,
     GenerationVerdict,
+    L2WriteGeneration,
     NoWriteGeneration,
     WriteGeneration,
     source_reads,
 )
 from threetears.core.collections.scan_cache import ScanCache
-from threetears.core.exceptions import InvalidL2ScopeError, L2ScopeNotConfiguredError
+from threetears.core.exceptions import GenerationUnavailableError, InvalidL2ScopeError, L2ScopeNotConfiguredError
 from threetears.observe import contain, get_logger
 
 if TYPE_CHECKING:
@@ -151,19 +152,21 @@ class DerivedCacheRegistration:
 
 
 def _write_generation_kind(collection: Any) -> str:
-    """which of the three write-generation declarations a collection carries.
+    """which of the write-generation declarations a collection carries.
 
     Read off the instance rather than assumed, because a registry holds whatever was registered
     with it: a stand-in with no declaration is undeclared.
 
     :param collection: a registered collection, or a stand-in for one
     :ptype collection: Any
-    :return: ``"on"``, ``"opted_out"`` or ``"undeclared"``
+    :return: ``"on"``, ``"on_in_l2"``, ``"opted_out"`` or ``"undeclared"``
     :rtype: str
     """
     declared = getattr(collection, "write_generation", None)
     if isinstance(declared, WriteGeneration):
         return "on"
+    if isinstance(declared, L2WriteGeneration):
+        return "on_in_l2"
     if isinstance(declared, NoWriteGeneration):
         return "opted_out"
     return "undeclared"
@@ -377,6 +380,10 @@ class CollectionRegistry:
                     f"the same write_generation on both"
                 )
         self._collections[table] = collection
+        if getattr(collection, "keeps_write_generation_in_l2", False) is True:
+            # its generation is in L2 beside its rows, read by catch_up_l2_generations: following it is
+            # what makes this registry count the table's broadcasts and its own advances
+            self.follow_generation(table)
         if l1_backend or l2_client or l3_pool:
             self._overrides[table] = {}
             if l1_backend:
@@ -515,6 +522,53 @@ class CollectionRegistry:
         :rtype: None
         """
         self._generation_marks.follow(table_name)
+
+    def generation_kept_in_l2(self, table_name: str) -> bool:
+        """whether ``table_name``'s write generation is kept in L2 by the collection registered for it.
+
+        Such a table's generation is not in the epoch bucket: :meth:`catch_up_l2_generations` judges it,
+        and a pass over the epoch bucket leaves it alone.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: ``True`` when the registered collection keeps its generation in L2
+        :rtype: bool
+        """
+        collection = self._collections.get(table_name)
+        return getattr(collection, "keeps_write_generation_in_l2", False) is True
+
+    async def catch_up_l2_generations(self) -> int:
+        """one catch-up pass over the followed tables whose write generation is kept in L2, returning how many it dropped.
+
+        Each table's generation is read from L2 (``BaseCollection.l2_write_generation``) and judged
+        against this registry's mark (:meth:`settle_generation`), which drops the table here when a
+        row broadcast was missed or the bucket was replaced: what this process holds of the table
+        goes, and the next read of it goes to L2. A table seen for the first time is dropped once,
+        since nothing says what was cached before its mark was taken. A generation that cannot be
+        read is logged and that table is left as it was; the next pass reads again. The caller's
+        scheduler drives the cadence, as for ``threetears.epoch.generation_catchup_tick``, which
+        runs this pass too.
+
+        :return: how many tables were dropped
+        :rtype: int
+        """
+        dropped = 0
+        for table_name in self._generation_marks.followed:
+            collection = self._collections.get(table_name)
+            if not self.generation_kept_in_l2(table_name) or collection is None:
+                continue
+            try:
+                token = await collection.l2_write_generation()
+            except GenerationUnavailableError as exc:
+                # NOSILENT: nothing is dropped and the mark does not move; the next pass reads again
+                log.warning(
+                    "write generation unavailable in L2; the table is left as it is and the next pass reads again",
+                    extra={"extra_data": {"table": table_name, "error": str(exc)}},
+                )
+                continue
+            if self.settle_generation(table_name, token).drops:
+                dropped += 1
+        return dropped
 
     def watched_by(self, table_name: str, watching: Callable[[], bool]) -> None:
         """say that a follower watches ``table_name``'s generation, and how to ask whether it still does.

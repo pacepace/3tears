@@ -8,6 +8,31 @@ packages (bumped in lock-step).
 
 ## v0.78.0 -- 2026-10-24
 
+### core: versioned answers read from L1, say how each was given, and announce versions that only rise
+
+**Added:** `VersionedAnswers` keeps its answers and its index in the process's L1 as well as L2 (when its registry
+offers an L1 backend), each declaring its own L1 table. `answer` reads L1 before it records the request, so an
+answer L1 holds is given with no L2 round trip and no index compare-and-set; a replica's copies are evicted by the
+compare-and-set broadcasts, and retirement reads the index's shards from L2. `answer_with_outcome` returns the answer
+with its `AnswerOutcome`: `read`, `computed`, `peer_fallback` (computed after a peer held the build lock and its value
+never landed), or not stored, `retired` or `index_unwritable` (`GivenAnswer`). `announce(version, order, scope=,
+detail=)` keeps one record per scope of the newest version any replica announced, by compare-and-set so it only rises,
+with the version it replaced (`Announced`, `AnnouncedVersion`; read back with `announced(scope)`); a replica behind
+names the recorded version, and retirement goes below the version replaced. A host that announces leaves retirement to
+`announce` rather than calling `current_version` with its own version.
+
+**Added:** `L2_WRITE_GENERATION` (`threetears.core.collections.generation`), a write-generation declaration for a table
+kept in L2 alone: its generation is a key beside its rows (`{scope}.{table}-generation`), advanced by every write that
+changes a row (a won compare-and-set, a delete, an eviction), with no generation source on the registry. A registry
+follows every such table it holds, and `CollectionRegistry.catch_up_l2_generations()` judges the marks from L2, so a
+replica that missed a broadcast drops its L1 copy at the next pass. `threetears.epoch.generation_catchup_tick` runs that
+pass too and no longer reads these tables from the epoch bucket. `VersionedAnswers` and its index declare it; a host
+schedules the pass. The collection census and the declaration walker accept it.
+
+**Fixed:** A derived collection's miss that a value already in its store answers -- a peer's, found while waiting on
+the peer's build lock -- counts against the tier that store is (`DerivedCollection.derived_values_tier`; L2 for
+`VersionedAnswers`), not L3; only a miss that computes counts L3 (`BaseCollection.fetch_from_store_with_tier`).
+
 ### evals: a reporter label's form follows its dimension's scale, and may quote the memo passage it is about
 
 **Changed:** A reporter label on a pass/fail rubric dimension now takes a `verdict` (`pass` or `fail`), and one on an

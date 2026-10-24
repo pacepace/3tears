@@ -81,7 +81,7 @@ def find_census_problems(census: dict[str, Any], named_per_instance: dict[str, s
         if record.get("framework", False):
             continue
         if record["declaration"] == "invalid":
-            problems.append(f"{record['name']}: write_generation is not one of the three declarations")
+            problems.append(f"{record['name']}: write_generation is not one of the four declarations")
         if record["declaration"] == "opted_out" and not str(record["reason"] or "").strip():
             problems.append(f"{record['name']}: NoWriteGeneration without a reason")
         if (

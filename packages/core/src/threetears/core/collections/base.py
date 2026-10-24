@@ -28,6 +28,7 @@ from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeVar
+from uuid import uuid7
 
 from sqlalchemy import Column, Float, MetaData, String, Table, Text
 
@@ -46,11 +47,13 @@ from threetears.core.collections.flush import FlushStrategy, WriteBuffer
 from threetears.core.collections.generation import (
     WRITE_GENERATION,
     WRITE_GENERATION_UNDECLARED,
+    L2WriteGeneration,
     NoWriteGeneration,
     UndeclaredWriteGeneration,
     WriteGeneration,
     WriteGenerationDeclaration,
     source_reads,
+    split_generation_token,
 )
 from threetears.core.collections.l2_order import (
     L2_ORDER_COLUMNS,
@@ -138,6 +141,9 @@ _GENERATION_WARNING_INTERVAL_SECONDS: Final = 60.0
 #: against ONE key produces -- a credential-stuffing run against one account, or every replica
 #: incrementing one counter. Matches the value the coordination primitives used.
 _CAS_RETRY_BACKOFF_SECONDS: Final = 0.02
+
+#: compare-and-swap rounds an advance of an L2-kept write generation takes before it gives up
+_L2_GENERATION_CAS_ATTEMPTS: Final = 16
 
 
 @dataclass(frozen=True, slots=True)
@@ -641,6 +647,13 @@ class BaseCollection(ABC, Generic[EntityT]):
     #:   opt-out, for a table that shares a cache across pods and is written too often to advance
     #:   a generation per commit. It cannot be combined with :attr:`negative_cache_max_age`,
     #:   which is a generation's first user.
+    #: - :data:`~threetears.core.collections.generation.L2_WRITE_GENERATION` is for a table kept in
+    #:   L2 alone, which no L3 commit writes and so no broker advances: its generation is a key in
+    #:   L2 beside its rows, under the owner's scope, advanced by every write that changes a row (a
+    #:   won compare-and-swap, a delete, an eviction) with no generation source on the registry.
+    #:   Every registry holding the collection follows it, and
+    #:   :meth:`CollectionRegistry.catch_up_l2_generations` judges the marks. It cannot be combined
+    #:   with :attr:`negative_cache_max_age`, whose generation is the registry's source.
     #: - :data:`~threetears.core.collections.generation.WRITE_GENERATION_UNDECLARED`, the default
     #:   in this release, changes nothing: the collection advances a generation only where
     #:   absence caching already made it (:meth:`save_entity`, :meth:`l2_cas_mutate`).
@@ -701,10 +714,18 @@ class BaseCollection(ABC, Generic[EntityT]):
             and isinstance(cls.write_generation, UndeclaredWriteGeneration)
         ):
             cls.write_generation = WRITE_GENERATION
-        if not isinstance(cls.write_generation, WriteGeneration | NoWriteGeneration | UndeclaredWriteGeneration):
+        if not isinstance(
+            cls.write_generation, WriteGeneration | L2WriteGeneration | NoWriteGeneration | UndeclaredWriteGeneration
+        ):
             raise TypeError(
-                f"{cls.__name__}.write_generation must be WRITE_GENERATION, a NoWriteGeneration(reason=...) "
-                f"or WRITE_GENERATION_UNDECLARED; got {cls.write_generation!r}"
+                f"{cls.__name__}.write_generation must be WRITE_GENERATION, L2_WRITE_GENERATION, a "
+                f"NoWriteGeneration(reason=...) or WRITE_GENERATION_UNDECLARED; got {cls.write_generation!r}"
+            )
+        if cls.negative_cache_max_age is not None and isinstance(cls.write_generation, L2WriteGeneration):
+            raise TypeError(
+                f"{cls.__name__} caches absences (negative_cache_max_age) and keeps its write generation in "
+                f"L2: a recorded absence is stamped with the registry source's generation, which no write "
+                f"to this table advances"
             )
         if cls.negative_cache_max_age is not None and isinstance(cls.write_generation, NoWriteGeneration):
             raise TypeError(
@@ -960,6 +981,20 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: dict[str, Any] | None
         """
         ...
+
+    async def fetch_from_store_with_tier(self, entity_id: Any) -> tuple[dict[str, Any] | None, ReadTier]:
+        """the read a pull-through makes past L2, and the tier that answered it, for the tier counts.
+
+        :meth:`fetch_from_store` reads the store, so the store answers: L3, a row found or not. A
+        collection whose store read can be answered by a shared cache instead -- a derived value a
+        peer already put in L2 -- says so by overriding this.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :return: what :meth:`fetch_from_store` returned, and :attr:`ReadTier.L3`
+        :rtype: tuple[dict[str, Any] | None, ReadTier]
+        """
+        return await self.fetch_from_store(entity_id), ReadTier.L3
 
     @abstractmethod
     async def save_to_store(
@@ -1598,6 +1633,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: _Bump
         """
         registry = self.registry
+        if self.keeps_write_generation_in_l2 and registry is not None and rows >= 1:
+            return await self._advance_l2_generation(registry, rows)
         if not self._write_generation_on or registry is None or rows < 1:
             return _NO_BUMP
         shared = shared_advance_for(self.table_name)
@@ -1654,6 +1691,125 @@ class BaseCollection(ABC, Generic[EntityT]):
         registry.account_generation(self.table_name, token)
         return _Bump(token=token, rows=rows)
 
+    @property
+    def keeps_write_generation_in_l2(self) -> bool:
+        """whether this collection keeps its table's write generation in L2, beside its rows.
+
+        :return: ``True`` when the class declares ``L2_WRITE_GENERATION`` and the collection has an
+            L2 client; such a table is followed by its registry
+            (:meth:`CollectionRegistry.catch_up_l2_generations`)
+        :rtype: bool
+        """
+        return isinstance(self.write_generation, L2WriteGeneration) and self._nats_client is not None
+
+    def _l2_generation_key(self) -> str:
+        """the L2 key this table's write generation is kept under, beside its rows in the owner's scope.
+
+        A table name is ``[a-z_]``, so ``{table}-generation`` names no table and the key can be no row's.
+
+        :return: ``{scope}.{table}-generation``
+        :rtype: str
+        :raises L2ScopeNotConfiguredError: when the registry carries no key scope
+        """
+        scope = self._registry.kv_key_scope
+        if scope is None:
+            raise L2ScopeNotConfiguredError(
+                f"{self.table_name}: no kv_key_scope on this collection's registry, so its write generation "
+                f"would carry no principal segment"
+            )
+        return f"{scope}.{self.table_name}-generation"
+
+    async def l2_write_generation(self) -> str | None:
+        """this table's write generation as L2 holds it, for the pass that judges a follower's mark.
+
+        A table with none yet is given one, its first incarnation at count zero, as the epoch bucket
+        mints one on a first read: a follower's mark then has an incarnation for the first write's
+        advance to follow, rather than reading that write as a replaced store.
+
+        :return: the token, ``{incarnation}:{count}``; ``None`` only without an L2 client
+        :rtype: str | None
+        :raises GenerationUnavailableError: when L2 cannot be read, or holds a value that is no token
+        """
+        try:
+            kv = await self._ensure_kv()
+            if kv is None:
+                return None
+            key = self._l2_generation_key()
+            raw = await kv.get(key=key)
+            if raw is None:
+                minted = f"{uuid7()}:0".encode()
+                raw = minted if await kv.create(key=key, value=minted) is not None else await kv.get(key=key)
+        except KvError as exc:
+            raise GenerationUnavailableError(
+                f"write generation for {self.table_name!r} could not be read from L2: {exc}"
+            ) from exc
+        if raw is None:
+            raise GenerationUnavailableError(f"write generation for {self.table_name!r} vanished while being minted")
+        token = raw.decode("utf-8", errors="replace")
+        if split_generation_token(token) is None:
+            raise GenerationUnavailableError(f"write generation for {self.table_name!r} is malformed: {raw!r}")
+        return token
+
+    async def _advance_l2_generation(self, registry: CollectionRegistry, rows: int) -> _Bump:
+        """advance this table's write generation in L2 by compare-and-swap, for one write of ``rows`` rows.
+
+        This process's advances of the table take turns, so its own writes never contend for the key; a
+        peer's do, and lose a round to it at most.
+
+        :param registry: this collection's registry, which accounts for the advance
+        :ptype registry: CollectionRegistry
+        :param rows: how many row messages the write publishes
+        :ptype rows: int
+        :return: the generation written and the row count to stamp; a failure for the caller to raise
+            once its write path has run, when the key could not be advanced
+        :rtype: _Bump
+        """
+        lock: asyncio.Lock = self.__dict__.setdefault("_l2_generation_lock", asyncio.Lock())
+        try:
+            async with lock:
+                token = await self._advance_l2_generation_key()
+        except (KvError, ConcurrentModificationError) as exc:
+            failure = GenerationUnavailableError(
+                f"write generation for {self.table_name!r} could not be advanced in L2: {exc}"
+            )
+            log.error(
+                "write generation could not be advanced in L2 after a write; a replica that misses this "
+                "write's broadcast cannot tell from it",
+                extra={"extra_data": {"table": self.table_name, "rows": rows, "error": str(exc)}},
+            )
+            return _Bump(failure=failure)
+        registry.account_generation(self.table_name, token)
+        return _Bump(token=token, rows=rows)
+
+    async def _advance_l2_generation_key(self) -> str:
+        """move the generation key on by one, minting a new incarnation when it holds none.
+
+        :return: the token this advance wrote
+        :rtype: str
+        :raises KvError: when L2 cannot be reached
+        :raises ConcurrentModificationError: when peers kept winning past the retry budget
+        """
+        kv = await self._ensure_kv()
+        if kv is None:
+            raise KvError(f"{self.table_name}: no L2 client to keep the write generation in")
+        key = self._l2_generation_key()
+        for _ in range(_L2_GENERATION_CAS_ATTEMPTS):
+            entry = await kv.get_entry(key=key)
+            parts = None if entry is None else split_generation_token(entry[0].decode("utf-8", errors="replace"))
+            if parts is None:
+                # none yet, or a value no follower can count: a new incarnation, so every follower drops
+                written = f"{uuid7()}:1"
+            else:
+                written = f"{parts[0]}:{parts[1] + 1}"
+            if entry is None:
+                won = await kv.create(key=key, value=written.encode())
+            else:
+                won = await kv.update(key=key, value=written.encode(), revision=entry[1])
+            if won is not None:
+                return written
+            await asyncio.sleep(random.uniform(0, _CAS_RETRY_BACKOFF_SECONDS))  # noqa: S311 - jitter, not security
+        raise ConcurrentModificationError(self.table_name, key, datetime.min)
+
     async def _bump_after_commit(self) -> _Bump:
         """advance the generation after one row's L3 commit, on the paths that always have.
 
@@ -1664,7 +1820,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: what the advance came to; for a collection not switched on, at most a failure
         :rtype: _Bump
         """
-        if self._write_generation_on:
+        if self._write_generation_on or self.keeps_write_generation_in_l2:
             return await self._bump_generation(1)
         failure = await self._advance_generation()
         return _NO_BUMP if failure is None else _Bump(failure=failure)
@@ -2525,8 +2681,8 @@ class BaseCollection(ABC, Generic[EntityT]):
             if self._l1 is not None and self._l1_fence.still_newest(ticket):
                 self._l1_upsert(lookup.row, self.primary_key_columns)
             return lookup.row
-        record_tier_read(self.table_name, ReadTier.L3)
-        pg_data = await self.fetch_from_store(entity_id)
+        pg_data, tier = await self.fetch_from_store_with_tier(entity_id)
+        record_tier_read(self.table_name, tier)
         if pg_data is not None and self._row_is_expired(pg_data):
             pg_data = None
         if pg_data is not None:

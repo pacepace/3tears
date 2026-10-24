@@ -35,11 +35,13 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 __all__ = [
+    "L2_WRITE_GENERATION",
     "WRITE_GENERATION",
     "WRITE_GENERATION_UNDECLARED",
     "GenerationMarks",
     "GenerationSource",
     "GenerationVerdict",
+    "L2WriteGeneration",
     "NoWriteGeneration",
     "READS_GENERATIONS_ATTRIBUTE",
     "UndeclaredWriteGeneration",
@@ -187,6 +189,24 @@ class WriteGeneration:
         return "WRITE_GENERATION"
 
 
+class L2WriteGeneration:
+    """the type of :data:`L2_WRITE_GENERATION`: a table kept in L2 alone, whose generation is kept there too.
+
+    A table no L3 commit writes has no broker to advance its generation, and a pod may not write the
+    epoch bucket. Its writes are compare-and-sets on the owner's own L2 keys, so its generation is one
+    more key beside them (``{scope}.{table}-generation``, under the same grant), advanced by every
+    write that changes a row -- each won compare-and-set, delete and eviction -- and followed by every
+    registry holding the collection (:meth:`CollectionRegistry.catch_up_l2_generations`). Tokens are
+    ``{incarnation}:{count}``: the incarnation is minted when the key is first written, so a wiped
+    bucket starts another and every follower drops the table.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "L2_WRITE_GENERATION"
+
+
 @dataclass(frozen=True, slots=True)
 class NoWriteGeneration:
     """a collection's declared decision that writes to its table advance no generation.
@@ -232,12 +252,17 @@ class UndeclaredWriteGeneration:
 #: table's write generation, once per commit, and every row broadcast of that commit names it.
 WRITE_GENERATION: Final = WriteGeneration()
 
+#: declare on a collection class kept in L2 alone to keep its write generation in L2 beside its rows
+#: (:class:`L2WriteGeneration`), so a replica that missed a row broadcast drops its L1 copy at the
+#: next catch-up pass.
+L2_WRITE_GENERATION: Final = L2WriteGeneration()
+
 #: the default: the collection has declared nothing, and writes as it did before. See
 #: :class:`UndeclaredWriteGeneration`.
 WRITE_GENERATION_UNDECLARED: Final = UndeclaredWriteGeneration()
 
 #: everything :attr:`BaseCollection.write_generation` may hold.
-WriteGenerationDeclaration = WriteGeneration | NoWriteGeneration | UndeclaredWriteGeneration
+WriteGenerationDeclaration = WriteGeneration | L2WriteGeneration | NoWriteGeneration | UndeclaredWriteGeneration
 
 
 class GenerationVerdict(StrEnum):

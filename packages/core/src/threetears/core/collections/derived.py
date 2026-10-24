@@ -50,9 +50,12 @@ import re
 from abc import abstractmethod
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Protocol
 
 from threetears.core.collections.base import BaseCollection, EntityT
+from threetears.core.collections.tier_reads import ReadTier
 from threetears.observe import get_logger, traced
 
 if TYPE_CHECKING:
@@ -65,6 +68,18 @@ log = get_logger(__name__)
 
 #: the JetStream KV key grammar; a lease key outside it is hashed
 _KV_KEY_GRAMMAR: Final = re.compile(r"^[-/_=.a-zA-Z0-9]+$")
+
+
+@dataclass
+class _Derivation:
+    """what one store read of a derived collection did: computed the value, and after a peer held its lock."""
+
+    computed: bool = False
+    peer_held: bool = False
+
+
+#: the derivation the store read this task is inside, for the tier count and :meth:`DerivedCollection.deriving_after_peer`
+_DERIVATION: ContextVar[_Derivation | None] = ContextVar("derived_store_read", default=None)
 
 
 class BuildLockHeld(Exception):
@@ -207,6 +222,12 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
     #: let go -- finished, or died and lost its lease -- so the loser derives under it
     peer_retake_seconds: ClassVar[float] = 1.0
 
+    #: the tier :meth:`load_derived` reads, which answers a miss whenever a value is already there
+    #: (derived earlier, or by a peer while this read waited): the durable tier by default; ``L2``
+    #: for a collection whose derived values live in the shared cache alone. A miss that computes
+    #: counts against L3 either way: the value came from the source data
+    derived_values_tier: ClassVar[ReadTier] = ReadTier.L3
+
     def __init__(self, *args: Any, build_lock: BuildLock | None = None, **kwargs: Any) -> None:
         """build the collection as :class:`BaseCollection` does, with the cross-pod build lock.
 
@@ -315,6 +336,38 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
     # compute-on-miss durable tier
     # ------------------------------------------------------------------
 
+    async def fetch_from_store_with_tier(self, entity_id: Any) -> tuple[dict[str, Any] | None, ReadTier]:
+        """the value, read or derived, and the tier that answered it.
+
+        :attr:`derived_values_tier` when :meth:`load_derived` found the value -- at once, or after
+        waiting on a peer's derivation -- and L3 when this read computed it.
+
+        :param entity_id: pk value or tuple of pk values
+        :ptype entity_id: Any
+        :return: the value, or ``None`` when nothing is derivable; and the tier
+        :rtype: tuple[dict[str, Any] | None, ReadTier]
+        """
+        derivation = _Derivation()
+        token = _DERIVATION.set(derivation)
+        try:
+            row = await self.fetch_from_store(entity_id)
+        finally:
+            _DERIVATION.reset(token)
+        return row, ReadTier.L3 if derivation.computed else self.derived_values_tier
+
+    def deriving_after_peer(self) -> bool:
+        """whether the derivation running in this task began after a peer held the key's build lock.
+
+        For :meth:`compute` to tell a host that it is the fallback: the peer let go of the lock
+        without its value landing (it finished as this read retook it, or it died and its lease
+        lapsed), so this replica computes what the peer was computing.
+
+        :return: ``True`` inside a :meth:`compute` that a held build lock preceded
+        :rtype: bool
+        """
+        derivation = _DERIVATION.get()
+        return derivation is not None and derivation.peer_held
+
     @traced
     async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
         """return the derived value, computing it if the durable tier lacks it.
@@ -368,6 +421,9 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 # a peer POD may have derived it while we queued.
                 return await self._derive_and_save(key)
         except BuildLockHeld:
+            derivation = _DERIVATION.get()
+            if derivation is not None:
+                derivation.peer_held = True
             return await self._await_peer_derivation(key, self._build_lock)
 
     async def _derive_and_save(self, key: tuple[Any, ...]) -> dict[str, Any] | None:
@@ -375,6 +431,9 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
         existing = await self.load_derived(key)
         if existing is not None:
             return existing
+        derivation = _DERIVATION.get()
+        if derivation is not None:
+            derivation.computed = True
         derived = await self.compute(key)
         if derived is not None:
             await self.save_to_store(derived)
