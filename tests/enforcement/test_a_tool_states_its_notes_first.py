@@ -8,18 +8,26 @@ lost a branch was presented as everything there was. A consumer cannot repair
 that afterwards without parsing a tool's prose to find its last line, so the
 tool states its notes first, in its own text.
 
-Three shapes put a note after a body, and this walks every package's ``src`` for
+Four shapes put a note after a body, and this walks every package's ``src`` for
 each:
 
 - a text window rendered without ``note_first=True``
   (``threetears.agent.tools.text_window.TextWindow.rendered``);
 - a note glued on behind something: a literal that opens with a line break and
   then a note's words;
-- a note appended to a list of lines after lines that are not notes.
+- a note appended to a list of lines after lines that are not notes;
+- a note built into a string after its body: an f-string, a ``+`` chain or a
+  ``.join([...])`` whose note piece comes after a piece that is not. In a string
+  a note piece is a literal opening like a note, a call to a note-maker (a
+  function or method whose name says ``note``, such as ``window.note(...)``),
+  or a name assigned from one -- not every name containing "note", which in a
+  string is as often a person's note or an error's detail.
 
 A window's note placed by hand (``.note(...)``) is listed in ``HAND_PLACED`` with
 where it goes. A literal that reads like a note and is not part of a tool's
-result is listed in ``NOT_A_TOOL_RESULT`` with what it is.
+result is listed in ``NOT_A_TOOL_RESULT`` with what it is. A string that puts
+its note after something on purpose is listed in ``NOTE_BUILT_AFTER_ON_PURPOSE``
+with why.
 """
 
 from __future__ import annotations
@@ -60,6 +68,23 @@ NOT_A_TOOL_RESULT: dict[str, str] = {
     ),
     "packages/channels/src/threetears/channels/formatting.py: [truncated]": (
         "the mark on a Discord embed cut to the platform's length limit, read by a person"
+    ),
+}
+
+
+#: ``file:function`` -> why a string built there puts its note after something. A new one is added with its reason.
+NOTE_BUILT_AFTER_ON_PURPOSE: dict[str, str] = {
+    "packages/search/src/threetears/search/bind_answer.py:_head": (
+        "the one-line attribution AR-G2 requires first, naming whose synthesis follows; the note comes right "
+        "under it, before the answer text and its sources"
+    ),
+    "packages/agent/tools/src/threetears/agent/tools/builtin/calculator.py:_evaluate": (
+        "a one-line result whose parenthetical names its units, on the same line as the number it qualifies, "
+        "so no head of the result keeps the number without it"
+    ),
+    "packages/agent/tools/src/threetears/agent/tools/builtin/analyze_media.py:_handle_document": (
+        "the prompt an analyser model reads, not a tool result: the window note follows the document fence it "
+        "describes, as HAND_PLACED records"
     ),
 }
 
@@ -169,11 +194,86 @@ def _appended_late(tree: ast.AST, where: str) -> list[str]:
     return hits
 
 
+def _pieces(node: ast.AST) -> list[ast.AST] | None:
+    """The pieces a string is built from, in order, when it is built: an f-string, a ``+`` chain, a joined list.
+
+    :return: the pieces, or None when the node builds no string from pieces
+    """
+    if isinstance(node, ast.JoinedStr):
+        return [part.value if isinstance(part, ast.FormattedValue) else part for part in node.values]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        flat: list[ast.AST] = []
+        for side in (node.left, node.right):
+            flat.extend(_pieces(side) or [side])
+        return flat
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "join"
+        and isinstance(node.func.value, ast.Constant)
+        and node.args
+        and isinstance(node.args[0], ast.List)
+    ):
+        return list(node.args[0].elts)
+    return None
+
+
+def _piece_kind(piece: ast.AST, made: set[str]) -> str:
+    """``note``, ``blank`` (whitespace only) or ``body``, for one piece of a built string."""
+    if isinstance(piece, ast.Constant) and isinstance(piece.value, str):
+        text = piece.value.lstrip(" \n")
+        if not text:
+            return "blank"
+        return "note" if NOTE.match(text) else "body"
+    if isinstance(piece, ast.Name) and piece.id in made:
+        return "note"
+    return "note" if _makes_note(piece) else "body"
+
+
+def _makes_note(node: ast.AST) -> bool:
+    """Whether a value is a call to a note-maker: a function or method whose name says ``note``."""
+    if not isinstance(node, ast.Call):
+        return False
+    callee = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+    return "note" in callee.lower()
+
+
+def _built_late(tree: ast.AST, where: str) -> list[str]:
+    """Every string built with a note piece after a piece that is not a note."""
+    made = {
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and _makes_note(node.value)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    hits = []
+    for node in ast.walk(tree):
+        pieces = _pieces(node)
+        if not pieces:
+            continue
+        seen_body = False
+        for piece in pieces:
+            kind = _piece_kind(piece, made)
+            if kind == "note" and seen_body:
+                if f"{where}:{_owner(tree, node)}" not in NOTE_BUILT_AFTER_ON_PURPOSE:
+                    hits.append(f"{where}:{node.lineno}: a note built into a string after what it is about")
+                break
+            seen_body = seen_body or kind == "body"
+    return hits
+
+
 def _findings(source: str, where: str) -> list[str]:
     tree = ast.parse(source)
     windows = [] if where == WINDOW_MODULE else _trailing_windows(tree, where)
-    # a nested function is walked with the one that holds it: each finding once
-    return list(dict.fromkeys(windows + _glued_on(tree, where) + _appended_late(tree, where)))
+    built = [] if where == WINDOW_MODULE else _built_late(tree, where)
+    found = windows + _glued_on(tree, where) + _appended_late(tree, where) + built
+    # one finding per line: a nested function is walked with the one that holds it, and one line can
+    # match two shapes (a glued literal is also a string built late)
+    by_line: dict[str, str] = {}
+    for hit in found:
+        by_line.setdefault(":".join(hit.split(":", 2)[:2]), hit)
+    return list(by_line.values())
 
 
 def _each_source() -> list[tuple[str, str]]:
@@ -214,11 +314,15 @@ def test_the_tables_name_what_is_there() -> None:
         file, opening = key.split(":", 1)
         path = WORKSPACE / file
         assert path.is_file() and opening.strip() in path.read_text(encoding="utf-8"), f"names what is gone: {key}"
+    for key in NOTE_BUILT_AFTER_ON_PURPOSE:
+        file, function = key.split(":", 1)
+        path = WORKSPACE / file
+        assert path.is_file() and f"def {function}(" in path.read_text(encoding="utf-8"), f"names what is gone: {key}"
     assert len(SOURCES) > 20, f"the walk found only {SOURCES}"
 
 
 def test_the_walk_has_teeth() -> None:
-    """Each of the three shapes is found, and each of their note-first forms is not."""
+    """Each of the four shapes is found, and each of their note-first forms is not."""
     late = (
         "def tool(window, found, degraded):\n"
         "    parts = []\n"
@@ -249,4 +353,24 @@ def test_the_walk_has_teeth() -> None:
     )
     assert _findings(first, "x.py") == []
     assert _hand_placed(ast.parse(first), "x.py") == ["x.py:tool"]
+    built_late = (
+        "def tool(body, window, candidates):\n"
+        "    footnotes = _footnotes(candidates)\n"
+        "    joined = f'{body}\\n\\n{footnotes}' if footnotes else body\n"
+        "    added = body + '\\n\\n' + window.note(tool='t')\n"
+        "    listed = '\\n\\n'.join([body, _notes(candidates)])\n"
+        "    inline = f'{body}\\n\\n(Partial results: two engines failed.)'\n"
+        "    return joined, added, listed, inline\n"
+    )
+    assert sorted(int(h.split(":")[1]) for h in _findings(built_late, "x.py")) == [3, 4, 5, 6]
+    built_first = (
+        "def tool(body, window, candidates, note, notes_file):\n"
+        "    footnotes = _footnotes(candidates)\n"
+        "    joined = f'{footnotes}\\n\\n{body}' if footnotes else body\n"
+        "    added = window.note(tool='t') + '\\n\\n' + body\n"
+        "    users = f'{body} ({note})'\n"
+        "    missing = f'the release notes {notes_file} do not exist'\n"
+        "    return joined, added, users, missing\n"
+    )
+    assert _findings(built_first, "x.py") == [], "a note stated first, or a name that is not a made note, passes"
     assert _findings("x = window.rendered(tool='t')\n", WINDOW_MODULE) == [], "the window's own module defines both"
