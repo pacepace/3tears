@@ -76,6 +76,9 @@ this to High. The cheapest step is the owner answering them before Wave C.
 - The model.py CampaignReport docstring still describes code's table on the first screen.
 - 04's docs/reading-reports.md shows the old first screen; 03 rewrites the same file.
 
+**Wave B integration, done** (merges 6b11d2c89, 3ae3ef26e, db1b43467): every item above is closed; each is a
+decision line below, prefixed `B:`.
+
 **Decisions made mid-build:** (append here, one line each)
 - [DECISION: runs made at 00107a5b7 stay poolable with every later pin of this plan, and no chunk may move a pooling or identity input: IDENTITY_VERSION, CELL_MODEL_VERSION, context/variant keys, apparatus_class_id, measured_template_digest, the content digest, case ids | main session 2026-10-24, before Discodon spends about $100 on runs at 00107a5b7; an investigation verified this with file:line evidence, and chunk 01 pins every such digest to its 00107a5b7 value]
 - [DECISION: Chunk 06's CAMPAIGN_BUNDLE_SHAPE move must keep a reporter case frozen at an earlier shape readable and calibratable (reporter_kind.py:554 refuses it today) | frozen labels are human work; Discodon freezes labels at 00107a5b7, so a shape bump must never void them. 06 adds a read path for earlier frozen shapes or freezes the frame shape-independently, with a test freezing at shape 2 and reading after 06]
@@ -183,6 +186,16 @@ this to High. The cheapest step is the owner answering them before Wave C.
 - 03: a `scorecard` matrix's glyph columns share one scale per unit (04's request). Settled by: R2 comparability.
 - 03: package sentences built with count forms from fragments (an existing `result{'s'}` style) are accepted, since the package's own sentences are English; the lines this chunk added pick one whole template per count form instead. Settled by: main-session ruling on Critic R-19.
 - 03: a guardrail line names each guardrail with its own aspects (`the A guardrail on x and the B guardrail on y`), never every guardrail on every aspect. Settled by: Critic R-7.
+
+- B: [DECISION: a page names a goal check through `floor_readings(check_names=)`/`floor_statement(check_names=)`, `AspectNames.check_names` and `names.measure_name_of`; `campaign_readings` passes no names | routing decision.py:668 through the bundle moved `FloorStatus.reason`, which is baked into the campaign readings and so the campaign fingerprint (01's no-fingerprint-moves rule); `test_check_names_on_the_page` pins that naming moves no reading and sweeps S1 (with a call), S2, S4 and a checked measurement for a stray expression, folds included]
+- B: [DECISION: a trial's failed-check line keeps the name beside the expression, the name still code-quoted in Markdown | it is the one place a check's text is evidence, and the code span keeps a host's name inert (`test_report_presentation` pins it)]
+- B: [DECISION: `common.rate_name` is deleted in the frozen module | 03 removed its last caller, and it printed a check as code with no declared name]
+- B: [DECISION: "No question was declared, so every reading is a lead." stands once in the question's place (`provenance.question_blocks`), not under each kind's Scorecard table | R4b, it is report-wide; `test_campaign_create_declares` pinned it on the first screen, and 04's own test moved back to pin it once there]
+- B: [DECISION: campaign depth blocks (`depth_blocks.py`) sit in `scorecard`, not the first screen's `scoreboard` | R1: after 04 they were left between the warnings and the call; 05 still owns their collapse and REPEATS_FLOOR's move to Design & provenance]
+- B: [DECISION: Critic R-13 as the Critic recommended: `TableBlock.shared_scale` (model, default false) and fold links set where an aspect cell is built (`AspectNames.cell`, `AspectNames.folds` from `fold_ids`); the serializer's `_MATRIX_TABLES`, `_fold_places`, `_linked` go | S1-S4 render byte for byte as before; a trace's "reaches nothing" line now reads only figure and trial links, since the aspect cell links its fold whatever it cites]
+- B: [DECISION: `_UNFILLED` and its parametrised guard are deleted | 03 and 04 fill every campaign section, and a guard over an empty table runs nothing]
+- B: page.py merged textually clean (04's `settle_blocks` call kept, 03's move of `behind_on_blocks` into the answer kept); verified by reading the merged builder and the first-screen tests.
+- B: `FLOORS_WARN_ONLY` said "a broken one opens the page", false since 03; it says "warns on the first screen". Settled by: 03's first-screen ruling.
 
 ## Advisory: what I would do differently
 
@@ -793,10 +806,10 @@ The main session:
 ## Status
 
 - [x] Chunk 00: reporter label form and memo excerpt
-- [ ] Chunk 01: declared names
+- [x] Chunk 01: declared names
 - [x] Chunk 02: split and scaffold
-- [ ] Chunk 03: first screen, caveats once, provenance
-- [ ] Chunk 04: scorecard and reconciliation
+- [x] Chunk 03: first screen, caveats once, provenance
+- [x] Chunk 04: scorecard and reconciliation
 - [ ] Chunk 05: degenerate collapse
 - [ ] Chunk 06: aggregates and chart
 - [ ] Chunk 07: writer view
