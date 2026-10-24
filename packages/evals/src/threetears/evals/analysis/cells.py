@@ -65,8 +65,9 @@ from threetears.evals.schema.models import ApparatusProvenance
 #: first public release's cell model (from ``v0.67.0-evaladopt.25``); the versions before it, 12 included, were
 #: pre-release. 13: what the judge and the simulated user were actually sent (``judge_sent_settings``,
 #: ``simulator_sent_settings``) joins the apparatus coordinate beside what they were asked, so cells pool only when
-#: both match.
-CELL_MODEL_VERSION: int = 13
+#: both match. 14: the spend ceiling (``max_cost_usd``) leaves the apparatus coordinate
+#: (``Sweepable.no_rig_coordinate``), so runs that differ only in their cap pool in one cell.
+CELL_MODEL_VERSION: int = 14
 
 
 class ApparatusClass(EvalDocumentModel):

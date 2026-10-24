@@ -222,8 +222,11 @@ about the lever. The engine's own: the judge model, which judge each dimension w
 scored by (`judge_dim_divergence`), the temperature each judge call was sent at, the request settings the judge was
 asked for and those its calls were sent with (`judge_request_settings`, `judge_sent_settings`), the judge configs,
 the simulator model and the request settings it was asked for and sent with (`simulator_request_settings`,
-`simulator_sent_settings`), and the per-run cost ceiling (`max_cost_usd`). *Example:* the v1 runs were judged by
-judge-a and the v2 runs by judge-b: the rig moved, so the report will not pool them as one condition.
+`simulator_sent_settings`). The per-run cost ceiling (`max_cost_usd`) is declared apparatus too, so a kind can seat
+it, but it is no dimension of the rig (`no_rig_coordinate`): a cap decides when a run may stop, not what it measured,
+so runs that differ only in their cap are one rig and the bisection states the difference as a plain fact.
+*Example:* the v1 runs were judged by judge-a and the v2 runs by judge-b: the rig moved, so the report will not pool
+them as one condition.
 
 #### Apparatus class
 One configuration of the rig as recorded on the runs (`ApparatusClass`). Two observations pool only when

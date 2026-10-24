@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the spend ceiling splits no test setup, so arms launched at two caps pair and read an interval
+
+**Fixed:** Two launches on one template that differed only in the `max_cost_usd` they were given read as two test
+setups, so their arms shared no rig and read "no interval could be read: ... ran under no test setup in common". The
+cap decides when a run may stop, never what a case scored, so it is no longer a dimension of the rig
+(`Sweepable.no_rig_coordinate`, new): such runs pool in one cell per arm, pair and read an interval, and no confound
+list names a cap difference. The quick path's share of an `Eval`'s cap per arm splits nothing either. The cap stays a
+declared apparatus input that a kind seats; the bisection and each run's summary still state it, and a run it stopped
+part-way is still marked by its status and completeness. The bundle shape moves from 62 to 63 and the cell model from
+13 to 14, so every apparatus class id and fingerprint moves: a stored analysis reads as needing regeneration
+(`AnalysisLine.needs_regeneration`) and its report is refused until it is generated again; nothing else is dropped.
+See `packages/evals/MIGRATIONS.toml`.
+
 ### evals: each arm's depth is stated beside every reading, and a comparison of pass^k names the depth every arm reached
 
 **Added:** Runs pooled forward leave arms measured to different depths, across arms and across the cases of one arm,
@@ -17,7 +30,7 @@ each point there over all its runs (`C(c, k) / C(n, k)`, exact, no model); a dep
 `unmeasured_for` it, and the pass^k row counts the cases short of `k`. A pass-rate reading's `precision` states each
 side's own half-width, which side limits the interval, and the share of the difference's variance that lies between
 cases, which extra repeats cannot lower. Nothing read changes: the frontier still ranks at the planned `k`, and every
-interval, change and count is as it was. The bundle shape moves from 62 to 63. See `packages/evals/MIGRATIONS.toml`.
+interval, change and count is as it was. The bundle shape moves from 63 to 64. See `packages/evals/MIGRATIONS.toml`.
 
 **Added (surfaces):** The campaign page states depth in three tables, `Depth`, `Pass^k depth` and `Precision`, each
 with one plain sentence under it ("v2 was run twice on character, the others once; that tightens v2's own estimate,

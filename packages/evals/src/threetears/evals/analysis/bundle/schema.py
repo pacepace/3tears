@@ -2527,13 +2527,18 @@ class AnalysisContextBundle(EvalDocumentModel):
     # own; a frontier point's pass^k reads its headline cell alone and lists every cell with its own reading and
     # reason (`pass_hat_k_cells`), so pass^k and its curve move over unchanged runs; a comparison set's case-set fingerprint digests the run's frozen case ids
     # and is never None.
-    # 63: depth is stated, nothing read changes: each arm's `scoreboard[].depth` (usable cases, trials, and trials per
+    # 63: the spend ceiling (`max_cost_usd`) is no dimension of the rig (`Sweepable.no_rig_coordinate`): runs that
+    # differ only in the cap they were given are one apparatus class and so one cell, and no confound list, coverage
+    # row, divergence or factor-aliasing read names a cap difference, so every apparatus class id, cell and fingerprint
+    # moves over unchanged runs (`CELL_MODEL_VERSION` 14). The host declarations digest reads whether each sweepable is
+    # a dimension of the rig.
+    # 64: depth is stated, nothing read changes: each arm's `scoreboard[].depth` (usable cases, trials, and trials per
     # case fewest, median and most), each overall pass-rate floor contrast's `case_trials` and `case_passed` beside its shares, and each
     # frontier point's delivered `depth`, `n_cases_short_of_k`, common-depth reading (`common_pass_hat_k`,
     # `n_common_cases`, `n_cases_left_out`) and each subject's `common_depth`, `shares_no_case` and `unmeasured_for`; a point's opt-in
     # `model_pass_hat_k` (`basis: "model"`), None unless the host asks for it.
     schema_version: int = Field(
-        default=63, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=64, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -3607,8 +3612,9 @@ def host_declarations_digest(profile: HostProfile) -> str:
     fingerprint, and the same holds for a world dimension; a lever is a coordinate of every arm. A host adding,
     removing or renaming one moves every fingerprint over unchanged runs, and the package's own versions
     cannot say so — they are the package's. This digest is computed from the registry the bundle was assembled
-    under, so it moves exactly when those declarations do: each sweepable's name, role and blank rule (whether
-    a blank means "never recorded", which decides whether a level can be compared at all), and each world
+    under, so it moves exactly when those declarations do: each sweepable's name, role, blank rule (whether
+    a blank means "never recorded", which decides whether a level can be compared at all) and whether it is a
+    dimension of the rig at all (an apparatus input carrying ``no_rig_coordinate`` splits no cell), and each world
     dimension's name. The core's declarations are in it too, because the registry a host extends carries them;
     a core change also moves :attr:`AnalysisContextBundle.schema_version`, which is read first.
 
@@ -3621,14 +3627,15 @@ def host_declarations_digest(profile: HostProfile) -> str:
     :rtype: str
     """
     sweepables = sorted(
-        (declared.name, declared.role, declared.indeterminate_when_blank)
+        (declared.name, declared.role, declared.indeterminate_when_blank, declared.no_rig_coordinate is None)
         for declared in profile.sweepables.declarations
     )
     world = sorted(profile.world.names) if profile.world is not None else []
     return canonical_digest(
         {
             "sweepables": [
-                {"name": name, "role": role, "indeterminate_when_blank": blank} for name, role, blank in sweepables
+                {"name": name, "role": role, "indeterminate_when_blank": blank, "rig_coordinate": rig}
+                for name, role, blank, rig in sweepables
             ],
             "world": world,
         }
