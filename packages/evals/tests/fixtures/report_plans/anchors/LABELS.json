@@ -34,7 +34,7 @@
       "input": "r5",
       "expect": "pass",
       "labeled_by": "pending_owner",
-      "note": "references/r5-kairo-round2.plan.json, with Watch rewritten to name the weakest margin (R7) and Next rewritten to name the experiment that would change the answer (R10)."
+      "note": "references/r5-kairo-round2.plan.json, whose Watch names the weakest margin (R7) and whose Next names the experiment that would change the answer (R10)."
     },
     {
       "plan": "anchors/weak/refused-facts-shape.plan.json",

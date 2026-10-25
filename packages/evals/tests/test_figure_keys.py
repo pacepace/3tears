@@ -9,7 +9,9 @@ Contracts held here (``threetears.evals.analysis.report.figure_keys``, GENERATOR
 - each filter spells its figure as the grammar says, and refuses a figure it does not suit;
 - the derived values (cost uplift, its range, a stratum's loss share, a candidate's flip margin) are computed from the
   input's point figures;
-- D3: a digit typed outside a key and outside a name the input holds is found, with its offset;
+- the per-task figures and the declared criteria have keys, so a page's task cells and gate thresholds print from data;
+- D3: a digit typed outside a key, outside a name the input holds, outside a percentile name and outside one of the
+  package's unit phrases is found, with its offset;
 - the planner prompt's section is written from the module's own families and filters.
 """
 
@@ -302,6 +304,11 @@ class TestFilters:
         assert _figure("flip_margin.qwen3.8-flash", "int") == "11"
         assert _figure("scoreboard.qwen3.8-flash.lost", "int") == "2"
 
+    def test_int_separates_thousands(self):
+        assert _figure("meta.volume_per_month", "int", name="r4") == "12,000,000"
+        assert _figure("measure.latency_ms.atlas-m.high.r1.p95", "int", name="r2") == "2,551"
+        assert _figure("meta.volume_per_month", name="r4") == "12000000"
+
     def test_pct10_rounds_to_the_nearest_ten(self):
         assert _figure("strata.off_lane.loss_share", "pct10") == "50%"
 
@@ -346,6 +353,44 @@ class TestFilters:
     def test_a_malformed_key_is_refused(self, inner, why):
         with pytest.raises(UnresolvableReference, match=why):
             parse_key(inner)
+
+
+# --- tasks and criteria --------------------------------------------------------------------------------------------
+
+
+class TestTasksAndCriteria:
+    def test_a_task_figure_reads_one_arms_measure_in_one_task(self):
+        assert _figure("task.billing.atlas-m.latency_s.p95", name="r1") == "2.1 s"
+        assert _figure("task.billing.atlas-m.overall.mean", name="r1") == "92"
+
+    def test_a_pass_fail_dimension_in_a_task_reads_as_a_rate(self):
+        assert _figure("task.trouble.atlas-m.resolves.mean", "pct", name="r1") == "90%"
+
+    def test_dotted_task_and_arm_ids_resolve(self):
+        assert _figure("task.multihop.brisk-s.low.r1.pass_rate.mean", name="r2") == "95.6%"
+
+    def test_a_task_names_its_name_and_traffic_share(self):
+        assert _figure("task.billing.name", name="r1") == "Billing & account Q&A"
+        assert _figure("task.billing.share", "pct", name="r1") == "42%"
+
+    def test_a_task_offers_only_the_measures_it_holds_for_that_arm(self):
+        with pytest.raises(UnresolvableReference, match="after `task.billing.atlas-m.` comes"):
+            resolve("task.billing.atlas-m.resolves.mean", _input("r1"))
+
+    def test_a_criterion_threshold_is_in_its_measures_units(self):
+        assert _figure("criteria.p95.threshold", name="r1") == "3 s"
+        assert _figure("criteria.p95.threshold", name="r2") == "600 ms"
+        assert _figure("criteria.pass_rate.threshold", "pct", name="r2") == "97%"
+        assert _figure("criteria.trouble.resolves.threshold", "pct", name="r1") == "90%"
+
+    def test_a_criterion_names_its_measure_statistic_and_direction(self):
+        assert _figure("criteria.p95.measure", name="r1") == "Latency"
+        assert _figure("criteria.p95.statistic", name="r1") == "p95"
+        assert _figure("criteria.p95.direction", name="r1") == "lower is better"
+
+    def test_an_unknown_criterion_is_refused_naming_the_criteria(self):
+        with pytest.raises(UnresolvableReference, match="`p95`"):
+            resolve("criteria.p99.threshold", _input("r1"))
 
 
 # --- derived values ------------------------------------------------------------------------------------------------
@@ -444,6 +489,21 @@ class TestLiteralNumbers:
         assert literal_numbers("164k out", _input("r4")) == [(0, 3)]
         assert literal_numbers("64kb out", _input("r4")) == [(0, 2)]
 
+    def test_a_percentile_name_passes(self):
+        assert literal_numbers("its p95 latency and P50 are both up", _input("r5")) == []
+
+    def test_a_percentile_name_inside_another_word_fails(self):
+        assert literal_numbers("xp95 and p95x", _input("r5")) == [(2, 4), (10, 12)]
+
+    def test_the_package_unit_phrase_passes_whole(self):
+        assert literal_numbers("cost per 1,000 replies is up", _input("r5")) == []
+        assert literal_numbers("Cost ($/1,000 replies)", _input("r5")) == []
+
+    def test_digits_outside_a_package_phrase_fail(self):
+        assert literal_numbers("95 percent of replies", _input("r5")) == [(0, 2)]
+        assert literal_numbers("on 1,000 cases", _input("r5")) == [(3, 8)]
+        assert literal_numbers("per 1,000 calls", _input("r5")) == [(4, 9)]
+
     def test_served_models_and_trial_ids_pass(self):
         text = "deepseek/deepseek-v4.1-flash-1017 failed T15 on oft-match-score"
         assert literal_numbers(text, _input("r5")) == []
@@ -485,12 +545,16 @@ class TestTheGrammar:
             "cost.uplift_range",
             "strata.<stratum>.loss_share",
             "flip_margin.<candidate>",
+            "task.<task>.<field>",
+            "task.<task>.<arm>.<measure>.<statistic>",
+            "criteria.<criterion>.<field>",
         ):
             assert f"- `{form}`:" in grammar, form
 
     def test_it_states_the_literal_number_rule(self):
         grammar = figure_key_grammar()
         assert "write `{arm:1017}`, not `1017`" in grammar
+        assert "`p95`" in grammar and "`per 1,000 replies`" in grammar
         assert "never split at dots" in grammar
 
     def test_its_worked_example_is_rendered(self):

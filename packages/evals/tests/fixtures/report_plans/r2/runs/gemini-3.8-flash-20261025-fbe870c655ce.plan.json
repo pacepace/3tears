@@ -1,60 +1,60 @@
 {
   "mode": "decide",
   "headline_kind": "decision",
-  "headline": "Adopt {arm:brisk-s.low.r1}: it meets both gates at {cost_per_1k.brisk-s.low.r1|usd_per_1k}.",
-  "lede": "{arm:brisk-s.low.r1} delivers {pass_rate.brisk-s.low.r1|pct} pass rate and tail latency under the budget cap. A stricter accuracy gate above {pass_rate.brisk-s.high.r1|pct} would force higher-tier models.",
+  "headline": "Adopt {arm:brisk-s.low.r1}: it meets both accuracy and latency criteria at the lowest operating cost.",
+  "lede": "{arm:brisk-s.low.r1} achieves {measure.pass_rate.brisk-s.low.r1.mean|pct} accuracy and {measure.latency_ms.brisk-s.low.r1.p95} latency at {measure.cost_per_1k.brisk-s.low.r1.mean|usd_per_1k}. Tightening the latency gate below {measure.latency_ms.brisk-s.low.r1.p95} ms would eliminate all configurations meeting the accuracy threshold.",
   "decision": {
     "slots": [
       {
         "key": "recommendation",
-        "text": "Deploy {arm:brisk-s.low.r1}. It satisfies the accuracy gate at {pass_rate.brisk-s.low.r1|pct} and the latency budget at {cost_per_1k.brisk-s.low.r1|usd_per_1k}.",
+        "text": "Deploy {arm:brisk-s.low.r1}. It satisfies the {criteria.pass_rate.threshold|pct} pass gate and the {criteria.p95.threshold} ms p95 latency budget while costing {measure.cost_per_1k.brisk-s.low.r1.mean|usd_per_1k}.",
         "caveats": []
       },
       {
         "key": "why_not",
-        "text": "{arm:brisk-s.low.r0} misses the pass gate, {arm:brisk-s.high.r0} doubles cost, and {arm:atlas-m.high.r1} breaches latency at higher unit cost.",
+        "text": "{arm:atlas-m.high.r1} reaches {measure.pass_rate.atlas-m.high.r1.mean|pct} pass rate but breaches latency at {measure.latency_ms.atlas-m.high.r1.p95} ms, while {arm:nano-xs.off.r0} costs {measure.cost_per_1k.nano-xs.off.r0.mean|usd_per_1k} but reaches only {measure.pass_rate.nano-xs.off.r0.mean|pct}.",
         "caveats": []
       },
       {
         "key": "watch",
-        "text": "The margin over the accuracy gate is slim, and multi-hop queries remain the most vulnerable task type.",
+        "text": "Monitor multi-hop tasks where {arm:brisk-s.low.r1} achieves {task.multihop.brisk-s.low.r1.pass_rate.mean|pct}, leaving the narrowest margin against accuracy expectations.",
         "caveats": []
       },
       {
         "key": "next",
-        "text": "Ship {arm:brisk-s.low.r1} to production and track multi-hop plan failures.",
+        "text": "Enable one retry in production for {arm:brisk-s.low.r1} and audit off-by-one errors on datemath tasks.",
         "caveats": []
       }
     ],
     "confidence": {
-      "form": "low",
+      "form": "high",
       "caveats": []
     }
   },
   "method": [
     {
-      "term": "Design",
-      "text": "Full factorial sweep over three model families, three reasoning tiers, and two retry settings across four query tasks.",
+      "term": "Sample size",
+      "text": "{scoreboard.brisk-s.low.r1.cases|int} cases evaluated across four core task types.",
       "caveats": []
     },
     {
-      "term": "Pass definition",
-      "text": "Executed call sequence matches gold result or requests expected clarification.",
-      "caveats": []
-    },
-    {
-      "term": "Accuracy gate",
-      "text": "Hard minimum pass threshold set at ninety-seven percent overall.",
+      "term": "Pass criteria",
+      "text": "The executed call sequence returns the gold result, or asks for clarification when required.",
       "caveats": []
     },
     {
       "term": "Latency gate",
-      "text": "Hard tail latency ceiling set at six hundred milliseconds per task.",
+      "text": "The p95 latency must remain below {criteria.p95.threshold} ms.",
       "caveats": []
     },
     {
-      "term": "Cost basis",
-      "text": "Measured token usage multiplied by list prices per thousand planner executions including retries.",
+      "term": "Accuracy gate",
+      "text": "Overall pass rate must meet or exceed {criteria.pass_rate.threshold|pct}.",
+      "caveats": []
+    },
+    {
+      "term": "Cost calculation",
+      "text": "Measured tokens multiplied by model list price per 1,000 replies, including retries.",
       "caveats": []
     }
   ],
@@ -159,7 +159,7 @@
         "role": "recommended"
       },
       {
-        "option": "brisk-s.high.r0",
+        "option": "brisk-s.low.r0",
         "role": "near_miss"
       },
       {
@@ -167,7 +167,7 @@
         "role": "most_accurate"
       },
       {
-        "option": "brisk-s.low.r0",
+        "option": "nano-xs.off.r0",
         "role": "cheapest"
       }
     ],
@@ -189,9 +189,9 @@
         ],
         "arms": [
           "brisk-s.low.r1",
-          "brisk-s.high.r0",
+          "brisk-s.low.r0",
           "atlas-m.high.r1",
-          "brisk-s.low.r0"
+          "nano-xs.off.r0"
         ],
         "strata": [],
         "limit": 0,
@@ -215,9 +215,9 @@
         ],
         "arms": [
           "brisk-s.low.r1",
-          "brisk-s.high.r0",
+          "brisk-s.low.r0",
           "atlas-m.high.r1",
-          "brisk-s.low.r0"
+          "nano-xs.off.r0"
         ],
         "strata": [],
         "limit": 0,
@@ -232,7 +232,7 @@
     },
     {
       "kind": "range_bars",
-      "title": "Latency distribution",
+      "title": "Latency distribution and budget",
       "query": {
         "source": "measures",
         "aspect": "",
@@ -241,9 +241,9 @@
         ],
         "arms": [
           "brisk-s.low.r1",
-          "brisk-s.high.r0",
+          "brisk-s.low.r0",
           "atlas-m.high.r1",
-          "brisk-s.low.r0"
+          "nano-xs.off.r0"
         ],
         "strata": [],
         "limit": 0,
@@ -259,12 +259,12 @@
   ],
   "sections": [
     {
-      "id": "gate_frontier",
-      "eyebrow": "Gate frontier",
-      "headline": "Only three configurations survive both accuracy and latency criteria.",
-      "takeaway": "Passing arms sit in the upper left quadrant below the latency ceiling.",
+      "id": "frontier",
+      "eyebrow": "Gate evaluation",
+      "headline": "{arm:brisk-s.low.r1} is the lowest-cost configuration satisfying both gates",
+      "takeaway": "Only configurations with low or high reasoning and retry enabled meet the {criteria.pass_rate.threshold|pct} accuracy threshold.",
       "chart": {
-        "kind": "gate_scatter",
+        "kind": "bars",
         "title": "",
         "query": {
           "source": "measures",
@@ -288,48 +288,12 @@
       "caveats": []
     },
     {
-      "id": "lever_effects",
-      "eyebrow": "Factor sweeps",
-      "headline": "Adding one retry consistently recovers accuracy across reasoning levels.",
-      "takeaway": "A single retry lifts passing rate without jumping to the next model tier.",
+      "id": "tasks",
+      "eyebrow": "Task breakdown",
+      "headline": "Accuracy is highest on single lookups and lowest on multi-hop queries",
+      "takeaway": "Retries recover failed attempts across all tasks, bringing multi-hop accuracy to {task.multihop.brisk-s.low.r1.pass_rate.mean|pct}.",
       "chart": {
         "kind": "bars",
-        "title": "",
-        "query": {
-          "source": "measures",
-          "aspect": "",
-          "measures": [
-            "pass_rate"
-          ],
-          "arms": [
-            "brisk-s.off.r0",
-            "brisk-s.off.r1",
-            "brisk-s.low.r0",
-            "brisk-s.low.r1",
-            "brisk-s.high.r0",
-            "brisk-s.high.r1"
-          ],
-          "strata": [],
-          "limit": 0,
-          "transform": "none",
-          "small_multiples_by": "none"
-        },
-        "reference": [],
-        "emphasis": "brisk-s.low.r1",
-        "level": "",
-        "unit": "pct",
-        "domain": []
-      },
-      "caption": "",
-      "caveats": []
-    },
-    {
-      "id": "task_breakdown",
-      "eyebrow": "Task sensitivity",
-      "headline": "Multi-hop planning drives nearly all gating failures across candidate models.",
-      "takeaway": "Single lookups pass easily, while multi-step tasks demand reasoning and retries.",
-      "chart": {
-        "kind": "gate_matrix",
         "title": "",
         "query": {
           "source": "tasks",
@@ -339,19 +303,13 @@
           ],
           "arms": [
             "brisk-s.low.r1",
-            "brisk-s.high.r0",
-            "atlas-m.high.r1",
-            "nano-xs.low.r1"
+            "brisk-s.low.r0",
+            "atlas-m.high.r1"
           ],
-          "strata": [
-            "single",
-            "multihop",
-            "datemath",
-            "disamb"
-          ],
+          "strata": [],
           "limit": 0,
           "transform": "none",
-          "small_multiples_by": "none"
+          "small_multiples_by": "task"
         },
         "reference": [],
         "emphasis": "brisk-s.low.r1",
@@ -363,10 +321,10 @@
       "caveats": []
     },
     {
-      "id": "failure_modes",
-      "eyebrow": "Failure patterns",
-      "headline": "Missing calls and wrong arguments account for remaining query failures.",
-      "takeaway": "Inspect representative failure traces from candidate trials.",
+      "id": "failures",
+      "eyebrow": "Failure modes",
+      "headline": "Wrong arguments and missing calls drive the remaining errors",
+      "takeaway": "A single retry resolves JSON malformations, leaving semantic and date-math miscalculations as primary failure reasons.",
       "chart": {
         "kind": "examples",
         "title": "",
@@ -378,7 +336,7 @@
             "brisk-s.low.r1"
           ],
           "strata": [],
-          "limit": 3,
+          "limit": 4,
           "transform": "none",
           "small_multiples_by": "none"
         },
@@ -394,32 +352,32 @@
   ],
   "explore": [
     {
-      "title": "Gate sensitivity",
+      "title": "Threshold exploration",
       "controls": [
         {
-          "id": "pass_threshold",
+          "id": "pass_gate",
           "kind": "slider",
-          "title": "Pass rate floor",
+          "title": "Pass rate threshold",
           "binds": "floor:pass_rate",
-          "min": 90.0,
+          "min": 95.0,
           "max": 99.0,
           "step": 0.5,
           "default": 97.0,
           "options": []
         },
         {
-          "id": "latency_cap",
+          "id": "latency_gate",
           "kind": "slider",
-          "title": "Latency ceiling (ms)",
+          "title": "Latency p95 limit (ms)",
           "binds": "p95",
           "min": 300.0,
-          "max": 1500.0,
+          "max": 1000.0,
           "step": 50.0,
           "default": 600.0,
           "options": []
         }
       ],
-      "recomputes": "Recomputes surviving arms against alternate pass floors and latency caps."
+      "recomputes": "Adjusting the pass gate above {measure.pass_rate.brisk-s.low.r1.mean|pct} requires {arm:brisk-s.high.r1}, whereas setting latency below {measure.latency_ms.brisk-s.low.r1.p95} ms yields no passing configuration."
     }
   ],
   "full_results": [
@@ -430,7 +388,7 @@
   ],
   "durable_claims": [
     {
-      "text": "{arm:brisk-s.low.r1} satisfies both thresholds with {pass_rate.brisk-s.low.r1|pct} pass rate at {cost_per_1k.brisk-s.low.r1|usd_per_1k}.",
+      "text": "{arm:brisk-s.low.r1} satisfies criteria with {measure.pass_rate.brisk-s.low.r1.mean|pct} accuracy, {measure.latency_ms.brisk-s.low.r1.p95} ms latency, and {measure.cost_per_1k.brisk-s.low.r1.mean|usd_per_1k} cost.",
       "confidence": "high",
       "keys": [
         "measure.pass_rate.brisk-s.low.r1.mean",
@@ -439,11 +397,11 @@
       ]
     },
     {
-      "text": "Nano-XS with high reasoning and retry reaches {pass_rate.nano-xs.high.r1|pct}, surpassing base Atlas-M at {pass_rate.atlas-m.off.r0|pct}.",
+      "text": "{arm:atlas-m.high.r1} reaches {measure.pass_rate.atlas-m.high.r1.mean|pct} accuracy but breaches the latency threshold at {measure.latency_ms.atlas-m.high.r1.p95} ms.",
       "confidence": "high",
       "keys": [
-        "measure.pass_rate.nano-xs.high.r1.mean",
-        "measure.pass_rate.atlas-m.off.r0.mean"
+        "measure.pass_rate.atlas-m.high.r1.mean",
+        "measure.latency_ms.atlas-m.high.r1.p95"
       ]
     }
   ],

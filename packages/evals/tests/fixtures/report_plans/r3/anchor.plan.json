@@ -2,17 +2,17 @@
   "mode": "decide",
   "headline_kind": "decision",
   "headline": "Use {arm:brisk-s.few}. It is the cheapest configuration that clears the overall gate, every cell floor and the latency budget.",
-  "lede": "It reaches {measure.balanced_accuracy.brisk-s.few.mean|pct} balanced accuracy with a p-ninety-five latency of {measure.latency_ms.brisk-s.few.p95|int} ms. If complex news turns improved for {arm:nano-xs.few}, the far cheaper model would win.",
+  "lede": "It reaches {measure.balanced_accuracy.brisk-s.few.mean|pct} balanced accuracy with a p95 latency of {measure.latency_ms.brisk-s.few.p95|int} ms, inside the {criteria.p95.threshold} budget. If complex news turns improved for {arm:nano-xs.few}, the far cheaper model would win.",
   "decision": {
     "slots": [
       {
         "key": "recommendation",
-        "text": "**{arm:brisk-s.few}**: balanced accuracy {measure.balanced_accuracy.brisk-s.few.mean|pct}, p-ninety-five {measure.latency_ms.brisk-s.few.p95|int} ms, and a fraction of the cost of any Atlas-M configuration.",
+        "text": "**{arm:brisk-s.few}**: balanced accuracy {measure.balanced_accuracy.brisk-s.few.mean|pct}, p95 {measure.latency_ms.brisk-s.few.p95|int} ms, and a fraction of the cost of any Atlas-M configuration.",
         "caveats": []
       },
       {
         "key": "why_not",
-        "text": "**{arm:nano-xs.few}** is cheaper and clears the overall gate, but falls below the floor on complex news. **{arm:atlas-m.rubric}** is the most accurate at {measure.balanced_accuracy.atlas-m.rubric.mean|pct} but far too slow. **{arm:nano-xs.zero}** is the cheapest and misses the overall gate.",
+        "text": "**{arm:nano-xs.few}** is cheaper and clears the overall gate, but falls below the {criteria.cell_floor.threshold|pct} cell floor on complex news. **{arm:atlas-m.rubric}** is the most accurate at {measure.balanced_accuracy.atlas-m.rubric.mean|pct} but far too slow. **{arm:nano-xs.zero}** is the cheapest and misses the overall gate.",
         "caveats": []
       },
       {
@@ -27,7 +27,7 @@
       }
     ],
     "confidence": {
-      "form": "low",
+      "form": "high",
       "caveats": []
     }
   },

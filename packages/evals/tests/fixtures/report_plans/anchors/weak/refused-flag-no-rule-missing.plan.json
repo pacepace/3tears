@@ -59,7 +59,7 @@
     },
     {
       "term": "Cost",
-      "text": "Measured tokens times list price per thousand replies, at {meta.volume_per_month|int} replies a month.",
+      "text": "Measured tokens times list price, per 1,000 replies, at {meta.volume_per_month|int} replies a month.",
       "caveats": []
     }
   ],
@@ -130,7 +130,7 @@
   "summary": [
     {
       "kind": "bars",
-      "title": "Cost per thousand replies",
+      "title": "Cost per 1,000 replies",
       "query": {
         "source": "measures",
         "aspect": "",

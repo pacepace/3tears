@@ -44,8 +44,8 @@ ANCHORS = {
     "r3": "Hand-written from references/r3-classifier.html.",
     "r4": "Hand-written from references/r4-tradeoff.html.",
     "r5": (
-        "references/r5-kairo-round2.plan.json, with Watch rewritten to name the weakest margin (R7) and Next rewritten "
-        "to name the experiment that would change the answer (R10)."
+        "references/r5-kairo-round2.plan.json, whose Watch names the weakest margin (R7) and whose Next names the "
+        "experiment that would change the answer (R10)."
     ),
 }
 

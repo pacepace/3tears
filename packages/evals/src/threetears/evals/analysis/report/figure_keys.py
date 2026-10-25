@@ -21,8 +21,9 @@ an :class:`~threetears.evals.analysis.errors.UnresolvableReference`, so the plan
 ``flip_margin.<arm>`` are computed here from the input's point figures. They carry no interval and no test, and the
 grammar says so. Everything else is copied from the input.
 
-**Digits only inside keys (D3).** :func:`literal_numbers` finds every digit that plan prose types outside a key and
-outside a name the input holds. A number a reader sees is code's.
+**Digits only inside keys (D3).** :func:`literal_numbers` finds every digit that plan prose types outside a key,
+outside a name the input holds, outside a percentile's name (``p95``) and outside one of the package's own unit
+phrases (``per 1,000 replies``). A number a reader sees is code's.
 
 **The grammar is taught by this module.** :func:`figure_key_grammar` writes the planner prompt's section from the
 module's own families, statistics and filters, with examples rendered on a synthetic input, so the prompt can never
@@ -39,9 +40,20 @@ from typing import Literal, get_args
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.quantities import PERCENT, POINTS, number_in
-from threetears.evals.analysis.report.figures import PER_THOUSAND_REPLIES
+from threetears.evals.analysis.report.figures import PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report.words import arm_tags
-from threetears.evals.analysis.report_input import Arm, Aspect, Judged, Measure, Reading, ReportInput, Stratum
+from threetears.evals.analysis.report_input import (
+    Arm,
+    Aspect,
+    Criterion,
+    Judged,
+    Measure,
+    Reading,
+    ReportInput,
+    Stat,
+    Stratum,
+    Task,
+)
 from threetears.evals.analysis.summary import dollars_text
 
 #: What a figure is: a number, an interval (low, high), a piece of text, or an arm (rendered by name and tag).
@@ -64,7 +76,7 @@ _FILTER_MEANS: dict[str, str] = {
     "pts": "a change in points, signed, one decimal at most",
     "abs": "the magnitude, without its sign",
     "usd": "dollars",
-    "int": "the nearest whole number",
+    "int": "the nearest whole number, its thousands separated",
     "pct10": "a rate rounded to the nearest 10%",
     "interval": "an interval's two ends, joined by 'to'",
     "usd_per_1k": "dollars per 1,000 replies, with the words",
@@ -75,6 +87,19 @@ INTERVAL_TEMPLATE = "{low} to {high}"
 RANGE_TEMPLATE = "{low}–{high}"
 PER_THOUSAND_TEMPLATE = "{amount} " + PER_THOUSAND_REPLIES
 ARM_TEMPLATE = "{name} ({tag})"
+#: What separates a whole number's thousands under the ``int`` filter (``12,000,000``). Prose only: the package's
+#: number rule (:mod:`threetears.evals.analysis.numbers`) writes no separator inside its tables' intervals and lists.
+THOUSANDS_SEPARATOR = ","
+#: How a criterion's direction reads.
+DIRECTION_WORDS = {"higher_is_better": "higher is better", "lower_is_better": "lower is better"}
+
+#: The percentile names prose may write with their digits (``p95 latency``): the statistics a criterion or a measure
+#: reads, and the other common ones. A fixed set, never read from the input's free text.
+_PERCENTILE_NAMES: tuple[str, ...] = ("p50", "p90", "p95", "p99")
+
+#: The package's own unit phrases, which prose may write whole with their digits: each one a template a rendered
+#: figure is joined with, so prose that says "per 1,000 replies" uses the package's words and no figure of its own.
+_UNIT_PHRASES: tuple[str, ...] = (PER_THOUSAND_REPLIES, PER_THOUSAND_LABEL)
 
 #: A key, as plan prose holds it: one pair of single braces around anything but braces.
 _KEY = re.compile(r"\{([^{}]*)\}")
@@ -614,6 +639,94 @@ def _latency(report_input: ReportInput, _: tuple[str, ...], path: str) -> Figure
     return _text(path, report_input.caveats.latency, "why latency is not compared")
 
 
+def _held_values(report_input: ReportInput, key: str) -> list[float | None]:
+    """Every mean the input holds for a measure or judged dimension: overall, in each task and in each cell."""
+    stats: list[Stat] = []
+    for table in (report_input.measures, report_input.judged):
+        if key in table:
+            stats.extend(table[key].per_arm.values())
+    for per_arm in [task.per_arm for task in report_input.tasks] + [
+        cell.per_arm for cell in report_input.cells.values()
+    ]:
+        stats.extend(figures[key] for figures in per_arm.values() if key in figures)
+    return [stat.mean for stat in stats]
+
+
+def _scale_of(report_input: ReportInput, key: str, extra: Iterable[float] = ()) -> tuple[Scale, str]:
+    """The scale a measure or judged dimension's figures are on wherever they sit: a measure's unit, a pass-fail
+    dimension's rate scale read from every figure it holds (and ``extra``, a threshold on it), else plain."""
+    if key in report_input.measures:
+        return _measure_scale(report_input.measures[key])
+    judged = report_input.judged.get(key)
+    if judged is not None and judged.scale == "pass_fail":
+        return _rate_scale([*_held_values(report_input, key), *extra]), ""
+    return "plain", ""
+
+
+_TASK_FIELDS = ("name", "n_cases", "share")
+
+
+def _task(report_input: ReportInput, task_id: str) -> Task:
+    return next(task for task in report_input.tasks if task.id == task_id)
+
+
+def _tasks(report_input: ReportInput, _: tuple[str, ...]) -> list[str]:
+    return [task.id for task in report_input.tasks]
+
+
+def _task_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return list(_task(report_input, prior[0]).per_arm)
+
+
+def _task_measures(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    task_id, arm_id = prior
+    return list(_task(report_input, task_id).per_arm[arm_id])
+
+
+def _task_field(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    task_id, field = values
+    task = _task(report_input, task_id)
+    if field == "name":
+        return _text(path, task.name or task.id, "the task's name")
+    if field == "n_cases":
+        return _number(path, task.n_cases, "the task's cases", "count")
+    return _number(path, task.share, "the task's share of traffic", "share", whole=True)
+
+
+def _task_figure(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    task_id, arm_id, key, statistic = values
+    stat = _task(report_input, task_id).per_arm[arm_id][key]
+    scale, unit = _scale_of(report_input, key)
+    what = f"the task's {statistic} on {key}"
+    if statistic in ("n", "n_cases"):
+        return _number(path, getattr(stat, statistic), what, "count")
+    if statistic == "ci":
+        return _interval(path, stat.ci, what, scale, unit=unit)
+    return _number(path, getattr(stat, statistic), what, scale, unit=unit, change=statistic == "change")
+
+
+_CRITERION_FIELDS = ("threshold", "measure", "statistic", "direction")
+
+
+def _criterion(report_input: ReportInput, criterion_id: str) -> Criterion:
+    return next(criterion for criterion in report_input.criteria if criterion.id == criterion_id)
+
+
+def _criterion_field(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    criterion_id, field = values
+    criterion = _criterion(report_input, criterion_id)
+    if field == "threshold":
+        threshold = float(criterion.threshold)
+        scale, unit = _scale_of(report_input, criterion.measure, (threshold,))
+        return _number(path, threshold, "the criterion's threshold", scale, unit=unit)
+    if field == "measure":
+        held = report_input.measures.get(criterion.measure) or report_input.judged.get(criterion.measure)
+        return _text(path, (held.label if held else None) or criterion.measure, "the criterion's measure")
+    if field == "statistic":
+        return _text(path, criterion.statistic, "the criterion's statistic")
+    return _text(path, DIRECTION_WORDS[criterion.direction], "the criterion's direction")
+
+
 # --- derived values: descriptive, computed here from the input's point figures ----------------------------------
 
 
@@ -858,6 +971,29 @@ _FAMILIES: tuple[_Family, ...] = (
         resolve=_judge,
     ),
     _family_of(_Word("caveats"), _Word("latency"), what="why latency is not compared", resolve=_latency),
+    _family_of(
+        _Word("task"),
+        _Ids("<task>", _tasks),
+        _Statistic(_TASK_FIELDS, "<field>"),
+        what="a task",
+        resolve=_task_field,
+    ),
+    _family_of(
+        _Word("task"),
+        _Ids("<task>", _tasks),
+        _Ids("<arm>", _task_arms),
+        _Ids("<measure>", _task_measures),
+        _Statistic(_MEASURE_STATISTICS),
+        what="an arm's figure on a measure or judged dimension within one task",
+        resolve=_task_figure,
+    ),
+    _family_of(
+        _Word("criteria"),
+        _keyed("<criterion>", lambda ri: [criterion.id for criterion in ri.criteria]),
+        _Statistic(_CRITERION_FIELDS, "<field>"),
+        what="a declared criterion: its threshold in its measure's units, the measure, statistic and direction",
+        resolve=_criterion_field,
+    ),
     _family_of(
         _Word("strata"),
         _Ids("<stratum>", _strata),
@@ -1155,6 +1291,19 @@ def _money(value: float, signed: bool) -> str:
     return _plus(text, value) if signed else text
 
 
+def _grouped(text: str) -> str:
+    """A whole number as :func:`~threetears.evals.analysis.numbers.format_number` spells it, its thousands separated
+    by :data:`THOUSANDS_SEPARATOR` (``12000000`` reads ``12,000,000``); any other text unchanged."""
+    sign, digits = (text[:1], text[1:]) if text[:1] in "+-" else ("", text)
+    if not digits.isdigit():
+        return text
+    groups: list[str] = []
+    while len(digits) > 3:
+        digits, tail = digits[:-3], digits[-3:]
+        groups.insert(0, tail)
+    return sign + THOUSANDS_SEPARATOR.join([digits, *groups])
+
+
 def _spelling_for(figure: Figure, filters: tuple[str, ...]) -> str:
     chosen = next((name for name in filters if name in _SPELLINGS), None)
     if chosen is not None:
@@ -1198,7 +1347,7 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
     if spelling == "int":
         if figure.scale not in ("count", "plain", "points"):
             raise _refuse(figure.path, f"cannot read as a whole number: it is on the {figure.scale} scale")
-        text = format_number(float(round(value)))
+        text = _grouped(format_number(float(round(value))))
         return _Spelled(_plus(text, value) if signed else text)
     text = format_number(value)
     text = _plus(text, value) if signed else text
@@ -1316,9 +1465,10 @@ def literal_numbers(text: str, report_input: ReportInput) -> list[tuple[int, int
 
     Keys are set aside first; then every name the input holds that carries digits (arm ids and names, served models,
     settings as displayed, aspect, measure, dimension, stratum, task and factor ids and names, the campaign's name,
-    trial and case ids) is set aside where a non-word character, or the text's edge, bounds it on both sides. Any
-    Unicode decimal digit left is an offence. An id made only of digits (an arm ``1017``) is never set aside: prose
-    writes ``{arm:1017}``.
+    trial and case ids), every percentile name (``p50``, ``p90``, ``p95``, ``p99``) and every one of the package's
+    unit phrases (``per 1,000 replies``, matched whole) is set aside where a non-word character, or the text's edge,
+    bounds it on both sides. Any Unicode decimal digit left is an offence (``95 percent``, ``1,000 cases``). An id
+    made only of digits (an arm ``1017``) is never set aside: prose writes ``{arm:1017}``.
 
     :param text: Plan prose.
     :ptype text: str
@@ -1335,7 +1485,8 @@ def literal_numbers(text: str, report_input: ReportInput) -> list[tuple[int, int
 
     for match in _KEY.finditer(text):
         mask(*match.span())
-    for name in sorted(_allowed_names(report_input), key=len, reverse=True):
+    allowed = _allowed_names(report_input) | set(_PERCENTILE_NAMES) | set(_UNIT_PHRASES)
+    for name in sorted(allowed, key=len, reverse=True):
         pattern = re.compile(rf"(?<!\w){re.escape(name)}(?!\w)", re.IGNORECASE)
         for match in pattern.finditer("".join(masked)):
             mask(*match.span())
@@ -1477,7 +1628,10 @@ def figure_key_grammar() -> str:
         "Without a filter a rate reads as a percent, a change in points, money in dollars. A digit outside a key is "
         "refused unless it is part of a name the input holds: an arm's id or name, a served model, a setting as "
         "displayed (such as `64k`), an aspect, measure, dimension, stratum or task id or name, the campaign's name, "
-        "a trial or case id. An id made only of digits is never such a name: write `{arm:1017}`, not `1017`."
+        "a trial or case id. An id made only of digits is never such a name: write `{arm:1017}`, not `1017`. "
+        f"Percentile names ({', '.join(f'`{name}`' for name in _PERCENTILE_NAMES)}) and the package's unit phrases "
+        f"({', '.join(f'`{phrase}`' for phrase in _UNIT_PHRASES)}, whole) are written as they are; any other number "
+        "is a key."
     )
     return "\n".join(lines)
 

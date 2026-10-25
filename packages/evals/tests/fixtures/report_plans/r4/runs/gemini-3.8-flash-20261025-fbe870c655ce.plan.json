@@ -1,28 +1,28 @@
 {
   "mode": "tradeoff",
   "headline_kind": "trade",
-  "headline": "Trade persona fidelity for serving cost: {arm:f64} cuts cost but regresses on consistency.",
-  "lede": "{arm:f64} saves cost over {arm:prod} while maintaining guardrails, but drops {contrast.f64.persona.delta|abs|pts} points on persona adherence. The choice turns on whether degradation in extended multi-turn dialogue is acceptable.",
+  "headline": "Trade {contrast.f64.persona.delta|abs|pts} points of persona consistency for {cost_per_1k.f64|usd} per 1,000 replies on {arm:f64}, or keep {arm:prod}.",
+  "lede": "{arm:f64} cuts cost from {cost_per_1k.prod|usd} to {cost_per_1k.f64|usd} while clearing all guardrails, but drops character consistency from {judged.persona.prod|pct} to {judged.persona.f64|pct}. A choice depends on the business valuation of consistency points.",
   "decision": {
     "slots": [
       {
         "key": "the_trade",
-        "text": "{arm:f64} reduces cost from {cost_per_1k.prod|usd_per_1k} to {cost_per_1k.f64|usd_per_1k}, but persona adherence falls by {contrast.f64.persona.delta|abs|pts} points ({contrast.f64.persona.interval|interval}).",
+        "text": "{arm:f64} lowers cost by {cost_per_1k.f64|usd} per 1,000 replies against {cost_per_1k.prod|usd} on {arm:prod}, conceding {contrast.f64.persona.delta|abs|pts} points ({contrast.f64.persona.interval|pts}) on persona consistency.",
         "caveats": []
       },
       {
         "key": "where_it_flips",
-        "text": "The switch flips to {arm:prod} if persona degradation greater than five points is unacceptable, or if conversations routinely exceed five turns.",
+        "text": "If preserving one point of persona consistency is worth more than ten cents per 1,000 replies, {arm:prod} remains preferable.",
         "caveats": []
       },
       {
         "key": "our_lean",
-        "text": "Lean toward {arm:f64} if monthly serving budget is the primary constraint and prompt guardrails prevent major policy regressions.",
+        "text": "Lean toward {arm:f64} if monthly volume warrants the cost reduction and human reviewers tolerate minor persona drift on long turns.",
         "caveats": []
       },
       {
         "key": "what_settles_it",
-        "text": "A human side-by-side trial on long sessions or an explicit minimum acceptable persona fidelity threshold will settle the choice.",
+        "text": "A live prompt routing test or human acceptance threshold on long conversations would confirm whether users detect the persona degradation.",
         "caveats": []
       }
     ],
@@ -33,28 +33,33 @@
   },
   "method": [
     {
-      "term": "Sample and repeats",
-      "text": "The evaluation ran {scoreboard.prod.cases} distinct dialogue cases across {scoreboard.prod.ran} total trials.",
+      "term": "Evaluation design",
+      "text": "Four arms evaluated across {scoreboard.prod.cases|int} cases with {scoreboard.prod.ran|int} total runs per arm.",
       "caveats": []
     },
     {
-      "term": "Persona evaluation",
-      "text": "Graded by a calibrated judge rubric ({judge.agreement|pct} agreement on {judged.persona.calibration_ratings} human comparisons).",
+      "term": "Judge calibration",
+      "text": "Persona consistency assessed by a calibrated judge with {judged.persona.agreement} agreement on {judged.persona.calibration_ratings|int} ratings.",
       "caveats": []
     },
     {
-      "term": "Guardrails",
-      "text": "Requires music facts and non-speculation adherence on prompt bait tests to satisfy policy guardrails.",
+      "term": "Confidence intervals",
+      "text": "Ninety-five percent paired intervals computed against control, reported without multiple-comparison correction.",
       "caveats": []
     },
     {
-      "term": "Interval estimation",
-      "text": "Reported intervals reflect {family.level} confidence on paired differences with {family.correction} family correction.",
+      "term": "Guardrail criteria",
+      "text": "Music facts required at {criteria.facts.threshold|pct}; speculation refusal required at {criteria.specul.threshold|pct} on bait prompts.",
       "caveats": []
     },
     {
-      "term": "Cost calculation",
-      "text": "Token usage priced per thousand replies across varying context lengths over conversation turns.",
+      "term": "Cost basis",
+      "text": "Cost per 1,000 replies calculated from token consumption against standard list prices.",
+      "caveats": []
+    },
+    {
+      "term": "Latency comparison",
+      "text": "Reported via telemetry distributions across runs rather than formal comparative hypothesis testing.",
       "caveats": []
     }
   ],
@@ -97,8 +102,8 @@
   "show_arms_key": true,
   "flag": [
     {
-      "title": "No target margin declared",
-      "text": "Because no explicit loss threshold was set in advance, the tradeoff between cost savings and persona drift requires product leadership judgment.",
+      "title": "No target trade ratio set in advance",
+      "text": "The evaluation did not specify a pre-registered exchange rate between cost and character consistency, so leadership must price the tradeoff directly.",
       "discloses": [
         "no_rule"
       ],
@@ -139,33 +144,8 @@
   },
   "summary": [
     {
-      "kind": "forest",
-      "title": "Persona adherence contrast vs {arm:prod}",
-      "query": {
-        "source": "contrasts",
-        "aspect": "",
-        "measures": [
-          "persona"
-        ],
-        "arms": [
-          "f64",
-          "f16",
-          "cor"
-        ],
-        "strata": [],
-        "limit": 0,
-        "transform": "none",
-        "small_multiples_by": "none"
-      },
-      "reference": [],
-      "emphasis": "f64",
-      "level": "95%",
-      "unit": "points",
-      "domain": []
-    },
-    {
       "kind": "bars",
-      "title": "Cost per 1k replies across arms",
+      "title": "Cost per 1,000 replies",
       "query": {
         "source": "measures",
         "aspect": "",
@@ -188,14 +168,40 @@
       "level": "",
       "unit": "usd_per_1k",
       "domain": []
+    },
+    {
+      "kind": "dot_interval",
+      "title": "Stays in character pass rate",
+      "query": {
+        "source": "judged",
+        "aspect": "persona",
+        "measures": [
+          "persona"
+        ],
+        "arms": [
+          "prod",
+          "f64",
+          "f16",
+          "cor"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "f64",
+      "level": "",
+      "unit": "percent",
+      "domain": []
     }
   ],
   "sections": [
     {
-      "id": "contrasts_overview",
-      "eyebrow": "Primary judged contrast",
-      "headline": "All candidates regress on persona adherence relative to {arm:prod}.",
-      "takeaway": "{arm:f64} drops {contrast.f64.persona.delta|abs|pts} points ({contrast.f64.persona.interval|interval}), while {arm:cor} shows smaller loss but breaches policy guardrails.",
+      "id": "contrasts",
+      "eyebrow": "Primary aspect",
+      "headline": "All candidates regress significantly on persona consistency",
+      "takeaway": "Points show differences against {arm:prod} with paired ninety-five percent intervals.",
       "chart": {
         "kind": "forest",
         "title": "",
@@ -221,20 +227,20 @@
         "unit": "points",
         "domain": []
       },
-      "caption": "Intervals reflect {family.level} paired differences without multi-candidate correction.",
+      "caption": "Differences are uncorrected across the three challengers.",
       "caveats": []
     },
     {
-      "id": "depth_trajectory",
-      "eyebrow": "Turn depth breakdown",
-      "headline": "Persona fidelity degrades steeply at deeper turns for Flash models.",
-      "takeaway": "While {arm:f64} is competitive in turns one and two, its adherence falls sharply past five turns.",
+      "id": "depth",
+      "eyebrow": "Conversation length",
+      "headline": "Persona degradation concentrates in later conversation turns",
+      "takeaway": "Performance across candidates diverges sharply after turn five.",
       "chart": {
         "kind": "lines",
         "title": "",
         "query": {
           "source": "strata",
-          "aspect": "",
+          "aspect": "persona",
           "measures": [
             "persona"
           ],
@@ -260,20 +266,20 @@
         "unit": "percent",
         "domain": []
       },
-      "caption": "Strata differences are descriptive and uncorrected.",
+      "caption": "Stratum differences are descriptive and uncorrected.",
       "caveats": []
     },
     {
-      "id": "scenario_breakdown",
-      "eyebrow": "Behavioral scenarios",
-      "headline": "Drift is concentrated in banter and corrections.",
-      "takeaway": "{arm:f64} holds persona well during song intros but struggles when receiving corrections or in banter.",
+      "id": "scenarios",
+      "eyebrow": "Failure modes",
+      "headline": "{arm:f64} drops steepest during corrections and banter",
+      "takeaway": "Bars show change in points relative to {arm:prod} by scenario.",
       "chart": {
         "kind": "diverging_bars",
         "title": "",
         "query": {
           "source": "strata",
-          "aspect": "",
+          "aspect": "persona",
           "measures": [
             "persona"
           ],
@@ -284,8 +290,8 @@
           "strata": [
             "scenario:intro",
             "scenario:rec",
-            "scenario:banter",
             "scenario:deflect",
+            "scenario:banter",
             "scenario:correct"
           ],
           "limit": 0,
@@ -293,32 +299,32 @@
           "small_multiples_by": "none"
         },
         "reference": [],
-        "emphasis": "f64",
+        "emphasis": "",
         "level": "",
         "unit": "points",
         "domain": []
       },
-      "caption": "Delta relative to control per scenario; uncorrected descriptive figures.",
+      "caption": "Uncorrected scenario breakdowns across sample cases.",
       "caveats": []
     }
   ],
   "explore": [
     {
-      "title": "Explore tradeoff parameters",
+      "title": "Explore tradeoff valuation",
       "controls": [
         {
-          "id": "price_sensitivity",
+          "id": "price_tradeoff",
           "kind": "slider",
-          "title": "Valuation per persona point ($)",
+          "title": "Valuation per consistency point",
           "binds": "price_per_point",
-          "min": 0.05,
-          "max": 0.5,
-          "step": 0.05,
+          "min": 0.0,
+          "max": 0.2,
+          "step": 0.01,
           "default": 0.1,
           "options": []
         }
       ],
-      "recomputes": "Adjusting valuation per persona point re-ranks {arm:prod} and {arm:f64}."
+      "recomputes": "Adjusting the consistency value threshold flips preference between {arm:prod} and {arm:f64} at approximately ten cents per point."
     }
   ],
   "full_results": [
@@ -328,31 +334,23 @@
   ],
   "durable_claims": [
     {
-      "text": "{arm:prod} achieves {judged.persona.prod|pct} persona adherence, exceeding {arm:f64} at {judged.persona.f64|pct} by {contrast.f64.persona.delta|abs|pts} points ({contrast.f64.persona.interval|interval}).",
+      "text": "{arm:f64} lowers cost from {cost_per_1k.prod|usd} to {cost_per_1k.f64|usd} while persona consistency drops from {judged.persona.prod|pct} to {judged.persona.f64|pct} ({contrast.f64.persona.delta|pts} points).",
       "confidence": "high",
       "keys": [
         "judged.persona.prod",
         "judged.persona.f64",
         "contrast.f64.persona.delta",
-        "contrast.f64.persona.interval"
-      ]
-    },
-    {
-      "text": "{arm:f64} costs {cost_per_1k.f64|usd_per_1k} and {arm:f16} costs {cost_per_1k.f16|usd_per_1k}, compared to {cost_per_1k.prod|usd_per_1k} for {arm:prod}.",
-      "confidence": "high",
-      "keys": [
         "cost_per_1k.prod",
-        "cost_per_1k.f64",
-        "cost_per_1k.f16"
+        "cost_per_1k.f64"
       ]
     },
     {
-      "text": "{arm:cor} fails the speculation guardrail at {measure.specul.cor.mean|pct}, down {contrast.cor.specul.delta|abs|pts} points ({contrast.cor.specul.interval|interval}) relative to {arm:prod}.",
+      "text": "{arm:cor} fails the speculation guardrail threshold of {criteria.specul.threshold|pct} with a score of {measure.specul.cor.mean|pct} ({contrast.cor.specul.delta|pts} points).",
       "confidence": "high",
       "keys": [
-        "measure.specul.cor.mean",
         "contrast.cor.specul.delta",
-        "contrast.cor.specul.interval"
+        "criteria.specul.threshold",
+        "measure.specul.cor.mean"
       ]
     }
   ],
