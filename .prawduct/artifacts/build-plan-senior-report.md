@@ -217,6 +217,11 @@ decision line below, prefixed `B:`.
 - D: [DECISION: the per-arm floor rollup replaces the flat `floors` list rather than sitting beside it | 07 builder; one place per floor]
 - D: [DECISION: the R8 control rule moves to report/decision.py (`control_cannot_show`, `ControlBound`), which the scorecard and the view both call | 07 builder; campaign_bundle cannot import scorecard (cycle)]
 - D: [FOLLOW-UP: the check-level R8 case (a check every arm passes or none does) is flagged neither on the page nor in the view; not in 07's list, filed for after this plan]
+- E: [DECISION: cost belongs to provider routing, not the model: one report-wide caveat line (`caveat-cost`, source `cost`) on any page that prints a cost figure, a campaign's or an aspect's own, built in `_lines` with the other report-wide kinds so a campaign's fold drops it by its mark; the writer's view hands it once as `disclosures.cost_routing`; the glossary's "cost per reply" says "as its runs were routed" | owner 2026-10-25 (relayed by venv-67); the aspect page joined after cumulative review rev-20261025T120254Z-8b0f30e6 R-3/R-4 found it campaign-only, against the report-wide rule]
+- E: [DECISION: `campaign_bundle.py` reads `COST_ROUTING_CAVEAT` and `priced_aspects` from `report/campaign/provenance.py`, where every report-wide caveat is built, not from `report/decision.py` | the caveat is a disclosure, not a decision rule; one module owns every report-wide line]
+- E: [DECISION: after develop's de47a0911 moved the block types to `report/blocks.py`, this plan's block additions (`TableCell.flag`, `CostQualityPoint`, `TrialDetail`, `fold_anchor`) live there and `model.py` re-exports them; `_CAMPAIGN_SECTION_TITLES` stays in `model.py` beside `CampaignReport`, its only reader | merge fc3bac05a; the "model.py frozen after 02" rows below read as model.py plus blocks.py]
+- E: the writer recording was re-made twice, not once: after 08 (a7a078b00) and after the cost-routing view change (dbfce539c).
+- E: [FOLLOW-UP: served_by/served_quantization on the usage row key, never in the pooling key (discodon#3082); campaign_export (discodon#3079); both own PRs after #956]
 
 ## Advisory: what I would do differently
 
@@ -552,7 +557,7 @@ A cleanup plus a small schema change. No behaviour change except the JSON shape.
   | `packages/evals/src/threetears/evals/analysis/report/campaign/names.py` | `aspect_name`, `AspectNames`: every aspect name a part prints | 01 |
   | `packages/evals/src/threetears/evals/analysis/report/campaign/common.py` | `as_written`, `named_arms`, `floor_of`, `rate_name`, `points` | **frozen after 02** |
 
-- `packages/evals/src/threetears/evals/analysis/report/model.py` (**frozen after 02**):
+- `packages/evals/src/threetears/evals/analysis/report/model.py`, whose block types are in `report/blocks.py` since develop's de47a0911 (**frozen after 02**):
   - section ids `answer`, `warnings`, `scorecard`, `findings`, `next`, `provenance` in `ReportSection`, headed by
     `CampaignReport.section_titles` (titles of at most 3 words; `answer` and `warnings` sit on the first screen);
   - an aspect page refuses them, and every page refuses a block in `glossary`;

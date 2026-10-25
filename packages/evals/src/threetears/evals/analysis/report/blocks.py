@@ -166,9 +166,9 @@ TextRole = Literal[
 #: set after the readings it judges were visible, with when, or that its time is not recorded. ``floor``: on the first
 #: screen, a broken floor's warning, the page's first line; in the Decision section, the lines under the floors table
 #: saying a floor warns and never decides, and how the cases that would settle one were counted. ``verdict``: the
-#: verdict line. ``design``, ``charts`` and
-#: ``cost``: how the run was laid out, what was not charted and where a cost is a floor, in the methods. ``memo``: who wrote the memo,
-#: or that no one did. ``runs``: member runs left out, unfinished or short. ``measurement``: how and when the runs
+#: verdict line. ``design``, ``charts`` and ``cost``: how the run was laid out, what was not charted and where a cost
+#: is a floor, in the methods; ``cost`` is also the first-screen line saying each cost figure is its runs' provider
+#: routing's. ``memo``: who wrote the memo, or that no one did. ``runs``: member runs left out, unfinished or short. ``measurement``: how and when the runs
 #: were launched and measured. ``apparatus``: the test setup — controls, confounds, cells that did not pool, a judge
 #: grading its own model's answers. ``comparisons``: how the contrasts against the control were tested and
 #: corrected. ``strata``: a stratum too small to read alone. ``guardrails``: how guardrails were decided.
@@ -867,7 +867,6 @@ __all__ = [
     "VERDICT_OUTCOMES",
     "BarOutcome",
     "CellValue",
-    "CostQualityPoint",
     "ChartBlock",
     "ChartKind",
     "ContrastOutcome",
@@ -892,7 +891,6 @@ __all__ = [
     "Verdict",
     "VerdictKind",
     "VerdictReason",
-    "fold_anchor",
     "fold_anchor",
     "fold_ids",
     "interval_text",

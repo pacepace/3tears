@@ -13,11 +13,10 @@ Five disclosures are report-wide:
 - **results with no ordered time**, of which whether a criterion came after them is not known;
 - **latency read under concurrency**, which every comparison leaves out;
 - **request settings not confirmed**, for the judge or the simulated user;
-- **cost as routed**: every cost figure is what the runs' provider routing charged, not the model's alone, said on a
-  campaign's page wherever it prints one (:func:`cost_caveat_blocks`), with no row of detail, since the package does
-  not record which provider served a call.
+- **cost as routed**: every cost figure is what the runs' provider routing charged, not the model's alone, said
+  wherever a page prints one, with no row of detail, since the package does not record which provider served a call.
 
-Each is built here and only here: its line (:func:`caveat_blocks`, :func:`cost_caveat_blocks`), its detail (:func:`provenance_blocks`,
+Each is built here and only here: its line (:func:`caveat_blocks`), its detail (:func:`provenance_blocks`,
 :func:`aspect_provenance_blocks`, :func:`setup_disclosure`), and what an aspect's fold on a campaign's page leaves out
 because the campaign states it (:func:`for_the_campaign`), which reads the marks those carry, never their words.
 """
@@ -35,6 +34,7 @@ from threetears.evals.analysis.report.campaign.warnings import listed, where
 from threetears.evals.analysis.report.decision import floor_statement
 from threetears.evals.analysis.report.model import (
     DisclosureBlock,
+    DisclosureSource,
     Report,
     ReportBlock,
     ReportSection,
@@ -49,7 +49,6 @@ __all__ = [
     "COST_ROUTING_CAVEAT",
     "aspect_provenance_blocks",
     "caveat_blocks",
-    "cost_caveat_blocks",
     "for_the_campaign",
     "priced_aspects",
     "provenance_blocks",
@@ -62,7 +61,7 @@ __all__ = [
 _NO_QUESTION = "No question was declared, so every reading is a lead."
 
 #: A report-wide disclosure's kind.
-_Kind = Literal["late", "untimed", "latency", "settings"]
+_Kind = Literal["late", "untimed", "latency", "settings", "cost"]
 
 #: The id each report-wide caveat line carries, by its kind: the mark a fold leaves it out by.
 _CAVEAT_ANCHORS: dict[_Kind, str] = {
@@ -70,6 +69,16 @@ _CAVEAT_ANCHORS: dict[_Kind, str] = {
     "untimed": "caveat-untimed",
     "latency": "caveat-latency",
     "settings": "caveat-settings",
+    "cost": "caveat-cost",
+}
+
+#: What each report-wide caveat line speaks for, by its kind.
+_CAVEAT_SOURCES: dict[_Kind, DisclosureSource] = {
+    "late": "timing",
+    "untimed": "timing",
+    "latency": "measurement",
+    "settings": "measurement",
+    "cost": "cost",
 }
 
 #: The id an aspect's own methods line stating a test-setup disclosure in full carries, by its kind.
@@ -111,6 +120,8 @@ def _lines(bundles: Sequence[AnalysisContextBundle]) -> list[tuple[_Kind, str]]:
         lines.append(("latency", _LATENCY_LINE.format(where=where(contended, total))))
     if unconfirmed := [aspect_name(bundle) for bundle in bundles if bundle.request_settings_disclosure]:
         lines.append(("settings", _SETTINGS_LINE.format(where=where(unconfirmed, total))))
+    if priced_aspects(bundles):
+        lines.append(("cost", COST_ROUTING_CAVEAT))
     return lines
 
 
@@ -157,8 +168,9 @@ def timing_caveats(bundles: Sequence[AnalysisContextBundle]) -> list[str]:
 
 def caveat_blocks(bundles: Sequence[AnalysisContextBundle], *, section: ReportSection) -> list[ReportBlock]:
     """A page's first-screen caveat lines, after what warns: when its criteria were set, results with no ordered time,
-    latency read under concurrency and request settings not confirmed, each once for the whole page, naming where it
-    holds; each carries the id its kind marks it by.
+    latency read under concurrency, request settings not confirmed, each once for the whole page, naming where it
+    holds, and, where the page prints a cost figure, that each is its runs' provider routing's; each carries the id
+    its kind marks it by.
 
     :param bundles: Each aspect's evidence, in the campaign's order; one for an aspect's own page.
     :ptype bundles: Sequence[AnalysisContextBundle]
@@ -171,7 +183,7 @@ def caveat_blocks(bundles: Sequence[AnalysisContextBundle], *, section: ReportSe
     return [
         DisclosureBlock(
             section=section,
-            source="timing" if kind in ("late", "untimed") else "measurement",
+            source=_CAVEAT_SOURCES[kind],
             text=line,
             anchor=_CAVEAT_ANCHORS[kind],
         )
@@ -184,9 +196,6 @@ def caveat_blocks(bundles: Sequence[AnalysisContextBundle], *, section: ReportSe
 COST_ROUTING_CAVEAT = (
     "Each cost figure reflects the provider routing of the runs it was measured on, not the model alone."
 )
-
-#: The id the cost caveat line carries.
-_COST_ANCHOR = "caveat-cost"
 
 
 def priced_aspects(bundles: Sequence[AnalysisContextBundle]) -> list[str]:
@@ -203,20 +212,6 @@ def priced_aspects(bundles: Sequence[AnalysisContextBundle]) -> list[str]:
         for bundle in bundles
         if any(board.test_cost_usd is not None or board.reply_cost_usd is not None for board in bundle.scoreboard)
     ]
-
-
-def cost_caveat_blocks(bundles: Sequence[AnalysisContextBundle]) -> list[ReportBlock]:
-    """A campaign page's one line saying its cost figures are its runs' provider routing's, not the model's alone,
-    after the other report-wide caveats; only where the page prints a cost figure. No figure restates it.
-
-    :param bundles: Each aspect's evidence, in the campaign's order.
-    :ptype bundles: Sequence[AnalysisContextBundle]
-    :return: The line, or nothing where no arm was priced.
-    :rtype: list[ReportBlock]
-    """
-    if not priced_aspects(bundles):
-        return []
-    return [DisclosureBlock(section="warnings", source="cost", text=COST_ROUTING_CAVEAT, anchor=_COST_ANCHOR)]
 
 
 def setup_disclosure(

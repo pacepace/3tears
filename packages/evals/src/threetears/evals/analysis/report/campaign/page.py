@@ -39,7 +39,6 @@ from threetears.evals.analysis.report.campaign.memo_blocks import (
 from threetears.evals.analysis.report.campaign.names import AspectNames, check_legend_blocks
 from threetears.evals.analysis.report.campaign.provenance import (
     caveat_blocks,
-    cost_caveat_blocks,
     for_the_campaign,
     provenance_blocks,
     question_blocks,
@@ -132,7 +131,6 @@ def build_campaign_report(
         *floor_warnings(readings, memo, names=names),
         *guardrail_warnings(campaign, readings, reports, names=names),
         *caveat_blocks(bundles, section="warnings"),
-        *cost_caveat_blocks(bundles),
     ]
     if kind == "change":
         blocks += table_blocks(campaign, readings, reports, names=names)

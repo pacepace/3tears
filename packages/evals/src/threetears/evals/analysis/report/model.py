@@ -53,10 +53,10 @@ from threetears.evals.analysis.report.blocks import (
     VERDICT_OUTCOMES,
     BarOutcome,
     CellValue,
-    CostQualityPoint,
     ChartBlock,
     ChartKind,
     ContrastOutcome,
+    CostQualityPoint,
     DisclosureBlock,
     DisclosureSource,
     Fact,
@@ -586,7 +586,6 @@ def _cells(blocks: Sequence[ReportBlock]) -> list[TableCell]:
 
 
 __all__ = [
-    "TrialDetail",
     "CAMPAIGN_JSON_SHAPE",
     "FINDING_ROLES",
     "FIRST_SCREEN",
@@ -620,6 +619,7 @@ __all__ = [
     "TextBlock",
     "TextRole",
     "TrialBlock",
+    "TrialDetail",
     "Verdict",
     "VerdictKind",
     "VerdictReason",

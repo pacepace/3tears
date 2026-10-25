@@ -67,7 +67,7 @@ where it holds, and its detail is a row of **Design & provenance**, stated there
 when, and each aspect's own sentence for the test setup, verbatim. No aspect's fold repeats it, and it never lowers a
 reading or a recommendation. An aspect's own page says the same line under its verdict, its detail in its methods.
 
-Where a campaign's page prints any cost figure, one more line follows them: `Each cost figure reflects the provider
+Where a page prints any cost figure, a campaign's or an aspect's own, one more line follows them: `Each cost figure reflects the provider
 routing of the runs it was measured on, not the model alone.` Quality is fixed for a model, its version and its
 quantization; cost is not, since one model routed across providers can cost several times more. No cost figure, chart
 or fold says it again, and the writer's view hands the same sentence once (`disclosures.cost_routing`).

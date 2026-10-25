@@ -3,6 +3,7 @@ writer's view each say so once, at report level, wherever they present a cost fi
 
 - **The page** carries one first-screen caveat line (``caveat-cost``) among the report-wide caveats, on every shape
   that prints a cost, in HTML and in Markdown; no fold, figure or chart restates it, and an unpriced campaign has none.
+  An aspect's own page that prints a cost says it once too, under its verdict among its report-wide caveats.
 - **The writer's view** hands it once, in the campaign's own ``disclosures`` (``cost_routing``), as the page spells
   it, naming the priced aspects; no aspect's part carries it, and an unpriced campaign's view has none.
 """
@@ -13,10 +14,10 @@ import json
 
 import pytest
 
-from threetears.evals.analysis import campaign_report_html, campaign_report_markdown
+from threetears.evals.analysis import campaign_report_html, campaign_report_markdown, report_html, report_markdown
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle, writer_view
 from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT, priced_aspects
-from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock
+from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, Report
 from packages.evals.tests.report_shapes_support import SHAPES, ArmTrials, AspectTrials, Shape, shape_of
 
 #: The id the caveat line carries on the page.
@@ -41,7 +42,7 @@ def _unpriced() -> Shape:
     )
 
 
-def _caveats(page: CampaignReport) -> list[DisclosureBlock]:
+def _caveats(page: CampaignReport | Report) -> list[DisclosureBlock]:
     return [block for block in page.blocks if isinstance(block, DisclosureBlock) and block.anchor == _ANCHOR]
 
 
@@ -75,6 +76,23 @@ def test_a_page_that_prints_no_cost_does_not_say_it() -> None:
     assert _caveats(page) == []
     assert COST_ROUTING_CAVEAT not in campaign_report_html(page)
     assert COST_ROUTING_CAVEAT not in campaign_report_markdown(page)
+
+
+@pytest.mark.parametrize("name", sorted(SHAPES))
+def test_an_aspect_s_own_page_that_prints_a_cost_says_it_once_among_its_caveats(name: str) -> None:
+    shape = SHAPES[name]()
+    for own in shape.reports.values():
+        assert [(block.section, block.source, block.text) for block in _caveats(own)] == [
+            ("header", "cost", COST_ROUTING_CAVEAT)
+        ]
+        assert report_html(own).count(COST_ROUTING_CAVEAT) == 1
+        assert report_markdown(own).count(COST_ROUTING_CAVEAT) == 1
+
+
+def test_an_aspect_s_own_page_that_prints_no_cost_does_not_say_it() -> None:
+    for own in _unpriced().reports.values():
+        assert _caveats(own) == []
+        assert COST_ROUTING_CAVEAT not in report_html(own) and COST_ROUTING_CAVEAT not in report_markdown(own)
 
 
 @pytest.mark.parametrize("name", sorted(SHAPES))

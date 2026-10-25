@@ -6,14 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: a campaign's page and the writer's view say once that a cost is its runs' provider routing's
+### evals: a page and the writer's view say once that a cost is its runs' provider routing's
 
 **Changed:** an eval's cost belongs to its provider routing, not its model (owner, 2026-10-25): one model routed
 across providers can cost several times more on one run than another. Wherever a campaign's page prints any cost
 figure (a cost reading, a cost floor, the cost/quality chart, the equal-weight aggregate), its first screen says once,
 after the other report-wide caveats, "Each cost figure reflects the provider routing of the runs it was measured on,
 not the model alone." (a `warnings` `DisclosureBlock`, source `cost`, id `caveat-cost`); no figure, fold or chart
-repeats it, and a page with no priced arm does not say it. The writer's view hands the same sentence once, in the
+repeats it, and a page with no priced arm does not say it. An aspect's own page that prints a cost says the same line
+once, under its verdict among its report-wide caveats (a `header` `DisclosureBlock`, the same source and id). The
+glossary's "cost per reply" now reads "What production would spend per reply on the models the arm runs, as its runs
+were routed." The writer's view hands the same sentence once, in the
 campaign's `disclosures` as `cost_routing` (`[{aspects, said}]`, the priced aspects), on a campaign of one aspect too,
 and in no aspect's part. No reading, ranking, identity or fingerprint moves. See `packages/evals/MIGRATIONS.toml`.
 
