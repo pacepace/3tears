@@ -212,6 +212,11 @@ decision line below, prefixed `B:`.
 - C: [DECISION: S2 "tables kept" means its Pass^k depth and Precision tables; its Depth table, every row alike, is one sentence | 05 builder, rule 2]
 - C: [DECISION: the level paragraph drops "Correcting across arms would lower it, at the price of wider intervals" and "the reading beside it always agrees with it" as recitation | c3 builder; owner may want the first back]
 - C: [DECISION: the "seams are empty today" skeleton test is removed at integration, since 05 and 06 fill all three seams and their own tests pin what fills them | main session]
+- D: [DECISION: a disclosure moves to the view's campaign-level `disclosures` when two or more aspects carry it alike; the report-wide kinds (late_criteria, latency_contended, request_settings_disclosure) always move; a one-aspect campaign keeps its own in its part. Shared confound explanations move the same way (`confound_catalog`) | 07 builder, R4b and "terms defined once"]
+- D: [DECISION: the view's `aggregate` is handed on two or more aspects only; on one aspect it repeats that aspect's figures | 07 builder, matching 06's page rule]
+- D: [DECISION: the per-arm floor rollup replaces the flat `floors` list rather than sitting beside it | 07 builder; one place per floor]
+- D: [DECISION: the R8 control rule moves to report/decision.py (`control_cannot_show`, `ControlBound`), which the scorecard and the view both call | 07 builder; campaign_bundle cannot import scorecard (cycle)]
+- D: [FOLLOW-UP: the check-level R8 case (a check every arm passes or none does) is flagged neither on the page nor in the view; not in 07's list, filed for after this plan]
 
 ## Advisory: what I would do differently
 
