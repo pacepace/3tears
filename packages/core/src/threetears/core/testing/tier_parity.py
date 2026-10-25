@@ -30,6 +30,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+import asyncpg
 from sqlalchemy import MetaData
 
 from threetears.core.cache.base import UnsupportedL1ColumnError
@@ -350,12 +351,53 @@ def _l3_column_findings(
     return findings
 
 
-async def _l3_row_findings(name: str, conn: Any, schema: TableSchema) -> list[str]:
-    """write the sample row to a scratch copy of the migrated table and compare what it reads back.
+def _split_table(name: str) -> tuple[str | None, str]:
+    """a table name's schema, when it names one (``platform_audit.audit_events``), and its table.
+
+    :param name: the table's name as a ``TableSchema`` declares it
+    :ptype name: str
+    :return: ``(schema, table)``, ``schema`` ``None`` for the connection's own
+    :rtype: tuple[str | None, str]
+    """
+    schema, _, table = name.rpartition(".")
+    return (schema or None), table
+
+
+def _qualified(name: str) -> str:
+    """a table name as SQL, each part quoted: ``"platform_audit"."audit_events"``.
+
+    :param name: the table's name as a ``TableSchema`` declares it
+    :ptype name: str
+    :return: the quoted name
+    :rtype: str
+    """
+    schema, table = _split_table(name)
+    return quote_identifier(table) if schema is None else f"{quote_identifier(schema)}.{quote_identifier(table)}"
+
+
+def _fitted(value: Any, max_length: int | None) -> Any:
+    """``value`` cut to a ``varchar(n)`` column's length, so the column can hold it.
+
+    :param value: the sample value
+    :ptype value: Any
+    :param max_length: the column's ``character_maximum_length``, or ``None`` for no limit
+    :ptype max_length: int | None
+    :return: the value, a string no longer than the column holds
+    :rtype: Any
+    """
+    return value[:max_length] if isinstance(value, str) and max_length is not None else value
+
+
+async def _l3_row_findings(
+    name: str, conn: Any, schema: TableSchema, max_lengths: Mapping[str, int | None]
+) -> list[str]:
+    """write each sample value to a scratch copy of the migrated table and compare what it reads back.
 
     The copy (``LIKE ... INCLUDING DEFAULTS``) has the table's columns, types and defaults and none
-    of its foreign keys or checks, so the row needs no parent rows; it is a temporary table, dropped
-    after.
+    of its foreign keys or checks; its ``NOT NULL`` constraints are dropped, so each column's value
+    is written and read on a row of its own, each in its own savepoint, and a value the table refuses
+    is that column's finding without stopping the rest. A string is cut to its column's
+    ``varchar(n)``. The copy is a temporary table, dropped after.
 
     :param name: the collection's name
     :ptype name: str
@@ -363,25 +405,37 @@ async def _l3_row_findings(name: str, conn: Any, schema: TableSchema) -> list[st
     :ptype conn: Any
     :param schema: the table
     :ptype schema: TableSchema
+    :param max_lengths: each column's ``character_maximum_length``
+    :ptype max_lengths: Mapping[str, int | None]
     :return: the findings
     :rtype: list[str]
     """
+    findings: list[str] = []
     scratch = quote_identifier(f"tier_parity_{uuid.uuid7().hex}")
     row = {
-        column.name: _sample(column)
+        column.name: _fitted(_sample(column), max_lengths.get(column.name))
         for column in schema.columns
-        if column.column_type not in (TSVECTOR_TYPE, VECTOR_TYPE, ENUM_TYPE)
+        if column.column_type not in (TSVECTOR_TYPE, VECTOR_TYPE, ENUM_TYPE) and column.name in max_lengths
     }
-    names = list(row)
-    await conn.execute(f"CREATE TEMP TABLE {scratch} (LIKE {quote_identifier(schema.name)} INCLUDING DEFAULTS)")
+    await conn.execute(f"CREATE TEMP TABLE {scratch} (LIKE {_qualified(schema.name)} INCLUDING DEFAULTS)")
     try:
-        columns = ", ".join(quote_identifier(column) for column in names)
-        placeholders = ", ".join(f"${index}" for index in range(1, len(names) + 1))
-        await conn.execute(f"INSERT INTO {scratch} ({columns}) VALUES ({placeholders})", *row.values())  # noqa: S608
-        got = await conn.fetchrow(f"SELECT {columns} FROM {scratch}")  # noqa: S608
+        for column in row:
+            await conn.execute(f"ALTER TABLE {scratch} ALTER COLUMN {quote_identifier(column)} DROP NOT NULL")
+        for column, value in row.items():
+            quoted = quote_identifier(column)
+            try:
+                async with conn.transaction():
+                    got = await conn.fetchval(
+                        f"INSERT INTO {scratch} ({quoted}) VALUES ($1) RETURNING {quoted}",  # noqa: S608
+                        value,
+                    )
+            except (asyncpg.PostgresError, asyncpg.InterfaceError) as exc:
+                findings.append(f"{name}.{column}: L3: the table refused {value!r}: {type(exc).__name__}: {exc}")
+            else:
+                findings.extend(_row_findings(name, "L3", {column: value}, {column: got}))
     finally:
         await conn.execute(f"DROP TABLE IF EXISTS {scratch}")
-    return _row_findings(name, "L3", row, None if got is None else dict(got))
+    return findings
 
 
 async def live_tier_parity_findings(
@@ -420,27 +474,35 @@ async def live_tier_parity_findings(
         if schema is None:
             continue
         name = cls.__qualname__
+        table_schema, table = _split_table(schema.name)
         live = [
             dict(row)
             for row in await conn.fetch(
-                "SELECT column_name, data_type, numeric_precision, numeric_scale, is_nullable, column_default "
-                "FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1",
-                schema.name,
+                "SELECT column_name, data_type, numeric_precision, numeric_scale, is_nullable, column_default, "
+                "character_maximum_length FROM information_schema.columns "
+                "WHERE table_schema = COALESCE($2, current_schema()) AND table_name = $1",
+                table,
+                table_schema,
             )
         ]
         if not live:
-            findings.append(f"{name}: L3: no table {schema.name!r} on the connection's schema")
+            findings.append(f"{name}: L3: no table {schema.name!r} on the connection")
             continue
         pk_rows = await conn.fetch(
             "SELECT k.column_name FROM information_schema.table_constraints c "
             "JOIN information_schema.key_column_usage k ON k.constraint_name = c.constraint_name "
             "AND k.table_schema = c.table_schema AND k.table_name = c.table_name "
-            "WHERE c.constraint_type = 'PRIMARY KEY' AND c.table_schema = current_schema() AND c.table_name = $1 "
-            "ORDER BY k.ordinal_position",
-            schema.name,
+            "WHERE c.constraint_type = 'PRIMARY KEY' AND c.table_schema = COALESCE($2, current_schema()) "
+            "AND c.table_name = $1 ORDER BY k.ordinal_position",
+            table,
+            table_schema,
         )
         pk = tuple(str(r["column_name"]) for r in pk_rows)
         others = frozenset((not_owned or {}).get(cls, ()))
         findings.extend(_l3_column_findings(name, schema, live, pk, others))
-        findings.extend(await _l3_row_findings(name, conn, schema))
+        max_lengths = {str(row["column_name"]): row["character_maximum_length"] for row in live}
+        try:
+            findings.extend(await _l3_row_findings(name, conn, schema, max_lengths))
+        except asyncpg.PostgresError as exc:
+            findings.append(f"{name}: L3: the scratch copy of {schema.name!r} failed: {type(exc).__name__}: {exc}")
     return findings

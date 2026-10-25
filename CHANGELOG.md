@@ -64,7 +64,9 @@ exacting values (a `Decimal` at its column's full precision, negative; an aware 
 UUID; nested JSON; a bool; bytes; an integer beyond a float's precision) and reads it back, and passes it
 through the collection's L2 codec. `live_tier_parity_findings(conn, collections, *, not_owned=None)` holds the
 migrated Postgres table to the schema (columns, type, precision and scale, nullability, default, primary key)
-and writes the row to a scratch copy of the table to hold asyncpg's read of it. Each names the collection,
+and writes each value to a scratch copy of the table to hold asyncpg's read of it: a string cut to its
+column's `varchar(n)`, each column in its own savepoint so a value the table refuses is that column's finding,
+and a schema-qualified table name (`platform_audit.audit_events`) looked up and copied by its schema and table. Each names the collection,
 column and tier of every difference. `tests/enforcement/test_tier_parity.py` runs the first over all 33 3tears
 collections with a schema; the datasources live parity test runs the second. It caught
 `CapabilitySourceCollection`'s schema drifting from the hub's `datasources` table: `kind`, `access_mode` and
