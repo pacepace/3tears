@@ -139,7 +139,8 @@ def test_the_writer_reads_each_arm_s_depth_the_common_depth_and_what_limits_each
     arms = TwoArms(TWICE, ONCE, k_a=2, k_b=2)
     bundle = campaign_bundle(arms.bundle, arms=arms.arms, readings=arms.readings().readings)
 
-    [aspect] = writer_view(bundle)["aspects"]
+    view = writer_view(bundle)
+    [aspect] = view["aspects"]
 
     assert aspect["depth"] == {
         "arms": {
@@ -160,9 +161,10 @@ def test_the_writer_reads_each_arm_s_depth_the_common_depth_and_what_limits_each
         ],
     }
     [reading] = aspect["readings"]
-    assert set(reading["precision"]) == {"half_width", "own_half_width", "limited_by", "between_case_share", "means"}
+    assert set(reading["precision"]) == {"half_width", "own_half_width", "limited_by", "between_case_share"}
     assert set(reading["precision"]["own_half_width"]) == {"A", "B"}
-    assert reading["precision"]["means"] == REPEATS_FLOOR
+    # What a between-case share means is defined once, for the whole view.
+    assert view["precision_means"] == REPEATS_FLOOR
 
 
 def test_the_writer_prompt_states_the_depth_rule() -> None:

@@ -157,7 +157,10 @@ class TestTheWriterIsWarned:
             *bare.aspects, floors=[_floor(bare, held, status="held"), _floor(bare, broken, status="broken")]
         )
         view = json.loads(build_campaign_user_message(bundle).split("\n", 1)[1])
-        assert [floor["floor"] for floor in view["floors"]] == [broken, held]
+        # The arm's floors are rolled up by status, broken first.
+        [arm] = view["floors"]
+        assert list(arm) == ["arm", "broken", "held"]
+        assert [floor["floor"] for state in ("broken", "held") for floor in arm[state]] == [broken, held]
         assert view["floor_warning"].startswith(f"1 floor(s) broken: {broken} on {arm_at(bundle, TOYHOST_WIDE)}")
         assert "`floors_overridden`" in view["floor_warning"]
 

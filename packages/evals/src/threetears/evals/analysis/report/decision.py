@@ -750,6 +750,58 @@ def aspect_pass_rate(
     return next((rate for rate in rates if rate.measure is None), None)
 
 
+#: What a control's pass rate cannot let a candidate show on an aspect: a ``drop`` past the margin, or a ``gain``.
+ControlBound = Literal["drop", "gain"]
+
+
+def control_cannot_show(
+    bundle: AnalysisContextBundle,
+    control: str,
+    candidates: Sequence[str],
+    *,
+    margin: float | None,
+    passed: int,
+    trials: int,
+) -> tuple[ControlBound, ...]:
+    """What no candidate's pass rate can show against the control on one aspect, whatever it does: the one rule the
+    page's scorecard marks and the writer's view flags.
+
+    A drop is read on per-case shares, so whether one past the margin can show is decided on them: the largest drop a
+    candidate's values allow is the mean of the control's shares it reads, and where that is at or below the margin
+    for every candidate read on shares, no drop can pass it. Shares and trials differ where cases ran an uneven number
+    of usable trials, so the trial rate alone would flag a control that can still show a drop. At 100% of its trials
+    every share is one, and no gain can show.
+
+    :param bundle: The aspect's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :param control: The control's variant key.
+    :ptype control: str
+    :param candidates: Each candidate's variant key read against it on the aspect.
+    :ptype candidates: Sequence[str]
+    :param margin: The aspect's margin in points; None where none is declared, so no drop is read against one.
+    :ptype margin: float | None
+    :param passed: The trials the control passed.
+    :ptype passed: int
+    :param trials: The trials the control was measured on.
+    :ptype trials: int
+    :return: ``drop``, ``gain``, both or neither, in that order; neither where the control has no trial.
+    :rtype: tuple[ControlBound, ...]
+    """
+    if not trials:
+        return ()
+    bounds: list[ControlBound] = []
+    if margin is not None:
+        rates = [aspect_pass_rate(bundle, control, candidate) for candidate in candidates]
+        shares = [
+            100 * sum(rate.samples[0]) / len(rate.samples[0]) for rate in rates if rate is not None and rate.samples
+        ]
+        if shares and all(share <= margin for share in shares):
+            bounds.append("drop")
+    if passed == trials:
+        bounds.append("gain")
+    return tuple(bounds)
+
+
 # =============================================================================
 # The cases that would show a floor holds: an unclear floor's interval, computed again at more independent cases
 # =============================================================================
@@ -1094,6 +1146,7 @@ def projection_note(projections: Sequence[SampleProjection], *, run_cases: int, 
 
 __all__ = [
     "CasesNeeded",
+    "ControlBound",
     "FloorOutcome",
     "FloorReadings",
     "FloorVerdict",
@@ -1103,6 +1156,7 @@ __all__ = [
     "SampleProjection",
     "aspect_pass_rate",
     "case_cost_usd",
+    "control_cannot_show",
     "evaluate_floor",
     "floor_projection",
     "floor_readings",
