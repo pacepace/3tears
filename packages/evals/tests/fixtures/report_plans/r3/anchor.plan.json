@@ -1,0 +1,333 @@
+{
+  "mode": "decide",
+  "headline_kind": "decision",
+  "headline": "Use {arm:brisk-s.few}. It is the cheapest configuration that clears the overall gate, every cell floor and the latency budget.",
+  "lede": "It reaches {measure.balanced_accuracy.brisk-s.few.mean|pct} balanced accuracy with a p-ninety-five latency of {measure.latency_ms.brisk-s.few.p95|int} ms. If complex news turns improved for {arm:nano-xs.few}, the far cheaper model would win.",
+  "decision": {
+    "slots": [
+      {
+        "key": "recommendation",
+        "text": "**{arm:brisk-s.few}**: balanced accuracy {measure.balanced_accuracy.brisk-s.few.mean|pct}, p-ninety-five {measure.latency_ms.brisk-s.few.p95|int} ms, and a fraction of the cost of any Atlas-M configuration.",
+        "caveats": []
+      },
+      {
+        "key": "why_not",
+        "text": "**{arm:nano-xs.few}** is cheaper and clears the overall gate, but falls below the floor on complex news. **{arm:atlas-m.rubric}** is the most accurate at {measure.balanced_accuracy.atlas-m.rubric.mean|pct} but far too slow. **{arm:nano-xs.zero}** is the cheapest and misses the overall gate.",
+        "caveats": []
+      },
+      {
+        "key": "watch",
+        "text": "Complex news is the pick's weakest cell, the closest of its margins to the cell floor. Its errors are mostly medium turns labeled complex and the reverse; domain errors are rare.",
+        "caveats": []
+      },
+      {
+        "key": "next",
+        "text": "Collect more complex news turns and re-test {arm:nano-xs.few} on that cell: if it clears the floor, it takes the recommendation at a fraction of the cost.",
+        "caveats": []
+      }
+    ],
+    "confidence": {
+      "form": "low",
+      "caveats": []
+    }
+  },
+  "method": [
+    {
+      "term": "Corpus",
+      "text": "User turns from August and September, each labeled by two annotators, with disagreements adjudicated.",
+      "caveats": []
+    },
+    {
+      "term": "Accuracy",
+      "text": "A turn is correct only if both complexity and domain match. Balanced accuracy weights the nine cells equally; traffic-weighted accuracy follows production traffic.",
+      "caveats": []
+    },
+    {
+      "term": "Intervals",
+      "text": "Binomial intervals per cell; the smallest cells have the widest.",
+      "caveats": []
+    },
+    {
+      "term": "Cost",
+      "text": "Measured tokens times list price per million turns, at {meta.volume_per_month|int} turns a month.",
+      "caveats": []
+    }
+  ],
+  "schema": "report-plan/1",
+  "signals": {
+    "candidate_structure": "factorial",
+    "baseline": "none",
+    "score_type": "class_label",
+    "strata": "target_matrix",
+    "criteria": "hard_gates",
+    "cross_cutting": [],
+    "log_cost_axis": false
+  },
+  "shape": "C",
+  "masthead": {
+    "kind": "Choice · candidates compared",
+    "system": "Turn router: complexity × domain",
+    "counts": "9 arms",
+    "run_date": "{meta.run_date}",
+    "synthetic": true
+  },
+  "arms": [
+    {
+      "id": "atlas-m.zero",
+      "color_slot": 0
+    },
+    {
+      "id": "atlas-m.few",
+      "color_slot": 1
+    },
+    {
+      "id": "atlas-m.rubric",
+      "color_slot": 2
+    },
+    {
+      "id": "brisk-s.zero",
+      "color_slot": 3
+    },
+    {
+      "id": "brisk-s.few",
+      "color_slot": 4
+    },
+    {
+      "id": "brisk-s.rubric",
+      "color_slot": 5
+    },
+    {
+      "id": "nano-xs.zero",
+      "color_slot": 6
+    },
+    {
+      "id": "nano-xs.few",
+      "color_slot": 7
+    },
+    {
+      "id": "nano-xs.rubric",
+      "color_slot": 8
+    }
+  ],
+  "show_arms_key": true,
+  "flag": [],
+  "options": {
+    "rows": [
+      {
+        "option": "brisk-s.few",
+        "role": "recommended"
+      },
+      {
+        "option": "nano-xs.few",
+        "role": "near_miss"
+      },
+      {
+        "option": "atlas-m.rubric",
+        "role": "most_accurate"
+      },
+      {
+        "option": "nano-xs.zero",
+        "role": "cheapest"
+      }
+    ],
+    "columns": [
+      "gate"
+    ]
+  },
+  "summary": [
+    {
+      "kind": "bars",
+      "title": "Balanced accuracy",
+      "query": {
+        "source": "measures",
+        "aspect": "",
+        "measures": [
+          "balanced_accuracy"
+        ],
+        "arms": [
+          "brisk-s.few",
+          "nano-xs.few",
+          "atlas-m.rubric",
+          "nano-xs.zero"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "brisk-s.few",
+      "level": "",
+      "unit": "pct",
+      "domain": []
+    },
+    {
+      "kind": "bars",
+      "title": "Cost per million turns",
+      "query": {
+        "source": "measures",
+        "aspect": "",
+        "measures": [
+          "cost_per_1m"
+        ],
+        "arms": [
+          "brisk-s.few",
+          "nano-xs.few",
+          "atlas-m.rubric",
+          "nano-xs.zero"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "",
+      "level": "",
+      "unit": "usd_per_1m",
+      "domain": []
+    }
+  ],
+  "sections": [
+    {
+      "id": "lattice",
+      "eyebrow": "Model and prompt",
+      "headline": "Few-shot examples lift the small models most; rubric reasoning pays off only on the larger ones",
+      "takeaway": "Balanced accuracy for each model and prompt. It weights the nine target cells equally, so the largest segment cannot hide a weak cell.",
+      "chart": {
+        "kind": "lattice",
+        "title": "",
+        "query": {
+          "source": "configs",
+          "aspect": "",
+          "measures": [
+            "balanced_accuracy"
+          ],
+          "arms": [],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "brisk-s.few",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "cells",
+      "eyebrow": "The target matrix",
+      "headline": "Complex news is the hardest cell for every configuration, and the one that rules out Nano-XS",
+      "takeaway": "Accuracy per cell; rows are complexity, columns are domain.",
+      "chart": {
+        "kind": "heatmap",
+        "title": "",
+        "query": {
+          "source": "cells",
+          "aspect": "",
+          "measures": [
+            "accuracy"
+          ],
+          "arms": [
+            "brisk-s.few"
+          ],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "arm"
+        },
+        "reference": [],
+        "emphasis": "",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "errors",
+      "eyebrow": "Where the errors go",
+      "headline": "Almost every complexity error is off by one step",
+      "takeaway": "Rows are the true label; each row sums to the whole. Simple turns are almost never called complex.",
+      "chart": {
+        "kind": "confusion",
+        "title": "",
+        "query": {
+          "source": "confusion",
+          "aspect": "",
+          "measures": [
+            "complexity"
+          ],
+          "arms": [
+            "brisk-s.few"
+          ],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    }
+  ],
+  "explore": [
+    {
+      "title": "Compare any two configurations, or change the gates",
+      "controls": [
+        {
+          "id": "floor",
+          "kind": "slider",
+          "title": "Cell floor",
+          "binds": "floor:cell_floor",
+          "min": 70.0,
+          "max": 90.0,
+          "step": 1.0,
+          "default": 80.0,
+          "options": []
+        },
+        {
+          "id": "weighting",
+          "kind": "segmented",
+          "title": "Overall accuracy weighted by",
+          "binds": "weighting",
+          "min": 0.0,
+          "max": 0.0,
+          "step": 0.0,
+          "default": 0.0,
+          "options": [
+            "Cells equally",
+            "Traffic"
+          ]
+        }
+      ],
+      "recomputes": "Which configurations pass every gate and the cheapest of them; a lower cell floor lets {arm:nano-xs.few} take the recommendation."
+    }
+  ],
+  "full_results": [
+    "arms_by_measure",
+    "gate_matrix_full",
+    "configs",
+    "cells"
+  ],
+  "durable_claims": [
+    {
+      "text": "For a complexity-by-domain router, complex news is the cell that decides between models; {arm:brisk-s.few} clears it with few-shot examples.",
+      "confidence": "medium",
+      "keys": [
+        "measure.balanced_accuracy.brisk-s.few.mean"
+      ]
+    }
+  ],
+  "answers": []
+}

@@ -1,0 +1,370 @@
+{
+  "schema": "plan-anchor-labels/1",
+  "anchors": [
+    {
+      "plan": "r1/anchor.plan.json",
+      "input": "r1",
+      "expect": "pass",
+      "labeled_by": "pending_owner",
+      "note": "Hand-written from references/r1-model-selection.html."
+    },
+    {
+      "plan": "r2/anchor.plan.json",
+      "input": "r2",
+      "expect": "pass",
+      "labeled_by": "pending_owner",
+      "note": "Hand-written from references/r2-config-sweep.html."
+    },
+    {
+      "plan": "r3/anchor.plan.json",
+      "input": "r3",
+      "expect": "pass",
+      "labeled_by": "pending_owner",
+      "note": "Hand-written from references/r3-classifier.html."
+    },
+    {
+      "plan": "r4/anchor.plan.json",
+      "input": "r4",
+      "expect": "pass",
+      "labeled_by": "pending_owner",
+      "note": "Hand-written from references/r4-tradeoff.html."
+    },
+    {
+      "plan": "r5/anchor.plan.json",
+      "input": "r5",
+      "expect": "pass",
+      "labeled_by": "pending_owner",
+      "note": "references/r5-kairo-round2.plan.json, with Watch rewritten to name the weakest margin (R7) and Next rewritten to name the experiment that would change the answer (R10)."
+    },
+    {
+      "plan": "anchors/weak/refused-facts-shape.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "facts",
+      "faults": [
+        [
+          "shape",
+          "the signals look up shape 'D'"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "The shape is not the one code looks up from the signals."
+    },
+    {
+      "plan": "anchors/weak/refused-mode-headline-kind.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "mode",
+      "faults": [
+        [
+          "headline_kind",
+          "a decide plan's headline is a 'decision'"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "A decide plan with a trade headline."
+    },
+    {
+      "plan": "anchors/weak/refused-mode-slots.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "mode",
+      "faults": [
+        [
+          "decision.slots",
+          "in that order"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "Watch and Next out of the mode's order."
+    },
+    {
+      "plan": "anchors/weak/refused-mode-roles.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "mode",
+      "faults": [
+        [
+          "options.rows",
+          "recommends exactly one option"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "Two options marked recommended."
+    },
+    {
+      "plan": "anchors/weak/refused-allowed-mode.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "allowed_mode",
+      "faults": [
+        [
+          "mode",
+          "code allows only ['decide']"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "A no call where code allows only decide (one survivor dominates)."
+    },
+    {
+      "plan": "anchors/weak/refused-ids.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "ids",
+      "faults": [
+        [
+          "sections",
+          "name the section id 'question' 2 times"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "Two sections share an id."
+    },
+    {
+      "plan": "anchors/weak/refused-recommendation.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "recommendation",
+      "faults": [
+        [
+          "options.rows[0].option",
+          "which is no arm"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "Recommends an option that is no arm."
+    },
+    {
+      "plan": "anchors/weak/refused-answers.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "answers",
+      "faults": [
+        [
+          "answers[0].warning",
+          "which code did not raise"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "Answers a warning code never raised."
+    },
+    {
+      "plan": "anchors/weak/refused-confidence.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "confidence",
+      "faults": [
+        [
+          "decision.confidence.form",
+          "open caveats remain"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "Plain high while report-wide caveats are open."
+    },
+    {
+      "plan": "anchors/weak/refused-flag-no-rule-in-decide.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "flag",
+      "faults": [
+        [
+          "flag[0].discloses",
+          "holds 'no_rule'"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "A decide plan disclosing no rule set in advance."
+    },
+    {
+      "plan": "anchors/weak/refused-flag-no-rule-missing.plan.json",
+      "input": "r4",
+      "from": "r4/anchor.plan.json",
+      "expect": "refused",
+      "rule": "flag",
+      "faults": [
+        [
+          "flag",
+          "must disclose 'no_rule'"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "A tradeoff plan with no rule declared and no flag saying so."
+    },
+    {
+      "plan": "anchors/weak/refused-coverage.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "coverage",
+      "faults": [
+        [
+          "method",
+          "drop the caveat 'latency'"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "The latency caveat lands nowhere."
+    },
+    {
+      "plan": "anchors/weak/refused-charts-kind.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "charts",
+      "faults": [
+        [
+          "summary[0].kind",
+          "cannot draw 'contrasts'"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "A lines chart over contrasts, which it cannot draw."
+    },
+    {
+      "plan": "anchors/weak/refused-charts-summary-order.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "charts",
+      "faults": [
+        [
+          "summary[1].query.arms",
+          "in its order"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "A summary chart's arms out of the options table's order."
+    },
+    {
+      "plan": "anchors/weak/refused-keys.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "keys",
+      "faults": [
+        [
+          "lede",
+          "reading.1017.drop"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "A figure key naming a statistic no reading has."
+    },
+    {
+      "plan": "anchors/weak/refused-literal-digits.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "literal_digits",
+      "faults": [
+        [
+          "lede",
+          "types the number(s) ['15']"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "A typed number in prose (D3)."
+    },
+    {
+      "plan": "anchors/weak/item-R2.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R2",
+      "labeled_by": "pending_owner",
+      "note": "The headline names a topic, not the call."
+    },
+    {
+      "plan": "anchors/weak/item-R3.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R3",
+      "labeled_by": "pending_owner",
+      "note": "The lede is background in three sentences, with no supporting fact and nothing on what would change the answer."
+    },
+    {
+      "plan": "anchors/weak/item-R4.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R4",
+      "labeled_by": "pending_owner",
+      "note": "The lede repeats caveats the confidence already carries."
+    },
+    {
+      "plan": "anchors/weak/item-R5.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R5",
+      "labeled_by": "pending_owner",
+      "note": "Every section headline is a topic label."
+    },
+    {
+      "plan": "anchors/weak/item-R6.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R6",
+      "labeled_by": "pending_owner",
+      "note": "Why not the others names measures by their keys."
+    },
+    {
+      "plan": "anchors/weak/item-R7.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R7",
+      "labeled_by": "pending_owner",
+      "note": "Watch is generic monitoring advice and names no margin."
+    },
+    {
+      "plan": "anchors/weak/item-R8.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R8",
+      "labeled_by": "pending_owner",
+      "note": "The lede is long, passive and hedged."
+    },
+    {
+      "plan": "anchors/weak/item-R9.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R9",
+      "labeled_by": "pending_owner",
+      "note": "The first screen says to keep the control but not why or what the main risk is."
+    },
+    {
+      "plan": "anchors/weak/item-R10.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R10",
+      "labeled_by": "pending_owner",
+      "note": "Next names no experiment that could change the answer."
+    },
+    {
+      "plan": "anchors/weak/item-R11.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R11",
+      "labeled_by": "pending_owner",
+      "note": "Each confidence clause restates its caveat without saying what would make it material."
+    }
+  ]
+}

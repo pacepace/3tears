@@ -1,0 +1,327 @@
+{
+  "mode": "tradeoff",
+  "headline_kind": "trade",
+  "headline": "Switching to {arm:f64} cuts cost per reply by {cost.uplift.f64|abs|pct} but loses {contrast.f64.persona.delta|abs|pts} points of in-character rate, mostly in long conversations.",
+  "lede": "The loss grows with depth: past ten turns, {arm:f64} holds character far less often than {control.name}, while short conversations are close. A blind preference test or a live hybrid would show whether users notice before the savings are taken.",
+  "decision": {
+    "slots": [
+      {
+        "key": "the_trade",
+        "text": "{arm:f64} costs {cost.uplift.f64|abs|pct} less per reply than {control.name} and loses {contrast.f64.persona.delta|abs|pts} points of in-character rate ({contrast.f64.persona.interval|pts}). It holds every guardrail; {arm:f16} and {arm:cor} each break one.",
+        "caveats": []
+      },
+      {
+        "key": "where_it_flips",
+        "text": "The answer turns on what one point of in-character rate is worth per month. Below the price where the savings equal the loss, {arm:f64} wins; above it, {control.name} does. Set the price in the explore part to see the flip.",
+        "caveats": []
+      },
+      {
+        "key": "our_lean",
+        "text": "Our lean: a hybrid that serves early turns with {arm:f64} and hands longer conversations back to {control.name}. It keeps most of the savings and avoids most of the loss, but it is modeled, not measured.",
+        "caveats": []
+      },
+      {
+        "key": "what_settles_it",
+        "text": "A two-week live test of the hybrid on a slice of traffic, watching session length and thumbs-down rate in conversations past five turns, where raters already lean toward {control.name}.",
+        "caveats": []
+      }
+    ],
+    "confidence": {
+      "form": "high",
+      "caveats": []
+    }
+  },
+  "method": [
+    {
+      "term": "Test set",
+      "text": "Conversations replayed from September logs; every arm answered the same user turns, so differences are paired.",
+      "caveats": []
+    },
+    {
+      "term": "In-character rate",
+      "text": "A judge with the persona rubric, calibrated on {judged.persona.calibration_ratings|int} human-rated replies (agreement {judged.persona.agreement|pct}).",
+      "caveats": []
+    },
+    {
+      "term": "Guardrails",
+      "text": "Standing policy, not set for this campaign: declines to speculate and music facts correct. Options that break one are shown but left out of the pricing unless included.",
+      "caveats": []
+    },
+    {
+      "term": "Intervals",
+      "text": "{family.disclosure}",
+      "caveats": []
+    },
+    {
+      "term": "Hybrid",
+      "text": "Modeled, not run: the cheaper model serves early turns and Production the rest, weighted by the share of replies at each depth.",
+      "caveats": []
+    },
+    {
+      "term": "Cost",
+      "text": "Measured tokens times list price per thousand replies, at {meta.volume_per_month|int} replies a month.",
+      "caveats": []
+    }
+  ],
+  "schema": "report-plan/1",
+  "signals": {
+    "candidate_structure": "control_plus_candidates",
+    "baseline": "control",
+    "score_type": "pass_fail",
+    "strata": "many_strata",
+    "criteria": "margin",
+    "cross_cutting": [],
+    "log_cost_axis": false
+  },
+  "shape": "D",
+  "masthead": {
+    "kind": "Change · control vs candidates",
+    "system": "Persona chat model",
+    "counts": "{control.name} vs {n_candidates} candidates · 4 aspects",
+    "run_date": "{meta.run_date}",
+    "synthetic": true
+  },
+  "arms": [
+    {
+      "id": "prod",
+      "color_slot": -1
+    },
+    {
+      "id": "f64",
+      "color_slot": 0
+    },
+    {
+      "id": "f16",
+      "color_slot": 1
+    },
+    {
+      "id": "cor",
+      "color_slot": 2
+    }
+  ],
+  "show_arms_key": true,
+  "flag": [
+    {
+      "title": "No rule set in advance.",
+      "text": "The campaign did not say how much personality a dollar is worth, so this page prices the trade instead of deciding it. The persona's owner makes the call; the measured changes stand as shown.",
+      "discloses": [
+        "no_rule"
+      ],
+      "weakens": [],
+      "survives": [
+        "judged:persona",
+        "task",
+        "judged:facts",
+        "specul"
+      ]
+    }
+  ],
+  "options": {
+    "rows": [
+      {
+        "option": "prod",
+        "role": "control"
+      },
+      {
+        "option": "f64",
+        "role": "lean"
+      },
+      {
+        "option": "f16",
+        "role": "cheapest"
+      },
+      {
+        "option": "cor",
+        "role": "alternative"
+      }
+    ],
+    "columns": [
+      "judged:persona",
+      "judged:facts",
+      "measure:specul",
+      "cost_per_1k"
+    ]
+  },
+  "summary": [
+    {
+      "kind": "bars",
+      "title": "Cost per thousand replies",
+      "query": {
+        "source": "measures",
+        "aspect": "",
+        "measures": [
+          "cost_per_1k"
+        ],
+        "arms": [],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "",
+      "level": "",
+      "unit": "usd_per_1k",
+      "domain": []
+    },
+    {
+      "kind": "forest",
+      "title": "In-character rate against Production, in points",
+      "query": {
+        "source": "contrasts",
+        "aspect": "",
+        "measures": [
+          "persona"
+        ],
+        "arms": [],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "",
+      "level": "95%",
+      "unit": "points",
+      "domain": []
+    }
+  ],
+  "sections": [
+    {
+      "id": "aspects",
+      "eyebrow": "Every aspect, against Production",
+      "headline": "Personality is the only judged loss for {arm:f64}; {arm:f16} also gets music facts wrong more often",
+      "takeaway": "Change in points against {control.name} on the same conversations, for the two judged aspects. A whisker clear of zero is a real change.",
+      "chart": {
+        "kind": "forest",
+        "title": "",
+        "query": {
+          "source": "contrasts",
+          "aspect": "",
+          "measures": [
+            "persona",
+            "facts"
+          ],
+          "arms": [],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "f64",
+        "level": "95%",
+        "unit": "points",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "depth",
+      "eyebrow": "Where the personality goes",
+      "headline": "The flash models hold character for a few turns, then drift",
+      "takeaway": "In-character rate by how deep into the conversation the reply is. Short conversations are close; the gap opens past five turns.",
+      "chart": {
+        "kind": "lines",
+        "title": "",
+        "query": {
+          "source": "strata",
+          "aspect": "",
+          "measures": [
+            "persona"
+          ],
+          "arms": [],
+          "strata": [
+            "depth:1-2",
+            "depth:3-5",
+            "depth:6-10",
+            "depth:11+"
+          ],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "",
+        "level": "",
+        "unit": "percent",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "users",
+      "eyebrow": "What a point means to users",
+      "headline": "Raters prefer Production clearly only in longer conversations",
+      "takeaway": "Blind side-by-side ratings of {control.name} against {arm:f64}. Right of the middle means raters preferred {control.name}.",
+      "chart": {
+        "kind": "diverging_bars",
+        "title": "",
+        "query": {
+          "source": "human_pref",
+          "aspect": "",
+          "measures": [],
+          "arms": [],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "This is the only link between the judge's points and what people notice, and it is small: read it as direction, not size.",
+      "caveats": []
+    }
+  ],
+  "explore": [
+    {
+      "title": "Set the price of a point",
+      "controls": [
+        {
+          "id": "price",
+          "kind": "slider",
+          "title": "Value of one point of in-character rate, per month",
+          "binds": "price_per_point",
+          "min": 0.0,
+          "max": 5000.0,
+          "step": 100.0,
+          "default": 1000.0,
+          "options": []
+        },
+        {
+          "id": "guardrails",
+          "kind": "toggle",
+          "title": "Include options that break a guardrail",
+          "binds": "",
+          "min": 0.0,
+          "max": 0.0,
+          "step": 0.0,
+          "default": 0.0,
+          "options": []
+        }
+      ],
+      "recomputes": "Net monthly value per option, savings minus the price of the points lost, ranked; the page says the price at which the best option changes from {arm:f64} to {control.name}."
+    }
+  ],
+  "full_results": [
+    "arms_by_measure",
+    "contrasts",
+    "strata"
+  ],
+  "durable_claims": [
+    {
+      "text": "Flash persona models lose character with conversation depth: the gap to {control.name} opens past five turns.",
+      "confidence": "medium",
+      "keys": [
+        "contrast.f64.persona.delta"
+      ]
+    }
+  ],
+  "answers": []
+}
