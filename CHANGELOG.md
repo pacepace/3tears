@@ -26,7 +26,10 @@ precision and scale, or wider than 18 digits in SQLite (a 64-bit integer) or 38 
 `UnsupportedL1ColumnError` naming the table and column, and the collection when a `DeclaredTableCollection`
 creates the table. Nothing is kept as a binary float any more. A dynamic collection
 (`create_dynamic_collection`) with a `decimal` column, which declares no scale, is refused on a registry with an
-L1. A DuckDB L1 whose `NUMERIC(p, s)` columns were `DOUBLE` now answers `Decimal` for them.
+L1. A DuckDB L1 whose `NUMERIC(p, s)` columns were `DOUBLE` now answers `Decimal` for them. `answer_json`
+writes a `Decimal` as the JSON number its `float` writes, so an answer built from those columns reads on the
+wire as it did when they were floats, not as a quoted string. `tier_parity_findings` checks a collection with
+`caches_in_l1 = False` on its L2 codec alone.
 
 **Fixed:** `ScheduledJobCollection` and `JobFireCollection` wrote past `save_entity` and evicted nothing:
 `set_status`, `update_schedule`, `request_immediate_fire`, `claim_and_reschedule`, `create_dispatching`,
