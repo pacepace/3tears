@@ -50,6 +50,17 @@ control `%`, its candidates `pts`, a choice's arms `%`), and a cell handed back 
 refused. `settle_blocks` takes the campaign and each aspect's page, which a floor's count is read from;
 `decision.rate_projections` (new) is each unclear rate's projection a floor's count joins.
 
+### evals: a campaign's depth tables are one sentence where a sentence says all they would
+
+**Changed:** On a campaign's page, the Depth table is one sentence where every arm ran each case alike on every
+aspect but at most three, which the sentence names ("Every arm ran each case once on every aspect but v3 twice on
+tone; ..."); a depth that varies within an arm, or arms of one aspect over different cases, keeps the table. The
+Pass^k depth table is one sentence for the campaign where pass^k is planned and compared at depth 1 on every aspect
+with no case left out, since it would print each arm's pass rate again. The Precision table drops a column empty on
+every row, and moves under Methods where every arm ran each case once. What extra repeats cannot lower is said once,
+in Design & provenance, where a comparison reads a between-case share. The writer's view is unchanged. See
+`packages/evals/MIGRATIONS.toml`.
+
 ### evals: every page's first screen is the decision, and each report-wide caveat is said once
 
 **Changed:** A campaign's page and an aspect's own page open on their title, nothing above it and nothing announced
