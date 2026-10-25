@@ -24,18 +24,18 @@ support tickets from users with drifting phone clocks.
 
 **Only sealing needs the ``core`` extra** (``3tears-iam[core]``). Seed generation,
 provisioning URIs, verification and backup codes run on the base install. ``seal_seed``,
-``unseal_seed`` and :class:`DecryptionError` are core's sealing, imported when first used --
-sealed seeds are stored data, so they are sealed by the one implementation that opens them
-again -- and without the extra they raise an :class:`ImportError` naming it.
+``unseal_seed`` and :class:`DecryptionError` are core's sealing, imported at the top of this
+module where core is installed -- sealed seeds are stored data, so they are sealed by the one
+implementation that opens them again -- and without the extra they raise an
+:class:`ImportError` naming it.
 """
 
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import secrets
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, NoReturn
+from typing import Final, NoReturn
 
 import pyotp
 from pydantic import SecretStr
@@ -43,8 +43,14 @@ from pydantic import SecretStr
 from threetears.iam._core_extra import core_extra_missing
 from threetears.observe import contain, get_logger
 
-if TYPE_CHECKING:
-    from threetears.core.security import DecryptionError
+try:
+    from threetears.core.security import DecryptionError, open_secret, seal
+except ModuleNotFoundError as _exc:
+    # a module missing from inside an installed core is a broken environment, raised here as it came
+    core_extra_missing(_exc, needed_by=__name__)
+    _CORE_ABSENT: ModuleNotFoundError | None = _exc
+else:
+    _CORE_ABSENT = None
 
 __all__ = [
     "BACKUP_CODE_COUNT",
@@ -211,10 +217,8 @@ def seal_seed(seed_b32: str, key: SecretStr) -> str:
 
     :raises ImportError: the ``core`` extra is not installed
     """
-    try:
-        from threetears.core.security import seal
-    except ModuleNotFoundError as exc:
-        raise core_extra_missing(exc, needed_by="threetears.iam.totp.seal_seed") from exc
+    if _CORE_ABSENT is not None:
+        raise core_extra_missing(_CORE_ABSENT, needed_by="threetears.iam.totp.seal_seed") from _CORE_ABSENT
     return seal(seed_b32, key)
 
 
@@ -225,60 +229,26 @@ def unseal_seed(sealed: str, key: SecretStr) -> str:
         different key, or tampered with.
     :raises ImportError: the ``core`` extra is not installed
     """
-    try:
-        from threetears.core.security import open_secret
-    except ModuleNotFoundError as exc:
-        raise core_extra_missing(exc, needed_by="threetears.iam.totp.unseal_seed") from exc
+    if _CORE_ABSENT is not None:
+        raise core_extra_missing(_CORE_ABSENT, needed_by="threetears.iam.totp.unseal_seed") from _CORE_ABSENT
     return open_secret(sealed, key).get_secret_value()
 
 
 def __getattr__(name: str) -> object:
-    """Resolve :class:`DecryptionError` on first access, from core's sealing.
+    """Name the ``core`` extra when :class:`DecryptionError` is asked for without it.
 
-    It is core's own class, so ``except DecryptionError`` here catches what ``unseal_seed``
-    raises. Resolved lazily so the base install imports this module without core.
+    With core installed, ``DecryptionError`` is core's own class, imported above, so
+    ``except DecryptionError`` here catches what ``unseal_seed`` raises and this hook is never
+    reached for it. On the base install the name is absent, so ``dir()`` leaves it out, and
+    reaching it raises the error that names the extra.
 
     :param name: the attribute asked for
     :ptype name: str
-    :return: :class:`threetears.core.security.DecryptionError`
+    :return: never returns
     :rtype: object
     :raises ImportError: ``DecryptionError`` was asked for and the ``core`` extra is not installed
     :raises AttributeError: for any other name
     """
-    if name != "DecryptionError":
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    try:
-        from threetears.core import security as core_security
-    except ModuleNotFoundError as exc:
-        raise core_extra_missing(exc, needed_by="threetears.iam.totp.DecryptionError") from exc
-    resolved: object = core_security.DecryptionError
-    return resolved
-
-
-def __dir__() -> list[str]:
-    """The module's names, with ``DecryptionError`` when core is installed to resolve it.
-
-    Left out on the base install, where reaching it raises :class:`ImportError`: a name
-    ``dir()`` lists is one introspection (``hasattr``, ``inspect``) will try to read, and
-    ``hasattr`` only expects :class:`AttributeError`.
-
-    :return: sorted attribute names
-    :rtype: list[str]
-    """
-    names = set(globals())
-    if _core_is_installed():
-        names.add("DecryptionError")
-    return sorted(names)
-
-
-def _core_is_installed() -> bool:
-    """Whether ``threetears.core`` can be found, without importing it.
-
-    :return: whether core is installed
-    :rtype: bool
-    """
-    try:
-        return importlib.util.find_spec("threetears.core") is not None
-    except ModuleNotFoundError:
-        # an import hook that refuses core answers by raising rather than with None
-        return False
+    if name == "DecryptionError" and _CORE_ABSENT is not None:
+        raise core_extra_missing(_CORE_ABSENT, needed_by="threetears.iam.totp.DecryptionError") from _CORE_ABSENT
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -1,4 +1,4 @@
-"""Only the ``core`` extra's modules import core at module level, and nothing imports upward.
+"""Only the modules named here import core at module level, and nothing imports upward.
 
 The base install leaves out core, the NATS client and the agent layer, so a module-level import
 of any of them anywhere but the two named ``core`` modules makes an extra mandatory. It would do
@@ -7,8 +7,10 @@ so silently: a development environment has all of them installed, so every test 
 Checked by reading source rather than by importing, because an import check can only prove the
 modules that happened to load are clean. A module-level import here is one that runs when the
 module is imported: at the top, or inside a module-level ``try``/``if``/``with`` or class body.
-Imports inside a function, and under ``if TYPE_CHECKING:``, cost nothing at import and are the
-sanctioned shapes.
+An import under ``if TYPE_CHECKING:`` costs nothing at import and is not counted. An import
+inside a function is not counted here either, because it is not allowed at all: serving code
+imports what it needs at its top, an optional extra's module under a guard there (owner ruling,
+2026-10-24, held family-wide by ``tests/enforcement/test_no_function_level_imports.py``).
 """
 
 from __future__ import annotations
@@ -31,10 +33,10 @@ _FORBIDDEN_ROOTS = (
     "nkeys",
 )
 
-#: the ``core`` extra's modules, which may import ``threetears.core`` at module level behind
-#: the guard that names the extra. ``totp`` is not one: only its sealing needs core, imported
-#: where it is used.
-_CORE_EXTRA_MODULES = frozenset({"dpop.py", "stores/attempt_limiter.py"})
+#: the modules that import ``threetears.core`` at module level, behind the guard that names the
+#: ``core`` extra. ``dpop`` and ``stores.attempt_limiter`` need core to import at all; ``totp``
+#: imports only its sealing there, and the rest of it runs on the base install.
+_CORE_EXTRA_MODULES = frozenset({"dpop.py", "stores/attempt_limiter.py", "totp.py"})
 
 
 def _modules() -> list[Path]:

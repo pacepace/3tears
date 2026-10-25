@@ -1,4 +1,4 @@
-"""What importing each base module costs, as an allowlist.
+"""What importing each base module costs on the base install, as an allowlist.
 
 ``test_imports_without_core`` proves the base modules work with core, NATS and the agent
 layer refused. This test asks the question from the other side: not "did it avoid what we
@@ -11,18 +11,24 @@ The floor is the promise to a consumer outside the platform (testament's coordin
 ``github``, ``oidc``, ``tokens`` and ``clientip`` and runs neither NATS nor Postgres): importing
 a base module costs what the base install declares and no more.
 
-Measured in a fresh interpreter, because whatever the pytest process already imported would
-otherwise hide the cost entirely.
+Measured by :mod:`threetears.enforcement.import_floor`, in a fresh interpreter with what the base
+install leaves out refused. Refused rather than left installed because ``totp`` imports core's
+sealing at its top under the guard naming the ``core`` extra (lazy imports are banned in serving
+code, owner ruling 2026-10-24): with core installed, importing it loads core, which is the cost
+the extra's buyer chose; the base install's buyer pays none of it.
 """
 
 from __future__ import annotations
 
-import json
-import subprocess
-import sys
 from functools import cache
 
 import pytest
+
+from threetears.enforcement.import_floor import (
+    ImportFloorConfig,
+    modules_loaded_by_importing,
+    run_import_floor_enforcement,
+)
 
 #: Third-party import roots the base floor pays for: the declared distributions, and the
 #: support modules each loads of its own accord. Enumerated rather than derived, so a change
@@ -102,75 +108,47 @@ _BASE_MODULES = (
     "threetears.iam.webauthn",
 )
 
-#: CPython's build configuration module embeds the ABI flags and platform in its name, so it
-#: is the interpreter rather than a dependency, yet it is absent from ``sys.stdlib_module_names``.
-_INTERPRETER_ARTIFACT_PREFIXES = ("_sysconfigdata",)
+#: What the base install leaves out, refused in the probe as an install without it refuses it: the
+#: same roots ``tests/enforcement/test_package_boundaries.py`` holds the source to.
+_REFUSED_ROOTS = (
+    "threetears.core",
+    "threetears.agent",
+    "threetears.nats",
+    "sqlalchemy",
+    "asyncpg",
+    "nats",
+    "nkeys",
+)
 
-_PROBE = """
-import json
-import sys
-
-before = set(sys.modules)
-import {module}  # noqa: F401
-print(json.dumps(sorted(set(sys.modules) - before)))
-"""
+_FLOOR = ImportFloorConfig(
+    base_modules=_BASE_MODULES,
+    third_party_roots=_PERMITTED_THIRD_PARTY_ROOTS,
+    family_prefixes=_PERMITTED_FAMILY_PREFIXES,
+    namespace_modules=_PERMITTED_FAMILY_MODULES,
+    refused_roots=_REFUSED_ROOTS,
+)
 
 
 @cache
 def _modules_loaded_by_importing(module: str) -> tuple[str, ...]:
-    """Every module a fresh interpreter loads for *module*'s import.
+    """Every module a fresh base-install interpreter loads for *module*'s import.
 
     :param module: the dotted module name to import in the probe
     :ptype module: str
     :return: the module names loaded, sorted
     :rtype: tuple[str, ...]
     """
-    result = subprocess.run(
-        [sys.executable, "-c", _PROBE.format(module=module)],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-    assert result.returncode == 0, f"probe for {module} failed:\n{result.stderr}"
-    loaded: list[str] = json.loads(result.stdout.strip())
-    return tuple(loaded)
-
-
-def _is_permitted(module: str) -> bool:
-    """Whether the base floor pays for *module*.
-
-    :param module: a dotted module name from ``sys.modules``
-    :ptype module: str
-    :return: true when the module is stdlib, a declared distribution's, or permitted family
-    :rtype: bool
-    """
-    root = module.split(".")[0]
-    if root in sys.stdlib_module_names or module.startswith(_INTERPRETER_ARTIFACT_PREFIXES):
-        return True
-    if root in _PERMITTED_THIRD_PARTY_ROOTS:
-        return True
-    if any(module == prefix or module.startswith(f"{prefix}.") for prefix in _PERMITTED_FAMILY_PREFIXES):
-        return True
-    return module in _PERMITTED_FAMILY_MODULES
+    return modules_loaded_by_importing(module, refused=_REFUSED_ROOTS)
 
 
 @pytest.mark.parametrize("module", _BASE_MODULES)
-class TestBaseModuleImportCost:
-    def test_the_probe_actually_imported_the_module(self, module: str) -> None:
-        """An allowlist over an empty set passes for the wrong reason."""
-        assert module in _modules_loaded_by_importing(module)
+def test_nothing_outside_the_base_floor_is_loaded(module: str) -> None:
+    """No core, no NATS, no agent layer, no Postgres driver: an allowlist, not a denylist.
 
-    def test_nothing_outside_the_base_floor_is_loaded(self, module: str) -> None:
-        """No core, no NATS, no agent layer, no Postgres driver: an allowlist, not a denylist."""
-        offenders = sorted(m for m in _modules_loaded_by_importing(module) if not _is_permitted(m))
-
-        assert offenders == [], (
-            f"importing {module} loaded modules outside iam's base floor: {offenders}. Either the "
-            "import belongs behind TYPE_CHECKING, inside a function or behind an extra, or the floor "
-            "itself is changing -- in which case the ruling in test_dependency_alignment.py, the "
-            "package's dependencies and this list move together"
-        )
+    A change to the floor itself moves the ruling in test_dependency_alignment.py, the package's
+    dependencies and this config together.
+    """
+    run_import_floor_enforcement(_FLOOR, module)
 
 
 def test_the_contracts_leaf_is_what_stepup_loads_for_its_taxonomy() -> None:

@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### enforcement: the import-floor gate measures what a base install costs to import
+
+**Added (enforcement):** `threetears.enforcement.import_floor`, the gate `3tears-iam`'s base install
+was held to, for any package with one. `ImportFloorConfig` names the base modules, the third-party
+roots and family packages the base install pays for, and the roots it leaves out;
+`run_import_floor_enforcement(config, module)` imports the module in a fresh interpreter with those
+roots refused and fails on anything it loaded outside the floor, on a module that needs a refused
+root without the guard naming its extra, and on a probe that loaded nothing. An allowlist, not a
+denylist: the next dependency to arrive is one nobody wrote down. `modules_loaded_by_importing` and
+`outside_floor` are the probe and the check on their own. `3tears-iam`'s import-cost test is now a
+thin shell over it.
+
 ### iam: the base install brings no core, NATS client or agent layer
 
 **Changed (iam):** `3tears-iam`'s hard dependencies no longer include `3tears[security]`,
@@ -30,7 +42,9 @@ installed `defusedxml` is re-raised as it came.
 `3tears-iam[core]`, plus `[nats]` for the KV stores. `3tears-iam[core,nats]` restores the old
 install except for agent-acl: an app that reached `threetears.agent.acl` through iam declares
 `3tears-agent-acl` itself. Without `core`, importing `dpop` or `stores.attempt_limiter`, calling `seal_seed` or
-`unseal_seed`, or reaching `totp.DecryptionError` raises `ImportError` naming `3tears-iam[core]`. An
+`unseal_seed`, or reaching `totp.DecryptionError` raises `ImportError` naming `3tears-iam[core]`; with
+it, importing `totp` loads core's sealing at once, as importing `dpop` loads core, rather than on the first
+seal (no lazy imports in serving code). An
 app that imported `threetears.core`, `threetears.nats` or `threetears.agent.acl` while depending only
 on `3tears-iam` must now declare them itself. Every import path is unchanged. This ships in a minor
 release.
