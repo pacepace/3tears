@@ -86,6 +86,20 @@ logarithmic when the arms' cost per 1,000 replies spans more than ten times.
   since a reader still reads a digit there as a number, no typed digit either. A control's ``min``, ``max``,
   ``step`` and ``default`` are the control's own scale, numbers and not prose, and are not checked here.
 
+- *Watch names the weakest margin*: a decide plan's Watch slot cites the weakest margin
+  (:func:`~threetears.evals.analysis.report_margins.weakest_margin`) by at least one ``weakest.*`` figure key, where the
+  input reads any figure against a criterion, margin or floor. Which margin is weakest is code's fact; what Watch says
+  about it is the prose's.
+- *Reader names above Full results* (GENERATOR §6.3, §8 item 9): no prose field above Full results (every one but
+  Method's and the durable claims', and the explore option labels included) types an internal id: an aspect,
+  measure, judged dimension, stratum, task or criterion id that reads as an id (it holds an underscore, a dot, a
+  colon, a slash, an equals sign, a bracket or a quote) and differs from its reader name
+  (:func:`~threetears.evals.analysis.report.figure_keys.reader_name`). It is matched as D3 matches a name: keys set
+  aside, then every name a reader is shown (arms, reader names), then the id where a non-word character or the text's
+  edge bounds it, in any case. A plain-word id (``billing``) reads as a word and is the rubric's to judge. Nor does
+  such prose quote the campaign's question (``{meta.question}``): the campaign wrote it in its own ids
+  (``dj_character_v2``), which no reader name can replace, so the page says what it asks in reader names instead.
+
 **Warnings** (:func:`raised_warnings`), what code raises on an arm and the plan must answer: a floor read ``broken``
 (``floor_broken``) or ``unclear`` (``floor_unclear``: GENERATOR §3's borderline, whose answer says what sample
 would settle it) on the arm, by its aspect and ``floor`` key; an aspect where a pair reading shows another arm ahead
@@ -105,13 +119,24 @@ decision's confidence or, where the confidence does not list it, the flag.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 
 from pydantic import BaseModel
 
 from threetears.evals.analysis.errors import PlanRefusal, UnresolvableReference
-from threetears.evals.analysis.report.figure_keys import format_figure, keys_in, literal_numbers, parse_key, resolve
+from threetears.evals.analysis.report.figure_keys import (
+    PERCENTILE_NAMES,
+    WEAKEST_PREFIX,
+    format_figure,
+    keys_in,
+    literal_numbers,
+    parse_key,
+    reader_names,
+    render,
+    resolve,
+)
 from threetears.evals.analysis.report_decision import (
     Caveat,
     Materiality,
@@ -126,6 +151,7 @@ from threetears.evals.analysis.report_decision import (
     surviving_options,
 )
 from threetears.evals.analysis.report_input import Aspect, Judged, Measure, ReportInput
+from threetears.evals.analysis.report_margins import weakest_margin
 from threetears.evals.kernel.report_plan import ChartSpec, OptionRow, ReportPlan, Signals, WarningRef
 from threetears.evals.schema.prose import field_is_prose
 
@@ -351,6 +377,8 @@ def validate_plan(plan: ReportPlan, report_input: ReportInput) -> None:
     faults += _chart_faults(plan, report_input)
     faults += _key_faults(plan, report_input)
     faults += _literal_faults(plan, report_input)
+    faults += _watch_faults(plan, report_input)
+    faults += _reader_id_faults(plan, report_input)
     if faults:
         raise PlanRefusal(faults)
 
@@ -1017,3 +1045,114 @@ def _literal_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fa
                     "the input does not hold is written in words or left out"
                 ),
             )
+
+
+# --- the weakest margin in Watch -----------------------------------------------------------------------------------
+
+
+def _watch_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
+    """A decide plan's Watch cites the weakest margin by a ``weakest.*`` key, where the input has one."""
+    if plan.mode != "decide" or weakest_margin(report_input) is None:
+        return
+    for index, slot in enumerate(plan.decision.slots):
+        if slot.key != "watch":
+            continue
+        try:
+            cited = any(key.path.startswith(WEAKEST_PREFIX) for key in keys_in(slot.text))
+        except UnresolvableReference:
+            continue  # the key check refuses a key that does not parse
+        if not cited:
+            said = render(_WEAKEST_SAID, report_input, {})
+            yield (
+                f"decision.slots[{index}].text",
+                f"names no weakest margin: Watch opens with it, cited by a `weakest.` key, and code found it: {said}",
+            )
+
+
+#: How a Watch refusal says the weakest margin code found.
+_WEAKEST_SAID = "{weakest.arm}, {weakest.value} against {weakest.criterion} at {weakest.threshold}"
+
+
+# --- internal ids above Full results -------------------------------------------------------------------------------
+
+#: A character no reader name carries and an id often does: an id holding one reads as an id.
+_ID_MARKS = re.compile(r"[_.:/=()\[\]\"]")
+#: Where the page's Full results begin: prose at these paths sits below it, where ids may appear.
+_BELOW_FULL_RESULTS = ("method", "durable_claims")
+#: The key that quotes the campaign's question, in the campaign's own words and ids.
+_QUESTION_KEY = "meta.question"
+
+
+def _above_full_results(plan: ReportPlan) -> Iterator[tuple[str, str]]:
+    for path, text in [*_prose(plan), *_option_labels(plan)]:
+        if not path.startswith(_BELOW_FULL_RESULTS):
+            yield path, text
+
+
+def _internal_ids(report_input: ReportInput) -> dict[str, tuple[str, str]]:
+    """Every id that reads as an id and differs from its reader name: id, then its kind and reader name.
+
+    An id reads as an id when it holds a character no reader name carries (an underscore, a dot, a colon, a slash, an
+    equals sign, a bracket or a quote); a plain word (``billing``, ``persona``) reads as a word, and a percentile's
+    name (``p95``) is the reader's own."""
+    found: dict[str, tuple[str, str]] = {}
+    for kind, names in reader_names(report_input).items():
+        for identifier, name in names.items():
+            if identifier.lower() in PERCENTILE_NAMES or identifier.casefold() == name.casefold():
+                continue
+            if _ID_MARKS.search(identifier):
+                found.setdefault(identifier, (kind, name))
+    return found
+
+
+def _reader_id_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
+    """No prose above Full results types an internal id (GENERATOR §8 item 9), matched as D3 matches a name, nor quotes
+    the campaign's question, which the campaign wrote in its own ids."""
+    ids = _internal_ids(report_input)
+    shown = {name for names in reader_names(report_input).values() for name in names.values()}
+    shown |= {
+        name for arm in report_input.arms for name in (arm.id, arm.name, arm.short_name, arm.served_model) if name
+    }
+    shown -= set(ids)
+    for path, text in _above_full_results(plan):
+        try:
+            keys = keys_in(text)
+        except UnresolvableReference:
+            keys = []  # the key check refuses a key that does not parse
+        if any(key.path == _QUESTION_KEY for key in keys):
+            yield (
+                path,
+                f"quotes the campaign's question ({{{_QUESTION_KEY}}}) above Full results, in the campaign's own words "
+                "and ids: say what it asks in reader names, or leave it to Method",
+            )
+        for identifier in _typed_ids(text, ids, shown):
+            kind, name = ids[identifier]
+            yield path, f"types the {kind} id {identifier!r} above Full results: write its reader name, {name!r}"
+
+
+def _typed_ids(text: str, ids: Mapping[str, tuple[str, str]], shown: Iterable[str]) -> list[str]:
+    """The ids ``text`` types outside its keys and outside any name a reader is shown, each once, in order found."""
+    masked = list(_KEY_SPAN.sub(lambda match: "_" * len(match.group()), text))
+
+    def mask(pattern: re.Pattern[str]) -> None:
+        for match in pattern.finditer("".join(masked)):
+            masked[match.start() : match.end()] = "_" * (match.end() - match.start())
+
+    for name in sorted(shown, key=len, reverse=True):
+        mask(_bounded(name))
+    typed: list[str] = []
+    for identifier in sorted(ids, key=len, reverse=True):
+        pattern = _bounded(identifier)
+        if pattern.search("".join(masked)):
+            typed.append(identifier)
+            mask(pattern)
+    return sorted(typed, key=lambda identifier: text.lower().find(identifier.lower()))
+
+
+#: A key as prose holds it, set aside before ids are looked for.
+_KEY_SPAN = re.compile(r"\{[^{}]*\}")
+
+
+def _bounded(name: str) -> re.Pattern[str]:
+    """``name`` where a non-word character or the text's edge bounds it on both sides, in any case: D3's rule."""
+    return re.compile(rf"(?<!\w){re.escape(name)}(?!\w)", re.IGNORECASE)

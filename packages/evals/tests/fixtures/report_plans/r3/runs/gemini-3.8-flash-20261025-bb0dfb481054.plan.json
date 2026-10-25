@@ -1,28 +1,28 @@
 {
   "mode": "decide",
   "headline_kind": "decision",
-  "headline": "Select {arm:brisk-s.few}. It is the only configuration that satisfies both cell accuracy floors and the latency budget.",
-  "lede": "{arm:brisk-s.few} delivers {measure.balanced_accuracy.brisk-s.few.mean}% balanced accuracy with {measure.latency_ms.brisk-s.few.p95} ms p95 latency at {measure.cost_per_1m.brisk-s.few.mean} dollars per million turns. Every cheaper or faster configuration fails the accuracy floor on complex news turns.",
+  "headline": "Deploy {arm:brisk-s.few}. It is the only configuration to clear all accuracy floors within the latency budget.",
+  "lede": "{arm:brisk-s.few} delivers {measure.balanced_accuracy.brisk-s.few.mean|pct} balanced accuracy with a p95 latency of {measure.latency_ms.brisk-s.few.p95} ms. Lowering the cell accuracy floor below {criteria.cell_floor.threshold|pct} would allow {arm:nano-xs.few} at lower cost.",
   "decision": {
     "slots": [
       {
         "key": "recommendation",
-        "text": "Deploy {arm:brisk-s.few}. It attains {measure.balanced_accuracy.brisk-s.few.mean}% balanced accuracy, stays within the {criteria.p95.threshold} ms p95 latency threshold at {measure.latency_ms.brisk-s.few.p95} ms, and clears the {criteria.cell_floor.threshold}% cell accuracy floor across all nine cells.",
+        "text": "Select {arm:brisk-s.few}. It satisfies the {criteria.overall.threshold|pct} overall target, clears the {criteria.cell_floor.threshold|pct} floor across every cell, and stays under the {criteria.p95.threshold} ms latency cap.",
         "caveats": []
       },
       {
         "key": "why_not",
-        "text": "{arm:nano-xs.few} misses the cell floor on complex news turns. {arm:atlas-m.rubric} reaches {measure.balanced_accuracy.atlas-m.rubric.mean}% accuracy but breaches the latency budget at {measure.latency_ms.atlas-m.rubric.p95} ms. {arm:nano-xs.zero} drops balanced accuracy to {measure.balanced_accuracy.nano-xs.zero.mean}%.",
+        "text": "{arm:nano-xs.few} breaches the {criteria.cell_floor.threshold|pct} floor on complex news. Every Atlas-M configuration exceeds the {criteria.p95.threshold} ms latency budget.",
         "caveats": []
       },
       {
         "key": "watch",
-        "text": "The binding constraint is the complex news cell, where {arm:brisk-s.few} clears the {criteria.cell_floor.threshold}% floor by only a small margin.",
+        "text": "{weakest.arm} achieves {weakest.value|pct} against {weakest.criterion} at {weakest.threshold|pct}, a margin of {weakest.margin|pts}. Production drifts toward complex news could compromise classification quality.",
         "caveats": []
       },
       {
         "key": "next",
-        "text": "Ship {arm:brisk-s.few} to production routing. If cost must be lowered further, collect more complex news exemplars to fine-tune {arm:nano-xs.few}.",
+        "text": "Run a targeted prompt trial on {arm:nano-xs.few} specifically for complex news turns to test if its cell floor failure can be eliminated.",
         "caveats": []
       }
     ],
@@ -33,23 +33,28 @@
   },
   "method": [
     {
-      "term": "Sample size",
-      "text": "Evaluation ran on {scoreboard.brisk-s.few.cases|int} turns across a complexity and domain target grid.",
+      "term": "Test cases",
+      "text": "{scoreboard.brisk-s.few.cases} labelled evaluation turns evaluated across three complexity tiers and three domain categories.",
       "caveats": []
     },
     {
       "term": "Passing criteria",
-      "text": "A candidate must achieve at least {criteria.overall.threshold}% balanced accuracy, {criteria.cell_floor.threshold}% accuracy in every cell, and under {criteria.p95.threshold} ms p95 latency.",
+      "text": "Balanced accuracy at or above {criteria.overall.threshold|pct}, every cell at or above {criteria.cell_floor.threshold|pct}, and latency under {criteria.p95.threshold} ms.",
       "caveats": []
     },
     {
-      "term": "Accuracy metric",
-      "text": "A turn is marked correct only when both complexity level and domain category match the gold label.",
+      "term": "Scoring",
+      "text": "Deterministic exact match against ground truth complexity and domain annotations.",
       "caveats": []
     },
     {
-      "term": "Cost calculation",
-      "text": "Cost is computed from total token counts multiplied by published model price rates per million turns.",
+      "term": "Confidence intervals",
+      "text": "Standard errors and half-widths calculated at normal confidence intervals per cell.",
+      "caveats": []
+    },
+    {
+      "term": "Cost basis",
+      "text": "Measured prompt and generation token counts multiplied by published model catalog pricing.",
       "caveats": []
     }
   ],
@@ -137,7 +142,7 @@
   "summary": [
     {
       "kind": "bars",
-      "title": "Balanced accuracy (%)",
+      "title": "Balanced accuracy across candidates",
       "query": {
         "source": "measures",
         "aspect": "",
@@ -162,34 +167,8 @@
       "domain": []
     },
     {
-      "kind": "bars",
-      "title": "Cost per million turns ($)",
-      "query": {
-        "source": "measures",
-        "aspect": "",
-        "measures": [
-          "cost_per_1m"
-        ],
-        "arms": [
-          "brisk-s.few",
-          "nano-xs.few",
-          "atlas-m.rubric",
-          "nano-xs.zero"
-        ],
-        "strata": [],
-        "limit": 0,
-        "transform": "none",
-        "small_multiples_by": "none"
-      },
-      "reference": [],
-      "emphasis": "brisk-s.few",
-      "level": "",
-      "unit": "usd_per_1m",
-      "domain": []
-    },
-    {
-      "kind": "bars",
-      "title": "Latency p95 (ms)",
+      "kind": "range_bars",
+      "title": "P95 latency against budget",
       "query": {
         "source": "measures",
         "aspect": "",
@@ -212,39 +191,58 @@
       "level": "",
       "unit": "ms",
       "domain": []
+    },
+    {
+      "kind": "bars",
+      "title": "Cost per million turns",
+      "query": {
+        "source": "measures",
+        "aspect": "",
+        "measures": [
+          "cost_per_1m"
+        ],
+        "arms": [
+          "brisk-s.few",
+          "nano-xs.few",
+          "atlas-m.rubric",
+          "nano-xs.zero"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "brisk-s.few",
+      "level": "",
+      "unit": "usd_per_1m",
+      "domain": []
     }
   ],
   "sections": [
     {
-      "id": "gate_matrix",
-      "eyebrow": "Gate evaluation",
-      "headline": "{arm:brisk-s.few} is the single candidate passing all operational gates",
-      "takeaway": "Green cells pass; red cells fail either the overall accuracy, cell floor, or p95 latency budget.",
+      "id": "matrix",
+      "eyebrow": "Cell accuracy breakdown",
+      "headline": "{arm:brisk-s.few} maintains accuracy across all nine cells while cheaper options fail on complex tasks.",
+      "takeaway": "Compare accuracy across domain and complexity cells; values below {criteria.cell_floor.threshold|pct} breach the minimum standard.",
       "chart": {
-        "kind": "gate_matrix",
+        "kind": "heatmap",
         "title": "",
         "query": {
-          "source": "configs",
+          "source": "cells",
           "aspect": "",
           "measures": [
-            "balanced_accuracy",
-            "latency_ms"
+            "accuracy"
           ],
           "arms": [
-            "atlas-m.zero",
-            "atlas-m.few",
-            "atlas-m.rubric",
-            "brisk-s.zero",
             "brisk-s.few",
-            "brisk-s.rubric",
-            "nano-xs.zero",
             "nano-xs.few",
-            "nano-xs.rubric"
+            "atlas-m.few"
           ],
           "strata": [],
           "limit": 0,
           "transform": "none",
-          "small_multiples_by": "none"
+          "small_multiples_by": "arm"
         },
         "reference": [],
         "emphasis": "brisk-s.few",
@@ -256,18 +254,47 @@
       "caveats": []
     },
     {
-      "id": "target_heatmaps",
-      "eyebrow": "Cell breakdown",
-      "headline": "{arm:nano-xs.few} breaks the cell floor on complex news turns",
-      "takeaway": "Cell values display accuracy percentages across complexity levels and domains.",
+      "id": "frontier",
+      "eyebrow": "Model and prompt comparison",
+      "headline": "Few-shot prompting provides the necessary accuracy boost across all evaluated models.",
+      "takeaway": "Balanced accuracy across configurations; only configurations above {criteria.overall.threshold|pct} meet the aggregate bar.",
       "chart": {
-        "kind": "heatmap",
+        "kind": "bars",
         "title": "",
         "query": {
-          "source": "cells",
+          "source": "measures",
           "aspect": "",
           "measures": [
-            "accuracy"
+            "balanced_accuracy"
+          ],
+          "arms": [],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "brisk-s.few",
+        "level": "",
+        "unit": "pct",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "errors",
+      "eyebrow": "Complexity error distribution",
+      "headline": "{arm:brisk-s.few} avoids the confusion on complex turns that disqualifies {arm:nano-xs.few}.",
+      "takeaway": "Rows represent true complexity labels and columns indicate predicted classes.",
+      "chart": {
+        "kind": "confusion",
+        "title": "",
+        "query": {
+          "source": "confusion",
+          "aspect": "",
+          "measures": [
+            "complexity"
           ],
           "arms": [
             "brisk-s.few",
@@ -286,45 +313,16 @@
       },
       "caption": "",
       "caveats": []
-    },
-    {
-      "id": "confusion_breakdown",
-      "eyebrow": "Error patterns",
-      "headline": "{arm:brisk-s.few} errors concentrate in medium complexity classification",
-      "takeaway": "Percentages show predicted class distributions against true target labels.",
-      "chart": {
-        "kind": "confusion",
-        "title": "",
-        "query": {
-          "source": "confusion",
-          "aspect": "",
-          "measures": [],
-          "arms": [
-            "brisk-s.few"
-          ],
-          "strata": [],
-          "limit": 0,
-          "transform": "none",
-          "small_multiples_by": "none"
-        },
-        "reference": [],
-        "emphasis": "",
-        "level": "",
-        "unit": "",
-        "domain": []
-      },
-      "caption": "",
-      "caveats": []
     }
   ],
   "explore": [
     {
-      "title": "Explore criteria thresholds",
+      "title": "Constraint sensitivity analysis",
       "controls": [
         {
-          "id": "cell_floor_slider",
+          "id": "cell_floor_ctrl",
           "kind": "slider",
-          "title": "Minimum cell accuracy floor (%)",
+          "title": "Cell accuracy floor",
           "binds": "floor:cell_floor",
           "min": 70.0,
           "max": 85.0,
@@ -333,9 +331,9 @@
           "options": []
         },
         {
-          "id": "latency_budget_slider",
+          "id": "latency_ctrl",
           "kind": "slider",
-          "title": "P95 latency budget (ms)",
+          "title": "Latency budget (p95)",
           "binds": "p95",
           "min": 150.0,
           "max": 500.0,
@@ -344,7 +342,7 @@
           "options": []
         }
       ],
-      "recomputes": "Adjusting the cell floor below the complex news failure rate would make {arm:nano-xs.few} the top choice on cost."
+      "recomputes": "Lowering the cell floor below the complex news drop makes {arm:nano-xs.few} eligible; raising the latency budget to {measure.latency_ms.atlas-m.zero.p95} ms unlocks {arm:atlas-m.zero}."
     }
   ],
   "full_results": [
@@ -355,21 +353,20 @@
   ],
   "durable_claims": [
     {
-      "text": "{arm:brisk-s.few} meets all criteria with {measure.balanced_accuracy.brisk-s.few.mean}% balanced accuracy, {measure.latency_ms.brisk-s.few.p95} ms p95 latency, and {measure.cost_per_1m.brisk-s.few.mean} dollars per million turns.",
-      "confidence": "very_high",
+      "text": "{arm:brisk-s.few} achieves {measure.balanced_accuracy.brisk-s.few.mean|pct} balanced accuracy at {measure.latency_ms.brisk-s.few.p95} ms latency while clearing the {criteria.cell_floor.threshold|pct} per-cell floor.",
+      "confidence": "high",
       "keys": [
         "measure.balanced_accuracy.brisk-s.few.mean",
         "measure.latency_ms.brisk-s.few.p95",
-        "measure.cost_per_1m.brisk-s.few.mean"
+        "criteria.cell_floor.threshold"
       ]
     },
     {
-      "text": "{arm:nano-xs.few} reaches {measure.balanced_accuracy.nano-xs.few.mean}% balanced accuracy above the overall threshold of {criteria.overall.threshold}%, but fails the {criteria.cell_floor.threshold}% cell floor on complex news.",
-      "confidence": "very_high",
+      "text": "{arm:nano-xs.few} achieves {measure.balanced_accuracy.nano-xs.few.mean|pct} balanced accuracy but drops below the {criteria.cell_floor.threshold|pct} floor on complex turns.",
+      "confidence": "high",
       "keys": [
         "measure.balanced_accuracy.nano-xs.few.mean",
-        "criteria.cell_floor.threshold",
-        "criteria.overall.threshold"
+        "criteria.cell_floor.threshold"
       ]
     }
   ],

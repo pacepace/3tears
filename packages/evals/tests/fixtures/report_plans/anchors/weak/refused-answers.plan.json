@@ -2,7 +2,7 @@
   "mode": "decide",
   "headline_kind": "decision",
   "headline": "Keep {control.name}. Both candidates cost {cost.uplift_range|pct} more per reply and stay in character less often.",
-  "lede": "{arm:qwen3.8-flash} is clearly worse on the asked pass rate: down {reading.qwen3.8-flash.change|abs|pts} points ({reading.qwen3.8-flash.level} interval {reading.qwen3.8-flash.interval|pts}), inside the {aspect.margin}-point margin but not a tie. {arm:1017}'s drop of {reading.1017.change|abs|pts} points could be noise. Neither candidate improves anything this campaign measured.",
+  "lede": "{arm:qwen3.8-flash} is worse on the asked pass rate, by {reading.qwen3.8-flash.high|abs|pts} to {reading.qwen3.8-flash.low|abs|pts} points, and neither candidate beats {control.name} on anything this campaign measured. A candidate priced at or below {control.name} that holds character as well would change the answer.",
   "decision": {
     "slots": [
       {
@@ -17,7 +17,7 @@
       },
       {
         "key": "watch",
-        "text": "The thinnest margin is {arm:1017}: its drop of {reading.1017.change|abs|pts} points is not separated from zero, so on quality it may be a tie, though it still costs {cost.uplift.1017|pct} more per reply. {arm:1017} also spent {reasoning_ratio.1017|pct} of its output reasoning against {control.name}'s {reasoning_ratio.September|pct}, and other swept levers varied with the model, so part of its result may be the effort budget or another lever. Two of {arm:qwen3.8-flash}'s runs each lost one trial to the harness.",
+        "text": "The weakest margin: {weakest.arm}'s worst drop, {weakest.value|abs|pts} points, sits {weakest.margin} points inside {weakest.criterion}; past that line {control.name} is still cheaper, so the call holds. {arm:1017} spent {reasoning_ratio.1017|pct} of its output reasoning against {control.name}'s {reasoning_ratio.September|pct}, and other swept levers varied with the model, so its result is not the model's alone. Two of {arm:qwen3.8-flash}'s runs each lost one trial to the test setup.",
         "caveats": [
           "confound:observed:reasoning_ratio",
           "confound:model",
@@ -27,7 +27,7 @@
       },
       {
         "key": "next",
-        "text": "The experiment that could change the answer: a candidate priced at or below {control.name}, run on the same cases with off-lane asks oversampled, since that stratum carries about {strata.off_lane.loss_share|pct10} of each candidate's loss. Calibrate the judge against human ratings first, so the in-character figures can carry the call.",
+        "text": "Run a candidate priced at or below {control.name} on the same cases, with off-lane asks oversampled, since they carry about {strata.off_lane.loss_share|pct10} of each candidate's loss: if it holds character within the margin, it replaces {control.name}; if not, {control.name} stays.",
         "caveats": []
       }
     ],
@@ -216,7 +216,7 @@
       "id": "question",
       "eyebrow": "The asked question",
       "headline": "Both candidates stay inside the {aspect.margin}-point margin, but {arm:qwen3.8-flash} is separated as worse",
-      "takeaway": "The question: {meta.question} The shaded region is the margin; a candidate passes when its whole interval sits inside it.",
+      "takeaway": "The question: does either candidate stay in character within {aspect.margin} points of {control.name}? The shaded region is the margin; a candidate passes when its whole interval sits inside it.",
       "chart": {
         "kind": "forest",
         "title": "",
@@ -282,7 +282,7 @@
     {
       "id": "examples",
       "eyebrow": "What the failures look like",
-      "headline": "Off-lane failures answer the question instead of brushing it off",
+      "headline": "Most failures answer an off-topic question instead of brushing it off",
       "takeaway": "Failed trials on in-character, with the judge's reason and the end of the reply.",
       "chart": {
         "kind": "examples",

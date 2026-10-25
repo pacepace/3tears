@@ -7,7 +7,8 @@ Contracts held here:
   r5 report input on every field r5 carries a value for, each number at the precision r5 writes it; r5's contrasts
   are matched by arm, measure and kind, since the bundle carries every contrast and r5 a subset.
 - **Rubric.** Every rubric version is immutable: ``rubric/DIGESTS.json`` pins the sha256 of each version's two files,
-  and lists every version there is. v1 holds R1 (code's) to R11, each once.
+  and lists every version there is. v1 holds R1 (code's) to R11, each once; v2 holds R1 to R12, changing only R4 and
+  R10 and adding R12; the dataset reads the newest by default.
 - **Anchors.** ``anchors/LABELS.json`` labels every anchor and weakened copy, and nothing else; each is pending the
   owner or the owner's. Each input's anchor passes the plan checks and R1. Each refused copy fails exactly the faults
   its label lists (one rule, nothing more), and every rule of the plan checks has one. Each copy weakened on an item
@@ -53,6 +54,8 @@ RULES = frozenset(
         "charts",
         "keys",
         "literal_digits",
+        "weakest",
+        "reader_ids",
     }
 )
 
@@ -151,6 +154,25 @@ def test_rubric_v1_holds_r1_to_r11_once_with_r1_scored_by_code() -> None:
     assert all(f"| {item['id']} |" in text for item in items)
 
 
+def test_rubric_v2_changes_r4_and_r10_and_adds_r12_scored_by_a_model() -> None:
+    old = {item["id"]: item for item in dataset.rubric("v1")["items"]}
+    new = {item["id"]: item for item in dataset.rubric("v2")["items"]}
+    assert list(new) == [f"R{n}" for n in range(1, 13)]
+    assert new["R12"]["scored_by"] == "model"
+    assert {item_id for item_id in old if old[item_id] != new[item_id]} == {"R4", "R10"}
+    assert "Method's required entries" in new["R4"]["pass_when"]
+    assert "clear from context" in new["R10"]["pass_when"]
+    text = (dataset.RUBRICS / "v2.md").read_text(encoding="utf-8")
+    assert all(f"| {item_id} |" in text for item_id in new)
+
+
+def test_the_dataset_reads_the_newest_rubric_by_default() -> None:
+    assert dataset.rubric_versions() == ["v1", "v2"]
+    assert dataset.latest_rubric() == "v2"
+    assert dataset.model_items() == dataset.model_items("v2")
+    assert dataset.rubric_digest() == dataset.rubric_digest("v2")
+
+
 # --- anchors ---------------------------------------------------------------------------------------------------------
 
 
@@ -206,7 +228,7 @@ def _structure(plan: ReportPlan) -> Any:
 
 def test_each_item_copy_changes_only_prose_and_every_model_item_has_one() -> None:
     weak = _label("fails_item")
-    assert sorted(entry["item"] for entry in weak) == sorted(dataset.model_items("v1"))
+    assert sorted(entry["item"] for entry in weak) == sorted(dataset.model_items())
     for entry in weak:
         plan = dataset.load_plan(HERE / entry["plan"])
         validate_plan(plan, dataset.report_input_of(entry["input"]))
@@ -247,7 +269,7 @@ def _reply(**changes: dict[str, Any]) -> str:
     headline = dataset.load_plan(R5_ANCHOR).headline
     items = [
         {"id": item_id, "verdict": "pass", "reason": "It holds.", "quote": headline[:20], "labeled_by": "model"}
-        for item_id in dataset.model_items("v1")
+        for item_id in dataset.model_items()
     ]
     items = [{**item, **changes.get(item["id"], {})} for item in items]
     return json.dumps({"items": items, "scored_at": "2026-10-25T00:00:00+00:00"})
@@ -257,7 +279,7 @@ def test_a_sound_reply_becomes_a_record_with_every_digest_set() -> None:
     scores = dataset.record(R5_ANCHOR, "```json\n" + _reply() + "\n```", scorer="owner")
     assert scores.run_id == "anchor" and scores.input == "r5" and scores.scorer == "owner"
     assert scores.plan_digest == dataset.sha256_file(R5_ANCHOR)
-    assert scores.rubric.digest == dataset.rubric_digest("v1")
+    assert scores.rubric == dataset.RubricRef(version="v2", digest=dataset.rubric_digest("v2"))
     assert scores.planner.model == "hand-written"
     assert dataset.score_faults(scores, R5_ANCHOR) == []
 
@@ -283,7 +305,7 @@ def test_an_unsound_reply_is_refused(changes: dict[str, Any], fault: str) -> Non
 
 def test_a_record_of_a_changed_plan_or_rubric_is_unsound(tmp_path: Path) -> None:
     scores = dataset.record(R5_ANCHOR, _reply(), scorer="owner")
-    stale = scores.model_copy(update={"plan_digest": "0" * 64, "rubric": dataset.RubricRef(version="v1", digest="x")})
+    stale = scores.model_copy(update={"plan_digest": "0" * 64, "rubric": dataset.RubricRef(version="v2", digest="x")})
     faults = dataset.score_faults(stale, R5_ANCHOR)
     assert any("plan changed after it was scored" in fault for fault in faults)
     assert any("rubric digest" in fault for fault in faults)
@@ -293,7 +315,7 @@ def test_records_pool_only_by_prompt_rubric_and_scorer() -> None:
     base = dataset.record(R5_ANCHOR, _reply(), scorer="claude-opus-5-5")
     other_scorer = base.model_copy(update={"scorer": "owner"})
     other_prompt = base.model_copy(update={"planner": base.planner.model_copy(update={"prompt_digest": "p2"})})
-    other_rubric = base.model_copy(update={"rubric": dataset.RubricRef(version="v2", digest="r2")})
+    other_rubric = base.model_copy(update={"rubric": dataset.RubricRef(version="v1", digest="r1")})
     same = base.model_copy(update={"run_id": "another", "scored_at": "later"})
     grouped = dataset.pools([base, other_scorer, other_prompt, other_rubric, same])
     assert len(grouped) == 4
@@ -311,8 +333,9 @@ def test_the_brief_is_blind_and_carries_what_a_scorer_needs(plan: str) -> None:
     brief = dataset.scoring_brief(path)
     assert path.name.removesuffix(".plan.json") not in brief
     assert "gemini" not in brief and "item-R" not in brief
-    assert (dataset.RUBRICS / "v1.md").read_text(encoding="utf-8") in brief
+    assert (dataset.RUBRICS / "v2.md").read_text(encoding="utf-8") in brief
     assert "R1 is code's and already scored: pass" in brief
-    assert all(f'"id": "{item_id}"' in brief for item_id in dataset.model_items("v1"))
+    assert all(f'"id": "{item_id}"' in brief for item_id in dataset.model_items())
+    assert "against rubric v2" in brief
     plan_model = dataset.load_plan(path)
     assert f"as written: {plan_model.headline}" in brief

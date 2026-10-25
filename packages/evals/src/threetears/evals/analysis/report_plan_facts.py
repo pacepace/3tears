@@ -22,6 +22,11 @@ as :class:`PlanFacts`, so the planner's user message and the plan code completes
 - **The modes and the caveats** (:mod:`~threetears.evals.analysis.report_decision`): the modes the evidence allows
   (:func:`~threetears.evals.analysis.report_decision.allowed_modes`), and every caveat by id, with its scope (where it
   may land) and, for one code proved immaterial, the checked line code renders in its place.
+- **The weakest margin** (:func:`~threetears.evals.analysis.report_margins.weakest_margin`): the figure nearest the
+  line it is read against, rendered, with the ``weakest.*`` figure keys that name it, which a decide plan's Watch cites.
+- **The reader names** (:func:`~threetears.evals.analysis.report.figure_keys.reader_names`): the one name a reader is
+  shown for each aspect, measure, judged dimension, stratum, task and criterion, which the plan writes in place of
+  the id above Full results.
 
 :func:`complete_plan` turns a reply into the stored :class:`~threetears.evals.kernel.report_plan.ReportPlan`. Besides
 the facts above it fills each unit's code part: the flag's disclosures (:func:`flag_disclosures`) and the measures it
@@ -55,10 +60,16 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.errors import PlanRefusal, SoundnessRefusal, UnresolvableReference
-from threetears.evals.analysis.report.figure_keys import resolve
+from threetears.evals.analysis.report.figure_keys import (
+    WEAKEST_PREFIX,
+    reader_names,
+    render,
+    resolve,
+)
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_decision import allowed_modes, caveat_materiality, report_caveats
 from threetears.evals.analysis.report_input import Aspect, ReportInput
+from threetears.evals.analysis.report_margins import weakest_margin
 from threetears.evals.analysis.report_plan_checks import (
     classify,
     implied_disclosures,
@@ -87,6 +98,7 @@ __all__ = [
     "PLAN_MODES",
     "FactArm",
     "FactCaveat",
+    "FactWeakest",
     "PlanFacts",
     "complete_plan",
     "flag_disclosures",
@@ -132,6 +144,22 @@ class FactCaveat(BaseModel):
     checked: str = Field(description="The line code renders for a caveat it proved immaterial; empty for an open one.")
 
 
+class FactWeakest(BaseModel):
+    """The weakest margin as the planner is told of it: what it is, rendered, and the keys that name it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    said: str = Field(description="The weakest margin in words, its figures rendered.")
+    keys: tuple[str, ...] = Field(description="The figure keys that name it; a decide plan's Watch cites one.")
+
+
+#: The weakest-margin keys, in the order the facts list them, and how the facts render it.
+_WEAKEST_KEYS = tuple(f"{WEAKEST_PREFIX}{field}" for field in ("arm", "criterion", "value", "threshold", "margin"))
+_WEAKEST_SAID = (
+    "{weakest.arm}: {weakest.value} against {weakest.criterion} at {weakest.threshold}, a gap of {weakest.margin}"
+)
+
+
 class PlanFacts(BaseModel):
     """Everything code decides about a report before the planner writes, read off the report input alone."""
 
@@ -155,6 +183,12 @@ class PlanFacts(BaseModel):
     )
     allowed_modes: tuple[str, ...] = Field(description="The modes the evidence allows, in PLAN_MODES' order.")
     caveats: tuple[FactCaveat, ...] = Field(description="Every caveat the input carries, by id.")
+    weakest: FactWeakest | None = Field(
+        description="The weakest margin under the call; None where the input reads no figure against a line."
+    )
+    names: Mapping[str, Mapping[str, str]] = Field(
+        description="Each id's one reader name, by kind (aspect, measure, judged, stratum, task, criterion), then id."
+    )
 
 
 def plan_facts(report_input: ReportInput) -> PlanFacts:
@@ -195,7 +229,15 @@ def plan_facts(report_input: ReportInput) -> PlanFacts:
             FactCaveat(id=caveat.id, reach=caveat.reach, checked=materiality[caveat.id].checked or "")
             for caveat in report_caveats(report_input)
         ),
+        weakest=_weakest(report_input),
+        names={str(kind): found for kind, found in reader_names(report_input).items()},
     )
+
+
+def _weakest(report_input: ReportInput) -> FactWeakest | None:
+    if weakest_margin(report_input) is None:
+        return None
+    return FactWeakest(said=render(_WEAKEST_SAID, report_input, {}), keys=_WEAKEST_KEYS)
 
 
 def flag_disclosures(facts: PlanFacts, mode: str, listed: Iterable[str]) -> tuple[str, ...]:

@@ -56,6 +56,8 @@ Add `ReportPlan` (pydantic) mirroring `schema/report-plan.schema.json`. The writ
 - a confidence off its three forms' rule (GENERATOR.md §2 item 5): plain "high" while an open report-wide caveat remains; "high, if the caveats below aren't material" that leaves an open report-wide caveat out, or lists one without its clause; "low" is always allowed;
 - a caveat code proved immaterial (a late margin, floor or bar the call holds across) listed anywhere: code renders its checked line;
 - a caveat in `caveats` that lands nowhere or more than once, or where its scope does not allow (a scoped caveat in the flag or in Method, a report-wide one beside one claim; Method takes only apparatus confounds, latency and unreported observations), read off the caveat ids the plan records on its confidence, slots, sections and Method pairs.
+- a decide plan whose Watch does not cite the weakest margin code computed (`weakest.*` keys, GENERATOR.md §2 item 5);
+- prose above Full results that types an id-shaped internal id where it differs from the reader name code supplies, or quotes the campaign's question (GENERATOR.md §8 item 9).
 
 Keep the 24,300-character writer budget. The plan is smaller than the memo it replaces, because the renderer writes the tables.
 **Done when:** the planner produces valid plans for the five reference inputs, and the Kairo plan matches `references/r5-kairo-round2.plan.json` in shape, mode, spine and section order.

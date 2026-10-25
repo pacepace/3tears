@@ -134,12 +134,19 @@ class TestTheKairoPlanResolves:
     def test_the_headline_prints_the_uplift_range_the_page_prints(self):
         assert "Both candidates cost 27–28% more per reply" in _rendered(_plan()["headline"])
 
-    def test_the_lede_prints_the_drop_and_its_interval(self):
+    def test_the_lede_prints_the_drop_by_its_interval_ends_in_two_sentences(self):
         lede = _rendered(_plan()["lede"])
-        assert "down 7.6 points (95% interval -10.8 to -3.4)" in lede
-        assert "inside the 15-point margin" in lede
-        assert lede.startswith("qwen3.8-flash (A) is clearly worse")
-        assert "1017 (B)'s drop of 3 points" in lede
+        assert lede.startswith("qwen3.8-flash (A) is worse on the asked pass rate, by 3.4 to 10.8 points")
+        assert "neither candidate beats September on anything this campaign measured" in lede
+        assert lede.endswith("would change the answer.")
+        assert lede.count(". ") == 1
+
+    def test_watch_opens_with_the_weakest_margin(self):
+        watch = _rendered(_slot("watch"))
+        assert watch.startswith(
+            "The weakest margin: qwen3.8-flash (A)'s worst drop, 10.8 points, sits 4.2 points inside the margin on "
+            "character adherence (v2)"
+        )
 
     def test_the_recommendation_prints_the_controls_figures(self):
         text = _rendered(_slot("recommendation"))
@@ -171,10 +178,11 @@ class TestTheKairoPlanResolves:
             pytest.skip(f"headless Chromium cannot launch: {reason}")
         text, errors = rendered(R5_PAGE, "() => document.body.innerText")
         assert not errors
-        for figure in ("27–28%", "7.6", "-10.8 to -3.4", "85.3%", "91.5%", "$1.89", "55%", "76%", "about 50%"):
+        for figure in ("27–28%", "by 3.4 to 10.8 points", "4.2 points inside", "85.3%", "91.5%", "$1.89", "55%", "76%"):
             assert figure in text, figure
+        assert "about 50%" in text
         assert _figure("cost.uplift_range", "pct") in text
-        assert _figure("reading.qwen3.8-flash.interval", "pts") in text
+        assert _figure("weakest.margin") in text
         assert _figure("pass_rate.September", "pct") in text
 
 

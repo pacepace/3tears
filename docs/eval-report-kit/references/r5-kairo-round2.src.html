@@ -50,7 +50,7 @@
 </section>
 
 <section>
-  <header><span class="eyebrow">What the failures look like</span><h2>Off-lane failures answer the question instead of brushing it off</h2>
+  <header><span class="eyebrow">What the failures look like</span><h2>Most failures answer an off-topic question instead of brushing it off</h2>
   <p class="takeaway">Failed trials on in-character, with the judge's reason and the end of the reply.</p></header>
   <div class="chart" id="ex" data-kind="examples"></div>
 </section>
@@ -96,7 +96,7 @@ const usd=v=>"$"+v.toFixed(2);
   const lo=Math.round(Math.min(...ups)*100),hi=Math.round(Math.max(...ups)*100);
   const sep=cands.filter(a=>R[a.id].within_interval[1]<0);const worst=cands.slice().sort((a,b)=>R[a.id].change-R[b.id].change)[0];
   document.getElementById("h1").textContent=`Keep ${ctl.name}. Both candidates cost ${lo===hi?lo:lo+"–"+hi}% more per reply and stay in character less often.`;
-  document.getElementById("lede").innerHTML=`${worst.name} is clearly worse on the asked pass rate: down ${(-R[worst.id].change).toFixed(1)} points (95% interval ${R[worst.id].within_interval.map(v=>v.toFixed(1)).join(" to ")}), inside the 15-point margin but not a tie. ${cands.filter(a=>a!==worst).map(a=>`${a.name}'s drop of ${(-R[a.id].change).toFixed(1)} points could be noise`).join("; ")}. Neither candidate improves anything this campaign measured.`;
+  document.getElementById("lede").innerHTML=`${worst.name} is worse on the asked pass rate, by ${(-R[worst.id].within_interval[1]).toFixed(1)} to ${(-R[worst.id].within_interval[0]).toFixed(1)} points, and neither candidate beats ${ctl.name} on anything this campaign measured. A candidate priced at or below ${ctl.name} that holds character as well would change the answer.`;
   // The decision's confidence: one clause per open caveat (the plan's words), then code's checked line for each late
   // criterion the call holds across: a reading flips at its worst drop (-lo), and every flip point lies under the margin
   // the campaign set, and keeping the control holds at every margin either way.
@@ -112,13 +112,15 @@ const usd=v=>"$"+v.toFixed(2);
   document.getElementById("d-rec").innerHTML=`<strong>Keep ${ctl.name}</strong> (${ctl.served_model}). It has the highest pass rate (${pr(ctl.id).toFixed(1)}%), the highest in-character rate (${(jm(prim,ctl.id)*100).toFixed(1)}%) and the lowest cost (${usd(cc)} per 1,000 replies).`;
   document.getElementById("d-why").innerHTML=cands.map(a=>{const c1=C(a.id,"production_replicating_cost"),c2=C(a.id,prim);return `<strong>${a.name}:</strong> ${Math.round((cost(a.id).mean*1000/cc-1)*100)}% more per reply${c2?`, in-character ${pts(c2.delta*100)} points`:""}${R[a.id].within_interval[1]<0?`, pass rate ${pts(R[a.id].change)}`:""}.`;}).join("<br>");
   const conf=cands.filter(a=>Math.abs(a.reasoning_ratio-ctl.reasoning_ratio)>=0.2);
-  // Watch names the weakest margin first: the candidate whose drop is not separated from zero, and what it still costs.
-  const thin=cands.filter(a=>R[a.id].within_interval[1]>=0).sort((a,b)=>R[b.id].change-R[a.id].change)[0];
-  const thinText=thin?`The thinnest margin is ${thin.name}: its drop of ${(-R[thin.id].change).toFixed(1).replace(/\.0$/,"")} points is not separated from zero, so on quality it may be a tie, though it still costs ${Math.round((cost(thin.id).mean*1000/cc-1)*100)}% more per reply. `:"";
-  document.getElementById("d-watch").innerHTML=`${thinText}${conf.map(a=>`${a.name}${a===thin?" also":""} spent ${Math.round(a.reasoning_ratio*100)}% of its output reasoning against ${ctl.name}'s ${Math.round(ctl.reasoning_ratio*100)}%, and other swept levers varied with the model, so part of its result may be the effort budget or another lever.`).join(" ")} ${D.caveats.short_runs.length===2?"Two":D.caveats.short_runs.length} of ${D.arms.find(a=>a.id===D.caveats.short_runs[0].arm)?.name??"one candidate"}'s runs each lost one trial to the harness.`;
-  // Next names the experiment that could change the answer, and why off-lane asks are the stratum to oversample.
+  // Watch opens with the weakest margin (report_margins.weakest_margin): the reading whose worst drop sits nearest the
+  // margin, and why the call holds past it.
+  const weak=cands.slice().sort((a,b)=>R[a.id].within_interval[0]-R[b.id].within_interval[0])[0];
+  const one=v=>v.toFixed(1).replace(/\.0$/,"");const drop=-R[weak.id].within_interval[0];
+  const weakText=`The weakest margin: ${weak.name}'s worst drop, ${one(drop)} points, sits ${one(asp.margin-drop)} points inside the margin on ${asp.name}; past that line ${ctl.name} is still cheaper, so the call holds. `;
+  document.getElementById("d-watch").innerHTML=`${weakText}${conf.map(a=>`${a.name} spent ${Math.round(a.reasoning_ratio*100)}% of its output reasoning against ${ctl.name}'s ${Math.round(ctl.reasoning_ratio*100)}%, and other swept levers varied with the model, so its result is not the model's alone.`).join(" ")} ${D.caveats.short_runs.length===2?"Two":D.caveats.short_runs.length} of ${D.arms.find(a=>a.id===D.caveats.short_runs[0].arm)?.name??"one candidate"}'s runs each lost one trial to the test setup.`;
+  // Next names the experiment that could change the answer, which way, and why off-lane asks are the stratum to oversample.
   const lead=D.strata[0];const loss=cands.map(a=>{const tot=D.strata.reduce((s,st)=>s+st.n_cases*(st.per_arm[ctl.id][prim].mean-st.per_arm[a.id][prim].mean),0);return lead.n_cases*(lead.per_arm[ctl.id][prim].mean-lead.per_arm[a.id][prim].mean)/tot;});
-  document.getElementById("d-next").innerHTML=`The experiment that could change the answer: a candidate priced at or below ${ctl.name}, run on the same cases with off-lane asks oversampled, since that stratum carries about ${Math.round(Math.min(...loss)*10)*10}% of each candidate's loss. Calibrate the judge against human ratings first, so the in-character figures can carry the call.`;})();
+  document.getElementById("d-next").innerHTML=`Run a candidate priced at or below ${ctl.name} on the same cases, with off-lane asks oversampled, since they carry about ${Math.round(Math.min(...loss)*10)*10}% of each candidate's loss: if it holds character within the margin, it replaces ${ctl.name}; if not, ${ctl.name} stays.`;})();
 
 // ---- options table
 (function(){const cc=cost(ctl.id).mean*1000;const rows=[ctl,...cands];
@@ -142,7 +144,7 @@ document.getElementById("key").innerHTML=`<thead><tr><th>Arm</th><th>Role</th><t
 // ---- the asked question: forest against the margin
 (function(){const margin=asp.margin;
   document.getElementById("q-h").textContent=`Both candidates stay inside the ${margin}-point margin, but ${cands.filter(a=>R[a.id].within_interval[1]<0).map(a=>a.name).join(" and ")||"neither"} is separated as worse`;
-  document.getElementById("q-t").textContent=`The question: ${D.meta.question.replace(/^"|"$/g,"")} The shaded region is the margin; a candidate passes when its whole interval sits inside it.`;
+  document.getElementById("q-t").textContent=`The question: does either candidate stay in character within ${margin} points of ${ctl.name}? The shaded region is the margin; a candidate passes when its whole interval sits inside it.`;
   document.getElementById("q-cap").textContent=`Pass rate on ${asp.name}: a trial passes when every check and judged dimension passes. Confirmatory 95% intervals on ${asp.readings[0].cases[0]} paired cases. The margin was set after the readings were visible.`;
   setChart(document.getElementById("question"),{domain:[-16,4],fmt:"+num:0",level:"95%",reference:{value:-margin,label:`margin −${margin}`,kind:"margin"},label_width:160,label_width_narrow:110,
     rows:cands.map(a=>{const r=R[a.id];return {id:a.id,label:nm(a),value:r.change,lo:r.within_interval[0],hi:r.within_interval[1],color:COL[a.id],strong:r.within_interval[1]<0,

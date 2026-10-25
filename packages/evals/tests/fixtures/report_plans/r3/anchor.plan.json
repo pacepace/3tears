@@ -17,12 +17,12 @@
       },
       {
         "key": "watch",
-        "text": "Complex news is the pick's weakest cell, the closest of its margins to the cell floor. Its errors are mostly medium turns labeled complex and the reverse; domain errors are rare.",
+        "text": "The weakest margin: {weakest.arm} clears the {weakest.threshold} gate on {weakest.criterion} at {weakest.value}, by {weakest.margin} points. Its weakest cell, complex news, clears the {criteria.cell_floor.threshold|pct} floor; its errors there are mostly medium turns labeled complex and the reverse.",
         "caveats": []
       },
       {
         "key": "next",
-        "text": "Collect more complex news turns and re-test {arm:nano-xs.few} on that cell: if it clears the floor, it takes the recommendation at a fraction of the cost.",
+        "text": "Re-test {arm:nano-xs.few} with more few-shot examples of complex news: if it clears the cell floor, it takes the recommendation at a fraction of the cost; if not, {arm:brisk-s.few} stands.",
         "caveats": []
       }
     ],
@@ -221,7 +221,7 @@
     {
       "id": "cells",
       "eyebrow": "The target matrix",
-      "headline": "Complex news is the hardest cell for every configuration, and the one that rules out Nano-XS",
+      "headline": "Complex news is the pick's weakest cell, and it still clears the floor",
       "takeaway": "Accuracy per cell; rows are complexity, columns are domain.",
       "chart": {
         "kind": "heatmap",

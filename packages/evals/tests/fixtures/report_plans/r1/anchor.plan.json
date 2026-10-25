@@ -17,7 +17,7 @@
       },
       {
         "key": "watch",
-        "text": "The weakest margin: {arm:atlas-m}'s issue resolution in troubleshooting, {task.trouble.atlas-m.resolves.mean|pct}, sits right at its floor of {criteria.trouble.resolves.threshold|pct}, with an interval that crosses it. Re-test it on a larger troubleshooting sample before launch.",
+        "text": "The weakest margin is {weakest.arm} on {weakest.criterion}: {weakest.value}, exactly at its {weakest.threshold} floor, with an interval that crosses it. A larger troubleshooting sample settles it before launch.",
         "caveats": []
       },
       {
@@ -184,7 +184,7 @@
     {
       "id": "behaviors",
       "eyebrow": "Task-specific behaviors",
-      "headline": "The small models fail on behaviors, not on overall quality",
+      "headline": "{arm:brisk-s} and {arm:open-70b} decline speculation bait less often than the gate requires",
       "takeaway": "Declining to speculate on bait prompts, with intervals; the floor is the dashed line.",
       "chart": {
         "kind": "dot_interval",

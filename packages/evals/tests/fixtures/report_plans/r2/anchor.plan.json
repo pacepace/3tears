@@ -17,7 +17,7 @@
       },
       {
         "key": "watch",
-        "text": "The pick clears the {criteria.pass_rate.threshold|pct} pass-rate gate at {measure.pass_rate.brisk-s.low.r1.mean|pct}, by a fraction of a point, inside the interval of about one point at this sample size: the weakest margin on the page. Wrong arguments, mostly date windows, are now its largest failure.",
+        "text": "The weakest margin: {weakest.arm} clears the {weakest.threshold} pass-rate gate at {weakest.value}, by {weakest.margin} points, inside the interval of about one point at this sample size. Wrong arguments, mostly date windows, are now its largest failure.",
         "caveats": []
       },
       {
@@ -260,7 +260,7 @@
     {
       "id": "levers",
       "eyebrow": "What each lever buys",
-      "headline": "A retry buys accuracy for almost nothing; reasoning buys accuracy with latency",
+      "headline": "One retry raises the pass rate at every model and reasoning level",
       "takeaway": "Pass rate of every configuration, grouped by model. Compare neighbours that differ in one lever.",
       "chart": {
         "kind": "bars",
