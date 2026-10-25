@@ -13,7 +13,11 @@ difference, so the rule is:
 - every level is cut alike, wherever the name is printed — and two arms the cut would name alike are
   told apart by their digests, so no two arms ever print the same name;
 - no report dumps an arm's whole lever set: it names the arm by its difference, and the bundle beside it carries the
-  rest.
+  rest;
+- where a chart has no room for an arm's name it prints the arm's short name (GENERATOR.md §6.1): the campaign's
+  label, else the control's role, else only what differs from the control, the model first and trimmed of the prefix
+  it shares with the control's; never longer than the arm's own name, and two arms whose short names would read alike
+  are each named in full.
 
 The first half pins the rule on the naming functions themselves; the second builds reports — code-only ones through
 the toy host, and analysis reports by hand — and reads their tables in both outputs, Markdown and HTML, since a name
@@ -49,7 +53,7 @@ from threetears.evals.analysis.arms import (
     writer_arms,
 )
 from threetears.evals.analysis.cells import cell_ref
-from threetears.evals.analysis.report import TableBlock
+from threetears.evals.analysis.report import ChartBlock, TableBlock
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.authored import AuthoredCampaignAnalysis
 from threetears.evals.kernel.campaign import EvalAnalysis, FindingResolution, VariantIndexEntry
@@ -71,6 +75,7 @@ from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.factories import analysed_aspect, make_analysis
+from packages.evals.tests.g2_support import g2_report
 from packages.evals.tests.report_support import toy_campaign_host
 
 #: Three rigs, by their apparatus class ids.
@@ -547,3 +552,106 @@ def test_a_derived_arm_is_labelled_by_the_page_s_word_and_a_taken_one_gets_a_num
     held = named.model_copy(update={"arms": [named.control.model_copy(update={"label": "1024tok"})]})
     labels = [arm.label for arm in campaign_arms(host.storage, held, profile=host.profile)]
     assert labels[0] == "1024tok" and labels[1:] == ["1024tok (2)"]
+
+
+# --- an arm's short name, where a chart has no room for its name ---------------------------------------------------
+
+#: The control's model, and two candidates' sharing its prefix: one trimmed to ``flash``, one whose separator differs,
+#: so both trim to ``flash`` too.
+_CONTROL_MODEL, _FLASH, _FLASH_UNDERSCORED = "Meridian-4.1", "Meridian-4.1-flash", "Meridian-4.1_flash"
+
+
+def _modelled_page(arms: list[tuple[str, int]], labels: dict[int, str] | None = None) -> tuple[Report, list[str]]:
+    """The code-only page of a toy campaign with one arm per ``(model, chunk_tokens)``, the first its control, and the
+    campaign's ``labels`` by arm position; with each arm's variant key, in that order."""
+    profile = toyhost_profile()
+    host = toyhost_host(profile=profile)
+    batches = [
+        toyhost_batch(
+            chunk_tokens=chunk, retriever_top_k=3, extraction_schema="v1", ocr_engine_version="tess-5.3.1", model=model
+        ).model_copy(update={"candidate_model": model})
+        for model, chunk in arms
+    ]
+    for batch in batches:
+        host.storage.save_eval_run(batch)
+        for result in toyhost_measurements(
+            batch, profile=profile, cost_usd=0.02, total_ms=900.0, field_accuracy=0.8, layout_fidelity=3
+        ):
+            host.storage.save_eval_result(result)
+    campaign = toyhost_campaign_of_one_aspect(
+        id="5f1d7c2a-8e3b-4a6d-9c0f-2b7e4d1a6c3e",
+        scope_id=TOYHOST_SCOPE,
+        name="short names",
+        subject_id=TOYHOST_SUBJECT.subject_id,
+        subject_kind="extractor_config",
+        behavior="extract_invoice_fields",
+        template_id="",
+        run_ids=[batch.id for batch in batches],
+        design=toyhost_aspect_design(),
+        created_by="test:fixture",
+    )
+    host.storage.save_campaign(campaign)
+    campaign = set_campaign_control(
+        host.storage, campaign.id, campaign.scope_id, batches[0].id, set_by="t", profile=profile
+    )
+    bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
+    by_levels = {
+        (entry.levers["model"].display, entry.levers["chunk_tokens"].display): entry.variant_key
+        for entry in bundle.variant_index
+    }
+    keys = [by_levels[(model, f"{chunk}tok")] for model, chunk in arms]
+    given = {keys[position]: label for position, label in (labels or {}).items()}
+    report = build_code_only_report(
+        bundle, assembled_at="2026-10-18T00:00:00+00:00", campaign_name=campaign.name, arm_labels=given or None
+    )
+    return report, keys
+
+
+def _short_names(report: Report) -> dict[str, str | None]:
+    """Each arm's name on the outcome bar, to the short name it carries for a tight place."""
+    (chart,) = [block for block in report.blocks if isinstance(block, ChartBlock) and block.chart == "outcome_bar"]
+    return {bar.arm: bar.short_name for bar in chart.bars}
+
+
+class TestAnArmsShortNameIsWhatSetsItApart:
+    def test_the_control_is_its_role_and_a_candidate_only_what_differs_with_the_shared_model_prefix_trimmed(
+        self,
+    ) -> None:
+        """GENERATOR.md §6.1: against ``Meridian-4.1`` at 256 tokens, ``Meridian-4.1-flash`` at 1024 is ``flash ·
+        chunk tokens 1024tok``, the model first; at 256 it differs in its model alone, so is ``flash``."""
+        report, keys = _modelled_page([(_CONTROL_MODEL, 256), (_FLASH, 1024), (_FLASH, 256)])
+        shorts = _short_names(report)
+        control, wide, narrow = (
+            next(name for name in shorts if f"model {model}" in name and f"{chunk}tok" in name)
+            for model, chunk in ((_CONTROL_MODEL, 256), (_FLASH, 1024), (_FLASH, 256))
+        )
+        assert shorts == {control: "control", wide: "flash · chunk tokens 1024tok", narrow: "flash"}
+        assert all(len(short or name) <= len(name) for name, short in shorts.items())
+        assert len(keys) == len(shorts)
+
+    def test_a_campaign_label_names_the_arm_in_tight_places_too(self) -> None:
+        """An alias wins: the control labelled ``Production`` is ``Production``, a candidate labelled ``fast`` is
+        ``fast``, and the unlabelled candidate is still named by what differs."""
+        report, _ = _modelled_page(
+            [(_CONTROL_MODEL, 256), (_FLASH, 1024), (_FLASH, 256)], labels={0: "Production", 2: "fast"}
+        )
+        shorts = _short_names(report)
+        assert shorts["Production"] == "Production" and shorts["fast"] == "fast"
+        (other,) = [name for name in shorts if name not in ("Production", "fast")]
+        assert shorts[other] == "flash · chunk tokens 1024tok"
+
+    def test_two_arms_whose_short_names_would_read_alike_are_each_named_in_full(self) -> None:
+        """``Meridian-4.1-flash`` and ``Meridian-4.1_flash``, both at 1024 tokens, both trim to ``flash · chunk tokens
+        1024tok``: each is named in full, so the two never read alike; the control keeps its role."""
+        report, _ = _modelled_page([(_CONTROL_MODEL, 256), (_FLASH, 1024), (_FLASH_UNDERSCORED, 1024)])
+        shorts = _short_names(report)
+        candidates = {name: short for name, short in shorts.items() if short != "control"}
+        assert len(candidates) == 2 and all(short == name for name, short in candidates.items())
+        assert len(set(shorts.values())) == len(shorts)
+
+    async def test_an_arm_s_own_name_wins_where_it_is_already_short(self) -> None:
+        """The quick path names its arms ``v4.1-flash`` and ``v4-flash``: no short name is longer than the arm's own,
+        so ``v4-flash`` is ``v4-flash``, never ``candidate v4-flash``."""
+        shorts = _short_names(await g2_report())
+        assert shorts["v4-flash"] == "v4-flash"
+        assert all(len(short or name) <= len(name) for name, short in shorts.items())

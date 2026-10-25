@@ -167,16 +167,48 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
 .excard .top{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;font-size:var(--t-xs);color:var(--muted)}
 .excard .reason{font-size:var(--t-sm)}
 .excard pre{margin:0;font-family:var(--f-mono);font-size:var(--t-xs);color:var(--ink-2);white-space:pre-wrap;overflow-wrap:anywhere;background:var(--sunk);padding:.5rem .6rem;border-radius:4px;max-height:9rem;overflow:auto}
+/* gate matrix: a pill, the binding reasons and the cost per cell; the cheapest passing cell washed */
+.gate td,.gate th{white-space:normal;vertical-align:top}
+.gate td.cell{min-width:9.5rem}
+.gate .why{display:block;font-size:var(--t-xs);color:var(--muted);margin-top:.25rem;line-height:1.35}
+.gate .cost{display:block;font-size:var(--t-xs);color:var(--ink-2);margin-top:.15rem;font-variant-numeric:tabular-nums}
+.gate td.pick{background:var(--accent-wash)}
+.gate .pickmark{font-size:var(--t-xs);font-weight:600;color:var(--accent);display:block;margin-top:.2rem}
+.gate .task b{display:block;font-weight:600;color:var(--ink)}
+.gate .task span{font-size:var(--t-xs);color:var(--muted)}
+.gate .task span.xc{font-weight:600;color:var(--warn);text-transform:uppercase;letter-spacing:.05em;display:block;margin-top:.25rem}
+/* lattice of tiles for two crossed factors; columns set inline from the data */
+.lattice{display:grid;gap:2px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.lattice>div{background:var(--surface);padding:.7rem .8rem;min-width:0}
+.lattice .hd{background:var(--sunk);font-size:var(--t-xs);font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:flex;align-items:end}
+.lattice .rh{background:var(--sunk);font-family:var(--f-display);font-weight:600;display:flex;align-items:center}
+.lattice .cell{display:grid;gap:.3rem;align-content:start}
+.lattice .acc{font-size:var(--t-xl);font-weight:600;line-height:1}
+.lattice .meta{font-size:var(--t-xs);color:var(--ink-2);font-variant-numeric:tabular-nums}
+.lattice .cell.rec{box-shadow:inset 0 0 0 2px var(--accent)}
+.lattice .bar{height:4px;border-radius:2px;background:var(--sunk);position:relative}
+.lattice .bar i{position:absolute;inset:0 auto 0 0;border-radius:2px;background:var(--s1)}
+/* cell grids: heatmap, difference heatmap, confusion */
+.mx{display:grid;gap:2px;font-size:var(--t-sm)}
+.mx .h{font-size:var(--t-xs);color:var(--muted);font-weight:600;padding:.25rem .35rem;display:flex;align-items:end;justify-content:center;text-align:center}
+.mx .rl{font-size:var(--t-xs);color:var(--muted);font-weight:600;padding:.25rem .5rem .25rem 0;display:flex;align-items:center;justify-content:flex-end}
+.mx .c{border-radius:3px;padding:.5rem .35rem;text-align:center;font-variant-numeric:tabular-nums;display:grid;gap:.05rem;min-width:0}
+.mx .c b{font-size:var(--t-md);font-weight:600}
+.mx .c span{font-size:var(--t-xs);opacity:.85}
+.mx .c.low{outline:2px solid var(--bad);outline-offset:-2px}
+.excard .q{font-weight:600}
+.excard dl{display:grid;grid-template-columns:4.5rem 1fr;gap:.25rem .6rem;margin:0;font-size:var(--t-sm)}
+.excard dt{color:var(--muted)}
+.excard dd{margin:0;font-family:var(--f-mono);font-size:var(--t-xs);overflow-wrap:anywhere;min-width:0}
+.excard dd.bad{color:var(--bad)}
+.excard .note{font-size:var(--t-sm);color:var(--ink-2)}
+.chart .legend svg{display:inline-block}
+@media (max-width:560px){.lattice .acc{font-size:var(--t-lg)}.lattice>div{padding:.5rem}}
 
 .flag{display:flex;gap:.6rem;align-items:flex-start;font-size:var(--t-sm);color:var(--ink-2);background:var(--warn-wash);border-radius:var(--r);padding:.6rem .8rem;max-width:var(--col)}
 .flag b{color:var(--warn)}
 .keytbl td.spec{font-family:var(--f-mono);font-size:var(--t-xs);color:var(--ink-2);white-space:normal}
 .mini h3{font-size:var(--t-base);margin-bottom:.15rem}
-.ex{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,28rem),1fr));gap:1rem}
-.excard{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:.9rem 1rem;display:grid;gap:.5rem;min-width:0}
-.excard .top{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;font-size:var(--t-xs);color:var(--muted)}
-.excard .reason{font-size:var(--t-sm)}
-.excard pre{margin:0;font-family:var(--f-mono);font-size:var(--t-xs);color:var(--ink-2);white-space:pre-wrap;overflow-wrap:anywhere;background:var(--sunk);padding:.5rem .6rem;border-radius:4px;max-height:9rem;overflow:auto}
 </style>
 <div class="page">
 <div class="mast"><span class="kind">Change · control vs candidates</span><span><b>Kairo persona model, round 2</b></span><span>September vs 2 candidates · character adherence (v2) · 299 cases × 3 repeats</span><span>Run 2026-10-25</span></div>
@@ -193,8 +225,8 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
   </div>
   <div class="tbl"><table id="opt"></table></div>
   <div class="grid2">
-    <div class="fig mini"><h3>Change against September, in points</h3><p class="cap" style="margin:0 0 .4rem">Higher is better. Corrected for 16 comparisons.</p><div class="chart" id="sum-pts"></div></div>
-    <div class="fig mini"><h3>Cost per 1,000 replies</h3><p class="cap" style="margin:0 0 .4rem">Production roles only, as the runs were routed. Lower is better.</p><div class="chart" id="sum-cost"></div></div>
+    <div class="fig mini"><h3>Change against September, in points</h3><p class="cap" style="margin:0 0 .4rem">Higher is better. Corrected for 16 comparisons.</p><div class="chart" id="sum-pts" data-kind="forest"></div></div>
+    <div class="fig mini"><h3>Cost per 1,000 replies</h3><p class="cap" style="margin:0 0 .4rem">Production roles only, as the runs were routed. Lower is better.</p><div class="chart" id="sum-cost" data-kind="bars"></div></div>
   </div>
 </div>
 
@@ -207,19 +239,19 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
 <section>
   <header><span class="eyebrow">The asked question</span><h2 id="q-h"></h2>
   <p class="takeaway" id="q-t"></p></header>
-  <div class="fig"><div class="chart" id="question"></div><p class="cap" id="q-cap"></p></div>
+  <div class="fig"><div class="chart" id="question" data-kind="forest"></div><p class="cap" id="q-cap"></p></div>
 </section>
 
 <section>
   <header><span class="eyebrow">Where character is lost</span><h2 id="st-h"></h2>
   <p class="takeaway">Change in in-character rate against September, by kind of listener message. The twelve largest strata, by cases. Bold rows are separated from zero at 95%, before any correction; read them as leads.</p></header>
-  <div class="grid2" id="strata"></div>
+  <div class="chart" id="strata" data-kind="diverging_bars"></div>
 </section>
 
 <section>
   <header><span class="eyebrow">What the failures look like</span><h2>Off-lane failures answer the question instead of brushing it off</h2>
   <p class="takeaway">Failed trials on in-character, with the judge's reason and the end of the reply.</p></header>
-  <div class="ex" id="ex"></div>
+  <div class="chart" id="ex" data-kind="examples"></div>
 </section>
 
 <div class="part"><h2>Test the margin</h2><span>The margin was set after the results were seen</span></div>
@@ -229,7 +261,7 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
     <div class="ctl"><label for="e-m">Margin (points)</label><input type="range" id="e-m" min="0" max="15" step="0.5" value="15"><output id="o-m"></output></div>
     <div class="ctl"><label>Measure</label><div class="seg" id="e-k"><button type="button" data-v="pass">Pass rate (95%)</button><button type="button" data-v="char">In-character (corrected)</button></div></div>
   </div>
-  <div class="result"><div class="callout" id="e-note"></div><div class="fig"><div class="chart" id="e-chart"></div></div></div>
+  <div class="result"><div class="callout" id="e-note"></div><div class="fig"><div class="chart" id="e-chart" data-kind="forest"></div></div></div>
 </section>
 
 <div class="part"><h2>Full results</h2><span>Every arm, measure and stratum</span></div>
@@ -241,7 +273,8 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
 </section>
 </div>
 
-<script>// Minimal chart kit: pixel-true SVG rendered at container width, shared tooltip, sortable tables.
+<script>// Minimal chart kit: pixel-true SVG rendered at container width, shared tooltip, sortable tables, and one
+// declarative entry point: every div.chart[data-kind][data-chart] is drawn from its JSON (drawCharts).
 const NS="http://www.w3.org/2000/svg";
 function S(tag,attrs={},parent){const e=document.createElementNS(NS,tag);for(const k in attrs){if(k==="text")e.textContent=attrs[k];else e.setAttribute(k,attrs[k]);}if(parent)parent.appendChild(e);return e;}
 function H(tag,attrs={},html){const e=document.createElement(tag);for(const k in attrs)e.setAttribute(k,attrs[k]);if(html!=null)e.innerHTML=html;return e;}
@@ -250,11 +283,44 @@ function lin(d0,d1,r0,r1){const f=x=>r0+(x-d0)/(d1-d0)*(r1-r0);f.inv=y=>d0+(y-r0
 function logs(d0,d1,r0,r1){const a=Math.log10(d0),b=Math.log10(d1);const f=x=>r0+(Math.log10(x)-a)/(b-a)*(r1-r0);f.d=[d0,d1];return f;}
 function ticks(a,b,n=5){if(n>1){let k=n,t=ticksRaw(a,b,k);while(t.length>n+1&&k>1){k--;t=ticksRaw(a,b,k);}return t;}return ticksRaw(a,b,n);}
 function ticksRaw(a,b,n=5){const step=Math.pow(10,Math.floor(Math.log10((b-a)/n)));const err=(b-a)/n/step;const m=err>=7.5?10:err>=3.5?5:err>=1.5?2:1;const s=m*step;const out=[];for(let v=Math.ceil(a/s)*s;v<=b+1e-9;v+=s)out.push(+v.toFixed(10));return out;}
+// nice ticks whose labels are all distinct: a format that rounds (an integer count) would otherwise print
+// "1" at 0.5 and at 1, so the step widens until each label names one position
+function kFmtTicks(a,b,n,f){for(let k=n;k>1;k--){const t=ticks(a,b,k),L=t.map(f);if(new Set(L).size===L.length)return t;}return ticks(a,b,2);}
+// explicit tick values, thinned left to right so no two labels touch at the drawn width
+function kThinTicks(vals,x,f){const out=[];let last=-1e9;for(const v of vals){const half=f(v).length*3.2;if(x(v)-half<last+6)continue;out.push(v);last=x(v)+half;}return out;}
+const kClamp=(v,a,b)=>Math.max(Math.min(a,b),Math.min(Math.max(a,b),v));
 const fmt={
   pct:(v,d=1)=>v.toFixed(d)+"%",
   usd:v=>v>=100?"$"+Math.round(v).toLocaleString():v>=10?"$"+v.toFixed(1):v>=1?"$"+v.toFixed(2):"$"+v.toFixed(3),
   s:v=>v.toFixed(v<10?1:0)+"s", ms:v=>Math.round(v)+" ms", x:v=>v.toFixed(1)+"×"
 };
+// named formats for chart data: "name" or "name:digits", with a leading "+" to sign positive values.
+// Without digits a value prints as many decimals as it needs, up to two (usd and ms keep their own rounding).
+const kShort=(v,d)=>d==null?String(+(+v).toFixed(2)):(+v).toFixed(d);
+const K_FMTS={
+  num:kShort, int:v=>Math.round(v).toLocaleString("en-US"), pct:(v,d)=>kShort(v,d)+"%", pts:(v,d)=>kShort(v,d)+" pts",
+  usd:(v,d)=>d==null?fmt.usd(v):"$"+v.toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d}),
+  usdk:v=>Math.abs(v)>=1000?"$"+(v/1000).toFixed(1)+"k":"$"+Math.round(v).toLocaleString("en-US"),
+  ms:(v,d)=>(d==null?String(Math.round(v)):v.toFixed(d))+" ms", s:(v,d)=>kShort(v,d)+" s",
+  dur:v=>v>=1000?kShort(v/1000)+"s":kShort(v)+"ms", x:(v,d)=>v.toFixed(d==null?1:d)+"×", k:(v,d)=>(v/1000).toFixed(d==null?1:d)+"k"
+};
+function namedFmt(spec){const m=typeof spec==="string"&&/^(\+?)([a-z]+)(?::(\d))?$/.exec(spec);
+  if(!m||!Object.hasOwn(K_FMTS,m[2]))throw new Error(`fmt ${JSON.stringify(spec)} is not one of ${Object.keys(K_FMTS).join(", ")} (optionally "+name" or "name:digits")`);
+  const f=K_FMTS[m[2]],d=m[3]==null?null:+m[3],signed=m[1]==="+";return v=>{const t=f(v,d);return signed&&v>0?"+"+t:t;};}
+// chart data is untrusted text: escape everything that lands in markup, and accept colors only as token names
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
+function kTok(c,fallback){if(c==null)return fallback;if(typeof c!=="string"||!/^--[a-z][a-z0-9-]*$/.test(c))throw new Error(`color ${JSON.stringify(c)} is not a token name such as "--s1"`);return c;}
+// a number that reaches a style or a size: finite, or refused, so data can never write CSS of its own
+function kNum(v,dflt,what){if(v==null)return dflt;if(typeof v!=="number"||!Number.isFinite(v))throw new Error(`${what} ${JSON.stringify(v)} is not a finite number`);return v;}
+// the kit reads a null field as one not set, as the package's models do: nulls are dropped from every object
+function kNoNulls(v){if(Array.isArray(v))return v.map(kNoNulls);if(v&&typeof v==="object")return Object.fromEntries(Object.entries(v).filter(([,x])=>x!=null).map(([k,x])=>[k,kNoNulls(x)]));return v;}
+const K_STATUS=["good","warn","bad","neutral"];
+function kStatus(k){if(!K_STATUS.includes(k))throw new Error(`status ${JSON.stringify(k)} is not one of ${K_STATUS.join(", ")}`);return k;}
+// a tooltip is a list of text lines; the first is set in bold
+function tipHTML(t){if(t==null)return null;return (Array.isArray(t)?t:[t]).map((l,i)=>i?esc(l):`<b>${esc(l)}</b>`).join("<br>");}
+// text width in the chart font, measured; charts redraw once web fonts load, so widths match what is drawn
+let kCanvas;function textW(t,size=12,weight=400){kCanvas=kCanvas||document.createElement("canvas").getContext("2d");
+  kCanvas.font=`${weight} ${size}px ${css("--f-body")||"sans-serif"}`;return kCanvas.measureText(String(t)).width;}
 // tooltip
 const tip=H("div",{id:"tip",role:"tooltip"});document.addEventListener("DOMContentLoaded",()=>document.body.appendChild(tip));
 function showTip(html,x,y){tip.innerHTML=html;tip.classList.add("on");const w=tip.offsetWidth,h=tip.offsetHeight;
@@ -263,11 +329,12 @@ function hideTip(){tip.classList.remove("on");}
 document.addEventListener("pointermove",e=>{const t=e.target.closest&&e.target.closest("[data-tip]");if(t)showTip(t.getAttribute("data-tip"),e.clientX,e.clientY);else hideTip();});
 document.addEventListener("focusin",e=>{const t=e.target.closest&&e.target.closest("[data-tip]");if(t){const r=t.getBoundingClientRect();showTip(t.getAttribute("data-tip"),r.right,r.top);}});
 document.addEventListener("focusout",hideTip);
-// responsive render: fn(el,width) called on resize
-const charts=[];
-function chart(el,fn){const go=()=>{const w=Math.max(180,Math.floor(el.clientWidth));if(el._w===w)return;el._w=w;el.innerHTML="";fn(el,w);};new ResizeObserver(go).observe(el);go();return ()=>{el._w=0;go();};}
+// responsive render: fn(el,width) called on resize and once fonts load; the returned redraw() carries its observer as .ro
+function chart(el,fn){const go=()=>{const w=Math.max(180,Math.floor(el.clientWidth));if(el._w===w)return;el._w=w;el.innerHTML="";fn(el,w);};
+  go();const ro=new ResizeObserver(go);ro.observe(el);const redraw=()=>{el._w=0;go();};redraw.ro=ro;kRedraws.add(redraw);return redraw;}
+const kRedraws=new Set();if(document.fonts)document.fonts.ready.then(()=>{for(const r of kRedraws)r();});
 function svgIn(el,w,h){return S("svg",{width:w,height:h,viewBox:`0 0 ${w} ${h}`,role:"img"},el);}
-// hit target helper: transparent rect larger than mark
+// hit target helper: transparent rect larger than mark; html is already-escaped tooltip markup
 function hit(g,x,y,w,h,html){const r=S("rect",{x,y,width:w,height:h,fill:"transparent","data-tip":html,tabindex:0},g);return r;}
 // sortable tables: th.sort[data-k], rows rendered by fn(sortedRows)
 function sortable(tableEl,rows,render,defKey,defDir=-1){let key=defKey,dir=defDir;
@@ -277,19 +344,57 @@ function sortable(tableEl,rows,render,defKey,defDir=-1){let key=defKey,dir=defDi
   ths.forEach(th=>{th.tabIndex=0;const f=()=>{if(key===th.dataset.k)dir=-dir;else{key=th.dataset.k;dir=-1;}draw();};th.onclick=f;th.onkeydown=e=>{if(e.key==="Enter")f();};});draw();}
 function pill(kind,text){const ic={good:"✓",warn:"!",bad:"✕",neutral:"–"}[kind];return `<span class="pill ${kind}"><span aria-hidden="true">${ic}</span>${text}</span>`;}
 // colors are applied via style="fill:var(--token)" so theme changes need no re-render
-// label placement: try right, left, above, below, then nudges; avoids other labels and obstacle boxes [x0,y0,x1,y1]
-function placeLabels(items,bounds,obstacles=[]){const W=t=>t.length*6.6+2;const placed=[...obstacles];
-  const hitAny=b=>b[0]<bounds[0]||b[2]>bounds[2]||b[1]<bounds[1]||b[3]>bounds[3]||placed.some(p=>b[0]<p[2]&&b[2]>p[0]&&b[1]<p[3]&&b[3]>p[1]);
-  for(const it of items){const w=W(it.text);const opts=[[it.px+9,it.py+4,"start"],[it.px-9,it.py+4,"end"],[it.px,it.py-10,"middle"],[it.px,it.py+18,"middle"]];
-    for(const d of [12,-12,24,-24])opts.push([it.px+9,it.py+4+d,"start"],[it.px-9,it.py+4+d,"end"]);
-    const score=b=>(b[0]<bounds[0]||b[2]>bounds[2]||b[1]<bounds[1]||b[3]>bounds[3]?100:0)+placed.filter(p=>b[0]<p[2]&&b[2]>p[0]&&b[1]<p[3]&&b[3]>p[1]).length;
-    let pick=opts[0],bs=1e9;for(const o of opts){const x0=o[2]==="end"?o[0]-w:o[2]==="middle"?o[0]-w/2:o[0];const b=[x0,o[1]-10,x0+w,o[1]+3];const sc=score(b);if(sc<bs){bs=sc;pick=o;}if(sc===0)break;}
-    it.x=pick[0];it.y=pick[1];it.anchor=pick[2];const x0=it.anchor==="end"?it.x-w:it.anchor==="middle"?it.x-w/2:it.x;placed.push([x0,it.y-10,x0+w,it.y+3]);}
+// label placement: try right, left, above, below, then nudges up and down; avoids other labels and obstacle boxes [x0,y0,x1,y1].
+// A label's box is its measured 12px text plus a little air, so two placed labels never touch; above and below clear
+// the label's own mark (radius it.r, default 5.5). An obstacle may carry a fifth number, its cost (default 10): a
+// reference line costs 1, so crossing it beats colliding with a label. A spot costs more the further its box is from
+// its own mark, and a spot nearer another mark than its own costs 3, so a label strays from its mark only to avoid a
+// collision and never sits beside another arm's mark. marks: [[x,y]] of every mark drawn (default: the items').
+function placeLabels(items,bounds,obstacles=[],marks){const W=(t,strong)=>textW(t,12,strong?600:400)+3;const placed=[...obstacles];
+  const pts=marks||items.map(it=>[it.px,it.py]);const near=(b,x,y)=>Math.hypot(Math.max(b[0]-x,0,x-b[2]),Math.max(b[1]-y,0,y-b[3]));
+  for(const it of items){const w=W(it.text,it.strong),g=(it.r==null?5.5:it.r)+2,R=it.px+g+1.5,L=it.px-g-1.5,up=it.py-g-4.5,dn=it.py+g+13;
+    const opts=[[R,it.py+4,"start"],[L,it.py+4,"end"],[it.px,up,"middle"],[it.px,dn,"middle"]];
+    for(const d of [-6,6,12,-12,24,-24,36,-36])opts.push([R,it.py+4+d,"start"],[L,it.py+4+d,"end"]);
+    opts.push([it.px,up-14,"middle"],[it.px,dn+14,"middle"]);
+    const box=o=>{const x0=o[2]==="end"?o[0]-w:o[2]==="middle"?o[0]-w/2:o[0];return [x0,o[1]-12.5,x0+w,o[1]+4];};
+    const score=b=>{let s=b[0]<bounds[0]||b[2]>bounds[2]||b[1]<bounds[1]||b[3]>bounds[3]?100:0;
+      for(const p of placed)if(b[0]<p[2]&&b[2]>p[0]&&b[1]<p[3]&&b[3]>p[1])s+=p[4]==null?10:p[4];
+      const own=near(b,it.px,it.py);s+=own*.06;
+      if(pts.some(([x,y])=>(x!==it.px||y!==it.py)&&near(b,x,y)<Math.max(own,4)))s+=3;return s;};
+    let pick=opts[0],bs=1e9;opts.forEach((o,i)=>{const sc=score(box(o))+i*.08;if(sc<bs){bs=sc;pick=o;}});
+    it.x=pick[0];it.y=pick[1];it.anchor=pick[2];placed.push(box(pick));}
   return items;}
+// marks: one shape per arm where color alone would carry identity; hollow marks a failure or an absent setting
+function mark(g,shape,x,y,r,color,hollow){const st=hollow?`fill:var(--surface);stroke:var(${color});stroke-width:2`:`fill:var(${color});stroke:var(--surface);stroke-width:2`;
+  if(shape==="square")return S("rect",{x:x-r*.88,y:y-r*.88,width:r*1.76,height:r*1.76,rx:1.5,style:st},g);
+  if(shape==="triangle")return S("path",{d:`M${x},${y-r*1.1}L${x+r*1.05},${y+r*.8}L${x-r*1.05},${y+r*.8}Z`,style:st},g);
+  if(shape==="diamond")return S("path",{d:`M${x},${y-r*1.15}L${x+r*1.1},${y}L${x},${y+r*1.15}L${x-r*1.1},${y}Z`,style:st},g);
+  return S("circle",{cx:x,cy:y,r,style:st},g);}
+const K_SHAPES=["circle","square","triangle","diamond"];
+function kShape(s){if(s==null)return "circle";if(!K_SHAPES.includes(s))throw new Error(`shape ${JSON.stringify(s)} is not one of ${K_SHAPES.join(", ")}`);return s;}
+// patterns: a fill told apart by its texture, not its color alone (one status hue, several causes). The box is
+// washed in its token and the texture drawn over it in the token as plain lines and dots, clipped to the box by
+// geometry, so a pattern references nothing outside its own marks.
+const K_PATTERNS=["hatch","cross","dots","rows","cols"];
+function kPatternName(name){if(!K_PATTERNS.includes(name))throw new Error(`pattern ${JSON.stringify(name)} is not one of ${K_PATTERNS.join(", ")}`);return name;}
+function kTexture(g,name,x,y,w,h,color,opacity=1){kPatternName(name);const t=S("g",{style:`opacity:${opacity}`},g),P=6;
+  S("rect",{x,y,width:w,height:h,rx:2,style:`fill:color-mix(in oklab, var(${color}) 22%, var(--surface));stroke:var(${color});stroke-width:1`},t);
+  if(w<=0||h<=0)return t;const d=[];
+  // a diagonal from (sx,sy) along (1,dir) for h, cut to the box's x range
+  const diag=(sx,sy,dir)=>{const a=Math.max(0,x-sx),b=Math.min(h,x+w-sx);if(b>a)d.push(`M${sx+a},${sy+dir*a}L${sx+b},${sy+dir*b}`);};
+  if(name==="hatch"||name==="cross")for(let k=-h;k<w;k+=P)diag(x+k,y+h,-1);
+  if(name==="cross")for(let k=-h;k<w;k+=P)diag(x+k,y,1);
+  if(name==="rows")for(let v=y+P/2;v<y+h;v+=P)d.push(`M${x},${v}H${x+w}`);
+  if(name==="cols")for(let v=x+P/2;v<x+w;v+=P)d.push(`M${v},${y}V${y+h}`);
+  if(d.length)S("path",{d:d.join(""),style:`fill:none;stroke:var(${color});stroke-width:${name==="cross"?1:1.4}`},t);
+  if(name==="dots")for(let i=x+P/2;i<x+w;i+=P)for(let j=y+P/2;j<y+h;j+=P)S("circle",{cx:i,cy:j,r:1.4,style:`fill:var(${color})`},t);
+  return t;}
 
 // ---------- arm naming ----------
 // arms: [{id, role:'control'|'challenger', alias?, spec:{model, ...}}]; attrs: [{k, fmt(v)}] in display order
 // short = alias, else only the attributes that differ from control (model trimmed of the shared prefix); tag = A, B, C…
+// (AA after Z), never P, which is the control's alone
+const kCandidateTag=n=>{let t="";for(n++;n;n=Math.floor((n-1)/26))t=String.fromCharCode(65+(n-1)%26)+t;return t;};
 function armLabels(arms,attrs,controlName="Production"){
   const ctl=arms.find(a=>a.role==="control");const fmtA=(k,v)=>{const a=attrs.find(x=>x.k===k);return a&&a.fmt?a.fmt(v):String(v);};
   const trimModel=(m,base)=>{if(!base||m===base)return m;let i=0;while(i<m.length&&i<base.length&&m[i]===base[i])i++;
@@ -297,7 +402,7 @@ function armLabels(arms,attrs,controlName="Production"){
   let n=0;
   for(const a of arms){a.long=attrs.map(x=>fmtA(x.k,a.spec[x.k])).join(" · ");
     if(a===ctl){a.short=a.alias||controlName;a.tag="P";continue;}
-    a.tag=String.fromCharCode(65+n++);
+    do a.tag=kCandidateTag(n++);while(a.tag==="P");
     if(a.alias){a.short=a.alias;continue;}
     const diffs=attrs.filter(x=>a.spec[x.k]!==ctl.spec[x.k]);
     a.short=diffs.map(x=>x.k==="model"?trimModel(a.spec.model,ctl.spec.model):(x.sfmt?x.sfmt(a.spec[x.k]):fmtA(x.k,a.spec[x.k]))).join(" · ")||a.long;}
@@ -305,56 +410,76 @@ function armLabels(arms,attrs,controlName="Production"){
   const seen={};for(const a of arms){(seen[a.short]=seen[a.short]||[]).push(a);}
   for(const k in seen)if(seen[k].length>1)for(const a of seen[k]){const extra=attrs.find(x=>seen[k].some(b=>b!==a&&b.spec[x.k]!==a.spec[x.k]));if(extra)a.short+=" · "+fmtA(extra.k,a.spec[extra.k]);}
   return arms;}
-function armChip(a,color){return `<span class="armchip"><span class="tag" style="background:var(${color})">${a.tag}</span>${a.short}</span>`;}
+// a tag's letter on its arm's color: on-fill, except on the control's ink-gray, which is light in the dark theme
+const kOnTag=c=>c==="--ink-2"?"--surface":"--on-fill";
+function armChip(a,color){return `<span class="armchip"><span class="tag" style="background:var(${color});color:var(${kOnTag(color)})">${a.tag}</span>${a.short}</span>`;}
+function kArmChip(tag,label,color){const s=H("span",{class:"armchip"});const t=H("span",{class:"tag"}),c=kTok(color,"--ink-2");t.style.background=`var(${c})`;t.style.color=`var(${kOnTag(c)})`;t.textContent=tag;s.append(t,document.createTextNode(label));return s;}
 
-// ---------- horizontal bars (optionally diverging, with whiskers and a reference line) ----------
-// rows:[{label, value, lo?, hi?, color, strong?, muted?, note?, tip?}] opt:{domain:[a,b], fmt, ref?:{value,label}, labelW?, rowH?}
-function barsH(el,w,rows,opt){const rowH=opt.rowH||28,narrow=w<480,lw=opt.labelW||(narrow?Math.min(130,w*.36):Math.min(220,w*.3));const m={l:lw,r:narrow?52:70,t:opt.ref?20:6,b:22};
-  const h=m.t+m.b+rowH*rows.length;const s=svgIn(el,w,h);const [d0,d1]=opt.domain;const x=lin(d0,d1,m.l,w-m.r);
+// ---------- horizontal bars (optionally diverging, stacked, grouped, with whiskers and a reference line) ----------
+// rows:[{label, sl?, value | segments:[{value,color}], lo?, hi?, color, strong?, muted?, note?, tip?, group?}]
+// opt:{domain:[a,b], fmt, tickFmt?, ticks?, ref?:{value,label}, origin?, originLabel?, level?, labelW?, rowH?}
+function barsH(el,w,rows,opt){const rowH=opt.rowH||28,narrow=w<480,tagW=rows.some(r=>r.tag!=null)?22:0,lw=opt.labelW||(narrow?Math.min(130,w*.36):Math.min(220,w*.3));
+  const m={l:lw,r:narrow?52:70,t:opt.ref||opt.level||opt.originLabel?20:6,b:22};
+  const grouped=rows.some(r=>r.group!=null);let gaps=0;rows.forEach((r,i)=>{if(i&&r.group!==rows[i-1].group)gaps++;});
+  const h=m.t+m.b+rowH*rows.length+gaps*14+(grouped?14:0);const s=svgIn(el,w,h);const [d0,d1]=opt.domain;const x=lin(d0,d1,m.l,w-m.r);
   const tf=opt.tickFmt||opt.fmt;const tw=Math.max(...[d0,d1,(d0+d1)/2].map(v=>tf(v).length))*6.4+14;
-  for(const v of ticks(d0,d1,Math.max(2,Math.floor((w-m.l-m.r)/tw)))){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:tf(v)},s);}
-  const z=x(Math.max(d0,Math.min(d1,0)));S("line",{x1:z,x2:z,y1:m.t-2,y2:h-m.b,class:"axis"},s);
-  rows.forEach((r,i)=>{const cy=m.t+rowH*i+rowH/2;const g=S("g",{},s);const v=Math.max(d0,Math.min(d1,r.value));
-    const maxC=Math.floor((m.l-14)/6.6);let lab=r.label;if(lab.length>maxC)lab=(r.sl&&r.sl.length<=maxC)?r.sl:lab.slice(0,maxC-1)+"…";
-    S("text",{x:m.l-10,y:cy+4,"text-anchor":"end",class:r.strong?"lbl-strong":"lbl",text:lab},g);
-    const x0=Math.min(z,x(v)),bw=Math.max(1.5,Math.abs(x(v)-z));
-    S("rect",{x:x0,y:cy-(rowH*.28),width:bw,height:rowH*.56,rx:3,style:`fill:var(${r.color||"--s1"});opacity:${r.muted?.45:1}`},g);
+  const tv=opt.ticks?kThinTicks(opt.ticks,x,tf):kFmtTicks(d0,d1,Math.max(2,Math.floor((w-m.l-m.r)/tw)),tf);
+  for(const v of tv){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:tf(v)},s);}
+  const o=opt.origin||0;const z=x(kClamp(o,d0,d1));S("line",{x1:z,x2:z,y1:m.t-2,y2:h-m.b,class:"axis"},s);
+  if(opt.originLabel)S("text",{x:z+4,y:m.t-8,class:"tick",text:opt.originLabel},s);
+  let y0=m.t+(grouped?14:0);
+  rows.forEach((r,i)=>{if(grouped&&(i===0||r.group!==rows[i-1].group)){if(i)y0+=14;S("text",{x:0,y:y0-4,class:"lbl-strong",text:r.group==null?"":r.group},s);}
+    const cy=y0+rowH/2;y0+=rowH;const g=S("g",{},s);const val=r.segments?r.segments.reduce((a,sg)=>a+sg.value,0):r.value;const v=kClamp(val,d0,d1);
+    // the label, else its short label, else (where the row has a tag) the tag alone, else the short or long label cut
+    const maxC=Math.floor((m.l-14-tagW)/6.6);let lab=r.label;if(lab.length>maxC)lab=r.sl&&r.sl.length<=maxC?r.sl:r.tag!=null?"":(r.sl||lab).slice(0,maxC-1)+"…";
+    S("text",{x:m.l-10-tagW,y:cy+4,"text-anchor":"end",class:r.strong?"lbl-strong":"lbl",text:lab},g);
+    if(r.tag!=null){const tc=r.color||"--ink-2";S("rect",{x:m.l-26,y:cy-8,width:16,height:16,rx:3,style:`fill:var(${tc})`},g);
+      S("text",{x:m.l-18,y:cy+3.5,"text-anchor":"middle",class:"tag",style:`fill:var(${kOnTag(tc)});font-size:10px;font-weight:600`,text:r.tag},g);}
+    if(r.segments){let acc=o;r.segments.forEach((sg,j)=>{const a=x(kClamp(acc,d0,d1)),b=x(kClamp(acc+sg.value,d0,d1));const c=sg.color||r.color||"--s1";
+        const sx=Math.min(a,b)+(j?1:0),sw=Math.max(0,Math.abs(b-a)-(j?1:0)),sy=cy-(rowH*.28),sh=rowH*.56;
+        if(sg.pattern!=null)kTexture(g,sg.pattern,sx,sy,sw,sh,c,r.muted?.45:1);
+        else S("rect",{x:sx,y:sy,width:sw,height:sh,rx:2,style:`fill:var(${c});opacity:${r.muted?.45:1}`},g);acc+=sg.value;});}
+    else{const x0=Math.min(z,x(v)),bw=Math.max(1.5,Math.abs(x(v)-z));
+      S("rect",{x:x0,y:cy-(rowH*.28),width:bw,height:rowH*.56,rx:3,style:`fill:var(${r.color||"--s1"});opacity:${r.muted?.45:1}`},g);}
     if(r.lo!=null){S("line",{x1:x(Math.max(d0,r.lo)),x2:x(Math.min(d1,r.hi)),y1:cy,y2:cy,style:"stroke:var(--ink);stroke-width:1.25"},g);
-      for(const e of [r.lo,r.hi])S("line",{x1:x(Math.max(d0,Math.min(d1,e))),x2:x(Math.max(d0,Math.min(d1,e))),y1:cy-4,y2:cy+4,style:"stroke:var(--ink);stroke-width:1.25"},g);}
-    const right=r.value>=0;const edge=r.lo!=null?(right?x(Math.min(d1,r.hi)):x(Math.max(d0,r.lo))):x(v);
-    let nt=(r.note!=null?r.note:opt.fmt(r.value));if(right&&edge+6+nt.length*6.4>w)nt=opt.fmt(r.value);let nw=nt.length*6.4;const flip=!right&&edge-6-nw<m.l+4;
-    if(flip&&Math.max(z,x(Math.min(d1,r.hi!=null?r.hi:0)))+6+nw>w){nt=opt.fmt(r.value);nw=nt.length*6.4;}
-    S("text",{x:right?edge+6:flip?Math.max(z,x(Math.min(d1,r.hi!=null?r.hi:0)))+6:edge-6,y:cy+4,"text-anchor":right||flip?"start":"end",class:r.strong?"lbl-strong":"tick",text:nt},g);
-    hit(g,0,cy-rowH/2,w,rowH,r.tip||`<b>${r.label}</b><br>${opt.fmt(r.value)}`);});
-  if(opt.ref){const rx=x(opt.ref.value);S("line",{x1:rx,x2:rx,y1:m.t-6,y2:h-m.b,class:"floor"},s);S("text",{x:rx+4,y:m.t-8,class:"tick",text:opt.ref.label},s);}
+      for(const e of [r.lo,r.hi])S("line",{x1:x(kClamp(e,d0,d1)),x2:x(kClamp(e,d0,d1)),y1:cy-4,y2:cy+4,style:"stroke:var(--ink);stroke-width:1.25"},g);}
+    const right=val>=o;const edge=r.lo!=null?(right?x(Math.min(d1,r.hi)):x(Math.max(d0,r.lo))):x(v);
+    let nt=(r.note!=null?r.note:opt.fmt(val));if(right&&edge+6+nt.length*6.4>w)nt=opt.fmt(val);let nw=nt.length*6.4;const flip=!right&&edge-6-nw<m.l+4;
+    const past=Math.max(z,x(Math.min(d1,r.hi!=null?r.hi:o)));
+    if(flip&&past+6+nw>w){nt=opt.fmt(val);nw=nt.length*6.4;}
+    S("text",{x:right?edge+6:flip?past+6:edge-6,y:cy+4,"text-anchor":right||flip?"start":"end",class:r.strong?"lbl-strong":"tick",text:nt},g);
+    hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,opt.fmt(val)+(r.lo!=null?` (${opt.fmt(r.lo)} to ${opt.fmt(r.hi)})`:"")]));});
+  if(opt.ref){const rx=x(opt.ref.value);S("line",{x1:rx,x2:rx,y1:m.t-6,y2:h-m.b,class:"floor"},s);if(opt.ref.label)S("text",{x:rx+4,y:m.t-8,class:"tick",text:opt.ref.label},s);}
+  if(opt.level)S("text",{x:w,y:m.t-8,"text-anchor":"end",class:"tick",text:`${opt.level} intervals`},s);
   return s;}
 
 // ---------- line chart over ordered categories ----------
-// cats:[label], series:[{name, color, values:[...], lo?:[], hi?:[], strong?, dash?}], opt:{domain, fmt, xTitle?, yTitle?, h?}
-function lineChart(el,w,cats,series,opt){const narrow=w<480;const h=opt.h||(narrow?260:300);const m={l:44,r:narrow?92:130,t:14,b:opt.xTitle?44:28};const s=svgIn(el,w,h);
+// cats:[label], series:[{name, color, values:[...], lo?:[], hi?:[], strong?, dash?, endLabel?}], opt:{domain, fmt, xTitle?, h?, level?}
+function lineChart(el,w,cats,series,opt){const narrow=w<480;const h=opt.h||(narrow?260:300);const m={l:44,r:narrow?92:130,t:opt.level?24:14,b:opt.xTitle?44:28};const s=svgIn(el,w,h);
   const x=i=>m.l+(cats.length===1?0:i/(cats.length-1))*(w-m.l-m.r),[d0,d1]=opt.domain,y=lin(d0,d1,h-m.b,m.t);
-  for(const v of ticks(d0,d1,5)){S("line",{x1:m.l,x2:w-m.r,y1:y(v),y2:y(v),class:"grid"},s);if(v>d0)S("text",{x:m.l-8,y:y(v)+4,"text-anchor":"end",class:"tick",text:opt.fmt(v)},s);}
+  for(const v of kFmtTicks(d0,d1,5,opt.fmt)){S("line",{x1:m.l,x2:w-m.r,y1:y(v),y2:y(v),class:"grid"},s);if(v>d0)S("text",{x:m.l-8,y:y(v)+4,"text-anchor":"end",class:"tick",text:opt.fmt(v)},s);}
   cats.forEach((c,i)=>S("text",{x:x(i),y:h-m.b+16,"text-anchor":"middle",class:"tick",text:c},s));
   if(opt.xTitle)S("text",{x:(m.l+w-m.r)/2,y:h-6,"text-anchor":"middle",class:"tick",text:opt.xTitle},s);
+  if(opt.level)S("text",{x:w-m.r,y:12,"text-anchor":"end",class:"tick",text:`${opt.level} intervals`},s);
   const ends=[];const obs=[];
   for(const se of series){if(se.lo)S("path",{d:"M"+se.hi.map((v,i)=>`${x(i)},${y(v)}`).join("L")+"L"+se.lo.map((v,i)=>[i,v]).reverse().map(([i,v])=>`${x(i)},${y(v)}`).join("L")+"Z",style:`fill:var(${se.color});opacity:.12`},s);}
   for(const se of series){S("path",{d:"M"+se.values.map((v,i)=>`${x(i)},${y(v)}`).join("L"),style:`fill:none;stroke:var(${se.color});stroke-width:${se.strong?2.5:2};${se.dash?"stroke-dasharray:5 4;":""}`},s);
     se.values.forEach((v,i)=>{const g=S("g",{},s);S("circle",{cx:x(i),cy:y(v),r:se.strong?4.5:3.5,style:`fill:var(${se.color});stroke:var(--surface);stroke-width:2`},g);obs.push([x(i)-5,y(v)-5,x(i)+5,y(v)+5]);
-      hit(g,x(i)-10,y(v)-10,20,20,`<b>${se.name}</b> · ${cats[i]}<br>${opt.fmt(v)}${se.lo?` (${opt.fmt(se.lo[i])}–${opt.fmt(se.hi[i])})`:""}`);});
-    ends.push({px:x(cats.length-1),py:y(se.values.at(-1)),text:opt.endLabel?opt.endLabel(se):se.name,strong:se.strong});}
+      hit(g,x(i)-10,y(v)-10,20,20,tipHTML([`${se.name} · ${cats[i]}`,`${opt.fmt(v)}${se.lo?` (${opt.fmt(se.lo[i])}–${opt.fmt(se.hi[i])})`:""}`]));});
+    ends.push({px:x(cats.length-1),py:y(se.values.at(-1)),text:se.endLabel||se.name,strong:se.strong});}
   // end labels stacked to avoid collisions, to the right of the last point
   ends.sort((a,b)=>a.py-b.py);let last=-1e9;for(const e of ends){e.y=Math.max(e.py+4,last+16);last=e.y;}
   const maxE=Math.floor((m.r-12)/6.6);for(const e of ends)S("text",{x:e.px+10,y:e.y,class:e.strong?"lbl-strong":"lbl",text:e.text.length>maxE?e.text.slice(0,maxE-1)+"…":e.text},s);
   return s;}
 
 // ---------- forest plot: change against a control, with interval and an optional margin ----------
-// rows:[{label, value, lo, hi, color, strong?, note?, group?, tip?}] opt:{domain:[a,b], fmt, margin?:number (drawn at -margin), marginLabel?, level?:"95%"}
+// rows:[{label, value, lo, hi, color, strong?, note?, group?, tip?}] opt:{domain:[a,b], fmt, ref?:{value,label} (margin band from value up), level?}
 function forest(el,w,rows,opt){const narrow=w<480,rowH=opt.rowH||30,need=Math.max(...rows.map(r=>r.label.length))*6.6+18,lw=opt.labelW||Math.min(need,narrow?w*.42:Math.min(230,w*.32));
   const m={l:lw,r:narrow?60:96,t:22,b:24};let gaps=0;rows.forEach((r,i)=>{if(i&&r.group!==rows[i-1].group)gaps++;});
   const h=m.t+m.b+rowH*rows.length+gaps*14+(rows.some(r=>r.group)?14:0);const s=svgIn(el,w,h);const [d0,d1]=opt.domain;const x=lin(d0,d1,m.l,w-m.r);
-  if(opt.margin!=null){const mx=x(Math.max(d0,-opt.margin));S("rect",{x:mx,y:m.t,width:x(d1)-mx,height:h-m.t-m.b,style:"fill:var(--good-wash);opacity:.6"},s);
-    S("line",{x1:mx,x2:mx,y1:m.t-4,y2:h-m.b,class:"floor"},s);S("text",{x:mx+4,y:narrow&&opt.level?h-m.b-6:m.t-8,class:"tick",text:opt.marginLabel||`margin −${opt.margin}`},s);}
-  for(const v of ticks(d0,d1,Math.max(2,Math.floor((w-m.l-m.r)/(Math.max(opt.fmt(d0).length,opt.fmt(d1).length)*6.4+16))))){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:opt.fmt(v)},s);}
+  if(opt.ref){const mx=x(Math.max(d0,opt.ref.value));S("rect",{x:mx,y:m.t,width:x(d1)-mx,height:h-m.t-m.b,style:"fill:var(--good-wash);opacity:.6"},s);
+    S("line",{x1:mx,x2:mx,y1:m.t-4,y2:h-m.b,class:"floor"},s);if(opt.ref.label)S("text",{x:mx+4,y:narrow&&opt.level?h-m.b-6:m.t-8,class:"tick",text:opt.ref.label},s);}
+  for(const v of kFmtTicks(d0,d1,Math.max(2,Math.floor((w-m.l-m.r)/(Math.max(opt.fmt(d0).length,opt.fmt(d1).length)*6.4+16))),opt.fmt)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:opt.fmt(v)},s);}
   S("line",{x1:x(0),x2:x(0),y1:m.t-4,y2:h-m.b,class:"axis",style:"stroke-width:1.5"},s);
   if(opt.level)S("text",{x:w-m.r,y:m.t-8,"text-anchor":"end",class:"tick",text:`${opt.level} intervals`},s);
   let y0=m.t+(rows.some(r=>r.group)?14:0);
@@ -365,8 +490,205 @@ function forest(el,w,rows,opt){const narrow=w<480,rowH=opt.rowH||30,need=Math.ma
     S("line",{x1:cl(r.lo),x2:cl(r.hi),y1:cy,y2:cy,style:`stroke:var(${r.color||"--s1"});stroke-width:3;stroke-linecap:round`},g);
     S("rect",{x:cl(r.value)-5,y:cy-5,width:10,height:10,rx:2,style:`fill:var(${r.color||"--s1"});stroke:var(--surface);stroke-width:2`},g);
     let nt=r.note!=null?r.note:opt.fmt(r.value);if(nt.length*6.4>m.r-10)nt=opt.fmt(r.value);S("text",{x:w-m.r+8,y:cy+4,class:r.strong?"lbl-strong":"tick",text:nt},g);
-    hit(g,0,cy-rowH/2,w,rowH,r.tip||`<b>${r.label}</b><br>${opt.fmt(r.value)} [${opt.fmt(r.lo)}, ${opt.fmt(r.hi)}]`);});
+    hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,`${opt.fmt(r.value)} [${opt.fmt(r.lo)}, ${opt.fmt(r.hi)}]`]));});
   return s;}
+
+// ---------- declarative renderers: each takes the chart's JSON (kit/API.md "Chart data") ----------
+function kNeed(d,keys){for(const k of keys)if(d[k]==null)throw new Error(`"${k}" is required`);}
+function kList(d,k){if(!Array.isArray(d[k]))throw new Error(`"${k}" must be a list`);return d[k];}
+// GENERATOR §5.2: an interval-bearing chart prints its level, so a chart drawing intervals without one is refused
+function kNeedLevel(d,rows){if(!d.level&&rows.some(r=>r.lo!=null||r.hi!=null))throw new Error(`rows carry intervals, so "level" is required`);}
+const kLabelW=(d,w)=>(w<480?d.label_width_narrow:d.label_width)||null;
+const kIsEm=(d,id)=>d.emphasis!=null&&id!=null&&id===d.emphasis;
+
+function kBars(el,w,d){kNeed(d,["domain","fmt"]);const rows=kList(d,"rows");kNeedLevel(d,rows);const f=namedFmt(d.fmt);
+  const ref=d.reference;const pref=ref&&ref.kind==="no_preference";
+  barsH(el,w,rows.map(r=>({...r,sl:r.short_label,color:kTok(r.color,"--s1"),strong:r.strong||kIsEm(d,r.id),
+      segments:r.segments&&r.segments.map(sg=>({value:sg.value,color:kTok(sg.color,null),pattern:sg.pattern}))})),
+    {domain:d.domain,fmt:f,tickFmt:d.tick_fmt?namedFmt(d.tick_fmt):null,ticks:d.ticks,ref:ref&&!pref?ref:null,origin:pref?ref.value:0,originLabel:pref?ref.label:null,
+     level:d.level,labelW:kLabelW(d,w),rowH:d.row_height});}
+
+function kForest(el,w,d){kNeed(d,["domain","fmt","level"]);const rows=kList(d,"rows");
+  forest(el,w,rows.map(r=>({...r,sl:r.short_label,color:kTok(r.color,"--s1"),strong:r.strong||kIsEm(d,r.id)})),
+    {domain:d.domain,fmt:namedFmt(d.fmt),ref:d.reference||null,level:d.level,labelW:kLabelW(d,w),rowH:d.row_height});}
+
+function kLines(el,w,d){kNeed(d,["domain","fmt"]);const series=kList(d,"series");const cats=kList(d,"categories");
+  if(!d.level&&series.some(se=>se.lo||se.hi))throw new Error(`series carry bands, so "level" is required`);
+  lineChart(el,w,cats,series.map(se=>({...se,color:kTok(se.color,"--s1"),endLabel:se.end_label})),{domain:d.domain,fmt:namedFmt(d.fmt),xTitle:d.x_title,h:d.height,level:d.level});}
+
+// scatter: two measures that trade off. gate=true shades where both references pass (gate_scatter).
+function kScatter(el,w,d,gate){kNeed(d,["x_domain","y_domain","x_fmt","y_fmt"]);const pts=kList(d,"points");
+  if(gate&&(!d.reference||!d.x_reference))throw new Error(`gate_scatter needs "reference" (y) and "x_reference" (x)`);
+  const xf=namedFmt(d.x_fmt),yf=namedFmt(d.y_fmt),narrow=w<560;const [x0,x1]=d.x_domain,[y0,y1]=d.y_domain;
+  const yt=d.y_ticks||kFmtTicks(y0,y1,5,yf);const h=d.height||Math.round(Math.min(380,Math.max(300,w*.45)));
+  const m={l:Math.max(30,Math.max(...yt.map(v=>yf(v).length))*6.6+16),r:18,t:16,b:40};const s=svgIn(el,w,h);
+  const x=d.x_log?logs(x0,x1,m.l,w-m.r):lin(x0,x1,m.l,w-m.r),y=lin(y0,y1,h-m.b,m.t);const obs=[];
+  const passSide=(r,lo,hi,dflt)=>((r.kind||dflt)==="budget"?[lo,r.value]:[r.value,hi]);
+  if(gate){const [ax,bx]=passSide(d.x_reference,x0,x1,"budget"),[ay,by]=passSide(d.reference,y0,y1,"floor");
+    S("rect",{x:x(ax),y:y(by),width:x(bx)-x(ax),height:y(ay)-y(by),style:"fill:var(--good-wash)"},s);
+    if(d.region_label){S("text",{x:x(ax)+8,y:y(by)+16,class:"lbl",style:"fill:var(--good);font-weight:600",text:d.region_label},s);obs.push([x(ax)+8,y(by)+6,x(ax)+8+d.region_label.length*6.6,y(by)+19]);}}
+  if(d.price_line){const p=d.price_line.value,yAt=v=>-(v/Math.max(1e-9,p)),lx=Math.min(x1,p*-y0);
+    S("path",{d:`M${x(0)},${y(0)}L${x(x1)},${y(0)}L${x(x1)},${y(Math.max(y0,yAt(x1)))}L${x(lx)},${y(Math.max(y0,yAt(lx)))}Z`,style:"fill:var(--good-wash)"},s);}
+  for(const v of yt){S("line",{x1:m.l,x2:w-m.r,y1:y(v),y2:y(v),class:"grid"},s);if(v>y0)S("text",{x:m.l-8,y:y(v)+4,"text-anchor":"end",class:"tick",text:yf(v)},s);}
+  for(const v of kThinTicks(d.x_ticks||kFmtTicks(x0,x1,5,xf),x,xf)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-m.b+16,"text-anchor":"middle",class:"tick",text:xf(v)},s);}
+  if(d.x_title)S("text",{x:(m.l+w-m.r)/2,y:h-6,"text-anchor":"middle",class:"tick",text:d.x_title},s);
+  if(d.y_title)S("text",{x:m.l+6,y:h-m.b-8,class:"tick",text:d.y_title},s);
+  if(d.x_reference){const rx=x(d.x_reference.value);S("line",{x1:rx,x2:rx,y1:m.t,y2:h-m.b,class:"floor"},s);obs.push([rx-2,m.t,rx+2,h-m.b,1]);
+    if(d.x_reference.label){S("text",{x:rx+4,y:m.t+12,class:"tick",text:d.x_reference.label},s);obs.push([rx+4,m.t+2,rx+4+d.x_reference.label.length*6.4,m.t+15]);}}
+  if(d.reference){const ry=y(d.reference.value);S("line",{x1:m.l,x2:w-m.r,y1:ry,y2:ry,class:"floor"},s);obs.push([m.l,ry-2,w-m.r,ry+2,1]);
+    if(d.reference.label){const lw=d.reference.label.length*6.4;S("text",{x:w-m.r,y:ry+13,"text-anchor":"end",class:"tick",text:d.reference.label},s);obs.push([w-m.r-lw,ry+1.5,w-m.r,ry+16.5]);}}
+  if(d.price_line){const p=d.price_line.value,yAt=v=>-(v/Math.max(1e-9,p)),lx=Math.min(x1,p*-y0);
+    S("line",{x1:x(0),y1:y(0),x2:x(lx),y2:y(Math.max(y0,yAt(lx))),style:"stroke:var(--good);stroke-width:1.5;stroke-dasharray:5 4"},s);
+    if(d.price_line.label){const mx=lx*.55,t=d.price_line.label,tx=x(mx)+8,ty=y(Math.max(y0,yAt(mx)))+16;S("text",{x:tx,y:ty,class:"tick",style:"fill:var(--good)",text:t},s);obs.push([tx,ty-10,tx+t.length*6.4,ty+3]);}
+    if(d.price_line.region_label){const t=d.price_line.region_label;S("text",{x:w-m.r-8,y:m.t+16,"text-anchor":"end",class:"lbl",style:"fill:var(--good);font-weight:600",text:t},s);obs.push([w-m.r-8-t.length*6.6,m.t+6,w-m.r-8,m.t+19]);}}
+  const at=p=>[x(kClamp(p.x,x0,x1)),y(kClamp(p.y,y0+(y1-y0)*.025,y1))];const byId=Object.fromEntries(pts.filter(p=>p.id!=null).map(p=>[p.id,p]));
+  if(d.frontier){let best=-Infinity;const fr=[];for(const p of [...pts].sort((a,b)=>a.x-b.x))if(p.y>best){fr.push(p);best=p.y;}
+    S("path",{d:"M"+fr.map(p=>at(p).join(",")).join("L"),style:"fill:none;stroke:var(--base);stroke-width:1.5"},s);}
+  for(const pa of d.paths||[]){const ps=kList(pa,"ids").map(id=>{if(!byId[id])throw new Error(`path names point "${id}", which is not in "points"`);return byId[id];});
+    S("path",{d:"M"+ps.map(p=>at(p).join(",")).join("L"),style:`fill:none;stroke:var(${kTok(pa.color,"--base")});stroke-width:${kNum(pa.width,2,"path width")};opacity:${kNum(pa.opacity,1,"path opacity")}`},s);}
+  for(const p of pts){const [px,py]=at(p),r=kNum(p.size,5.5,"point size"),g=S("g",{},s);const c=kTok(p.color,"--s1");const mk=mark(g,kShape(p.shape),px,py,r,c,p.hollow);if(p.muted)mk.style.opacity=.45;
+    if(kIsEm(d,p.id))S("circle",{cx:px,cy:py,r:r+4.5,style:"fill:none;stroke:var(--ink);stroke-width:1.5"},g);obs.push([px-r-2,py-r-2,px+r+2,py+r+2]);
+    hit(g,px-12,py-12,24,24,tipHTML(p.tip||[p.label||p.id||"",`${xf(p.x)} · ${yf(p.y)}`]));}
+  // the emphasized point is labelled first, then left to right, so it gets the best spot
+  const labs=pts.map(p=>({p,text:narrow?p.narrow_label:p.label})).filter(l=>l.text).map(l=>{const [px,py]=at(l.p);return {...l,px,py,r:kNum(l.p.size,5.5,"point size")};})
+    .map(l=>({...l,strong:kIsEm(d,l.p.id)})).sort((a,b)=>(b.strong?1:0)-(a.strong?1:0)||a.px-b.px);
+  placeLabels(labs,[m.l,0,w,h-m.b],obs,pts.map(at)).forEach(l=>S("text",{x:l.x,y:l.y,"text-anchor":l.anchor,class:kIsEm(d,l.p.id)?"lbl-strong":"lbl",text:l.text},s));
+  return s;}
+
+// one rate per candidate against a floor: dot, interval, floor dashed
+function kDotInterval(el,w,d){kNeed(d,["domain","fmt","level"]);const rows=kList(d,"rows");const f=namedFmt(d.fmt);const [d0,d1]=d.domain;
+  const rowH=d.row_height||28,need_=Math.max(...rows.map(r=>r.label.length))*6.6+18,m={l:kLabelW(d,w)||Math.min(need_,w*.42),r:14,t:22,b:22},maxC=Math.floor((m.l-12)/6.6);
+  const h=m.t+m.b+rowH*rows.length;const s=svgIn(el,w,h);const x=lin(d0,d1,m.l,w-m.r);
+  const tw=Math.max(f(d0).length,f(d1).length)*6.4+16;
+  for(const v of d.ticks?kThinTicks(d.ticks,x,f):kFmtTicks(d0,d1,Math.max(2,Math.floor((w-m.l-m.r)/tw)),f)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:f(v)},s);}
+  rows.forEach((r,i)=>{const cy=m.t+rowH*i+rowH/2,c=kTok(r.color,"--s1"),g=S("g",{},s);
+    S("text",{x:m.l-8,y:cy+4,"text-anchor":"end",class:r.strong||kIsEm(d,r.id)?"lbl-strong":"lbl",text:r.label.length<=maxC?r.label:r.label.slice(0,maxC-1)+"…"},g);
+    if(r.lo!=null)S("line",{x1:x(kClamp(r.lo,d0,d1)),x2:x(kClamp(r.hi,d0,d1)),y1:cy,y2:cy,style:`stroke:var(${c});stroke-width:3;stroke-linecap:round;opacity:.35`},g);
+    mark(g,kShape(r.shape),x(kClamp(r.value,d0,d1)),cy,5,c,r.hollow);
+    hit(g,m.l,cy-rowH/2,w-m.l-m.r,rowH,tipHTML(r.tip||[r.label,f(r.value)+(r.lo!=null&&r.hi!=null?` (${f(r.lo)} to ${f(r.hi)})`:"")]));});
+  if(d.reference){const rx=x(d.reference.value);S("line",{x1:rx,x2:rx,y1:m.t-4,y2:h-m.b,class:"floor"},s);if(d.reference.label)S("text",{x:rx+4,y:m.t-8,class:"tick",text:d.reference.label},s);}
+  S("text",{x:w-m.r,y:m.t-8,"text-anchor":"end",class:"tick",text:`${d.level} intervals`},s);
+  return s;}
+
+// latency distributions: one bar per row from "from" to "to" (p50 to p95), grouped, with a budget line
+function kRangeBars(el,w,d){kNeed(d,["domain","fmt"]);const groups=kList(d,"groups");const f=namedFmt(d.fmt);const [d0,d1]=d.domain;
+  const band=g=>kList(g,"rows").length*13+20,m={l:Math.min(190,w*.36),r:16,t:16,b:26};const h=m.t+m.b+groups.reduce((a,g)=>a+band(g),0);const s=svgIn(el,w,h);const x=lin(d0,d1,m.l,w-m.r);
+  const tw=Math.max(f(d0).length,f(d1).length)*6.4+16;
+  for(const v of d.ticks?kThinTicks(d.ticks,x,f):kFmtTicks(d0,d1,Math.max(2,Math.floor((w-m.l-m.r)/tw)),f)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-8,"text-anchor":"middle",class:"tick",text:f(v)},s);}
+  let top=m.t;for(const gr of groups){const y0=top+10;top+=band(gr);
+    S("text",{x:m.l-12,y:y0+gr.rows.length*13/2+3,"text-anchor":"end",class:"lbl-strong",text:w<480&&gr.short_label?gr.short_label:gr.label},s);
+    gr.rows.forEach((r,i)=>{const cy=y0+i*13+4,c=kTok(r.color,"--s1"),g=S("g",{},s);
+      S("line",{x1:x(kClamp(r.from,d0,d1)),x2:x(kClamp(r.to,d0,d1)),y1:cy,y2:cy,style:`stroke:var(${c});stroke-width:6;stroke-linecap:round`},g);
+      mark(g,kShape(r.shape),x(kClamp(r.to,d0,d1)),cy,4,c,r.hollow);
+      hit(g,m.l,cy-6.5,w-m.l-m.r,13,tipHTML(r.tip||[`${r.label} · ${gr.label}`,`${f(r.from)} to ${f(r.to)}`]));});}
+  if(d.reference){const rx=x(d.reference.value);S("line",{x1:rx,x2:rx,y1:m.t-8,y2:h-m.b,class:"floor"},s);if(d.reference.label)S("text",{x:rx+4,y:m.t-2,class:"tick",text:d.reference.label},s);}
+  return s;}
+
+// HTML renderers: drawn once, sized by CSS
+function kTxt(tag,cls,t){const e=H(tag,cls?{class:cls}:{});e.textContent=t==null?"":t;return e;}
+function kPill(kind,text){const s=H("span",{},pill(kStatus(kind),esc(text)));return s.firstChild;}
+function kWithTip(e,t){if(t!=null){e.setAttribute("data-tip",tipHTML(t));e.tabIndex=0;}return e;}
+const kGridCols=n=>`auto repeat(${n},minmax(0,1fr))`;
+
+// pass/fail per candidate × task: pill, the binding reasons, cost; the cheapest passing cell highlighted
+function kGateMatrix(el,d){const cols=kList(d,"columns"),rows=kList(d,"rows");const cf=d.cost_fmt?namedFmt(d.cost_fmt):null;
+  const wrap=H("div",{class:"tbl"}),t=H("table",{class:"gate"}),hr=H("tr");hr.appendChild(kTxt("th","",d.row_header||""));for(const c of cols)hr.appendChild(kTxt("th","",c.label));
+  const th=H("thead");th.appendChild(hr);const tb=H("tbody");
+  for(const r of rows){const tr=H("tr"),td=H("td",{class:"task"});td.append(kTxt("b","",r.label));if(r.detail)td.append(kTxt("span","",r.detail));if(r.flag)td.append(kTxt("span","xc",r.flag));tr.appendChild(td);
+    const cells=kList(r,"cells");if(cells.length!==cols.length)throw new Error(`row "${r.label}" has ${cells.length} cells for ${cols.length} columns`);
+    for(const c of cells){const cd=H("td",{class:c.pick?"cell pick":"cell"});cd.appendChild(kPill(c.status,c.label));
+      if(c.reasons&&c.reasons.length)cd.appendChild(kTxt("span","why",c.reasons.join("; ")));
+      if(c.cost!=null){if(!cf)throw new Error(`cells carry "cost", so "cost_fmt" is required`);cd.appendChild(kTxt("span","cost",cf(c.cost)+(d.cost_unit?" "+d.cost_unit:"")));}
+      if(c.pick&&d.pick_label)cd.appendChild(kTxt("span","pickmark",d.pick_label));tr.appendChild(cd);}
+    tb.appendChild(tr);}
+  t.append(th,tb);wrap.appendChild(t);el.appendChild(wrap);}
+
+// two crossed factors: a tile per cell with the metric, a bar, cost and latency, and a status pill
+function kLattice(el,d){kNeed(d,["fmt"]);const cols=kList(d,"columns"),rows=kList(d,"rows");const f=namedFmt(d.fmt),cf=d.cost_fmt?namedFmt(d.cost_fmt):null,lf=d.latency_fmt?namedFmt(d.latency_fmt):null;
+  const bd=d.bar_domain||null;const box=H("div",{class:"lattice"});box.style.gridTemplateColumns=kGridCols(cols.length);box.appendChild(kTxt("div","hd",""));
+  for(const c of cols)box.appendChild(kTxt("div","hd",c.label));
+  for(const r of rows){const rh=H("div",{class:"rh"});if(r.color){const sw=H("span",{class:"sw"});sw.style.background=`var(${kTok(r.color)})`;rh.appendChild(sw);}rh.append(document.createTextNode(r.label));box.appendChild(rh);
+    const cells=kList(r,"cells");if(cells.length!==cols.length)throw new Error(`row "${r.label}" has ${cells.length} cells for ${cols.length} columns`);
+    for(const c of cells){const cell=kWithTip(H("div",{class:kIsEm(d,c.id)?"cell rec":"cell"}),c.tip);cell.appendChild(kTxt("span","acc",f(c.value)));
+      if(bd){const bar=H("div",{class:"bar"}),i=H("i");i.style.width=kClamp((c.value-bd[0])/(bd[1]-bd[0])*100,0,100)+"%";bar.appendChild(i);cell.appendChild(bar);}
+      const meta=[c.cost!=null&&cf?cf(c.cost)+(d.cost_unit?" "+d.cost_unit:""):null,c.latency!=null&&lf?lf(c.latency):null].filter(Boolean);
+      if(meta.length)cell.appendChild(kTxt("span","meta",meta.join(" · ")));if(c.status)cell.appendChild(kPill(c.status,c.status_label||""));box.appendChild(cell);}}
+  el.appendChild(box);}
+
+// grids of cells (heatmap, difference heatmap, confusion) share the .mx layout
+function kMxGrid(cols,rows,cell){const box=H("div",{class:"mx"});box.style.gridTemplateColumns=kGridCols(cols.length);box.appendChild(H("div"));
+  for(const c of cols)box.appendChild(kTxt("div","h",c));
+  rows.forEach((r,i)=>{box.appendChild(kTxt("div","rl",r.label));const cells=kList(r,"cells");if(cells.length!==cols.length)throw new Error(`row "${r.label}" has ${cells.length} cells for ${cols.length} columns`);
+    cells.forEach((c,j)=>box.appendChild(cell(c,i,j)));});return box;}
+function kMxCell(bg,fg,main,sub,t){const e=kWithTip(H("div",{class:"c"}),t);e.style.background=bg;e.style.color=fg;e.appendChild(kTxt("b","",main));if(sub!=null)e.appendChild(kTxt("span","",sub));return e;}
+
+// target matrix of cells: sequential shading in six steps over the domain, n per cell, outline below the floor
+function kHeatmap(el,d){kNeed(d,["domain","fmt"]);const f=namedFmt(d.fmt),nf=d.n_fmt?namedFmt(d.n_fmt):null,[d0,d1]=d.domain;const cols=kList(d,"columns").map(c=>c.label);
+  el.appendChild(kMxGrid(cols,kList(d,"rows"),(c,i,j)=>{const k=kClamp(Math.floor((c.value-d0)/(d1-d0)*6),0,5);
+    const e=kMxCell(`var(--seq-${k})`,`var(--seq-t${k})`,f(c.value),c.n!=null&&nf?nf(c.n):null,c.tip||[`${d.rows[i].label} · ${cols[j]}`,f(c.value)+(c.n!=null?` · n = ${c.n.toLocaleString("en-US")}`:"")]);
+    if(d.reference&&c.value<d.reference.value)e.classList.add("low");return e;}));}
+
+// difference between two configs: diverging shading, gray within ±neutral, full color at ±saturate
+function kDiffHeatmap(el,d){kNeed(d,["fmt"]);const f=namedFmt(d.fmt),df=d.detail_fmt?namedFmt(d.detail_fmt):null,nu=d.neutral==null?.5:d.neutral,sat=d.saturate||8;const cols=kList(d,"columns").map(c=>c.label);
+  el.appendChild(kMxGrid(cols,kList(d,"rows"),(c,i,j)=>{const v=c.value,mag=Math.min(1,Math.abs(v)/sat),flat=Math.abs(v)<nu;
+    const bg=flat?"var(--div-mid)":`color-mix(in oklab, var(${v>0?"--div-pos":"--div-neg"}) ${Math.round(18+mag*72)}%, var(--surface))`;
+    return kMxCell(bg,mag>.55&&!flat?"var(--on-fill)":"var(--ink)",f(v),c.detail!=null&&df?df(c.detail):null,c.tip||[`${d.rows[i].label} · ${cols[j]}`,f(v)]);}));}
+
+// errors between classes, rows normalized to 100: the diagonal tinted, off-diagonal cells warn and bad by share
+function kConfusion(el,d){const labels=kList(d,"labels"),M=kList(d,"matrix");const f=namedFmt(d.fmt||"pct:1"),warnAt=d.warn_at==null?1:d.warn_at,badAt=d.bad_at==null?3:d.bad_at;
+  if(M.length!==labels.length)throw new Error(`"matrix" has ${M.length} rows for ${labels.length} labels`);
+  const rows=M.map((r,i)=>{if(!Array.isArray(r))throw new Error(`"matrix" row ${i} must be a list`);const tot=r.reduce((a,v)=>a+v,0);return {label:labels[i],cells:d.normalized===false?r.map(v=>tot?v/tot*100:0):r};});
+  el.appendChild(kMxGrid(labels,rows,(v,i,j)=>{const bg=i===j?"var(--seq-1)":v>=badAt?"var(--bad-wash)":v>=warnAt?"var(--warn-wash)":"var(--sunk)";
+    return kMxCell(bg,"var(--ink)",f(v),null,[`${labels[i]} → ${labels[j]}`,`${f(v)} of the row`]);}));}
+
+// what failures look like: cards with a meta line, then the question, fields, judge reason, excerpt and a note
+function kExamples(el,d){const cards=kList(d,"cards");const box=H("div",{class:"ex"});if(d.card_min_rem!=null)box.style.gridTemplateColumns=`repeat(auto-fit,minmax(min(100%,${kNum(d.card_min_rem,0,"card_min_rem")}rem),1fr))`;
+  for(const c of cards){const card=H("div",{class:"excard"}),top=H("div",{class:"top"});
+    for(const it of c.meta||[])top.appendChild(it.status?kPill(it.status,it.label):it.tag?kArmChip(it.tag,it.label,it.color):kTxt("span",it.mono?"mono":"",it.text));card.appendChild(top);
+    if(c.question!=null)card.appendChild(kTxt("div","q",c.question));
+    if(c.fields&&c.fields.length){const dl=H("dl");for(const fl of c.fields){dl.appendChild(kTxt("dt","",fl.term));dl.appendChild(kTxt("dd",fl.tone==="bad"?"bad":"",fl.text));}card.appendChild(dl);}
+    if(c.reason!=null)card.appendChild(kTxt("div","reason",c.reason));if(c.excerpt!=null)card.appendChild(kTxt("pre","",c.excerpt));if(c.note!=null)card.appendChild(kTxt("div","note",c.note));
+    box.appendChild(card);}
+  el.appendChild(box);}
+
+// legend: [{label, color?, mark?: dot|square|line|circle|triangle|diamond, hollow?, opacity?, pattern?}]
+function kLegend(items){if(!Array.isArray(items))throw new Error(`"legend" must be a list`);const box=H("div",{class:"legend"});
+  for(const it of items){const sp=H("span"),c=kTok(it.color,"--ink-2"),mk=it.mark||"dot";
+    if(it.pattern!=null){const sv=S("svg",{width:12,height:12,style:"vertical-align:-1px;margin-right:.4rem"});kTexture(sv,it.pattern,.5,.5,11,11,c);sp.appendChild(sv);}
+    else if(mk==="dot"||mk==="square"){const i=H("i",mk==="square"?{class:"sq"}:{});i.style.background=it.hollow?"var(--surface)":`var(${c})`;if(it.hollow)i.style.boxShadow=`inset 0 0 0 2px var(${c})`;sp.appendChild(i);}
+    else if(mk==="line"){const sv=S("svg",{width:22,height:10,style:"vertical-align:0;margin-right:.35rem"});S("line",{x1:1,x2:21,y1:5,y2:5,style:`stroke:var(${c});stroke-width:2;opacity:${kNum(it.opacity,1,"legend opacity")}`},sv);sp.appendChild(sv);}
+    else{const sv=S("svg",{width:14,height:14,style:"vertical-align:-2px;margin-right:.35rem"});mark(sv,kShape(mk),7,7,5,c,it.hollow);sp.appendChild(sv);}
+    sp.append(document.createTextNode(it.label));box.appendChild(sp);}
+  return box;}
+
+// ---------- dispatcher ----------
+const K_KINDS={bars:{draw:kBars},diverging_bars:{draw:kBars},forest:{draw:kForest},lines:{draw:kLines},
+  scatter_frontier:{draw:(el,w,d)=>kScatter(el,w,d,false)},gate_scatter:{draw:(el,w,d)=>kScatter(el,w,d,true)},
+  dot_interval:{draw:kDotInterval},range_bars:{draw:kRangeBars},
+  gate_matrix:{html:kGateMatrix},lattice:{html:kLattice},heatmap:{html:kHeatmap},diff_heatmap:{html:kDiffHeatmap},confusion:{html:kConfusion},examples:{html:kExamples}};
+const K_NOT_DRAWN={table:"a table is written as an HTML table (sortable() adds sorting); the kit does not draw it"};
+const K_PANEL_TEXT=["title","subtitle","tag","color"];
+function kUnmount(st){for(const r of st.ro){r.ro.disconnect();kRedraws.delete(r);}st.ro=[];}
+function kMount(host){const st=host._kit;kUnmount(st);host.innerHTML="";const kind=host.getAttribute("data-kind");
+  try{if(!Object.hasOwn(K_KINDS,kind))throw new Error(Object.hasOwn(K_NOT_DRAWN,kind)?K_NOT_DRAWN[kind]:`unknown kind; the kit draws ${Object.keys(K_KINDS).join(", ")}`);const R=K_KINDS[kind];
+    let d;try{d=JSON.parse(host.getAttribute("data-chart"));}catch(e){throw new Error(`data-chart is not JSON (${e.message})`);}
+    if(!d||typeof d!=="object"||Array.isArray(d))throw new Error("data-chart must be a JSON object");d=kNoNulls(d);
+    if(d.legend)host.appendChild(kLegend(d.legend));
+    const one=(box,data)=>{if(R.html)R.html(box,data);else st.ro.push(chart(box,(e,w)=>R.draw(e,w,data)));};
+    if(d.panels==null){const box=H("div");host.appendChild(box);one(box,d);return;}
+    // small multiples: each panel is the chart's own fields overlaid with the panel's
+    kList(d,"panels");const {panels,legend,panel_min_rem,...shared}=d;const grid=H("div",{class:"mult"});
+    if(panel_min_rem!=null)grid.style.gridTemplateColumns=`repeat(auto-fill,minmax(min(100%,${kNum(panel_min_rem,0,"panel_min_rem")}rem),1fr))`;host.appendChild(grid);
+    for(const p of panels){const fig=H("div",{class:"fig"});grid.appendChild(fig);const h4=H("h4");if(p.tag)h4.appendChild(kArmChip(p.tag,p.title||"",p.color));else h4.textContent=p.title||"";fig.appendChild(h4);
+      if(p.subtitle)fig.appendChild(kTxt("div","sub",p.subtitle));
+      if(Object.keys(p).some(k=>!K_PANEL_TEXT.includes(k))){const box=H("div",{class:"chart"});fig.appendChild(box);one(box,{...shared,...p});}}}
+  catch(e){kUnmount(st);host.innerHTML="";console.error(`kit: chart "${kind}"${host.id?" #"+host.id:""}: ${e.message}`);}}
+// draws every div.chart[data-kind][data-chart] under root, once; a later change to data-chart redraws that chart
+function drawCharts(root=document){const sel="div.chart[data-kind][data-chart]";const els=[...root.querySelectorAll(sel)];if(root.matches&&root.matches(sel))els.unshift(root);
+  for(const el of els){if(el._kit)continue;el._kit={ro:[]};new MutationObserver(()=>kMount(el)).observe(el,{attributes:true,attributeFilter:["data-chart","data-kind"]});kMount(el);}}
+// a page script that builds chart data from its own input sets it with setChart(); the JSON is pure data
+function setChart(el,data){el.setAttribute("data-chart",JSON.stringify(data));}
+if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",()=>drawCharts());else setTimeout(()=>drawCharts());
 
 const D={"schema":"report-input/1","meta":{"campaign":"Kairo persona model, round 2: September vs qwen3.8-flash and 1017 on character v2 with the promoted directives","question":"With the promoted queue-wording and AI-lane directives, does qwen3.8-flash or 1017 keep Kairo in character on dj_character_v2 at least as well as September, without being worse by more than 15 points?","behavior":"Kairo's character across persona models","kind":"change","kind_means":"A control and candidates: the memo recommends a candidate the evidence separated, or keeps the control.","design_shape":"one_factor_at_a_time","run_date":"2026-10-25","provenance":"Rebuilt read-only in the prod pod with assemble_campaign_bundle on 2026-10-25, minus insight 01a17220-d2e4 (minted by this analysis after generation). Aspect fingerprint matches the stored one: v2:9a5263b22a2d2b3f5db2c045efd03303ccba7bb22f01e583b15380574efcd53c","synthetic":false},"arms":[{"id":"September","name":"September","role":"control","served_model":"deepseek/deepseek-v4.1-flash","variant_key":"e3e2ac5c94560836da6dfabd035e6725da2a8d2a816e3fa821f18907196c509c","settings":{"model":"deepseek/deepseek-v4.1-flash"},"reasoning_ratio":0.760290346711},{"id":"qwen3.8-flash","name":"qwen3.8-flash","role":"challenger","served_model":"qwen/qwen3.8-flash","variant_key":"e5aab2dfed4a5d3fec988037c4b2ecfafe141ac90c85d7634c42f0e53af5e92e","settings":{"model":"qwen/qwen3.8-flash"},"reasoning_ratio":0.679056827202},{"id":"1017","name":"1017","role":"challenger","served_model":"deepseek/deepseek-v4.1-flash-1017","variant_key":"569a37c037db329b30f201850d0758b1065d1f9eb94ca9759e7c45670d1718d3","settings":{"model":"deepseek/deepseek-v4.1-flash-1017"},"reasoning_ratio":0.551348217391}],"aspects":[{"id":"character adherence (v2)","name":"character adherence (v2)","margin":15.0,"asked":true,"exploratory_measures":["cost_usd","delivered_items","execution_mode","status","tool_provider_faults","turns_ended_by_budget"],"readings":[{"arm":"qwen3.8-flash","reading":"within_margin","change":-7.581,"within_interval":[-10.79,-3.381],"gain_confidence":0.95,"margin":15.0,"control_passed":"765 of 897","arm_passed":"695 of 895","cases":[299,299],"confirmatory":true,"why":"qwen3.8-flash's drop is shown to stay within 15 points (it is at most 10.8)","precision":{"half_width":3.705,"own_half_width":{"September":4.157,"qwen3.8-flash":4.295},"limited_by":"qwen3.8-flash","between_case_share":0.2849,"means":"Extra repeats of a case shrink only the noise within cases; the spread between cases is a floor that only more cases lower."}},{"arm":"1017","reading":"within_margin","change":-3.01,"within_interval":[-5.815,1.136],"gain_confidence":0.95,"margin":15.0,"control_passed":"765 of 897","arm_passed":"738 of 897","cases":[299,299],"confirmatory":true,"why":"1017's drop is shown to stay within 15 points (it is at most 5.8)","precision":{"half_width":3.475,"own_half_width":{"September":4.157,"1017":3.821},"limited_by":"September","between_case_share":0.1702,"means":"Extra repeats of a case shrink only the noise within cases; the spread between cases is a floor that only more cases lower."}}],"depth":{"September":{"cases":299,"trials":897,"repeats_per_case":[3,3.0,3]},"1017":{"cases":299,"trials":897,"repeats_per_case":[3,3.0,3]},"qwen3.8-flash":{"cases":299,"trials":895,"repeats_per_case":[2,3.0,3]}},"pass_k":[{"where":"character adherence (v2)","k":1,"common_depth":2,"shares_no_case":false,"unmeasured_for":[],"said":["On character adherence (v2), pass^k is compared at depth 2, the fewest runs any arm gave a shared case, over all runs."]}]}],"floors":[{"floor":"character adherence (v2)/rate_drop/*","aspect":"character adherence (v2)","arm":"qwen3.8-flash","status":"held","reading":null,"speaks_for":"the pass rate","interval":[-10.79,-3.381],"worst_drop":10.79,"margin":15.0,"short_by":null,"reason":"qwen3.8-flash's drop is shown to stay within 15 points (it is at most 10.8)"},{"floor":"character adherence (v2)/rate_drop/*","aspect":"character adherence (v2)","arm":"1017","status":"held","reading":"persona.holds_character","speaks_for":"persona.holds_character","interval":[-7.11,-1.701],"worst_drop":7.11,"margin":15.0,"short_by":null,"reason":"1017's drop is shown to stay within 15 points (it is at most 7.1)"}],"bars":[],"guardrails":[],"scoreboard":{"September":{"ran":897,"lost":{},"usable":897,"passed":765,"failed":{"judged":129,"check":3},"cases":299,"reply_cost_usd":0.001892,"test_cost_usd":4.848},"1017":{"ran":897,"lost":{},"usable":897,"passed":738,"failed":{"judged":159},"cases":299,"reply_cost_usd":0.002406,"test_cost_usd":5.169},"qwen3.8-flash":{"ran":897,"lost":{"infra":2},"usable":895,"passed":695,"failed":{"judged":188,"model_failed":7,"check":5},"cases":299,"reply_cost_usd":0.002427,"test_cost_usd":5.636}},"measures":{"cost_usd":{"label":null,"unit":"usd","higher_is_better":false,"merit_axis":null,"means":"Blended program spend for the result. Authoritative for spend; the per-role rows decompose it but never re-total it. WHAT IT SUMS VARIES: metered third-party spend is included only for a run whose op\u2026","per_arm":{"September":{"mean":0.005405,"ci":[0.005215,0.005594],"n":897,"n_cases":299,"p95":0.009619},"1017":{"mean":0.005762,"ci":[0.005526,0.005999],"n":897,"n_cases":299,"p95":0.01178},"qwen3.8-flash":{"mean":0.006283,"ci":[0.005988,0.006578],"n":897,"n_cases":299,"p95":0.01181}}},"delivered_items":{"label":null,"unit":"items","higher_is_better":true,"merit_axis":null,"means":"How many items one async delivery's payload carried. Zero is a real delivery of nothing, not a missing measurement.","per_arm":{"September":{"mean":0.0,"ci":[0.0,0.0],"n":33,"n_cases":19,"p95":null},"1017":{"mean":0.0,"ci":[0.0,0.0],"n":18,"n_cases":7,"p95":null},"qwen3.8-flash":{"mean":0.0,"ci":[0.0,0.0],"n":71,"n_cases":30,"p95":null}}},"execution_mode":{"label":null,"unit":null,"higher_is_better":null,"merit_axis":null,"means":"Whether the observation was made while other eval work was executing \u2014 another run holding a concurrency slot (never one queued for it), or other cells of its own run, which executes its cells concur\u2026","per_arm":{}},"failed_reply_notices":{"label":null,"unit":"notices","higher_is_better":false,"merit_axis":"reliability","means":"how many failed replies a listener was told about","per_arm":{"September":{"mean":0.00223,"ci":[-0.0008678,0.005327],"n":897,"n_cases":299,"p95":0.0},"1017":{"mean":0.0,"ci":[0.0,0.0],"n":897,"n_cases":299,"p95":0.0},"qwen3.8-flash":{"mean":0.0,"ci":[0.0,0.0],"n":897,"n_cases":299,"p95":0.0}}},"goal_state:call_count(\"discord.send_message\") >= 1 or call_count(\"music.queue_voice\") >= 1":{"label":null,"unit":null,"higher_is_better":true,"merit_axis":"quality","means":"how often the check 'call_count(\"discord.send_message\") >= 1 or call_count(\"music.queue_voice\") >= 1' held","per_arm":{"September":{"mean":0.9967,"ci":[0.9856,0.9992],"n":897,"n_cases":299,"p95":null},"1017":{"mean":1.0,"ci":[0.9873,1.0],"n":897,"n_cases":299,"p95":null},"qwen3.8-flash":{"mean":0.9866,"ci":[0.9737,0.9932],"n":895,"n_cases":299,"p95":null}}},"production_replicating_cost":{"label":null,"unit":"usd","higher_is_better":false,"merit_axis":"cost","means":"Observed dollars belonging to the production roles \u2014 measurement-only roles excluded. In a judge campaign the judge under test is the subject, metered under the judge role alone, so there that role i\u2026","per_arm":{"September":{"mean":0.001892,"ci":[0.001755,0.002028],"n":864,"n_cases":294,"p95":0.0053},"1017":{"mean":0.002406,"ci":[0.002206,0.002605],"n":879,"n_cases":295,"p95":0.008268},"qwen3.8-flash":{"mean":0.002427,"ci":[0.00226,0.002594],"n":828,"n_cases":285,"p95":0.006199}}},"status":{"label":null,"unit":null,"higher_is_better":null,"merit_axis":null,"means":"Where one piece of background work stood when the cell ended: delivered, failed with an error, or acknowledged and never delivered before the cell ended.","per_arm":{}},"tool_provider_faults":{"label":null,"unit":"faults","higher_is_better":false,"merit_axis":null,"means":"how often a tool's provider failed the persona","per_arm":{"September":{"mean":0.0,"ci":[0.0,0.0],"n":897,"n_cases":299,"p95":0.0},"1017":{"mean":0.0,"ci":[0.0,0.0],"n":897,"n_cases":299,"p95":0.0},"qwen3.8-flash":{"mean":0.0,"ci":[0.0,0.0],"n":897,"n_cases":299,"p95":0.0}}},"turns_ended_by_budget":{"label":null,"unit":"turns","higher_is_better":false,"merit_axis":null,"means":"How many of the candidate's turns outlived the host's per-turn budget \u2014 the bound the host runs every turn under in production \u2014 and were ended by it. An ended turn delivers nothing, whatever its rou\u2026","per_arm":{"September":{"mean":0.0,"ci":[0.0,0.0],"n":897,"n_cases":299,"p95":0.0},"1017":{"mean":0.0,"ci":[0.0,0.0],"n":897,"n_cases":299,"p95":0.0},"qwen3.8-flash":{"mean":0.007821,"ci":[0.001274,0.01437],"n":895,"n_cases":299,"p95":0.0}}}},"judged":{"__outcome__":{"scale":"ordinal","tier":"undetermined","judge_model":"openai/gpt-6-luna","calibration":"insufficient","per_arm":{"September":{"mean":4.695,"n":897,"n_cases":299},"1017":{"mean":4.709,"n":897,"n_cases":299},"qwen3.8-flash":{"mean":4.482,"n":895,"n_cases":299}}},"__transcript__":{"scale":"ordinal","tier":"undetermined","judge_model":"openai/gpt-6-luna","calibration":"insufficient","per_arm":{"September":{"mean":2.942,"n":897,"n_cases":299},"1017":{"mean":2.959,"n":897,"n_cases":299},"qwen3.8-flash":{"mean":2.81,"n":895,"n_cases":299}}},"persona.booth_stays_offstage":{"scale":"pass_fail","tier":"undetermined","judge_model":"openai/gpt-6-luna","calibration":"insufficient","per_arm":{"September":{"mean":0.9295,"n":894,"n_cases":299},"1017":{"mean":0.9376,"n":897,"n_cases":299},"qwen3.8-flash":{"mean":0.9,"n":890,"n_cases":299}}},"persona.holds_character":{"scale":"pass_fail","tier":"undetermined","judge_model":"openai/gpt-6-luna","calibration":"insufficient","per_arm":{"September":{"mean":0.915,"n":894,"n_cases":299},"1017":{"mean":0.8662,"n":897,"n_cases":299},"qwen3.8-flash":{"mean":0.8539,"n":890,"n_cases":299}}}},"primary_judged":"persona.holds_character","contrasts":[{"arm":"qwen3.8-flash","control":"September","kind":"measure","measure":"production_replicating_cost","verdict":"regressed","delta":0.000616,"interval":[0.0003791,0.000853],"p_adjusted":2.661e-12,"materiality":"material","confounds":[]},{"arm":"qwen3.8-flash","control":"September","kind":"judged","measure":"__outcome__","verdict":"regressed","delta":-0.2129,"interval":[-0.3065,-0.1194],"p_adjusted":9.683e-10,"materiality":"material","confounds":[]},{"arm":"1017","control":"September","kind":"measure","measure":"production_replicating_cost","verdict":"regressed","delta":0.0004924,"interval":[0.0001743,0.0008105],"p_adjusted":8.342e-05,"materiality":"material","confounds":["observed:reasoning_ratio"]},{"arm":"qwen3.8-flash","control":"September","kind":"trial","measure":"passed","verdict":"regressed","delta":-0.07581,"interval":[-0.1259,-0.02573],"p_adjusted":0.0001211,"materiality":"material","confounds":[]},{"arm":"qwen3.8-flash","control":"September","kind":"judged","measure":"persona.holds_character","verdict":"regressed","delta":-0.05964,"interval":[-0.1009,-0.0184],"p_adjusted":0.0002682,"materiality":"material","confounds":[]},{"arm":"1017","control":"September","kind":"judged","measure":"persona.holds_character","verdict":"regressed","delta":-0.04738,"interval":[-0.08199,-0.01277],"p_adjusted":0.0006398,"materiality":"material","confounds":["observed:reasoning_ratio"]},{"arm":"qwen3.8-flash","control":"September","kind":"judged","measure":"__transcript__","verdict":"regressed","delta":-0.1321,"interval":[-0.2442,-0.02],"p_adjusted":0.005154,"materiality":"material","confounds":[]},{"arm":"qwen3.8-flash","control":"September","kind":"measure","measure":"goal_state:call_count(\"discord.send_message\") >= 1 or call_count(\"music.queue_voice\") >= 1","verdict":"not_separated","delta":-0.01003,"interval":[-0.0219,0.001837],"p_adjusted":0.1108,"materiality":"material","confounds":[]}],"contrast_families":[{"merit_axes":[],"correction":"holm","alpha":0.05,"family_size":16,"disclosure":"16 comparisons this question asks about carried a p and were corrected together by Holm's method at \u03b1=0.05; a separation stands only where the adjusted p is below it and the interval excludes zero. Each interval is at 99.69%, so the family's intervals hold together at 95%.","level":"99.69%"}],"strata":[{"id":"off_lane","n_cases":38,"per_arm":{"September":{"__outcome__":{"mean":4.754385964912281,"sem":0.04978888657979474,"n":114},"__transcript__":{"mean":2.824561403508772,"sem":0.07302192826885828,"n":114},"persona.booth_stays_offstage":{"mean":0.9649122807017544,"sem":0.016817589237523186,"n":114},"persona.holds_character":{"mean":0.6578947368421053,"sem":0.06092750540090231,"n":114}},"1017":{"__outcome__":{"mean":4.7368421052631575,"sem":0.05207545609368767,"n":114},"__transcript__":{"mean":2.736842105263158,"sem":0.06551626533680749,"n":114},"persona.booth_stays_offstage":{"mean":0.9824561403508771,"sem":0.012236593551980975,"n":114},"persona.holds_character":{"mean":0.45614035087719296,"sem":0.06338665698549073,"n":114}},"qwen3.8-flash":{"__outcome__":{"mean":4.754385964912281,"sem":0.061182967759904894,"n":114},"__transcript__":{"mean":3.1666666666666665,"sem":0.0812324071237891,"n":114},"persona.booth_stays_offstage":{"mean":0.9553571428571429,"sem":0.018811986029772944,"n":112},"persona.holds_character":{"mean":0.42857142857142855,"sem":0.06603818480190884,"n":112}}}},{"id":"machinery","n_cases":30,"per_arm":{"September":{"__outcome__":{"mean":4.7,"sem":0.0626164305042473,"n":90},"__transcript__":{"mean":2.7,"sem":0.07209685552967565,"n":90},"persona.booth_stays_offstage":{"mean":0.6888888888888889,"sem":0.06954207696268767,"n":90},"persona.holds_character":{"mean":0.9,"sem":0.03963434402199234,"n":90}},"1017":{"__outcome__":{"mean":4.688888888888889,"sem":0.057476372697622,"n":90},"__transcript__":{"mean":2.8777777777777778,"sem":0.08224707090606115,"n":90},"persona.booth_stays_offstage":{"mean":0.7444444444444445,"sem":0.06124158833126994,"n":90},"persona.holds_character":{"mean":0.8555555555555555,"sem":0.04131718054585566,"n":90}},"qwen3.8-flash":{"__outcome__":{"mean":4.511111111111111,"sem":0.09686442096757053,"n":90},"__transcript__":{"mean":2.8666666666666667,"sem":0.09264111117062017,"n":90},"persona.booth_stays_offstage":{"mean":0.7528089887640449,"sem":0.04856252471041546,"n":89},"persona.holds_character":{"mean":0.8539325842696629,"sem":0.044643562224669066,"n":89}}}},{"id":"about","n_cases":23,"per_arm":{"September":{"__outcome__":{"mean":4.782608695652174,"sem":0.057806089508512,"n":69},"__transcript__":{"mean":2.9130434782608696,"sem":0.10730333565611247,"n":69},"persona.booth_stays_offstage":{"mean":0.9855072463768116,"sem":0.014492753623188406,"n":69},"persona.holds_character":{"mean":0.9855072463768116,"sem":0.014492753623188406,"n":69}},"1017":{"__outcome__":{"mean":4.797101449275362,"sem":0.04562131671457387,"n":69},"__transcript__":{"mean":2.971014492753623,"sem":0.1066786955467571,"n":69},"persona.booth_stays_offstage":{"mean":0.9855072463768116,"sem":0.014492753623188406,"n":69},"persona.holds_character":{"mean":0.9855072463768116,"sem":0.014492753623188406,"n":69}},"qwen3.8-flash":{"__outcome__":{"mean":4.63768115942029,"sem":0.08092852531191681,"n":69},"__transcript__":{"mean":2.710144927536232,"sem":0.08965935589380282,"n":69},"persona.booth_stays_offstage":{"mean":0.9710144927536232,"sem":0.020024616803123403,"n":69},"persona.holds_character":{"mean":0.9565217391304348,"sem":0.02393399489405132,"n":69}}}},{"id":"superlative","n_cases":22,"per_arm":{"September":{"__outcome__":{"mean":4.818181818181818,"sem":0.04234170490944072,"n":66},"__transcript__":{"mean":3.6515151515151514,"sem":0.11070040847439822,"n":66},"persona.booth_stays_offstage":{"mean":0.9545454545454546,"sem":0.03322822204810809,"n":66},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":66}},"1017":{"__outcome__":{"mean":4.803030303030303,"sem":0.05659528187312665,"n":66},"__transcript__":{"mean":3.287878787878788,"sem":0.1302963184955517,"n":66},"persona.booth_stays_offstage":{"mean":0.9545454545454546,"sem":0.024962256698421635,"n":66},"persona.holds_character":{"mean":0.9848484848484849,"sem":0.015151515151515152,"n":66}},"qwen3.8-flash":{"__outcome__":{"mean":4.140625,"sem":0.13913327166945688,"n":64},"__transcript__":{"mean":2.765625,"sem":0.10929244682310993,"n":64},"persona.booth_stays_offstage":{"mean":0.9047619047619048,"sem":0.04055554229833091,"n":63},"persona.holds_character":{"mean":0.9682539682539683,"sem":0.02181807554504172,"n":63}}}},{"id":"small_talk","n_cases":17,"per_arm":{"September":{"__outcome__":{"mean":4.666666666666667,"sem":0.0700140042014005,"n":51},"__transcript__":{"mean":2.784313725490196,"sem":0.11412202673355702,"n":51},"persona.booth_stays_offstage":{"mean":0.8823529411764706,"sem":0.049019607843137254,"n":51},"persona.holds_character":{"mean":0.9803921568627451,"sem":0.0196078431372549,"n":51}},"1017":{"__outcome__":{"mean":4.784313725490196,"sem":0.07530535046930008,"n":51},"__transcript__":{"mean":2.803921568627451,"sem":0.13725490196078433,"n":51},"persona.booth_stays_offstage":{"mean":0.9803921568627451,"sem":0.0196078431372549,"n":51},"persona.holds_character":{"mean":0.9803921568627451,"sem":0.0196078431372549,"n":51}},"qwen3.8-flash":{"__outcome__":{"mean":4.568627450980392,"sem":0.08462096324329445,"n":51},"__transcript__":{"mean":2.6666666666666665,"sem":0.08084520834544433,"n":51},"persona.booth_stays_offstage":{"mean":0.9215686274509803,"sem":0.03534854191631362,"n":51},"persona.holds_character":{"mean":0.9607843137254902,"sem":0.026849144975743436,"n":51}}}},{"id":"multi","n_cases":12,"per_arm":{"September":{"__outcome__":{"mean":4.833333333333333,"sem":0.06487491201346024,"n":36},"__transcript__":{"mean":2.7222222222222223,"sem":0.13504789855677715,"n":36},"persona.booth_stays_offstage":{"mean":0.9722222222222222,"sem":0.027777777777777776,"n":36},"persona.holds_character":{"mean":0.7222222222222222,"sem":0.1148365353626472,"n":36}},"1017":{"__outcome__":{"mean":4.777777777777778,"sem":0.07491109582924911,"n":36},"__transcript__":{"mean":3.1944444444444446,"sem":0.1388888888888889,"n":36},"persona.booth_stays_offstage":{"mean":0.9444444444444444,"sem":0.037455547914624555,"n":36},"persona.holds_character":{"mean":0.5833333333333334,"sem":0.11695491087787284,"n":36}},"qwen3.8-flash":{"__outcome__":{"mean":4.527777777777778,"sem":0.11932987222940057,"n":36},"__transcript__":{"mean":2.6944444444444446,"sem":0.08663493332529516,"n":36},"persona.booth_stays_offstage":{"mean":0.9166666666666666,"sem":0.043519413988924456,"n":36},"persona.holds_character":{"mean":0.6388888888888888,"sem":0.1388888888888889,"n":36}}}},{"id":"emotional","n_cases":11,"per_arm":{"September":{"__outcome__":{"mean":4.757575757575758,"sem":0.0649927593622037,"n":33},"__transcript__":{"mean":3.4242424242424243,"sem":0.1802966640078002,"n":33},"persona.booth_stays_offstage":{"mean":0.9696969696969697,"sem":0.030303030303030304,"n":33},"persona.holds_character":{"mean":0.9696969696969697,"sem":0.030303030303030304,"n":33}},"1017":{"__outcome__":{"mean":4.606060606060606,"sem":0.10841541709089889,"n":33},"__transcript__":{"mean":3.1818181818181817,"sem":0.15151515151515152,"n":33},"persona.booth_stays_offstage":{"mean":1.0,"sem":0.0,"n":33},"persona.holds_character":{"mean":0.9393939393939394,"sem":0.040655781409087086,"n":33}},"qwen3.8-flash":{"__outcome__":{"mean":4.575757575757576,"sem":0.0649927593622037,"n":33},"__transcript__":{"mean":3.090909090909091,"sem":0.09090909090909091,"n":33},"persona.booth_stays_offstage":{"mean":0.9090909090909091,"sem":0.04694525268130202,"n":33},"persona.holds_character":{"mean":0.9393939393939394,"sem":0.06060606060606061,"n":33}}}},{"id":"lineage","n_cases":10,"per_arm":{"September":{"__outcome__":{"mean":4.5,"sem":0.21227747971714223,"n":30},"__transcript__":{"mean":3.0,"sem":0.20487876571761973,"n":30},"persona.booth_stays_offstage":{"mean":1.0,"sem":0.0,"n":29},"persona.holds_character":{"mean":0.9655172413793104,"sem":0.03567181926278241,"n":29}},"1017":{"__outcome__":{"mean":4.566666666666666,"sem":0.1,"n":30},"__transcript__":{"mean":2.966666666666667,"sem":0.11600340565456167,"n":30},"persona.booth_stays_offstage":{"mean":1.0,"sem":0.0,"n":30},"persona.holds_character":{"mean":0.9666666666666667,"sem":0.03333333333333333,"n":30}},"qwen3.8-flash":{"__outcome__":{"mean":4.2,"sem":0.18724777273725243,"n":30},"__transcript__":{"mean":2.7,"sem":0.12619796324000607,"n":30},"persona.booth_stays_offstage":{"mean":0.9310344827586207,"sem":0.045640932764121386,"n":29},"persona.holds_character":{"mean":0.9655172413793104,"sem":0.0343709605845086,"n":29}}}},{"id":"pushback","n_cases":10,"per_arm":{"September":{"__outcome__":{"mean":4.8,"sem":0.10183501544346311,"n":30},"__transcript__":{"mean":2.933333333333333,"sem":0.08314794192830981,"n":30},"persona.booth_stays_offstage":{"mean":1.0,"sem":0.0,"n":30},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":30}},"1017":{"__outcome__":{"mean":4.7,"sem":0.05983516452371671,"n":30},"__transcript__":{"mean":3.0,"sem":0.11111111111111112,"n":30},"persona.booth_stays_offstage":{"mean":1.0,"sem":0.0,"n":30},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":30}},"qwen3.8-flash":{"__outcome__":{"mean":4.466666666666667,"sem":0.13333333333333333,"n":30},"__transcript__":{"mean":2.7,"sem":0.14444444444444443,"n":30},"persona.booth_stays_offstage":{"mean":0.9666666666666667,"sem":0.03333333333333333,"n":30},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":30}}}},{"id":"rejection","n_cases":10,"per_arm":{"September":{"__outcome__":{"mean":4.733333333333333,"sem":0.06666666666666667,"n":30},"__transcript__":{"mean":2.966666666666667,"sem":0.12619796324000607,"n":30},"persona.booth_stays_offstage":{"mean":0.9666666666666667,"sem":0.03333333333333333,"n":30},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":30}},"1017":{"__outcome__":{"mean":4.833333333333333,"sem":0.07453559924999299,"n":30},"__transcript__":{"mean":3.1,"sem":0.1651785416368723,"n":30},"persona.booth_stays_offstage":{"mean":0.9666666666666667,"sem":0.03333333333333333,"n":30},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":30}},"qwen3.8-flash":{"__outcome__":{"mean":4.6,"sem":0.08314794192830982,"n":30},"__transcript__":{"mean":2.6,"sem":0.10886621079036347,"n":30},"persona.booth_stays_offstage":{"mean":0.9333333333333333,"sem":0.044444444444444446,"n":30},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":30}}}},{"id":"short","n_cases":10,"per_arm":{"September":{"__outcome__":{"mean":4.566666666666666,"sem":0.11166528467912101,"n":30},"__transcript__":{"mean":2.8333333333333335,"sem":0.1590869007030706,"n":30},"persona.booth_stays_offstage":{"mean":0.9666666666666667,"sem":0.03333333333333333,"n":30},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":30}},"1017":{"__outcome__":{"mean":4.733333333333333,"sem":0.08314794192830981,"n":30},"__transcript__":{"mean":2.8333333333333335,"sem":0.15112745009706047,"n":30},"persona.booth_stays_offstage":{"mean":0.9666666666666667,"sem":0.03333333333333333,"n":30},"persona.holds_character":{"mean":0.9666666666666667,"sem":0.03333333333333333,"n":30}},"qwen3.8-flash":{"__outcome__":{"mean":4.7,"sem":0.09229582069908972,"n":30},"__transcript__":{"mean":2.7666666666666666,"sem":0.12222222222222222,"n":30},"persona.booth_stays_offstage":{"mean":0.9666666666666667,"sem":0.03333333333333333,"n":30},"persona.holds_character":{"mean":0.9666666666666667,"sem":0.03333333333333333,"n":30}}}},{"id":"story","n_cases":10,"per_arm":{"September":{"__outcome__":{"mean":4.366666666666666,"sem":0.11600340565456167,"n":30},"__transcript__":{"mean":2.8,"sem":0.12372809695177826,"n":30},"persona.booth_stays_offstage":{"mean":0.9333333333333333,"sem":0.044444444444444446,"n":30},"persona.holds_character":{"mean":0.9333333333333333,"sem":0.044444444444444446,"n":30}},"1017":{"__outcome__":{"mean":4.4,"sem":0.13877773329774218,"n":30},"__transcript__":{"mean":2.533333333333333,"sem":0.14229164972072997,"n":30},"persona.booth_stays_offstage":{"mean":0.9666666666666667,"sem":0.03333333333333333,"n":30},"persona.holds_character":{"mean":0.9666666666666667,"sem":0.03333333333333333,"n":30}},"qwen3.8-flash":{"__outcome__":{"mean":3.9,"sem":0.26782157318208777,"n":30},"__transcript__":{"mean":2.3,"sem":0.12619796324000607,"n":30},"persona.booth_stays_offstage":{"mean":0.5333333333333333,"sem":0.08888888888888889,"n":30},"persona.holds_character":{"mean":0.8333333333333334,"sem":0.07453559924999299,"n":30}}}},{"id":"slang","n_cases":9,"per_arm":{"September":{"__outcome__":{"mean":4.925925925925926,"sem":0.04899539464934427,"n":27},"__transcript__":{"mean":2.925925925925926,"sem":0.14463425325753063,"n":27},"persona.booth_stays_offstage":{"mean":0.9629629629629629,"sem":0.037037037037037035,"n":27},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":27}},"1017":{"__outcome__":{"mean":4.851851851851852,"sem":0.058560697410525546,"n":27},"__transcript__":{"mean":2.8518518518518516,"sem":0.14814814814814814,"n":27},"persona.booth_stays_offstage":{"mean":1.0,"sem":0.0,"n":27},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":27}},"qwen3.8-flash":{"__outcome__":{"mean":4.407407407407407,"sem":0.1335389361282959,"n":27},"__transcript__":{"mean":2.6666666666666665,"sem":0.07856742013183861,"n":27},"persona.booth_stays_offstage":{"mean":0.9629629629629629,"sem":0.037037037037037035,"n":27},"persona.holds_character":{"mean":0.9259259259259259,"sem":0.04899539464934427,"n":27}}}},{"id":"ai_opinion","n_cases":8,"per_arm":{"September":{"__outcome__":{"mean":4.75,"sem":0.08333333333333333,"n":24},"__transcript__":{"mean":3.0833333333333335,"sem":0.20653989967735087,"n":24},"persona.booth_stays_offstage":{"mean":0.9583333333333334,"sem":0.041666666666666664,"n":24},"persona.holds_character":{"mean":0.9166666666666666,"sem":0.05455447255899809,"n":24}},"1017":{"__outcome__":{"mean":4.625,"sem":0.1717960677340692,"n":24},"__transcript__":{"mean":2.875,"sem":0.1774768037604235,"n":24},"persona.booth_stays_offstage":{"mean":0.9583333333333334,"sem":0.041666666666666664,"n":24},"persona.holds_character":{"mean":0.9166666666666666,"sem":0.05455447255899809,"n":24}},"qwen3.8-flash":{"__outcome__":{"mean":4.666666666666667,"sem":0.1543033499620919,"n":24},"__transcript__":{"mean":2.8333333333333335,"sem":0.10910894511799618,"n":24},"persona.booth_stays_offstage":{"mean":0.9583333333333334,"sem":0.041666666666666664,"n":24},"persona.holds_character":{"mean":0.9583333333333334,"sem":0.041666666666666664,"n":24}}}},{"id":"discovery","n_cases":8,"per_arm":{"September":{"__outcome__":{"mean":4.333333333333333,"sem":0.2439750182371333,"n":24},"__transcript__":{"mean":2.75,"sem":0.23358829607557838,"n":24},"persona.booth_stays_offstage":{"mean":0.8695652173913043,"sem":0.06222207215302044,"n":23},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":23}},"1017":{"__outcome__":{"mean":4.541666666666667,"sem":0.125,"n":24},"__transcript__":{"mean":2.875,"sem":0.2741328318968918,"n":24},"persona.booth_stays_offstage":{"mean":0.875,"sem":0.060993754559283325,"n":24},"persona.holds_character":{"mean":0.9583333333333334,"sem":0.041666666666666664,"n":24}},"qwen3.8-flash":{"__outcome__":{"mean":4.083333333333333,"sem":0.18633899812498247,"n":24},"__transcript__":{"mean":2.5,"sem":0.0890870806374748,"n":24},"persona.booth_stays_offstage":{"mean":0.8333333333333334,"sem":0.08908708063747478,"n":24},"persona.holds_character":{"mean":0.9583333333333334,"sem":0.041666666666666664,"n":24}}}},{"id":"identify","n_cases":8,"per_arm":{"September":{"__outcome__":{"mean":4.5,"sem":0.1259881576697424,"n":24},"__transcript__":{"mean":2.625,"sem":0.1717960677340692,"n":24},"persona.booth_stays_offstage":{"mean":0.9166666666666666,"sem":0.08333333333333333,"n":24},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":24}},"1017":{"__outcome__":{"mean":4.708333333333333,"sem":0.07552724726458047,"n":24},"__transcript__":{"mean":3.0416666666666665,"sem":0.21304202581158668,"n":24},"persona.booth_stays_offstage":{"mean":1.0,"sem":0.0,"n":24},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":24}},"qwen3.8-flash":{"__outcome__":{"mean":4.458333333333333,"sem":0.13997590495601006,"n":24},"__transcript__":{"mean":2.7916666666666665,"sem":0.1079664115905777,"n":24},"persona.booth_stays_offstage":{"mean":0.9166666666666666,"sem":0.05455447255899809,"n":24},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":24}}}},{"id":"next_up","n_cases":8,"per_arm":{"September":{"__outcome__":{"mean":4.666666666666667,"sem":0.10910894511799618,"n":24},"__transcript__":{"mean":3.375,"sem":0.2983918537974829,"n":24},"persona.booth_stays_offstage":{"mean":0.875,"sem":0.0876840468015252,"n":24},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":24}},"1017":{"__outcome__":{"mean":4.583333333333333,"sem":0.05455447255899809,"n":24},"__transcript__":{"mean":3.2916666666666665,"sem":0.31140681808400783,"n":24},"persona.booth_stays_offstage":{"mean":0.7916666666666666,"sem":0.08768404680152521,"n":24},"persona.holds_character":{"mean":0.8333333333333334,"sem":0.08908708063747478,"n":24}},"qwen3.8-flash":{"__outcome__":{"mean":4.416666666666667,"sem":0.137292411841319,"n":24},"__transcript__":{"mean":2.9583333333333335,"sem":0.20351572615808045,"n":24},"persona.booth_stays_offstage":{"mean":0.8333333333333334,"sem":0.08908708063747478,"n":24},"persona.holds_character":{"mean":0.8333333333333334,"sem":0.1259881576697424,"n":24}}}},{"id":"music_tech","n_cases":7,"per_arm":{"September":{"__outcome__":{"mean":4.380952380952381,"sem":0.18442777839082938,"n":21},"__transcript__":{"mean":2.6666666666666665,"sem":0.16265001215808889,"n":21},"persona.booth_stays_offstage":{"mean":1.0,"sem":0.0,"n":21},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":21}},"1017":{"__outcome__":{"mean":4.571428571428571,"sem":0.14018668041790233,"n":21},"__transcript__":{"mean":2.7142857142857144,"sem":0.1530738216030628,"n":21},"persona.booth_stays_offstage":{"mean":1.0,"sem":0.0,"n":21},"persona.holds_character":{"mean":0.9523809523809523,"sem":0.047619047619047616,"n":21}},"qwen3.8-flash":{"__outcome__":{"mean":4.380952380952381,"sem":0.22335313142016333,"n":21},"__transcript__":{"mean":2.7142857142857144,"sem":0.18442777839082938,"n":21},"persona.booth_stays_offstage":{"mean":1.0,"sem":0.0,"n":21},"persona.holds_character":{"mean":0.8571428571428571,"sem":0.09912695235553012,"n":21}}}},{"id":"taste","n_cases":7,"per_arm":{"September":{"__outcome__":{"mean":4.666666666666667,"sem":0.14547859349066158,"n":21},"__transcript__":{"mean":3.0476190476190474,"sem":0.16947743257192557,"n":21},"persona.booth_stays_offstage":{"mean":0.9523809523809523,"sem":0.047619047619047616,"n":21},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":21}},"1017":{"__outcome__":{"mean":4.761904761904762,"sem":0.11983864182969446,"n":21},"__transcript__":{"mean":3.0952380952380953,"sem":0.1884816204291733,"n":21},"persona.booth_stays_offstage":{"mean":1.0,"sem":0.0,"n":21},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":21}},"qwen3.8-flash":{"__outcome__":{"mean":4.380952380952381,"sem":0.1530738216030628,"n":21},"__transcript__":{"mean":2.857142857142857,"sem":0.16030960219622348,"n":21},"persona.booth_stays_offstage":{"mean":1.0,"sem":0.0,"n":21},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":21}}}},{"id":"assistant_shape","n_cases":6,"per_arm":{"September":{"__outcome__":{"mean":4.277777777777778,"sem":0.2908056072956089,"n":18},"__transcript__":{"mean":3.0,"sem":0.17213259316477408,"n":18},"persona.booth_stays_offstage":{"mean":0.9411764705882353,"sem":0.05823026703934292,"n":17},"persona.holds_character":{"mean":0.5882352941176471,"sem":0.15331492325035836,"n":17}},"1017":{"__outcome__":{"mean":4.444444444444445,"sem":0.3063121944908938,"n":18},"__transcript__":{"mean":3.111111111111111,"sem":0.16480441082434807,"n":18},"persona.booth_stays_offstage":{"mean":0.7777777777777778,"sem":0.16480441082434807,"n":18},"persona.holds_character":{"mean":0.4444444444444444,"sem":0.16480441082434807,"n":18}},"qwen3.8-flash":{"__outcome__":{"mean":4.166666666666667,"sem":0.26874192494328497,"n":18},"__transcript__":{"mean":2.6666666666666665,"sem":0.22771001702132443,"n":18},"persona.booth_stays_offstage":{"mean":0.8333333333333334,"sem":0.07453559924999299,"n":18},"persona.holds_character":{"mean":0.4444444444444444,"sem":0.1111111111111111,"n":18}}}},{"id":"correction","n_cases":6,"per_arm":{"September":{"__outcome__":{"mean":4.833333333333333,"sem":0.07453559924999299,"n":18},"__transcript__":{"mean":2.8333333333333335,"sem":0.16666666666666666,"n":18},"persona.booth_stays_offstage":{"mean":1.0,"sem":0.0,"n":18},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":18}},"1017":{"__outcome__":{"mean":4.777777777777778,"sem":0.1111111111111111,"n":18},"__transcript__":{"mean":3.2222222222222223,"sem":0.1405456737852613,"n":18},"persona.booth_stays_offstage":{"mean":1.0,"sem":0.0,"n":18},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":18}},"qwen3.8-flash":{"__outcome__":{"mean":4.555555555555555,"sem":0.20487876571761973,"n":18},"__transcript__":{"mean":3.1666666666666665,"sem":0.11385500851066221,"n":18},"persona.booth_stays_offstage":{"mean":0.9444444444444444,"sem":0.05555555555555555,"n":18},"persona.holds_character":{"mean":0.9444444444444444,"sem":0.05555555555555555,"n":18}}}},{"id":"debate","n_cases":6,"per_arm":{"September":{"__outcome__":{"mean":4.833333333333333,"sem":0.07453559924999299,"n":18},"__transcript__":{"mean":3.5,"sem":0.14272480642961255,"n":18},"persona.booth_stays_offstage":{"mean":1.0,"sem":0.0,"n":18},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":18}},"1017":{"__outcome__":{"mean":4.888888888888889,"sem":0.07027283689263066,"n":18},"__transcript__":{"mean":2.9444444444444446,"sem":0.05555555555555555,"n":18},"persona.booth_stays_offstage":{"mean":0.8888888888888888,"sem":0.07027283689263066,"n":18},"persona.holds_character":{"mean":0.9444444444444444,"sem":0.05555555555555555,"n":18}},"qwen3.8-flash":{"__outcome__":{"mean":4.666666666666667,"sem":0.1217161238900369,"n":18},"__transcript__":{"mean":2.9444444444444446,"sem":0.1590869007030706,"n":18},"persona.booth_stays_offstage":{"mean":0.9444444444444444,"sem":0.05555555555555555,"n":18},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":18}}}},{"id":"praise","n_cases":6,"per_arm":{"September":{"__outcome__":{"mean":4.777777777777778,"sem":0.16480441082434805,"n":18},"__transcript__":{"mean":2.611111111111111,"sem":0.10243938285880985,"n":18},"persona.booth_stays_offstage":{"mean":1.0,"sem":0.0,"n":18},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":18}},"1017":{"__outcome__":{"mean":4.555555555555555,"sem":0.1405456737852613,"n":18},"__transcript__":{"mean":2.7777777777777777,"sem":0.1111111111111111,"n":18},"persona.booth_stays_offstage":{"mean":0.9444444444444444,"sem":0.05555555555555555,"n":18},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":18}},"qwen3.8-flash":{"__outcome__":{"mean":4.333333333333333,"sem":0.08606629658238704,"n":18},"__transcript__":{"mean":2.611111111111111,"sem":0.10243938285880985,"n":18},"persona.booth_stays_offstage":{"mean":0.8333333333333334,"sem":0.16666666666666663,"n":18},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":18}}}},{"id":"request","n_cases":6,"per_arm":{"September":{"__outcome__":{"mean":4.833333333333333,"sem":0.07453559924999299,"n":18},"__transcript__":{"mean":3.1666666666666665,"sem":0.23959842947608692,"n":18},"persona.booth_stays_offstage":{"mean":0.9444444444444444,"sem":0.05555555555555555,"n":18},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":18}},"1017":{"__outcome__":{"mean":4.722222222222222,"sem":0.10243938285880987,"n":18},"__transcript__":{"mean":3.3333333333333335,"sem":0.2721655269759087,"n":18},"persona.booth_stays_offstage":{"mean":0.8888888888888888,"sem":0.07027283689263066,"n":18},"persona.holds_character":{"mean":0.9444444444444444,"sem":0.05555555555555555,"n":18}},"qwen3.8-flash":{"__outcome__":{"mean":4.277777777777778,"sem":0.15908690070307058,"n":18},"__transcript__":{"mean":2.9444444444444446,"sem":0.2641080960889936,"n":18},"persona.booth_stays_offstage":{"mean":1.0,"sem":0.0,"n":18},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":18}}}},{"id":"sequence","n_cases":6,"per_arm":{"September":{"__outcome__":{"mean":4.666666666666667,"sem":0.1217161238900369,"n":18},"__transcript__":{"mean":2.8333333333333335,"sem":0.16666666666666666,"n":18},"persona.booth_stays_offstage":{"mean":1.0,"sem":0.0,"n":18},"persona.holds_character":{"mean":0.9444444444444444,"sem":0.05555555555555555,"n":18}},"1017":{"__outcome__":{"mean":4.722222222222222,"sem":0.10243938285880987,"n":18},"__transcript__":{"mean":2.7777777777777777,"sem":0.1111111111111111,"n":18},"persona.booth_stays_offstage":{"mean":0.9444444444444444,"sem":0.05555555555555555,"n":18},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":18}},"qwen3.8-flash":{"__outcome__":{"mean":4.611111111111111,"sem":0.15908690070307058,"n":18},"__transcript__":{"mean":2.8333333333333335,"sem":0.18757714462371258,"n":18},"persona.booth_stays_offstage":{"mean":0.8333333333333334,"sem":0.07453559924999299,"n":18},"persona.holds_character":{"mean":1.0,"sem":0.0,"n":18}}}},{"id":"ai_mechanics","n_cases":5,"per_arm":{"September":{"__outcome__":{"mean":4.733333333333333,"sem":0.12472191289246472,"n":15},"__transcript__":{"mean":2.466666666666667,"sem":0.1699673171197595,"n":15},"persona.booth_stays_offstage":{"mean":0.8666666666666667,"sem":0.13333333333333333,"n":15},"persona.holds_character":{"mean":0.8666666666666667,"sem":0.13333333333333333,"n":15}},"1017":{"__outcome__":{"mean":4.866666666666666,"sem":0.0816496580927726,"n":15},"__transcript__":{"mean":3.2666666666666666,"sem":0.12472191289246472,"n":15},"persona.booth_stays_offstage":{"mean":0.8666666666666667,"sem":0.0816496580927726,"n":15},"persona.holds_character":{"mean":0.8666666666666667,"sem":0.0816496580927726,"n":15}},"qwen3.8-flash":{"__outcome__":{"mean":4.666666666666667,"sem":0.10540925533894599,"n":15},"__transcript__":{"mean":2.7333333333333334,"sem":0.19436506316151003,"n":15},"persona.booth_stays_offstage":{"mean":0.9333333333333333,"sem":0.06666666666666667,"n":15},"persona.holds_character":{"mean":0.8666666666666667,"sem":0.13333333333333333,"n":15}}}}],"examples":[{"trial":"T15","case":"oft-match-score","stratum":"off_lane","arm":"1017","repeat":2,"reason":"The first reply brushes off the match question and pivots to Joy Orbison in Kairo\u2019s dry DJ voice. But the queued spoken line\u2014\u201cJules asks me who won the match tonight\u201d\u2014sounds like a behind-the-scenes recap rather than Kairo addressing the listener, so the replies do not consistently hold character.","excerpt":"[\u2026 1607 characters earlier]\n] **Burial, Archangel** \u2014 Hyperdub *(3:59)* [1.5M views]\n[r4] **Sample Breakdown: Burial - Archangel** \u2014 TRACKLIB *(0:59)* [450.5K views]\n[r5] **Burial - Archangel (Music Video)** \u2014 Jack *(3:59)* [20.1K views]\n\nUse `music__queue_track` with the `track_ref` shown in brackets (e.g. r12) to add to your playlist.\n[A card with this info will be auto-attached to your next message. Keep your text"},{"trial":"T44","case":"oft-landlord-email","stratum":"off_lane","arm":"qwen3.8-flash","repeat":1,"reason":"Jules asked for help with a non-music task, and Kairo gave practical advice to put the breakage date in writing, keep replies, and said the boiler was the landlord\u2019s job. The musical turn to King Tubby does not undo that out-of-lane answer.","excerpt":"[\u2026 694 characters earlier]\nt put it in writing with the date it broke and keep the replies on file \u2014 a dead boiler is the landlord's job, not yours, wherever you rent. i'll put the heating on in the mix instead.\"}) \u2192 Message sent to Discord via webhook\n  \u2713 music.search({\"query\": \"King Tubby dub\"}) \u2192 **Search results for \"King Tubby dub\":**\n[r1] **Zion Gate Dub** \u2014 King Tubby - Topic *(3:13)* [official \u00b7 621.9K views]"},{"trial":"T5","case":"mch-voice-intros","stratum":"machinery","arm":"1017","repeat":1,"reason":"The reply says, \u201cI write the line, the box reads it back,\u201d describing how the voice system works, then refers to \u201cinside the machine.\u201d The rule treats explaining how it works as a failure, even though the selector phrasing otherwise fits Kairo.","excerpt":"[\u2026 205 characters earlier]\ns:\n  \u2713 discord.send_message({\"channel_id\": 1503186183688032286, \"content\": \"I write the line, the box reads it back \u2014 that's the whole trick. What's inside the machine? Dunno, love, I'm a selector not an engineer.\"}) \u2192 Message sent to Discord via webhook\n  \u2713 music.set_channel_mood({\"mood\": \"UK bass thread \u2014 warm garage haze drifting into breaks and dubby techno\"}) \u2192 Channel mood set: UK bas"},{"trial":"T7","case":"mch-voice-intros","stratum":"machinery","arm":"qwen3.8-flash","repeat":1,"reason":"Fail: \u201cI just talk and it airs\u201d describes how the voice intros work, crossing into the behind-the-scenes explanation the persona should avoid. The dubplate comparison and the sharp, musical tone otherwise fit Kairo.","excerpt":"## Jules\nhow do the voice intros get made?\n\n## Persona\nha, you're asking the wrong person about the wires love \u2014 I just talk and it airs. but the old-school version of that same trick: selector shouting over a rhythm onto an acetate dubplate, one-off cut, mic straight through the box. every dj intro you hear since is just that idea with better plumbing.\n\nif you wanted the actual tech behind it, that's engineer territ"},{"trial":"T213","case":"mlt-nine-times-seven","stratum":"multi","arm":"1017","repeat":1,"reason":"Jules asked for a non-music fact, and Kairo gave the answer\u2014\u201csixty-three\u201d\u2014after the playful calculator brush-off. That independently fails the stated criterion, even though the surrounding DJ commentary stays in character.","excerpt":"[\u2026 398 characters earlier]\n503186183688032286, \"content\": \"math? do I look like a calculator, Jules. sixty-three, and that's the last arithmetic you're getting out of me.\"}) \u2192 Message sent to Discord via webhook\n  \u2713 discord.send_message({\"channel_id\": 1503186183688032286, \"content\": \"Hyph Mngo though \u2014 Joy Orbison, two thousand nine, the record that told everyone UK funky and dubstep were about to melt into each othe"},{"trial":"T215","case":"mlt-nine-times-seven","stratum":"multi","arm":"qwen3.8-flash","repeat":1,"reason":"Jules asked for a non-music fact, and Kairo supplied the answer, \u201c63,\u201d before turning back toward music. The playful delivery does not excuse giving the math result.","excerpt":"## Jules\nlove this. also random but what's 9 times 7\n\n## Persona\n63 \u2014 but only 'cos I'm feeling generous, love \ud83d\ude0f ask me what 1963 sounds like and I might never stop talking\n\nTool actions:\n  \u2713 discord.send_message({\"channel_id\": 1503186183688032286, \"content\": \"63 \u2014 but only 'cos I'm feeling generous, love \ud83d\ude0f ask me what 1963 sounds like and I might never stop talking\"}) \u2192 Message sent to Discord via webhook"},{"trial":"T26","case":"nxt-after-the-anz","stratum":"next_up","arm":"1017","repeat":1,"reason":"The Discord reply names the next records and connects them through their sound in Kairo\u2019s music-focused voice. But the queued spoken line begins, \u201cJules asks what\u2019s next,\u201d which reads like detached narration about the listener rather than Kairo speaking to them, so not every delivered reply holds the persona.","excerpt":"## Jules\nwhat's coming up after the anz?\n\n## Persona\nOvermono \u2014 \"So U Kno\" straight after. Keeps the stuttered-vocal pressure of the Anz but opens it out, more space in the drums. Then Skee Mask's \"CZ3000 Dub\" to let some air in, dub-techno haze to close the arc.\nJules asks what's next. After the Anz, Overmono \u2014 So U Kno. Same stuttered pressure, more space in the drums. Then Skee Mask, CZ3000 Dub, to let the dub haz"},{"trial":"T73","case":"nxt-born-slippy","stratum":"next_up","arm":"qwen3.8-flash","repeat":2,"reason":"The music-focused request and the spoken intro fit Kairo\u2019s DJ voice, but \u201cright at the front of the run\u201d exposes a queue position, which her directives explicitly say not to give.","excerpt":"## Jules\nstick born slippy on after this one?\n\n## Persona\nsay less \u2014 putting Underworld straight after this one, right at the front of the run \ud83c\udf9b\ufe0f\n\nTool actions:\n  \u2713 music.search({\"query\": \"Underworld Born Slippy NUXX\"}) \u2192 **Search results for \"Underworld Born Slippy NUXX\":**\n[r1] **Underworld - Born Slippy** \u2014 sean7000 *(9:45)* [28.4M views]\n[r2] **Underworld - Born Slippy (Nuxx)** \u2014 Underworld *(4:28)* [21.7M views]"},{"trial":"T137","case":"ast-top-ten-garage","stratum":"assistant_shape","arm":"1017","repeat":1,"reason":"Kairo\u2019s framing is opinionated\u2014\u201cmy ten, not THE ten\u201d\u2014and the closing point about garage crossing into pop fits her voice. But the reply is delivered as a numbered top-ten list, which is one of the specified generic-assistant tells.","excerpt":"[\u2026 1667 characters earlier]\necords 1997]** \u2014 clubb guide *(6:08)* [473.1K views]\n[r8] **Double 99 ft. Top Cat - Rip Groove** \u2014 Reese Lacey *(3:32)* [429.3K views]\n[r9] **Double 99 ft. Top Cat - Rip Groove (Video)** \u2014 PiotrK *(3:27)* [39.9K views]\n[r10] **Double 99 - RIP Groove (Official Video) (1997)** \u2014 CLUB ROTATION TV *(3:19)* [1.4K views]\n\nUse `music__queue_track` with the `track_ref` shown in brackets (e.g. r12)"},{"trial":"T140","case":"ast-top-ten-garage","stratum":"assistant_shape","arm":"qwen3.8-flash","repeat":1,"reason":"The reply does use Kairo\u2019s garage-specific, opinionated voice (\u201ccanon plus dubplate side, no radio filler\u201d) and follows with a spoken track intro. But the delivered answer is a numbered top-ten list, which the criteria explicitly count as generic-assistant behavior.","excerpt":"[\u2026 6341 characters earlier]\nmusic.replace_music({\"item_id\": \"i4\", \"reason\": \"swapping to the official label upload of Ripgroove for cleaner audio \u2014 same track Jules asked for\", \"track_ref\": \"r1\"}) \u2192 Replaced i4 with **Double 99 - RIP Groove (Original)** by Skint Records, in the same queue position (audio resolving) \u2014 new item i5.\n  \u2713 music.search({\"query\": \"Sweet Female Attitude Flowers\"}) \u2192 **Search results for \"Swe"},{"trial":"T25","case":"mtc-main-riff-synth","stratum":"music_tech","arm":"1017","repeat":1,"reason":"The replies mostly sound like Kairo: she refuses to invent a synth name, describes what she hears in musical terms, and the queued Basic Channel segue has a strong DJ voice. But \u201cif you want, I\u2019ll keep digging off-air\u201d offers further help, which the criteria identify as generic-assistant phrasing, so this fails.","excerpt":"[\u2026 2267 characters earlier]\nd I'm not going to pretend. couldn't source what made that riff, and I'd rather tell you that than make up a synth name. what I can tell you is what I hear: it's built on a choked, stuttering vocal chop riding a pitched chord stab \u2014 the swing is UK funky, not the box. if you want, I'll keep digging off-air\"}) \u2192 Message sent to Discord via webhook\n  \u2713 music.search({\"query\": \"Basic Channel P"},{"trial":"T323","case":"mtc-cheap-drum-machine","stratum":"music_tech","arm":"qwen3.8-flash","repeat":1,"reason":"The drum-machine question is in Kairo\u2019s music-tech lane, and the Donuts segue has a music-minded point of view. But the reply gives a long, generic-assistant-style bullet list of recommendations, which breaks the persona check even though it also includes some characterful commentary.","excerpt":"[\u2026 1167 characters earlier]\n's the one you don't grow out of.\n\nHonest opinion though: the machine is never the bottleneck. Dilla made Donuts on an MPC-3000 with a broken wrist in a hospital bed \u2014 the swing you hear is a limitation turned into a style. Cheap gear just means your limitations arrive sooner, which is a gift.\n\nI'm putting Donuts on after the Skee Mask so you can hear what a box does in the right hands. Gi"}],"caveats":{"late_criteria":[{"criterion":"aspect","name":null,"set_at":"25 Oct 2026"},{"criterion":"control","name":null,"set_at":"25 Oct 2026"},{"criterion":"margin","name":null,"set_at":"25 Oct 2026"},{"criterion":"floor","name":"character adherence (v2)/rate_drop/*","set_at":"25 Oct 2026"}],"judge_tiers":{"__outcome__":"undetermined","__transcript__":"undetermined","persona.booth_stays_offstage":"undetermined","persona.holds_character":"undetermined"},"confounds":{"simulator_sent_settings":"not recorded on every run in this campaign, so whether it varied cannot be established; if it did, the simulated user's calls were sent with different request settings, so the same simulator model may have played the conversation differently","observed:reasoning_ratio":"the share of the candidate's output spent reasoning differed between these levels by at least the stated threshold. A reasoning effort is sent as a word that each vendor maps to its own budget, so a comparison of models at one effort setting does not hold reasoning constant: the level that reasons more can spend its output cap reasoning and truncate, and that cost is then charged to the level rather than to the budget it was given","model":"another lever this campaign swept, which also took more than one value across these runs, so part of the movement may belong to it"},"apparatus_confounds":[{"dimension":"simulator_sent_settings","kind":"apparatus","status":"undecided","level_values":{},"threshold":null}],"latency":"Latency is not compared here: every result's latency was read while other cells or runs executed beside it (execution_mode `concurrent`), so it is left out of every comparison, bar and ranking. Launch with measure_latency=True to read latency clean.","short_runs":[{"run":"01a170ab-d2da-750d-a1e3-f4b43716844d","arm":"qwen3.8-flash","note":"DEGRADED: 298 of 299 cells produced a usable measurement (1 excluded as a harness failure rather than a candidate outcome). Every rate on this run is computed over that shorter denominator, so reading it beside a complete run compares two different populations."},{"run":"01a17121-6e85-732d-ab3a-cf86aed8cdc6","arm":"qwen3.8-flash","note":"DEGRADED: 597 of 598 cells produced a usable measurement (1 excluded as a harness failure rather than a candidate outcome). Every rate on this run is computed over that shorter denominator, so reading it beside a complete run compares two different populations."}],"unreported":["input_tokens","llm_calls","output_tokens"]},"prior_insights":[{"statement":"Gemini-3.5-flash-lite repeatedly fails tool use and music queueing directives when given standard persona prompts.","confidence":"very_high"},{"statement":"Qwen3.8-flash significantly lowers production costs and improves queue restraint, making it the primary candidate once readiness is settled.","confidence":"high"}]};
 const ctl=D.arms.find(a=>a.role==="control");
@@ -406,11 +728,12 @@ const usd=v=>"$"+v.toFixed(2);
 
 // ---- summary: corrected changes in points, and cost bars
 (function(){const meas=[["passed","Pass rate (asked)"],[prim,"In-character (judge)"],["persona.booth_stays_offstage","Booth stays offstage (judge)"]];const rows=[];
-  for(const [k,label] of meas)for(const a of cands){const c=C(a.id,k);if(!c)continue;rows.push({group:label,label:nm(a),value:c.delta*100,lo:c.interval[0]*100,hi:c.interval[1]*100,color:COL[a.id],strong:c.verdict==="regressed",note:`${pts(c.delta*100)}${c.verdict==="regressed"?" worse":""}`});}
+  for(const [k,label] of meas)for(const a of cands){const c=C(a.id,k);if(!c)continue;rows.push({id:a.id,group:label,label:nm(a),value:c.delta*100,lo:c.interval[0]*100,hi:c.interval[1]*100,color:COL[a.id],strong:c.verdict==="regressed",note:`${pts(c.delta*100)}${c.verdict==="regressed"?" worse":""}`});}
   const missing=[];for(const [k,label] of meas)for(const a of cands)if(!C(a.id,k))missing.push(`${a.name}, ${label.toLowerCase()}`);
-  chart(document.getElementById("sum-pts"),(el,w)=>forest(el,w,rows,{domain:[-14,4],fmt:v=>(v>0?"+":"")+v.toFixed(0),level:famLevel}));
+  setChart(document.getElementById("sum-pts"),{domain:[-14,4],fmt:"+num:0",level:famLevel,rows});
   if(missing.length)document.getElementById("sum-pts").insertAdjacentHTML("afterend",`<p class="cap">Not in the writer bundle (trimmed): ${missing.join("; ")}.</p>`);
-  const ar=[ctl,...cands];chart(document.getElementById("sum-cost"),(el,w)=>barsH(el,w,ar.map(a=>{const m=cost(a.id);return {label:a===ctl?a.short:nm(a),value:m.mean*1000,lo:m.ci[0]*1000,hi:m.ci[1]*1000,color:COL[a.id],strong:a===ctl,note:usd(m.mean*1000)};}),{domain:[0,3],fmt:v=>"$"+v.toFixed(2),tickFmt:v=>"$"+v.toFixed(1),rowH:30}));})();
+  const ar=[ctl,...cands];setChart(document.getElementById("sum-cost"),{domain:[0,3],fmt:"usd:2",tick_fmt:"usd:1",level:"95%",row_height:30,
+    rows:ar.map(a=>{const m=cost(a.id);return {id:a.id,label:a===ctl?a.short:nm(a),value:m.mean*1000,lo:m.ci[0]*1000,hi:m.ci[1]*1000,color:COL[a.id],strong:a===ctl,note:usd(m.mean*1000)};})});})();
 
 // ---- arms key
 document.getElementById("key").innerHTML=`<thead><tr><th>Arm</th><th>Role</th><th>Served model</th><th class="r">Share of output spent reasoning</th><th class="r">Trials usable</th></tr></thead><tbody>`+
@@ -421,35 +744,38 @@ document.getElementById("key").innerHTML=`<thead><tr><th>Arm</th><th>Role</th><t
   document.getElementById("q-h").textContent=`Both candidates stay inside the ${margin}-point margin, but ${cands.filter(a=>R[a.id].within_interval[1]<0).map(a=>a.name).join(" and ")||"neither"} is separated as worse`;
   document.getElementById("q-t").textContent=`The question: ${D.meta.question.replace(/^"|"$/g,"")} The shaded region is the margin; a candidate passes when its whole interval sits inside it.`;
   document.getElementById("q-cap").textContent=`Pass rate on ${asp.name}: a trial passes when every check and judged dimension passes. Confirmatory 95% intervals on ${asp.readings[0].cases[0]} paired cases. The margin was set after the readings were visible.`;
-  chart(document.getElementById("question"),(el,w)=>forest(el,w,cands.map(a=>{const r=R[a.id];return {label:nm(a),value:r.change,lo:r.within_interval[0],hi:r.within_interval[1],color:COL[a.id],strong:r.within_interval[1]<0,
-    note:r.within_interval[1]<0?"worse":"not separated",tip:`<b>${a.name}</b><br>${pts(r.change)} points [${r.within_interval.map(v=>v.toFixed(1)).join(", ")}]<br>${r.arm_passed} passed vs ${r.control_passed}`};}),{domain:[-16,4],fmt:v=>(v>0?"+":"")+v.toFixed(0),margin,level:"95%",labelW:w<480?110:160}));})();
+  setChart(document.getElementById("question"),{domain:[-16,4],fmt:"+num:0",level:"95%",reference:{value:-margin,label:`margin −${margin}`,kind:"margin"},label_width:160,label_width_narrow:110,
+    rows:cands.map(a=>{const r=R[a.id];return {id:a.id,label:nm(a),value:r.change,lo:r.within_interval[0],hi:r.within_interval[1],color:COL[a.id],strong:r.within_interval[1]<0,
+      note:r.within_interval[1]<0?"worse":"not separated",tip:[a.name,`${pts(r.change)} points [${r.within_interval.map(v=>v.toFixed(1)).join(", ")}]`,`${r.arm_passed} passed vs ${r.control_passed}`]};})});})();
 
 // ---- strata
 (function(){const top=D.strata.slice(0,12);const c0=ctl.id;
   const lead=top[0];const ds=cands.map(a=>lead.per_arm[a.id][prim].mean*100-lead.per_arm[c0][prim].mean*100);
   const share=cands.map(a=>{const tot=D.strata.reduce((s,st)=>s+st.n_cases*(st.per_arm[c0][prim].mean-st.per_arm[a.id][prim].mean),0);const one=lead.n_cases*(lead.per_arm[c0][prim].mean-lead.per_arm[a.id][prim].mean);return one/tot;});
   document.getElementById("st-h").textContent=`Off-lane asks, the largest stratum, carry about ${Math.round(Math.min(...share)*10)*10}% of each candidate's loss`;
-  const host=document.getElementById("strata");
-  for(const a of cands){const f=H("div",{class:"fig mini"});f.innerHTML=`<h3>${chip(a)}</h3><p class="cap" style="margin:.25rem 0 .4rem">Points against ${ctl.name}, whose rate is in brackets</p>`;const el=H("div",{class:"chart"});f.appendChild(el);host.appendChild(f);
-    chart(el,(el,w)=>barsH(el,w,top.map(st=>{const x=st.per_arm[a.id][prim],c=st.per_arm[c0][prim];const dv=(x.mean-c.mean)*100,se=Math.hypot(x.sem,c.sem)*100;const sig=Math.abs(dv)>1.96*se;
-      return {label:`${st.id.replace(/_/g," ")} (${Math.round(c.mean*100)}%)`,value:dv,color:COL[a.id],muted:!sig,strong:sig,note:pts(dv),tip:`<b>${st.id.replace(/_/g," ")}</b> · ${st.n_cases} cases<br>${ctl.name} ${(c.mean*100).toFixed(1)}% · ${a.name} ${(x.mean*100).toFixed(1)}%<br>${pts(dv)} points (±${(1.96*se).toFixed(1)}, uncorrected)`};}),{domain:[-26,8],fmt:v=>(v>0?"+":"")+v.toFixed(0),rowH:24,labelW:w<480?118:150}));}})();
+  setChart(document.getElementById("strata"),{domain:[-26,8],fmt:"+num:0",row_height:24,label_width:150,label_width_narrow:118,panel_min_rem:30,
+    panels:cands.map(a=>({tag:a.tag,title:a.short,color:COL[a.id],subtitle:`Points against ${ctl.name}, whose rate is in brackets`,
+      rows:top.map(st=>{const x=st.per_arm[a.id][prim],c=st.per_arm[c0][prim];const dv=(x.mean-c.mean)*100,se=Math.hypot(x.sem,c.sem)*100;const sig=Math.abs(dv)>1.96*se;
+        return {label:`${st.id.replace(/_/g," ")} (${Math.round(c.mean*100)}%)`,value:dv,color:COL[a.id],muted:!sig,strong:sig,note:pts(dv),
+          tip:[`${st.id.replace(/_/g," ")} · ${st.n_cases} cases`,`${ctl.name} ${(c.mean*100).toFixed(1)}% · ${a.name} ${(x.mean*100).toFixed(1)}%`,`${pts(dv)} points (±${(1.96*se).toFixed(1)}, uncorrected)`]};})}))});})();
 
 // ---- examples (failed in-character trials, candidates first)
 (function(){const pick=[];const want=[["off_lane",cands[0]],["off_lane",cands[1]],["multi",cands[1]],["about",cands[0]]];
   for(const [st,a] of want){const e=D.examples.find(x=>x.stratum===st&&x.arm===a.id&&!pick.includes(x));if(e)pick.push(e);}
   for(const e of D.examples)if(pick.length<4&&!pick.includes(e))pick.push(e);
-  document.getElementById("ex").innerHTML=pick.map(e=>`<div class="excard"><div class="top"><span class="mono">${e.trial}</span><span class="mono">${e.case}</span><span>${e.stratum.replace(/_/g," ")}</span>${chip(A[e.arm])}<span>repeat ${e.repeat}</span></div><div class="reason">${(e.reason||"No judge reason recorded.").replace(/</g,"&lt;")}</div><pre>${e.excerpt.replace(/</g,"&lt;")}</pre></div>`).join("");})();
+  setChart(document.getElementById("ex"),{cards:pick.map(e=>({meta:[{text:e.trial,mono:true},{text:e.case,mono:true},{text:e.stratum.replace(/_/g," ")},{tag:A[e.arm].tag,label:A[e.arm].short,color:COL[e.arm]},{text:`repeat ${e.repeat}`}],
+    reason:e.reason||"No judge reason recorded.",excerpt:e.excerpt}))});})();
 
 // ---- explorer
-let kind="pass";const em=document.getElementById("e-m");let redraw;
+let kind="pass";const em=document.getElementById("e-m");
 document.querySelectorAll("#e-k button").forEach(b=>b.onclick=()=>{kind=b.dataset.v;explore();});
 function iv(a){if(kind==="pass"){const r=R[a.id];return {v:r.change,lo:r.within_interval[0],hi:r.within_interval[1]};}const c=C(a.id,prim);return {v:c.delta*100,lo:c.interval[0]*100,hi:c.interval[1]*100};}
 function explore(){const m=+em.value;document.getElementById("o-m").textContent=m.toFixed(1)+" points";document.querySelectorAll("#e-k button").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.v===kind)));
   const lines=cands.map(a=>{const x=iv(a);const holds=-x.lo<m;return `<strong>${a.name}</strong> ${holds?"holds":"fails"} (worst drop ${(-x.lo).toFixed(1)}; it holds for any margin above ${(-x.lo).toFixed(1)})`;});
   document.getElementById("e-note").innerHTML=`At a ${m.toFixed(1)}-point margin on ${kind==="pass"?"the asked pass rate":"the in-character rate"}: ${lines.join("; ")}. ${ctl.name} stays the recommendation at any margin, because neither candidate improves on it.`;
-  redraw&&redraw();}
+  setChart(document.getElementById("e-chart"),{domain:[-16,4],fmt:"+num:0",level:kind==="pass"?"95%":famLevel,reference:{value:-m,label:`margin −${m.toFixed(1)}`,kind:"margin"},label_width:160,label_width_narrow:110,
+    rows:cands.map(a=>{const x=iv(a);return {id:a.id,label:nm(a),value:x.v,lo:x.lo,hi:x.hi,color:COL[a.id],strong:-x.lo>=m,note:-x.lo<m?"within":"outside"};})});}
 explore();
-redraw=chart(document.getElementById("e-chart"),(el,w)=>forest(el,w,cands.map(a=>{const x=iv(a);return {label:nm(a),value:x.v,lo:x.lo,hi:x.hi,color:COL[a.id],strong:-x.lo>=+em.value,note:-x.lo<+em.value?"within":"outside"};}),{domain:[-16,4],fmt:v=>(v>0?"+":"")+v.toFixed(0),margin:+em.value,marginLabel:`margin −${(+em.value).toFixed(1)}`,level:kind==="pass"?"95%":famLevel,labelW:w<480?110:160}));
 
 // ---- full tables
 (function(){const ar=[ctl,...cands];const dims=Object.keys(J);const dn={"__outcome__":"Outcome (1–5, judge)","__transcript__":"Transcript (1–4, judge)","persona.holds_character":"Holds character (judge)","persona.booth_stays_offstage":"Booth stays offstage (judge)"};

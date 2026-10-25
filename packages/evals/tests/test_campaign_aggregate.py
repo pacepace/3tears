@@ -38,7 +38,6 @@ from threetears.evals.analysis.campaign_bundle import (
 from threetears.evals.analysis.campaign_readings import AggregateWeighting
 from threetears.evals.analysis.report.campaign.aggregate import EQUAL_WEIGHT_ROW
 from threetears.evals.analysis.report.model import CampaignReport, ChartBlock, DisclosureBlock, TableBlock
-from threetears.evals.analysis.report.svg import chart_svg
 from threetears.evals.analysis.reporter_bank import frozen_case_receipt
 from threetears.evals.analysis.reporter_kind import (
     judge_case_material,
@@ -250,14 +249,16 @@ def test_s2_draws_its_arms_on_one_aspect_with_that_aspect_s_own_figures_and_no_r
     # One aspect: the matrix carries no row across aspects, and nothing says how aspects are weighed.
     assert EQUAL_WEIGHT_ROW not in {row["aspect"].text for row in _matrix(page).rows}
     assert WEIGHTING_LINE not in _lines(page)
-    svg = chart_svg(chart, chart_id="c1")
-    assert svg.startswith('<svg class="viz"') and all(f">{arm}</text>" in svg for arm in ("alpha", "beta", "gamma"))
-    assert "<script" not in svg and "url(" not in svg
+    drawn = chart.kit_chart()
+    assert drawn is not None and drawn[0] == "scatter_frontier"
+    assert [point["label"] for point in drawn[1]["points"]] == ["alpha", "beta", "gamma"]  # type: ignore[index,union-attr]
     html = campaign_report_html(page)
-    assert '<figure class="fig" data-chart="cost_quality">' in html
-    assert '<table class="visually-hidden"><caption>Cost and pass rate</caption>' in html
+    assert '<figure class="fig" data-figure="cost_quality">' in html and 'data-kind="scatter_frontier"' in html
+    assert '<div class="tbl chart-values"><table><caption>Cost and pass rate</caption>' in html
     markdown = campaign_report_markdown(page)
-    assert "| alpha | 0.004 | [0.004, 0.004] | 88.3 |" in markdown
+    # The table reads cost per 1,000 replies, as the chart's axis and the scoreboard do: $0.004 a reply is $4.
+    assert "| Arm | Cost per 1,000 replies ($) | Interval ($) | Pass rate (%) | Interval (%) |" in markdown
+    assert "| alpha | 4 | [4, 4] | 88.3 |" in markdown
 
 
 def test_s1_draws_every_arm_across_its_aspects() -> None:
@@ -270,8 +271,81 @@ def test_s1_draws_every_arm_across_its_aspects() -> None:
         ("v3", 45.0),
         ("v4", 48.3),
     ]
+    drawn = chart.kit_chart()
+    assert drawn is not None
+    assert [point["label"] for point in drawn[1]["points"]] == ["production", "v2", "v3", "v4"]  # type: ignore[index,union-attr]
     html = campaign_report_html(page)
-    assert all(f">{arm}</text>" in html for arm in ("production", "v2", "v3", "v4"))
+    assert all(f"<td>{arm}</td>" in html for arm in ("production", "v2", "v3", "v4"))
+
+
+def _sparse() -> Shape:
+    """A campaign whose second aspect lacks an arm: ``billing`` runs production, v2 and v3, ``tone`` production and v3,
+    so v3 is the second candidate the campaign lists but the first ``tone`` does."""
+    return shape_of(
+        "sparse",
+        [
+            AspectTrials(
+                "billing",
+                [ArmTrials("production", passing=18), ArmTrials("v2", passing=6), ArmTrials("v3", passing=17)],
+            ),
+            AspectTrials("tone", [ArmTrials("production", passing=10), ArmTrials("v3", passing=12)]),
+        ],
+        control=True,
+    )
+
+
+#: The campaigns whose pages tag their arms: dense ones, and one whose aspect lacks an arm.
+_TAGGED = {"s1": SHAPES["s1"], "s2": SHAPES["s2"], "sparse": _sparse}
+
+
+@pytest.mark.parametrize("name", sorted(_TAGGED))
+def test_an_arm_is_one_tag_and_one_colour_on_every_chart_of_the_campaign_page(name: str) -> None:
+    """GENERATOR.md §5.2: one colour per arm for the whole page. The cost/quality chart and every aspect's outcome bar
+    on the campaign page tag an arm alike (the control P, the others A, B, C in the order the campaign's aspects list
+    them), so each draws it in one colour; the control, where there is one, ink-gray. An aspect that lacks an arm
+    shifts no other arm's tag: on the sparse campaign v3 is B on ``tone`` too, as on ``billing`` and the chart, where
+    v2, run on one aspect, is withheld."""
+    shape = _TAGGED[name]()
+    page = shape.page()
+    (chart,) = _charts(page)
+    tags = {point.arm: point.tag for point in chart.points}
+    assert len(set(tags.values())) == len(tags) and None not in tags.values()
+    assert ("P" in tags.values()) == (shape.readings.control is not None)
+    colours = {point["label"]: point["color"] for point in chart.kit_chart()[1]["points"]}  # type: ignore[index]
+    bars = [
+        bar
+        for aspect in page.aspects
+        for block in aspect.report.blocks
+        if isinstance(block, ChartBlock) and block.chart == "outcome_bar"
+        for bar in block.bars
+    ]
+    assert bars, "every aspect's page draws its outcome bar"
+    worn: dict[str, set[str | None]] = {}
+    for bar in bars:
+        worn.setdefault(bar.arm, set()).add(bar.tag)
+    assert all(len(held) == 1 for held in worn.values()), worn
+    assert len({tag for held in worn.values() for tag in held}) == len(worn), worn
+    for bar in bars:
+        if bar.arm not in tags:
+            continue
+        assert bar.tag == tags[bar.arm], bar.arm
+        row = next(row for row in _outcome_rows(page) if row["label"] == bar.arm)
+        assert row["color"] == colours[bar.short_name or bar.arm]
+    if shape.readings.control is not None:
+        assert colours[shape.readings.control_label] == "--ink-2"
+    if name == "sparse":
+        assert sorted(tags) == ["production", "v3"] and worn == {"production": {"P"}, "v2": {"A"}, "v3": {"B"}}
+
+
+def _outcome_rows(page: CampaignReport) -> list[dict[str, Any]]:
+    """Every drawn row of every aspect's outcome bar on the campaign page."""
+    return [
+        row
+        for aspect in page.aspects
+        for block in aspect.report.blocks
+        if isinstance(block, ChartBlock) and block.chart == "outcome_bar"
+        for row in block.kit_chart()[1]["rows"]  # type: ignore[index,union-attr]
+    ]
 
 
 @pytest.mark.parametrize("build", [s3_measurement, s4_change], ids=["s3", "s4"])
@@ -280,7 +354,7 @@ def test_a_measurement_and_one_candidate_on_one_aspect_draw_no_chart(build: Any)
     page = shape.page()
     assert _charts(page) == []
     assert WEIGHTING_LINE not in _lines(page)
-    assert '<figure class="fig" data-chart="cost_quality">' not in campaign_report_html(page)
+    assert '<figure class="fig" data-figure="cost_quality">' not in campaign_report_html(page)
     if shape.readings.kind == "measurement":
         assert shape.readings.aggregate is None
 

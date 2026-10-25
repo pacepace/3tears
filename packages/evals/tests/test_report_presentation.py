@@ -124,7 +124,7 @@ async def test_an_outcome_bar_repeating_the_scoreboard_prints_no_second_table(g2
     # Passed, failed by check and failed by judge are the scoreboard's own columns: the bar's table would repeat it.
     assert "**Outcomes**" not in report_markdown(report)
     # The page still draws the bar.
-    assert report_html(report).count('data-chart="outcome_bar"') == 1
+    assert report_html(report).count('data-figure="outcome_bar"') == 1
 
 
 async def test_the_question_is_quoted_once_under_the_title_and_never_in_the_body(

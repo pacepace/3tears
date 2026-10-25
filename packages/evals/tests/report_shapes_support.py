@@ -29,6 +29,7 @@ from threetears.evals.analysis import assemble_context_bundle, build_campaign_re
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_readings
 from threetears.evals.analysis.report.model import CampaignReport, Report
+from threetears.evals.analysis.report.words import campaign_arm_tags
 from threetears.evals.kernel.authored import AuthoredCampaignAnalysis
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import BarOverride, CampaignArm, DecisionClause, RateDrop
@@ -264,9 +265,10 @@ def shape_of(name: str, aspects: Sequence[AspectTrials], *, control: bool, quest
     shapes below, or a test's own of the same parts."""
     campaign, bundles, arms = _assembled(name, aspects, control=control, question=question)
     readings = campaign_readings(campaign, bundles, arms=arms)
+    tags = campaign_arm_tags(bundles.values(), readings.control)
     reports = {
         label: build_code_only_report(
-            bundle, assembled_at=ASSEMBLED_AT, campaign_name=name, arm_labels=readings.arm_labels()
+            bundle, assembled_at=ASSEMBLED_AT, campaign_name=name, arm_labels=readings.arm_labels(), arm_tags=tags
         )
         for label, bundle in bundles.items()
     }

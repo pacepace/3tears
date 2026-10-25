@@ -15,7 +15,7 @@ reach those screens; :data:`ENGINE_WORDS` maps each to what a reader is told ins
 from __future__ import annotations
 
 import typing
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any, Literal
 
 from threetears.evals.analysis.arms import arm_label, arm_names, multi_rig_variants, short_digest
@@ -415,6 +415,60 @@ def positions(numbers: list[int]) -> str:
     return ", ".join(f"F{position + 1}" for position in numbers)
 
 
+#: The control's letter tag, which no candidate wears.
+_CONTROL_TAG = "P"
+
+
+def arm_tags(variant_keys: Sequence[str], control: str | None) -> dict[str, str]:
+    """Each arm's letter tag (GENERATOR.md §6.1): ``P`` for the control, then ``A``, ``B``, ``C``… for the others in
+    the order given (``AA`` after ``Z``), skipping ``P``, which is the control's alone, so every chart of one page tags
+    an arm alike and colours it by its tag.
+
+    :param variant_keys: The arms, in the page's order.
+    :ptype variant_keys: Sequence[str]
+    :param control: The control's variant key; None where there is none.
+    :ptype control: str | None
+    :return: Variant key -> tag, for every arm given.
+    :rtype: dict[str, str]
+    """
+    tags: dict[str, str] = {}
+    place = 0
+    for key in variant_keys:
+        if key == control:
+            tags[key] = _CONTROL_TAG
+            continue
+        tag = _CONTROL_TAG
+        while tag == _CONTROL_TAG:
+            place += 1
+            tag, number = "", place
+            while number:
+                number, letter = divmod(number - 1, 26)
+                tag = chr(ord("A") + letter) + tag
+        tags[key] = tag
+    return tags
+
+
+def campaign_arm_tags(
+    bundles: Iterable[AnalysisContextBundle], control: str | None, *, also: Iterable[str] = ()
+) -> dict[str, str]:
+    """Each arm's letter tag across a campaign's page (:func:`arm_tags`): the arms in the order its aspects'
+    scoreboards list them, then ``also``'s not listed there, so an arm one aspect lacks shifts no other arm's tag, and
+    every chart of the page tags and colours an arm alike.
+
+    :param bundles: Each aspect's bundle, in the campaign's order.
+    :ptype bundles: Iterable[AnalysisContextBundle]
+    :param control: The campaign's control's variant key; None where there is none.
+    :ptype control: str | None
+    :param also: Arms to tag after those the scoreboards list, where they are not among them.
+    :ptype also: Iterable[str]
+    :return: Variant key -> tag.
+    :rtype: dict[str, str]
+    """
+    listed = dict.fromkeys(board.variant_key for bundle in bundles for board in bundle.scoreboard)
+    listed.update(dict.fromkeys(also))
+    return arm_tags(list(listed), control)
+
+
 def counted(n: int, of: int, what: str) -> str:
     """``n of m <what>``: a count, never a rate."""
     return f"{n} of {of} {what}"
@@ -435,6 +489,8 @@ __all__ = [
     "GUARDRAIL_DECISION_WORDS",
     "LOWER_IS_BETTER",
     "arm_namer",
+    "arm_tags",
+    "campaign_arm_tags",
     "cell_arm_labels",
     "comparison_words",
     "counted",

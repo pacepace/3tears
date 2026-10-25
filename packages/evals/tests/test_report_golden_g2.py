@@ -91,8 +91,8 @@ def test_no_arm_is_a_winner_and_no_change_is_a_percent(g2: Report, door: str) ->
 
 def test_exactly_one_chart_is_drawn_and_it_is_the_outcome_bar(g2: Report) -> None:
     page = report_html(g2)
-    assert page.count("<svg") == 1
-    assert page.count('data-chart="outcome_bar"') == 1
+    assert page.count('data-kind="') == 1
+    assert page.count('data-figure="outcome_bar"') == 1
     markdown = report_markdown(g2)
     assert markdown.count("**Outcomes**") == 1
     # The case floor is a caveat under the scoreboard, in normal weight, after the result: what is withheld under

@@ -38,6 +38,7 @@ from packages.evals.tests.ladder_support import (
 )
 from packages.evals.tests.report_support import page_violations
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
+from packages.evals.tests.page_contract_support import what_runs
 
 RUNG = EXAMPLES / "3-invoices"
 EXTRACT = RUNG / "extract.py"
@@ -165,7 +166,7 @@ def test_run_as_a_script_it_writes_the_report_and_exits_with_the_gate(
     out = capsys.readouterr().out
     assert out.startswith("invoices: ") and "v1 (control): 90 result(s)" in out
     html = (copy / "report" / "report.html").read_text(encoding="utf-8")
-    assert "<script" not in html
+    assert what_runs(html) == [], "the page runs the kit's script and nothing else"
     (written,) = (copy / "report").glob("bundle-*.json")
     bundle = AnalysisContextBundle.from_json(written.read_text(encoding="utf-8"))
     assert bundle.fingerprint() in html

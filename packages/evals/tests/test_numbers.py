@@ -226,7 +226,7 @@ class TestThereIsOneImplementation:
 _SPELLING_TREES = ("threetears/evals/analysis",)
 
 #: What sits inside :data:`_SPELLING_TREES` and is not read as a report, so is not walked:
-#: ``numbers.py`` is the rule itself, and ``report/svg.py`` spells only a chart's drawing coordinates (to a tenth
+#: ``numbers.py`` is the rule itself, and ``report/svg.py`` spells only a glyph's drawing coordinates (to a tenth
 #: of a unit), every value it shows a reader going through the rule.
 #: ``out_of_run_spend.py`` is the spend ledger, which spells only dollars, at the four decimals a
 #: per-call price needs.

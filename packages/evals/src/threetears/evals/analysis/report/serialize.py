@@ -1,6 +1,6 @@
 """A report in one of its three forms: the one switch every door that hands a report out reads.
 
-Markdown is what an agent reads and a pull request quotes, HTML the one page a person reads with no script, and JSON
+Markdown is what an agent reads and a pull request quotes, HTML the one page a person reads, its charts drawn by the kit's inlined script, and JSON
 the bundle the report was computed from — the machine form, versioned by its ``schema_version`` — so a program never
 reads the page's layout as data.
 """
