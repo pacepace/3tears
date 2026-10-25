@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from threetears.agent.tools.http_operation import RestAffordanceError
-from threetears.agent.tools.server import RegistrationManifest, ToolManifestEntry
+from threetears.core.tool_wire import RestAffordanceError
+from threetears.core.tool_wire import RegistrationManifest, ToolManifestEntry
 from threetears.nats import IncomingMessage, Subjects, set_default_namespace
 from threetears.registry.auth import ToolPodAuth
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint

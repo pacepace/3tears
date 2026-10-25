@@ -17,8 +17,8 @@ import json
 from datetime import timedelta
 from typing import Any
 
-from threetears.agent.tools.context_envelope import CallContext
-from threetears.agent.tools.server import CallAccepted
+from threetears.core.tool_wire import CallContext
+from threetears.core.tool_wire import CallAccepted
 from threetears.nats import IncomingMessage, Subject, set_default_namespace
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.proxy import ProxyCallRequest, ProxyCallResponse

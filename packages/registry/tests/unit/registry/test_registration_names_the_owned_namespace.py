@@ -31,7 +31,7 @@ from uuid import UUID
 
 import pytest
 
-from threetears.agent.tools.server import RegistrationManifest, RegistrationResponse, ToolManifestEntry
+from threetears.core.tool_wire import RegistrationManifest, RegistrationResponse, ToolManifestEntry
 from threetears.nats import IncomingMessage, Subjects, set_default_namespace
 from threetears.registry.auth import ToolPodAuth
 from threetears.registry.catalog import ToolCatalog

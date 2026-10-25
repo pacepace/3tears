@@ -33,7 +33,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import SecretStr
 from threetears.agent.tools.base_tool import CONFLICT, MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.call_scope import current_scope
-from threetears.agent.tools.server import CallRequest, ToolServer
+from threetears.core.tool_wire import CallRequest
+from threetears.agent.tools.server import ToolServer
 from threetears.core.security import (
     PLATFORM_CUSTOMER_SENTINEL,
     TOOL_PROXY_ASSERTION_UNVERIFIED,

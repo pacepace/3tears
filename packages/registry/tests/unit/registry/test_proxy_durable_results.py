@@ -25,9 +25,9 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from threetears.agent.tools.context_envelope import CallContext
+from threetears.core.tool_wire import CallContext
 
-from threetears.agent.tools.server import CallAccepted, CallRequest
+from threetears.core.tool_wire import CallAccepted, CallRequest
 from threetears.nats import (
     RESULT_ACK_TIMEOUT_SECONDS,
     IncomingMessage,

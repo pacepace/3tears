@@ -32,6 +32,10 @@ from pathlib import Path
 
 _SRC_ROOT = Path(__file__).resolve().parent.parent.parent / "src" / "threetears" / "agent" / "tools"
 
+#: core's half of the declaration: the shared base and the inbound face are defined there, beside
+#: the manifest that carries them, so a rival there is as much a drift as one here.
+_CORE_TOOL_WIRE = Path(__file__).resolve().parents[4] / "core" / "src" / "threetears" / "core" / "tool_wire"
+
 #: the sanctioned base every path-template-carrying type must inherit.
 _SHARED_BASE = "PathTemplateBinding"
 
@@ -43,10 +47,23 @@ _CACHE_VOCABULARY = frozenset({"PUBLIC", "AUTHENTICATED", "PRIVATE"})
 def _collect_src_files() -> list[Path]:
     """collect production Python source files to scan.
 
-    :return: sorted list of source file paths under agent/tools src
+    :return: sorted list of source file paths under agent/tools src and core's tool_wire
     :rtype: list[Path]
     """
-    return sorted(_SRC_ROOT.rglob("*.py"))
+    return sorted([*_SRC_ROOT.rglob("*.py"), *_CORE_TOOL_WIRE.rglob("*.py")])
+
+
+def _display(path: Path) -> str:
+    """name a scanned file relative to the root it was found under.
+
+    :param path: a file from :func:`_collect_src_files`
+    :ptype path: Path
+    :return: the relative path, prefixed with its root's package
+    :rtype: str
+    """
+    if path.is_relative_to(_CORE_TOOL_WIRE):
+        return f"core/tool_wire/{path.relative_to(_CORE_TOOL_WIRE)}"
+    return str(path.relative_to(_SRC_ROOT))
 
 
 def _base_names(node: ast.ClassDef) -> set[str]:
@@ -141,11 +158,32 @@ class TestOnePathTemplateType:
         for path in _collect_src_files():
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for name in find_unshared_path_template_types(tree):
-                violations.append(f"{path.relative_to(_SRC_ROOT)}: {name}")
+                violations.append(f"{_display(path)}: {name}")
         assert not violations, (
             f"class(es) declare a path_template without inheriting {_SHARED_BASE} "
             f"({len(violations)}):\n" + "\n".join(violations)
         )
+
+
+class TestTheScanSeesTheBinding:
+    """the files scanned include the ones that define the shared base and the inbound face."""
+
+    def test_core_rest_module_is_scanned(self) -> None:
+        """a scan that missed core would pass a rival defined beside the base."""
+        scanned = {_display(path) for path in _collect_src_files()}
+        assert "core/tool_wire/rest.py" in scanned
+
+    def test_the_scan_finds_the_shared_base_and_its_inbound_subclass(self) -> None:
+        """``PathTemplateBinding`` and ``RestAffordance(PathTemplateBinding)`` are both in view."""
+        classes: dict[str, set[str]] = {}
+        for path in _collect_src_files():
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    classes[node.name] = _base_names(node)
+        assert _SHARED_BASE in classes
+        assert _SHARED_BASE in classes["RestAffordance"]
+        assert _SHARED_BASE in classes["HttpOperationDescriptor"]
 
 
 class TestOneCacheVocabulary:
@@ -157,7 +195,7 @@ class TestOneCacheVocabulary:
         for path in _collect_src_files():
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for name in find_duplicate_cache_vocabularies(tree):
-                violations.append(f"{path.relative_to(_SRC_ROOT)}: {name}")
+                violations.append(f"{_display(path)}: {name}")
         assert not violations, (
             "cache-exposure vocabulary re-spelled locally; import "
             "threetears.core.http_cache.CacheClass instead "

@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from threetears.agent.tools.server import HeartbeatMessage
+from threetears.core.tool_wire import HeartbeatMessage
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
