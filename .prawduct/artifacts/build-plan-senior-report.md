@@ -83,6 +83,10 @@ decision line below, prefixed `B:`.
 - To settle prints two identical rows where a floor reads the pass rate at the margin's own points (e.g. billing/v3). One quantity is rendered once, so merge them into one row that says both what it shows and that the floor holds.
 - The level and correction explanation under the matrix is seven one-sentence paragraphs. Make it one short block, saying the same mechanism with no recitation.
 
+**From the #951 merge review (rev-20261025T010626Z-1b0c28e4), for wave C:**
+- On the default page (`trials="table"`), a check with a declared name appears only by that name, and its expression appears nowhere. Give declared check names a legend (name — expression), once, as aspects have, and test it over campaign_report's default with names declared. Fix CHANGELOG:23-24 and reading-reports.md:333 to match.
+- Prose notes to fix in passing: the `_Trace._trial` docstring (memo_blocks.py:411-413) still says the fold holds the record; the Unreleased CHANGELOG's "byte for byte as before" (line 78) against the trials default (lines 99-102).
+
 **Decisions made mid-build:** (append here, one line each)
 - [DECISION: runs made at 00107a5b7 stay poolable with every later pin of this plan, and no chunk may move a pooling or identity input: IDENTITY_VERSION, CELL_MODEL_VERSION, context/variant keys, apparatus_class_id, measured_template_digest, the content digest, case ids | main session 2026-10-24, before Discodon spends about $100 on runs at 00107a5b7; an investigation verified this with file:line evidence, and chunk 01 pins every such digest to its 00107a5b7 value]
 - [DECISION: Chunk 06's CAMPAIGN_BUNDLE_SHAPE move must keep a reporter case frozen at an earlier shape readable and calibratable (reporter_kind.py:554 refuses it today) | frozen labels are human work; Discodon freezes labels at 00107a5b7, so a shape bump must never void them. 06 adds a read path for earlier frozen shapes or freezes the frame shape-independently, with a test freezing at shape 2 and reading after 06]
