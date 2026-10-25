@@ -24,7 +24,8 @@ of them.
 `threetears.agent.tools.http_operation` and `threetears.agent.tools.server`. Each old path still imports them
 and names the same object, so `isinstance` and nested validation hold across both paths; their `__module__`
 is now the core module, which moves only what is keyed on the dotted name (tracebacks, documentation
-cross-references, a list of models by qualified name); pickles, reprs and JSON schema titles are unchanged. The pod's own policy and machinery (`ToolRegistrationRefused`, `FINAL_REFUSAL_CODES`,
+cross-references, a list of models by qualified name); a pickle made before still loads through the old path,
+and their reprs and JSON schema titles are unchanged. The pod's own policy and machinery (`ToolRegistrationRefused`, `FINAL_REFUSAL_CODES`,
 `refusal_is_final`, `refusals_in_reply`, `DiscoveryProbeResponse`, `DiscoveryProbeResultEntry`, `ToolServer`)
 stay in `threetears.agent.tools.server`. `CallRequest`'s and the registry's `ProxyCallRequest`'s legacy-field refusal now points at
 `threetears.core.tool_wire.CallContext`, which a registry-only install carries, instead of the agent-tools path.

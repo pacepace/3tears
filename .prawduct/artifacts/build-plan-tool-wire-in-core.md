@@ -14,7 +14,7 @@ Success: registry's `pyproject.toml` no longer names `3tears-agent-tools`; nothi
 imports `threetears.agent.tools`; every existing import path of a moved name still works and resolves to the
 same object; the whole unit suite is green apart from known reds.
 
-Out of scope: removing registry's mirror models (`ProbeResponse`, `DiscoverRequest`/`DiscoverResponse`,
+Out of scope (chunks 01-04; chunk 05 later took the exact copies among them, see below): removing registry's mirror models (`ProbeResponse`, `DiscoverRequest`/`DiscoverResponse`,
 `ProxyCallResponse`); moving `TolerantWireModel` or `CacheClass` out of core; a core-free contracts leaf.
 
 ## Owner rulings (2026-10-25, binding)
@@ -70,7 +70,8 @@ Into `packages/core/src/threetears/core/tool_wire/`:
 - `__init__.py` re-exporting the public names.
 
 Stays in agent-tools (pod policy and machinery): `ToolRegistrationRefused`, `FINAL_REFUSAL_CODES`,
-`refusal_is_final`, `refusals_in_reply`, `ProbeAck`, the `DiscoveryProbe*` models, `ToolCallFailure`,
+`refusal_is_final`, `refusals_in_reply`, `ProbeAck` and the `DiscoveryProbe*` models (chunk 05 moved `ProbeAck`,
+`DiscoveryProbeToolEntry` and `DiscoveryProbeRequest` to core; the result pair stays), `ToolCallFailure`,
 `TOOL_RESULT_TOO_LARGE`, `tool_namespace_*`, `nats_connect`, `ToolServer`.
 
 Re-export rule: `server.py`, `context_envelope.py` and `http_operation.py` import the moved names from core at
@@ -124,7 +125,8 @@ Registry kept its own copies of three wire shapes the pod defines. Field-by-fiel
 `DiscoverRequest`/`DiscoverResponse` == agent-tools `DiscoveryProbeRequest`/`DiscoveryProbeResponse` (same
 fields and the same `_omit_absent_pod_id` validator). `ProxyCallRequest` is NOT a copy (a different hop: `pop`,
 `input_schema_digest` vs `proxy_assertion`) and stays.
-- [DECISION 2026-10-25, after the builder's comparison: NARROWED. `DiscoverResultEntry` carries seven fields the
+- [DECISION 2026-10-25, the main session's, inferred, flag at the boundary (the owner asked for the follow-up,
+  not for this narrowing), after the builder's comparison: NARROWED. `DiscoverResultEntry` carries seven fields the
   pod's `DiscoveryProbeResultEntry` leaves out on purpose (its docstring: "only the fields needed by readiness
   polling"), so `DiscoverResponse`/`DiscoveryProbeResponse` are a subset pair, not a copy. Folding them would grow
   the pod's surface, a change rather than a move. Chunk 05 folds only the exact matches: `ProbeResponse` ->

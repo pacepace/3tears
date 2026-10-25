@@ -357,8 +357,8 @@ class CallResponse(BaseModel):
     :ptype error: str | None
     :param error_code: machine-readable code for a refusal the pod names -- one of its own gates,
         or the tool's :attr:`~threetears.agent.tools.base_tool.ToolResult.error_code` copied through
-        unchanged -- read by the registry straight into
-        :attr:`threetears.registry.proxy.ProxyCallResponse.error_code`. ``None`` for a success and
+        unchanged -- relayed by the registry as it came, since its ``ProxyCallResponse`` is this
+        class. ``None`` for a success and
         for every failure nobody names -- a tool that raised, a gate that reports only a reason
     :ptype error_code: str | None
     :param context: unified identity + trace envelope echoed from the
