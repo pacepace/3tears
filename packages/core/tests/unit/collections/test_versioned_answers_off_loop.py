@@ -96,6 +96,27 @@ class TestAnswerJson:
         )
         assert answer_json(answer) == expected
 
+    @pytest.mark.parametrize("bad", [Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity"), Decimal("sNaN")])
+    def test_a_non_finite_decimal_is_written_as_null(self, bad: Decimal) -> None:
+        """``NaN`` and ``Infinity`` are not JSON; a NUMERIC column holding ``'NaN'`` must not make an answer unreadable."""
+        answer = {"total": bad, "rows": [{"share": bad, "n": 1}] * 300, "flat": [bad]}
+        text = answer_json(answer)
+        assert json.loads(text) == {"total": None, "rows": [{"share": None, "n": 1}] * 300, "flat": [None]}
+        assert "NaN" not in text and "Infinity" not in text
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_a_non_finite_float_is_written_as_null(self, bad: float) -> None:
+        answer = {"ratio": bad, "rows": [{"ratio": bad, "ok": 0.5}] * 300, "pair": (bad, 2.5), "nested": {"x": [bad]}}
+        text = answer_json(answer)
+        expected = {
+            "ratio": None,
+            "rows": [{"ratio": None, "ok": 0.5}] * 300,
+            "pair": [None, 2.5],
+            "nested": {"x": [None]},
+        }
+        assert json.loads(text) == expected
+        assert "NaN" not in text and "Infinity" not in text
+
     def test_no_one_encoder_call_writes_a_long_list_or_a_whole_mapping(self, monkeypatch: pytest.MonkeyPatch) -> None:
         answer = {"rows": [{"id": n} for n in range(5000)], "meta": {"states": list(range(600))}}
         expected = json.dumps(answer, default=str)
