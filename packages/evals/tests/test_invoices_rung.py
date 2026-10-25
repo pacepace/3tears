@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from threetears.evals import Result
+from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
 from threetears.evals.analysis import (
     AnalysisContextBundle,
     campaign_report_html,
@@ -89,8 +90,10 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
         "**Exploratory: nothing separated v2 from v1 on any reading. Not yet shown safe: v2 on no invented total.**"
     )
     # The one failure cause beside checks and the judge heads its own column; no legend line is needed under it. Both
-    # prompts cost well under a cent per invoice, so the cost column reads per 1,000 replies.
-    assert lines[7] == (
+    # prompts cost well under a cent per invoice, so the cost column reads per 1,000 replies. The page prints a cost, so
+    # the report-wide line on provider routing sits between the result and the scoreboard (owner, 2026-10-25).
+    assert lines[5] == COST_ROUTING_CAVEAT
+    assert lines[9] == (
         "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Model failed | Cost per 1,000 replies |"
     )
     assert page_violations(result.report) == []
