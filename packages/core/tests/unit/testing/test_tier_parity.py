@@ -63,6 +63,16 @@ class _TooWide(_Exact):
     schema: ClassVar[TableSchema] = _schema("tier_too_wide", 20)
 
 
+class _Widest(_Exact):
+    """a NUMERIC as wide as the DuckDB L1 holds, wider than decimal's default 28-digit context."""
+
+    schema: ClassVar[TableSchema] = TableSchema(
+        name="tier_widest",
+        primary_key="id",
+        columns=[Column("id", UUID_TYPE), Column("amount", NUMERIC_TYPE, precision=38, scale=12)],
+    )
+
+
 class _UntypedCodec(_Exact):
     """an L2 codec that hands back JSON's own types: a UUID as text, a Decimal as text."""
 
@@ -81,6 +91,13 @@ def test_a_numeric_the_sqlite_l1_cannot_hold_is_named_with_its_collection_column
     findings = tier_parity_findings([_TooWide])
     assert len(findings) == 1, findings
     assert findings[0].startswith("_TooWide: SQLite L1: tier_too_wide.amount: NUMERIC(20, 2)")
+
+
+def test_a_numeric_wider_than_the_default_decimal_context_is_sampled_whole() -> None:
+    findings = tier_parity_findings([_Widest])
+    assert [finding for finding in findings if "DuckDB" in finding] == [], findings
+    assert len(findings) == 1, findings
+    assert findings[0].startswith("_Widest: SQLite L1: tier_widest.amount: NUMERIC(38, 12)")
 
 
 def test_an_l2_codec_that_changes_a_type_is_named_per_column() -> None:

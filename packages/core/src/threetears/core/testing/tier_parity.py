@@ -27,7 +27,7 @@ import sqlite3
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Context, Decimal
 from typing import Any
 
 import asyncpg
@@ -104,8 +104,10 @@ def _sample(column: Column) -> Any:
     kind = column.column_type
     value: Any = None
     if kind == NUMERIC_TYPE and column.precision is not None and column.scale is not None:
-        # every digit the column holds, negative: a float or a narrower integer loses some of it
-        value = Decimal(-(10**column.precision - 1)).scaleb(-column.scale)
+        # every digit the column holds, negative: a float or a narrower integer loses some of it.
+        # the context carries the column's own precision: decimal's default 28 digits would round
+        # a wider value up past the column
+        value = Decimal(-(10**column.precision - 1)).scaleb(-column.scale, Context(prec=column.precision))
     elif kind == VECTOR_TYPE and column.vector_dim is not None:
         value = [0.5 if index % 2 else -0.25 for index in range(column.vector_dim)]
     elif kind == ENUM_TYPE and column.enum_type:
