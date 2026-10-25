@@ -83,7 +83,7 @@ class SoundnessRefusal(GenerationError):
     them recovers reaches the soundness chain looking complete. It is then a strong candidate
     for any ``_reject_*`` validator — and a refusal there would buy exactly the second full
     generation a truncation must never buy.
-    :func:`~threetears.evals.analysis.generator._reject_incomplete_generation` therefore runs
+    :func:`~threetears.evals.analysis.generation_round.reject_incomplete_generation` therefore runs
     before anything parses, so no cut-short result can reach a ``_reject_*`` validator at
     all. That ordering is now the only thing holding the boundary, which is why it is a
     chokepoint rather than a check at each call site.

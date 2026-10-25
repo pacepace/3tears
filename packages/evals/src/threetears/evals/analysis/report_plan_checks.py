@@ -117,7 +117,7 @@ from threetears.evals.analysis.report_input import Aspect, Judged, Measure, Repo
 from threetears.evals.kernel.report_plan import ChartSpec, OptionRow, ReportPlan, Signals, WarningRef
 from threetears.evals.schema.prose import field_is_prose
 
-__all__ = ["classify", "implied_disclosures", "raised_warnings", "validate_plan"]
+__all__ = ["MODE_SLOTS", "classify", "implied_disclosures", "raised_warnings", "validate_plan"]
 
 #: The ``meta.design_shape`` that marks the candidates as ordered versions of one thing.
 _ORDERED_VERSIONS = "ordered_versions"
@@ -134,7 +134,7 @@ _METHOD_KINDS = frozenset({"apparatus", "latency", "unreported"})
 _HEADLINE_KIND = {"decide": "decision", "tradeoff": "trade", "no_call": "no_call"}
 #: The decision slots each mode takes, in order. A no call takes decide mode's.
 _DECIDE_SLOTS = ("recommendation", "why_not", "watch", "next")
-_SLOTS = {
+MODE_SLOTS: dict[str, tuple[str, ...]] = {
     "decide": _DECIDE_SLOTS,
     "tradeoff": ("the_trade", "where_it_flips", "our_lean", "what_settles_it"),
     "no_call": _DECIDE_SLOTS,
@@ -245,7 +245,7 @@ def _log_cost_axis(report_input: ReportInput) -> bool:
         try:
             figure = resolve(f"cost_per_1k.{arm.id}", report_input)
         except UnresolvableReference:
-            continue  # this arm states no cost, so it spans nothing
+            continue  # NOSILENT: an arm that states no cost spans nothing; the cost axis is read over the others
         if isinstance(figure.value, float) and figure.value > 0:
             costs.append(figure.value)
     return len(costs) > 1 and max(costs) / min(costs) > _LOG_SPREAD
@@ -358,8 +358,11 @@ def _mode_faults(plan: ReportPlan) -> Iterator[_Fault]:
     if plan.headline_kind != _HEADLINE_KIND[mode]:
         yield "headline_kind", f"is {plan.headline_kind!r}, and a {mode} plan's headline is a {_HEADLINE_KIND[mode]!r}"
     keys = tuple(slot.key for slot in plan.decision.slots)
-    if keys != _SLOTS[mode]:
-        yield "decision.slots", f"are {list(keys)}, and a {mode} plan's slots are {list(_SLOTS[mode])}, in that order"
+    if keys != MODE_SLOTS[mode]:
+        yield (
+            "decision.slots",
+            f"are {list(keys)}, and a {mode} plan's slots are {list(MODE_SLOTS[mode])}, in that order",
+        )
     rows = plan.options.rows
     recommended = [index for index, row in enumerate(rows) if row.role == "recommended"]
     lean = [index for index, row in enumerate(rows) if row.role == "lean"]

@@ -8,7 +8,6 @@ enum and bound for bound, so neither copy drifts from what the package reads.
 from __future__ import annotations
 
 import json
-from copy import deepcopy
 from typing import Any, get_args
 
 import jsonschema
@@ -45,13 +44,22 @@ from threetears.evals.kernel.report_plan import (
 from threetears.evals.schema.prose import field_is_prose
 
 from packages.evals.tests.report_kit_support import KIT
+from packages.evals.tests.report_plan_support import (
+    CODE_FILLED,
+    CODE_FILLED_ON_A_CHART,
+    CODE_FILLED_PARTS,
+    R5_PLAN,
+    planned_reply,
+)
 
 DOCS_SCHEMA = KIT / "schema" / "report-plan.schema.json"
-R5_PLAN = KIT / "references" / "r5-kairo-round2.plan.json"
 
-#: The fields code fills on the stored plan, top level and on each chart.
-CODE_FILLED = frozenset({"schema", "signals", "shape", "masthead", "arms", "show_arms_key"})
-CODE_FILLED_ON_A_CHART = frozenset({"level", "unit", "domain"})
+#: Each unit code has a part of: the stored model, and the planner's model it completes.
+_COMPLETED: dict[type[BaseModel], type[BaseModel]] = {
+    Flag: report_plan.PlannedFlag,
+    Options: report_plan.PlannedOptions,
+    ChartReference: report_plan.PlannedChartReference,
+}
 
 #: Each object in the documentation schema, by where it sits, and the model it documents.
 DOCUMENTED: dict[tuple[str, ...], type[BaseModel]] = {
@@ -94,15 +102,17 @@ def _r5() -> dict[str, Any]:
 
 def _planned(plan: dict[str, Any]) -> dict[str, Any]:
     """A stored plan without the fields code fills: what the planner wrote."""
-    planned = {key: value for key, value in deepcopy(plan).items() if key not in CODE_FILLED}
-    for chart in [*planned["summary"], *(section["chart"] for section in planned["sections"])]:
-        for key in CODE_FILLED_ON_A_CHART:
-            del chart[key]
-    return planned
+    return planned_reply(plan)
 
 
 def _contract() -> dict[str, Any]:
-    schema: dict[str, Any] = report_plan.planner_response_format()["json_schema"]["schema"]
+    """The structure call's contract: where every choice the planner makes is sent."""
+    schema: dict[str, Any] = report_plan.structure_response_format()["json_schema"]["schema"]
+    return schema
+
+
+def _prose_contract() -> dict[str, Any]:
+    schema: dict[str, Any] = report_plan.prose_response_format()["json_schema"]["schema"]
     return schema
 
 
@@ -145,40 +155,100 @@ def _constraints(node: dict[str, Any]) -> dict[str, Any]:
     return found
 
 
-class TestThePlannersContract:
-    def test_the_strict_projection_succeeds_and_is_sent_strictly(self):
-        directive = report_plan.planner_response_format()
-        assert directive["type"] == "json_schema"
-        assert directive["json_schema"]["name"] == report_plan.PLAN_SCHEMA_NAME
-        assert directive["json_schema"]["strict"] is True
+_CONTRACTS = {"structure": _contract, "prose": _prose_contract}
 
-    def test_every_object_is_closed_and_fully_required(self):
-        for node in _walk(_contract()):
+
+class TestThePlannersContracts:
+    @pytest.mark.parametrize(
+        ("directive", "name"),
+        [
+            (report_plan.structure_response_format, report_plan.STRUCTURE_SCHEMA_NAME),
+            (report_plan.prose_response_format, report_plan.PROSE_SCHEMA_NAME),
+        ],
+    )
+    def test_each_strict_projection_succeeds_and_is_sent_strictly(self, directive: Any, name: str):
+        sent = directive()
+        assert sent["type"] == "json_schema"
+        assert sent["json_schema"]["name"] == name
+        assert sent["json_schema"]["strict"] is True
+
+    @pytest.mark.parametrize("which", list(_CONTRACTS))
+    def test_every_object_is_closed_and_fully_required(self, which: str):
+        for node in _walk(_CONTRACTS[which]()):
             if "properties" in node:
                 assert node["additionalProperties"] is False
                 assert set(node["required"]) == set(node["properties"])
 
-    def test_nothing_is_null_or_a_union(self):
-        sent = json.dumps(_contract())
+    @pytest.mark.parametrize("which", list(_CONTRACTS))
+    def test_nothing_is_null_or_a_union(self, which: str):
+        sent = json.dumps(_CONTRACTS[which]())
         assert '"anyOf"' not in sent and '"oneOf"' not in sent
         assert '"null"' not in sent, "absence is an empty string or a list of at most one, never null"
 
-    def test_a_reference_stands_alone(self):
-        refs = [node for node in _walk(_contract()) if "$ref" in node]
-        assert refs and all(set(node) == {"$ref"} for node in refs)
+    @pytest.mark.parametrize("which", list(_CONTRACTS))
+    def test_a_reference_stands_alone(self, which: str):
+        refs = [node for node in _walk(_CONTRACTS[which]()) if "$ref" in node]
+        assert all(set(node) == {"$ref"} for node in refs)
 
-    def test_the_contract_holds_no_field_code_fills(self):
+    def test_the_structure_holds_no_field_code_fills(self):
         # A chart query's `arms` is the planner's filter, not the stored plan's arm colours, so each code-filled
-        # name is looked for where code fills it: the top level, and a chart.
+        # name is looked for where code fills it: the top level, a chart, and each unit code has a part of.
         contract = _contract()
         assert not set(contract["properties"]) & CODE_FILLED
-        assert not set(contract["$defs"]["PlannedChart"]["properties"]) & CODE_FILLED_ON_A_CHART
+        assert not set(contract["$defs"]["StructureChart"]["properties"]) & CODE_FILLED_ON_A_CHART
+        for stored, planned in _COMPLETED.items():
+            if planned.__name__ in contract["$defs"]:
+                sent = set(contract["$defs"][planned.__name__]["properties"])
+                assert not sent & CODE_FILLED_PARTS[stored.__name__], planned.__name__
+
+    def test_the_structure_holds_no_prose(self):
+        """Every sentence goes through the prose call, so the structure's size never grows with the page's words."""
+
+        def models(model: type[BaseModel]) -> set[type[BaseModel]]:
+            found = {model}
+            for field in model.model_fields.values():
+                for arg in (field.annotation, *get_args(field.annotation)):
+                    if isinstance(arg, type) and issubclass(arg, BaseModel) and arg not in found:
+                        found |= models(arg)
+            return found
+
+        prose = [
+            (model.__name__, name)
+            for model in models(report_plan.PlanStructure)
+            for name, field in model.model_fields.items()
+            if field_is_prose(field)
+        ]
+        assert prose == []
+
+    def test_the_structure_holds_well_under_the_slots_every_writer_accepts(self):
+        """The memo's measured ceiling (``authored.SLOT_BUDGET``) holds the structure too, with room: growth fails
+        here rather than on a paid call a provider refuses as a grammar too large."""
+        slots = authored.count_slots(_contract())
+        assert slots <= authored.SLOT_BUDGET * 3 // 4, (
+            f"the planner's structure contract holds {slots} free-text and list slots, past three quarters of the "
+            f"budget of {authored.SLOT_BUDGET}; move a part code can decide into report_plan_facts, or prose into the "
+            "prose call"
+        )
+
+    def test_the_prose_contract_is_flat_however_many_sections_a_page_has(self):
+        assert authored.count_slots(_prose_contract()) == 3, "one list of {key, text}: the list, the key, the text"
+        assert set(_prose_contract()["properties"]) == {"prose"}
 
     def test_the_stored_plan_is_the_contract_plus_what_code_fills(self):
         planned = set(PlannedReport.model_fields)
         stored = {field.alias or name for name, field in ReportPlan.model_fields.items()}
         assert stored == planned | CODE_FILLED
         assert set(ChartSpec.model_fields) == set(report_plan.PlannedChart.model_fields) | CODE_FILLED_ON_A_CHART
+        for stored_unit, planned_unit in _COMPLETED.items():
+            assert (
+                set(stored_unit.model_fields)
+                == set(planned_unit.model_fields) | CODE_FILLED_PARTS[stored_unit.__name__]
+            ), stored_unit.__name__
+
+    def test_an_answer_names_its_warning_by_position_and_is_stored_by_the_warning(self):
+        assert report_plan.PlannedAnswer.model_fields["warning"].annotation is int
+        assert WarningAnswer.model_fields["warning"].annotation is WarningRef
+        assert set(report_plan.PlannedAnswer.model_fields) == set(WarningAnswer.model_fields)
 
     def test_the_planners_part_of_the_kairo_plan_is_a_valid_reply(self):
         PlannedReport.model_validate(_planned(_r5()))

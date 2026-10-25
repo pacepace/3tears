@@ -289,9 +289,7 @@ def _criterion_figures(report_input: ReportInput, criterion: Criterion, arm: str
     if criterion.scope == "each_cell":
         holders = [cell.per_arm.get(arm, {}) for cell in report_input.cells.values()]
     elif criterion.scope == "each_task" or criterion.task is not None:
-        holders = [
-            task.per_arm.get(arm, {}) for task in report_input.tasks if criterion.task in (None, task.id)
-        ]
+        holders = [task.per_arm.get(arm, {}) for task in report_input.tasks if criterion.task in (None, task.id)]
     else:
         for table in (report_input.measures, report_input.judged):
             figures = table.get(criterion.measure)
@@ -326,9 +324,7 @@ def surviving_options(report_input: ReportInput) -> list[str]:
     """
     gates = [criterion for criterion in report_input.criteria if criterion.kind in ("gate", "guardrail")]
     breached = {
-        str(guardrail.get("arm"))
-        for guardrail in report_input.guardrails
-        if guardrail.get("decision") == "breached"
+        str(guardrail.get("arm")) for guardrail in report_input.guardrails if guardrail.get("decision") == "breached"
     }
     return [
         arm.id
@@ -379,9 +375,7 @@ def _floor_status(read: FloorRead, overrides: _Overrides) -> str:
     return "broken" if -high >= margin else "unclear"
 
 
-def _floors_not_held(
-    report_input: ReportInput, arm: str, asked: Sequence[Aspect], overrides: _Overrides
-) -> list[str]:
+def _floors_not_held(report_input: ReportInput, arm: str, asked: Sequence[Aspect], overrides: _Overrides) -> list[str]:
     clauses: list[str] = []
     for aspect in asked:
         floors = list(dict.fromkeys(floor.floor for floor in report_input.floors if floor.aspect == aspect.id))
@@ -488,7 +482,9 @@ def _costs(report_input: ReportInput) -> dict[str, float]:
     if len(dollars) != 1:
         return {}
     key = dollars[0]
-    stated = {arm: float(stat.mean) for arm, stat in report_input.measures[key].per_arm.items() if stat.mean is not None}
+    stated = {
+        arm: float(stat.mean) for arm, stat in report_input.measures[key].per_arm.items() if stat.mean is not None
+    }
     if stated:
         return stated
     blended: dict[str, float] = {}
