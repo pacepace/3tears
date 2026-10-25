@@ -23,7 +23,12 @@ from threetears.core.data.migrations import MigrationRunner
 from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
 from threetears.langgraph.checkpoint_scope import CheckpointScope
 from threetears.langgraph.migrations import register as register_langgraph
-from threetears.langgraph.protocols import AsyncpgPoolAdapter, CheckpointL2Cache, CheckpointL2ValueLimit
+from threetears.langgraph.protocols import (
+    AsyncpgPoolAdapter,
+    CheckpointL2Cache,
+    CheckpointL2RevisionCache,
+    CheckpointL2ValueLimit,
+)
 from threetears.nats import NatsClient, set_default_namespace
 
 pytestmark = pytest.mark.integration
@@ -123,8 +128,36 @@ class _NatsKvL2Cache(CheckpointL2Cache):
         await (await self.nc.kv_bucket(name=bucket)).delete(key=key)
 
 
-class _LimitedNatsKvL2Cache(_NatsKvL2Cache, CheckpointL2ValueLimit):
-    """the same cache stating the server's advertised ``max_payload`` as its value limit."""
+class _FencedNatsKvL2Cache(_NatsKvL2Cache, CheckpointL2RevisionCache, CheckpointL2ValueLimit):
+    """the same cache with the bucket's revision-fenced write and the server's ``max_payload`` as its limit."""
+
+    async def get_latest(self, bucket: str, key: str) -> tuple[bytes | None, int]:
+        """the value and the key's latest revision, a deletion included.
+
+        :param bucket: bucket suffix
+        :ptype bucket: str
+        :param key: cache key
+        :ptype key: str
+        :return: value or None, and the revision
+        :rtype: tuple[bytes | None, int]
+        """
+        return await (await self.nc.kv_bucket(name=bucket)).get_latest(key=key)
+
+    async def update(self, bucket: str, key: str, value: bytes, revision: int) -> int | None:
+        """write only while the key's latest revision is ``revision``.
+
+        :param bucket: bucket suffix
+        :ptype bucket: str
+        :param key: cache key
+        :ptype key: str
+        :param value: bytes to store
+        :ptype value: bytes
+        :param revision: expected revision
+        :ptype revision: int
+        :return: the new revision, or None when the key changed
+        :rtype: int | None
+        """
+        return await (await self.nc.kv_bucket(name=bucket)).update(key=key, value=value, revision=revision)
 
     @property
     def max_value_bytes(self) -> int | None:
@@ -134,6 +167,63 @@ class _LimitedNatsKvL2Cache(_NatsKvL2Cache, CheckpointL2ValueLimit):
         :rtype: int | None
         """
         return self.nc.max_payload
+
+
+class _InterleavingExecutor:
+    """the real executor, running ``between`` after the first latest-checkpoint query and before it answers.
+
+    Makes the refill race deterministic: the reader's query has read the older checkpoint, a writer
+    lands a newer one in Postgres and L2, and only then does the reader go on to refill.
+    """
+
+    def __init__(self, inner: AsyncpgPoolAdapter) -> None:
+        """wrap ``inner``.
+
+        :param inner: the real executor
+        :ptype inner: AsyncpgPoolAdapter
+        """
+        self.inner = inner
+        self.between: Any = None
+
+    async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
+        """delegate.
+
+        :param query: SQL
+        :ptype query: str
+        :param args: parameters
+        :ptype args: object
+        :return: rows
+        :rtype: list[dict[str, Any]]
+        """
+        return await self.inner.fetch(query, *args)
+
+    async def fetchrow(self, query: str, *args: object) -> dict[str, Any] | None:
+        """delegate, then run ``between`` once if this was the latest-checkpoint query.
+
+        :param query: SQL
+        :ptype query: str
+        :param args: parameters
+        :ptype args: object
+        :return: the row the real query returned
+        :rtype: dict[str, Any] | None
+        """
+        row = await self.inner.fetchrow(query, *args)
+        if self.between is not None and "ORDER BY checkpoint_id DESC" in query:
+            between, self.between = self.between, None
+            await between()
+        return row
+
+    async def execute(self, query: str, *args: object) -> str:
+        """delegate.
+
+        :param query: SQL
+        :ptype query: str
+        :param args: parameters
+        :ptype args: object
+        :return: status tag
+        :rtype: str
+        """
+        return await self.inner.execute(query, *args)
 
 
 @pytest.fixture
@@ -194,7 +284,7 @@ def _checkpoint(checkpoint_id: str, value: str = "small") -> dict[str, Any]:
 _CONFIG: dict[str, Any] = {"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}}
 
 
-@pytest.mark.parametrize("cache", [_LimitedNatsKvL2Cache, _NatsKvL2Cache], ids=["limit-stated", "put-refused"])
+@pytest.mark.parametrize("cache", [_FencedNatsKvL2Cache, _NatsKvL2Cache], ids=["limit-stated", "put-refused"])
 async def test_the_next_worker_reads_the_oversized_checkpoint_from_postgres(
     executor: AsyncpgPoolAdapter, nc: NatsClient, cache: type[_NatsKvL2Cache]
 ) -> None:
@@ -217,12 +307,12 @@ async def test_the_next_worker_reads_the_oversized_checkpoint_from_postgres(
 async def test_a_read_pinned_to_an_older_checkpoint_leaves_the_latest_cached(
     executor: AsyncpgPoolAdapter, nc: NatsClient
 ) -> None:
-    writer = ThreeTierCheckpointSaver(executor, l2_cache=_LimitedNatsKvL2Cache(nc), l2_bucket=_BUCKET, scope=_UNSCOPED)
+    writer = ThreeTierCheckpointSaver(executor, l2_cache=_FencedNatsKvL2Cache(nc), l2_bucket=_BUCKET, scope=_UNSCOPED)
     first = await writer.aput(_CONFIG, _checkpoint("cp-1"), {}, {})
     await writer.aput(first, _checkpoint("cp-2"), {}, {})
 
     pinned_reader = ThreeTierCheckpointSaver(
-        executor, l2_cache=_LimitedNatsKvL2Cache(nc), l2_bucket=_BUCKET, scope=_UNSCOPED
+        executor, l2_cache=_FencedNatsKvL2Cache(nc), l2_bucket=_BUCKET, scope=_UNSCOPED
     )
     pinned = await pinned_reader.aget_tuple({"configurable": {**_CONFIG["configurable"], "checkpoint_id": "cp-1"}})
     assert pinned is not None and pinned.checkpoint["id"] == "cp-1"
@@ -231,7 +321,36 @@ async def test_a_read_pinned_to_an_older_checkpoint_leaves_the_latest_cached(
     assert cached is not None
     assert writer.deserialize_checkpoint_tuple(cached)["checkpoint"]["id"] == "cp-2"
     latest_reader = ThreeTierCheckpointSaver(
-        executor, l2_cache=_LimitedNatsKvL2Cache(nc), l2_bucket=_BUCKET, scope=_UNSCOPED
+        executor, l2_cache=_FencedNatsKvL2Cache(nc), l2_bucket=_BUCKET, scope=_UNSCOPED
     )
     latest = await latest_reader.aget_tuple(_CONFIG)
     assert latest is not None and latest.checkpoint["id"] == "cp-2"
+
+
+async def test_an_older_refill_cannot_replace_a_newer_checkpoint(executor: AsyncpgPoolAdapter, nc: NatsClient) -> None:
+    """the race: a reader's query reads cp-1, a writer lands cp-2, then the reader refills; cp-2 must stand."""
+    writer = ThreeTierCheckpointSaver(executor, l2_cache=_FencedNatsKvL2Cache(nc), l2_bucket=_BUCKET, scope=_UNSCOPED)
+    first = await writer.aput(_CONFIG, _checkpoint("cp-1"), {}, {})
+    bucket = await nc.kv_bucket(name=_BUCKET)
+    await bucket.delete(key="t-1")  # an evicted entry: the reader misses L2 and reads Postgres
+
+    interleaving = _InterleavingExecutor(executor)
+
+    async def _a_newer_checkpoint_lands() -> None:
+        await writer.aput(first, _checkpoint("cp-2"), {}, {})
+
+    interleaving.between = _a_newer_checkpoint_lands
+    reader = ThreeTierCheckpointSaver(
+        interleaving,  # type: ignore[arg-type]
+        l2_cache=_FencedNatsKvL2Cache(nc),
+        l2_bucket=_BUCKET,
+        scope=_UNSCOPED,
+    )
+    read = await reader.aget_tuple(_CONFIG)
+    assert read is not None and read.checkpoint["id"] == "cp-1", "the interleaving did not happen"
+
+    fresh = ThreeTierCheckpointSaver(executor, l2_cache=_FencedNatsKvL2Cache(nc), l2_bucket=_BUCKET, scope=_UNSCOPED)
+    latest = await fresh.aget_tuple(_CONFIG)
+    assert latest is not None and latest.checkpoint["id"] == "cp-2", "the older refill replaced the newer checkpoint"
+    cached = await bucket.get(key="t-1")
+    assert cached is not None and writer.deserialize_checkpoint_tuple(cached)["checkpoint"]["id"] == "cp-2"

@@ -24,6 +24,15 @@ does not attempt a put over it; it deletes the key and logs one WARNING with `si
 a member of `CheckpointL2Cache`, so adapters written against that one still satisfy it; without the
 limit the saver still deletes the key after the refused put.
 
+**Fixed:** the refill of L2 after a Postgres read could land after another worker's newer checkpoint
+and replace it, serving the older one to every worker whose L1 missed. The saver now reads the L2
+key's revision before the Postgres query and refills at that revision, so any write or deletion since
+refuses the refill (and then L1 is not given the older checkpoint either). This needs the new
+optional protocol `threetears.langgraph.CheckpointL2RevisionCache` (`get_latest(bucket, key)` and
+`update(bucket, key, value, revision)`, which a NATS-backed cache delegates to `NatsKvBucket`'s
+methods of the same names). **A cache without it is no longer refilled from a read at all**: only
+`aput` writes L2, and the next write refills it.
+
 ### nats: an oversized KV value is not retried through a bucket re-open
 
 **Fixed:** `NatsKvBucket` re-raises nats-py's `MaxPayloadError` instead of treating it as a transport

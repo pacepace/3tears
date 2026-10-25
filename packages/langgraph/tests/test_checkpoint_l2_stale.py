@@ -19,7 +19,7 @@ import pytest
 
 from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
 from threetears.langgraph.checkpoint_scope import CheckpointScope
-from threetears.langgraph.protocols import CheckpointL2Cache, CheckpointL2ValueLimit
+from threetears.langgraph.protocols import CheckpointL2Cache, CheckpointL2RevisionCache, CheckpointL2ValueLimit
 
 _UNSCOPED = CheckpointScope.unscoped(reason="tests pin the un-tenanted keyspace")
 
@@ -143,6 +143,116 @@ class _LimitedL2Cache(_DictL2Cache, CheckpointL2ValueLimit):
         return self.limit
 
 
+class _RevisionDictL2Cache(_DictL2Cache, CheckpointL2RevisionCache):
+    """a dict L2 that keeps a revision per key, a deletion included, as a NATS KV bucket does."""
+
+    def __init__(self) -> None:
+        """start empty at revision 0.
+
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__()
+        self.revisions: dict[str, int] = {}
+        self.sequence = 0
+        self.updates: list[tuple[str, int, bool]] = []
+
+    def _bump(self, key: str) -> int:
+        """advance the bucket's sequence and make it ``key``'s revision.
+
+        :param key: the key written or deleted
+        :ptype key: str
+        :return: the new revision
+        :rtype: int
+        """
+        self.sequence += 1
+        self.revisions[key] = self.sequence
+        return self.sequence
+
+    async def put(self, bucket: str, key: str, value: bytes) -> None:
+        """write a value at a new revision.
+
+        :param bucket: bucket name
+        :ptype bucket: str
+        :param key: cache key
+        :ptype key: str
+        :param value: bytes to store
+        :ptype value: bytes
+        :return: nothing
+        :rtype: None
+        """
+        await super().put(bucket, key, value)
+        self._bump(key)
+
+    async def delete(self, bucket: str, key: str) -> None:
+        """drop a key, leaving a deletion at a new revision.
+
+        :param bucket: bucket name
+        :ptype bucket: str
+        :param key: cache key
+        :ptype key: str
+        :return: nothing
+        :rtype: None
+        """
+        await super().delete(bucket, key)
+        self._bump(key)
+
+    async def get_latest(self, bucket: str, key: str) -> tuple[bytes | None, int]:
+        """the value and the key's latest revision.
+
+        :param bucket: bucket name
+        :ptype bucket: str
+        :param key: cache key
+        :ptype key: str
+        :return: value or None, and the revision (0 for a key never written)
+        :rtype: tuple[bytes | None, int]
+        """
+        self.gets.append(key)
+        return self.store.get(key), self.revisions.get(key, 0)
+
+    async def update(self, bucket: str, key: str, value: bytes, revision: int) -> int | None:
+        """write only while the key's revision is ``revision``.
+
+        :param bucket: bucket name
+        :ptype bucket: str
+        :param key: cache key
+        :ptype key: str
+        :param value: bytes to store
+        :ptype value: bytes
+        :param revision: the expected current revision
+        :ptype revision: int
+        :return: the new revision, or None when the key changed
+        :rtype: int | None
+        """
+        landed = self.revisions.get(key, 0) == revision
+        self.updates.append((key, revision, landed))
+        if not landed:
+            return None
+        self.store[key] = value
+        return self._bump(key)
+
+
+def _row(saver: ThreeTierCheckpointSaver, checkpoint_id: str) -> dict[str, Any]:
+    """an L3 checkpoint row for ``checkpoint_id``, serialized the way aput stores it.
+
+    :param saver: the saver whose serde encodes the row
+    :ptype saver: ThreeTierCheckpointSaver
+    :param checkpoint_id: the checkpoint's id
+    :ptype checkpoint_id: str
+    :return: the row as the executor returns it
+    :rtype: dict[str, Any]
+    """
+    cp_type, cp_blob = saver.serde.dumps_typed(_checkpoint(checkpoint_id))
+    _md_type, md_blob = saver.serde.dumps_typed({})
+    return {
+        "checkpoint_id": checkpoint_id,
+        "parent_checkpoint_id": None,
+        "type": cp_type,
+        "checkpoint": cp_blob,
+        "metadata_": md_blob,
+    }
+
+
 class TestAnOversizedBlobIsNotCached:
     """a blob over the cache's stated limit deletes the entry instead of attempting a doomed put."""
 
@@ -247,34 +357,14 @@ class TestAFailedPutDeletesTheEntry:
 class TestAPinnedReadDoesNotWarmTheCache:
     """the cache keys are read as "latest", so only a read of the latest checkpoint may fill them."""
 
-    @staticmethod
-    def _row(saver: ThreeTierCheckpointSaver, checkpoint_id: str) -> dict[str, Any]:
-        """an L3 checkpoint row for ``checkpoint_id``, serialized the way aput stores it.
-
-        :param saver: the saver whose serde encodes the row
-        :ptype saver: ThreeTierCheckpointSaver
-        :param checkpoint_id: the checkpoint's id
-        :ptype checkpoint_id: str
-        :return: the row as the executor returns it
-        :rtype: dict[str, Any]
-        """
-        cp_type, cp_blob = saver.serde.dumps_typed(_checkpoint(checkpoint_id))
-        _md_type, md_blob = saver.serde.dumps_typed({})
-        return {
-            "checkpoint_id": checkpoint_id,
-            "parent_checkpoint_id": None,
-            "type": cp_type,
-            "checkpoint": cp_blob,
-            "metadata_": md_blob,
-        }
-
     async def test_a_read_pinned_to_an_older_checkpoint_leaves_latest_cached(self) -> None:
-        l2 = _DictL2Cache()
-        l2.store["t-1"] = b"latest checkpoint"
+        l2 = _RevisionDictL2Cache()
+        await l2.put(_BUCKET, "t-1", b"latest checkpoint")
+        l2.puts.clear()
         l1 = AsyncMock()
         executor = _make_executor()
         saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
-        executor.fetchrow.return_value = self._row(saver, "cp-1")
+        executor.fetchrow.return_value = _row(saver, "cp-1")
 
         tup = await saver.aget_tuple(
             {"configurable": {"thread_id": "t-1", "checkpoint_ns": "", "checkpoint_id": "cp-1"}}
@@ -282,20 +372,118 @@ class TestAPinnedReadDoesNotWarmTheCache:
 
         assert tup is not None and tup.checkpoint["id"] == "cp-1"
         assert l2.store["t-1"] == b"latest checkpoint"
-        assert l2.puts == []
+        assert l2.puts == [] and l2.updates == []
         l1.put.assert_not_awaited()
 
     async def test_a_read_of_the_latest_checkpoint_warms_both_caches(self) -> None:
         """the counterpart: the guard stops the pinned read only, not every warm."""
-        l2 = _DictL2Cache()
+        l2 = _RevisionDictL2Cache()
         l1 = AsyncMock()
         l1.get.return_value = None
         executor = _make_executor()
         saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
-        executor.fetchrow.return_value = self._row(saver, "cp-2")
+        executor.fetchrow.return_value = _row(saver, "cp-2")
 
         tup = await saver.aget_tuple({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}})
 
         assert tup is not None and tup.checkpoint["id"] == "cp-2"
         assert saver.deserialize_checkpoint_tuple(l2.store["t-1"])["checkpoint"]["id"] == "cp-2"
         l1.put.assert_awaited_once()
+
+
+class TestARefillCannotReplaceANewerCheckpoint:
+    """a refill from an L3 read lands only if nothing reached the key since the revision read before it."""
+
+    async def test_an_older_refill_landing_after_a_newer_put_leaves_the_newer_one(self) -> None:
+        """the race, made deterministic: the newer put lands while the reader's query is running."""
+        l2 = _RevisionDictL2Cache()
+        reader_l1 = AsyncMock()
+        reader_l1.get.return_value = None
+        executor = _make_executor()
+        writer = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=l2, scope=_UNSCOPED)
+        reader = ThreeTierCheckpointSaver(executor=executor, l1_cache=reader_l1, l2_cache=l2, scope=_UNSCOPED)
+        config = {"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}}
+        older_row = _row(reader, "cp-1")
+
+        async def _query_then_a_newer_write_lands(*_args: object) -> dict[str, Any]:
+            await writer.aput(config, _checkpoint("cp-2"), {}, {})
+            return older_row
+
+        executor.fetchrow.side_effect = _query_then_a_newer_write_lands
+
+        tup = await reader.aget_tuple(config)
+
+        assert tup is not None and tup.checkpoint["id"] == "cp-1", "the reader answers with what it read"
+        assert reader.deserialize_checkpoint_tuple(l2.store["t-1"])["checkpoint"]["id"] == "cp-2", (
+            "the older refill replaced the newer checkpoint in L2"
+        )
+        reader_l1.put.assert_not_awaited()
+        fresh = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=l2, scope=_UNSCOPED)
+        fresh_tup = await fresh.aget_tuple(config)
+        assert fresh_tup is not None and fresh_tup.checkpoint["id"] == "cp-2"
+
+    async def test_a_refill_after_a_deletion_since_the_read_writes_nothing(self) -> None:
+        """a delete (a failed put's, a purge's) since the read refuses the refill too: create-if-absent would not."""
+        l2 = _RevisionDictL2Cache()
+        executor = _make_executor()
+        reader = ThreeTierCheckpointSaver(executor=executor, l2_cache=l2, scope=_UNSCOPED)
+        older_row = _row(reader, "cp-1")
+
+        async def _query_then_the_key_is_deleted(*_args: object) -> dict[str, Any]:
+            await l2.put(_BUCKET, "t-1", b"newer")
+            await l2.delete(_BUCKET, "t-1")
+            return older_row
+
+        executor.fetchrow.side_effect = _query_then_the_key_is_deleted
+
+        await reader.aget_tuple({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}})
+
+        assert "t-1" not in l2.store
+
+    async def test_a_cache_that_cannot_fence_is_not_refilled_from_a_read(self) -> None:
+        """without get_latest/update only aput writes L2; L1 is still warmed."""
+        l2 = _DictL2Cache()
+        l1 = AsyncMock()
+        l1.get.return_value = None
+        executor = _make_executor()
+        saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
+        executor.fetchrow.return_value = _row(saver, "cp-1")
+
+        await saver.aget_tuple({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}})
+
+        assert l2.puts == [] and l2.store == {}
+        l1.put.assert_awaited_once()
+
+    async def test_an_oversized_refill_writes_nothing_and_deletes_nothing(self) -> None:
+        l2 = _RevisionLimitedL2Cache(limit=1)
+        executor = _make_executor()
+        saver = ThreeTierCheckpointSaver(executor=executor, l2_cache=l2, scope=_UNSCOPED)
+        executor.fetchrow.return_value = _row(saver, "cp-1")
+
+        await saver.aget_tuple({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}})
+
+        assert l2.updates == [] and l2.revisions == {}
+
+
+class _RevisionLimitedL2Cache(_RevisionDictL2Cache, CheckpointL2ValueLimit):
+    """a fencing dict L2 with a stated value limit."""
+
+    def __init__(self, limit: int | None) -> None:
+        """start empty with ``limit`` as the stated maximum.
+
+        :param limit: the largest value accepted, or None for unknown
+        :ptype limit: int | None
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__()
+        self.limit = limit
+
+    @property
+    def max_value_bytes(self) -> int | None:
+        """the stated limit.
+
+        :return: the limit, or None when unknown
+        :rtype: int | None
+        """
+        return self.limit

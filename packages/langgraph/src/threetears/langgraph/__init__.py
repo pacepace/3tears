@@ -107,6 +107,7 @@ from threetears.langgraph.protocols import (
     CheckpointL1Cache,
     CheckpointL2Cache,
     CheckpointL2PrefixCache,
+    CheckpointL2RevisionCache,
     CheckpointL2ValueLimit,
     FlushCallback,
 )
@@ -157,6 +158,7 @@ __all__ = [
     "CheckpointL1Cache",
     "CheckpointL2Cache",
     "CheckpointL2PrefixCache",
+    "CheckpointL2RevisionCache",
     "CheckpointL2ValueLimit",
     "CheckpointScope",
     "ContextMergeMiddleware",
