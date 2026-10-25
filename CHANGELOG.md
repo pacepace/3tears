@@ -8,6 +8,12 @@ packages (bumped in lock-step).
 
 ## v0.78.0 -- 2026-10-24
 
+### models: the bare registry entry is readable without lifting the layers above it
+
+**Added:** `threetears.models.get_registered_capabilities(model_id)` returns a model's static registry entry,
+with no published facts or override applied, read under the registry lock. A caller that needed it lifted both
+layers off for one `get_capabilities` read and put them back, which another thread could read in between.
+
 ### core, datasources, scheduled-jobs: a declared collection derives its row types and write columns from its schema
 
 A `DeclaredTableCollection` kept a hand-written field-type map for its L2 codec and hand-written INSERT/UPSERT
