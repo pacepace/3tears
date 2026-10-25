@@ -8,6 +8,24 @@ packages (bumped in lock-step).
 
 ## v0.78.0 -- 2026-10-24
 
+### core: exact NUMERIC operands, immutable read-back, NaN-safe reads and answers, Decimal from L2 numbers
+
+**Fixed:** a `DeclaredTableCollection` write that named an `immutable` column cached the value it sent, while
+the update kept the stored one: after a second save of a hub `gateway_credit_rates` row, L3 held the first
+`date_created` and L1 and L2 the second. `columns_decided_by_store` now counts an `immutable` column the row
+carries, so the write reads it back from L3.
+
+**Fixed:** a row whose `NUMERIC` column holds Postgres `'NaN'` (or an infinity) made `get()` raise, since an
+exact L1 cannot hold it as a scaled integer. Such a row is served from L3 with no L1 copy (one held under its
+key is dropped), and the first is logged. `stored_decimal` raises `NonFiniteNumericError` (a `ValueError`,
+new in `threetears.core.cache.base`) for it.
+
+**Fixed:** an L2 `NUMERIC` field held as a JSON number (a writer that passed a float, or a pod whose L1 held
+`REAL`) decoded as a `float` through `deserialize_from_json`, the `DeclaredTableCollection` default codec, and
+`Decimal * float` raised. A `Decimal` field is now a `Decimal` whether the JSON holds a string or a number, so
+values older pods wrote decode too. `tier_parity_findings` also sends each `NUMERIC` through the L2 codec as a
+`float` and expects its `Decimal` back.
+
 ### models: the bare registry entry is readable without lifting the layers above it
 
 **Added:** `threetears.models.get_registered_capabilities(model_id)` returns a model's static registry entry,
@@ -27,7 +45,8 @@ column's Python type), `datetime_columns`, `insert_columns` (every written colum
 format of `serialize_to_json`, unchanged). `write_row(data, *, conn=None)` writes the upsert built from those
 lists: only the columns the row carries, `ON CONFLICT` on `conflict_columns` (the primary key unless the class
 names a natural key, when it returns the stored key and calls `settle_stored_key`), a plain `UPDATE` for a row
-short of a `NOT NULL` column, raising `RowCannotBeInsertedError` (a `RuntimeError`) when that finds no row.
+short of a `NOT NULL` column, raising `RowCannotBeInsertedError` (a `RuntimeError`, exported from
+`threetears.core.collections`) when that finds no row.
 `write_statement(data)` returns the statement and parameters without running it.
 
 **Changed:** a class that still states `datetime_columns`, `field_types`, `insert_columns` or `update_columns`
@@ -58,8 +77,14 @@ read through L1 was a float and `Decimal * float` raised. An exact `NUMERIC(p, s
 holding the value times `10**s` (`9.50` in `NUMERIC(12, 2)` is `950`), read back as the `Decimal` at scale `s`
 L3 answers, rounded as Postgres rounds. It is exact, and SQL run against L1 directly compares, sorts, takes
 `MIN`/`MAX` and sums it by value (a `SUM` is the scaled total; `deserialize_field` turns it back into the
-`Decimal`); an operand compared with it is scaled through `serialize_value` first. A `Float` column stays a
-float. The DuckDB L1 keeps `NUMERIC(p, s)` as a native `DECIMAL(p, s)`.
+`Decimal`). A `SUM` holds only while the scaled total fits a 64-bit integer (`2**63 - 1`, so
+`92233720368547.75807` at scale 5; ten of `NUMERIC(18, 2)`'s largest values pass it): past it `execute_query`
+raises `OverflowError` naming the column, not SQLite's bare "integer overflow"; sum such columns in L3. Compare
+the column with an operand through `SQLiteBackend.numeric_comparison(column_sql, operator, value, col_type)`,
+which returns the condition and its parameters: it bounds the scaled column by the operand exactly (`> v` is
+`> floor(v * 10**s)`, `>= v` is `>= ceil(...)`, and so on), never rounded to the column's scale, so
+`price > 9.995` against `10.00` is true, as in L3. `serialize_value` rounds to the scale, as a stored value
+is, and is not for operands. A `Float` column stays a float. The DuckDB L1 keeps `NUMERIC(p, s)` as a native `DECIMAL(p, s)`.
 
 **Changed:** an L1 refuses, when its table is created, a `NUMERIC` it cannot hold exactly: one with no declared
 precision and scale, or wider than 18 digits in SQLite (a 64-bit integer) or 38 in DuckDB. It raises
@@ -68,7 +93,8 @@ creates the table. Nothing is kept as a binary float any more. A dynamic collect
 (`create_dynamic_collection`) with a `decimal` column, which declares no scale, is refused on a registry with an
 L1. A DuckDB L1 whose `NUMERIC(p, s)` columns were `DOUBLE` now answers `Decimal` for them. `answer_json`
 writes a `Decimal` as the JSON number its `float` writes, so an answer built from those columns reads on the
-wire as it did when they were floats, not as a quoted string. `tier_parity_findings` checks a collection with
+wire as it did when they were floats, not as a quoted string. A `NaN` or infinite `Decimal` or `float` it writes
+as `null`, since JSON has no number for it (it wrote `NaN` and `Infinity`, which no JSON parser reads). `tier_parity_findings` checks a collection with
 `caches_in_l1 = False` on its L2 codec alone.
 
 **Fixed:** `ScheduledJobCollection` and `JobFireCollection` wrote past `save_entity` and evicted nothing:
@@ -94,8 +120,9 @@ table's columns, nullability and defaults.
 own SQL over a table it declares as `schema: ClassVar[TableSchema]`. From the schema it takes its key
 (`primary_key_column`, refused at class definition if declared otherwise), its instants (`datetime_columns`)
 and its `table_name`; it creates its L1 table on the registry's L1 at construction; it answers
-`columns_decided_by_store` (a declared column the write leaves out, or a `NOT NULL` default sent as `None`, is
-read back from L3 after the write); and `settle_stored_key(sent, stored, *, conn=None)`, called from a
+`columns_decided_by_store` (a declared column the write leaves out, a `NOT NULL` default sent as `None`, or an
+`immutable` or `insert_only_columns` column the write names, whose stored value an update keeps, is read back
+from L3 after the write); and `settle_stored_key(sent, stored, *, conn=None)`, called from a
 natural-key upsert's `save_to_store` with the key its `RETURNING` gave, evicts a row stored under another key
 and caches nothing under the key sent. `threetears.core.cache.base` adds `exact_decimal_type`,
 `stored_decimal` and `UnsupportedL1ColumnError`, which both L1 backends type and refuse `NUMERIC` columns by.

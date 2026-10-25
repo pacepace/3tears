@@ -9,9 +9,13 @@ An exact ``NUMERIC(p, s)`` column is kept as an ``INTEGER``: its value scaled by
 (``9.50`` in ``NUMERIC(12, 2)`` is ``950``), and read back as the ``Decimal`` at scale ``s`` that L3
 answers (type code ``INTEGER_DECIMAL_<s>``). Being an integer it is exact, and compares, sorts, takes
 ``MIN`` / ``MAX`` and sums correctly in SQL run against L1 directly; a ``SUM`` is the scaled total,
-exact, which :meth:`SQLiteBackend.deserialize_field` turns back into the ``Decimal``. An operand
-compared with such a column in that SQL is scaled the same way first, through
-:meth:`SQLiteBackend.serialize_value` with the column's code. A ``NUMERIC`` wider than 18 digits
+exact, which :meth:`SQLiteBackend.deserialize_field` turns back into the ``Decimal``. A ``SUM`` holds
+only while the scaled total stays within a 64-bit integer (``2**63 - 1``, so ``92233720368547.75807``
+at scale 5); past it :meth:`SQLiteBackend.execute_query` raises ``OverflowError`` naming the column.
+Compare such a column with an operand through :meth:`SQLiteBackend.numeric_comparison`, which bounds
+the scaled column by the operand exactly, never rounded to the column's scale: ``price > 9.995``
+against ``10.00`` is true, as in L3. :meth:`SQLiteBackend.serialize_value` rounds to the scale, as a
+stored value is, and is not for operands. A ``NUMERIC`` wider than 18 digits
 cannot fit a 64-bit integer, and one with no declared precision and scale has no scale to keep, so
 either is refused when its table is created (:class:`~threetears.core.cache.base.UnsupportedL1ColumnError`).
 SQLite's own ``NUMERIC`` and ``REAL`` are binary floats: money read back from them is a ``float``,
@@ -27,7 +31,7 @@ import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
-from decimal import Decimal
+from decimal import MAX_EMAX, MIN_EMIN, ROUND_CEILING, ROUND_FLOOR, Context, Decimal
 from types import MappingProxyType
 from typing import Any
 
@@ -72,6 +76,17 @@ log = get_logger(__name__)
 _DECIMAL_CODE = "INTEGER_DECIMAL"
 #: the widest exact ``NUMERIC`` whose scaled value always fits SQLite's 64-bit ``INTEGER``
 _SQLITE_MAX_DECIMAL_PRECISION = 18
+#: SQLite's largest ``INTEGER``; every stored scaled value is under ``10**18``, well inside it
+_SQLITE_MAX_INTEGER = 2**63 - 1
+#: what an operator in :meth:`SQLiteBackend.numeric_comparison` answers for an operand above
+#: every finite value (``NaN``, which Postgres sorts above all, or ``Infinity``); below every one,
+#: ``-Infinity``, it answers the opposite of each but ``=`` and ``!=``
+_ABOVE_EVERY_VALUE: Mapping[str, bool] = MappingProxyType(
+    {"=": False, "!=": True, "<>": True, "<": True, "<=": True, ">": False, ">=": False}
+)
+_BELOW_EVERY_VALUE: Mapping[str, bool] = MappingProxyType(
+    {"=": False, "!=": True, "<>": True, "<": False, "<=": False, ">": True, ">=": True}
+)
 
 
 def _decimal_code_scale(col_type: str) -> int | None:
@@ -523,18 +538,95 @@ class SQLiteBackend:
         """
         conn = self.get_connection()
         conn.row_factory = sqlite3.Row
-        cursor = conn.execute(sql, params)
-        rows = cursor.fetchall()
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.OperationalError as exc:
+            columns = self._numeric_columns_in(sql) if str(exc) == "integer overflow" else ()
+            if not columns:
+                raise
+            raise OverflowError(
+                f"a total of the exact NUMERIC column(s) {', '.join(columns)} passed SQLite's 64-bit integer "
+                f"(2**63 - 1, scaled by 10**scale): this L1 cannot sum them; sum them in L3"
+            ) from exc
         if not rows:
             return []
         return [dict(row) for row in rows]
+
+    def _numeric_columns_in(self, sql: str) -> tuple[str, ...]:
+        """every exact ``NUMERIC`` column, as ``table.column``, whose table and column ``sql`` names.
+
+        :param sql: a statement
+        :ptype sql: str
+        :return: the columns, in table then declared order
+        :rtype: tuple[str, ...]
+        """
+        return tuple(
+            f"{table}.{column}"
+            for table, columns in self._schema_info.items()
+            if table in sql
+            for column, code in columns.items()
+            if column in sql and _decimal_code_scale(code) is not None
+        )
+
+    def numeric_comparison(
+        self, column_sql: str, operator: str, value: Any, col_type: str
+    ) -> tuple[str, tuple[Any, ...]]:
+        """a SQL condition comparing an exact ``NUMERIC`` column with ``value`` as L3 compares them.
+
+        The column holds its value times ``10**s`` as an integer. The operand is scaled exactly
+        and bounded by the operator, never rounded to the column's scale: ``> v`` is ``> floor(v')``,
+        ``>= v`` is ``>= ceil(v')``, ``< v`` is ``< ceil(v')`` and ``<= v`` is ``<= floor(v')``, where
+        ``v'`` is ``v * 10**s``. ``=`` and ``!=`` with an operand finer than the scale, which no
+        stored value equals, are ``column <> column`` and ``column = column``: false and true for
+        every value, ``NULL`` for ``NULL``, as in L3. ``NaN`` and ``Infinity`` compare above every
+        value and ``-Infinity`` below it.
+
+        :param column_sql: the column as the statement names it, already quoted
+        :ptype column_sql: str
+        :param operator: one of ``=``, ``!=``, ``<>``, ``<``, ``<=``, ``>``, ``>=``
+        :ptype operator: str
+        :param value: the operand: a ``Decimal``, ``int``, ``float`` or decimal string
+        :ptype value: Any
+        :param col_type: the column's type code (:meth:`column_types`)
+        :ptype col_type: str
+        :return: the condition, with ``?`` placeholders, and its parameters
+        :rtype: tuple[str, tuple[Any, ...]]
+        :raises ValueError: when ``operator`` is not one of those, or ``col_type`` is not an exact
+            ``NUMERIC``'s
+        :raises decimal.InvalidOperation: when ``value`` is not a number
+        """
+        scale = _decimal_code_scale(col_type)
+        if scale is None or operator not in _ABOVE_EVERY_VALUE:
+            raise ValueError(f"no exact NUMERIC comparison {operator!r} for a column of type {col_type!r}")
+        number = (
+            value if isinstance(value, Decimal) else Decimal(repr(value) if isinstance(value, float) else str(value))
+        )
+        params: tuple[Any, ...] = ()
+        if not number.is_finite():
+            below = number.is_infinite() and number < 0
+            always = (_BELOW_EVERY_VALUE if below else _ABOVE_EVERY_VALUE)[operator]
+            condition = f"{column_sql} {'=' if always else '<>'} {column_sql}"
+        else:
+            context = Context(prec=max(1, len(number.as_tuple().digits)), Emax=MAX_EMAX, Emin=MIN_EMIN)
+            exact = number.scaleb(scale, context)
+            if operator in ("=", "!=", "<>") and exact != exact.to_integral_value():
+                condition = f"{column_sql} {'<>' if operator == '=' else '='} {column_sql}"
+            else:
+                rounding = ROUND_CEILING if operator in (">=", "<") else ROUND_FLOOR
+                bound = exact.to_integral_value(rounding=rounding)
+                # every stored value is under 10**18, so a bound clamped to SQLite's integer range
+                # answers each operator as the bound itself would
+                params = (int(max(Decimal(-_SQLITE_MAX_INTEGER), min(Decimal(_SQLITE_MAX_INTEGER), bound))),)
+                condition = f"{column_sql} {operator} ?"
+        return condition, params
 
     def serialize_value(self, value: Any, col_type: str) -> Any:
         """Serialize a Python value for SQLite storage based on column type.
 
         An exact ``NUMERIC(p, s)`` column stores the value as L3 stores it, rounded to scale ``s``
-        (:func:`~threetears.core.cache.base.stored_decimal`), times ``10**s`` as an integer; an
-        operand compared with the column in SQL run against L1 is scaled through here too.
+        (:func:`~threetears.core.cache.base.stored_decimal`), times ``10**s`` as an integer. That
+        rounding is right for a stored value and wrong for an operand: compare the column with one
+        through :meth:`numeric_comparison`.
         """
         if value is None:
             return None

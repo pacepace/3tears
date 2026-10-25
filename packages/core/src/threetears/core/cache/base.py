@@ -3,8 +3,8 @@
 - :class:`L1Backend`, the protocol every L1 backend implements.
 - :data:`MISSING`, the cache-miss sentinel (distinct from a cached ``None``).
 - :func:`build_select_clause` and :func:`bulk_columns`, shared SQL construction.
-- :func:`exact_decimal_type`, :func:`stored_decimal` and :class:`UnsupportedL1ColumnError`, how
-  an exact ``NUMERIC`` column keeps its ``Decimal``, or is refused.
+- :func:`exact_decimal_type`, :func:`stored_decimal`, :class:`UnsupportedL1ColumnError` and
+  :class:`NonFiniteNumericError`, how an exact ``NUMERIC`` column keeps its ``Decimal``, or is refused.
 
 Nothing cached in L1 ages: a row stays until a write that reaches it is heard
 (the collection broadcasts and their tables' write generations).
@@ -25,6 +25,7 @@ __all__ = [
     "MISSING",
     "build_select_clause",
     "bulk_columns",
+    "NonFiniteNumericError",
     "UnsupportedL1ColumnError",
     "exact_decimal_type",
     "stored_decimal",
@@ -145,6 +146,14 @@ def exact_decimal_type(
     return result
 
 
+class NonFiniteNumericError(ValueError):
+    """a ``NUMERIC`` value is ``NaN`` or infinite, which an exact L1 cannot hold as a scaled integer.
+
+    Postgres stores ``'NaN'`` (and, from 14, ``'Infinity'``) in a ``NUMERIC(p, s)`` column. A
+    collection serves such a row from L3 and keeps no L1 copy of it.
+    """
+
+
 def stored_decimal(value: Any, scale: int) -> Decimal:
     """``value`` as the ``Decimal`` a ``NUMERIC`` column of ``scale`` stores and L3 answers.
 
@@ -159,12 +168,12 @@ def stored_decimal(value: Any, scale: int) -> Decimal:
     :ptype scale: int
     :return: the value as stored
     :rtype: Decimal
-    :raises ValueError: when ``value`` is ``NaN`` or infinite, which no L1 holds at a scale
+    :raises NonFiniteNumericError: when ``value`` is ``NaN`` or infinite, which no L1 holds at a scale
     :raises decimal.InvalidOperation: when ``value`` is not a number
     """
     number = value if isinstance(value, Decimal) else Decimal(repr(value) if isinstance(value, float) else str(value))
     if not number.is_finite():
-        raise ValueError(f"{number} has no value at scale {scale}; an L1 holds only finite NUMERIC values")
+        raise NonFiniteNumericError(f"{number} has no value at scale {scale}; an L1 holds only finite NUMERIC values")
     return number.quantize(Decimal(1).scaleb(-scale), context=_NUMERIC_CONTEXT)
 
 

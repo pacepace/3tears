@@ -33,6 +33,7 @@ from sqlalchemy import Column, Float, MetaData, String, Table, Text
 from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.backends.protocol import L3Backend
 from threetears.core.cache import MISSING
+from threetears.core.cache.base import NonFiniteNumericError
 from threetears.core.collections.tier_reads import ReadTier, record_tier_read
 from threetears.core.collections.bypassing_write import BypassingWrite
 from threetears.core.collections.caller_transaction import CallerTransaction, shared_advance_for
@@ -2070,6 +2071,10 @@ class BaseCollection(ABC, Generic[EntityT]):
     def _l1_upsert(self, row: dict[str, Any], primary_key: str | tuple[str, ...]) -> None:
         """write one of this table's rows into L1; the one way a row of it enters or changes there.
 
+        A row whose ``NUMERIC`` value is ``NaN`` or infinite, which an exact L1 cannot hold, is
+        served from L3 alone: no L1 copy is kept, and one held under its key is dropped, so L1 never
+        answers a value L3 replaced. The first such row is logged.
+
         :param row: the row
         :ptype row: dict[str, Any]
         :param primary_key: its key's column name, or names in declared order
@@ -2077,10 +2082,20 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: nothing
         :rtype: None
         """
-        self._l1.upsert(self.table_name, row, primary_key)
         columns = (primary_key,) if isinstance(primary_key, str) else tuple(primary_key)
         key = tuple(row.get(column) for column in columns)
-        self._l1_changed(key if len(key) > 1 else key[0])
+        entity_id = key if len(key) > 1 else key[0]
+        try:
+            self._l1.upsert(self.table_name, row, primary_key)
+        except NonFiniteNumericError as exc:
+            self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), primary_key)
+            if not self.__dict__.get("_logged_non_finite_numeric"):
+                self.__dict__["_logged_non_finite_numeric"] = True
+                log.warning(
+                    "a row holds a NUMERIC value an exact L1 cannot hold; it is served from L3 without an L1 copy",
+                    extra={"extra_data": {"table": self.table_name, "key": f"{entity_id}", "error": f"{exc}"}},
+                )
+        self._l1_changed(entity_id)
 
     def _l1_changed(self, entity_id: Any) -> None:
         """tell every change listener that ``entity_id``'s row changed in, or left, L1.

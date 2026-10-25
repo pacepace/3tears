@@ -88,6 +88,26 @@ class TestDeserializeFromJson:
         result = deserialize_from_json(raw, {"price": Decimal})
         assert result["price"] == Decimal("19.99")
 
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (b'{"price": 19.99}', "19.99"),
+            (b'{"price": -0.1}', "-0.1"),
+            (b'{"price": 7}', "7"),
+            (b'{"price": 1e-07}', "1E-7"),
+            (b'{"price": "19.99"}', "19.99"),
+        ],
+    )
+    def test_a_decimal_field_is_a_decimal_from_a_json_number_too(self, raw: bytes, expected: str) -> None:
+        """an older pod, or a writer that sent a float, cached the field as a JSON number; it decodes exactly."""
+        result = deserialize_from_json(raw, {"price": Decimal | None})
+        assert isinstance(result["price"], Decimal)
+        assert str(result["price"]) == expected
+        assert result["price"] * Decimal(2) == Decimal(expected) * 2
+
+    def test_a_bool_in_a_decimal_field_is_left_as_written(self) -> None:
+        assert deserialize_from_json(b'{"price": true}', {"price": Decimal})["price"] is True
+
     def test_bytes_restoration(self):
         raw = serialize_to_json({"payload": b"\xde\xad"})
         result = deserialize_from_json(raw, {"payload": bytes})
