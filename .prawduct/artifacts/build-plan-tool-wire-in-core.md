@@ -118,6 +118,24 @@ nested validation and `is` hold. `__module__` changes: say so in the CHANGELOG.
   into core.
 - README package table/diagram if it shows registry → agent-tools.
 
+### 05: registry's duplicate wire models give way to the shared ones (owner, 2026-10-25: "Should we just get that follow up?", yes)
+Registry kept its own copies of three wire shapes the pod defines. Field-by-field comparison on this branch:
+`ProxyCallResponse` == `CallResponse` (already in core); `ProbeResponse` == agent-tools `ProbeAck`;
+`DiscoverRequest`/`DiscoverResponse` == agent-tools `DiscoveryProbeRequest`/`DiscoveryProbeResponse` (same
+fields and the same `_omit_absent_pod_id` validator). `ProxyCallRequest` is NOT a copy (a different hop: `pop`,
+`input_schema_digest` vs `proxy_assertion`) and stays.
+- Verify the nested entry types match exactly (`DiscoverToolEntry`/`DiscoverResultEntry` vs
+  `DiscoveryProbeToolEntry`/`DiscoveryProbeResultEntry`, and any further nesting), and every validator and
+  serializer. Any difference: stop and report rather than fold.
+- Move `ProbeAck` and the discovery-probe models with their entry types into `core.tool_wire.messages` (or a
+  `discovery` module beside it), verbatim; agent-tools `server.py` re-exports them under their old names.
+- Registry uses the shared classes. Registry's public names (`ProxyCallResponse`, `ProbeResponse`,
+  `DiscoverRequest`, `DiscoverResponse`, entry types) stay importable from their registry modules as the same
+  objects, unless a name is private or has no caller anywhere (check `__all__` and the public-API gate); a public
+  name kept for compatibility is a plain re-export import, never a private alias.
+- Tests: the same-object checks for the new re-exports; existing registry discovery/registration/proxy tests pass
+  unchanged.
+
 ## Gates (main session)
 Full unit suite on the testament pool; integration `./scripts/test-integration.sh -rs` for registry and
 agent-tools after telling discodon; cumulative Critic.
