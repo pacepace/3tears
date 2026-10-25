@@ -34,14 +34,18 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from threetears.observe import contain, get_logger
 
 from .config import DEFAULT_EGRESS_HEALTH_TIMEOUT_SECONDS
 
-if TYPE_CHECKING:  # pragma: no cover - import-time only
+try:
     import httpx
+
+    _HTTPX = True
+except ImportError:  # NOSILENT: the http extra is optional; the protocol imports without it, a transport says so
+    _HTTPX = False
 
 log = get_logger(__name__)
 
@@ -219,16 +223,16 @@ class ProxyEgress:
     def httpx_transport(self) -> httpx.AsyncBaseTransport | None:
         """An ``httpx`` transport bound to this proxy.
 
-        Imported inside the method rather than at module scope so this module stays importable
-        by anything that only wants the protocol -- the sidecar, for instance, which needs the
-        browser half and has no httpx involvement in it.
+        httpx is imported at module scope under ``try/except ImportError``, so this module stays
+        importable by anything that only wants the protocol -- the sidecar, for instance, which needs
+        the browser half and has no httpx involvement in it; a transport asked for without it raises.
 
         ``socks5://`` additionally requires ``httpx[socks]``; that is httpx's own dependency
         boundary and the ``ImportError`` it raises names it clearly enough that wrapping it
         would say less.
         """
-        import httpx  # noqa: PLC0415 -- deliberate; see docstring
-
+        if not _HTTPX:
+            raise ImportError("an egress transport needs httpx: install 3tears[http]")
         return httpx.AsyncHTTPTransport(proxy=self._proxy_url)
 
     def browser_proxy_arg(self) -> str | None:
@@ -246,9 +250,9 @@ class ProxyEgress:
         Never raises. An egress health check that can itself fail a caller has replaced one
         outage with two.
         """
-        import httpx  # noqa: PLC0415 -- same import discipline as `httpx_transport`
-
         try:
+            if not _HTTPX:
+                raise ImportError("an egress health probe needs httpx: install 3tears[http]")
             async with httpx.AsyncClient(transport=self.httpx_transport(), timeout=timeout) as client:
                 response = await client.get(_HEALTH_PROBE_URL)
                 response.raise_for_status()

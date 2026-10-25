@@ -31,8 +31,9 @@ the grant store -- :class:`LocalGrantAuthorizer`, :mod:`~threetears.mcp.rbac`
 and :mod:`~threetears.mcp.migrations` -- is the ``grants`` extra
 (``3tears-mcp[grants]``), the one part of the package that needs core,
 epoch, nats and sqlalchemy. a server that brings its own
-:class:`Authorizer` installs and imports without them, so the rbac names
-below resolve on first access rather than at import.
+:class:`Authorizer` installs and imports without them: the rbac names are
+bound at import when the extra is installed, and reaching one without it
+raises an ``ImportError`` naming the extra.
 """
 
 from __future__ import annotations
@@ -46,7 +47,6 @@ from __future__ import annotations
 # imports working but reports ``unknown`` rather than crashing.
 from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _version
-from typing import TYPE_CHECKING
 
 try:
     __version__ = _version("3tears-mcp")
@@ -81,12 +81,16 @@ from threetears.mcp.tool import (
     register_tool,
 )
 
-if TYPE_CHECKING:  # the grant store's names, re-imported so type checkers resolve them
+#: why the grant store's names are absent, when the ``grants`` extra is not installed
+_GRANT_STORE_ERROR: ImportError | None = None
+try:
     from threetears.mcp.rbac import (
         McpToolGrantCollection,
         McpToolGrantEntity,
         mcp_tool_grants_table,
     )
+except ImportError as _exc:  # NOSILENT: the grants extra is optional; __getattr__ names it
+    _GRANT_STORE_ERROR = _exc
 
 #: names that live in :mod:`threetears.mcp.rbac`, which only the ``grants`` extra can import
 _GRANT_STORE_NAMES = frozenset({"McpToolGrantCollection", "McpToolGrantEntity", "mcp_tool_grants_table"})
@@ -122,30 +126,28 @@ __all__ = [
 
 
 def __getattr__(name: str) -> object:
-    """resolve a grant-store name on first access.
+    """refuse a grant-store name the ``grants`` extra did not provide, naming the extra.
+
+    only reached for a name not bound at import, so a grant-store name lands here only when
+    :mod:`threetears.mcp.rbac` could not be imported.
 
     :param name: the attribute asked for
     :ptype name: str
-    :return: the named object from :mod:`threetears.mcp.rbac`
+    :return: never returns
     :rtype: object
-    :raises ImportError: when the ``grants`` extra is not installed
+    :raises ImportError: for a grant-store name, when the ``grants`` extra is not installed
     :raises AttributeError: for any other name
     """
-    if name not in _GRANT_STORE_NAMES:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    try:
-        from threetears.mcp import rbac
-    except ImportError as exc:
+    if name in _GRANT_STORE_NAMES and _GRANT_STORE_ERROR is not None:
         raise ImportError(
             f"threetears.mcp.{name} is part of the MCP grant store, which needs the grants extra: "
             "install 3tears-mcp[grants]",
-        ) from exc
-    value: object = getattr(rbac, name)
-    return value
+        ) from _GRANT_STORE_ERROR
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def __dir__() -> list[str]:
-    """the module's names, the grant store's included though they are not loaded yet.
+    """the module's names, the grant store's included even when its extra is not installed.
 
     :return: sorted attribute names
     :rtype: list[str]

@@ -490,9 +490,6 @@ class CoordinationCountersCollection(CoordinationCollection):
 
     l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "write_behind"
     expires_at_column: ClassVar[str | None] = "expires_at"
-    datetime_columns: ClassVar[frozenset[str]] = frozenset(
-        {"window_start", "expires_at", "date_created", "date_updated", "l2_epoch"}
-    )
     schema = TableSchema(
         name="coordination_counters",
         primary_key=("purpose", "key"),
@@ -516,9 +513,6 @@ class CoordinationClaimsCollection(CoordinationCollection):
 
     l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "write_behind"
     expires_at_column: ClassVar[str | None] = "expires_at"
-    datetime_columns: ClassVar[frozenset[str]] = frozenset(
-        {"date_claimed", "date_completed", "expires_at", "date_created", "date_updated", "l2_epoch"}
-    )
     schema = TableSchema(
         name="coordination_claims",
         primary_key=("purpose", "key"),
@@ -548,7 +542,6 @@ class CoordinationRevocationsCollection(CoordinationCollection):
     l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "synchronous"
     expires_at_column: ClassVar[str | None] = "expires_at"
     negative_cache_max_age: ClassVar[timedelta | None] = timedelta(seconds=_REVOCATION_NEGATIVE_CACHE_SECONDS)
-    datetime_columns: ClassVar[frozenset[str]] = frozenset({"revoked_at", "expires_at", "date_created", "date_updated"})
     schema = TableSchema(
         name="coordination_revocations",
         write_generation=WRITE_GENERATION,
@@ -570,7 +563,6 @@ class CoordinationRedemptionsCollection(CoordinationCollection):
 
     l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "synchronous"
     expires_at_column: ClassVar[str | None] = "expires_at"
-    datetime_columns: ClassVar[frozenset[str]] = frozenset({"expires_at", "date_created", "date_updated", "l2_epoch"})
     schema = TableSchema(
         name="coordination_redemptions",
         primary_key=("purpose", "key"),

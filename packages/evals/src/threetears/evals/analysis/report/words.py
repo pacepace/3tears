@@ -24,7 +24,7 @@ from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import cell_index, resolve_reading, restated_dispersion
 from threetears.evals.analysis.report.figures import MeasureRuler, analysis_rulers
-from threetears.evals.analysis.report.model import CellValue, TableCell
+from threetears.evals.analysis.report.blocks import CellValue, TableCell
 from threetears.evals.kernel.analysis_measures import BarDecision
 from threetears.evals.analysis.style import declared_check_name, measure_name
 from threetears.evals.kernel.campaign import (

@@ -95,6 +95,7 @@ from threetears.evals.kernel.remedies import (
     FIND_TEMPLATE,
     WRITER_REMEDY,
 )
+from pydantic import ValidationError
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
@@ -2209,8 +2210,6 @@ def freeze_reporter_case(
     :raises StorageError: The new case could not be persisted.
     :raises TypeError: ``supersedes`` is a bare string rather than a sequence of ids.
     """
-    from pydantic import ValidationError
-
     if isinstance(supersedes, str):
         raise TypeError("supersedes is a sequence of case ids; a bare string would be read one character per id")
     replaced = [case_id for case_id in supersedes if case_id]

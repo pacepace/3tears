@@ -33,6 +33,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
 
+from shapely.geometry import Point
 from shapely.geometry.base import BaseGeometry
 
 from threetears.geo.geometry import UndecodableGeometry
@@ -297,8 +298,6 @@ def aggregate_band(
     :return: one feature per group
     :rtype: BandResult
     """
-    from shapely.geometry import Point
-
     groups: dict[Any, list[tuple[dict[str, Any], BaseGeometry]]] = {}
     unread_by_bucket: dict[Any, int] = {}
     undecodable = 0

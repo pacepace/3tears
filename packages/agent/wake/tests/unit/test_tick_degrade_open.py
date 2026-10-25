@@ -70,13 +70,13 @@ class _CtxRaisingOnEnter:
 
 
 def _patch_lock(monkeypatch: pytest.MonkeyPatch, ctx: Any) -> None:
-    """Replace ``threetears.core.coordination.nats_distributed_lock`` (resolved by the local
-    import inside the generic engine) with a factory returning ``ctx``."""
+    """Replace ``nats_distributed_lock`` where the generic engine's tick module bound it at
+    import with a factory returning ``ctx``."""
 
     def _factory(_client: Any, _key: str, **_kw: Any) -> Any:
         return ctx
 
-    monkeypatch.setattr("threetears.core.coordination.nats_distributed_lock", _factory)
+    monkeypatch.setattr("threetears.scheduled_jobs.tick.nats_distributed_lock", _factory)
 
 
 def _collections() -> tuple[_NoDbScheduleCollection, WakeFireCollection]:

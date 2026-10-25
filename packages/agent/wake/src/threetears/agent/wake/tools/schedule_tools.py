@@ -52,6 +52,8 @@ from threetears.agent.wake.collections import (
     WakeScheduleCollection,
     WebhookSubscriptionCollection,
 )
+from threetears.agent.wake.events import EVENT_SCHEDULE_CAP_REJECT
+from threetears.agent.wake.metrics import get_wake_emitter
 from threetears.agent.wake.config import (
     DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT as _CONFIG_DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT,
 )
@@ -967,14 +969,9 @@ def load_wake_schedule_create_tool(
                 make_wake_conversation=make_wake_conversation,
             )
         except ScheduleCapExceeded:
-            # local import keeps the tool layer's cold-import cost the
-            # same on the happy path; metrics + events only matter on
-            # the rejection branch. The Loki event is intentionally
-            # emitted here (not in the helper) so the trigger context
-            # -- user_id, agent_id -- lands on the structured event.
-            from threetears.agent.wake.events import EVENT_SCHEDULE_CAP_REJECT  # noqa: PLC0415
-            from threetears.agent.wake.metrics import get_wake_emitter  # noqa: PLC0415
-
+            # The Loki event is intentionally emitted here (not in the
+            # helper) so the trigger context -- user_id, agent_id --
+            # lands on the structured event.
             get_wake_emitter().inc_schedule_cap_rejection()
             # convert at border: schedule-cap-reject (create) log extra_data fields
             log_user_id = str(user_id)
@@ -1805,9 +1802,6 @@ def load_wake_schedule_resume_tool(
                 pool=schedules_collection.l3_pool,
             )
         except ScheduleCapExceeded:
-            from threetears.agent.wake.events import EVENT_SCHEDULE_CAP_REJECT  # noqa: PLC0415
-            from threetears.agent.wake.metrics import get_wake_emitter  # noqa: PLC0415
-
             get_wake_emitter().inc_schedule_cap_rejection()
             log.info(
                 EVENT_SCHEDULE_CAP_REJECT,

@@ -1,7 +1,10 @@
 """Built-in tool registrations.
 
-Each tool is in its own module.  Dependencies are optional — if a dep is
-missing, that tool is skipped with a warning log.
+Each tool is in its own module, imported here at module top. A tool whose
+optional dependency is missing still imports (it records the absence in a
+module flag and refuses at call time); the one whose absence cannot be seen
+that way -- ``web_fetch``'s extractor -- is probed at registration and
+skipped with a warning log.
 """
 
 from __future__ import annotations
@@ -10,6 +13,16 @@ from collections.abc import Callable, Iterable
 from importlib.util import find_spec
 from typing import TYPE_CHECKING
 
+from threetears.agent.tools.builtin.analyze_media import create_analyze_media_tool
+from threetears.agent.tools.builtin.calculator import CalculatorTool, create_calculator_tool
+from threetears.agent.tools.builtin.context_recall import ContextRecallTool, create_context_recall_tool
+from threetears.agent.tools.builtin.current_date import CurrentDateTool, create_current_date_tool
+from threetears.agent.tools.builtin.date_math import DateMathTool, create_date_math_tool
+from threetears.agent.tools.builtin.dictionary import DictionaryTool, create_dictionary_tool
+from threetears.agent.tools.builtin.timezone_converter import TimezoneConverterTool, create_timezone_converter_tool
+from threetears.agent.tools.builtin.unit_converter import UnitConverterTool, create_unit_converter_tool
+from threetears.agent.tools.builtin.web_fetch import create_web_fetch_tool
+from threetears.agent.tools.builtin.web_search import create_web_search_tool
 from threetears.observe import contain, get_logger
 
 __all__ = [
@@ -20,15 +33,13 @@ __all__ = [
 
 if TYPE_CHECKING:
     from threetears.agent.tools.base_tool import TearsTool
-    from threetears.agent.tools.registry import ToolRegistry
+    from threetears.agent.tools.registry import ToolFactory, ToolRegistry
 
 log = get_logger(__name__)
 
 
 def _build_calculator() -> TearsTool:
     """zero-config calculator TearsTool factory."""
-    from threetears.agent.tools.builtin.calculator import CalculatorTool
-
     return CalculatorTool()
 
 
@@ -40,8 +51,6 @@ def _build_context_recall() -> TearsTool:
     active call scope at execute time, so no construction-time wiring is
     needed (mirrors :func:`_build_current_date`).
     """
-    from threetears.agent.tools.builtin.context_recall import ContextRecallTool
-
     return ContextRecallTool()
 
 
@@ -52,8 +61,6 @@ def _build_current_date() -> TearsTool:
     :class:`CallContext` (browser-supplied / channel-adapter-resolved
     user timezone) so no construction-time tz is needed in dev.
     """
-    from threetears.agent.tools.builtin.current_date import CurrentDateTool
-
     return CurrentDateTool()
 
 
@@ -63,29 +70,21 @@ def _build_date_math() -> TearsTool:
     "today" is read per call from the :class:`ToolCallScope`'s user timezone,
     as :func:`_build_current_date` does.
     """
-    from threetears.agent.tools.builtin.date_math import DateMathTool
-
     return DateMathTool()
 
 
 def _build_dictionary() -> TearsTool:
     """zero-config dictionary TearsTool factory (defaults to ``en``)."""
-    from threetears.agent.tools.builtin.dictionary import DictionaryTool
-
     return DictionaryTool()
 
 
 def _build_timezone_converter() -> TearsTool:
     """zero-config timezone_converter TearsTool factory."""
-    from threetears.agent.tools.builtin.timezone_converter import TimezoneConverterTool
-
     return TimezoneConverterTool()
 
 
 def _build_unit_converter() -> TearsTool:
     """zero-config unit_converter TearsTool factory."""
-    from threetears.agent.tools.builtin.unit_converter import UnitConverterTool
-
     return UnitConverterTool()
 
 
@@ -138,14 +137,14 @@ def make_standard_builtins(
 #: builtins whose dependency cannot be detected by importing their module,
 #: mapped to ``(module to probe for, remediation hint)``.
 #:
-#: The ``except ImportError`` below only skips a tool whose *own module*
-#: fails to import. ``web_fetch`` reaches its extractor through Extract,
-#: which imports trafilatura **lazily** so that importing the package never
-#: pays for it -- so without the extra the module imports cleanly, the tool
-#: constructs, and every call refuses. Registering a tool that cannot serve
-#: a single request is the exact condition the skip-with-reason pattern
-#: exists to prevent, so the availability is probed instead of inferred.
-#: ``serve.py`` does the same for the pod path; this is the registry path.
+#: Every builtin module imports without its optional extra, so an import
+#: failure never signals a missing dependency. ``web_fetch`` reaches its
+#: extractor through Extract, which does not need trafilatura to import --
+#: so without the extra the module imports cleanly, the tool constructs, and
+#: every call refuses. Registering a tool that cannot serve a single request
+#: is the exact condition the skip-with-reason pattern exists to prevent, so
+#: the availability is probed instead of inferred. ``serve.py`` does the
+#: same for the pod path; this is the registry path.
 _PROBED_BUILTINS: dict[str, tuple[str, str]] = {
     "web_fetch": (
         "trafilatura",
@@ -157,27 +156,25 @@ _PROBED_BUILTINS: dict[str, tuple[str, str]] = {
 def register_builtins(registry: ToolRegistry) -> None:
     """Register all available built-in tools on *registry*.
 
-    Missing optional dependencies cause individual tools to be skipped,
-    not a crash -- whether the absence shows up as an ``ImportError`` or has
-    to be probed for (:data:`_PROBED_BUILTINS`).
+    A tool whose missing optional dependency can only be probed for
+    (:data:`_PROBED_BUILTINS`) is skipped, not a crash; a registration
+    error is contained and that tool skipped.
     """
-    # Each entry: (tool_type, module_path, factory_name)
-    _builtins: list[tuple[str, str, str]] = [
-        ("calculator", "threetears.agent.tools.builtin.calculator", "create_calculator_tool"),
-        ("context_recall", "threetears.agent.tools.builtin.context_recall", "create_context_recall_tool"),
-        ("unit_converter", "threetears.agent.tools.builtin.unit_converter", "create_unit_converter_tool"),
-        ("timezone_converter", "threetears.agent.tools.builtin.timezone_converter", "create_timezone_converter_tool"),
-        ("dictionary", "threetears.agent.tools.builtin.dictionary", "create_dictionary_tool"),
-        ("current_date", "threetears.agent.tools.builtin.current_date", "create_current_date_tool"),
-        ("date_math", "threetears.agent.tools.builtin.date_math", "create_date_math_tool"),
-        ("web_search", "threetears.agent.tools.builtin.web_search", "create_web_search_tool"),
-        ("web_fetch", "threetears.agent.tools.builtin.web_fetch", "create_web_fetch_tool"),
-        ("analyze_media", "threetears.agent.tools.builtin.analyze_media", "create_analyze_media_tool"),
+    # Each entry: (tool_type, factory)
+    _builtins: list[tuple[str, ToolFactory]] = [
+        ("calculator", create_calculator_tool),
+        ("context_recall", create_context_recall_tool),
+        ("unit_converter", create_unit_converter_tool),
+        ("timezone_converter", create_timezone_converter_tool),
+        ("dictionary", create_dictionary_tool),
+        ("current_date", create_current_date_tool),
+        ("date_math", create_date_math_tool),
+        ("web_search", create_web_search_tool),
+        ("web_fetch", create_web_fetch_tool),
+        ("analyze_media", create_analyze_media_tool),
     ]
 
-    import importlib
-
-    for tool_type, module_path, factory_name in _builtins:
+    for tool_type, factory in _builtins:
         if tool_type in _PROBED_BUILTINS and find_spec(_PROBED_BUILTINS[tool_type][0]) is None:
             log.warning(
                 "Skipping built-in tool (missing dependency)",
@@ -185,14 +182,7 @@ def register_builtins(registry: ToolRegistry) -> None:
             )
             continue
         try:
-            mod = importlib.import_module(module_path)
-            factory = getattr(mod, factory_name)
             registry.register(tool_type, factory)
-        except ImportError as exc:
-            log.warning(
-                "Skipping built-in tool (missing dependency)",
-                extra={"extra_data": {"tool_type": tool_type, "error": str(exc)}},
-            )
         except Exception as exc:
             contain(
                 exc,

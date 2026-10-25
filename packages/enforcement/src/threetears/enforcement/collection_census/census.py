@@ -11,7 +11,7 @@ For each class:
   standing in for an instance (a literal, or a class attribute). ``None`` when the table is named
   per instance (a constructor argument, a scope) or the class names none of its own.
 - ``abstract``: whether the class leaves an abstract method unimplemented.
-- ``declaration``: ``on``, ``opted_out``, ``undeclared``, or ``invalid``, read off
+- ``declaration``: ``on``, ``on_in_l2``, ``opted_out``, ``undeclared``, or ``invalid``, read off
   ``write_generation`` as the class resolves it; ``reason`` is an opt-out's reason.
 - ``ancestors``: every other census class it subclasses, by qualified name.
 - ``framework``: whether the class is the 3tears framework's rather than the trees' own.
@@ -116,6 +116,7 @@ def _declaration(cls: type) -> tuple[str, str | None]:
     :rtype: tuple[str, str | None]
     """
     from threetears.core.collections.generation import (
+        L2WriteGeneration,
         NoWriteGeneration,
         UndeclaredWriteGeneration,
         WriteGeneration,
@@ -124,6 +125,8 @@ def _declaration(cls: type) -> tuple[str, str | None]:
     declared = getattr(cls, "write_generation", None)
     if isinstance(declared, WriteGeneration):
         return "on", None
+    if isinstance(declared, L2WriteGeneration):
+        return "on_in_l2", None
     if isinstance(declared, NoWriteGeneration):
         return "opted_out", declared.reason
     if isinstance(declared, UndeclaredWriteGeneration):

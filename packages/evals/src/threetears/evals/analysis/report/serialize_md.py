@@ -25,14 +25,13 @@ from __future__ import annotations
 import html
 import re
 from collections.abc import Iterable, Sequence
+from typing import TYPE_CHECKING
 
-from threetears.evals.analysis.report.model import (
+from threetears.evals.analysis.report.blocks import (
     FIRST_SCREEN,
     SECTION_TITLES,
-    CampaignReport,
     ChartBlock,
     DisclosureBlock,
-    Report,
     ReportBlock,
     TableBlock,
     TextBlock,
@@ -40,6 +39,10 @@ from threetears.evals.analysis.report.model import (
 )
 from threetears.evals.analysis.report.verdict import cause_short
 from threetears.evals.analysis.style import GLOSSARY
+
+if TYPE_CHECKING:
+    # The documents import this module to write themselves, so their types are named for the checker alone.
+    from threetears.evals.analysis.report.model import CampaignReport, Report
 
 #: How an answer's resolution leads it.
 RESOLUTION_WORDS = {"answered": "Answered", "partial": "Partly answered", "unanswerable": "Unanswerable"}

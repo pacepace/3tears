@@ -48,7 +48,9 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import reduce
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
+
+from pydantic import Field
 
 from threetears.evals.analysis.bundle.schema import (
     FLOOR_COST_MEASURE,
@@ -73,13 +75,60 @@ from threetears.evals.analysis.style import code, declared_check_name, humanize,
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.declaration import CostLower, DecisionClause, Floor, RateDrop
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of, rule_rates
+from threetears.evals.schema.base import EvalDocumentModel
 
-if TYPE_CHECKING:
-    from threetears.evals.analysis.campaign_readings import FloorStatus
-
-#: Where one floor stands on one candidate, and where each rate it reads does: the values of
-#: :data:`~threetears.evals.analysis.campaign_readings.FloorState`, spelled here because that module reads this one.
+#: Where one floor stands on one candidate, and where each rate it reads does: the values of :data:`FloorState`.
 FloorOutcome = Literal["broken", "held", "unclear"]
+
+#: Where one floor stands for one candidate. ``broken``: the evidence shows the candidate past the floor. ``held``: it
+#: shows the candidate within it. ``unclear``: neither, the reason saying why.
+FloorState = Literal["broken", "held", "unclear"]
+
+
+class FloorStatus(EvalDocumentModel):
+    """One floor for one candidate: broken, held or unclear, and why."""
+
+    floor: str = Field(description="The floor's key (`Floor.key`): what a recorded call names an override by.")
+    aspect: str = Field(description="The label of the aspect the floor is read on.")
+    arm: str = Field(description="The candidate's variant key.")
+    arm_label: str = Field(description="What a reader calls the candidate.")
+    status: FloorState = Field(description="`broken`, `held` or `unclear`.")
+    reading: str | None = Field(
+        description=(
+            "The rate that decided the status, named as a clause names a reading (a check's verbatim text, a "
+            "measure's or judged dimension's key): for a floor reading every pass rate, the one that broke it, or "
+            "held or unclear the one nearest breaking; for a floor on one reading, that reading. None for a cost "
+            "floor, and for the trials' own pass rate, which no clause names; the floor key says which kind it is."
+        )
+    )
+    interval: tuple[float, float] | None = Field(
+        description=(
+            "The interval the status was read on, low then high, in the clause's units: points of pass rate for a "
+            "rate floor, dollars per reply for a cost floor; the candidate minus the control. None when none was read."
+        )
+    )
+    reason: str = Field(description="Why, in one plain sentence, with the counts it rests on.")
+    margin: float | None = Field(
+        default=None,
+        description="A rate floor's margin, in points: the most the candidate's rate may drop. None for a cost floor.",
+    )
+    worst_drop: float | None = Field(
+        default=None,
+        description=(
+            "The largest drop in points the deciding rate's interval allows: the worst case the floor is read against. "
+            "None for a cost floor, or with no interval."
+        ),
+    )
+    short_by: float | None = Field(
+        default=None,
+        description=(
+            "For an unclear floor only: how far the worst case lies past the margin, in points (`worst_drop` less "
+            "`margin`), which is how far the floor is from being shown held. None for a held floor, for a broken one "
+            "(its breach is the interval and reason it carries, not this figure: `worst_drop` is the far end of the "
+            "interval, not how far the floor is broken), where the worst case lies within the margin, and for a cost "
+            "floor. A floor speaks for the one rate it read, never its whole aspect."
+        ),
+    )
 
 
 #: The fewest usable cases on every arm before a rate floor can be read broken or held: the page's case floor.
@@ -326,8 +375,6 @@ def evaluate_floor(
         per reply), the candidate minus the control.
     :rtype: FloorStatus
     """
-    from threetears.evals.analysis.campaign_readings import FloorStatus  # this module is read by that one
-
     verdict = read_floor(floor, readings, control=control_label, candidate=arm_label)
     margin = floor.clause.max_points if isinstance(floor.clause, RateDrop) else None
     worst = verdict.rate.worst_drop() if margin is not None and verdict.rate is not None else None

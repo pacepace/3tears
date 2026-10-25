@@ -29,6 +29,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from camoufox.async_api import AsyncCamoufox
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Response as PlaywrightResponse
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -431,10 +432,6 @@ class CamoufoxDriver(ScrapeDriver):
     async def _ensure_browser(self) -> Any:
         """Lazily launch (once) and return the Playwright-shaped ``Browser``."""
         if self._browser is None:
-            # Deferred: camoufox's import chain pulls numpy/lxml/browserforge/etc,
-            # a real cost tests that always inject *browser* should never pay.
-            from camoufox.async_api import AsyncCamoufox
-
             self._camoufox = AsyncCamoufox(headless=self._headless, **self._launch_proxy_options())
             self._browser = await self._camoufox.__aenter__()
         return self._browser

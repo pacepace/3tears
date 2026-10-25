@@ -31,16 +31,14 @@ import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
-from threetears.evals.analysis.report.model import (
+from threetears.evals.analysis.report.blocks import (
     FIRST_SCREEN,
     FOLDED_SECTIONS,
     SECTION_TITLES,
-    CampaignAspectFold,
-    CampaignReport,
     ChartBlock,
     DisclosureBlock,
-    Report,
     ReportBlock,
     TableBlock,
     TableCell,
@@ -53,6 +51,10 @@ from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg, interval_
 from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.schema.logs import contain, get_logger
+
+if TYPE_CHECKING:
+    # The documents import this module to write themselves, so their types are named for the checker alone.
+    from threetears.evals.analysis.report.model import CampaignAspectFold, CampaignReport, Report
 
 log = get_logger(__name__)
 

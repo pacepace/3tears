@@ -1,11 +1,11 @@
 """Default-store collections -- three-tier CRUD for the generic tables.
 
 Generalized from agent-wake's ``WakeScheduleCollection`` /
-``WakeFireCollection``. Like agent-wake, these subclass
-:class:`BaseCollection` directly (not :class:`SchemaBackedCollection`)
-because the ``payload`` / ``schedule_config`` / ``output`` JSONB columns
-need handling beyond the schema-driven CRUD generator's built-in tags;
-asyncpg's native codecs round-trip ``dict[str, Any] <-> JSONB`` cleanly.
+``WakeFireCollection``. Each is a :class:`DeclaredTableCollection`: its
+table is declared once, as a ``TableSchema`` matching the v001 migration,
+and its L1 table, L2 codec (every column rehydrated by its declared type)
+and upsert column lists are read off it. Its claim, reap and finalize
+statements stay its own.
 
 Both Collections declare ``partition_column = "partition_key"`` as a
 class attribute so consumers (and partition-column enforcement walkers)
@@ -30,10 +30,15 @@ from datetime import datetime, timedelta
 from typing import Any, ClassVar, get_args
 from uuid import UUID
 
-from threetears.core.collections.base import BaseCollection
-from threetears.core.serialization import (
-    deserialize_from_json,
-    serialize_to_json,
+from threetears.core.collections import DeclaredTableCollection, DeleteCascade
+from threetears.core.collections.schema_backed import (
+    DATETIMETZ_TYPE,
+    INT_TYPE,
+    JSONB_TYPE,
+    STRING_TYPE,
+    UUID_TYPE,
+    Column,
+    TableSchema,
 )
 from threetears.observe import get_logger
 
@@ -56,140 +61,60 @@ log = get_logger(__name__)
 _SCHEDULE_STATUSES: frozenset[str] = frozenset(get_args(ScheduleStatus))
 
 
-# Field-type hints used when L2 cache rounds a row through JSON. The
-# helpers in ``threetears.core.serialization.deserialize_from_json``
-# dispatch on these to rehydrate UUID / datetime / dict values back to
-# their native Python types after a NATS KV pull.
-_JOB_FIELD_TYPES: dict[str, Any] = {
-    "partition_key": UUID,
-    "job_id": UUID,
-    "kind": str,
-    "payload": dict,
-    "schedule_type": str,
-    "schedule_config": dict,
-    "status": str,
-    "next_fire_at": datetime | None,
-    "last_fired_at": datetime | None,
-    "missed_fire_policy": str,
-    "name": str | None,
-    "date_created": datetime,
-    "date_updated": datetime,
-}
-
-
-_FIRE_FIELD_TYPES: dict[str, Any] = {
-    "partition_key": UUID,
-    "fire_id": UUID,
-    "job_id": UUID,
-    "scheduled_fire_at": datetime,
-    "actual_fired_at": datetime,
-    "status": str,
-    "output": dict | None,
-    "latency_ms": int | None,
-    "error": str | None,
-    "date_created": datetime,
-}
-
-
-# columns the Collection emits on INSERT, in positional-param order.
-_JOB_INSERT_COLUMNS: tuple[str, ...] = (
-    "partition_key",
-    "job_id",
-    "kind",
-    "payload",
-    "schedule_type",
-    "schedule_config",
-    "status",
-    "next_fire_at",
-    "last_fired_at",
-    "missed_fire_policy",
-    "name",
-    "date_created",
-    "date_updated",
+#: ``scheduled_jobs`` as the v001 migration leaves it. ``date_created`` is
+#: written on insert and kept by every update.
+_SCHEDULED_JOBS_SCHEMA = TableSchema(
+    name="scheduled_jobs",
+    primary_key=("partition_key", "job_id"),
+    columns=[
+        Column("partition_key", UUID_TYPE),
+        Column("job_id", UUID_TYPE),
+        Column("kind", STRING_TYPE),
+        Column("payload", JSONB_TYPE, server_default="'{}'::jsonb"),
+        Column("schedule_type", STRING_TYPE),
+        Column("schedule_config", JSONB_TYPE, server_default="'{}'::jsonb"),
+        Column("status", STRING_TYPE, server_default="'active'"),
+        Column("next_fire_at", DATETIMETZ_TYPE, nullable=True),
+        Column("last_fired_at", DATETIMETZ_TYPE, nullable=True),
+        Column("missed_fire_policy", STRING_TYPE, server_default="'coalesce'"),
+        Column("name", STRING_TYPE, nullable=True),
+        Column("date_created", DATETIMETZ_TYPE, server_default="now()", immutable=True),
+        Column("date_updated", DATETIMETZ_TYPE, server_default="now()"),
+    ],
 )
 
 
-# columns updated on ON CONFLICT (partition + pk excluded;
-# ``date_created`` immutable).
-_JOB_UPDATE_COLUMNS: tuple[str, ...] = tuple(
-    c for c in _JOB_INSERT_COLUMNS if c not in {"partition_key", "job_id", "date_created"}
+#: ``job_fires`` as the v001 migration leaves it. A fire's job, schedule and
+#: dispatch instants are set when it is inserted; an update writes only its
+#: outcome (``status``, ``output``, ``latency_ms``, ``error``).
+_JOB_FIRES_SCHEMA = TableSchema(
+    name="job_fires",
+    primary_key=("partition_key", "fire_id"),
+    columns=[
+        Column("partition_key", UUID_TYPE),
+        Column("fire_id", UUID_TYPE),
+        Column("job_id", UUID_TYPE, immutable=True),
+        Column("scheduled_fire_at", DATETIMETZ_TYPE, immutable=True),
+        Column("actual_fired_at", DATETIMETZ_TYPE, server_default="now()", immutable=True),
+        Column("status", STRING_TYPE),
+        Column("output", JSONB_TYPE, nullable=True),
+        Column("latency_ms", INT_TYPE, nullable=True),
+        Column("error", STRING_TYPE, nullable=True),
+        Column("date_created", DATETIMETZ_TYPE, server_default="now()", immutable=True),
+    ],
 )
 
 
-_FIRE_INSERT_COLUMNS: tuple[str, ...] = (
-    "partition_key",
-    "fire_id",
-    "job_id",
-    "scheduled_fire_at",
-    "actual_fired_at",
-    "status",
-    "output",
-    "latency_ms",
-    "error",
-    "date_created",
-)
+#: every ``scheduled_jobs`` column, as the reads select them
+_SCHEDULED_JOBS_SELECT_COLUMNS = ", ".join(column.name for column in _SCHEDULED_JOBS_SCHEMA.columns)
 
 
-_FIRE_UPDATE_COLUMNS: tuple[str, ...] = (
-    "status",
-    "output",
-    "latency_ms",
-    "error",
-)
-
-
-def _build_upsert_sql(
-    table: str,
-    insert_cols: Sequence[str],
-    update_cols: Sequence[str],
-    pk_cols: Sequence[str],
-) -> str:
-    """Build a parameterised INSERT ... ON CONFLICT DO UPDATE statement.
-
-    Positional parameters bind to ``insert_cols`` in declared order.
-
-    :param table: table name
-    :ptype table: str
-    :param insert_cols: columns to write on INSERT (in positional-param
-        order)
-    :ptype insert_cols: Sequence[str]
-    :param update_cols: columns to update on conflict
-    :ptype update_cols: Sequence[str]
-    :param pk_cols: conflict target columns
-    :ptype pk_cols: Sequence[str]
-    :return: SQL string ready for ``execute()``
-    :rtype: str
-    """
-    placeholders = ", ".join(f"${i + 1}" for i in range(len(insert_cols)))
-    column_list = ", ".join(insert_cols)
-    pk_list = ", ".join(pk_cols)
-    set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
-    return (
-        f"INSERT INTO {table} ({column_list}) VALUES ({placeholders}) "
-        f"ON CONFLICT ({pk_list}) DO UPDATE SET {set_clause}"
-    )
-
-
-_SCHEDULED_JOBS_UPSERT_SQL = _build_upsert_sql(
-    "scheduled_jobs",
-    _JOB_INSERT_COLUMNS,
-    _JOB_UPDATE_COLUMNS,
-    ("partition_key", "job_id"),
-)
-
-
-_JOB_FIRES_UPSERT_SQL = _build_upsert_sql(
-    "job_fires",
-    _FIRE_INSERT_COLUMNS,
-    _FIRE_UPDATE_COLUMNS,
-    ("partition_key", "fire_id"),
-)
+#: every ``job_fires`` column, as the reads select them
+_JOB_FIRES_SELECT_COLUMNS = ", ".join(column.name for column in _JOB_FIRES_SCHEMA.columns)
 
 
 _SCHEDULED_JOBS_FETCH_SQL = (
-    "SELECT partition_key, job_id, kind, payload, schedule_type, "
-    "schedule_config, status, next_fire_at, last_fired_at, "
-    "missed_fire_policy, name, date_created, date_updated "
+    f"SELECT {_SCHEDULED_JOBS_SELECT_COLUMNS} "  # noqa: S608 - declared column names, no user input
     "FROM scheduled_jobs WHERE partition_key = $1 AND job_id = $2"
 )
 
@@ -198,8 +123,7 @@ _SCHEDULED_JOBS_DELETE_SQL = "DELETE FROM scheduled_jobs WHERE partition_key = $
 
 
 _JOB_FIRES_FETCH_SQL = (
-    "SELECT partition_key, fire_id, job_id, scheduled_fire_at, "
-    "actual_fired_at, status, output, latency_ms, error, date_created "
+    f"SELECT {_JOB_FIRES_SELECT_COLUMNS} "  # noqa: S608 - declared column names, no user input
     "FROM job_fires WHERE partition_key = $1 AND fire_id = $2"
 )
 
@@ -212,15 +136,7 @@ _JOB_FIRES_DELETE_SQL = "DELETE FROM job_fires WHERE partition_key = $1 AND fire
 REAPED_DISPATCH_ERROR: str = "reaped: dispatch abandoned in 'dispatching' (pod died mid-dispatch)"
 
 
-# the column list reused by every multi-row scheduled_jobs read.
-_SCHEDULED_JOBS_SELECT_COLUMNS = (
-    "partition_key, job_id, kind, payload, schedule_type, "
-    "schedule_config, status, next_fire_at, last_fired_at, "
-    "missed_fire_policy, name, date_created, date_updated"
-)
-
-
-class ScheduledJobCollection(BaseCollection[ScheduledJobEntity]):
+class ScheduledJobCollection(DeclaredTableCollection[ScheduledJobEntity]):
     """Three-tier collection for :class:`ScheduledJobEntity`.
 
     Implements :class:`~threetears.scheduled_jobs.protocols.ScheduleStore`.
@@ -229,14 +145,15 @@ class ScheduledJobCollection(BaseCollection[ScheduledJobEntity]):
     ``job_fires.job_id`` reference the bare id.
     """
 
-    primary_key_column: str | tuple[str, ...] = ("partition_key", "job_id")
+    schema: ClassVar[TableSchema] = _SCHEDULED_JOBS_SCHEMA
 
     partition_column: ClassVar[str] = "partition_key"
 
-    @property
-    def table_name(self) -> str:
-        """Return the L3 table name."""
-        return "scheduled_jobs"
+    #: ``job_fires.job_id`` references ``scheduled_jobs.job_id`` ``ON DELETE CASCADE``: a job's
+    #: fires go with it, so a delete announces them and no tier keeps serving one.
+    delete_cascades: ClassVar[tuple[DeleteCascade, ...]] = (
+        DeleteCascade("job_fires", "job_id", "CASCADE", parent_column="job_id"),
+    )
 
     @property
     def entity_class(self) -> type[ScheduledJobEntity]:
@@ -268,10 +185,16 @@ class ScheduledJobCollection(BaseCollection[ScheduledJobEntity]):
         *,
         conn: Any = None,
     ) -> int:
-        """Upsert a job row.
+        """Upsert a job row, writing only the columns ``data`` carries.
+
+        A column ``data`` does not carry is left to the table: its default
+        on an insert, its stored value on an update; ``None`` for
+        ``payload`` / ``schedule_config`` (``NOT NULL DEFAULT '{}'``) counts
+        as not carried. ``date_created`` is kept by an update
+        (:meth:`DeclaredTableCollection.write_row`).
 
         :param data: row dict keyed by column name; must carry both pk
-            columns and every non-nullable column
+            columns, and every ``NOT NULL`` column without a default to insert
         :ptype data: dict[str, Any]
         :param original_timestamp: ignored (no CAS fence -- job updates
             are idempotent in the upsert path)
@@ -282,12 +205,7 @@ class ScheduledJobCollection(BaseCollection[ScheduledJobEntity]):
         :rtype: int
         """
         del original_timestamp
-        params = _job_insert_params(data)
-        target = conn if conn is not None else self.l3_pool
-        if target is None:
-            return 0
-        await target.execute(_SCHEDULED_JOBS_UPSERT_SQL, *params)
-        return 1
+        return await self.write_row(data, conn=conn)
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """Delete a job row by composite pk.
@@ -306,14 +224,6 @@ class ScheduledJobCollection(BaseCollection[ScheduledJobEntity]):
         partition_key, job_id = self.normalize_pk(entity_id)
         await self.l3_pool.execute(_SCHEDULED_JOBS_DELETE_SQL, partition_key, job_id)
         return None
-
-    def serialize(self, data: dict[str, Any]) -> bytes:
-        """Encode a row dict for L2 (NATS KV) storage."""
-        return serialize_to_json(data)
-
-    def deserialize(self, data: bytes) -> dict[str, Any]:
-        """Decode L2-cached bytes back to a row dict."""
-        return deserialize_from_json(data, _JOB_FIELD_TYPES)
 
     # --- ScheduleStore protocol methods ---
 
@@ -574,20 +484,19 @@ class ScheduledJobCollection(BaseCollection[ScheduledJobEntity]):
             raise ValueError(msg)
         changed = None
         if self.l3_pool is not None:
-            # cache-bypass: targeted UPDATE that settles no cache tier, and that is safe only
-            # because no code reads a scheduled_jobs row by primary key: get_by_job_id,
-            # list_jobs, list_for_partition, list_due_for_tick and update_schedule all query
-            # L3, so a cached copy of this row is never served. A by-pk reader added later must
-            # add the eviction (see threetears.agent.wake.collections for the shape).
-            changed = await self.l3_pool.fetchval(
-                "UPDATE scheduled_jobs SET status = $1, date_updated = $2 "
-                "WHERE partition_key = $3 AND job_id = $4 "
-                "RETURNING job_id",
-                status,
-                now,
-                partition_key,
-                job_id,
-            )
+            # cache-bypass: targeted UPDATE; the row is evicted from every tier once it lands.
+            async with self.bypassing_write((partition_key, job_id)) as write:
+                changed = await self.l3_pool.fetchval(
+                    "UPDATE scheduled_jobs SET status = $1, date_updated = $2 "
+                    "WHERE partition_key = $3 AND job_id = $4 "
+                    "RETURNING job_id",
+                    status,
+                    now,
+                    partition_key,
+                    job_id,
+                )
+                if changed is None:
+                    write.unchanged()
         return changed is not None
 
     async def update_schedule(
@@ -646,17 +555,21 @@ class ScheduledJobCollection(BaseCollection[ScheduledJobEntity]):
                     row["last_fired_at"],
                     now,
                 )
-                changed = await self.l3_pool.fetchval(
-                    "UPDATE scheduled_jobs "
-                    "SET schedule_config = $1, next_fire_at = $2, date_updated = $3 "
-                    "WHERE partition_key = $4 AND job_id = $5 "
-                    "RETURNING job_id",
-                    schedule_config,
-                    next_fire_at,
-                    now,
-                    partition_key,
-                    job_id,
-                )
+                # cache-bypass: targeted UPDATE; the row is evicted from every tier once it lands.
+                async with self.bypassing_write((partition_key, job_id)) as write:
+                    changed = await self.l3_pool.fetchval(
+                        "UPDATE scheduled_jobs "
+                        "SET schedule_config = $1, next_fire_at = $2, date_updated = $3 "
+                        "WHERE partition_key = $4 AND job_id = $5 "
+                        "RETURNING job_id",
+                        schedule_config,
+                        next_fire_at,
+                        now,
+                        partition_key,
+                        job_id,
+                    )
+                    if changed is None:
+                        write.unchanged()
                 updated = changed is not None
         return updated
 
@@ -690,16 +603,19 @@ class ScheduledJobCollection(BaseCollection[ScheduledJobEntity]):
         """
         requested = None
         if self.l3_pool is not None:
-            # cache-bypass: targeted UPDATE guarded on status. Settles no cache tier; safe only
-            # because no code reads a scheduled_jobs row by primary key (see set_status).
-            requested = await self.l3_pool.fetchval(
-                "UPDATE scheduled_jobs SET next_fire_at = $1, date_updated = $1 "
-                "WHERE partition_key = $2 AND job_id = $3 AND status = 'active' "
-                "RETURNING job_id",
-                now,
-                partition_key,
-                job_id,
-            )
+            # cache-bypass: targeted UPDATE guarded on status; the row is evicted from every tier
+            # once it lands, unless the guard matched nothing.
+            async with self.bypassing_write((partition_key, job_id)) as write:
+                requested = await self.l3_pool.fetchval(
+                    "UPDATE scheduled_jobs SET next_fire_at = $1, date_updated = $1 "
+                    "WHERE partition_key = $2 AND job_id = $3 AND status = 'active' "
+                    "RETURNING job_id",
+                    now,
+                    partition_key,
+                    job_id,
+                )
+                if requested is None:
+                    write.unchanged()
         return requested is not None
 
     async def claim_and_reschedule(
@@ -739,24 +655,27 @@ class ScheduledJobCollection(BaseCollection[ScheduledJobEntity]):
         """
         if self.l3_pool is None:
             return False
-        # cache-bypass: atomic CAS UPDATE. Settles no cache tier; safe only because no code
-        # reads a scheduled_jobs row by primary key (see set_status).
-        claimed = await self.l3_pool.fetchval(
-            "UPDATE scheduled_jobs "
-            "SET next_fire_at = $1, last_fired_at = $2, date_updated = $2, status = $3 "
-            "WHERE partition_key = $4 AND job_id = $5 AND next_fire_at = $6 "
-            "RETURNING job_id",
-            computed_next_fire,
-            now,
-            new_status,
-            partition_key,
-            job_id,
-            expected_next_fire,
-        )
+        # cache-bypass: atomic CAS UPDATE; the row is evicted from every tier once it lands, and
+        # a claim that lost changed nothing and evicts nothing.
+        async with self.bypassing_write((partition_key, job_id)) as write:
+            claimed = await self.l3_pool.fetchval(
+                "UPDATE scheduled_jobs "
+                "SET next_fire_at = $1, last_fired_at = $2, date_updated = $2, status = $3 "
+                "WHERE partition_key = $4 AND job_id = $5 AND next_fire_at = $6 "
+                "RETURNING job_id",
+                computed_next_fire,
+                now,
+                new_status,
+                partition_key,
+                job_id,
+                expected_next_fire,
+            )
+            if claimed is None:
+                write.unchanged()
         return claimed is not None
 
 
-class JobFireCollection(BaseCollection[JobFireEntity]):
+class JobFireCollection(DeclaredTableCollection[JobFireEntity]):
     """Three-tier collection for :class:`JobFireEntity`.
 
     Implements :class:`~threetears.scheduled_jobs.protocols.FireStore`.
@@ -766,14 +685,9 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
     status.
     """
 
-    primary_key_column: str | tuple[str, ...] = ("partition_key", "fire_id")
+    schema: ClassVar[TableSchema] = _JOB_FIRES_SCHEMA
 
     partition_column: ClassVar[str] = "partition_key"
-
-    @property
-    def table_name(self) -> str:
-        """Return the L3 table name."""
-        return "job_fires"
 
     @property
     def entity_class(self) -> type[JobFireEntity]:
@@ -799,7 +713,10 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
         *,
         conn: Any = None,
     ) -> int:
-        """Upsert a fire row.
+        """Upsert a fire row, writing only the columns ``data`` carries.
+
+        An update of a stored fire writes only its outcome; its job and
+        instants are kept (:meth:`DeclaredTableCollection.write_row`).
 
         :param data: row dict keyed by column name
         :ptype data: dict[str, Any]
@@ -811,12 +728,7 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
         :rtype: int
         """
         del original_timestamp
-        params = _fire_insert_params(data)
-        target = conn if conn is not None else self.l3_pool
-        if target is None:
-            return 0
-        await target.execute(_JOB_FIRES_UPSERT_SQL, *params)
-        return 1
+        return await self.write_row(data, conn=conn)
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """Delete a fire row by composite pk."""
@@ -825,14 +737,6 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
         partition_key, fire_id = self.normalize_pk(entity_id)
         await self.l3_pool.execute(_JOB_FIRES_DELETE_SQL, partition_key, fire_id)
         return None
-
-    def serialize(self, data: dict[str, Any]) -> bytes:
-        """Encode a row dict for L2 (NATS KV) storage."""
-        return serialize_to_json(data)
-
-    def deserialize(self, data: bytes) -> dict[str, Any]:
-        """Decode L2-cached bytes back to a row dict."""
-        return deserialize_from_json(data, _FIRE_FIELD_TYPES)
 
     # --- FireStore protocol methods ---
 
@@ -869,18 +773,20 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
         """
         if self.l3_pool is None:
             return None
-        # cache-bypass: INSERT of a fresh fire_id, which no cache can hold.
-        await self.l3_pool.execute(
-            "INSERT INTO job_fires "
-            "(partition_key, fire_id, job_id, scheduled_fire_at, actual_fired_at, status) "
-            "VALUES ($1, $2, $3, $4, $5, $6)",
-            partition_key,
-            fire_id,
-            job_id,
-            scheduled_fire_at,
-            actual_fired_at,
-            "dispatching",
-        )
+        # cache-bypass: INSERT of a new fire; its key is settled in every tier once it lands, so
+        # a read of it that missed before the insert holds no stale absence.
+        async with self.bypassing_write((partition_key, fire_id)):
+            await self.l3_pool.execute(
+                "INSERT INTO job_fires "
+                "(partition_key, fire_id, job_id, scheduled_fire_at, actual_fired_at, status) "
+                "VALUES ($1, $2, $3, $4, $5, $6)",
+                partition_key,
+                fire_id,
+                job_id,
+                scheduled_fire_at,
+                actual_fired_at,
+                "dispatching",
+            )
         return None
 
     async def finalize_success(
@@ -912,15 +818,18 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
         """
         if self.l3_pool is None:
             return None
-        # cache-bypass: targeted UPDATE on the terminal-state columns.
-        await self.l3_pool.execute(
-            "UPDATE job_fires SET status = $1, output = $2, latency_ms = $3 WHERE partition_key = $4 AND fire_id = $5",
-            status,
-            output,
-            latency_ms,
-            partition_key,
-            fire_id,
-        )
+        # cache-bypass: targeted UPDATE on the terminal-state columns; the row is evicted from
+        # every tier once it lands.
+        async with self.bypassing_write((partition_key, fire_id)):
+            await self.l3_pool.execute(
+                "UPDATE job_fires SET status = $1, output = $2, latency_ms = $3 "
+                "WHERE partition_key = $4 AND fire_id = $5",
+                status,
+                output,
+                latency_ms,
+                partition_key,
+                fire_id,
+            )
         return None
 
     async def finalize_failed(
@@ -954,17 +863,19 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
         """
         if self.l3_pool is None:
             return None
-        # cache-bypass: targeted UPDATE on the failure columns.
-        await self.l3_pool.execute(
-            "UPDATE job_fires SET status = 'failed', error = $1, latency_ms = $2, "
-            "output = COALESCE($5::jsonb, output) "
-            "WHERE partition_key = $3 AND fire_id = $4",
-            error,
-            latency_ms,
-            partition_key,
-            fire_id,
-            output,
-        )
+        # cache-bypass: targeted UPDATE on the failure columns; the row is evicted from every
+        # tier once it lands.
+        async with self.bypassing_write((partition_key, fire_id)):
+            await self.l3_pool.execute(
+                "UPDATE job_fires SET status = 'failed', error = $1, latency_ms = $2, "
+                "output = COALESCE($5::jsonb, output) "
+                "WHERE partition_key = $3 AND fire_id = $4",
+                error,
+                latency_ms,
+                partition_key,
+                fire_id,
+                output,
+            )
         return None
 
     async def latest_for_jobs(
@@ -1049,18 +960,19 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
         # cannot apply by construction. ``partition_key`` is named in the
         # RETURNING clause so the partition-column enforcement walker sees
         # it as a static literal (same technique as list_due_for_tick).
-        # cache-bypass: bulk terminal-state UPDATE across partitions; not
-        # pk-addressable, so the L1 row cache cannot serve or invalidate
-        # it -- the reaped rows re-materialize on the next targeted fetch.
-        rows = await self.l3_pool.fetch(
-            "UPDATE job_fires SET status = 'failed', error = $1 "
-            "WHERE status = 'dispatching' AND actual_fired_at < $2 "
-            "AND job_id IN (SELECT job_id FROM scheduled_jobs WHERE kind = ANY($3)) "
-            "RETURNING partition_key, fire_id",
-            REAPED_DISPATCH_ERROR,
-            cutoff,
-            list(kinds),
-        )
+        # cache-bypass: bulk terminal-state UPDATE across partitions; the rows it reaped are
+        # named by its RETURNING and evicted from every tier once it lands.
+        async with self.bypassing_write() as write:
+            rows = await self.l3_pool.fetch(
+                "UPDATE job_fires SET status = 'failed', error = $1 "
+                "WHERE status = 'dispatching' AND actual_fired_at < $2 "
+                "AND job_id IN (SELECT job_id FROM scheduled_jobs WHERE kind = ANY($3)) "
+                "RETURNING partition_key, fire_id",
+                REAPED_DISPATCH_ERROR,
+                cutoff,
+                list(kinds),
+            )
+            write.touches(*((row["partition_key"], row["fire_id"]) for row in rows))
         return len(rows)
 
     async def reap_fires(self, fire_ids: Sequence[UUID]) -> list[UUID]:
@@ -1083,13 +995,15 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
         # ``partition_key`` is named in the RETURNING clause so the
         # partition-column enforcement walker sees it as a static literal.
         # cache-bypass: see reap_stale_dispatching.
-        rows = await self.l3_pool.fetch(
-            "UPDATE job_fires SET status = 'failed', error = $1 "
-            "WHERE status = 'dispatching' AND fire_id = ANY($2::uuid[]) "
-            "RETURNING partition_key, fire_id",
-            REAPED_DISPATCH_ERROR,
-            list(fire_ids),
-        )
+        async with self.bypassing_write() as write:
+            rows = await self.l3_pool.fetch(
+                "UPDATE job_fires SET status = 'failed', error = $1 "
+                "WHERE status = 'dispatching' AND fire_id = ANY($2::uuid[]) "
+                "RETURNING partition_key, fire_id",
+                REAPED_DISPATCH_ERROR,
+                list(fire_ids),
+            )
+            write.touches(*((row["partition_key"], row["fire_id"]) for row in rows))
         return [row["fire_id"] for row in rows]
 
     async def list_for_job(
@@ -1114,8 +1028,7 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
             return []
         # cache-bypass: per-job history scan.
         rows = await self.l3_pool.fetch(
-            "SELECT partition_key, fire_id, job_id, scheduled_fire_at, "
-            "actual_fired_at, status, output, latency_ms, error, date_created "
+            f"SELECT {_JOB_FIRES_SELECT_COLUMNS} "  # noqa: S608 - declared column names, no user input
             "FROM job_fires "
             "WHERE partition_key = $1 AND job_id = $2 "
             "ORDER BY actual_fired_at DESC LIMIT $3",
@@ -1124,75 +1037,3 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
             limit,
         )
         return [JobFireEntity(dict(row), is_new=False, collection=self) for row in rows]
-
-
-# --- helpers -----------------------------------------------------------
-
-
-def _job_insert_params(data: dict[str, Any]) -> list[Any]:
-    """Project a row dict onto the job upsert's positional params.
-
-    Missing values are coerced to the schema's DEFAULT-equivalent so
-    every column carries an explicit bound value (the upsert path writes
-    every column unconditionally; relying on server defaults here would
-    change the bound-values arity and break the SQL).
-
-    :param data: row dict keyed by column name
-    :ptype data: dict[str, Any]
-    :return: positional parameter list in ``_JOB_INSERT_COLUMNS`` order
-    :rtype: list[Any]
-    """
-    return [_job_value_for_column(col, data) for col in _JOB_INSERT_COLUMNS]
-
-
-def _job_value_for_column(col: str, data: dict[str, Any]) -> Any:
-    """Return ``data[col]`` with defaults applied for columns that have a
-    DB-side default.
-
-    :param col: column name
-    :ptype col: str
-    :param data: row dict
-    :ptype data: dict[str, Any]
-    :return: value to bind for this column
-    :rtype: Any
-    """
-    if col in data:
-        value = data[col]
-        if col in {"payload", "schedule_config"} and value is None:
-            return {}
-        return value
-    if col in {"payload", "schedule_config"}:
-        return {}
-    if col == "status":
-        return "active"
-    if col == "missed_fire_policy":
-        return "coalesce"
-    return None
-
-
-def _fire_insert_params(data: dict[str, Any]) -> list[Any]:
-    """Project a row dict onto the fire upsert's positional params.
-
-    :param data: row dict keyed by column name
-    :ptype data: dict[str, Any]
-    :return: positional parameter list in ``_FIRE_INSERT_COLUMNS`` order
-    :rtype: list[Any]
-    """
-    return [_fire_value_for_column(col, data) for col in _FIRE_INSERT_COLUMNS]
-
-
-def _fire_value_for_column(col: str, data: dict[str, Any]) -> Any:
-    """Return ``data[col]`` with defaults for omittable columns.
-
-    :param col: column name
-    :ptype col: str
-    :param data: row dict
-    :ptype data: dict[str, Any]
-    :return: value to bind for this column
-    :rtype: Any
-    """
-    if col in data:
-        return data[col]
-    if col == "status":
-        return "dispatching"
-    return None

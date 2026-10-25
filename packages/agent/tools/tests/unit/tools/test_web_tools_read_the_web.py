@@ -286,7 +286,7 @@ class TestTheUserAgentNamesTheDeployment:
             seen.update(kwargs)
             return RecordedFetchTransport({})
 
-        monkeypatch.setattr("threetears.agent.tools.search_transport.build_fetch_transport", _build)
+        monkeypatch.setattr("threetears.agent.tools.builtin.web_fetch.build_fetch_transport", _build)
 
         create_web_fetch_tool({"user_agent": "metallm/0.71.0", "pdf_max_bytes": 30_000_000}, "fetch")
 
@@ -390,7 +390,7 @@ class TestPdfs:
             await asyncio.sleep(0.5)
             return DocumentResult(text="late", title=None, page_count=1, word_count=1, was_ocr=False)
 
-        monkeypatch.setattr("threetears.agent.tools.document.parse_document", _slow)
+        monkeypatch.setattr("threetears.agent.tools.builtin.web_fetch.parse_document", _slow)
         reader = pdf_reader(parse_timeout_seconds=0.05)
 
         with pytest.raises(web_fetch_module.CarrierUnreadable, match=r"took longer than 0\.05 s"):
@@ -407,7 +407,7 @@ class TestPdfs:
             seen.update(kwargs)
             return await real(*args, **kwargs)
 
-        monkeypatch.setattr("threetears.agent.tools.document.parse_document", _spy)
+        monkeypatch.setattr("threetears.agent.tools.builtin.web_fetch.parse_document", _spy)
 
         await pdf_reader().read(_fixture("otter-survey.pdf"))
 

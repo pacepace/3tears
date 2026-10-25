@@ -33,7 +33,7 @@ public API:
 
 from __future__ import annotations
 
-from threetears.core.data.migrations.ddl_lock import (
+from threetears.core.ddl.ddl_lock import (
     DDL_LOCK_NAMESPACE,
     DdlLockLease,
     DdlLockPolicy,
@@ -46,7 +46,7 @@ from threetears.core.data.migrations.drift import (
     parse_ddl_to_expected,
     snapshot_live_schema,
 )
-from threetears.core.data.migrations.errors import (
+from threetears.core.ddl.errors import (
     DdlLockError,
     DdlLockReleaseError,
     DdlLockTimeoutError,
@@ -77,7 +77,7 @@ from threetears.core.data.migrations.registry import (
 )
 from threetears.core.data.migrations.runner import MigrationRunner
 from threetears.core.data.migrations.scope import MigrationScope
-from threetears.core.data.migrations.session import (
+from threetears.core.ddl.session import (
     ConnectionSession,
     MigrationSession,
     SqlConnection,

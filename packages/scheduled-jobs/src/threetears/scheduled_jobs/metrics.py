@@ -28,6 +28,13 @@ from typing import TYPE_CHECKING, Any, Final
 
 from threetears.observe import BuildOnce, get_logger
 
+try:
+    from prometheus_client import REGISTRY, Counter, Histogram
+
+    _PROMETHEUS = True
+except ImportError:  # NOSILENT: the prometheus extra is optional; the emitter no-ops without it
+    _PROMETHEUS = False
+
 if TYPE_CHECKING:
     from prometheus_client import CollectorRegistry
 
@@ -142,14 +149,12 @@ class ScheduledJobsMetricsEmitter:
         self._initialise()
 
     def _initialise(self) -> None:
-        """Import ``prometheus_client`` + register the locked instruments.
+        """Register the locked instruments.
 
-        On import failure (extra not installed) leaves ``_available`` as
-        ``False``; subsequent emit calls become no-ops.
+        Without ``prometheus_client`` (extra not installed) leaves
+        ``_available`` as ``False``; subsequent emit calls become no-ops.
         """
-        try:
-            from prometheus_client import REGISTRY, Counter, Histogram
-        except ImportError:
+        if not _PROMETHEUS:
             log.debug("prometheus_client not installed -- scheduled-jobs metrics disabled")
             return
 

@@ -494,6 +494,12 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
                 "Subjects.hub_collection_keys_purge()",
                 str(Subjects.hub_collection_keys_purge()),
             ),
+            # a pod tells the hub a CDN-cached index it serves moved, so the hub purges the customer's copy
+            _here(
+                "packages/nats/src/threetears/nats/cache_index_requests.py",
+                "Subjects.hub_cache_index_moved()",
+                str(Subjects.hub_cache_index_moved()),
+            ),
             _here(
                 "packages/agent/tools/src/threetears/agent/tools/object_resolver.py",
                 "Subjects.hub_object_resolve()",

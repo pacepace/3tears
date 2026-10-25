@@ -34,7 +34,7 @@ from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
 )
-from threetears.agent.workspace.factory import register_tool_builder
+from threetears.agent.workspace.tool_registry import register_tool_builder
 from threetears.agent.workspace.sandbox import WorkspaceSandbox
 from threetears.agent.workspace.tools.helpers import (
     NoWorkspacePinned,

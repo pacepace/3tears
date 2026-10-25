@@ -89,6 +89,8 @@ from nats.js.api import (
     AckPolicy as _NatsAckPolicy,
     ConsumerConfig as _NatsConsumerConfig,
     DeliverPolicy as _NatsDeliverPolicy,
+    DiscardPolicy as _NatsDiscardPolicy,
+    StorageType as _NatsStorageType,
     StreamConfig as _NatsStreamConfig,
 )
 from nats.errors import (
@@ -101,6 +103,7 @@ from nats.errors import (
     StaleConnectionError as _NatsStaleConnectionError,
     TimeoutError as _NatsTimeoutError,
 )
+from nats.js.errors import APIError as _NatsJsAPIError
 from nats.js.errors import NotFoundError as _NatsJsNotFoundError
 from pydantic import BaseModel, ValidationError
 from threetears.observe import cancel_and_wait, contain, get_logger, representative_exception
@@ -136,12 +139,15 @@ from threetears.nats.errors import (
     NamespaceNotConfiguredError,
     NatsClientError,
     NoRespondersError,
+    ObjectStoreError,
     PublishError,
     RequestError,
     RequestTimeoutError,
     StreamSubjectsOverlapError,
     SubscribeError,
 )
+from threetears.nats.kv import DEFAULT_KV_TIMINGS, NatsKvBucket, build_kv_stream_config, reconcile_kv_stream
+from threetears.nats.object_store import NatsObjectStore, object_store_stream_name
 from threetears.nats.own_consumer import delivered_by_own_consumer, random_consumer_name
 from threetears.nats.result_delivery import SYNC_REPLY_BUDGET_SECONDS
 from threetears.nats.subject_permissions import SERVER_USER_INFO_SUBJECT, kv_stream_name
@@ -225,8 +231,7 @@ if TYPE_CHECKING:
     from nats.aio.client import Server as _NatsServer
     from nats.aio.msg import Msg as _NatsMsg
 
-    from threetears.nats.kv import KvRestoredHook, KvTimings, NatsKvBucket
-    from threetears.nats.object_store import NatsObjectStore
+    from threetears.nats.kv import KvRestoredHook, KvTimings
     from threetears.nats.transport import RawMessageCallback
 
 
@@ -3557,9 +3562,6 @@ class NatsClient:
         :rtype: None
         :raises Exception: any other refusal or failure; the round logs it and retries
         """
-        # local import avoids circular dependency between client.py and kv.py
-        from threetears.nats.kv import reconcile_kv_stream
-
         outcome = "re-declared after a NATS reconnect (created if a restart had wiped it)"
         stream = config.name or ""
         if stream in self._kv_refills and not await _stream_exists(js, stream):
@@ -5623,9 +5625,6 @@ class NatsClient:
         :raises KvError: if bucket creation or binding fails for any other reason
         :raises KvConfigMismatch: if a bind-only open finds a reconciled field differing
         """
-        # local import avoids circular dependency between client.py and kv.py
-        from threetears.nats.kv import DEFAULT_KV_TIMINGS, NatsKvBucket
-
         full_name = f"{self._namespace}-{name}"
         cached = self._buckets.get(full_name)
         if cached is not None:
@@ -5828,10 +5827,6 @@ class NatsClient:
             an owner finds the bucket live on file storage without ``drop_file_storage``
         :raises StreamSubjectsOverlapError: if a different stream owns the bucket's subjects
         """
-        # local import avoids circular dependency between client.py and kv.py
-        from nats.js.api import StorageType  # noqa: PLC0415
-        from threetears.nats.kv import DEFAULT_KV_TIMINGS, NatsKvBucket, build_kv_stream_config
-
         full_name = f"{self._namespace}-{name}" if prefix_namespace else name
         if replicas is not None and replicas <= 0:
             raise ValueError(f"KV bucket {full_name!r} needs at least one replica, got {replicas!r}")
@@ -5846,7 +5841,7 @@ class NatsClient:
             bucket=full_name,
             ttl_seconds=int(ttl.total_seconds()) if ttl is not None else 0,
             history=history,
-            storage_type=StorageType.FILE if storage == "file" else StorageType.MEMORY,
+            storage_type=_NatsStorageType.FILE if storage == "file" else _NatsStorageType.MEMORY,
             direct=direct,
             max_bytes=max_bytes,
             replicas=replicas,
@@ -5950,11 +5945,9 @@ class NatsClient:
         :raises StreamSubjectsOverlapError: if subjects are already claimed by a different stream
         :raises RuntimeError: if stream creation and update both fail
         """
-        from nats.js.api import StorageType, StreamConfig  # noqa: PLC0415
-
         full_name = f"{self._namespace}-{name}"
-        storage_type = StorageType.FILE if storage == "file" else StorageType.MEMORY
-        config = StreamConfig(name=full_name, subjects=subjects, storage=storage_type)
+        storage_type = _NatsStorageType.FILE if storage == "file" else _NatsStorageType.MEMORY
+        config = _NatsStreamConfig(name=full_name, subjects=subjects, storage=storage_type)
         if max_age_seconds is not None:
             config.max_age = max_age_seconds
         if max_msgs_per_subject is not None:
@@ -6007,8 +6000,6 @@ class NatsClient:
         :raises ObjectStoreNotFoundError: when the bucket does not exist
         :raises ObjectStoreError: when the bind fails otherwise
         """
-        from threetears.nats.object_store import NatsObjectStore  # noqa: PLC0415 -- object_store imports client's types
-
         full_name = f"{self._namespace}-{name}" if prefix_namespace else name
         store = NatsObjectStore(client=self, full_name=full_name)
         await store.bind()
@@ -6057,24 +6048,18 @@ class NatsClient:
         :raises StreamSubjectsOverlapError: when another stream owns the bucket's subjects
         :raises ObjectStoreError: when the create and the update both fail
         """
-        from nats.js.api import DiscardPolicy, StorageType, StreamConfig  # noqa: PLC0415
-        from nats.js.errors import APIError  # noqa: PLC0415
-
-        from threetears.nats.errors import ObjectStoreError  # noqa: PLC0415
-        from threetears.nats.object_store import NatsObjectStore, object_store_stream_name  # noqa: PLC0415
-
         if max_bytes <= 0:
             raise ValueError(f"an object store needs a positive max_bytes, got {max_bytes!r}")
         if replicas <= 0:
             raise ValueError(f"an object store needs at least one replica, got {replicas!r}")
         full_name = f"{self._namespace}-{name}" if prefix_namespace else name
         stream = object_store_stream_name(full_name)
-        config = StreamConfig(
+        config = _NatsStreamConfig(
             name=stream,
             subjects=[f"$O.{full_name}.C.>", f"$O.{full_name}.M.>"],
-            storage=StorageType.FILE if storage == "file" else StorageType.MEMORY,
+            storage=_NatsStorageType.FILE if storage == "file" else _NatsStorageType.MEMORY,
             max_bytes=max_bytes,
-            discard=DiscardPolicy.NEW,
+            discard=_NatsDiscardPolicy.NEW,
             # off: a rollup header purges a subject's -- or with ``all`` the whole stream's -- history,
             # a purge by publish that a writer holding only ``$O.`` must not have. objects are written
             # once, so a metadata subject holds one message without it.
@@ -6085,7 +6070,7 @@ class NatsClient:
         js = self.jetstream_context()
         try:
             await js.add_stream(config)
-        except APIError as exc:
+        except _NatsJsAPIError as exc:
             if exc.err_code == _JS_ERR_SUBJECTS_OVERLAP:
                 raise StreamSubjectsOverlapError(
                     f"cannot create object store {full_name!r}: its subjects are claimed by a different stream"
@@ -6096,7 +6081,7 @@ class NatsClient:
             try:
                 live = (await js.stream_info(stream)).config
                 await js.update_stream(config)
-            except APIError as update_exc:
+            except _NatsJsAPIError as update_exc:
                 raise ObjectStoreError(
                     f"object store {full_name!r} is live with another shape and could not be updated: {update_exc}"
                 ) from update_exc
@@ -6132,12 +6117,10 @@ class NatsClient:
         :rtype: None
         :raises NatsClientError: when the delete is refused for any reason but absence
         """
-        from nats.js.errors import NotFoundError  # noqa: PLC0415
-
         self._forget_declaration(stream)
         try:
             await self.jetstream_context().delete_stream(stream)
-        except NotFoundError:
+        except _NatsJsNotFoundError:
             log.debug("withdrawn stream %s was already gone", stream)
         except Exception as exc:
             raise NatsClientError(f"deleting stream {stream!r} failed: {exc}") from exc
@@ -6157,8 +6140,6 @@ class NatsClient:
         :rtype: None
         :raises NatsClientError: when the delete is refused
         """
-        from threetears.nats.object_store import object_store_stream_name  # noqa: PLC0415
-
         full_name = f"{self._namespace}-{name}" if prefix_namespace else name
         await self._withdraw(object_store_stream_name(full_name))
 

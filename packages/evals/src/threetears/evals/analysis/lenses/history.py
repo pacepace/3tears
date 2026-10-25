@@ -64,6 +64,14 @@ from threetears.evals.analysis.lenses.contestants import (
     identity_version_span,
     ContestantKey,
 )
+from threetears.evals.analysis.bundle.measures import in_population
+from threetears.evals.kernel.metrics import summary_population
+from threetears.evals.analysis.stats import (
+    EQUIVALENCE_TEST_NAME,
+    PAIRED_TEST_NAME,
+    paired_change,
+    standard_error_of_mean,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -549,9 +557,6 @@ def _host_measure_value_of(descriptor: MetricDescriptor) -> Callable[[EvalResult
     :raises HistoryError: The measure is not numeric, or declares no direction — a series could not say which
         way a step is a decline.
     """
-    from threetears.evals.analysis.bundle.measures import in_population
-    from threetears.evals.kernel.metrics import summary_population
-
     name = descriptor.name
     if descriptor.data_type != "numeric" or descriptor.higher_is_better is None:
         raise HistoryError(
@@ -725,13 +730,6 @@ def compute_history(
         before any row is read, so a typo cannot return an empty series that
         reads like a measure nobody recorded.
     """
-    from threetears.evals.analysis.stats import (
-        EQUIVALENCE_TEST_NAME,
-        PAIRED_TEST_NAME,
-        paired_change,
-        standard_error_of_mean,
-    )
-
     # A series point is a mean over cases, so the catalog name for what this returns
     # is `mean_composite` / `mean_cost_usd` / `mean_total_ms` — accepted here beside
     # the row names, resolved before the closed-set check for the reason `pivot`

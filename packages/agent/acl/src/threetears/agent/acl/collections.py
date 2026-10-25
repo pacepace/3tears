@@ -73,14 +73,17 @@ from threetears.agent.acl.entities import (
     RoleEntity,
     row_scope_for_customer,
 )
+from threetears.agent.acl.evaluator import evaluate_decision
 from threetears.agent.acl.types import (
     MAX_GROUP_MEMBERSHIP_DEPTH,
+    EvaluationContext,
     GroupMembership,
     MemberType,
     Role,
     RoleAssignment,
     ScopeType,
 )
+from threetears.agent.acl.types import Namespace as AclNamespace
 
 log = get_logger(__name__)
 
@@ -255,7 +258,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         write_generation=WRITE_GENERATION,
         primary_key=("row_scope", "group_id"),
         columns=[
-            Column("row_scope", STRING_TYPE, partition=True),
+            Column("row_scope", STRING_TYPE, partition=True, server_default="'customer'"),
             Column("group_id", UUID_TYPE),
             Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
             # unique per scope: the platform DDL owns a partial unique index
@@ -1185,7 +1188,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         write_generation=WRITE_GENERATION,
         primary_key=("row_scope", "assignment_id"),
         columns=[
-            Column("row_scope", STRING_TYPE, partition=True),
+            Column("row_scope", STRING_TYPE, partition=True, server_default="'customer'"),
             Column("assignment_id", UUID_TYPE),
             Column("role_id", UUID_TYPE, immutable=True),
             Column("group_id", UUID_TYPE, immutable=True),
@@ -1209,7 +1212,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             # ``managed_by`` declares assignment provenance. default
             # ``'manual'`` covers admin-authored rows; agent-side
             # automation passes ``'auto:agent-yaml'``.
-            Column("managed_by", STRING_TYPE),
+            Column("managed_by", STRING_TYPE, server_default="'manual'"),
         ],
     )
 
@@ -1804,7 +1807,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         write_generation=WRITE_GENERATION,
         primary_key=("row_scope", "namespace_id"),
         columns=[
-            Column("row_scope", STRING_TYPE, partition=True),
+            Column("row_scope", STRING_TYPE, partition=True, server_default="'customer'"),
             Column("namespace_id", UUID_TYPE),
             Column("name", STRING_TYPE),
             Column("namespace_type", STRING_TYPE, immutable=True),
@@ -2717,17 +2720,6 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
             for row in rows
         ]
-        # local imports keep this collection module free of a
-        # circular dep on the evaluator stack: types -> cache ->
-        # collections -> evaluator -> types would close the loop if
-        # we imported at module scope. the per-call cost is one
-        # attribute lookup, dwarfed by the fetch above.
-        from threetears.agent.acl.evaluator import evaluate_decision  # noqa: PLC0415
-        from threetears.agent.acl.types import (  # noqa: PLC0415
-            EvaluationContext,
-            Namespace as AclNamespace,
-        )
-
         for entity in candidates:
             data = entity.to_dict()
             ns = AclNamespace(

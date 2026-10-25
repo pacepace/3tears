@@ -71,7 +71,10 @@ from langchain_core.tools import StructuredTool
 from threetears.agent.tools.text_window import WindowedInput, window_text
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.langchain_adapter import to_langchain_tool
 from threetears.agent.tools.config import PDF_PARSE_TIMEOUT_SECONDS as DEFAULT_PDF_PARSE_TIMEOUT_SECONDS
+from threetears.agent.tools.document import DocumentParseError, OcrConfig, parse_document
+from threetears.agent.tools.search_transport import build_fetch_transport
 from threetears.media.contracts import EXTRACTION_STATUS_COMPLETE, EXTRACTION_STATUS_UNCHANGED
 from threetears.search.bind import project_failure_metadata, project_metadata, shown_date
 from threetears.search.contracts import (
@@ -193,8 +196,6 @@ def pdf_reader(
     """
 
     async def read(body: bytes) -> CarrierText:
-        from threetears.agent.tools.document import DocumentParseError, OcrConfig, parse_document
-
         if b"%PDF-" not in body[:_PDF_SIGNATURE_WINDOW]:
             raise CarrierUnreadable(
                 "the file says it is a PDF but is not one",
@@ -272,8 +273,6 @@ def create_web_fetch_tool(config: dict[str, Any], description: str) -> Structure
     :return: the wrapped tool
     :rtype: StructuredTool
     """
-    from threetears.agent.tools.langchain_adapter import to_langchain_tool
-
     return to_langchain_tool(
         WebFetchTool(
             max_chars=config.get("max_chars", DEFAULT_MAX_CHARS),
@@ -391,8 +390,6 @@ class WebFetchTool(TearsTool):
         if robots_unreadable not in ("deny", "allow"):
             raise ValueError(f"robots_unreadable must be 'deny' or 'allow', got {robots_unreadable!r}")
         if transport is None:
-            from threetears.agent.tools.search_transport import build_fetch_transport
-
             # The transport's own ceiling is the largest carrier this tool reads, so the cap that
             # refuses is always one this tool names in its message: a page's, or a PDF's.
             transport = build_fetch_transport(

@@ -1,55 +1,30 @@
-"""factory registry for workspace TearsTool instances.
+"""factory for workspace TearsTool instances.
 
 each tool module under :mod:`threetears.agent.workspace.tools` defines a
 ``_build`` callable that constructs the tool from runtime dependencies and
-registers itself with this factory at import time via
-:func:`register_tool_builder`. :func:`build_workspace_tools` lazy-imports
-the tools package to ensure registration side-effects fire before
-iterating the registry, while keeping this module free of top-level
-imports of the tools package -- the tools package imports
-``register_tool_builder`` from here at its own module load time, so a top-
-level import of ``tools`` in this file would create a circular import
-graph during partial-initialization windows. lazy import is the chosen
-remediation.
+registers itself at import time via
+:func:`~threetears.agent.workspace.tool_registry.register_tool_builder`.
+this module imports the tools package at module top, so every
+registration has fired before :func:`build_workspace_tools` iterates the
+registry. the registry lives in its own lower module so the tools package
+never imports this one.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
 from threetears.agent.acl import AclCache
 from threetears.agent.tools.base_tool import TearsTool
 
+from threetears.agent.workspace import tools as _tools  # noqa: F401 - registers every tool builder
+from threetears.agent.workspace.tool_registry import register_tool_builder, registered_tool_builders
+
 __all__ = [
     "build_workspace_tools",
     "register_tool_builder",
 ]
-
-_TOOL_BUILDERS: list[Callable[..., TearsTool]] = []
-
-
-def register_tool_builder(builder: Callable[..., TearsTool]) -> None:
-    """
-    appends a tool builder to the registry.
-
-    each tool module calls this at import time. builders take ``**kwargs``
-    so :func:`build_workspace_tools` can pass every canonical dependency
-    and each builder consumes only what it needs.
-
-    dedup: if an identical ``builder`` object is already registered
-    (e.g. a test harness that reloads the tools subpackage), the call is
-    a no-op so :func:`build_workspace_tools` does not emit duplicates.
-
-    :param builder: callable returning a constructed TearsTool
-    :ptype builder: Callable[..., TearsTool]
-    :return: None
-    :rtype: None
-    """
-    if builder in _TOOL_BUILDERS:
-        return
-    _TOOL_BUILDERS.append(builder)
 
 
 def build_workspace_tools(
@@ -76,9 +51,8 @@ def build_workspace_tools(
 
     the canonical kwargs span every dependency any workspace tool may
     need. each registered ``_build`` accepts ``**kwargs`` so unused deps
-    are dropped. lazy-imports the tools package on first call so module
-    registration side-effects fire before iteration, avoiding a circular
-    import between this module and the tools subpackage.
+    are dropped. the tools package is imported at this module's top, so
+    every registration side-effect has fired before iteration.
 
     :param workspace_collection: collection for Workspace entities
     :ptype workspace_collection: Any
@@ -138,11 +112,6 @@ def build_workspace_tools(
     :return: list of constructed TearsTool instances
     :rtype: list[TearsTool]
     """
-    # lazy import: tools modules import register_tool_builder from this
-    # module at their own load time; importing tools at top level here
-    # would create a circular import during partial initialization.
-    from threetears.agent.workspace import tools as _tools  # noqa: F401
-
     deps: dict[str, Any] = {
         "workspace_collection": workspace_collection,
         "workspace_file_collection": workspace_file_collection,
@@ -161,4 +130,4 @@ def build_workspace_tools(
         "namespace_collection": namespace_collection,
         "customer_id": customer_id,
     }
-    return [builder(**deps) for builder in _TOOL_BUILDERS]
+    return [builder(**deps) for builder in registered_tool_builders()]

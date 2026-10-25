@@ -29,6 +29,7 @@ from uuid import UUID
 
 from langchain_core.callbacks import BaseCallbackHandler
 
+from threetears.models.errors import CircuitOpenError, is_provider_answer, is_rate_limit
 from threetears.observe import get_logger
 
 __all__ = [
@@ -71,41 +72,6 @@ class CircuitState(StrEnum):
     CLOSED = "closed"
     OPEN = "open"
     HALF_OPEN = "half_open"
-
-
-class CircuitOpenError(Exception):
-    """raised when circuit breaker is open and request should be rejected.
-
-    :param provider_name: name of provider whose circuit is open
-    :ptype provider_name: str
-    :param remaining_seconds: seconds until recovery timeout expires
-    :ptype remaining_seconds: float
-    :param credential_scoped: whether the open circuit is ONE credential's on the provider
-        rather than the provider's own -- a revoked key, not an outage. the credential is
-        never named
-    :ptype credential_scoped: bool
-    :param model_name: the one model whose circuit is open for its rate limit, ``None`` when
-        the provider's is
-    :ptype model_name: str | None
-    """
-
-    def __init__(
-        self,
-        provider_name: str,
-        remaining_seconds: float,
-        *,
-        credential_scoped: bool = False,
-        model_name: str | None = None,
-    ) -> None:
-        self.provider_name = provider_name
-        self.remaining_seconds = remaining_seconds
-        self.credential_scoped = credential_scoped
-        self.model_name = model_name
-        scope = " (one credential on it; the provider itself may be healthy)" if credential_scoped else ""
-        target = (
-            f"{model_name} on {provider_name} (rate-limited; its other models are not)" if model_name else provider_name
-        )
-        super().__init__(f"Circuit open for {target}{scope}, retry in {remaining_seconds:.0f}s")
 
 
 class CircuitBreaker:
@@ -644,8 +610,6 @@ class CircuitBreakerCallback(BaseCallbackHandler):
         """
         _ = run_id
         _ = kwargs
-        from threetears.models.errors import is_provider_answer, is_rate_limit
-
         if isinstance(error, CircuitOpenError):
             return
         if not isinstance(error, Exception):

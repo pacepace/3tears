@@ -78,6 +78,21 @@ from urllib.robotparser import RobotFileParser
 
 from pydantic import JsonValue
 
+try:
+    import trafilatura
+    import trafilatura.metadata
+
+    _TRAFILATURA = True
+except ImportError:  # NOSILENT: the extract extra is optional; extract() refuses with its name
+    _TRAFILATURA = False
+
+try:
+    import charset_normalizer
+
+    _CHARSET_DETECTOR = True
+except ImportError:  # NOSILENT: no detector; UTF-8 with replacement is the stated last resort
+    _CHARSET_DETECTOR = False
+
 from threetears.media.contracts import (
     EXTRACTION_STATUS_COMPLETE,
     EXTRACTION_STATUS_FAILED,
@@ -541,16 +556,14 @@ def _load_extractor() -> _Extractor:
     :rtype: _Extractor
     :raises threetears.search.contracts.errors.LocalCapExceeded: when the extra is not installed
     """
-    try:
-        from trafilatura import extract as _trafilatura_extract
-    except ImportError as exc:
+    if not _TRAFILATURA:
         raise LocalCapExceeded(
             f"extraction requires the {_EXTRACT_EXTRA} extra, which is not installed",
             spend=Spend(),
             remediation=f"install {_EXTRACT_EXTRA}",
             scope=EXTRACTOR_UNAVAILABLE_SCOPE,
-        ) from exc
-    return _trafilatura_extract
+        )
+    return trafilatura.extract
 
 
 def _page_facts(markup: str) -> tuple[str | None, datetime | None]:
@@ -563,9 +576,7 @@ def _page_facts(markup: str) -> tuple[str | None, datetime | None]:
     :raises Exception: whatever trafilatura raised reading the page's header; the caller reads
         the page without them and says so, since "the page does not say" is a different answer
     """
-    from trafilatura.metadata import extract_metadata
-
-    found = extract_metadata(markup)
+    found = trafilatura.metadata.extract_metadata(markup)
     if found is None:
         return None, None
     title = (getattr(found, "title", None) or "").strip() or None
@@ -1019,15 +1030,10 @@ def _decode(body: bytes, content_type: str) -> tuple[str, str]:
     except UnicodeDecodeError:
         # NOSILENT: not UTF-8, so the detector below decides
         pass
-    try:
-        from charset_normalizer import from_bytes
-
-        best = from_bytes(body).best()
+    if _CHARSET_DETECTOR:
+        best = charset_normalizer.from_bytes(body).best()
         if best is not None and best.encoding:
             return str(best), codecs.lookup(best.encoding).name
-    except ImportError:
-        # NOSILENT: no detector installed; UTF-8 with replacement is the stated last resort
-        pass
     return body.decode("utf-8", errors="replace"), "utf-8"
 
 
