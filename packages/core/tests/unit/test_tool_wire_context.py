@@ -143,7 +143,8 @@ class TestCallRequestRejectsLegacyFlatFields:
         message = str(excinfo.value)
         assert "conversation_id" in message
         assert "CallContext" in message
-        assert "threetears.agent.tools.context_envelope" in message
+        # the core path, which every install of either side carries; a registry-only install has no agent-tools
+        assert "threetears.core.tool_wire.CallContext" in message
 
     def test_user_id_flat_field_rejected(self) -> None:
         """a flat ``user_id`` produces a validation error naming the field."""

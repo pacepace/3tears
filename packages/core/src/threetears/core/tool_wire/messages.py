@@ -322,7 +322,7 @@ class CallRequest(TolerantWireModel):
                 raise ValueError(
                     f"legacy flat identity field(s) {fields_list} rejected on "
                     f"CallRequest; migrated to CallContext, see "
-                    f"threetears.agent.tools.context_envelope.CallContext"
+                    f"threetears.core.tool_wire.CallContext"
                 )
         return data
 

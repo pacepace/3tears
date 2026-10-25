@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from uuid import uuid7
 
+import pytest
+from pydantic import ValidationError
 
 from threetears.core.tool_wire import CallContext
 from threetears.registry.proxy import ProxyCallRequest
@@ -38,6 +40,16 @@ class TestProxyCallRequestAuthFields:
             context=CallContext(agent_id=uuid7()),
         )
         assert req.pop == "x"
+
+    def test_a_legacy_flat_identity_field_is_refused_naming_where_it_moved(self) -> None:
+        """a flat ``conversation_id`` is refused, pointing at the CallContext a registry-only install carries."""
+        with pytest.raises(ValidationError) as excinfo:
+            ProxyCallRequest.model_validate(
+                {"tool_name": "test.stub", "tool_version": "1.0", "arguments": {}, "conversation_id": str(uuid7())}
+            )
+        message = str(excinfo.value)
+        assert "conversation_id" in message
+        assert "threetears.core.tool_wire.CallContext" in message
 
     def test_ignores_a_field_a_newer_agent_adds(self) -> None:
         """a tolerant reader: a registry predating a field still routes the call (owner ruling 2026-10-07)."""

@@ -26,12 +26,13 @@ _REFUSED_PACKAGE = "threetears.agent.tools"
 #: without it, so what this proves is that the registry never needs it.
 _PROBE = """
 import importlib.abc, sys
-_REFUSED_ROOTS = ("langchain", "langchain_core", "langgraph", "pgvector")
+#: top-level prefixes: langchain_openai, langgraph_sdk and the like are refused with their roots
+_REFUSED_PREFIXES = ("langchain", "langgraph", "pgvector")
 def _refused(name):
     return (
         name == "threetears.agent.tools"
         or name.startswith("threetears.agent.tools.")
-        or name.split(".")[0] in _REFUSED_ROOTS
+        or name.split(".")[0].startswith(_REFUSED_PREFIXES)
     )
 class _NotInstalled(importlib.abc.MetaPathFinder):
     def find_spec(self, name, path=None, target=None):

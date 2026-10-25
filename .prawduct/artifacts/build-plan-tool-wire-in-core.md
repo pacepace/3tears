@@ -34,7 +34,9 @@ Out of scope: removing registry's mirror models (`ProbeResponse`, `DiscoverReque
   agent-tools, which the workspace install provides | `imports_declared` and dependency alignment scan `src`
   only; moving them is churn with no consumer]
 - [DECISION: the pinned `context_envelope` error string (agent-tools test_context_envelope.py:147,
-  registry proxy.py:241) keeps its text | the old path still works]
+  registry proxy.py:241) keeps its text | the old path still works] REVERSED after cumulative review
+  rev-20261025T135533Z-a6c11d15 R-10: a registry-only install has no agent-tools, so both refusals point at
+  `threetears.core.tool_wire.CallContext`]
 - [DECISION: agent-tools' `test_context_envelope.py` moves whole to core as `test_tool_wire_context.py`;
   the tool-free classes and methods of `test_rest_affordance.py` move to core's `test_tool_wire_rest.py`
   and the rest stay | every case in the first file is pure, so a move, not a copy, keeps one home per
@@ -119,6 +121,11 @@ nested validation and `is` hold. `__module__` changes: say so in the CHANGELOG.
 ## Gates (main session)
 Full unit suite on the testament pool; integration `./scripts/test-integration.sh -rs` for registry and
 agent-tools after telling discodon; cumulative Critic.
+
+Results (2026-10-25): pool at 1e9adeede 42,391 passed, 1 failed (the core scoped-snapshot flake #946 fixes);
+integration `-rs` at 1e9adeede: registry 11 passed, agent/tools 10 passed, no skips; cumulative Critic
+rev-20261025T135533Z-a6c11d15, 0 blocking. After its fixes: core -k test_tool_wire 83, registry -k
+test_import_cost 3, test_proxy 78, test_auth_wire_fields 11 passed.
 
 ## Risks
 - `test_public_api_has_a_caller`: moved names gain new definitions in core; each needs a src caller outside

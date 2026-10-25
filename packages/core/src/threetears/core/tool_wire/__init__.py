@@ -21,8 +21,9 @@ public surface:
 
 pod policy and machinery -- which refusals are final, readiness polling, the
 probe acknowledgement, ``ToolServer`` itself -- stay in
-``threetears.agent.tools.server``, which re-exports every name here under its
-old path.
+``threetears.agent.tools.server``. each name here keeps its old path:
+``context_envelope`` re-exports the context, ``http_operation`` the REST
+affordance, and ``server`` the messages.
 """
 
 from __future__ import annotations

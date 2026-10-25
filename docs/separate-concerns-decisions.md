@@ -109,12 +109,12 @@ Phase 2: lazy `__init__`s remove the *import-time* half of the pain for
 free, which may be all these consumers need.
 
 **Update (2026-10-25): the registry half is done, in core rather than a
-contracts leaf.** The wire envelopes left `server.py`: `CallContext`,
-`bind_log_context`, `RestAffordance` and its neighbours, and the
-registration, call and heartbeat messages now live in
-`threetears.core.tool_wire`, which both the pod and the registry
-depend on. `server.py`, `context_envelope.py` and `http_operation.py`
-re-export them under their old names. `3tears-registry` no longer
+contracts leaf.** The registration, call and heartbeat envelopes left
+`server.py`, `CallContext` and `bind_log_context` left
+`context_envelope.py`, and `RestAffordance` and its neighbours left
+`http_operation.py`. All now live in `threetears.core.tool_wire`, which
+both the pod and the registry depend on, and each old module re-exports
+its names under their old paths. `3tears-registry` no longer
 depends on `3tears-agent-tools`, and a test in the registry
 (`test_import_cost.py`) holds it there. The home follows
 `core.http_cache`, promoted when a second consumer arrived and neither

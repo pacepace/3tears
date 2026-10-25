@@ -43,7 +43,8 @@ loaded = sorted(
     name
     for name in sys.modules
     if name.startswith(("threetears.agent", "threetears.registry"))
-    or name.split(".")[0] in ("httpx", "cryptography", "jwt", "langchain", "langgraph", "pgvector")
+    or name.split(".")[0] in ("httpx", "cryptography", "jwt")
+    or name.split(".")[0].startswith(("langchain", "langgraph", "pgvector"))
 )
 assert not loaded, loaded
 print("imported")
