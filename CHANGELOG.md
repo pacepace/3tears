@@ -13,14 +13,17 @@ put that failed left the PREVIOUS checkpoint under it, and another worker whose 
 that older state from L2 without reaching Postgres. A production turn whose checkpoints were over the
 NATS server's `max_payload` did exactly that (`KvError: ... nats: maximum payload exceeded`, three
 times for one turn). `l2_put` now deletes the key whenever the put does not land, and only if that
-delete also fails adds the thread to the saver's cache bypass, so this process reads it from L3 until
-a purge of it succeeds. A read pinned to a `checkpoint_id` no longer warms the caches: the keys are
+delete also fails puts the key on the saver's write bypass, so this process reads that thread and
+namespace from L3 until a later put or delete of the key lands. The write bypass is kept apart from
+the purge bypass (a thread whose purge could not clear a cache stays off the caches until a purge
+succeeds, whatever is written) and holds at most `threetears.langgraph.checkpoint.L2_WRITE_BYPASS_LIMIT`
+(4096) keys; past that the oldest is dropped with a WARNING naming it. A read pinned to a `checkpoint_id` no longer warms the caches: the keys are
 read as "latest", and warming them from an older checkpoint served it to every later unpinned read.
 
 **Added:** `threetears.langgraph.CheckpointL2ValueLimit`, an optional protocol beside
 `CheckpointL2PrefixCache`: an L2 cache with a `max_value_bytes` property (`int | None`). The saver
 does not attempt a put over it; it deletes the key and logs one WARNING with `size_bytes` and
-`max_value_bytes`. A NATS-backed cache answers with `NatsClient.max_payload`. A separate protocol, not
+`max_value_bytes`. `NatsCheckpointL2Cache` (below) answers with `NatsClient.max_payload`. A separate protocol, not
 a member of `CheckpointL2Cache`, so adapters written against that one still satisfy it; without the
 limit the saver still deletes the key after the refused put.
 
@@ -29,9 +32,18 @@ and replace it, serving the older one to every worker whose L1 missed. The saver
 key's revision before the Postgres query and refills at that revision, so any write or deletion since
 refuses the refill (and then L1 is not given the older checkpoint either). This needs the new
 optional protocol `threetears.langgraph.CheckpointL2RevisionCache` (`get_latest(bucket, key)` and
-`update(bucket, key, value, revision)`, which a NATS-backed cache delegates to `NatsKvBucket`'s
+`update(bucket, key, value, revision)`, which `NatsCheckpointL2Cache` delegates to `NatsKvBucket`'s
 methods of the same names). **A cache without it is no longer refilled from a read at all**: only
 `aput` writes L2, and the next write refills it.
+
+**Added:** `threetears.langgraph.nats_l2.NatsCheckpointL2Cache(client)`, the saver's L2 cache over a
+`NatsClient`'s KV buckets. It implements `CheckpointL2Cache`, `CheckpointL2RevisionCache`,
+`CheckpointL2ValueLimit` (`max_value_bytes` is the client's `max_payload`) and
+`CheckpointL2PrefixCache` (`delete_prefix` lists the bucket's keys under the prefix and deletes each,
+so a purge clears a thread's namespaced bundles too). Install `3tears-langgraph[nats]`; the module is
+not imported by `threetears.langgraph`, so a saver without NATS does not need `3tears-nats`. A host
+with its own NATS adapter should switch to this one, or it keeps neither the fenced refill nor the
+size check.
 
 ### core: the testing fixtures import testcontainers from `testcontainers.community`
 

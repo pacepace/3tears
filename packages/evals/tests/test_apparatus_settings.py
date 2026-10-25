@@ -55,6 +55,7 @@ from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_REVIEWER_POOL, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
 from packages.evals.tests.ops_support import CALLER, launched_runs, ops_fixture
+from packages.evals.tests.mcp_wire import wire
 from packages.evals.tests.off_loop import off_loop
 
 #: The toy host's one launch-settable apparatus dimension: who reviews the extractions.
@@ -306,7 +307,7 @@ async def test_the_fastmcp_tool_hands_the_launch_its_apparatus_settings():
         tools = {tool.name: tool for tool in await client.list_tools()}
         result = await client.call_tool("evals", call, raise_on_error=False)
 
-    assert "apparatus_settings" in tools["evals"].input_schema["properties"]
+    assert "apparatus_settings" in wire(tools["evals"])["inputSchema"]["properties"]
     assert result.is_error and "no apparatus setting named 'grader_version'" in result.content[0].text
 
 

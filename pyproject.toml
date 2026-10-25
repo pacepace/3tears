@@ -317,6 +317,11 @@ ignore = ["N818", "N811"]
 # tree -- collecting it here fails at import on a ``nodriver`` that the
 # workspace venv will never install.
 addopts = "--import-mode=importlib --ignore=packages/scrape/sidecar"
+# A test that runs past this fails with every thread's stack printed, instead of spinning a run
+# for hours: a test double that re-raised one stored exception made each logged traceback longer
+# than the last, and a 4,097-call loop held a CPU at 99% until it was killed. Well above any
+# single test's runtime; a test that needs longer says so with @pytest.mark.timeout.
+timeout = 600
 # Multiple packages carry a same-named ``tests`` package (e.g.
 # ``packages/agent/workspace/tests`` and ``packages/datasources/tests``
 # both define ``tests/integration/conftest.py``). Under importlib mode

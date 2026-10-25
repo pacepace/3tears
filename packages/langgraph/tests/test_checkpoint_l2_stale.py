@@ -11,13 +11,20 @@ against a real NATS server and Postgres is ``integration/test_checkpoint_l2_over
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
+from prometheus_client import REGISTRY
+
+from threetears.langgraph.checkpoint import (
+    L2_WRITE_BYPASS_LIMIT,
+    CheckpointPurgeIncompleteError,
+    ThreeTierCheckpointSaver,
+)
 from threetears.langgraph.checkpoint_scope import CheckpointScope
 from threetears.langgraph.protocols import CheckpointL2Cache, CheckpointL2RevisionCache, CheckpointL2ValueLimit
 
@@ -55,6 +62,20 @@ def _make_executor() -> Any:
     executor.fetchrow = AsyncMock(return_value=None)
     executor.execute = AsyncMock(return_value="INSERT 0 1")
     return executor
+
+
+def _fresh(exc: Exception) -> Exception:
+    """a new exception like ``exc``, so each raise starts its own traceback.
+
+    raising one stored instance again appends every new raise's frames to its traceback, and a
+    logged failure then formats a longer one each time: 4,097 raises took hours.
+
+    :param exc: the configured failure
+    :ptype exc: Exception
+    :return: a fresh instance of the same type and arguments
+    :rtype: Exception
+    """
+    return type(exc)(*exc.args)
 
 
 class _DictL2Cache(CheckpointL2Cache):
@@ -100,7 +121,7 @@ class _DictL2Cache(CheckpointL2Cache):
         """
         self.puts.append(key)
         if self.fail_put is not None:
-            raise self.fail_put
+            raise _fresh(self.fail_put)
         self.store[key] = value
 
     async def delete(self, bucket: str, key: str) -> None:
@@ -115,7 +136,7 @@ class _DictL2Cache(CheckpointL2Cache):
         :raises Exception: the configured delete failure
         """
         if self.fail_delete is not None:
-            raise self.fail_delete
+            raise _fresh(self.fail_delete)
         self.store.pop(key, None)
 
 
@@ -156,6 +177,8 @@ class _RevisionDictL2Cache(_DictL2Cache, CheckpointL2RevisionCache):
         self.revisions: dict[str, int] = {}
         self.sequence = 0
         self.updates: list[tuple[str, int, bool]] = []
+        self.fail_get_latest: Exception | None = None
+        self.fail_update: Exception | None = None
 
     def _bump(self, key: str) -> int:
         """advance the bucket's sequence and make it ``key``'s revision.
@@ -206,8 +229,11 @@ class _RevisionDictL2Cache(_DictL2Cache, CheckpointL2RevisionCache):
         :ptype key: str
         :return: value or None, and the revision (0 for a key never written)
         :rtype: tuple[bytes | None, int]
+        :raises Exception: the configured read failure
         """
         self.gets.append(key)
+        if self.fail_get_latest is not None:
+            raise _fresh(self.fail_get_latest)
         return self.store.get(key), self.revisions.get(key, 0)
 
     async def update(self, bucket: str, key: str, value: bytes, revision: int) -> int | None:
@@ -223,7 +249,10 @@ class _RevisionDictL2Cache(_DictL2Cache, CheckpointL2RevisionCache):
         :ptype revision: int
         :return: the new revision, or None when the key changed
         :rtype: int | None
+        :raises Exception: the configured write failure
         """
+        if self.fail_update is not None:
+            raise _fresh(self.fail_update)
         landed = self.revisions.get(key, 0) == revision
         self.updates.append((key, revision, landed))
         if not landed:
@@ -487,3 +516,149 @@ class _RevisionLimitedL2Cache(_RevisionDictL2Cache, CheckpointL2ValueLimit):
         :rtype: int | None
         """
         return self.limit
+
+
+def _contained(site: str, exc_type: str) -> float:
+    """how many errors ``contain()`` has counted at ``site``.
+
+    :param site: the containing function's site label
+    :ptype site: str
+    :param exc_type: the contained exception's type name
+    :ptype exc_type: str
+    :return: the count so far
+    :rtype: float
+    """
+    labels = {"site": f"threetears.langgraph.checkpoint:ThreeTierCheckpointSaver.{site}", "exc_type": exc_type}
+    return REGISTRY.get_sample_value("contained_errors_total", labels) or 0.0
+
+
+class TestAFencedCacheThatFails:
+    """a fenced cache's failed revision read or failed refill degrades; neither fails the read."""
+
+    _CONFIG: dict[str, Any] = {"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}}
+
+    async def test_a_failed_revision_read_is_answered_from_l3_and_counted(self) -> None:
+        l2 = _RevisionDictL2Cache()
+        assert isinstance(l2, CheckpointL2RevisionCache), "the double must reach the fenced branch"
+        l2.fail_get_latest = RuntimeError("nats: timeout")
+        executor = _make_executor()
+        saver = ThreeTierCheckpointSaver(executor=executor, l2_cache=l2, scope=_UNSCOPED)
+        executor.fetchrow.return_value = _row(saver, "cp-1")
+        before = _contained("_l2_read_with_revision", "CheckpointCacheError")
+
+        tup = await saver.aget_tuple(self._CONFIG)
+
+        assert tup is not None and tup.checkpoint["id"] == "cp-1", "the durable store answered"
+        assert _contained("_l2_read_with_revision", "CheckpointCacheError") - before == 1
+        assert l2.updates == [], "no revision was read, so nothing is refilled"
+
+    async def test_a_failed_refill_still_answers_and_still_warms_l1(self) -> None:
+        l2 = _RevisionDictL2Cache()
+        assert isinstance(l2, CheckpointL2RevisionCache), "the double must reach the fenced branch"
+        l2.fail_update = RuntimeError("nats: timeout")
+        l1 = AsyncMock()
+        l1.get.return_value = None
+        executor = _make_executor()
+        saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
+        executor.fetchrow.return_value = _row(saver, "cp-1")
+        before = _contained("_refill_l2", "RuntimeError")
+
+        tup = await saver.aget_tuple(self._CONFIG)
+
+        assert tup is not None and tup.checkpoint["id"] == "cp-1"
+        assert _contained("_refill_l2", "RuntimeError") - before == 1
+        assert l2.store == {}
+        l1.put.assert_awaited_once()
+
+
+class TestAWriteBypassLiftsWhenTheKeyIsWrittenAgain:
+    """an outage's bypass ends with the next write that lands; a purge's bypass does not."""
+
+    _CONFIG: dict[str, Any] = {"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}}
+
+    async def test_an_outage_bypasses_the_key_and_the_next_landed_put_lifts_it(self) -> None:
+        l2 = _DictL2Cache()
+        l2.fail_put = RuntimeError("nats: timeout")
+        l2.fail_delete = RuntimeError("nats: timeout")
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=l2, scope=_UNSCOPED)
+        await saver.l2_put("t-1", "", b"cp-1")
+        await saver.aget_tuple(self._CONFIG)
+        assert l2.gets == [], "during the outage the key is read from L3"
+
+        l2.fail_put = l2.fail_delete = None
+        await saver.l2_put("t-1", "", b"cp-2")
+        await saver.aget_tuple(self._CONFIG)
+
+        assert l2.gets == ["t-1"], "the key holds the newest checkpoint again, so it is read from cache"
+
+    async def test_a_landed_delete_lifts_it_too(self) -> None:
+        l2 = _DictL2Cache()
+        l2.fail_put = RuntimeError("nats: timeout")
+        l2.fail_delete = RuntimeError("nats: timeout")
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=l2, scope=_UNSCOPED)
+        await saver.l2_put("t-1", "", b"cp-1")
+
+        l2.fail_delete = None
+        await saver.l2_put("t-1", "", b"cp-2")
+        await saver.aget_tuple(self._CONFIG)
+
+        assert l2.gets == ["t-1"]
+
+    async def test_the_bypass_is_per_namespace(self) -> None:
+        l2 = _DictL2Cache()
+        l2.fail_put = RuntimeError("nats: timeout")
+        l2.fail_delete = RuntimeError("nats: timeout")
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=l2, scope=_UNSCOPED)
+        await saver.l2_put("t-1", "sub", b"cp-1")
+
+        await saver.aget_tuple(self._CONFIG)
+
+        assert l2.gets == ["t-1"], "the root namespace was never bypassed"
+
+    async def test_a_purge_bypass_survives_a_landed_put(self) -> None:
+        l2 = _DictL2Cache()
+        l2.fail_delete = RuntimeError("nats: timeout")
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=l2, scope=_UNSCOPED)
+        with pytest.raises(CheckpointPurgeIncompleteError):
+            await saver.adelete_thread("t-1")
+
+        l2.fail_delete = None
+        await saver.l2_put("t-1", "", b"written after the purge")
+        await saver.aget_tuple(self._CONFIG)
+
+        assert l2.gets == [], "an erased thread is read from L3 until a purge of it succeeds"
+
+    async def test_the_write_bypass_is_bounded_oldest_first(self, caplog: pytest.LogCaptureFixture) -> None:
+        l2 = _DictL2Cache()
+        l2.fail_put = RuntimeError("nats: timeout")
+        l2.fail_delete = RuntimeError("nats: timeout")
+        limit = 3
+        saver = ThreeTierCheckpointSaver(
+            executor=_make_executor(), l2_cache=l2, scope=_UNSCOPED, l2_write_bypass_limit=limit
+        )
+
+        with caplog.at_level(logging.WARNING):
+            for n in range(limit + 1):
+                await saver.l2_put(f"t-{n}", "", b"cp")
+
+        full = [r for r in caplog.records if "write bypass is full" in r.getMessage()]
+        assert len(full) == 1 and full[0].l2_key == "t-0" and full[0].limit == limit
+        await saver.aget_tuple({"configurable": {"thread_id": "t-0", "checkpoint_ns": ""}})
+        await saver.aget_tuple({"configurable": {"thread_id": f"t-{limit}", "checkpoint_ns": ""}})
+        assert l2.gets == ["t-0"], "the oldest key was dropped from the bypass; the newest is still on it"
+
+    def test_the_bypass_holds_the_published_limit_by_default(self) -> None:
+        default = inspect.signature(ThreeTierCheckpointSaver).parameters["l2_write_bypass_limit"].default
+
+        assert default == L2_WRITE_BYPASS_LIMIT
+
+    async def test_a_reused_failure_does_not_grow_its_traceback(self) -> None:
+        l2 = _DictL2Cache()
+        l2.fail_put = RuntimeError("nats: timeout")
+        l2.fail_delete = RuntimeError("nats: timeout")
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=l2, scope=_UNSCOPED)
+
+        for n in range(50):
+            await saver.l2_put(f"t-{n}", "", b"cp")
+
+        assert l2.fail_put.__traceback__ is None, "the stored failure is never raised itself"

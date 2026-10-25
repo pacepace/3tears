@@ -55,6 +55,7 @@ one implementation with no parallel path.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, Final, cast
@@ -94,6 +95,7 @@ from threetears.langgraph.serde import UUIDSafeSerializer
 from threetears.observe import contain, get_logger
 
 __all__ = [
+    "L2_WRITE_BYPASS_LIMIT",
     "CheckpointCacheError",
     "CheckpointPurgeIncompleteError",
     "ThreeTierCheckpointSaver",
@@ -154,6 +156,12 @@ class CheckpointPurgeIncompleteError(CheckpointCacheError):
 
 
 _DEFAULT_L2_BUCKET = "checkpoints"
+
+#: the most L2 keys one saver keeps off its caches after a write AND its delete both failed. Such
+#: a key may still hold an older checkpoint, so the saver reads it from L3 until a later put or
+#: delete of it lands. During a long NATS outage every written key lands here; past this many the
+#: oldest is dropped with a WARNING naming it, and reads of it may again meet what L2 still holds.
+L2_WRITE_BYPASS_LIMIT: Final = 4096
 
 #: separates the customer from the caller's own thread id inside a stored
 #: ``thread_id``. a UUID's text form contains no ``/``, so the split point is
@@ -433,6 +441,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         l2_cache: CheckpointL2Cache | None = None,
         l2_bucket: str = _DEFAULT_L2_BUCKET,
         flush_callback: FlushCallback | None = None,
+        l2_write_bypass_limit: int = L2_WRITE_BYPASS_LIMIT,
     ) -> None:
         """initialize checkpoint saver.
 
@@ -454,6 +463,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :ptype l2_bucket: str
         :param flush_callback: optional post-write flush callback
         :ptype flush_callback: FlushCallback | None
+        :param l2_write_bypass_limit: how many L2 keys the write bypass holds before it drops
+            the oldest
+        :ptype l2_write_bypass_limit: int
         :return: nothing
         :rtype: None
         """
@@ -465,9 +477,16 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         self._l2_bucket = l2_bucket
         self._scope = scope
         self._flush_callback = flush_callback
-        # stored thread ids whose purge deleted L3 but could not clear a cache: read from L3
-        # alone until a purge of them succeeds, so an erased thread is never served from cache
+        # two reasons to read a thread from L3 alone, kept apart because they end differently.
+        # purge: stored thread ids whose purge deleted L3 but could not clear a cache. an erased
+        # thread is never served from cache, so only a purge of it that succeeds lifts this; a
+        # write never does (a write cannot clear the namespaces a failed sweep left behind).
         self._cache_bypassed_threads: set[str] = set()
+        # write: L2 keys whose put and then delete both failed, so the key may still hold an older
+        # checkpoint. lifted by the next put or delete of that key that lands; bounded by
+        # l2_write_bypass_limit, oldest first.
+        self._l2_write_bypassed: OrderedDict[str, None] = OrderedDict()
+        self._l2_write_bypass_limit = l2_write_bypass_limit
 
     # ------------------------------------------------------------------
     # Tenancy helpers
@@ -730,9 +749,11 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         - a blob over the cache's :attr:`CheckpointL2ValueLimit.max_value_bytes` is
           not put; the key is deleted instead, with one WARNING naming both sizes;
         - any other put failure is contained and the key is deleted too;
-        - only when that delete also fails is the thread added to this saver's
-          bypass set, so it reads from L3 alone until a purge of it succeeds. Other
-          processes are not reached by that set; for them the delete was the fix.
+        - only when that delete also fails is the key put on this saver's write
+          bypass, so that thread and namespace read from L3 alone until a later put
+          or delete of the key lands (at most :data:`L2_WRITE_BYPASS_LIMIT` keys,
+          oldest dropped first). Other processes are not reached by it; for them the
+          delete was the fix.
 
         Nothing here raises: the L3 row was written first and is the answer of record.
 
@@ -766,18 +787,41 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         else:
             try:
                 await self._l2.put(self._l2_bucket, key, data)
-                return
             except Exception as exc:
                 contain(exc, log=log, what="L2 checkpoint write failed; deleting the cached entry so readers use L3")
+            else:
+                # the key now holds the newest checkpoint
+                self._l2_write_bypassed.pop(key, None)
+                return
         try:
             await self.l2_delete(thread_id, checkpoint_ns, customer=customer)
         except CheckpointCacheError as exc:
             contain(
                 exc,
                 log=log,
-                what="L2 checkpoint entry could not be deleted after a failed write; this saver reads the thread from L3",
+                what="L2 checkpoint entry could not be deleted after a failed write; this saver reads it from L3",
             )
-            self._cache_bypassed_threads.add(self.storage_thread_id(thread_id, customer=customer))
+            self._bypass_l2_key(key)
+        else:
+            # the key holds nothing now, so nothing older can be read from it
+            self._l2_write_bypassed.pop(key, None)
+
+    def _bypass_l2_key(self, key: str) -> None:
+        """keep ``key`` off this saver's caches until a put or delete of it lands, within the bound.
+
+        :param key: the L2 key whose write and delete both failed
+        :ptype key: str
+        :return: nothing
+        :rtype: None
+        """
+        self._l2_write_bypassed[key] = None
+        self._l2_write_bypassed.move_to_end(key)
+        if len(self._l2_write_bypassed) > self._l2_write_bypass_limit:
+            dropped, _ = self._l2_write_bypassed.popitem(last=False)
+            log.warning(
+                "L2 write bypass is full; the oldest key returns to the caches and may meet an older checkpoint",
+                extra={"l2_bucket": self._l2_bucket, "l2_key": dropped, "limit": self._l2_write_bypass_limit},
+            )
 
     async def l2_delete(self, thread_id: str, checkpoint_ns: str, *, customer: UUID | None = None) -> None:
         """delete one thread+namespace L2 entry.
@@ -983,7 +1027,10 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
 
         # a thread whose purge could not clear a cache is read from L3 alone: what the cache
         # still holds is the erased thread
-        bypassed = self.storage_thread_id(thread_id, customer=customer) in self._cache_bypassed_threads
+        bypassed = (
+            self.storage_thread_id(thread_id, customer=customer) in self._cache_bypassed_threads
+            or self.l2_key(thread_id, checkpoint_ns, customer=customer) in self._l2_write_bypassed
+        )
         # the L2 key's revision as read BEFORE the L3 query; the refill after that query lands
         # only if the key is unchanged since (:meth:`_refill_l2`). None: no refill.
         l2_revision: int | None = None
@@ -1082,8 +1129,11 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             return await self._l2_or_recorded_miss(thread_id, checkpoint_ns, customer), None
         key = self.l2_key(thread_id, checkpoint_ns, customer=customer)
         try:
-            return await self._l2.get_latest(self._l2_bucket, key)
-        except Exception as exc:
+            try:
+                return await self._l2.get_latest(self._l2_bucket, key)
+            except Exception as exc:
+                raise CheckpointCacheError(f"L2 checkpoint read failed: {type(exc).__name__}: {exc}") from exc
+        except CheckpointCacheError as exc:
             contain(exc, log=log, what="L2 checkpoint read failed; reading the durable store", extra={"miss": "error"})
             return None, None
 

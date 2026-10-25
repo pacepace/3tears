@@ -878,10 +878,16 @@ dependencies = [
     { name = "uuid-utils" },
 ]
 
+[package.optional-dependencies]
+nats = [
+    { name = "3tears-nats" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
     { name = "3tears-media-contracts", editable = "packages/media-contracts" },
+    { name = "3tears-nats", marker = "extra == 'nats'", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "asyncpg" },
     { name = "langchain", specifier = ">=1.0" },
@@ -891,6 +897,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0" },
     { name = "uuid-utils" },
 ]
+provides-extras = ["nats"]
 
 [[package]]
 name = "3tears-mcp"
