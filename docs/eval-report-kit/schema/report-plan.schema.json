@@ -129,7 +129,7 @@
         "additionalProperties": false,
         "required": ["warning", "text"],
         "properties": {
-          "warning": {"type": "object", "additionalProperties": false, "required": ["kind", "aspect", "name"], "properties": {"kind": {"enum": ["floor_broken", "behind_on", "bar_missed"]}, "aspect": {"type": "string", "minLength": 1}, "name": {"type": "string", "minLength": 1, "description": "floor_broken: the floor key; behind_on: the arm id shown ahead; bar_missed: the bar's measure key"}}},
+          "warning": {"type": "object", "additionalProperties": false, "required": ["kind", "aspect", "name"], "properties": {"kind": {"enum": ["floor_broken", "floor_unclear", "behind_on", "bar_missed"]}, "aspect": {"type": "string", "minLength": 1}, "name": {"type": "string", "minLength": 1, "description": "floor_broken and floor_unclear: the floor key; behind_on: the arm id shown ahead; bar_missed: the bar's measure key"}}},
           "text": {"type": "string", "minLength": 1}
         }
       }

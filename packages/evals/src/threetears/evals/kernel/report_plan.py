@@ -24,7 +24,7 @@ field carries a number code would read.
 
 **Field-level constraints only.** Lengths, enums, non-empty ids and list bounds are checked here. Whether the parts
 agree with each other and with the report input (a headline kind that suits the mode, slot keys in the mode's order,
-a key that resolves, a flag that discloses what the caveats imply) is :mod:`threetears.evals.analysis`'s plan check.
+a key that resolves, a flag that discloses what the caveats imply) is :mod:`threetears.evals.analysis.report_plan_checks`.
 """
 
 from __future__ import annotations
@@ -114,9 +114,10 @@ _ReferenceKind = Literal["floor", "budget", "margin", "no_preference"]
 _ControlKind = Literal["slider", "segmented", "toggle", "select"]
 #: The tables Full results prints.
 _FullResultsTable = Literal["arms_by_measure", "contrasts", "strata", "gate_matrix_full", "configs", "cells"]
-#: What code warned of on the recommended arm, which the plan must answer: a floor it broke, an aspect a choice's pair
-#: readings show another arm ahead of it on, an absolute bar it missed.
-_WarningKind = Literal["floor_broken", "behind_on", "bar_missed"]
+#: What code warned of on the recommended arm, which the plan must answer: a floor it broke, a floor read unclear (a
+#: borderline, GENERATOR §3, answered with the sample that would settle it), an aspect a choice's pair readings show
+#: another arm ahead of it on, an absolute bar it missed.
+_WarningKind = Literal["floor_broken", "floor_unclear", "behind_on", "bar_missed"]
 
 #: What a flag discloses, by kind: criteria set after the results, a judge with no human calibration, one confound
 #: (``confound:<id>``, its id in the report input's ``caveats.confounds``) and one short run (``short_run:<run id>``).
@@ -296,7 +297,7 @@ class DurableClaim(_Plan):
 class WarningRef(_Plan):
     """One warning code raised on the recommended arm, named by what it is about in the report input's ids.
 
-    - ``floor_broken``: ``aspect`` is the floor's aspect, ``name`` its ``floor`` key.
+    - ``floor_broken`` and ``floor_unclear``: ``aspect`` is the floor's aspect, ``name`` its ``floor`` key.
     - ``behind_on``: ``aspect`` is where another arm is shown ahead, ``name`` that arm's id.
     - ``bar_missed``: ``aspect`` is the bar's aspect, ``name`` its measure key.
 

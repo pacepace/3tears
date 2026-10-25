@@ -365,7 +365,8 @@ def _reading_figure(reading: Reading, statistic: str, path: str) -> Figure:
     if statistic == "interval":
         return _interval(path, reading.within_interval, "the interval", "points", change=True)
     if statistic in ("low", "high"):
-        end = reading.within_interval[0 if statistic == "low" else 1]
+        bounds = reading.within_interval
+        end = None if bounds is None else bounds[0 if statistic == "low" else 1]
         return _number(path, end, f"the interval's {statistic} end", "points", change=True)
     if statistic == "margin":
         return _number(path, reading.margin, "the reading's margin", "points")
@@ -406,7 +407,8 @@ def _contrast(report_input: ReportInput, values: tuple[str, ...], path: str) -> 
     if statistic == "interval":
         return _interval(path, contrast.interval, "the interval", scale, unit=unit, change=True)
     if statistic in ("low", "high"):
-        end = contrast.interval[0 if statistic == "low" else 1]
+        bounds = contrast.interval
+        end = None if bounds is None else bounds[0 if statistic == "low" else 1]
         return _number(path, end, f"the interval's {statistic} end", scale, unit=unit, change=True)
     if statistic == "verdict":
         return _text(path, contrast.verdict, "the verdict")
@@ -694,6 +696,8 @@ def _loss_share(report_input: ReportInput, values: tuple[str, ...], path: str) -
 
 def _flip_margin(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     reading = _reading(_asked_or_refuse(report_input, path), values[0])
+    if reading.within_interval is None:
+        raise _refuse(path, "reads the reading's interval, which the input does not state")
     return Figure(path=path, kind="number", value=max(0.0, -float(reading.within_interval[0])), scale="points")
 
 

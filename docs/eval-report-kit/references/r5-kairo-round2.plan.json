@@ -35,11 +35,11 @@
   "mode": "decide",
   "headline_kind": "decision",
   "headline": "Keep {control.name}. Both candidates cost {cost.uplift_range|pct} more per reply and stay in character less often.",
-  "lede": "{arm:qwen3.8-flash} is clearly worse on the asked pass rate: down {reading.qwen3.8-flash.change|abs|pts} points (95% interval {reading.qwen3.8-flash.interval|pts}), inside the {aspect.margin}-point margin but not a tie. {arm:1017}'s drop of {reading.1017.change|abs|pts} points could be noise. Neither candidate improves anything this campaign measured.",
+  "lede": "{arm:qwen3.8-flash} is clearly worse on the asked pass rate: down {reading.qwen3.8-flash.change|abs|pts} points ({reading.qwen3.8-flash.level} interval {reading.qwen3.8-flash.interval|pts}), inside the {aspect.margin}-point margin but not a tie. {arm:1017}'s drop of {reading.1017.change|abs|pts} points could be noise. Neither candidate improves anything this campaign measured.",
   "flag": [
     {
       "title": "The criteria came after the results, and the judge is uncalibrated.",
-      "text": "The aspect, control, margin and floor were all set on {late_criteria.set_at}, after the readings were visible, and the judge has no human calibration yet (0 of 20 ratings). The cost finding is measured spend, not judged, so it supports keeping {control.name} on its own.",
+      "text": "The aspect, control, margin and floor were all set on {late_criteria.set_at}, after the readings were visible, and the judge has no human calibration yet (evidence tier {judge.tier}). The cost finding is measured spend, not judged, so it supports keeping {control.name} on its own.",
       "discloses": [
         "late_criteria",
         "judge_uncalibrated"
@@ -57,7 +57,7 @@
     "slots": [
       {
         "key": "recommendation",
-        "text": "**Keep {control.name}** ({control.served_model}). It has the highest pass rate ({pass_rate.September|pct}), the highest in-character rate ({judged.persona.holds_character.September|pct}) and the lowest cost ({cost_per_1k.September|usd} per 1,000 replies)."
+        "text": "**Keep {control.name}** ({control.served_model}). It has the highest pass rate ({pass_rate.September|pct}), the highest in-character rate ({judged.persona.holds_character.September|pct}) and the lowest cost ({cost_per_1k.September|usd_per_1k})."
       },
       {
         "key": "why_not",
@@ -69,7 +69,7 @@
       },
       {
         "key": "next",
-        "text": "Fix off-lane handling first: it is {control.name}'s weakest stratum and where both candidates lose most. Then calibrate the judge with 20 human ratings, and find out why {arm:qwen3.8-flash} cost more than the earlier campaign found."
+        "text": "Fix off-lane handling first: it is {control.name}'s weakest stratum and where both candidates lose most. Then calibrate the judge against human ratings, and find out why {arm:qwen3.8-flash} cost more than the earlier campaign found."
       }
     ],
     "confidence": "high"
@@ -106,8 +106,7 @@
         "aspect": "",
         "measures": [
           "passed",
-          "persona.holds_character",
-          "persona.booth_stays_offstage"
+          "persona.holds_character"
         ],
         "arms": [],
         "strata": [],
@@ -126,7 +125,7 @@
     },
     {
       "kind": "bars",
-      "title": "Cost per 1,000 replies",
+      "title": "Cost per thousand replies",
       "query": {
         "source": "measures",
         "aspect": "",
@@ -182,13 +181,13 @@
           4
         ]
       },
-      "caption": "Pass rate on {aspect.name}: a trial passes when every check and judged dimension passes. Confirmatory 95% intervals on {cases} paired cases. The margin was set after the readings were visible."
+      "caption": "Pass rate on {aspect.name}: a trial passes when every check and judged dimension passes. Confirmatory {reading.qwen3.8-flash.level} intervals on {cases} paired cases. The margin was set after the readings were visible."
     },
     {
       "id": "strata",
       "eyebrow": "Where character is lost",
       "headline": "Off-lane asks, the largest stratum, carry about {strata.off_lane.loss_share|pct10} of each candidate's loss",
-      "takeaway": "Change in in-character rate against {control.name}, by kind of listener message. The twelve largest strata, by cases. Bold rows are separated from zero at 95%, before any correction; read them as leads.",
+      "takeaway": "Change in in-character rate against {control.name}, by kind of listener message. The twelve largest strata, by cases. Bold rows are separated from zero before any correction; read them as leads.",
       "chart": {
         "kind": "diverging_bars",
         "title": "",
@@ -275,7 +274,7 @@
           "step": 0,
           "default": 0,
           "options": [
-            "Pass rate (95%)",
+            "Pass rate (confirmatory)",
             "In-character (corrected)"
           ]
         }
@@ -295,7 +294,7 @@
     },
     {
       "term": "Pass",
-      "text": "A trial passes when every check and every judged dimension passes. The asked reading uses confirmatory 95% intervals."
+      "text": "A trial passes when every check and every judged dimension passes. The asked reading uses confirmatory {reading.qwen3.8-flash.level} intervals."
     },
     {
       "term": "Corrected comparisons",
