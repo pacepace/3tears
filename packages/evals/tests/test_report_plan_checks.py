@@ -654,6 +654,12 @@ PROSE_FIELDS = {
     ("ExploreControl", "title"),
     ("MethodItem", "term"),
     ("MethodItem", "text"),
+    # The planner's own models of the same prose: the flag's words, an answer by its warning's position, and a prose
+    # call's text, which assembles into one of the fields above.
+    ("PlannedFlag", "title"),
+    ("PlannedFlag", "text"),
+    ("PlannedAnswer", "text"),
+    ("ProseItem", "text"),
 }
 
 
