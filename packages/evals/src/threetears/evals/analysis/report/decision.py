@@ -750,10 +750,6 @@ def aspect_pass_rate(
     return next((rate for rate in rates if rate.measure is None), None)
 
 
-#: What a control's pass rate cannot let a candidate show on an aspect: a ``drop`` past the margin, or a ``gain``.
-ControlBound = Literal["drop", "gain"]
-
-
 def control_cannot_show(
     bundle: AnalysisContextBundle,
     control: str,
@@ -762,7 +758,7 @@ def control_cannot_show(
     margin: float | None,
     passed: int,
     trials: int,
-) -> tuple[ControlBound, ...]:
+) -> tuple[Literal["drop", "gain"], ...]:
     """What no candidate's pass rate can show against the control on one aspect, whatever it does: the one rule the
     page's scorecard marks and the writer's view flags.
 
@@ -785,11 +781,11 @@ def control_cannot_show(
     :param trials: The trials the control was measured on.
     :ptype trials: int
     :return: ``drop``, ``gain``, both or neither, in that order; neither where the control has no trial.
-    :rtype: tuple[ControlBound, ...]
+    :rtype: tuple[Literal["drop", "gain"], ...]
     """
     if not trials:
         return ()
-    bounds: list[ControlBound] = []
+    bounds: list[Literal["drop", "gain"]] = []
     if margin is not None:
         rates = [aspect_pass_rate(bundle, control, candidate) for candidate in candidates]
         shares = [
@@ -1146,7 +1142,6 @@ def projection_note(projections: Sequence[SampleProjection], *, run_cases: int, 
 
 __all__ = [
     "CasesNeeded",
-    "ControlBound",
     "FloorOutcome",
     "FloorReadings",
     "FloorVerdict",
