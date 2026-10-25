@@ -318,7 +318,11 @@ _LOCAL_LINK = re.compile(r'href="#(?!g-)([^"]*)"')
 
 def _aspect_fold(fold: CampaignAspectFold, slug: str) -> list[str]:
     """One aspect's closed fold: the writer's summary of it, then its page's first screen and sections, a heading level
-    down, every id in it prefixed ``a-<slug>-``.
+    down, every id in it prefixed ``a-<slug>--``.
+
+    Ids derived from the slug join it with ``--``, which :func:`~threetears.evals.analysis.report.blocks.fold_ids`
+    never writes (it folds every run of other characters into one hyphen), so an aspect labelled "billing body" can
+    never take the id of the "billing" fold's body, nor any id inside it.
 
     The page's own title, its quoted question, its broken floors and its verdict line are left out
     (:attr:`~threetears.evals.analysis.report.model.CampaignAspectFold.head`): the campaign's first screen carries the
@@ -331,13 +335,13 @@ def _aspect_fold(fold: CampaignAspectFold, slug: str) -> list[str]:
         *(_block(block, index) for index, block in enumerate(head)),
         *_sections(report, _present_sections(report)),
     ]
-    prefix = f"a-{slug}-"
+    prefix = f"a-{slug}--"
     inner = _prefixed("\n".join(body), prefix)
     return [
         f'<section id="{fold_anchor(slug)}">',
         f'<details class="section"><summary><h2>{_escape(fold.aspect)}</h2> '
         f'<span class="count">· {_escape(fold.shows)}</span></summary>',
-        f'<div class="section-body" id="{fold_anchor(slug)}-body">',
+        f'<div class="section-body" id="{fold_anchor(slug)}--body">',
         inner,
         "</div></details>",
         "</section>",

@@ -95,7 +95,7 @@ def campaign_report_markdown(report: CampaignReport) -> str:
     for section in before:
         lines += ["", f"## {titles[section]}", *_folded([b for b in report.blocks if b.section == section])]
     for fold, slug in zip(report.aspects, report.fold_ids, strict=True):
-        prefix = f"a-{slug}-"
+        prefix = f"a-{slug}--"
         lines += ["", f"## {_inert(_one_line(fold.aspect))}", "", f"{_inert(_one_line(fold.shows))}.", ""]
         lines += [f"<details><summary>{html.escape(_one_line(fold.aspect), quote=False)} in full</summary>"]
         lines += _folded(fold.summary, prefix=prefix)

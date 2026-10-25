@@ -65,7 +65,7 @@ async def test_a_campaign_of_one_aspect_has_one_row_and_its_fold_holds_the_aspec
     # Every section the aspect's own page holds is in the fold, under the fold's prefix.
     sections = re.findall(r'<section id="([a-z_]+)">', own)
     assert sections and all(
-        f'<section id="a-billing-{section}">' in html for section in sections if section != "glossary"
+        f'<section id="a-billing--{section}">' in html for section in sections if section != "glossary"
     )
     assert html.count("<h1>") == 1
 
@@ -223,3 +223,13 @@ async def test_a_fold_of_a_choice_names_the_arms_by_the_campaign_s_labels() -> N
     page = build_campaign_report(tone.campaign, read, {"tone": report}, None)
     fold = campaign_report_markdown(page).split("\n## tone", 1)[1]
     assert "| ALPHA |" in fold and "| alpha |" not in fold
+
+
+@pytest.mark.parametrize("second", ["billing body", "billing trials", "billing 2"])
+async def test_an_aspect_whose_label_extends_anothers_never_takes_its_ids(second: str) -> None:
+    """An aspect's slug may read as another's plus a word ("billing" and "billing body"); the ids derived from a slug
+    join it with a separator no slug holds, so neither fold claims the other's ids, in HTML or Markdown."""
+    page = await page_of("billing", second)
+    for rendered in (campaign_report_html(page), campaign_report_markdown(page)):
+        ids = re.findall(r'\bid="([^"]+)"', rendered)
+        assert ids and len(ids) == len(set(ids)), sorted(i for i in ids if ids.count(i) > 1)

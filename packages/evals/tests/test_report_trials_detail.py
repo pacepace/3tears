@@ -112,10 +112,10 @@ async def test_every_form_says_the_same_and_a_link_to_a_failed_trial_lands_on_it
     html, html_all = serialize_report(table, "html"), serialize_report(every, "html")
     assert '<details class="trial"' not in html and html_all.count('<details class="trial"') == len(wrong)
     for trial in wrong:
-        target = f"a-{fold_id}-{trial.trial_id}"
+        target = f"a-{fold_id}--{trial.trial_id}"
         assert f'<td id="{target}">' in html and f'href="#{target}"' in html
     markdown, markdown_all = serialize_report(table, "markdown"), serialize_report(every, "markdown")
-    assert "<details id=" not in markdown and markdown_all.count(f'<details id="a-{fold_id}-T') == len(wrong)
+    assert "<details id=" not in markdown and markdown_all.count(f'<details id="a-{fold_id}--T') == len(wrong)
     assert "| Trial | Case | Arm | Outcome | Why | Stored result |" in markdown
     assert len(html) < len(html_all) and len(markdown) < len(markdown_all)
     # The machine form holds no records either way.
