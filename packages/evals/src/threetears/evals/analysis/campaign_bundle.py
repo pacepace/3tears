@@ -730,6 +730,11 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
     }
     if disclosures:
         view["disclosures"] = disclosures
+    if any(pair.precision is not None for pair in bundle.readings.pairs) or any(
+        reading.precision is not None for reading in bundle.readings.readings
+    ):
+        # A term defined once: what every comparison's `precision` reads its between-case share by.
+        view["precision_means"] = REPEATS_FLOOR
     if catalog:
         view["confound_catalog"] = catalog
     view |= {
@@ -1252,7 +1257,8 @@ def _depth(aspect: AnalysisContextBundle, namer: _Namer) -> dict[str, Any]:
 
 def _precision(precision: Precision | None, namer: _Namer) -> dict[str, Any] | None:
     """What limits a comparison's interval, as the writer reads it: its half-width and each arm's own in points, the arm
-    limiting it, and the between-case share of its variance, with what that share means."""
+    limiting it, and the between-case share of its variance. What that share means is defined once, for the whole
+    view (``precision_means``), never per comparison."""
     if precision is None:
         return None
     return {
@@ -1260,7 +1266,6 @@ def _precision(precision: Precision | None, namer: _Namer) -> dict[str, Any] | N
         "own_half_width": {namer.arm(key): _points(width) for key, width in precision.half_widths.items()},
         "limited_by": namer.arm(precision.limited_by) if precision.limited_by is not None else None,
         "between_case_share": _figure(precision.between_share),
-        "means": REPEATS_FLOOR,
     }
 
 

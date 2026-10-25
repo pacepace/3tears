@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import Any, get_args
 
@@ -24,6 +25,7 @@ import pytest
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, LateCriterion
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle, writer_view
+from threetears.evals.analysis.depth import REPEATS_FLOOR
 from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.decision import NeedKind
 from threetears.evals.analysis.report.model import CampaignReport, TableBlock
@@ -144,6 +146,16 @@ def test_a_campaign_of_one_aspect_keeps_that_aspect_s_own_disclosures_in_its_par
     (part,) = view["aspects"]
     assert part["disclosures"] and part["confound_catalog"]
     assert "disclosures" not in view and "confound_catalog" not in view
+
+
+@pytest.mark.parametrize("name", list(_SHAPES))
+def test_what_a_between_case_share_means_is_defined_once(name: str) -> None:
+    view = _view(_SHAPES[name]())
+    assert json.dumps(view, ensure_ascii=False).count(json.dumps(REPEATS_FLOOR, ensure_ascii=False)[1:-1]) == 1
+    assert view["precision_means"] == REPEATS_FLOOR
+    precisions = [reading["precision"] for part in view["aspects"] for reading in part["readings"]]
+    precisions += [pair["precision"] for pair in view.get("pairs", [])]
+    assert precisions and all("means" not in precision for precision in precisions if precision is not None)
 
 
 # --- sizings with their kind --------------------------------------------------------------------------------------

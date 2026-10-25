@@ -29,7 +29,8 @@ control's pass rate leaves no candidate able to show a drop past the margin or a
 by its declared name, else its whole expression, any other measure by its reader name (a cost by `Production cost`,
 never `production_replicating_cost`). A change, every interval in points, a floor's `worst_drop` and `short_by`, and
 a comparison's half-widths read to the one decimal the page prints (a change of `53.33` is `53.3`); a projected cost
-to two figures. No reading, identity, digest or fingerprint moves, and a campaign bundle frozen at shape 2 renders the
+to two figures. What a comparison's between-case share means is defined once, in a top-level `precision_means`,
+and each `precision` no longer carries `means`. No reading, identity, digest or fingerprint moves, and a campaign bundle frozen at shape 2 renders the
 same view as the one it was frozen from. The recorded writer fixture (`tests/fixtures/generate_analysis/recordings/`)
 is stale until it is re-recorded over the new view. See `packages/evals/MIGRATIONS.toml`.
 
