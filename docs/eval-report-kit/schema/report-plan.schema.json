@@ -58,7 +58,7 @@
         "properties": {
           "title": {"type": "string", "minLength": 1},
           "text": {"type": "string", "minLength": 1},
-          "discloses": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^(late_criteria|judge_uncalibrated|confound:.+|short_run:.+)$"}, "description": "late_criteria, judge_uncalibrated, confound:<id in caveats.confounds>, short_run:<run id>"},
+          "discloses": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^(late_criteria|judge_uncalibrated|no_rule|confound:.+|short_run:.+)$"}, "description": "late_criteria, judge_uncalibrated, no_rule (a tradeoff with no declared ranking rule), confound:<id in caveats.confounds>, short_run:<run id>"},
           "weakens": {"type": "array", "items": {"type": "string"}},
           "survives": {"type": "array", "items": {"type": "string"}}
         }
@@ -129,7 +129,7 @@
         "additionalProperties": false,
         "required": ["warning", "text"],
         "properties": {
-          "warning": {"type": "object", "additionalProperties": false, "required": ["kind", "aspect", "name"], "properties": {"kind": {"enum": ["floor_broken", "behind_on", "bar_missed"]}, "aspect": {"type": "string", "minLength": 1}, "name": {"type": "string", "minLength": 1, "description": "floor_broken: the floor key; behind_on: the arm id shown ahead; bar_missed: the bar's measure key"}}},
+          "warning": {"type": "object", "additionalProperties": false, "required": ["kind", "aspect", "name"], "properties": {"kind": {"enum": ["floor_broken", "floor_unclear", "behind_on", "bar_missed"]}, "aspect": {"type": "string", "minLength": 1}, "name": {"type": "string", "minLength": 1, "description": "floor_broken and floor_unclear: the floor key; behind_on: the arm id shown ahead; bar_missed: the bar's measure key"}}},
           "text": {"type": "string", "minLength": 1}
         }
       }

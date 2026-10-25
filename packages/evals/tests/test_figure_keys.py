@@ -260,6 +260,17 @@ class TestAPathIsMatchedNotSplit:
         with pytest.raises(UnresolvableReference, match="no single one"):
             resolve("aspect.name", _input("r1"))
 
+    @pytest.mark.parametrize(
+        "path", ["reading.a.low", "reading.a.high", "flip_margin.a", "contrast.a.m.low", "contrast.a.m.high"]
+    )
+    def test_an_end_of_an_interval_the_input_leaves_unstated_is_refused(self, path: str):
+        report_input = _small(
+            aspects=[{"id": "asked", "asked": True, "readings": [{"arm": "a", "reading": "untested", "change": 0}]}],
+            contrasts=[{"arm": "a", "measure": "m", "verdict": "untested"}],
+        )
+        with pytest.raises(UnresolvableReference, match="does not state"):
+            resolve(path, report_input)
+
 
 # --- filters -------------------------------------------------------------------------------------------------------
 
