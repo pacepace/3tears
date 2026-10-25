@@ -2021,6 +2021,29 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         pk = dict(zip(self.schema.pk_columns, pk_values, strict=True))
         return await store.fetch_one(self.schema.name, pk)
 
+    async def fetch_from_store_in_transaction(self, entity_id: Any, *, conn: Any) -> dict[str, Any] | None:
+        """fetch one row on a caller's open transaction, through the :class:`DurableStore` seam.
+
+        See :meth:`BaseCollection.fetch_from_store_in_transaction`. The same declared-columns
+        SELECT and read coercion as :meth:`fetch_from_store`, bound to ``conn`` so it sees the
+        transaction's uncommitted writes. A subclass that overrides :meth:`fetch_from_store` reads
+        its own way, which this cannot know, so it reads nothing here unless it overrides this too.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values (composite-pk)
+        :ptype entity_id: Any
+        :param conn: the caller's connection, with its transaction open
+        :ptype conn: Any
+        :return: row dict on hit; ``None`` on miss, with no durable store, or when a subclass reads
+            its own way
+        :rtype: dict[str, Any] | None
+        """
+        store = self._durable_store()
+        if store is None or type(self).fetch_from_store is not SchemaBackedCollection.fetch_from_store:
+            return None
+        pk_values = self.normalize_pk(entity_id)
+        pk = dict(zip(self.schema.pk_columns, pk_values, strict=True))
+        return await store.fetch_one(self.schema.name, pk, conn=conn)
+
     #: the most rows one bulk statement writes: well inside a broker's statement timeout for a
     #: row of a few dozen columns
     BULK_MAX_ROWS: ClassVar[int] = 1000

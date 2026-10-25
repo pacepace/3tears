@@ -28,6 +28,30 @@ each nullable column it leaves out as `None` (`complete_written_row`), and write
 caches; `l2_cas_mutate`'s fallback with no L2 now completes its row the same way, rather than keeping the stored
 value. A bulk `save_rows` still replaces every mutable column its rows share.
 
+### core: a save inside a caller transaction hands back the stored row
+
+**Fixed:** a save joining a caller's transaction (`save_entity(entity, conn=conn)`) left its handle holding the
+row as sent, so after a partial update a column the row did not name raised `AttributeError` on the handle, or
+answered a stale value, though L3 kept it (the hub hit it re-saving `platform.datasources` rows). Such a save
+now reads its row back over the caller's connection, so the read sees the transaction's own uncommitted writes,
+and the handle holds the stored row, as a save outside a transaction does. The caches are unchanged: nothing
+takes the row while the transaction is open, and when it ends every key it wrote is evicted, so the next read
+takes the committed row. The eviction's broadcast now takes its invalidation columns from the row as stored.
+A read back that raises is raised from the save, and the handle keeps its unsaved edits.
+
+**Added:** `BaseCollection.fetch_from_store_in_transaction(entity_id, *, conn)`, the extension point for that
+read. The default reads nothing and the handle keeps the row as sent, so a collection overriding
+`fetch_from_store` is unaffected. `SchemaBackedCollection` reads through its durable store's `fetch_one(conn=)`,
+unless a subclass overrides `fetch_from_store`, which must then override this too. The datasources and
+scheduled-jobs `DeclaredTableCollection`s implement it with their own `fetch_from_store` SELECT, run on the
+caller's `conn`. `CallerTransaction.restate` replaces the row an enrolled write carries.
+
+**Added (enforcement):** the collection census records `transaction_read_gap`, and
+`find_transaction_read_gaps(census)` lists every class that overrides `fetch_from_store`, may leave columns
+to the database (inherits a `columns_decided_by_store` other than `BaseCollection`'s, which answers none),
+and has no `fetch_from_store_in_transaction` at or below it. 3tears gates its own packages on it; a product
+runs it over its census as it does `find_census_problems`.
+
 ### core: exact NUMERIC operands, immutable read-back, NaN-safe reads and answers, Decimal from L2 numbers
 
 **Fixed:** a `DeclaredTableCollection` write that named an `immutable` column cached the value it sent, while
