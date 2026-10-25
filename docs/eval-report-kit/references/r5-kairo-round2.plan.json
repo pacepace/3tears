@@ -51,7 +51,7 @@
       },
       {
         "key": "watch",
-        "text": "{arm:1017} spent {reasoning_ratio.1017|pct} of its output reasoning against {control.name}'s {reasoning_ratio.September|pct}, and other swept levers varied with the model, so part of its result may be the effort budget or another lever, not the model. Two of {arm:qwen3.8-flash}'s runs each lost one trial to the harness, so its rates rest on slightly fewer trials.",
+        "text": "The thinnest margin is {arm:1017}: its drop of {reading.1017.change|abs|pts} points is not separated from zero, so on quality it may be a tie, though it still costs {cost.uplift.1017|pct} more per reply. {arm:1017} also spent {reasoning_ratio.1017|pct} of its output reasoning against {control.name}'s {reasoning_ratio.September|pct}, and other swept levers varied with the model, so part of its result may be the effort budget or another lever. Two of {arm:qwen3.8-flash}'s runs each lost one trial to the harness.",
         "caveats": [
           "confound:observed:reasoning_ratio",
           "confound:model",
@@ -61,7 +61,7 @@
       },
       {
         "key": "next",
-        "text": "Fix off-lane handling first: it is {control.name}'s weakest stratum and where both candidates lose most. Then calibrate the judge against human ratings, and find out why {arm:qwen3.8-flash} cost more than the earlier campaign found.",
+        "text": "The experiment that could change the answer: a candidate priced at or below {control.name}, run on the same cases with off-lane asks oversampled, since that stratum carries about {strata.off_lane.loss_share|pct10} of each candidate's loss. Calibrate the judge against human ratings first, so the in-character figures can carry the call.",
         "caveats": []
       }
     ],

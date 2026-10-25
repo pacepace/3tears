@@ -46,7 +46,10 @@ logarithmic when the arms' cost per 1,000 replies spans more than ten times.
   and no ``lean``; tradeoff no ``recommended`` and at most one ``lean``; a no call neither.
 - *The recommendation* (the memo's refusals, ported onto the report input): a measurement (one arm) recommends
   nothing; a recommended option is an arm the input holds (a change's candidate or its control); a choice's pick that
-  no pair reading shows ahead takes the ``low`` confidence form; a change switches to a candidate only when some aspect
+  no pair reading shows ahead takes the ``low`` confidence form, unless the campaign declares a gate (a criterion of
+  kind ``gate`` or ``guardrail``) and the pick is the one dominant survivor
+  (:func:`~threetears.evals.analysis.report_decision.dominant_options`): then gates and cost, not pair readings, settled
+  it, and the confidence states what they earn; a change switches to a candidate only when some aspect
   is asked, no guardrail on it breached, and it is shown better (a confirmatory ``better`` reading, or an
   ``improved`` contrast on an asked aspect) or no worse (every floor on every asked aspect ``held``, each declaring
   one). A change in tradeoff mode or a no call recommends nothing: GENERATOR §1.1's modes replace the memo's "a
@@ -435,17 +438,26 @@ def _recommendation_faults(plan: ReportPlan, report_input: ReportInput) -> Itera
         return
     if kind == "choice":
         ahead = any(pair.ahead == row.option for aspect in report_input.aspects for pair in aspect.pairs)
-        if not ahead and plan.decision.confidence.form != "low":
+        if not ahead and not _settled_by_gates(report_input, row.option) and plan.decision.confidence.form != "low":
             yield (
                 "decision.confidence.form",
                 (
                     f"is {plan.decision.confidence.form!r}, and the plan picks {row.option!r}, which no pair reading shows ahead "
-                    "of any arm: a pick nothing separated rests on cost or simplicity, so its confidence is 'low'. Lower "
-                    "it, pick an arm a pair reading shows ahead, or make no call"
+                    "of any arm, and no declared gate leaves it the one dominant survivor: a pick nothing separated rests "
+                    "on cost or simplicity, so its confidence is 'low'. Lower it, pick an arm a pair reading shows ahead, "
+                    "or make no call"
                 ),
             )
         return
     yield from _adoption_faults(row.option, path, report_input)
+
+
+def _settled_by_gates(report_input: ReportInput, arm: str) -> bool:
+    """Whether the campaign's declared gates settle the pick: it declares a gate or guardrail, and ``arm`` is the one
+    survivor at least as good as every other on cost, the asked aspect and every gate. Its basis is then the gates and
+    cost, which code read, and not a pair reading that does not separate it."""
+    gated = any(criterion.kind in ("gate", "guardrail") for criterion in report_input.criteria)
+    return gated and dominant_options(report_input) == [arm]
 
 
 def _adoption_faults(arm: str, path: str, report_input: ReportInput) -> Iterator[_Fault]:

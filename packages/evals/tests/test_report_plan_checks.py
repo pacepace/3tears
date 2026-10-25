@@ -6,7 +6,8 @@ Contracts held here (``threetears.evals.analysis.report_plan_checks``, GENERATOR
 - :func:`classify` looks r1–r5 up as A, B, C, D, D, and an ordered-versions input as E; the criteria signal wins a
   control under hard gates;
 - each check refuses at the field path it names: code's facts, mode (one code allows), slots, roles, ids, the
-  recommendation (the memo's refusals ported, and the one option that dominates), the warning answers
+  recommendation (the memo's refusals ported, and the one option that dominates; a choice's pick no pair reading
+  shows ahead is stated at low confidence unless declared gates leave it the one dominant survivor), the warning answers
   (``floor_unclear`` among them), the confidence's form and clauses, the flag, caveat coverage, the charts, the figure
   keys and D3, over every prose field the plan holds.
 
@@ -376,6 +377,33 @@ class TestTheRecommendation:
         data["arms"][0]["role"] = "challenger"
         assert "'low'" in _why(_plan(), "decision.confidence.form", data)
         assert "decision.confidence.form" not in _paths(_set(_plan(), "decision.confidence.form", "low"), data)
+
+    def test_an_ungated_choice_whose_pairs_do_not_separate_its_pick_is_still_low(self):
+        data = _input_dict()
+        data["arms"][0]["role"] = "challenger"
+        data["aspects"][0]["pairs"] = [{"arms": ["September", "1017"], "change": 0.4, "ahead": None}]
+        assert "no declared gate" in _why(_plan(), "decision.confidence.form", data)
+
+    @pytest.mark.parametrize("name", ["r1", "r2", "r3"])
+    def test_a_choice_gates_leave_one_dominant_survivor_may_state_high(self, name: str):
+        plan: dict[str, Any] = json.loads((FIXTURES / name / "anchor.plan.json").read_text(encoding="utf-8"))
+        assert plan["decision"]["confidence"]["form"] == "high"
+        _passes(plan, _input_dict(name))
+
+    def test_a_gated_choice_is_settled_only_for_the_one_dominant_survivor(self):
+        data = _input_dict()
+        data["arms"][0]["role"] = "challenger"
+        cost_gate = {
+            "id": "cost",
+            "kind": "gate",
+            "measure": "production_replicating_cost",
+            "direction": "lower_is_better",
+            "threshold": 0.01,
+        }
+        data["criteria"] = [cost_gate]
+        assert "decision.confidence.form" not in _paths(_plan(), data)
+        data["criteria"] = [{**cost_gate, "direction": "higher_is_better", "threshold": 0.002}]
+        assert "no declared gate" in _why(_plan(), "decision.confidence.form", data)
 
     def test_a_choice_shown_ahead_may_be_picked_at_any_confidence(self):
         data = _input_dict()

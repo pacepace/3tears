@@ -2,22 +2,22 @@
   "mode": "decide",
   "headline_kind": "decision",
   "headline": "Use {arm:brisk-s.low.r1}. It is the only configuration that passes both the pass-rate gate and the latency budget.",
-  "lede": "It passes {measure.pass_rate.brisk-s.low.r1.mean|pct} of tasks with a p-ninety-five latency of {measure.latency_ms.brisk-s.low.r1.p95|int} ms, at {cost_per_1k.brisk-s.low.r1|usd} per thousand calls. A looser latency budget would let the more accurate {arm:atlas-m.high.r1} in, at several times the cost.",
+  "lede": "It passes {measure.pass_rate.brisk-s.low.r1.mean|pct} of tasks with a p95 latency of {measure.latency_ms.brisk-s.low.r1.p95|int} ms, inside the {criteria.p95.threshold} budget, at {cost_per_1k.brisk-s.low.r1|usd_per_1k}. A looser latency budget would let the more accurate {arm:atlas-m.high.r1} in, at several times the cost.",
   "decision": {
     "slots": [
       {
         "key": "recommendation",
-        "text": "**{arm:brisk-s.low.r1}**: {measure.pass_rate.brisk-s.low.r1.mean|pct} pass rate, p-ninety-five {measure.latency_ms.brisk-s.low.r1.p95|int} ms, {cost_per_1k.brisk-s.low.r1|usd} per thousand calls. The retry is the cheapest lever in the sweep: it adds about two points of pass rate for little extra cost.",
+        "text": "**{arm:brisk-s.low.r1}**: {measure.pass_rate.brisk-s.low.r1.mean|pct} pass rate, p95 {measure.latency_ms.brisk-s.low.r1.p95|int} ms, {cost_per_1k.brisk-s.low.r1|usd_per_1k}. The retry is the cheapest lever in the sweep: it adds about two points of pass rate for little extra cost.",
         "caveats": []
       },
       {
         "key": "why_not",
-        "text": "**{arm:atlas-m.high.r1}** is the most accurate at {measure.pass_rate.atlas-m.high.r1.mean|pct}, but its p-ninety-five of {measure.latency_ms.atlas-m.high.r1.p95|int} ms is outside the budget. **{arm:brisk-s.high.r1}** passes more tasks but is too slow. **{arm:nano-xs.off.r0}** is the cheapest and fails the pass-rate gate by a wide margin.",
+        "text": "**{arm:atlas-m.high.r1}** is the most accurate at {measure.pass_rate.atlas-m.high.r1.mean|pct}, but its p95 of {measure.latency_ms.atlas-m.high.r1.p95|int} ms is outside the {criteria.p95.threshold} budget. **{arm:brisk-s.high.r1}** passes more tasks but is too slow. **{arm:nano-xs.off.r0}** is the cheapest and fails the {criteria.pass_rate.threshold|pct} pass-rate gate by a wide margin.",
         "caveats": []
       },
       {
         "key": "watch",
-        "text": "The pick clears the pass-rate gate by a fraction of a point, inside the interval of about one point at this sample size: the weakest margin on the page. Wrong arguments, mostly date windows, are now its largest failure.",
+        "text": "The pick clears the {criteria.pass_rate.threshold|pct} pass-rate gate at {measure.pass_rate.brisk-s.low.r1.mean|pct}, by a fraction of a point, inside the interval of about one point at this sample size: the weakest margin on the page. Wrong arguments, mostly date windows, are now its largest failure.",
         "caveats": []
       },
       {
@@ -27,7 +27,7 @@
       }
     ],
     "confidence": {
-      "form": "low",
+      "form": "high",
       "caveats": []
     }
   },
@@ -49,7 +49,7 @@
     },
     {
       "term": "Cost",
-      "text": "Measured tokens times list price per thousand planner calls, including retries, at {meta.volume_per_month|int} calls a month.",
+      "text": "Measured tokens times list price, stated per 1,000 replies (one reply is one planner call), including retries, at {meta.volume_per_month|int} calls a month.",
       "caveats": []
     }
   ],
@@ -201,7 +201,7 @@
     },
     {
       "kind": "bars",
-      "title": "Cost per thousand calls",
+      "title": "Cost per 1,000 replies",
       "query": {
         "source": "measures",
         "aspect": "",

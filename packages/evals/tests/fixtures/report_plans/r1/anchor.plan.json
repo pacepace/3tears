@@ -12,12 +12,12 @@
       },
       {
         "key": "why_not",
-        "text": "**{arm:atlas-l}** has the best quality but misses the latency budget on four of five tasks. **{arm:brisk-s}** and **{arm:open-70b}** speculate too often on bait prompts to pass the speculation gate.",
+        "text": "**{arm:atlas-l}** has the best quality but misses the {criteria.p95.threshold} p95 latency budget on four of five tasks. **{arm:brisk-s}** and **{arm:open-70b}** speculate too often on bait prompts to pass the speculation gate.",
         "caveats": []
       },
       {
         "key": "watch",
-        "text": "The weakest margin: {arm:atlas-m}'s issue resolution in troubleshooting sits right at its floor, with an interval that crosses it. Re-test it on a larger troubleshooting sample before launch.",
+        "text": "The weakest margin: {arm:atlas-m}'s issue resolution in troubleshooting, {task.trouble.atlas-m.resolves.mean|pct}, sits right at its floor of {criteria.trouble.resolves.threshold|pct}, with an interval that crosses it. Re-test it on a larger troubleshooting sample before launch.",
         "caveats": []
       },
       {
@@ -27,7 +27,7 @@
       }
     ],
     "confidence": {
-      "form": "low",
+      "form": "high",
       "caveats": []
     }
   },
@@ -49,7 +49,7 @@
     },
     {
       "term": "Cost",
-      "text": "Measured tokens times list price per thousand conversations; blended cost weights tasks by September traffic.",
+      "text": "Measured tokens times list price, stated per 1,000 replies; blended cost weights tasks by September traffic.",
       "caveats": []
     }
   ],
@@ -119,7 +119,7 @@
   "summary": [
     {
       "kind": "bars",
-      "title": "Cost per thousand conversations, billing",
+      "title": "Cost per 1,000 replies, billing",
       "query": {
         "source": "tasks",
         "aspect": "",
@@ -151,7 +151,7 @@
       "id": "matrix",
       "eyebrow": "Where each candidate passes",
       "headline": "{arm:atlas-m} passes every task; the cheapest passing model differs by task",
-      "takeaway": "Each cell checks overall quality, every task-specific behavior against its floor, and p-ninety-five latency. Amber means the score clears the floor but its interval crosses it.",
+      "takeaway": "Each cell checks overall quality, every task-specific behavior against its floor, and p95 latency. Amber means the score clears the floor but its interval crosses it.",
       "chart": {
         "kind": "gate_matrix",
         "title": "",
@@ -259,7 +259,7 @@
         {
           "id": "latency",
           "kind": "slider",
-          "title": "Latency budget (p-ninety-five, seconds)",
+          "title": "Latency budget (p95, seconds)",
           "binds": "p95",
           "min": 1.0,
           "max": 6.0,
