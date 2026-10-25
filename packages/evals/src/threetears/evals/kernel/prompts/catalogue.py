@@ -27,9 +27,10 @@ from __future__ import annotations
 
 from threetears.evals.kernel.prompts.seed import KIND_TEMPLATE, KIND_TEXT, SeedPrompt
 
-#: The analysis generator's system prompt — a single string, seeded into a shared-prompt registry. The
-#: registry key :class:`~threetears.evals.ops.AnalysisGeneration` resolves the generator's prompt under,
-#: and the subject a reporter run measures.
+#: The memo writer's system prompt, kept only for the memo reporter cases (kind version 1) that generate a memo
+#: candidate, and for reading memos already stored. No analysis generation resolves it: a generation is written by
+#: the report planner (:data:`REPORT_PLAN_PROMPT`). It is retired as the default and will be removed in a future
+#: minor release, once no deployment holds a memo reporter case; a host that seeds it keeps it only for those cases.
 ANALYSIS_GEN_PROMPT = "eval_analysis_gen"
 
 #: The report planner's system prompt — a single string, seeded into a shared-prompt registry like the analysis

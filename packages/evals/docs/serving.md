@@ -245,7 +245,7 @@ evals")`; your users then never name the host.
 ## Operations and jobs
 
 The operations (`threetears.evals.ops`) run over an `OpsHost`: the `LaunchHost`, plus `AnalysisGeneration`
-(the prompt, output cap and budget a background generation runs under). Each returns a typed model.
+(the `eval_report_plan` prompt, output cap and budget a background generation runs under). Each returns a typed model.
 
 **No transport call waits on a model.** Every operation whose work calls one is a **job**: `run_launch`,
 `sweep_launch`, `analysis_generate`, `judge_second`, `judge_drift_check` and `judge_temperature` return
@@ -438,7 +438,7 @@ To ask again after the runs, `campaign_create` with `aspects_from` adopts the as
 so it reads as the campaign declared before the runs did; what it adds (`margins` for an adopted aspect, a floor, an
 arm) is dated now and named on the page where that is later than its aspect's first result.
 
-4. `report_read` the campaign's page; `analysis_generate` adds the writer's memo;
+4. `report_read` the campaign's page; `analysis_generate` adds the report planner's plan (it resolves the `eval_report_plan` prompt);
 5. `campaign_record` the person's call: the arm, `call_reason`, and each broken floor (`floors_overridden`, by key,
    `billing/rate_drop/*`) and missed bar (`bars_overridden`, `tone/cost_usd`) it overrides. It is refused while the
    arm leaves one unnamed, or names one the arm did not raise, and on a measurement

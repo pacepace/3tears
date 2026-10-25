@@ -691,6 +691,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`CELL_MODEL_VERSION`** · *host contract* · constant (int) · The cell model this module implements, stamped onto every analysis generated under it (`GenerationProvenance.cell_model_version`).
   <br>`= 14`
 - **`EVAL_ANALYSIS_GEN_DEFAULT`** · *host contract* · constant (str) · The analysis generator's default system prompt.
+- **`EVAL_REPORT_PLAN_DEFAULT`** · *host contract* · constant (str) · The report planner's default system prompt.
 - **`GATE_TOKENS`** · constant (tuple) · Every token, in the order the module docstring lists them.
 - **`GLOSSARY`** · constant (dict) · Every term of art a page may use, in one plain sentence each.
 - **`MIN_CASES`** · *host contract* · constant (int) · The fewest independent cases with a usable trial an arm needs before a rate on it is estimated, charted or compared: below it a t interval is too wide and unstable to read (`SMALL_N_BAND_FLOOR`), so a rate is printed as a count ("1 of 2"), never as a percentage, a difference or an interval.

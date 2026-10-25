@@ -17,10 +17,13 @@ not here. The pipeline:
 - ``bundle`` — :func:`~threetears.evals.analysis.bundle.assemble.assemble_context_bundle`
   composes the reporting lenses into a deterministic, fingerprintable context bundle; the bundle's schema
   and each family of derivation it composes are modules of that package.
-- ``gen_prompt`` + ``generator`` — the hot-reloadable ``eval_analysis_gen``
-  prompt and the closed, one-shot
-  :func:`~threetears.evals.analysis.generator.generate_analysis` that turns a bundle into
-  a schema-valid ``EvalAnalysis`` + extracted insights.
+- ``plan_prompt`` + ``planner`` — the hot-reloadable ``eval_report_plan`` prompt
+  (:data:`EVAL_REPORT_PLAN_DEFAULT`, which both planner calls share) and the planner that turns a
+  bundle into the report plan every new analysis is written from.
+- ``gen_prompt`` + ``generator`` — the memo writer's ``eval_analysis_gen`` prompt and the closed,
+  one-shot :func:`~threetears.evals.analysis.generator.generate_analysis` that turns a bundle into
+  a schema-valid ``EvalAnalysis`` + extracted insights. Kept for the memo reporter cases (kind version 1) that
+  generate a memo candidate, and for reading old memos; no generation of an analysis resolves it.
 - ``errors`` — ``GenerationError`` / ``SoundnessRefusal``, raised by ``generator`` and
   caught by ``service`` and ``reporter_kind``.
 - ``report`` — the :class:`~threetears.evals.analysis.report.Report` a campaign is read through: one page,
@@ -140,6 +143,7 @@ from threetears.evals.analysis.campaigns import (
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics
 from threetears.evals.analysis.depth import Depth, ModelPassHatK, Precision
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
+from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
 from threetears.evals.analysis.generator import (
     CallAdmission,
     analysis_gen_request_settings_for,
@@ -649,6 +653,7 @@ __all__ = [
     "DEFAULT_WEIGHTING",
     "EQUIVALENCE_TEST_NAME",
     "EVAL_ANALYSIS_GEN_DEFAULT",
+    "EVAL_REPORT_PLAN_DEFAULT",
     "HISTORY_METRICS",
     "LABEL_BANDS",
     "METRIC_COMPOSITE",

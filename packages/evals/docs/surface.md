@@ -42,7 +42,7 @@ Two or more arms as a campaign, its bundle, report and frontier, the classifier 
 - `schema`: `LatencyMetrics`
 - `kernel`: `AspectDesign`, `BarOverride`, `CampaignCall`, `confusion_cell`, `CONFUSION_CELL_MEASURE`, `ControlDeclaration`, `CostLower`, `EvalAnalysis`, `EvalInsight`, `Floor`, `MATCH_MEASURE`, `OverriddenBar`, `RateDrop`, `SweptAxis`
 - `run`: `get_result_trace`, `get_run`, `list_results`, `list_runs`
-- `analysis`: `AnalysisContextBundle`, `assemble_context_bundle`, `campaign_report`, `CampaignReadings`, `CampaignReport`, `CELL_MODEL_VERSION`, `ChartBlock`, `create_campaign`, `EVAL_ANALYSIS_GEN_DEFAULT`, `EvalSummary`, `format_number`, `format_signed`, `frontier`, `GATE_TOKENS`, `gate_verdicts`, `GateResult`, `generate_analysis`, `inspect_campaign_bundle`, `Report`, `report_html`, `report_markdown`, `RequestSettingsReading`, `SentSettingsShare`, `SentSettingsState`
+- `analysis`: `AnalysisContextBundle`, `assemble_context_bundle`, `campaign_report`, `CampaignReadings`, `CampaignReport`, `CELL_MODEL_VERSION`, `ChartBlock`, `create_campaign`, `EVAL_ANALYSIS_GEN_DEFAULT`, `EVAL_REPORT_PLAN_DEFAULT`, `EvalSummary`, `format_number`, `format_signed`, `frontier`, `GATE_TOKENS`, `gate_verdicts`, `GateResult`, `generate_analysis`, `inspect_campaign_bundle`, `Report`, `report_html`, `report_markdown`, `RequestSettingsReading`, `SentSettingsShare`, `SentSettingsState`
 - `ops`: `campaign_record`, `scope_history`
 
 ## Rung 4: a world, a log, a host and serving
