@@ -1074,12 +1074,23 @@ def floors_projection(
     return reduce(SampleProjection.joined, projections)
 
 
-def projected_usd(value: float) -> str:
-    """A projected cost to two figures, since the cases it prices are about: ``$2.7``, ``$120``."""
+def projected_usd_value(value: float) -> float:
+    """A projected cost to two significant figures, since the cases it prices are about: ``2.7``, ``120``; nought
+    for none. The one rounding the page's price (:func:`projected_usd`) and the writer's view both state.
+
+    :param value: The cost, in US dollars.
+    :ptype value: float
+    :return: The cost to two figures.
+    :rtype: float
+    """
     if value <= 0:
-        return format_number(0.0, prefix="$")
-    places = 1 - math.floor(math.log10(value))
-    return format_number(round(value, places), prefix="$")
+        return 0.0
+    return round(value, 1 - math.floor(math.log10(value)))
+
+
+def projected_usd(value: float) -> str:
+    """A projected cost to two figures (:func:`projected_usd_value`), as the page prints it: ``$2.7``, ``$120``."""
+    return format_number(projected_usd_value(value), prefix="$")
 
 
 def projected_cell(projection: SampleProjection, need: CasesNeeded) -> str:
@@ -1161,6 +1172,7 @@ __all__ = [
     "project_sample",
     "projected_cell",
     "projected_usd",
+    "projected_usd_value",
     "projection_note",
     "rate_projections",
     "read_floor",

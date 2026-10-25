@@ -25,11 +25,13 @@ import pytest
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, LateCriterion
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle, writer_view
+from threetears.evals.analysis.campaign_readings import campaign_readings
 from threetears.evals.analysis.depth import REPEATS_FLOOR
+from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.decision import NeedKind
-from threetears.evals.analysis.report.model import CampaignReport, TableBlock
-from threetears.evals.kernel.declaration import RateDrop
+from threetears.evals.analysis.report.model import CampaignReport, TableBlock, TableCell
+from threetears.evals.kernel.declaration import Floor, RateDrop
 from threetears.evals.kernel.metrics import goal_check_measure, goal_check_of
 from packages.evals.tests.report_shapes_support import (
     CHECKS,
@@ -104,6 +106,26 @@ def _table(page: CampaignReport, name: str) -> TableBlock:
     return next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == name)
 
 
+def _tables(page: CampaignReport, name: str) -> list[TableBlock]:
+    return [block for block in page.blocks if isinstance(block, TableBlock) and block.name == name]
+
+
+def _as_the_page_prints(side: dict[str, Any]) -> str:
+    """One side of a view's ``to_settle``, spelled as the page's To settle cell spells it, from the view's own
+    ``cases`` and ``usd``: a count of cases it hands is the one the cell prints, and its price the cell's price."""
+    kind = side["kind"]
+    if kind == "never":
+        return "none would"
+    if kind == "lost":
+        return "re-run the lost trials"
+    if kind == "enough":
+        return f"this run's {side['cases']} cases"
+    if kind == "beyond":
+        return f"more than {format_number(side['cases'])} cases"
+    priced = "" if "usd" not in side else f", {format_number(side['usd'], prefix='$')}"
+    return f"{side['cases']} cases{priced}"
+
+
 # --- disclosures, once --------------------------------------------------------------------------------------------
 
 
@@ -139,6 +161,27 @@ def test_a_disclosure_aspects_carry_alike_is_said_once_naming_them_and_one_aspec
             assert all(key not in part["disclosures"] for part in carriers)
     assert view["confound_catalog"], "every S1 aspect explains its confounds alike"
     assert all("confound_catalog" not in part for part in view["aspects"])
+    for dimension, groups in view["confound_catalog"].items():
+        assert [group["aspects"] for group in groups] == [labels], dimension
+
+
+def test_a_confound_two_aspects_explain_alike_beside_a_third_worded_otherwise_is_said_once_for_the_two() -> None:
+    plain = _view(s1_change())
+    dimension, (group,) = next(iter(plain["confound_catalog"].items()))
+    otherwise = "worded otherwise on this aspect alone"
+
+    def reworded(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
+        if bundle.aspect != "refunds":
+            return bundle
+        return bundle.model_copy(update={"confound_catalog": {**bundle.confound_catalog, dimension: otherwise}})
+
+    view = writer_view(_bundle(s1_change(), reworded))
+    assert view["confound_catalog"][dimension] == [{"aspects": ["billing", "tone"], "said": group["said"]}]
+    parts = {part["aspect"]: part for part in view["aspects"]}
+    assert parts["refunds"]["confound_catalog"] == {dimension: otherwise}
+    assert "confound_catalog" not in parts["billing"] and "confound_catalog" not in parts["tone"]
+    rest = {key: groups for key, groups in view["confound_catalog"].items() if key != dimension}
+    assert rest == {key: groups for key, groups in plain["confound_catalog"].items() if key != dimension}
 
 
 def test_a_campaign_of_one_aspect_keeps_that_aspect_s_own_disclosures_in_its_part() -> None:
@@ -208,6 +251,43 @@ def test_an_observed_drop_past_the_margin_reads_never_on_the_reading_and_its_flo
     assert [row["observed"].value for row in settle.rows if row["aspect"].value == "billing"] == ["none would"]
 
 
+@pytest.mark.parametrize("name", list(_SHAPES))
+def test_every_count_and_price_to_settle_is_the_one_the_page_s_to_settle_table_prints(name: str) -> None:
+    shape = _SHAPES[name]()
+    view = _view(shape)
+    rows: list[dict[str, TableCell]] = [row for table in _tables(shape.page(), "to_settle") for row in table.rows]
+    # Each sizing the view hands: its aspect, its arm, what the page's row says it shows, and its two sides.
+    sizings = [
+        (part["aspect"], reading["arm"], f"no worse than the {format_number(reading['margin'])}-point margin", settle)
+        for part in view["aspects"]
+        for reading in part["readings"]
+        if (settle := reading.get("to_settle")) is not None
+    ]
+    sizings += [
+        (floor["aspect"], arm["arm"], f"the {format_number(floor['margin'])}-point floor holds", floor["to_settle"])
+        for arm in view["floors"]
+        for floor in arm.get("unclear", [])
+        if floor.get("margin") is not None
+    ]
+    claimed: set[int] = set()
+    for aspect, arm, shows, settle in sizings:
+        (at,) = [
+            at
+            for at, row in enumerate(rows)
+            if (row["aspect"].value, row["arm"].value) == (aspect, arm) and shows in str(row["shows"].value)
+        ]
+        claimed.add(at)
+        printed = (rows[at]["none"].value, rows[at]["observed"].value)
+        assert (_as_the_page_prints(settle["if_none"]), _as_the_page_prints(settle["if_observed"])) == printed, (
+            aspect,
+            arm,
+            shows,
+        )
+    assert claimed == set(range(len(rows))), "every row of the page's To settle table is one the view hands"
+    sides = [side for *_, settle in sizings for side in settle.values()]
+    assert (name == "s1") == any(side["kind"] == "more" and "usd" in side for side in sides)
+
+
 # --- rollups ------------------------------------------------------------------------------------------------------
 
 
@@ -226,6 +306,24 @@ def test_each_arm_s_figures_across_aspects_carry_their_weighting_and_one_aspect_
         assert "cost_per_reply_usd" in arm
         assert ("change_pts" in arm) == (figures.change is not None)
     assert "aggregate" not in _view(s2_choice()), "one aspect's figures are its own part's"
+
+
+def test_an_arm_unpriced_on_one_aspect_has_its_cost_across_aspects_withheld_naming_that_aspect() -> None:
+    shape = shape_of(
+        "unpriced",
+        [
+            AspectTrials("billing", [ArmTrials("production", passing=15), ArmTrials("v2", passing=14)]),
+            AspectTrials("tone", [ArmTrials("production", passing=10), ArmTrials("v2", passing=11, cost=None)]),
+        ],
+        control=True,
+    )
+    read = shape.readings.aggregate
+    assert read is not None
+    (figures,) = [arm for arm in read.arms if arm.arm_label == "v2"]
+    assert figures.cost.missing == ["tone"]
+    (arm,) = [arm for arm in _view(shape)["aggregate"]["arms"] if arm["arm"] == "v2"]
+    assert arm["cost_per_reply_usd"] == {"withheld_for": ["tone"]}
+    assert "value" in arm["pass_rate_pct"], "only the figure the aspect lacks is withheld"
 
 
 def test_each_arm_s_floors_roll_up_broken_unclear_and_held_each_with_the_rate_it_read() -> None:
@@ -299,6 +397,84 @@ def test_declared_names_reach_the_writer_and_move_no_reading() -> None:
     (v4,) = [arm for arm in view["floors"] if arm["arm"] == "v4"]
     assert [floor["reads"] for floor in v4["broken"]] == ["cites policy"]
     assert [part["readings"] for part in view["aspects"]] == [part["readings"] for part in plain["aspects"]]
+
+
+#: A rate code reads off a cell as a floor's reading that is no goal check: a measure with a reader name.
+_ON_TIME = "on_time"
+
+
+def _measured_on_time(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
+    """``bundle`` with every cell also measuring :data:`_ON_TIME`, a pass/fail measure no check reads, passing where
+    the first check passes, and its catalog naming it for a reader."""
+    first = goal_check_measure(CHECKS[0])
+    described = bundle.measure_catalog[first].model_copy(
+        update={"name": _ON_TIME, "reader_name": "Replies on time", "family": "outcome", "pass_fail": True}
+    )
+    cells = [
+        cell.model_copy(
+            update={
+                "measures": cell.measures.model_copy(
+                    update={
+                        "measures": [
+                            *cell.measures.measures,
+                            *(
+                                summary.model_copy(update={"name": _ON_TIME})
+                                for summary in cell.measures.measures
+                                if summary.name == first
+                            ),
+                        ]
+                    }
+                )
+            }
+        )
+        for cell in bundle.cell_measures
+    ]
+    return bundle.model_copy(
+        update={"cell_measures": cells, "measure_catalog": {**bundle.measure_catalog, _ON_TIME: described}}
+    )
+
+
+def test_a_floor_on_a_measure_no_check_reads_goes_by_the_measure_s_page_name() -> None:
+    shape = s1_change()
+    bundles = [_measured_on_time(shape.bundles[aspect.label]) for aspect in shape.campaign.aspects]
+    on_time = Floor(aspect="billing", clause=RateDrop(max_points=10, reading=_ON_TIME))
+    campaign = shape.campaign.model_copy(update={"floors": [*shape.campaign.floors, on_time]})
+    readings = campaign_readings(campaign, {bundle.aspect: bundle for bundle in bundles}, arms=shape.arms)
+    view = writer_view(build_campaign_bundle(campaign, bundles, arms=shape.arms, readings=readings))
+    reads = [
+        floor["reads"]
+        for arm in view["floors"]
+        for state in ("broken", "unclear", "held")
+        for floor in arm.get(state, [])
+        if floor["floor"] == on_time.key
+    ]
+    (billing,) = [part for part in view["aspects"] if part["aspect"] == "billing"]
+    named = measure_name_of(bundles[0], _ON_TIME)
+    assert named == billing["measures"][_ON_TIME]["name"] == "Replies on time"
+    assert reads and set(reads) == {named}, "never the measure's key"
+
+
+def test_a_floor_on_a_judged_dimension_goes_by_the_name_the_page_s_to_settle_table_gives_it() -> None:
+    scored = {"answer.correct": [1 if index < 14 else 0 for index in range(20)]}
+    shape = shape_of(
+        "judged",
+        [
+            AspectTrials(
+                "billing",
+                [
+                    ArmTrials("production", passing=15, scores={"answer.correct": [1] * 15 + [0] * 5}),
+                    ArmTrials("v2", passing=15, scores=scored),
+                ],
+                floors=(RateDrop(max_points=10, reading="answer.correct"),),
+            ),
+            AspectTrials("tone", [ArmTrials("production", passing=10), ArmTrials("v2", passing=10)]),
+        ],
+        control=True,
+    )
+    (arm,) = _view(shape)["floors"]
+    (floor,) = arm["unclear"]
+    (row,) = [row for row in _table(shape.page(), "to_settle").rows if row["shows"].value == "the 10-point floor holds"]
+    assert floor["reads"] == row["decided_by"].value != "answer.correct"
 
 
 # --- a bundle frozen at an earlier shape --------------------------------------------------------------------------
