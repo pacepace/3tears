@@ -74,7 +74,10 @@ collections with a schema; the datasources live parity test runs the second. It 
 declared; it now does, so a save that leaves one out reads the stored value back. The hub's run of the live gate over its
 own tables caught the same in `threetears.agent.knowledge`: `ConceptCollection` now declares the `concepts`
 defaults on `visibility`, `aliases`, `tags` and `always_inject`, and `PlaybookEntryCollection` those of
-`playbook_entries` on `visibility`, `tags` and `always_inject`.
+`playbook_entries` on `visibility`, `tags` and `always_inject`. In `threetears.agent.acl`, `row_scope` on
+`NamespaceCollection`, `GroupCollection` and `RoleAssignmentCollection` declares the hub's `DEFAULT 'customer'`,
+and `RoleAssignmentCollection.managed_by` its `DEFAULT 'manual'`. The live gate treats a declared
+`server_default="NULL"` (which a schema uses so generated writes leave a nullable column out) as no default.
 
 ### agent-acl: a delegated agent call's namespaces are asked with the call's own credential
 

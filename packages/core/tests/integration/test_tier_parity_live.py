@@ -49,7 +49,8 @@ class _Narrow(SchemaBackedCollection[_Row]):
         columns=[
             Column("id", UUID_TYPE),
             Column("row_scope", STRING_TYPE),
-            Column("note", STRING_TYPE, nullable=True),
+            # "NULL" makes generated writes leave the column out; Postgres records no default for it
+            Column("note", STRING_TYPE, nullable=True, server_default="NULL"),
             Column("small", INT_TYPE, nullable=True),
         ],
     )

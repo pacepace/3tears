@@ -258,7 +258,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         write_generation=WRITE_GENERATION,
         primary_key=("row_scope", "group_id"),
         columns=[
-            Column("row_scope", STRING_TYPE, partition=True),
+            Column("row_scope", STRING_TYPE, partition=True, server_default="'customer'"),
             Column("group_id", UUID_TYPE),
             Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
             # unique per scope: the platform DDL owns a partial unique index
@@ -1188,7 +1188,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         write_generation=WRITE_GENERATION,
         primary_key=("row_scope", "assignment_id"),
         columns=[
-            Column("row_scope", STRING_TYPE, partition=True),
+            Column("row_scope", STRING_TYPE, partition=True, server_default="'customer'"),
             Column("assignment_id", UUID_TYPE),
             Column("role_id", UUID_TYPE, immutable=True),
             Column("group_id", UUID_TYPE, immutable=True),
@@ -1212,7 +1212,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             # ``managed_by`` declares assignment provenance. default
             # ``'manual'`` covers admin-authored rows; agent-side
             # automation passes ``'auto:agent-yaml'``.
-            Column("managed_by", STRING_TYPE),
+            Column("managed_by", STRING_TYPE, server_default="'manual'"),
         ],
     )
 
@@ -1807,7 +1807,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         write_generation=WRITE_GENERATION,
         primary_key=("row_scope", "namespace_id"),
         columns=[
-            Column("row_scope", STRING_TYPE, partition=True),
+            Column("row_scope", STRING_TYPE, partition=True, server_default="'customer'"),
             Column("namespace_id", UUID_TYPE),
             Column("name", STRING_TYPE),
             Column("namespace_type", STRING_TYPE, immutable=True),

@@ -285,6 +285,21 @@ def tier_parity_findings(
     return findings
 
 
+def _has_default(expression: str | None) -> bool:
+    """whether a default expression gives a column a value: ``NULL`` (or ``NULL::type``) is no default.
+
+    A schema declares ``server_default="NULL"`` on a nullable column so its generated writes leave
+    the column out when a row does not name it; Postgres records no default for it, and none is
+    needed. Either way the column defaults to ``NULL``.
+
+    :param expression: the declared ``server_default``, or ``information_schema``'s ``column_default``
+    :ptype expression: str | None
+    :return: whether it is a default other than ``NULL``
+    :rtype: bool
+    """
+    return expression is not None and expression.strip().upper().split("::")[0] != "NULL"
+
+
 def _l3_column_findings(
     name: str, schema: TableSchema, live: Sequence[Mapping[str, Any]], pk: tuple[str, ...], not_owned: frozenset[str]
 ) -> list[str]:
@@ -341,7 +356,7 @@ def _l3_column_findings(
                 f"{name}.{column.name}: L3: migrated {'NULL' if row['is_nullable'] == 'YES' else 'NOT NULL'}, "
                 f"declared {'NULL' if nullable else 'NOT NULL'}"
             )
-        if (row["column_default"] is not None) != (column.server_default is not None):
+        if _has_default(row["column_default"]) != _has_default(column.server_default):
             findings.append(
                 f"{name}.{column.name}: L3: migrated default {row['column_default']!r}, "
                 f"declared server_default {column.server_default!r}"
