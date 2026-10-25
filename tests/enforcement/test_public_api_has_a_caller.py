@@ -20,6 +20,11 @@ import`` of it -- in any ``src`` module but those defining it at top level, and 
 for something else also counts: the gate can miss a test-only name, never invent one. A method of
 an exported class is reached through the class and is not held.
 
+**The enforcement package's callers are test shells.** Its domains exist to be called from a
+``tests/enforcement`` shell, so a name ``packages/enforcement/src`` exports also counts a reference in
+any tests tree outside the enforcement package itself (owner ruling, 2026-10-25). Its own unit tests
+do not count: a runner no other package's tests adopt still has no caller.
+
 **The ledger stays honest.** An entry must name a name some module exports, give a reason, and be
 one the scan still finds without a caller in this repo; an entry whose name gained one here is
 stale and must go.
@@ -40,6 +45,15 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LEDGER = _REPO_ROOT / "tests" / "enforcement" / "_public_api_consumers.txt"
 _MIN_REASON = 30
 
+#: the package whose public names are a test-suite API: its callers are other packages' test shells.
+_ENFORCEMENT_SRC = "packages/enforcement/src/"
+
+#: the enforcement package's own tests, which exercise a domain but do not adopt it.
+_ENFORCEMENT_TESTS = "packages/enforcement/tests/"
+
+#: every tests tree whose references count as a caller of an enforcement name.
+_TEST_ROOTS = ("tests", "packages/*/tests", "packages/agent/*/tests")
+
 #: every workspace member's source tree, per the root pyproject's workspace globs.
 _SOURCE_ROOTS = tuple(
     sorted(
@@ -58,6 +72,7 @@ class _Scan:
     :ivar exported: (module path, name) for every module-level public name today
     :ivar added: those not public at the baseline tag
     :ivar uses: module path -> every name it references
+    :ivar test_uses: test module path -> every name it references, outside the enforcement package's tests
     :ivar defines: module path -> every name it defines at top level
     :ivar baseline: the tag compared against
     """
@@ -65,11 +80,13 @@ class _Scan:
     exported: frozenset[tuple[str, str]]
     added: frozenset[tuple[str, str]]
     uses: dict[str, frozenset[str]]
+    test_uses: dict[str, frozenset[str]]
     defines: dict[str, frozenset[str]]
     baseline: str
 
     def has_caller(self, module: str, name: str) -> bool:
-        """whether some ``src`` module other than a definer of ``name`` references it.
+        """whether some ``src`` module other than a definer of ``name`` references it, or, for an
+        enforcement name, some test module outside the enforcement package's own tests.
 
         :param module: the exporting module
         :ptype module: str
@@ -78,9 +95,9 @@ class _Scan:
         :return: whether a caller exists
         :rtype: bool
         """
-        return any(
-            name in used and path != module and name not in self.defines[path] for path, used in self.uses.items()
-        )
+        if any(name in used and path != module and name not in self.defines[path] for path, used in self.uses.items()):
+            return True
+        return module.startswith(_ENFORCEMENT_SRC) and any(name in used for used in self.test_uses.values())
 
 
 def _names(tree: ast.Module, *, re_exports: bool) -> tuple[frozenset[str], frozenset[str]]:
@@ -134,7 +151,14 @@ def scan() -> _Scan:
         for path in sorted((_REPO_ROOT / source_root).rglob("*.py")):
             relative = path.relative_to(_REPO_ROOT).as_posix()
             uses[relative], defines[relative] = _names(parse_python_path(path), re_exports=path.name != "__init__.py")
-    return _Scan(frozenset(exported), frozenset(added), uses, defines, baseline)
+    test_uses: dict[str, frozenset[str]] = {}
+    for pattern in _TEST_ROOTS:
+        for root in _REPO_ROOT.glob(pattern):
+            for path in sorted(root.rglob("*.py")):
+                relative = path.relative_to(_REPO_ROOT).as_posix()
+                if not relative.startswith(_ENFORCEMENT_TESTS):
+                    test_uses[relative], _ = _names(parse_python_path(path), re_exports=True)
+    return _Scan(frozenset(exported), frozenset(added), uses, test_uses, defines, baseline)
 
 
 def _ledger() -> dict[tuple[str, str], str]:
@@ -159,6 +183,34 @@ class TestPublicApiHasACaller:
         assert len(scan.uses) > 900, f"only {len(scan.uses)} src modules read; discovery has collapsed"
         assert len(scan.exported) > 5000, f"only {len(scan.exported)} public names seen; the surface reader collapsed"
         assert scan.has_caller("packages/core/src/threetears/core/backends/protocol.py", "LoadFile")
+        # an enforcement runner's caller is another package's test shell: core's tests adopt memory_only_kv
+        assert scan.has_caller(
+            "packages/enforcement/src/threetears/enforcement/memory_only_kv/runner.py", "run_memory_only_kv_enforcement"
+        )
+
+    def test_a_test_caller_counts_for_an_enforcement_name_alone(self) -> None:
+        """the test-shell allowance is the enforcement package's, and its own tests never earn it."""
+        enforcement = "packages/enforcement/src/threetears/enforcement/demo/runner.py"
+        elsewhere = "packages/iam/src/threetears/iam/demo.py"
+        adopted = _Scan(
+            exported=frozenset(),
+            added=frozenset(),
+            uses={enforcement: frozenset(), elsewhere: frozenset()},
+            test_uses={"packages/iam/tests/test_demo.py": frozenset({"run_demo", "demo_helper"})},
+            defines={enforcement: frozenset({"run_demo"}), elsewhere: frozenset({"demo_helper"})},
+            baseline="v0.0.0",
+        )
+        assert adopted.has_caller(enforcement, "run_demo")
+        assert not adopted.has_caller(elsewhere, "demo_helper")
+        unadopted = _Scan(
+            exported=frozenset(),
+            added=frozenset(),
+            uses={enforcement: frozenset()},
+            test_uses={},
+            defines={enforcement: frozenset({"run_demo"})},
+            baseline="v0.0.0",
+        )
+        assert not unadopted.has_caller(enforcement, "run_demo")
 
     def test_every_name_added_since_the_last_release_has_a_caller_or_names_one(self, scan: _Scan) -> None:
         ledger = _ledger()

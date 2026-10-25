@@ -17,17 +17,16 @@ import sys
 
 import pytest
 
+from packages.iam.tests.base_install import BASE_MODULES, REFUSED_ROOTS
+
 #: refuses what the base install leaves out, as an install without it would
 BLOCK_CORE = """
 import importlib.abc, sys
-_REFUSED = (
-    "threetears.core", "threetears.nats", "threetears.agent",
-    "sqlalchemy", "asyncpg", "nats", "nkeys",
-)
+_REFUSED = {refused!r}
 class _NoCore(importlib.abc.MetaPathFinder):
     def find_spec(self, name, path=None, target=None):
         if any(name == refused or name.startswith(refused + ".") for refused in _REFUSED):
-            raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+            raise ModuleNotFoundError(f"No module named {{name!r}}", name=name)
         return None
 sys.meta_path.insert(0, _NoCore())
 
@@ -37,32 +36,8 @@ def _assert_none_loaded():
         if any(name == refused or name.startswith(refused + ".") for refused in _REFUSED)
     )
     assert not loaded, loaded
-"""
+""".format(refused=REFUSED_ROOTS)
 
-_BASE_MODULES = (
-    "threetears.iam",
-    "threetears.iam.apikeys",
-    "threetears.iam.breach",
-    "threetears.iam.buckets",
-    "threetears.iam.claim_mapping",
-    "threetears.iam.clientip",
-    "threetears.iam.connection_types",
-    "threetears.iam.dpop_client",
-    "threetears.iam.github",
-    "threetears.iam.oauth_state",
-    "threetears.iam.oidc",
-    "threetears.iam.passwords",
-    "threetears.iam.pkce",
-    "threetears.iam.rotation",
-    "threetears.iam.stepup",
-    "threetears.iam.stores",
-    "threetears.iam.stores.memory",
-    "threetears.iam.stores.nats_kv",
-    "threetears.iam.stores.postgres",
-    "threetears.iam.tokens",
-    "threetears.iam.totp",
-    "threetears.iam.webauthn",
-)
 
 #: the base install at work: a session token round trip, TOTP, backup codes, an attempt
 #: limiter and step-up, each over nothing but the base floor
@@ -151,7 +126,7 @@ def _expect_the_core_extra_named(statement: str) -> str:
 
 
 def test_the_base_modules_import_and_work_without_core_nats_or_the_agent_layer() -> None:
-    result = _run(BLOCK_CORE + f"MODULES = {_BASE_MODULES!r}\n" + USE_THE_BASE)
+    result = _run(BLOCK_CORE + f"MODULES = {BASE_MODULES!r}\n" + USE_THE_BASE)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ran"
 

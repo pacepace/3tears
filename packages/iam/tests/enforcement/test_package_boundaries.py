@@ -1,7 +1,7 @@
 """Only the modules named here import core at module level, and nothing imports upward.
 
 The base install leaves out core, the NATS client and the agent layer, so a module-level import
-of any of them anywhere but the two named ``core`` modules makes an extra mandatory. It would do
+of any of them anywhere but the ``core`` modules named below makes an extra mandatory. It would do
 so silently: a development environment has all of them installed, so every test still passes.
 
 Checked by reading source rather than by importing, because an import check can only prove the
@@ -20,18 +20,10 @@ from pathlib import Path
 
 import pytest
 
+from packages.iam.tests.base_install import REFUSED_ROOTS
+
 _PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "src" / "threetears" / "iam"
 
-#: the roots the base install does not carry
-_FORBIDDEN_ROOTS = (
-    "threetears.core",
-    "threetears.agent",
-    "threetears.nats",
-    "sqlalchemy",
-    "asyncpg",
-    "nats",
-    "nkeys",
-)
 
 #: the modules that import ``threetears.core`` at module level, behind the guard that names the
 #: ``core`` extra. ``dpop`` and ``stores.attempt_limiter`` need core to import at all; ``totp``
@@ -103,7 +95,7 @@ def _forbidden(names: set[str]) -> list[str]:
     :return: those the base install does not carry, sorted
     :rtype: list[str]
     """
-    return sorted(name for name in names for root in _FORBIDDEN_ROOTS if name == root or name.startswith(f"{root}."))
+    return sorted(name for name in names for root in REFUSED_ROOTS if name == root or name.startswith(f"{root}."))
 
 
 def test_the_package_has_modules_to_check() -> None:

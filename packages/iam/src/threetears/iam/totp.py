@@ -46,7 +46,9 @@ from threetears.observe import contain, get_logger
 try:
     from threetears.core.security import DecryptionError, open_secret, seal
 except ModuleNotFoundError as _exc:
-    # a module missing from inside an installed core is a broken environment, raised here as it came
+    # called for its check, not its result: a module missing from inside an installed core is a
+    # broken environment, which it re-raises here as it came. Core's own absence returns the error
+    # naming the extra, which each sealing call raises afresh from _CORE_ABSENT.
     core_extra_missing(_exc, needed_by=__name__)
     _CORE_ABSENT: ModuleNotFoundError | None = _exc
 else:

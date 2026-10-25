@@ -31,7 +31,8 @@ NATS, Postgres drivers or the agent layer.
 
 **Owner rulings (2026-10-24, binding):** the leaf, its name style and its contents (only what iam
 and agent-acl share); TOTP defers the core import to `seal_seed`/`unseal_seed`, with
-`DecryptionError` resolved by a module `__getattr__`; one `[core]` extra; `3tears-nats[client]`
+`DecryptionError` resolved by a module `__getattr__` (SUPERSEDED 2026-10-25 by the family-wide ban
+on lazy imports in serving code, owner ruling 2026-10-24 on develop: see the decision below); one `[core]` extra; `3tears-nats[client]`
 leaves the hard deps and `[nats]` stays as the KV switch; agent-acl leaves iam's deps; dpop's
 `ReplayGuard` import is TYPE_CHECKING-only; the guard shape (catch `ModuleNotFoundError` only for
 `threetears.core*`, raise `ImportError` naming `3tears-iam[core]`), saml's guard fixed the same
@@ -68,6 +69,23 @@ API-growth enforcement goes red for the new leaf's names until the maintainer's 
 - [DECISION: the device-flow URL and grant type are private constants | no in-repo caller, and the
   public-API gate holds new names to one; the error, outcome and code types are ledgered for
   testament, which has not written its caller yet]
+- [DECISION 2026-10-25: totp imports core's sealing (`seal`, `open_secret`, `DecryptionError`) at
+  its top under the guard naming `[core]`, as dpop does, instead of inside `seal_seed`/`unseal_seed`
+  and a module `__getattr__` | develop's `test_no_function_level_imports` (owner ruling 2026-10-24:
+  no lazy imports in serving code) supersedes this plan's TOTP ruling; owner approved the fix
+  2026-10-25 ("Yes to all"). With core installed, importing totp now loads core; the base install
+  still imports it without core]
+- [DECISION 2026-10-25: the import-cost test measures the base install (extras' roots refused) rather
+  than the development environment, through a shared `threetears.enforcement.import_floor` domain;
+  the base-module list and refused roots live once in `tests/base_install.py` | follows from the
+  totp decision, since a dev-environment probe would always see core under totp; the domain was
+  generalised for any package with a base floor at the owner's request 2026-10-25 ("Yes to all");
+  its runner's callers are test shells by design]
+- [RULING 2026-10-25 (owner, asked whether enforcement runners called only from tests may be public):
+  "Gate counts tests for enforcement" | `tests/enforcement/test_public_api_has_a_caller.py` counts a
+  reference in any tests tree outside `packages/enforcement/tests` as a caller of a name
+  `packages/enforcement/src` exports; every other package's names still need a `src` caller. The two
+  ledger lines a first attempt added are gone]
 
 **Level:** High.
 
@@ -93,7 +111,7 @@ Tests: leaf surface test (members and values pinned); agent-acl identity test
 pyproject: hard deps lose `3tears[security]`, `3tears-agent-acl`, `3tears-nats[client]`, gain
 `3tears-access-contracts`; extras `core = ["3tears[security]..."]`, `nats = ["3tears-nats[client]..."]`.
 `_core_extra.py` guard helper; dpop and stores.attempt_limiter guarded; ReplayGuard and
-CollectionRegistry TYPE_CHECKING-only; totp's core import deferred, `DecryptionError` via
+CollectionRegistry TYPE_CHECKING-only; totp's core import deferred (superseded 2026-10-25: imported at its top, see Decisions), `DecryptionError` via
 `__getattr__`; saml's guard narrowed to its own modules; stepup imports the leaf.
 Docs: stale pyproject comment and README claims fixed; CHANGELOG names the break and the fix.
 Tests: `test_imports_without_core.py` (meta-path finder refusing core, nats, the agent layer,
