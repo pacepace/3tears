@@ -2,7 +2,7 @@
  "$schema": "https://json-schema.org/draft/2020-12/schema",
  "$id": "report-input/1",
  "title": "Report input",
- "description": "Normalized campaign results. Produced by an adapter from the pipeline's campaign bundle (adapters/bundle_to_report.py). Statistics are copied through, never recomputed. A control-and-candidates campaign fills the core fields; the optional tasks, factors and configs, target_matrix and cells, confusion, human_pref, criteria and named strata carry what other comparison structures need (GENERATOR.md section 1). The model threetears.evals.analysis.report_input.ReportInput states the same fields, required sets and enums, and a test holds the two together. The r1-r4 references' own JSON is page-shaped synthetic data, not this schema; their report inputs are packages/evals/tests/fixtures/report_plans/r1-r4/input.json.",
+ "description": "Normalized campaign results. Produced from the pipeline's campaign bundle by threetears.evals.analysis.report_input_build.report_input (the kit's adapters/bundle_to_report.py is its first draft, reading a writer message). Statistics are copied through, never recomputed. A control-and-candidates campaign fills the core fields; the optional tasks, factors and configs, target_matrix and cells, confusion, human_pref, criteria and named strata carry what other comparison structures need (GENERATOR.md section 1). The model threetears.evals.analysis.report_input.ReportInput states the same fields, required sets and enums, and a test holds the two together. The r1-r4 references' own JSON is page-shaped synthetic data, not this schema; their report inputs are packages/evals/tests/fixtures/report_plans/r1-r4/input.json.",
  "type": "object",
  "required": [
   "schema",
@@ -43,7 +43,7 @@
   "scoreboard": {
    "type": "object",
    "additionalProperties": {"$ref": "#/$defs/ScoreboardRow"},
-   "description": "How each arm's trials came out, by arm."
+   "description": "How each arm's trials came out on the lead aspect, by arm."
   },
   "measures": {
    "type": "object",
@@ -184,6 +184,16 @@
      "type": ["array", "null"],
      "items": {"$ref": "#/$defs/PassK"},
      "description": "Where pass^k is compared."
+    },
+    "pairs": {
+     "type": "array",
+     "items": {"$ref": "#/$defs/PairRead"},
+     "description": "A choice's pair readings on the aspect."
+    },
+    "scoreboard": {
+     "type": ["object", "null"],
+     "additionalProperties": {"$ref": "#/$defs/ScoreboardRow"},
+     "description": "How each arm's trials came out on this aspect, by arm; none on the lead aspect (the first asked, else the first), whose scoreboard is the input's own."
     },
     "description": {
      "type": ["string", "null"],
@@ -331,33 +341,39 @@
   },
   "Contrast": {
    "type": "object",
-   "required": ["arm", "measure", "verdict", "delta", "interval"],
+   "required": ["arm", "measure", "verdict"],
    "properties": {
     "arm": {"type": "string", "description": "The arm's id."},
     "control": {"type": ["string", "null"], "description": "The control's id."},
     "kind": {"type": ["string", "null"], "description": "measure or judged."},
     "measure": {"type": "string", "description": "The measure or judged dimension, by key."},
+    "aspect": {"type": ["string", "null"], "description": "The aspect it is read on."},
     "verdict": {
      "type": "string",
      "description": "improved, regressed, equivalent, not_separated or untested."
     },
     "delta": {
-     "type": "number",
-     "description": "The arm minus the control, in the measure's units."
+     "type": ["number", "null"],
+     "description": "The arm minus the control, in the measure's units; none when untested."
     },
     "interval": {
-     "type": "array",
+     "type": ["array", "null"],
      "items": {"type": "number"},
      "minItems": 2,
      "maxItems": 2,
-     "description": "The corrected interval on the delta."
+     "description": "The corrected interval on the delta; none when untested."
     },
+    "level": {"type": ["string", "null"], "description": "The interval's level: its family's."},
     "p_adjusted": {"type": ["number", "null"], "description": "The adjusted p."},
     "materiality": {"type": ["string", "null"], "description": "Whether the delta is material."},
     "confounds": {
      "type": "array",
      "items": {"type": "string"},
      "description": "Confounds on the contrast, by dimension."
+    },
+    "reason": {
+     "type": ["string", "null"],
+     "description": "Why it is untested or not separated, in one sentence."
     }
    },
    "additionalProperties": false,
@@ -366,6 +382,7 @@
   "ContrastFamily": {
    "type": "object",
    "properties": {
+    "aspect": {"type": ["string", "null"], "description": "The aspect whose contrasts it corrects."},
     "merit_axes": {
      "type": "array",
      "items": {"type": "string"},
@@ -450,6 +467,7 @@
     "trial": {"type": ["string", "null"], "description": "The trial's id."},
     "case": {"type": ["string", "null"], "description": "The case's id."},
     "stratum": {"type": ["string", "null"], "description": "The stratum or task it falls in."},
+    "aspect": {"type": ["string", "null"], "description": "The aspect it ran on."},
     "arm": {"type": ["string", "null"], "description": "The arm that ran it."},
     "repeat": {"type": ["integer", "null"], "description": "Which repeat of the case."},
     "reason": {
@@ -562,6 +580,11 @@
      "type": "object",
      "additionalProperties": {"$ref": "#/$defs/Stat"},
      "description": "Each arm's mean, by arm."
+    },
+    "by_aspect": {
+     "type": "object",
+     "additionalProperties": {"type": "object", "additionalProperties": {"$ref": "#/$defs/Stat"}},
+     "description": "Each other aspect's figures, by aspect then arm; per_arm is the lead aspect's (the first asked, else the first)."
     }
    },
    "additionalProperties": false,
@@ -624,6 +647,11 @@
     "minimum": {
      "type": ["number", "null"],
      "description": "The least the measure can be, where the test set fixes it (a gold call count)."
+    },
+    "by_aspect": {
+     "type": "object",
+     "additionalProperties": {"type": "object", "additionalProperties": {"$ref": "#/$defs/Stat"}},
+     "description": "Each other aspect's figures, by aspect then arm; per_arm is the lead aspect's (the first asked, else the first)."
     }
    },
    "additionalProperties": false,
@@ -661,6 +689,55 @@
    },
    "additionalProperties": false,
    "description": "What the campaign was, as the masthead and the method section name it."
+  },
+  "PairRead": {
+   "type": "object",
+   "required": ["arms", "change"],
+   "properties": {
+    "arms": {
+     "type": "array",
+     "items": {"type": "string"},
+     "minItems": 2,
+     "maxItems": 2,
+     "description": "The two arms' ids, first then second, in the campaign's arm order."
+    },
+    "change": {"type": "number", "description": "The first arm minus the second, in points."},
+    "interval": {
+     "type": ["array", "null"],
+     "items": {"type": "number"},
+     "minItems": 2,
+     "maxItems": 2,
+     "description": "The interval on the change, in points."
+    },
+    "confidence": {"type": ["number", "null"], "description": "The interval's confidence level."},
+    "p_holm": {"type": ["number", "null"], "description": "The Holm-adjusted p."},
+    "ahead": {"type": ["string", "null"], "description": "The arm shown ahead; none when neither is."},
+    "confirmatory": {
+     "type": ["boolean", "null"],
+     "description": "Whether the pair answers the asked question."
+    },
+    "passed": {
+     "type": ["array", "null"],
+     "items": {"type": "string"},
+     "minItems": 2,
+     "maxItems": 2,
+     "description": "Each arm's passes, as 'k of n'."
+    },
+    "cases": {
+     "type": ["array", "null"],
+     "items": {"type": "integer"},
+     "minItems": 2,
+     "maxItems": 2,
+     "description": "Each arm's usable cases."
+    },
+    "why": {"type": ["string", "null"], "description": "Why, in one plain sentence."},
+    "precision": {
+     "anyOf": [{"$ref": "#/$defs/Precision"}, {"type": "null"}],
+     "description": "What limits the interval."
+    }
+   },
+   "additionalProperties": false,
+   "description": "Two arms of a choice on one aspect: the difference between them, and which one is shown ahead."
   },
   "PassK": {
    "type": "object",
@@ -742,7 +819,7 @@
   },
   "Reading": {
    "type": "object",
-   "required": ["arm", "reading", "change", "within_interval"],
+   "required": ["arm", "reading", "change"],
    "properties": {
     "arm": {"type": "string", "description": "The arm's id."},
     "reading": {
@@ -754,15 +831,22 @@
      "description": "The arm minus the control, in points."
     },
     "within_interval": {
-     "type": "array",
+     "type": ["array", "null"],
      "items": {"type": "number"},
      "minItems": 2,
      "maxItems": 2,
-     "description": "The interval on the change, low then high, in points."
+     "description": "The interval on the change at the nominal level, low then high, in points: what within_margin is read on. None where the aspect declares no margin."
+    },
+    "gain_interval": {
+     "type": ["array", "null"],
+     "items": {"type": "number"},
+     "minItems": 2,
+     "maxItems": 2,
+     "description": "The interval on the change at gain_confidence, low then high, in points: what a gain is read on."
     },
     "gain_confidence": {
      "type": ["number", "null"],
-     "description": "The interval's confidence level."
+     "description": "The gain interval's confidence level."
     },
     "margin": {
      "type": ["number", "null"],
@@ -873,6 +957,7 @@
    "properties": {
     "id": {"type": "string", "description": "The stratum's id."},
     "name": {"type": ["string", "null"], "description": "What a reader calls it."},
+    "aspect": {"type": ["string", "null"], "description": "The aspect whose cases it slices."},
     "dimension": {
      "type": ["string", "null"],
      "description": "The stratification it belongs to, when the input holds more than one."

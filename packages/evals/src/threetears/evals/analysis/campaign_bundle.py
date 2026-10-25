@@ -146,7 +146,7 @@ _FIGURES = 4
 _SEPARATED = frozenset({"improved", "regressed", "equivalent"})
 
 #: What each kind of campaign asks of its memo, as the writer's view says it.
-_KIND_MEANS: dict[str, str] = {
+KIND_MEANS: dict[str, str] = {
     "measurement": "One arm, measured: there is nothing to choose between, so the memo recommends no arm.",
     "choice": (
         "Several arms and no control: the memo picks the arm the evidence favours, or recommends none when no arm "
@@ -664,7 +664,7 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
             "aspects": bundle.labels,
         },
         "kind": kind,
-        "kind_means": _KIND_MEANS[kind],
+        "kind_means": KIND_MEANS[kind],
     }
     if kind == "choice":
         # A choice reads first which arm code showed ahead of which, on each aspect, and every bar an arm missed.

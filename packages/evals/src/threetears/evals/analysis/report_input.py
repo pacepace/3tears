@@ -16,6 +16,11 @@ factorial grid, the level of each factor every arm ran), ``target_matrix`` with 
 arm's accuracy in every cell), ``confusion`` (where a classifier's errors go), ``human_pref`` (blind human ratings
 of the control against one arm), ``criteria`` (declared gates, floors, bars and guardrails, each a threshold on one
 measure) and the named, weighted ``strata`` of more than one stratification.
+
+**More than one aspect.** The by-arm maps (``scoreboard``, each measure's and judged dimension's ``per_arm``) read the
+lead aspect: the first the campaign asks about, else the first. Every other aspect's figures sit beside them, in its
+own ``Aspect.scoreboard`` and each measure's ``by_aspect``; a contrast, contrast family, stratum and example names
+its aspect. A choice's pair readings sit on their aspect (``Aspect.pairs``).
 """
 
 from __future__ import annotations
@@ -95,8 +100,16 @@ class Reading(_Part):
     arm: str = Field(description="The arm's id.")
     reading: str = Field(description="The pipeline's verdict, e.g. within_margin, regressed, not_separated.")
     change: Number = Field(description="The arm minus the control, in points.")
-    within_interval: tuple[Number, Number] = Field(description="The interval on the change, low then high, in points.")
-    gain_confidence: Number | None = Field(default=None, description="The interval's confidence level.")
+    within_interval: tuple[Number, Number] | None = Field(
+        default=None,
+        description="The interval on the change at the nominal level, low then high, in points: what within_margin is "
+        "read on. None where the aspect declares no margin.",
+    )
+    gain_interval: tuple[Number, Number] | None = Field(
+        default=None,
+        description="The interval on the change at gain_confidence, low then high, in points: what a gain is read on.",
+    )
+    gain_confidence: Number | None = Field(default=None, description="The gain interval's confidence level.")
     margin: Number | None = Field(default=None, description="The margin the reading was read against, in points.")
     control_passed: str | None = Field(default=None, description="The control's passes, as 'k of n'.")
     arm_passed: str | None = Field(default=None, description="The arm's passes, as 'k of n'.")
@@ -125,6 +138,35 @@ class PassK(_Part):
     said: list[str] = Field(default_factory=list, description="What the pipeline says about it.")
 
 
+class ScoreboardRow(_Part):
+    """How one arm's trials came out."""
+
+    ran: int | None = Field(default=None, description="Trials run.")
+    lost: dict[str, int] = Field(default_factory=dict, description="Trials lost, by cause.")
+    usable: int | None = Field(default=None, description="Trials that produced a usable measurement.")
+    passed: int | None = Field(default=None, description="Trials that passed.")
+    failed: dict[str, int] = Field(default_factory=dict, description="Trials that failed, by cause.")
+    cases: int | None = Field(default=None, description="Distinct cases.")
+    reply_cost_usd: Number | None = Field(default=None, description="Cost per reply, dollars.")
+    test_cost_usd: Number | None = Field(default=None, description="What the arm's trials cost, dollars.")
+
+
+class PairRead(_Part):
+    """Two arms of a choice on one aspect: the difference between them, and which one is shown ahead."""
+
+    arms: tuple[str, str] = Field(description="The two arms' ids, first then second, in the campaign's arm order.")
+    change: Number = Field(description="The first arm minus the second, in points.")
+    interval: tuple[Number, Number] | None = Field(default=None, description="The interval on the change, in points.")
+    confidence: Number | None = Field(default=None, description="The interval's confidence level.")
+    p_holm: Number | None = Field(default=None, description="The Holm-adjusted p.")
+    ahead: str | None = Field(default=None, description="The arm shown ahead; none when neither is.")
+    confirmatory: bool | None = Field(default=None, description="Whether the pair answers the asked question.")
+    passed: tuple[str, str] | None = Field(default=None, description="Each arm's passes, as 'k of n'.")
+    cases: tuple[int, int] | None = Field(default=None, description="Each arm's usable cases.")
+    why: str | None = Field(default=None, description="Why, in one plain sentence.")
+    precision: Precision | None = Field(default=None, description="What limits the interval.")
+
+
 class Aspect(_Part):
     """One aspect the campaign read: its question and each candidate's reading against the control."""
 
@@ -138,6 +180,12 @@ class Aspect(_Part):
     readings: list[Reading] = Field(description="Each candidate's reading against the control.")
     depth: dict[str, Depth] | None = Field(default=None, description="How deeply each arm ran it, by arm.")
     pass_k: list[PassK] | None = Field(default=None, description="Where pass^k is compared.")
+    pairs: list[PairRead] = Field(default_factory=list, description="A choice's pair readings on the aspect.")
+    scoreboard: dict[str, ScoreboardRow] | None = Field(
+        default=None,
+        description="How each arm's trials came out on this aspect, by arm; none on the lead aspect (the first asked, "
+        "else the first), whose scoreboard is the input's own.",
+    )
     description: str | None = Field(default=None, description="How the aspect is graded, in a sentence or two.")
     graded_by: Literal["judged", "checked"] | None = Field(
         default=None, description="Whether a judge grades the aspect or a check in code does."
@@ -241,6 +289,11 @@ class Measure(_Part):
     minimum: Number | None = Field(
         default=None, description="The least the measure can be, where the test set fixes it (a gold call count)."
     )
+    by_aspect: dict[str, dict[str, Stat]] = Field(
+        default_factory=dict,
+        description="Each other aspect's figures, by aspect then arm; per_arm is the lead aspect's (the first asked, "
+        "else the first).",
+    )
 
 
 class Judged(_Part):
@@ -255,19 +308,11 @@ class Judged(_Part):
     agreement: Number | None = Field(default=None, description="The judge's agreement with those ratings.")
     level: str | None = Field(default=None, description="The confidence level of the intervals per_arm carries.")
     per_arm: dict[str, Stat] = Field(default_factory=dict, description="Each arm's mean, by arm.")
-
-
-class ScoreboardRow(_Part):
-    """How one arm's trials came out."""
-
-    ran: int | None = Field(default=None, description="Trials run.")
-    lost: dict[str, int] = Field(default_factory=dict, description="Trials lost, by cause.")
-    usable: int | None = Field(default=None, description="Trials that produced a usable measurement.")
-    passed: int | None = Field(default=None, description="Trials that passed.")
-    failed: dict[str, int] = Field(default_factory=dict, description="Trials that failed, by cause.")
-    cases: int | None = Field(default=None, description="Distinct cases.")
-    reply_cost_usd: Number | None = Field(default=None, description="Cost per reply, dollars.")
-    test_cost_usd: Number | None = Field(default=None, description="What the arm's trials cost, dollars.")
+    by_aspect: dict[str, dict[str, Stat]] = Field(
+        default_factory=dict,
+        description="Each other aspect's figures, by aspect then arm; per_arm is the lead aspect's (the first asked, "
+        "else the first).",
+    )
 
 
 class Contrast(_Part):
@@ -277,17 +322,25 @@ class Contrast(_Part):
     control: str | None = Field(default=None, description="The control's id.")
     kind: str | None = Field(default=None, description="measure or judged.")
     measure: str = Field(description="The measure or judged dimension, by key.")
+    aspect: str | None = Field(default=None, description="The aspect it is read on.")
     verdict: str = Field(description="improved, regressed, equivalent, not_separated or untested.")
-    delta: Number = Field(description="The arm minus the control, in the measure's units.")
-    interval: tuple[Number, Number] = Field(description="The corrected interval on the delta.")
+    delta: Number | None = Field(
+        default=None, description="The arm minus the control, in the measure's units; none when untested."
+    )
+    interval: tuple[Number, Number] | None = Field(
+        default=None, description="The corrected interval on the delta; none when untested."
+    )
+    level: str | None = Field(default=None, description="The interval's level: its family's.")
     p_adjusted: Number | None = Field(default=None, description="The adjusted p.")
     materiality: str | None = Field(default=None, description="Whether the delta is material.")
     confounds: list[str] = Field(default_factory=list, description="Confounds on the contrast, by dimension.")
+    reason: str | None = Field(default=None, description="Why it is untested or not separated, in one sentence.")
 
 
 class ContrastFamily(_Part):
     """One family of contrasts corrected together."""
 
+    aspect: str | None = Field(default=None, description="The aspect whose contrasts it corrects.")
     merit_axes: list[str] = Field(
         default_factory=list, description="The declared merit priority; empty when no rule ranks the axes."
     )
@@ -303,6 +356,7 @@ class Stratum(_Part):
 
     id: str = Field(description="The stratum's id.")
     name: str | None = Field(default=None, description="What a reader calls it.")
+    aspect: str | None = Field(default=None, description="The aspect whose cases it slices.")
     dimension: str | None = Field(
         default=None, description="The stratification it belongs to, when the input holds more than one."
     )
@@ -320,6 +374,7 @@ class Example(_Part):
     trial: str | None = Field(default=None, description="The trial's id.")
     case: str | None = Field(default=None, description="The case's id.")
     stratum: str | None = Field(default=None, description="The stratum or task it falls in.")
+    aspect: str | None = Field(default=None, description="The aspect it ran on.")
     arm: str | None = Field(default=None, description="The arm that ran it.")
     repeat: int | None = Field(default=None, description="Which repeat of the case.")
     reason: str | None = Field(default=None, description="Why it failed: the judge's reason or a note.")
@@ -465,7 +520,9 @@ class ReportInput(_Part):
         default_factory=list, description="Each guardrail check, as the pipeline read it."
     )
     criteria: list[Criterion] = Field(default_factory=list, description="The declared thresholds.")
-    scoreboard: dict[str, ScoreboardRow] = Field(description="How each arm's trials came out, by arm.")
+    scoreboard: dict[str, ScoreboardRow] = Field(
+        description="How each arm's trials came out on the lead aspect, by arm."
+    )
     measures: dict[str, Measure] = Field(description="Each measure, by key.")
     judged: dict[str, Judged] = Field(description="Each judged dimension, by key.")
     primary_judged: str | None = None
