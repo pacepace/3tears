@@ -582,18 +582,16 @@ async def test_a_campaign_asked_after_its_readings_reads_as_asked_and_names_each
     prepared = await prepare_analysis_generation(
         held.host, two.id, SCOPE, model=None, resolve_prompt=prompt, out_of_run_cap_usd=None
     )
-    late = {part["aspect"]: part["late_criteria"] for part in writer_view(prepared.bundle)["aspects"]}
-    # Dated as the page dates them, so the memo and the page say one date; the margins came first, so are not named.
-    assert late == {
-        "billing": [
-            {"criterion": "aspect", "name": None, "set_at": "1 Jan 2099"},
-            {"criterion": "floor", "name": "billing/rate_drop/*", "set_at": "1 Jan 2099"},
-        ],
-        "tone": [
-            {"criterion": "aspect", "name": None, "set_at": "1 Jan 2099"},
-            {"criterion": "bar", "name": COST_BAR.measure_id, "set_at": "1 Jan 2099"},
-        ],
-    }
+    view = writer_view(prepared.bundle)
+    # Handed once, for the whole report, each criterion naming the aspects it was set late on, never in an aspect's
+    # part. Dated as the page dates them, so the memo and the page say one date; the margins came first, so are not
+    # named.
+    assert view["disclosures"]["late_criteria"] == [
+        {"criterion": "aspect", "name": None, "set_at": "1 Jan 2099", "aspects": ["billing", "tone"]},
+        {"criterion": "floor", "name": "billing/rate_drop/*", "set_at": "1 Jan 2099", "aspects": ["billing"]},
+        {"criterion": "bar", "name": COST_BAR.measure_id, "set_at": "1 Jan 2099", "aspects": ["tone"]},
+    ]
+    assert not [part for part in view["aspects"] if "late_criteria" in part]
     analysis_id = await _generated(held, two)
 
     page = off_loop(campaign_report, held.host, two.id, SCOPE)

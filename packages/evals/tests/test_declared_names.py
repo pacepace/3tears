@@ -226,8 +226,12 @@ def identities(*, named: bool) -> dict[str, str]:
     found["readings"] = _sha(built["readings"].model_dump(mode="json", exclude={"aggregate"}))
     found["campaign fingerprint"] = campaign_bundle.fingerprint()
     found["campaign_evidence_digest"] = campaign_evidence_digest(campaign_bundle.to_dict())
-    found["writer message"] = hashlib.sha256(build_campaign_user_message(campaign_bundle).encode()).hexdigest()
     return found
+
+
+def writer_message(*, named: bool) -> str:
+    """The digest of what the writer is sent over the fixture: no identity, but what a reporter case renders."""
+    return hashlib.sha256(build_campaign_user_message(_fixture(named=named)["campaign_bundle"]).encode()).hexdigest()
 
 
 #: The durable minor ``00107a5b7`` stamped on what it wrote. The names are durable v16.3, since 0.78.0 shipped v16.2
@@ -313,7 +317,14 @@ PINNED: dict[str, str] = {
     "run-1-production context_key": "bdcd277ef947176d0cf5a586ccaf20fead3df0127fe4408595e4b90b8e8b49c0",
     "run-1-production variant_key": "948034e5bf867d07c3ba1cafab809575218262d649cf00973135e0be56068b6d",
     "template_digest": "2508d494320bd907e2d0bfeab1a6b53b37ccbcf645462cd754d319b9852f4553",
-    "writer message": "132c698dc3c7b1c3764cd8e1ea59f230ae0353243aa7bd4d094eda7267396c0b",
+}
+
+#: What the writer is sent over the fixture, naming nothing and naming everything. No run, cell, pool, pairing or
+#: fingerprint keys on it, so it is pinned apart from :data:`PINNED`: it moves whenever the writer's view does, and
+#: the names reach it, since the writer names an aspect by its short name and a check by its display name.
+PINNED_WRITER_MESSAGES: dict[bool, str] = {
+    False: "5498a5dcaf0204dd1b61ab9c7afecc550b9e85ab3d154037ff284762dc1e1047",
+    True: "cae65dc0d870f9712c0c68391362c88ff5654ab6a0417eaaa411af676a37b01f",
 }
 
 #: The fixture's stored documents naming nothing, as the tree at ``00107a5b7`` wrote them (:func:`documents`).
@@ -342,6 +353,10 @@ class TestEveryIdentityIsAsBeforeNamesExisted:
 
     def test_naming_every_aspect_and_check_moves_no_identity(self) -> None:
         assert identities(named=True) == PINNED
+
+    @pytest.mark.parametrize("named", [False, True], ids=["naming nothing", "naming everything"])
+    def test_the_writer_is_sent_what_it_was_pinned_to_names_included(self, named: bool) -> None:
+        assert writer_message(named=named) == PINNED_WRITER_MESSAGES[named]
 
     def test_a_template_campaign_and_bundle_naming_nothing_are_written_as_before(self) -> None:
         assert documents() == PINNED_DOCUMENTS

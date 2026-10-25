@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the writer's view hands each fact once, at the altitude the memo claims it, spelled as the page spells it
+
+**Changed:** the campaign writer's view (`writer_view`, so `build_campaign_user_message` and what a reporter case
+renders) changes shape. Each unclear reading's `cases_to_settle` (it was the cases the interval was read over, not a
+sizing) is replaced by `to_settle`: `if_none` and `if_observed`, each a `kind` (`more`, `enough`, `lost`, `never`,
+`beyond`), the total `cases` where the kind counts some, and `usd` where priced, as the page's To settle table sizes
+it; `never` means no count of cases would show the reading within its margin, only a change to the candidate. The
+flat `floors` list becomes a rollup per arm (an arm with a broken floor first): `{arm, broken, unclear, held}`, each
+floor with its `aspect`, the rate it `reads` (was `speaks_for`; a check by its declared name), its figures, `why`
+(was `reason`) and, when unclear, `to_settle`; `status` and `reading` go, and a figure it lacks is left out. Over two
+or more aspects the view gains `aggregate`: each arm's `pass_rate_pct`, a change's candidate's `change_pts` and
+`cost_per_reply_usd` across aspects (`value` and `interval`, or `withheld_for` naming the aspects), `cheaper_on`,
+`dearer_on`, the `weighting` and `level`. Disclosures are handed once, at the campaign's level: `disclosures` (new at
+the top) holds `late_criteria` (each criterion with the `aspects` it was set late on; each aspect part's
+`late_criteria` is gone), `latency_contended` and `request_settings_disclosure` wherever carried, and any other
+disclosure two or more aspects carry alike, each as `[{aspects, said}]`, which those aspects' parts no longer repeat;
+a confound's explanation two or more aspects carry alike moves to a top-level `confound_catalog`. An aspect's part
+gains `short_name` where one is declared and `control_floor` (`{control, cannot_show: ["drop" | "gain"]}`) where the
+control's pass rate leaves no candidate able to show a drop past the margin or a gain, the rule the Scorecard marks
+(`report.decision.control_cannot_show`, new). Each measure in `measures` gains `name`, as the page names it: a check
+by its declared name, else its whole expression, any other measure by its reader name (a cost by `Production cost`,
+never `production_replicating_cost`). A change, every interval in points, a floor's `worst_drop` and `short_by`, and
+a comparison's half-widths read to the one decimal the page prints (a change of `53.33` is `53.3`); a projected cost
+to two figures. No reading, identity, digest or fingerprint moves, and a campaign bundle frozen at shape 2 renders the
+same view as the one it was frozen from. The recorded writer fixture (`tests/fixtures/generate_analysis/recordings/`)
+is stale until it is re-recorded over the new view. See `packages/evals/MIGRATIONS.toml`.
+
 ### evals: an aspect and a goal check may declare the name a page prints for them
 
 **Added:** `Aspect.short_name` (at most 32 characters, and no other aspect's label or short name) is what a

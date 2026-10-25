@@ -23,6 +23,16 @@ what it left out, since the page shows all of it.
 Code's own readings across aspects, the floors, the pair readings and the bars are never trimmed, so a part can stay
 over budget; then it says so, and the overshoot is logged as a warning.
 
+**Facts at the altitude the writer claims them, each said once, spelled as the page spells it.** Beside each
+aspect's part the view hands the campaign's own: each arm's figures across aspects with their weighting
+(``aggregate``, on two or more aspects); each arm's floors, broken, unclear and held, each with the rate it read and,
+when unclear, what would settle it (``floors``); and every disclosure the report shares (``disclosures``), each naming
+the aspects carrying it: the criteria set after their readings were visible, the latency and request-settings
+disclosures wherever they are carried, and any other two or more aspects carry alike, which no aspect's part then
+repeats (a confound's explanation likewise, in ``confound_catalog``). A sizing carries its kind on each side
+(``to_settle``), a change and every other figure in points reads to the decimal the page prints, an aspect carries
+its declared ``short_name``, and a measure its page name, a goal check's its declared name.
+
 **The campaign's own part is bounded by the same budget, and only warned on.** What sits outside every aspect's part
 — the arms, floors, bars, a choice's pair readings and a measurement's measures — is code's adjudication and is never
 trimmed. It grows with arms and aspects (a choice's pairs with the square of its arms: six arms over four aspects read
@@ -41,7 +51,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 from pydantic import Field, field_validator, model_validator
@@ -55,7 +65,12 @@ from threetears.evals.analysis.bundle.schema import (
     refuse_a_bundle_of_another_shape,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
-from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_aggregate
+from threetears.evals.analysis.campaign_readings import (
+    AggregateFigure,
+    CampaignReadings,
+    FloorStatus,
+    campaign_aggregate,
+)
 from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.depth import REPEATS_FLOOR, Depth, Precision
@@ -63,9 +78,20 @@ from threetears.evals.analysis.depth_reading import aspect_depth
 from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines_bounded
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import CellAddress, campaign_cell_aliases
+from threetears.evals.analysis.report.decision import (
+    CasesNeeded,
+    SampleProjection,
+    case_cost_usd,
+    control_cannot_show,
+    floor_projection,
+    floor_readings,
+    read_floor,
+)
+from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import CampaignDeclaration, EvalCampaign
-from threetears.evals.kernel.declaration import ASPECT_PRESENTATION_FIELDS, CampaignArm, resolve_control_arm
+from threetears.evals.kernel.declaration import ASPECT_PRESENTATION_FIELDS, CampaignArm, Floor, resolve_control_arm
 from threetears.evals.kernel.errors import RefusedInput
+from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.hashing import round_floats
@@ -149,6 +175,19 @@ _DISCLOSURES: tuple[str, ...] = (
     "time_axis_withheld",
     "retracted_insights",
 )
+
+#: The disclosures that speak for the whole report whichever aspects carry them, each kind said once in the campaign's
+#: own ``disclosures`` and never in an aspect's part, with the criteria set after their readings were visible
+#: (``late_criteria``). Any other disclosure two or more aspects carry alike is said there once too; one aspect's own
+#: stays in its part.
+_REPORT_WIDE: frozenset[str] = frozenset({"latency_contended", "request_settings_disclosure"})
+
+#: The floor states in the order the writer's floor rollup lists them, per arm.
+_FLOOR_STATES: tuple[str, ...] = ("broken", "unclear", "held")
+
+#: The projection kinds whose count the writer's view states: what a ``more`` needs in all, the run's own cases for
+#: ``enough``, the cap a ``beyond`` passed. ``lost`` and ``never`` state no count.
+_COUNTED: frozenset[str] = frozenset({"more", "enough", "beyond"})
 
 
 class CampaignBundle(EvalDocumentModel):
@@ -608,6 +647,7 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
     """
     namer = _Namer(bundle)
     floors = sorted(bundle.readings.floors, key=lambda status: status.status != "broken")
+    disclosures, catalog, parts = _aspect_parts(bundle, budget, namer)
     bars = sorted(bundle.readings.bars, key=lambda status: status.status != "missed")
     first = bundle.aspects[0]
     kind = bundle.kind
@@ -627,8 +667,8 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
             {
                 "aspect": pair.aspect,
                 "arms": [pair.first_label, pair.second_label],
-                "change": _figure(pair.change),
-                "interval": _figures(pair.interval),
+                "change": _points(pair.change),
+                "interval": _points_pair(pair.interval),
                 "confidence": pair.confidence,
                 "p_holm": _figure(pair.p_holm),
                 "ahead": pair.ahead_label,
@@ -676,37 +716,29 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
             }
             for measured in bundle.readings.measures
         ]
+    view["arms"] = _arms(bundle, namer)
+    if (aggregate := _aggregate(bundle)) is not None:
+        view["aggregate"] = aggregate
     view |= {
-        "arms": _arms(bundle, namer),
-        # Each arm's verdict on each aspect's pass rate first, then each floor apart: a floor speaks for the one rate it
-        # read (a check's, or the pass rate's), never for its whole aspect, and an unclear floor is not a broken one.
+        # Each arm's verdict on each aspect's pass rate first, then each arm's floors: a floor speaks for the one rate
+        # it read (a check's, or the pass rate's), never for its whole aspect, and an unclear floor is not a broken one.
         "pass_rate_verdicts": [
-            {"aspect": row.aspect, "arm": row.arm_label, "reading": row.reading, "change": _figure(row.change)}
+            {"aspect": row.aspect, "arm": row.arm_label, "reading": row.reading, "change": _points(row.change)}
             for row in bundle.readings.readings
         ],
-        "floors": [
-            {
-                "floor": status.floor,
-                "aspect": status.aspect,
-                "arm": status.arm_label,
-                "status": status.status,
-                "reading": status.reading,
-                "speaks_for": status.reading
-                or ("the pass rate" if status.margin is not None else "the cost per reply"),
-                "interval": _figures(status.interval),
-                "worst_drop": _figure(status.worst_drop),
-                "margin": status.margin,
-                "short_by": _figure(status.short_by),
-                "reason": status.reason,
-            }
-            for status in floors
-        ],
+        "floors": _floors(bundle, floors),
+    }
+    if disclosures:
+        view["disclosures"] = disclosures
+    if catalog:
+        view["confound_catalog"] = catalog
+    view |= {
         "prior_insights": [
             {"statement": insight.statement, "confidence": insight.confidence} for insight in first.prior_insights
         ],
         # Stated so a short list is not read as the whole ledger.
         "prior_insights_omitted": first.prior_insights_omitted,
-        "aspects": [_aspect_part(bundle, index, budget, namer) for index in range(len(bundle.aspects))],
+        "aspects": parts,
     }
     if broken := [status for status in floors if status.status == "broken"]:
         view["floor_warning"] = (
@@ -744,6 +776,10 @@ def aspect_view(
     readings, the scoreboard, the design, coverage and the disclosures are never trimmed, so a part can stay over budget
     when they alone exceed it: ``trimmed`` says so, and the overshoot is logged as a warning.
 
+    A disclosure the whole report shares is not in the part: a report-wide kind, or one two or more aspects carry
+    alike, is the campaign's own (:func:`writer_view`'s ``disclosures``), and so is a confound's explanation two or
+    more aspects carry alike (its ``confound_catalog``).
+
     :param bundle: The campaign bundle.
     :ptype bundle: CampaignBundle
     :param index: The aspect's position.
@@ -753,14 +789,79 @@ def aspect_view(
     :return: The aspect's part.
     :rtype: dict[str, Any]
     """
-    return _aspect_part(bundle, index, budget, _Namer(bundle))
+    return _aspect_parts(bundle, budget, _Namer(bundle))[2][index]
 
 
-def _aspect_part(bundle: CampaignBundle, index: int, budget: int, namer: _Namer) -> dict[str, Any]:
-    """:func:`aspect_view`, naming through ``namer``."""
-    view = _untrimmed(bundle, bundle.aspects[index], namer)
-    _trim(view, budget)
-    return view
+def _aspect_parts(
+    bundle: CampaignBundle, budget: int, namer: _Namer
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, str], list[dict[str, Any]]]:
+    """Every aspect's part, each trimmed to ``budget`` once what the report shares is taken out of them: the
+    campaign's disclosures, the explanations of confounds two or more aspects carry alike, and the parts."""
+    parts = [_untrimmed(bundle, aspect, namer) for aspect in bundle.aspects]
+    disclosures = _shared_disclosures(bundle, parts)
+    catalog = _shared_catalog(parts)
+    for part in parts:
+        _trim(part, budget)
+    return disclosures, catalog, parts
+
+
+def _alike(held: Sequence[tuple[str, Any]]) -> list[dict[str, Any]]:
+    """``(aspect, value)`` pairs grouped by value, each value once with the aspects carrying it, first seen first."""
+    groups: list[dict[str, Any]] = []
+    for aspect, value in held:
+        group = next((group for group in groups if group["said"] == value), None)
+        if group is None:
+            groups.append({"aspects": [aspect], "said": value})
+        else:
+            group["aspects"].append(aspect)
+    return groups
+
+
+def _shared_disclosures(bundle: CampaignBundle, parts: Sequence[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Each disclosure the report shares, taken out of the aspects' parts and said once, naming the aspects that carry
+    it: the criteria set after their readings were visible, each report-wide kind (:data:`_REPORT_WIDE`) whatever
+    carries it, and any other a second aspect carries alike. A value one aspect alone carries stays in its part."""
+    said: dict[str, list[dict[str, Any]]] = {}
+    late: dict[tuple[str, str | None, str | None], list[str]] = {}
+    for aspect in bundle.aspects:
+        for criterion in aspect.reading_scope.late_criteria:
+            late.setdefault((criterion.criterion, criterion.name, criterion.page_date()), []).append(aspect.aspect)
+    if late:
+        # Dated as the page dates them, so the memo and the page say one date.
+        said["late_criteria"] = [
+            {"criterion": criterion, "name": name, "set_at": set_at, "aspects": aspects}
+            for (criterion, name, set_at), aspects in late.items()
+        ]
+    for key in dict.fromkeys(key for part in parts for key in part["disclosures"]):
+        groups = _alike([(part["aspect"], part["disclosures"][key]) for part in parts if key in part["disclosures"]])
+        shared = [group for group in groups if key in _REPORT_WIDE or len(group["aspects"]) > 1]
+        if not shared:
+            continue
+        said[key] = shared
+        carried = {aspect for group in shared for aspect in group["aspects"]}
+        for part in parts:
+            if part["aspect"] in carried:
+                del part["disclosures"][key]
+    return said
+
+
+def _shared_catalog(parts: Sequence[dict[str, Any]]) -> dict[str, str]:
+    """Each confound's explanation two or more aspects' parts carry, alike in every part carrying it, taken out of them
+    to be said once; an aspect left with none of its own carries no catalog."""
+    reasons: dict[str, list[str]] = {}
+    for part in parts:
+        for dimension, reason in part.get("confound_catalog", {}).items():
+            reasons.setdefault(dimension, []).append(reason)
+    shared = {dimension: said[0] for dimension, said in reasons.items() if len(said) > 1 and len(set(said)) == 1}
+    for part in parts:
+        own = {
+            dimension: reason
+            for dimension, reason in part.pop("confound_catalog", {}).items()
+            if dimension not in shared
+        }
+        if own:
+            part["confound_catalog"] = own
+    return shared
 
 
 class _Namer:
@@ -840,14 +941,125 @@ def _arms(bundle: CampaignBundle, namer: _Namer) -> dict[str, Any]:
     return {"arms": arms, "shared_levels": described["shared_levels"]}
 
 
+def _aggregate(bundle: CampaignBundle) -> dict[str, Any] | None:
+    """Each arm's figures across every aspect, with the weighting they are read under, as the scorecard's equal-weight
+    row and chart print them; None on one aspect, whose figures are its own part's, and where none was read."""
+    aggregate = bundle.readings.aggregate
+    if aggregate is None or len(bundle.aspects) < 2:
+        return None
+    arms: list[dict[str, Any]] = []
+    for arm in aggregate.arms:
+        entry: dict[str, Any] = {"arm": arm.arm_label, "pass_rate_pct": _across(arm.pass_rate, _points)}
+        if arm.change is not None:
+            entry["change_pts"] = _across(arm.change, _points)
+        entry["cost_per_reply_usd"] = _across(arm.cost, _figure)
+        if arm.cheaper_on is not None:
+            entry["cheaper_on"] = arm.cheaper_on
+        if arm.dearer_on is not None:
+            entry["dearer_on"] = arm.dearer_on
+        arms.append(entry)
+    weighting = aggregate.weighting
+    return {
+        "weighting": {
+            "basis": weighting.basis,
+            "weights": {label: _figure(weight) for label, weight in weighting.weights.items()},
+            "intervals": weighting.intervals,
+        },
+        "level": aggregate.level,
+        "arms": arms,
+    }
+
+
+def _across(figure: AggregateFigure, spelled: Callable[[float | None], float | None]) -> dict[str, Any]:
+    """One figure across aspects: its value and interval as the page spells them, or the aspects it is withheld for."""
+    if figure.value is None or figure.interval is None:
+        return {"withheld_for": figure.missing}
+    return {"value": spelled(figure.value), "interval": [spelled(end) for end in figure.interval]}
+
+
+def _floors(bundle: CampaignBundle, floors: Sequence[FloorStatus]) -> list[dict[str, Any]]:
+    """Every floor's status, arm by arm (an arm with a broken floor first): the floors it breaks, leaves unclear and
+    holds, each with the aspect and the rate it read, and for an unclear one what would settle it."""
+    declared = {floor.key: floor for floor in bundle.declaration.floors}
+    by_arm: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for status in floors:
+        aspect = bundle.aspect(status.aspect)
+        rate = status.margin is not None
+        entry: dict[str, Any] = {
+            "floor": status.floor,
+            "aspect": status.aspect,
+            "reads": _read_name(aspect, status.reading)
+            if status.reading is not None
+            else ("the pass rate" if rate else "the cost per reply"),
+            "interval": _points_pair(status.interval) if rate else _figures(status.interval),
+            "worst_drop": _points(status.worst_drop),
+            "margin": status.margin,
+            "short_by": _points(status.short_by),
+            "why": status.reason,
+        }
+        if status.status == "unclear":
+            entry["to_settle"] = _to_settle(_floor_projection(bundle, status, declared.get(status.floor)))
+        by_arm.setdefault(status.arm_label, {}).setdefault(status.status, []).append(
+            {key: value for key, value in entry.items() if value is not None}
+        )
+    return [
+        {"arm": arm, **{state: held[state] for state in _FLOOR_STATES if state in held}}
+        for arm, held in sorted(by_arm.items(), key=lambda item: "broken" not in item[1])
+    ]
+
+
+def _read_name(aspect: AnalysisContextBundle, reading: str) -> str:
+    """The rate a floor read, as the page names it: a check by its declared name, else its expression; a measure or
+    judged dimension by its key."""
+    return aspect.goal_check_names.get(reading, reading)
+
+
+def _floor_projection(bundle: CampaignBundle, status: FloorStatus, floor: Floor | None) -> SampleProjection | None:
+    """The cases that would show an unclear floor holds, counted as its aspect's page and the scorecard's To settle
+    count it: read again from the aspect's evidence. None where the campaign has no control or the floor no
+    declaration."""
+    control = bundle.readings.control
+    if control is None or floor is None:
+        return None
+    aspect = bundle.aspect(status.aspect)
+    verdict = read_floor(
+        floor,
+        floor_readings(aspect, control, status.arm),
+        control=bundle.readings.control_label,
+        candidate=status.arm_label,
+    )
+    return floor_projection(verdict, per_case_usd=case_cost_usd(aspect))
+
+
+def _to_settle(projection: SampleProjection | None) -> dict[str, Any] | None:
+    """What would settle an unclear reading, each side with its kind: if the arms do not differ (``if_none``) and if
+    they differ as observed (``if_observed``). None where nothing was projected."""
+    if projection is None:
+        return None
+    return {"if_none": _need(projection, projection.if_none), "if_observed": _need(projection, projection.if_observed)}
+
+
+def _need(projection: SampleProjection, need: CasesNeeded) -> dict[str, Any]:
+    """One side of a projection: its kind (:data:`~threetears.evals.analysis.report.decision.NeedKind`), the cases
+    it states (the total, never cases to add), and what running them costs, to two figures as the page prices it."""
+    said: dict[str, Any] = {"kind": need.kind}
+    if need.kind in _COUNTED:
+        said["cases"] = need.cases
+    if (cost := projection.cost(need)) is not None:
+        said["usd"] = _priced(cost)
+    return said
+
+
 def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Namer) -> dict[str, Any]:
     """One aspect's part of the view, whole."""
     label = aspect.aspect
     declared = aspect.declared
     design = declared.design if declared is not None else None
     payload = aspect.to_dict()
-    view: dict[str, Any] = {
-        "aspect": label,
+    view: dict[str, Any] = {"aspect": label}
+    if aspect.short_name is not None:
+        view["short_name"] = aspect.short_name
+    view |= {
         "question": {
             "asked": aspect.question_declared,
             "margin": declared.margin if declared is not None else None,
@@ -859,17 +1071,17 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
             {
                 "arm": reading.arm_label,
                 "reading": reading.reading,
-                "change": _figure(reading.change),
-                "gain_interval": _figures(reading.gain_interval),
+                "change": _points(reading.change),
+                "gain_interval": _points_pair(reading.gain_interval),
                 "gain_confidence": reading.gain_confidence,
-                "drop_interval": _figures(reading.drop_interval),
+                "drop_interval": _points_pair(reading.drop_interval),
                 "drop_confidence": reading.drop_confidence,
-                "within_interval": _figures(reading.within_interval),
+                "within_interval": _points_pair(reading.within_interval),
                 "margin": reading.margin,
                 "control_passed": f"{reading.control_passed} of {reading.control_trials}",
                 "arm_passed": f"{reading.arm_passed} of {reading.arm_trials}",
                 "cases": [reading.control_cases, reading.arm_cases],
-                "cases_to_settle": reading.projection.cases if reading.projection is not None else None,
+                "to_settle": _to_settle(reading.projection),
                 "confirmatory": reading.confirmatory,
                 "why": reading.reason,
                 "precision": _precision(reading.precision, namer),
@@ -956,15 +1168,29 @@ def _untrimmed(bundle: CampaignBundle, aspect: AnalysisContextBundle, namer: _Na
     }
     if confounds:
         view["confound_catalog"] = confounds
-    # Said once in the memo, never a demotion: each criterion set after the readings it judges were visible, dated as
-    # the page dates it, so the memo and the page say one date. Absent where none was, so a campaign adopting runs
-    # that are still valid hands the writer what one declared before them does.
-    if late := aspect.reading_scope.late_criteria:
-        view["late_criteria"] = [
-            {"criterion": criterion.criterion, "name": criterion.name, "set_at": criterion.page_date()}
-            for criterion in late
-        ]
+    if (bounds := _control_floor(bundle, aspect)) is not None:
+        view["control_floor"] = bounds
     return view
+
+
+def _control_floor(bundle: CampaignBundle, aspect: AnalysisContextBundle) -> dict[str, Any] | None:
+    """What the control's pass rate on ``aspect`` leaves no candidate able to show, as the scorecard marks it
+    (:func:`~threetears.evals.analysis.report.decision.control_cannot_show`): a ``drop`` past the margin, a ``gain``;
+    None where it can show both, or the campaign has no control."""
+    rows = bundle.readings.on_aspect(aspect.aspect)
+    control = bundle.readings.control
+    if control is None or not rows:
+        return None
+    first = rows[0]
+    bounds = control_cannot_show(
+        aspect,
+        control,
+        [row.arm for row in rows],
+        margin=first.margin,
+        passed=first.control_passed,
+        trials=first.control_trials,
+    )
+    return {"control": bundle.readings.control_label, "cannot_show": list(bounds)} if bounds else None
 
 
 def _repeats(depth: Depth) -> dict[str, Any]:
@@ -1030,8 +1256,8 @@ def _precision(precision: Precision | None, namer: _Namer) -> dict[str, Any] | N
     if precision is None:
         return None
     return {
-        "half_width": _figure(precision.half_width),
-        "own_half_width": {namer.arm(key): _figure(width) for key, width in precision.half_widths.items()},
+        "half_width": _points(precision.half_width),
+        "own_half_width": {namer.arm(key): _points(width) for key, width in precision.half_widths.items()},
         "limited_by": namer.arm(precision.limited_by) if precision.limited_by is not None else None,
         "between_case_share": _figure(precision.between_share),
         "means": REPEATS_FLOOR,
@@ -1088,14 +1314,19 @@ def _cells(aspect: AnalysisContextBundle, namer: _Namer) -> list[dict[str, Any]]
 
 
 def _measures(aspect: AnalysisContextBundle) -> dict[str, Any]:
-    """What each measure the cells carry means, keyed by name: never guessed from the name."""
+    """What each measure the cells carry means, keyed by its key: its name on the page, and what it means, never
+    guessed from the key."""
     names = sorted({summary.name for cell in aspect.cell_measures for summary in cell.measures.measures})
     meanings: dict[str, Any] = {}
     for name in names:
         facts = aspect.measure_catalog.get(name)
         if facts is None:
             continue
+        check = goal_check_of(name)
         meanings[name] = {
+            # As the page names it: a check by its declared name, else its whole expression; any other measure by
+            # its reader name, so a cost is never named by its key.
+            "name": (aspect.check_name(name) or check) if check is not None else measure_name(name, facts.reader_name),
             "means": capped_text(facts.reader_prose or facts.description or "", _MEANING_CHARS),
             "higher_is_better": facts.higher_is_better,
             "unit": facts.unit,
@@ -1265,6 +1496,27 @@ def _figured(node: dict[str, Any], names: frozenset[str]) -> dict[str, Any]:
 def _figures(values: Sequence[float] | None) -> list[float | None] | None:
     """An interval's ends, each as :func:`_figure` keeps it."""
     return None if values is None else [_figure(value) for value in values]
+
+
+def _points(value: float | None) -> float | None:
+    """A figure in points or percent as the page prints it: to one decimal, where a percent or a point is read; a
+    non-zero figure that would round to nought keeps :func:`_figure`'s, so it never reads as no change."""
+    if value is None or not math.isfinite(value):
+        return None
+    rounded = round(value, 1)
+    return _figure(value) if rounded == 0 and value != 0 else rounded
+
+
+def _points_pair(values: Sequence[float] | None) -> list[float | None] | None:
+    """An interval in points, each end as :func:`_points` spells it."""
+    return None if values is None else [_points(value) for value in values]
+
+
+def _priced(value: float) -> float:
+    """A projected cost to two significant figures, since the cases it prices are about."""
+    if value <= 0:
+        return 0.0
+    return round(value, 1 - math.floor(math.log10(value)))
 
 
 def _tail(text: str, limit: int) -> str:

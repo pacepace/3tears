@@ -44,6 +44,7 @@ from threetears.evals.analysis.report.decision import (
     SampleProjection,
     aspect_pass_rate,
     case_cost_usd,
+    control_cannot_show,
     floor_readings,
     projected_cell,
     rate_projections,
@@ -311,28 +312,21 @@ def _change_matrix(
 
 
 def _control_cell(rows: Sequence[AspectReading], bundle: AnalysisContextBundle, control: str) -> TableCell:
-    """The control's pass rate on an aspect (over its trials, as its count reads), marked where it cannot move.
-
-    A drop is read on per-case shares, so whether one past the margin can show is decided on them too: the largest
-    drop a row's values allow is the mean of the control's shares it reads, and where that is at or below the margin
-    for every row read on shares, no candidate's drop can pass it. Shares and trials differ where cases ran an uneven
-    number of usable trials, so the trial rate alone would mark a control that can still show a drop. At 100% of its
-    trials every share is one, and no gain can show.
-    """
+    """The control's pass rate on an aspect (over its trials, as its count reads), marked where it cannot move
+    (:func:`~threetears.evals.analysis.report.decision.control_cannot_show`, the rule the writer's view flags too)."""
     row = rows[0]
     if not row.control_trials:
         return TableCell(value=None)
     rate = 100 * row.control_passed / row.control_trials
-    marks = []
-    if row.margin is not None:
-        rates = [aspect_pass_rate(bundle, control, read.arm) for read in rows]
-        shares = [
-            100 * sum(read.samples[0]) / len(read.samples[0]) for read in rates if read is not None and read.samples
-        ]
-        if shares and all(share <= row.margin for share in shares):
-            marks.append("cannot show a drop")
-    if row.control_passed == row.control_trials:
-        marks.append("cannot show a gain")
+    bounds = control_cannot_show(
+        bundle,
+        control,
+        [read.arm for read in rows],
+        margin=row.margin,
+        passed=row.control_passed,
+        trials=row.control_trials,
+    )
+    marks = [f"cannot show a {bound}" for bound in bounds]
     return TableCell(value=round(rate, 1), flag="; ".join(marks) or None)
 
 
