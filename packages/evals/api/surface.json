@@ -4758,7 +4758,7 @@
     },
     "threetears.evals.analysis.campaign_report": {
       "kind": "function",
-      "signature": "campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignReport",
+      "signature": "campaign_report(host: EvalHost, campaign_id: str, scope_id: str, *, trials: TrialDetail = 'table') -> CampaignReport",
       "tier": "stable"
     },
     "threetears.evals.analysis.campaign_report_html": {
@@ -6301,6 +6301,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.TrialDetail": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.TrialJudgement": {
       "kind": "model",
       "signature": "",
@@ -7338,7 +7343,7 @@
     },
     "threetears.evals.ops.report_read": {
       "kind": "function",
-      "signature": "report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat) -> ReportDocument",
+      "signature": "report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat, trials: TrialDetail = 'table') -> ReportDocument",
       "tier": "stable"
     },
     "threetears.evals.ops.ReportDocument": {
@@ -7688,7 +7693,7 @@
     },
     "threetears.evals.actions.Action": {
       "kind": "dataclass",
-      "signature": "Action(name: str, summary: str, workflow: str, permission: PermissionClass, params: type[BaseModel], result: type[BaseModel], handler: ActionHandler, example: Mapping[str, Any], render: Callable[[Any], str] = …, long_running: bool = False, detail: str = '', happy_path: HappyPath | None = None)",
+      "signature": "Action(name: str, summary: str, workflow: str, permission: PermissionClass, params: type[BaseModel], result: type[BaseModel], handler: ActionHandler, example: Mapping[str, Any], render: Callable[[Any], str] = …, long_running: bool = False, detail: str = '', happy_path: HappyPath | None = None, text_field: str | None = None)",
       "tier": "stable"
     },
     "threetears.evals.actions.ACTION_NAME": {
@@ -7708,7 +7713,7 @@
     },
     "threetears.evals.actions.ActionOutcome": {
       "kind": "dataclass",
-      "signature": "ActionOutcome(text: str, structured: dict[str, Any] | None = None, refusal: Refusal | None = None, action: str | None = None)",
+      "signature": "ActionOutcome(text: str, structured: dict[str, Any] | None = None, refusal: Refusal | None = None, action: str | None = None, text_field: str | None = None)",
       "tier": "stable"
     },
     "threetears.evals.actions.Caller": {

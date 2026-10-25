@@ -173,8 +173,10 @@ existed by then) and **Test setup** (each aspect's own sentence, verbatim, for r
 read under concurrency, or request settings not confirmed). Each section appears only where it has something to say.
 
 **The folds.** Each aspect follows as a fold: one line of its reading, then that aspect's page in full, laid out as
-the rest of this guide describes, its arms named by the campaign's labels. A campaign of one aspect has one fold. In
-HTML every aspect a campaign table names links to its fold.
+the rest of this guide describes, its arms named by the campaign's labels, except that its failed and lost trials
+are a table, each row naming its stored result, unless the read asks for every record (`trials="all"`, under
+[Trials](#the-rest-of-the-page)). A campaign of one aspect has one fold. In HTML every aspect a campaign table names
+links to its fold.
 
 ### An aspect's first screen
 
@@ -322,8 +324,13 @@ heading.
   `no usable trial` marks a case an arm has none on. A case is named as its author named it (an `Eval`'s case `id`) where that reads as a
   name — one token, not a generated id, not a bare number — and `case N` otherwise. Then the trials' census in one
   line (`180 trials ran. Of them 161 passed and 19 failed.`) and only what went wrong: one row per failed or lost
-  trial, the failed first, and each one's record under `T4 · double-charge · cheaper candidate · failed` (never the
-  start of what the case asked), the first twelve open. A failed check is named by its expression, as code
+  trial, the failed first, each naming its stored result (`Stored result`, read with `result_get`) and carrying the
+  trial's id, so a link to the trial lands on its row. The full record of each is opt-in, because the records are
+  most of a large campaign's page: `report_read`'s `trials="all"` (`campaign_report(..., trials="all")`,
+  `report --trials all`) lays each one out under `T4 · double-charge · cheaper candidate · failed` (never the
+  start of what the case asked), the first twelve open, and the row then leaves its result to the record. An
+  aspect's own page (`build_report`, `build_code_only_report`, the quick path's `Result.report`) lays out every
+  record unless asked. A failed check is named by its declared name, else by its expression, as code
   (``check: `call_count("music.queue_track") >= 2` ``), and a judge's fail by its dimensions (`judge: tone`), else
   `failed by the judge`. The passed trials are one closed `Passed trials` table
   (trial, case, arm, stored result), so each result id stays reachable with `result_get`; when every trial passed,

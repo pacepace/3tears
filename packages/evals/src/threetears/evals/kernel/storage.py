@@ -805,6 +805,16 @@ def _require_field_in(store: DocumentStore) -> None:
         )
 
 
+#: An analysis's fields that carry its bundles, its memo and what its readings resolved to: left out of a read that
+#: only orders analyses, so choosing one never ships the rest.
+_ANALYSIS_HEAVY_FIELDS: tuple[str, ...] = ("aspects", "campaign_bundle", "document", "resolutions", "design_snapshot")
+
+
+def _analysis_order(document: dict[str, Any]) -> tuple[str, str]:
+    """A stored analysis's place among its campaign's, greatest newest: its ``created_at``, then its id."""
+    return str(document.get("created_at") or ""), str(document.get("id") or "")
+
+
 class EvalStorage:
     """Storage for eval documents over one document store.
 
@@ -1412,16 +1422,48 @@ class EvalStorage:
         )
         return {str(item["id"]): item.get("archived") is True for item in items}
 
-    def list_analyses_by_campaign(self, campaign_id: str, scope_id: str) -> list[EvalAnalysis]:
-        """Return every analysis attached to a campaign, newest first."""
-        items = self._store.by_doc_type(
+    def load_reported_analysis(self, campaign_id: str, scope_id: str) -> EvalAnalysis | None:
+        """The campaign's newest analysis that is not archived — the one its page reports — hydrating it alone.
+
+        The store picks it, so a campaign's archived analyses, each holding every aspect's frozen bundle, are never
+        shipped or read to find it: one read of the newest live analysis's ``created_at`` with its bundles, memo and
+        resolutions left out, then the live analyses written at that instant, of which the greatest id is reported
+        (:func:`_analysis_order`). Two written at one instant are rare; the order is stable all the same, and
+        :meth:`list_analyses_by_campaign` names the same analysis first among the campaign's live ones.
+
+        :param campaign_id: The campaign.
+        :ptype campaign_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :return: The analysis, or ``None`` when the campaign has none that is not archived.
+        :rtype: EvalAnalysis | None
+        """
+        live = {"archived": [False, None]}
+        newest = self._store.by_doc_type(
             "eval_analysis",
             scope_id,
             campaign_id=campaign_id,
+            field_in=live,
             order_by="created_at",
             descending=True,
+            limit=1,
+            exclude=_ANALYSIS_HEAVY_FIELDS,
         )
-        return self._hydrate_all(EvalAnalysis, items)
+        if not newest:
+            return None
+        tied = self._store.by_doc_type(
+            "eval_analysis", scope_id, campaign_id=campaign_id, field_in=live, created_at=newest[0].get("created_at")
+        )
+        if not tied:
+            # The newest was deleted or archived between the two reads: read again from the top.
+            return self.load_reported_analysis(campaign_id, scope_id)
+        return self._hydrate(EvalAnalysis, max(tied, key=_analysis_order))
+
+    def list_analyses_by_campaign(self, campaign_id: str, scope_id: str) -> list[EvalAnalysis]:
+        """Return every analysis attached to a campaign, newest first: by ``created_at``, then the greatest id
+        (:func:`_analysis_order`), so two written at one instant list in one order on every store."""
+        items = self._store.by_doc_type("eval_analysis", scope_id, campaign_id=campaign_id)
+        return self._hydrate_all(EvalAnalysis, sorted(items, key=_analysis_order, reverse=True))
 
     def delete_analysis(self, analysis_id: str, scope_id: str) -> bool:
         """Delete an analysis by id within a scope."""

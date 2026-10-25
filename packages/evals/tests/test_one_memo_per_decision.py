@@ -342,7 +342,7 @@ async def test_a_stored_v15_campaign_reads_as_one_aspect_whose_fold_is_the_aspec
     (aspect,) = campaign.aspects
     assert aspect.label == "billing" and aspect.run_ids == campaign.run_ids
 
-    page = off_loop(campaign_report, held.host, source, SCOPE)
+    page = off_loop(campaign_report, held.host, source, SCOPE, trials="all")
     (fold,) = page.aspects
     assert fold.report.section_titles == {**V0701_SECTION_TITLES, **FLOORS_HEADING_SINCE_0_71}
     # v0.70.1's layout: a v15 control carries no time it was named, and its aspect is asked no question, so when it
@@ -355,6 +355,14 @@ async def test_a_stored_v15_campaign_reads_as_one_aspect_whose_fold_is_the_aspec
         for (section, kind), run in groupby((block.section, block.kind) for block in fold.report.blocks)
     ]
     assert laid_out == V0701_BLOCKS
+    # Read by default, the page leaves out the trials' records: their table and the passed trials' run together.
+    (default,) = off_loop(campaign_report, held.host, source, SCOPE).aspects
+    without_records = [
+        (section, kind, len(list(run)))
+        for (section, kind), run in groupby((block.section, block.kind) for block in default.report.blocks)
+    ]
+    records = V0701_BLOCKS.index(("trials", "trial", 14))
+    assert without_records == [*V0701_BLOCKS[: records - 1], ("trials", "table", 2), *V0701_BLOCKS[records + 2 :]]
 
 
 # =============================================================================

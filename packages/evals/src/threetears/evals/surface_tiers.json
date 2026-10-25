@@ -1261,6 +1261,7 @@
 "threetears.evals.analysis.TokenRollup": "provisional",
 "threetears.evals.analysis.TrialBlock": "provisional",
 "threetears.evals.analysis.TrialCheck": "provisional",
+"threetears.evals.analysis.TrialDetail": "provisional",
 "threetears.evals.analysis.TrialJudgement": "provisional",
 "threetears.evals.analysis.TrialRow": "provisional",
 "threetears.evals.analysis.TrialState": "provisional",

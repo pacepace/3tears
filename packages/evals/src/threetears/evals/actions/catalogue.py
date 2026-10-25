@@ -200,6 +200,9 @@ class Action:
     :ivar detail: More help, shown on the action's own page.
     :ivar happy_path: For a ``spend`` action, required: what reaches its work, for the jobs conformance kit.
         ``None`` for every other class.
+    :ivar text_field: The one field of the result its ``render`` returns verbatim (``report_read``'s ``body``), so a
+        transport sending the text and the result's JSON in one reply leaves that field out of the JSON rather than
+        send it twice; ``None``, the default, for a render that composes its text, whose result is sent whole.
     """
 
     name: str
@@ -214,6 +217,7 @@ class Action:
     long_running: bool = False
     detail: str = ""
     happy_path: HappyPath | None = None
+    text_field: str | None = None
 
     def __post_init__(self) -> None:
         """Refuse an action no transport could mount honestly.
@@ -260,6 +264,11 @@ class Action:
             raise ValueError(
                 f"{where}: a spend action declares a happy_path — the parameters that reach its work — so the jobs "
                 "conformance kit can show its call makes no completion request and its job makes some"
+            )
+        if self.text_field is not None and self.text_field not in self.result.model_fields:
+            raise ValueError(
+                f"{where}: text_field {self.text_field!r} is no field of {self.result.__name__}: it names the field "
+                "the render returns verbatim"
             )
         try:
             self.params.model_validate(dict(self.example))
@@ -406,12 +415,15 @@ class ActionOutcome:
     :ivar structured: The result model's JSON form; ``None`` for help and for a refusal.
     :ivar refusal: Why the call was refused, as data; ``None`` for a call that was not.
     :ivar action: The action called, when the call named one the tool has.
+    :ivar text_field: The field of :attr:`structured` that :attr:`text` is verbatim, as the action declares it
+        (:attr:`Action.text_field`); ``None`` when the text is composed.
     """
 
     text: str
     structured: dict[str, Any] | None = None
     refusal: Refusal | None = None
     action: str | None = None
+    text_field: str | None = None
 
     def __post_init__(self) -> None:
         """Refuse an outcome that is both a result and a refusal.
@@ -605,7 +617,9 @@ class MountedTool:
             return ActionOutcome(
                 render.refuse_by_engine(self, action, refused), refusal=Refusal.of(refused), action=name
             )
-        return ActionOutcome(action.render(result), structured=result.model_dump(mode="json"), action=name)
+        return ActionOutcome(
+            action.render(result), structured=result.model_dump(mode="json"), action=name, text_field=action.text_field
+        )
 
     def _help(self, given: Mapping[str, Any]) -> ActionOutcome:
         undeclared = sorted(set(given) - {"topic"})
