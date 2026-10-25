@@ -27,7 +27,7 @@ from __future__ import annotations
 import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import reduce
 
 from threetears.evals.analysis.arms import short_digest
@@ -251,8 +251,9 @@ def table_blocks(
         for row in readings.readings
         if row.reading != "within_margin" and (level := _shown_interval(row)[1]) is not None
     ]
-    notes = _level_lines(levels, readings) if readings.readings else []
-    notes += _within_lines(readings, names)
+    # How the intervals were read is one paragraph, a sentence each: the level, the error rate, the rows no worse.
+    read = [*(_level_lines(levels, readings) if readings.readings else []), *_within_lines(readings, names)]
+    notes = [" ".join(read)] if read else []
     notes += [
         _rig_line(names(row.aspect), f"{row.arm_label}'s change against {readings.control_label}", row.rig)
         for row in readings.readings
@@ -429,10 +430,11 @@ def _percent(level: float) -> str:
 
 def _level_lines(levels: Sequence[float], readings: CampaignReadings) -> list[str]:
     """The level the corrected intervals were read at (``levels``: every reading's but one no worse than the margin,
-    whose line is :func:`_within_lines`; none where every reading is), how often an arm is shown better or worse
-    wrongly, and, with several arms, that the correction does not run across them. Each count is the page's own, and
-    counts what is corrected together: an arm's gains are its rows with an interval, its drops those with an interval
-    on an aspect with a margin (``drop_interval``), as its two families are read."""
+    whose sentence is :func:`_within_lines`; none where every reading is) and why it is wider than a plain interval,
+    then how often one arm is shown better or worse wrongly, and, with several arms, how often some arm is, since the
+    correction does not run across them. Each count is the page's own, and counts what is corrected together: an
+    arm's gains are its rows with an interval, its drops those with an interval on an aspect with a margin
+    (``drop_interval``), as its two families are read. One sentence each, every one a whole template."""
     families = Counter(row.arm for row in readings.readings)
     gains = Counter(row.arm for row in readings.readings if row.gain_interval is not None)
     drops = Counter(row.arm for row in readings.readings if row.drop_interval is not None)
@@ -443,37 +445,36 @@ def _level_lines(levels: Sequence[float], readings: CampaignReadings) -> list[st
         if round(high, 4) <= round(INTERVAL_LEVEL, 4):
             # A family of one is read at the nominal level: no reading is corrected.
             lines.append(
-                f"{'The interval is' if len(levels) == 1 else 'Each interval is'} read at {_percent(low)}, as a "
-                "floor's is."
+                f"The interval is read at {_percent(low)}, as a floor's is."
+                if len(levels) == 1
+                else f"Each interval is read at {_percent(low)}, as a floor's is."
             )
         else:
             if len(sizes) > 1:
-                together = "each arm's readings"
+                lines.append("Each arm's readings are corrected together.")
             else:
                 ((gained, dropped),) = sizes
-                together = (
-                    f"each arm's {gained} readings"
+                lines.append(
+                    f"Each arm's {gained} readings are corrected together."
                     if gained == dropped
-                    else f"each arm's gains on {gained} aspects, and its drops on {dropped}, are each"
+                    else f"Each arm's gains on {gained} aspects, and its drops on {dropped}, are each corrected "
+                    "together."
                 )
-            lines.append(
-                f"Intervals here are wider than a plain {_percent(INTERVAL_LEVEL)} interval, because {together}"
-                f"{'' if together.endswith(' each') else ' are'} corrected together."
-            )
             read_at = _percent(low) if round(low, 4) == round(high, 4) else f"{_percent(low)} to {_percent(high)}"
-            lines.append(f"Each is read at {read_at}, and the reading beside it always agrees with it.")
-    half = readings.alpha / 2
-    where = " on some aspect" if any(max(size) > 1 for size in sizes) else ""
+            lines.append(f"So each interval is read at {read_at}, not {_percent(INTERVAL_LEVEL)}.")
+    half = _percent(readings.alpha / 2)
     lines.append(
-        f"For any one arm, the chance of being wrongly shown better{where} is at most {_percent(half)}, and likewise "
+        f"For any one arm, the chance of being wrongly shown better on some aspect is at most {half}, and likewise "
         "for wrongly shown worse."
+        if any(max(size) > 1 for size in sizes)
+        else f"For any one arm, the chance of being wrongly shown better is at most {half}, and likewise for wrongly "
+        "shown worse."
     )
     if len(families) > 1:
         lines.append(
-            f"That correction runs within each arm, not across the {len(families)} arms, so the chance that some arm "
-            f"is wrongly shown better is up to {_percent(min(1.0, len(families) * half))}, and likewise for worse."
+            f"The correction does not run across the {len(families)} arms, so the chance that some arm is wrongly "
+            f"shown better is up to {_percent(min(1.0, len(families) * readings.alpha / 2))}, and likewise for worse."
         )
-        lines.append("Correcting across arms would lower it, at the price of wider intervals.")
     return lines
 
 
@@ -484,9 +485,8 @@ def _within_lines(readings: CampaignReadings, names: AspectNames) -> list[str]:
     if not within:
         return []
     lines = [
-        f"A row no worse than the margin reads a plain {_percent(INTERVAL_LEVEL)} interval, as a floor does.",
-        "An arm is no worse only where it holds on every asked aspect at once, so more aspects never make that "
-        "easier, and it needs no correction.",
+        f"A row no worse than the margin reads {_percent(INTERVAL_LEVEL)}, uncorrected: an arm is no worse only where "
+        "it holds on every asked aspect at once."
     ]
     clearing = [
         f"{row.arm_label} on {names(row.aspect)}"
@@ -624,9 +624,10 @@ def settle_blocks(
     independent cases, not cases to add, at which the interval would show it, if the arms do not differ and if they
     differ as observed, read at the nominal level over the same cases and values. So the two counts on one arm and
     aspect differ only where the floor reads other rates than the pass rate alone (every rate, or a check it names) or
-    reads them against other points than the margin. The floor's row names the rate deciding its as-observed count;
-    its no-difference count may be another rate's. A row on an aspect with no margin has nothing to show it within, and a settled reading
-    nothing left to show, so neither is a row here.
+    reads them against other points than the margin; where a floor's count is the row's own (the pass rate decides
+    it, at the margin's points, to the same counts), the two are one row, saying both. The floor's row names the
+    rate deciding its as-observed count; its no-difference count may be another rate's. A row on an aspect with no
+    margin has nothing to show it within, and a settled reading nothing left to show, so neither is a row here.
 
     :param campaign: The campaign, a change.
     :ptype campaign: EvalCampaign
@@ -689,17 +690,17 @@ def _sizings(
     """What would settle a row left unclear against its margin, then each rate floor on its aspect left unclear for
     its arm, each counted as the aspect's own page counts it."""
     found: list[_Sizing] = []
+    own: _Sizing | None = None
     if row.reading == "unclear" and row.margin is not None:
-        found.append(
-            _Sizing(
-                aspect=row.aspect,
-                arm=row.arm_label,
-                shows=f"no worse than the {format_number(row.margin)}-point margin",
-                decided_by="pass rate",
-                why=row.reason,
-                projection=row.projection,
-            )
+        own = _Sizing(
+            aspect=row.aspect,
+            arm=row.arm_label,
+            shows=f"no worse than the {format_number(row.margin)}-point margin",
+            decided_by="pass rate",
+            why=row.reason,
+            projection=row.projection,
         )
+        found.append(own)
     control = readings.control
     if control is None:
         return found
@@ -717,6 +718,25 @@ def _sizings(
         # One source for the count and the rate deciding it: where any unclear rate cannot be projected, neither is.
         rates = rate_projections(verdict, per_case_usd=per_case)
         deciding = None if rates is None else _deciding_rate(rates)
+        projection = None if rates is None else reduce(SampleProjection.joined, (one for _, one in rates))
+        if (
+            own is not None
+            and deciding is not None
+            and deciding.rate.measure is None
+            and clause.max_points == row.margin
+            and projection == own.projection
+        ):
+            # The floor's count is the row's own: the pass rate, at the margin's points, over the same cases. One
+            # quantity is one row, saying both what it shows and that the floor holds.
+            found[found.index(own)] = replace(
+                own,
+                shows=(
+                    f"no worse than the {format_number(row.margin)}-point margin, and the "
+                    f"{format_number(clause.max_points)}-point floor holds"
+                ),
+            )
+            own = None
+            continue
         found.append(
             _Sizing(
                 aspect=row.aspect,
@@ -724,7 +744,7 @@ def _sizings(
                 shows=f"the {format_number(clause.max_points)}-point floor holds",
                 decided_by=None if deciding is None else _rate_words(deciding),
                 why=verdict.reason if deciding is None else deciding.reason,
-                projection=None if rates is None else reduce(SampleProjection.joined, (one for _, one in rates)),
+                projection=projection,
                 floor=True,
             )
         )

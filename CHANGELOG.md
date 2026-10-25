@@ -16,12 +16,13 @@ none its full expression, never shortened. `campaign_create` takes `short_name` 
 (`aspects_from`) carries it, and `campaign_update` takes `short_names` (an aspect's label to its name, or null to
 clear it), which stays editable once runs have joined. The bundle carries both (`AnalysisContextBundle.short_name`,
 `.goal_check_names`, read by `.check_name`), and `report.campaign.names` names each aspect and measure from them
-(`aspect_name`, `AspectNames`, `legend`, `measure_name_of`). `style.measure_name` and `report.words.reading_heading`
+(`aspect_name`, `AspectNames`, `legend`, `measure_name_of`, `check_legend_blocks`). `style.measure_name` and `report.words.reading_heading`
 take a check's declared name as `declared=`, and `report.decision.floor_readings` and `floor_statement` take the
 names as `check_names=` (carried on `FloorReadings.check_names`, and on `AspectNames.check_names` for a part holding
 only an aspect's label). Every page names a named check by its name wherever it names one, its folds included: the
-tables and their headers, a floor's sentence and reasons, To settle, the call and a finding's evidence. The one place
-an expression stands beside its name is a trial's failed-check line, which states both. A campaign's readings name no
+tables and their headers, a floor's sentence and reasons, To settle, the call and a finding's evidence. A campaign's
+page states each name beside its expression once, in the **Checks** legend under Design & provenance
+(`check_names`), and a trial's failed-check line, on a page laid out with `trials="all"`, states both too. A campaign's readings name no
 check by a name, so no reading moves with one. Each name is written only when
 set and is no part of any identity, key, digest or fingerprint, and a `template_update` of `goal_check_names` alone
 leaves the template's `updated_at`: a run, a cell, a pool, a pairing, an analysis and a reporter case all key as
@@ -41,8 +42,10 @@ gone. A control at or below the margin is marked `cannot show a drop`, one at 10
 repeats reads `20 of 40 trials` wherever trials are not the cases beside them. **To settle** (`to_settle`, retitled from
 "To show no worse than the margin") holds a row's count on the pass rate and each unclear rate floor's on every rate
 it reads, naming the rate that decides each; the sentence promising the two agree is gone, since it held only for a
-floor on one rate. The level and error-rate lines are reworded and counted off the page's own arms and aspects, and
-no longer say the recommendation does not rest on the correction. Where a fold's contrast reads a row's own per-case
+floor on one rate. Where a floor's count is the row's own (the pass rate decides it, at the margin's points), the two
+are one row (`no worse than the 10-point margin, and the 10-point floor holds`). The level and error-rate lines are
+one paragraph, reworded and counted off the page's own arms and aspects, and no longer say the recommendation does
+not rest on the correction. Where a fold's contrast reads a row's own per-case
 values to another verdict, one line under the matrix names both and the interval each was read on. The matrix's last
 row, `All aspects (equal weight)`, holds what `equal_weight_cells` gives each arm, and a cell for an arm the matrix has
 no column for is refused, never dropped. Each such cell states its unit, which must be its column's (a change's
@@ -75,8 +78,8 @@ words), and `report.campaign_page` re-exports what it exported, with `late_crite
 page calls each aspect) now among them. `campaign_warnings` and `campaign_verdict` take the `AspectNames` to name
 aspects by. Both serializers lay a page's sections out in the page's own order: an aspect's page by
 `Report.section_titles`, a campaign's by `CampaignReport.section_titles`, its sections up to Design & provenance
-before the aspect folds and the rest after (`CampaignReport.headed_sections`). Every page renders as before, byte for
-byte. **Added**, none of it set on a page laid out today: a campaign's own sections in `ReportSection` (`answer`,
+before the aspect folds and the rest after (`CampaignReport.headed_sections`). The split itself moves no byte: a
+page built from the same inputs renders alike before and after it. **Added**, none of it set on a page laid out today: a campaign's own sections in `ReportSection` (`answer`,
 `warnings`, `scorecard`, `findings`, `next`, `provenance`), each laid out under its heading; `TableCell.flag`, a short
 marker printed after a cell's value; and the `cost_quality` chart, one `CostQualityPoint` per arm (new, provisional),
 which `chart_svg` refuses until it has a drawing. **Refused:** an aspect's page holding a block in a campaign's own

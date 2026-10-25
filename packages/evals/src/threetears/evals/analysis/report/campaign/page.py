@@ -36,7 +36,7 @@ from threetears.evals.analysis.report.campaign.memo_blocks import (
     memo_summary_blocks,
     recommendation_blocks,
 )
-from threetears.evals.analysis.report.campaign.names import AspectNames
+from threetears.evals.analysis.report.campaign.names import AspectNames, check_legend_blocks
 from threetears.evals.analysis.report.campaign.provenance import (
     caveat_blocks,
     for_the_campaign,
@@ -146,7 +146,9 @@ def build_campaign_report(
     if kind != "measurement" or call is not None:
         blocks += call_blocks(campaign, readings, call, names=names, reports=reports)
     blocks += memo_blocks(memo, campaign, readings, reports, resolutions, trial_ids or {}, names=names)
-    # Design & provenance: the design and when each criterion was set, then what depth says once.
+    # Design & provenance: what each declared check name stands for, the design and when each criterion was set,
+    # then what depth says once.
+    blocks += check_legend_blocks(names)
     blocks += provenance_blocks(bundles, readings.arm_labels(), names=names)
     blocks += depth_provenance_blocks(readings)
     summaries = {summary.aspect: summary for summary in (memo.aspect_summaries if memo is not None else [])}
