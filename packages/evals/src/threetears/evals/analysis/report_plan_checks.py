@@ -95,12 +95,24 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from itertools import combinations
 
 from pydantic import BaseModel
 
 from threetears.evals.analysis.errors import PlanRefusal, UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import format_figure, keys_in, literal_numbers, parse_key, resolve
+from threetears.evals.analysis.report_decision import (
+    Caveat,
+    Materiality,
+    allowed_modes,
+    caveat_materiality,
+    control_arm,
+    dominant_options,
+    floors_not_held,
+    report_caveats,
+    report_kind,
+    shown_better,
+    surviving_options,
+)
 from threetears.evals.analysis.report_input import Aspect, Judged, Measure, ReportInput
 from threetears.evals.kernel.report_plan import ChartSpec, OptionRow, ReportPlan, Signals, WarningRef
 from threetears.evals.schema.prose import field_is_prose
@@ -115,8 +127,8 @@ _FACTORIAL = "factorial"
 _FEW_STRATA = 6
 #: The spread of cost across arms past which the cost axis is logarithmic.
 _LOG_SPREAD = 10.0
-#: Judge tiers and calibration states that mean no human calibration stands behind the judge.
-_UNCALIBRATED = frozenset({"undetermined", "insufficient"})
+#: The caveat kinds Method may carry: method-level ones (R1 of the 2026-10-25 review).
+_METHOD_KINDS = frozenset({"apparatus", "latency", "unreported"})
 
 #: The headline kind each mode takes.
 _HEADLINE_KIND = {"decide": "decision", "tradeoff": "trade", "no_call": "no_call"}
@@ -169,7 +181,7 @@ def classify(report_input: ReportInput) -> tuple[Signals, str]:
     :return: The signals, and the shape (``A`` to ``E``).
     :rtype: tuple[Signals, str]
     """
-    control = _control(report_input)
+    control = control_arm(report_input)
     signals = Signals.model_validate(
         {
             "candidate_structure": _structure(report_input, control),
@@ -182,10 +194,6 @@ def classify(report_input: ReportInput) -> tuple[Signals, str]:
         }
     )
     return signals, _shape(signals)
-
-
-def _control(report_input: ReportInput) -> str | None:
-    return next((arm.id for arm in report_input.arms if arm.role == "control"), None)
 
 
 def _structure(report_input: ReportInput, control: str | None) -> str:
@@ -283,69 +291,27 @@ def raised_warnings(report_input: ReportInput, arm: str) -> list[WarningRef]:
 
 
 def implied_disclosures(report_input: ReportInput, mode: str) -> list[str]:
-    """The report-wide disclosures a plan in ``mode`` must make, which its flag holds exactly (this module's
-    Disclosures).
+    """The report-wide disclosures a plan in ``mode`` must make (this module's Disclosures): ``no_rule`` where it
+    applies, then every report-wide caveat code did not prove immaterial. ``no_rule`` is the flag's; each caveat lands
+    once, in the decision's confidence or, under a ``low`` confidence, in the flag.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
     :param mode: The plan's mode: ``decide``, ``tradeoff`` or ``no_call``.
     :ptype mode: str
-    :return: Each disclosure as the flag writes it, in the flag's order: no rule, late criteria, the judge, confounds,
-        runs.
+    :return: Each disclosure by id: no rule, then the caveats in :func:`report_caveats`' order.
     :rtype: list[str]
     """
-    caveats = report_input.caveats
     implied: list[str] = []
     if mode == "tradeoff" and not any(family.merit_axes for family in report_input.contrast_families):
         implied.append("no_rule")
-    if caveats.late_criteria:
-        implied.append("late_criteria")
-    if _judge_uncalibrated(report_input):
-        implied.append("judge_uncalibrated")
-    comparisons = _comparisons(report_input)
-    confounds = dict.fromkeys([*caveats.confounds, *(confound.dimension for confound in caveats.apparatus_confounds)])
-    for confound in confounds:
-        named = {contrast.arm for contrast in report_input.contrasts if confound in contrast.confounds}
-        if comparisons and all(comparison & named for comparison in comparisons):
-            implied.append(f"confound:{confound}")
-    for run in caveats.short_runs:
-        if run.arm is None or (comparisons and all(run.arm in comparison for comparison in comparisons)):
-            implied.append(f"short_run:{run.run}")
+    materiality = caveat_materiality(report_input)
+    implied += [
+        caveat.id
+        for caveat in report_caveats(report_input)
+        if caveat.scope == "report" and not materiality[caveat.id].immaterial
+    ]
     return implied
-
-
-def _judge_uncalibrated(report_input: ReportInput) -> bool:
-    tiers = report_input.caveats.judge_tiers
-    dimensions = [*report_input.judged, *(name for name in tiers if name not in report_input.judged)]
-    if not dimensions:
-        return False
-    for dimension in dimensions:
-        judged = report_input.judged.get(dimension)
-        stated = {tiers.get(dimension)}
-        if judged is not None:
-            stated |= {judged.tier, judged.calibration}
-        stated.discard(None)
-        if not stated or not stated <= _UNCALIBRATED:
-            return False
-    return True
-
-
-def _comparisons(report_input: ReportInput) -> list[frozenset[str]]:
-    """The comparisons the report makes, each as the arms in it: candidates against the control, pairs, or one arm."""
-    arms = [arm.id for arm in report_input.arms]
-    control = _control(report_input)
-    if len(set(arms)) <= 1:
-        return [frozenset(arms)] if arms else []
-    if control is not None:
-        return [frozenset({control, arm}) for arm in arms if arm != control]
-    return [frozenset(pair) for pair in combinations(arms, 2)]
-
-
-def _kind(report_input: ReportInput) -> str:
-    """What the campaign is, from its arms as :func:`~threetears.evals.analysis.kinds.campaign_kind` reads them."""
-    if len({arm.id for arm in report_input.arms}) <= 1:
-        return "measurement"
-    return "change" if _control(report_input) is not None else "choice"
 
 
 # --- the plan check ------------------------------------------------------------------------------------------------
@@ -363,10 +329,13 @@ def validate_plan(plan: ReportPlan, report_input: ReportInput) -> None:
     faults: list[_Fault] = []
     faults += _classification_faults(plan, report_input)
     faults += _mode_faults(plan)
+    faults += _allowed_mode_faults(plan, report_input)
     faults += _id_faults(plan)
     faults += _recommendation_faults(plan, report_input)
     faults += _answer_faults(plan, report_input)
+    faults += _confidence_faults(plan, report_input)
     faults += _flag_faults(plan, report_input)
+    faults += _coverage_faults(plan, report_input)
     faults += _chart_faults(plan, report_input)
     faults += _key_faults(plan, report_input)
     faults += _literal_faults(plan, report_input)
@@ -438,7 +407,7 @@ def _recommendation_faults(plan: ReportPlan, report_input: ReportInput) -> Itera
         return
     index = plan.options.rows.index(row)
     path = f"options.rows[{index}].option"
-    kind = _kind(report_input)
+    kind = report_kind(report_input)
     arms = [arm.id for arm in report_input.arms]
     if kind == "measurement":
         yield (
@@ -454,11 +423,11 @@ def _recommendation_faults(plan: ReportPlan, report_input: ReportInput) -> Itera
         return
     if kind == "choice":
         ahead = any(pair.ahead == row.option for aspect in report_input.aspects for pair in aspect.pairs)
-        if not ahead and plan.decision.confidence != "low":
+        if not ahead and plan.decision.confidence.form != "low":
             yield (
-                "decision.confidence",
+                "decision.confidence.form",
                 (
-                    f"is {plan.decision.confidence!r}, and the plan picks {row.option!r}, which no pair reading shows ahead "
+                    f"is {plan.decision.confidence.form!r}, and the plan picks {row.option!r}, which no pair reading shows ahead "
                     "of any arm: a pick nothing separated rests on cost or simplicity, so its confidence is 'low'. Lower "
                     "it, pick an arm a pair reading shows ahead, or make no call"
                 ),
@@ -470,7 +439,7 @@ def _recommendation_faults(plan: ReportPlan, report_input: ReportInput) -> Itera
 def _adoption_faults(arm: str, path: str, report_input: ReportInput) -> Iterator[_Fault]:
     """A change's switch to a candidate: refused when exploratory, past a breached guardrail, or neither shown better
     nor shown no worse on the asked aspects (the memo's exploratory and unseparated adoption refusals)."""
-    control = _control(report_input)
+    control = control_arm(report_input)
     if control is None or arm == control:
         return
     remedy = f"recommend the control, {control!r}, and say in `next` what would settle it"
@@ -499,19 +468,9 @@ def _adoption_faults(arm: str, path: str, report_input: ReportInput) -> Iterator
             ),
         )
         return
-    if any(
-        reading.arm == arm and reading.reading == "better" and reading.confirmatory
-        for aspect in report_input.aspects
-        for reading in aspect.readings
-    ):
+    if shown_better(report_input, arm):
         return
-    asked_ids = {aspect.id for aspect in asked}
-    if any(
-        contrast.arm == arm and contrast.verdict == "improved" and contrast.aspect in asked_ids
-        for contrast in report_input.contrasts
-    ):
-        return
-    open_floors = _floors_not_held(report_input, arm, asked)
+    open_floors = floors_not_held(report_input, arm, asked)
     if not open_floors:
         return
     yield (
@@ -522,26 +481,6 @@ def _adoption_faults(arm: str, path: str, report_input: ReportInput) -> Iterator
             f"{remedy[:1].upper()}{remedy[1:]}"
         ),
     )
-
-
-def _floors_not_held(report_input: ReportInput, arm: str, asked: Sequence[Aspect]) -> list[str]:
-    """Per asked aspect, why the candidate is not shown no worse there; empty when every floor reads held.
-
-    An aspect's floors are those read on it for any candidate; one with none declares no floor.
-    """
-    clauses: list[str] = []
-    for aspect in asked:
-        floors = list(dict.fromkeys(floor.floor for floor in report_input.floors if floor.aspect == aspect.id))
-        if not floors:
-            clauses.append(f"aspect {aspect.id!r} declares no floor, so nothing there shows it no worse")
-        for key in floors:
-            read = next((f for f in report_input.floors if f.floor == key and f.arm == arm), None)
-            if read is None:
-                clauses.append(f"floor {key} was not read on it, so it is not shown held")
-            elif read.status != "held":
-                reason = f" ({read.reason.rstrip('.')})" if read.reason else ""
-                clauses.append(f"floor {key} is {read.status}{reason}")
-    return clauses
 
 
 def _answer_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
@@ -581,11 +520,90 @@ def _said(key: tuple[str, str, str]) -> str:
     return f"{kind} {name!r} on aspect {aspect!r}"
 
 
+def _allowed_mode_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
+    """The mode is one code allows, and a decide plan recommends the one option that dominates, where one does."""
+    allowed = allowed_modes(report_input)
+    if plan.mode not in allowed:
+        survivors = surviving_options(report_input)
+        yield (
+            "mode",
+            (
+                f"is {plan.mode!r}, and code allows only {sorted(allowed)} for this input: the options that survive "
+                f"every gate and guardrail are {survivors}, and {_dominance_said(report_input)}"
+            ),
+        )
+        return
+    row = _recommended(plan)
+    dominant = dominant_options(report_input)
+    if plan.mode != "decide" or row is None or len(dominant) != 1 or row.option == dominant[0]:
+        return
+    if row.option in {arm.id for arm in report_input.arms}:
+        yield (
+            f"options.rows[{plan.options.rows.index(row)}].option",
+            (
+                f"is {row.option!r}, and {dominant[0]!r} is the one surviving option at least as good as every other on "
+                f"every axis that matters (cost, the asked aspect, every gate): recommend {dominant[0]!r}"
+            ),
+        )
+
+
+def _dominance_said(report_input: ReportInput) -> str:
+    dominant = dominant_options(report_input)
+    if len(dominant) == 1:
+        return f"{dominant[0]!r} dominates them"
+    if dominant:
+        return f"{dominant} tie on every axis, so none dominates alone"
+    return "none is at least as good as every other on every axis that matters"
+
+
+def _confidence_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
+    """The confidence's form suits the open report-wide caveats, and each clause states its condition."""
+    confidence = plan.decision.confidence
+    known = {caveat.id for caveat in report_caveats(report_input)}
+    for index, clause in enumerate(confidence.caveats):
+        if clause.id in known and not clause.material_if.strip():
+            yield (
+                f"decision.confidence.caveats[{index}].material_if",
+                f"is empty: the open caveat {clause.id!r} needs the condition that would make it material",
+            )
+    wide = [disclosure for disclosure in implied_disclosures(report_input, plan.mode) if disclosure != "no_rule"]
+    listed = {clause.id for clause in confidence.caveats}
+    if confidence.form == "high":
+        if wide:
+            yield (
+                "decision.confidence.form",
+                (
+                    f"is 'high', and open caveats remain: {wide}. Say 'high_if_immaterial' and give each its clause, "
+                    "or 'low' when the evidence is weak even if they are immaterial"
+                ),
+            )
+        elif confidence.caveats:
+            yield "decision.confidence.caveats", "list caveats, and a 'high' confidence is conditional on none"
+        return
+    if confidence.form != "high_if_immaterial":
+        return
+    if not confidence.caveats:
+        yield (
+            "decision.confidence.form",
+            "is 'high_if_immaterial' and lists no open caveat: with none open, the confidence is 'high'",
+        )
+    landed = _landings(plan)
+    if elsewhere := [item for item in wide if item not in listed and landed.get(item)]:
+        yield (
+            "decision.confidence.caveats",
+            (
+                f"leave out {elsewhere}, stated elsewhere ({', '.join(landed[elsewhere[0]])}): a 'high_if_immaterial' "
+                "confidence lists every open report-wide caveat, each with what would make it material"
+            ),
+        )
+
+
 def _flag_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
+    """The flag holds ``no_rule`` exactly when it applies, and otherwise only report-wide caveats."""
     implied = implied_disclosures(report_input, plan.mode)
     if not plan.flag:
-        if implied:
-            yield "flag", f"is empty, and this {plan.mode} plan must disclose {implied}"
+        if "no_rule" in implied:
+            yield "flag", f"is empty, and this {plan.mode} plan must disclose 'no_rule': no rule was set in advance"
         return
     discloses = plan.flag[0].discloses
     if not implied:
@@ -598,8 +616,8 @@ def _flag_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault
         )
         return
     yield from _repeated("flag[0].discloses", discloses, "disclosure")
-    if missing := [item for item in implied if item not in discloses]:
-        yield "flag[0].discloses", f"leaves out {missing}, which this {plan.mode} plan must disclose"
+    if "no_rule" in implied and "no_rule" not in discloses:
+        yield "flag[0].discloses", f"leaves out ['no_rule'], which this {plan.mode} plan must disclose"
     if "no_rule" in discloses and "no_rule" not in implied:
         yield (
             "flag[0].discloses",
@@ -610,15 +628,104 @@ def _flag_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault
                 else "holds 'no_rule', and the campaign declared a merit priority that ranks the axes"
             ),
         )
-    if extra := [item for item in discloses if item not in implied and item != "no_rule"]:
+    scopes = {caveat.id: caveat.scope for caveat in report_caveats(report_input)}
+    if scoped := [item for item in discloses if scopes.get(item) in ("scoped", "method")]:
         yield (
             "flag[0].discloses",
             (
-                f"holds {extra}, which are not report-wide disclosures of this input: a caveat touching one arm or one "
-                "finding is said beside the claim it qualifies, usually in Watch, and the flag holds only what touches "
-                f"the whole comparison ({implied})"
+                f"holds {scoped}, which are not report-wide disclosures of this input: a caveat touching one arm or one "
+                "finding is said beside the claim it qualifies, usually in Watch, a method-level one in Method, and the "
+                f"flag holds only what touches the whole comparison ({implied})"
             ),
         )
+
+
+#: Where a caveat may land, by scope; the flag is checked by :func:`_flag_faults`.
+_PLACES: dict[str, frozenset[str]] = {
+    "report": frozenset({"confidence", "flag"}),
+    "scoped": frozenset({"confidence", "claim"}),
+    "method": frozenset({"confidence", "claim", "method"}),
+}
+
+
+def _landing_places(plan: ReportPlan) -> Iterator[tuple[str, str, str]]:
+    """Every place the plan lands a caveat: the id, the field path, and the kind of place."""
+    for index, clause in enumerate(plan.decision.confidence.caveats):
+        yield clause.id, f"decision.confidence.caveats[{index}].id", "confidence"
+    for flag in plan.flag:
+        for index, item in enumerate(flag.discloses):
+            if item != "no_rule":
+                yield item, f"flag[0].discloses[{index}]", "flag"
+    for index, slot in enumerate(plan.decision.slots):
+        for number, item in enumerate(slot.caveats):
+            yield item, f"decision.slots[{index}].caveats[{number}]", "claim"
+    for index, section in enumerate(plan.sections):
+        for number, item in enumerate(section.caveats):
+            yield item, f"sections[{index}].caveats[{number}]", "claim"
+    for index, method in enumerate(plan.method):
+        for number, item in enumerate(method.caveats):
+            yield item, f"method[{index}].caveats[{number}]", "method"
+
+
+def _landings(plan: ReportPlan) -> dict[str, list[str]]:
+    found: dict[str, list[str]] = {}
+    for item, path, _place in _landing_places(plan):
+        found.setdefault(item, []).append(path)
+    return found
+
+
+def _coverage_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
+    """Every caveat lands exactly once where its scope allows, or nowhere when code proved it immaterial."""
+    caveats = {caveat.id: caveat for caveat in report_caveats(report_input)}
+    materiality = caveat_materiality(report_input)
+    seen: dict[str, list[tuple[str, str]]] = {}
+    for item, path, place in _landing_places(plan):
+        if item not in caveats:
+            yield path, f"names {item!r}, which is no caveat of this input; the caveats are {list(caveats)}"
+            continue
+        seen.setdefault(item, []).append((path, place))
+    for item, caveat in caveats.items():
+        where = seen.get(item, [])
+        if materiality[item].immaterial:
+            for path, _place in where:
+                yield path, f"names {item!r}, which code proved immaterial: {_checked(materiality[item])}"
+            continue
+        if not where:
+            yield _home(caveat), f"drop the caveat {item!r}: {_where_it_lands(caveat, plan)}"
+            continue
+        for path, _place in where[1:]:
+            yield path, f"states {item!r} again (also at {where[0][0]}): a caveat is stated exactly once"
+        path, place = where[0]
+        if place != "flag" and place not in _PLACES[caveat.scope]:
+            yield path, f"holds {item!r}, and {_where_it_lands(caveat, plan)}"
+
+
+def _checked(materiality: Materiality) -> str:
+    return f"code renders its checked line ({materiality.checked!r}), so the plan says nothing more of it"
+
+
+def _home(caveat: Caveat) -> str:
+    """The field a dropped caveat belongs at, named in its refusal."""
+    if caveat.scope == "report":
+        return "decision.confidence.caveats"
+    return "method" if caveat.scope == "method" else "decision.slots"
+
+
+def _where_it_lands(caveat: Caveat, plan: ReportPlan) -> str:
+    if caveat.scope == "report":
+        if plan.decision.confidence.form == "low":
+            return "it is report-wide: list it in `decision.confidence.caveats` with its clause, or disclose it in the flag"
+        return "it is report-wide: list it in `decision.confidence.caveats` with what would make it material"
+    if caveat.scope == "scoped":
+        return (
+            "it touches some comparisons, not all: name it in the `caveats` of the decision slot or section whose claim "
+            "it qualifies (usually Watch), or list it in `decision.confidence.caveats`; Method takes only method-level "
+            f"caveats ({sorted(_METHOD_KINDS)})"
+        )
+    return (
+        "it is method-level: name it in a Method item's `caveats`, in the `caveats` of the slot or section whose claim "
+        "it qualifies, or in `decision.confidence.caveats`"
+    )
 
 
 # --- charts --------------------------------------------------------------------------------------------------------
@@ -634,7 +741,7 @@ def _charts(plan: ReportPlan) -> Iterator[tuple[str, ChartSpec]]:
 def _chart_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
     for path, chart in _charts(plan):
         yield from _query_faults(path, chart, plan, report_input)
-    control = _control(report_input)
+    control = control_arm(report_input)
     arms = {arm.id for arm in report_input.arms}
     rows = [row.option for row in plan.options.rows if row.option in arms]
     for index, chart in enumerate(plan.summary):

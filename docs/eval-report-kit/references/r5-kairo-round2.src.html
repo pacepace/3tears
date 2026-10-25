@@ -5,6 +5,9 @@
 <style>/*KIT_CSS*/
 .flag{display:flex;gap:.6rem;align-items:flex-start;font-size:var(--t-sm);color:var(--ink-2);background:var(--warn-wash);border-radius:var(--r);padding:.6rem .8rem;max-width:var(--col)}
 .flag b{color:var(--warn)}
+.flag ul{margin:.3rem 0 0;padding-left:1.1rem}
+.flag li{margin:.15rem 0}
+.flag li.checked{color:var(--muted);list-style:"✓  "}
 .keytbl td.spec{font-family:var(--f-mono);font-size:var(--t-xs);color:var(--ink-2);white-space:normal}
 .mini h3{font-size:var(--t-base);margin-bottom:.15rem}
 </style>
@@ -14,7 +17,7 @@
 <div class="bluf">
   <h1 id="h1"></h1>
   <p class="lede" id="lede"></p>
-  <div class="flag"><b aria-hidden="true">!</b><span id="flag"></span></div>
+  <div class="flag"><b aria-hidden="true">!</b><div id="flag"></div></div>
   <div class="decision">
     <div class="rec"><span class="k">Recommendation</span><span class="v" id="d-rec"></span></div>
     <div><span class="k">Why not the candidates</span><span class="v" id="d-why"></span></div>
@@ -94,12 +97,22 @@ const usd=v=>"$"+v.toFixed(2);
   const sep=cands.filter(a=>R[a.id].within_interval[1]<0);const worst=cands.slice().sort((a,b)=>R[a.id].change-R[b.id].change)[0];
   document.getElementById("h1").textContent=`Keep ${ctl.name}. Both candidates cost ${lo===hi?lo:lo+"–"+hi}% more per reply and stay in character less often.`;
   document.getElementById("lede").innerHTML=`${worst.name} is clearly worse on the asked pass rate: down ${(-R[worst.id].change).toFixed(1)} points (95% interval ${R[worst.id].within_interval.map(v=>v.toFixed(1)).join(" to ")}), inside the 15-point margin but not a tie. ${cands.filter(a=>a!==worst).map(a=>`${a.name}'s drop of ${(-R[a.id].change).toFixed(1)} points could be noise`).join("; ")}. Neither candidate improves anything this campaign measured.`;
-  const late=D.caveats.late_criteria.map(x=>x.criterion==="floor"?"floor":x.criterion);const tiersU=Object.values(D.caveats.judge_tiers).every(t=>t==="undetermined");
-  document.getElementById("flag").innerHTML=`<b>The criteria came after the results, and the judge is uncalibrated.</b> The ${late.join(", ").replace(/, ([^,]*)$/," and $1")} were all set on ${D.caveats.late_criteria[0].set_at}, after the readings were visible${tiersU?", and the judge has no human calibration yet (0 of 20 ratings)":""}. The cost finding is measured spend, not judged, so it supports keeping ${ctl.name} on its own.`;
+  // The decision's confidence: one clause per open caveat (the plan's words), then code's checked line for each late
+  // criterion the call holds across: a reading flips at its worst drop (-lo), and every flip point lies under the margin
+  // the campaign set, and keeping the control holds at every margin either way.
+  const tiersU=Object.values(D.caveats.judge_tiers).every(t=>t==="undetermined");
+  const lateOf=k=>D.caveats.late_criteria.some(x=>x.criterion===k);
+  const clauses=[
+    tiersU&&`The judge is uncalibrated. Material only if it misreads in-character replies; cost, the deciding finding, is measured and doesn't depend on it.`,
+    lateOf("aspect")&&`The aspect was chosen after the results. Material only if a different aspect would have favored a candidate.`,
+    lateOf("control")&&`The control was chosen after the results. Material only if a different control would have favored a candidate.`].filter(Boolean);
+  const checked=[lateOf("margin")&&"The late margin was checked: the call holds at every margin.",
+    lateOf("floor")&&"The late floor was checked: the call holds at every margin the floor could take."].filter(Boolean);
+  document.getElementById("flag").innerHTML=`<b>Keep ${ctl.name}. Confidence: high, if the caveats below aren't material.</b><ul>${clauses.map(c=>`<li>${c}</li>`).join("")}${checked.map(c=>`<li class="checked">${c}</li>`).join("")}</ul>`;
   document.getElementById("d-rec").innerHTML=`<strong>Keep ${ctl.name}</strong> (${ctl.served_model}). It has the highest pass rate (${pr(ctl.id).toFixed(1)}%), the highest in-character rate (${(jm(prim,ctl.id)*100).toFixed(1)}%) and the lowest cost (${usd(cc)} per 1,000 replies).`;
   document.getElementById("d-why").innerHTML=cands.map(a=>{const c1=C(a.id,"production_replicating_cost"),c2=C(a.id,prim);return `<strong>${a.name}:</strong> ${Math.round((cost(a.id).mean*1000/cc-1)*100)}% more per reply${c2?`, in-character ${pts(c2.delta*100)} points`:""}${R[a.id].within_interval[1]<0?`, pass rate ${pts(R[a.id].change)}`:""}.`;}).join("<br>");
   const conf=cands.filter(a=>Math.abs(a.reasoning_ratio-ctl.reasoning_ratio)>=0.2);
-  document.getElementById("d-watch").innerHTML=`${conf.map(a=>`${a.name} spent ${Math.round(a.reasoning_ratio*100)}% of its output reasoning against ${ctl.name}'s ${Math.round(ctl.reasoning_ratio*100)}%, so part of its result may be the effort budget, not the model.`).join(" ")} Latency was not compared: every run shared the machine.`;
+  document.getElementById("d-watch").innerHTML=`${conf.map(a=>`${a.name} spent ${Math.round(a.reasoning_ratio*100)}% of its output reasoning against ${ctl.name}'s ${Math.round(ctl.reasoning_ratio*100)}%, and other swept levers varied with the model, so part of its result may be the effort budget or another lever, not the model.`).join(" ")} ${D.caveats.short_runs.length===2?"Two":D.caveats.short_runs.length} of ${D.arms.find(a=>a.id===D.caveats.short_runs[0].arm)?.name??"one candidate"}'s runs each lost one trial to the harness, so its rates rest on slightly fewer trials.`;
   document.getElementById("d-next").innerHTML=`Fix off-lane handling first: it is ${ctl.name}'s weakest stratum and where both candidates lose most. Then calibrate the judge with 20 human ratings, and find out why ${worst.name} cost more than the earlier campaign found.`;})();
 
 // ---- options table
@@ -179,6 +192,7 @@ explore();
     ["Judge",`${J[prim].judge_model||"Judge"}; evidence tier ${[...new Set(jt.map(x=>x[1]))].join(", ")} for all ${jt.length} dimensions: no human calibration and no test-retest yet.`],
     ["Cost","Production roles only, per reply, as each run's provider routing set it."],
     ["Latency",D.caveats.latency||"Compared."],
+    ["Not compared",`Token counts and model calls were recorded but not reported. The simulator's request settings were not recorded on every run, so whether they varied between arms is unknown.`],
     ["Strata","Per-stratum rates are descriptive. Their intervals are not corrected, and small strata move a lot on one case."],
     ["Source",D.meta.provenance]].map(([t,v])=>`<dt>${t}</dt><dd>${v}</dd>`).join("");})();
 </script>

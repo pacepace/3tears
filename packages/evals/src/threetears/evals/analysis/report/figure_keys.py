@@ -699,10 +699,26 @@ def _loss_share(report_input: ReportInput, values: tuple[str, ...], path: str) -
     return Figure(path=path, kind="number", value=share, scale="share", whole=True)
 
 
+def flip_margin(reading: Reading) -> float | None:
+    """The margin at which a reading flips (GENERATOR §3, UPSTREAM U6): its interval's worst drop, ``-lo``, never below
+    zero. The reading is within any margin above it and outside any at or below it.
+
+    :param reading: An arm's reading on an aspect.
+    :ptype reading: Reading
+    :return: The flip margin, in points; None where the reading states no interval to read it on.
+    :rtype: float | None
+    """
+    if reading.within_interval is None:
+        return None
+    return max(0.0, -float(reading.within_interval[0]))
+
+
 def _flip_margin(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     reading = _reading(_asked_or_refuse(report_input, path), values[0])
-    low = _end(path, reading.within_interval, "low", "the interval a flip is read on")
-    return Figure(path=path, kind="number", value=max(0.0, -float(low)), scale="points")
+    flip = flip_margin(reading)
+    if flip is None:
+        raise _refuse(path, "names the interval a flip is read on, which the input does not state")
+    return Figure(path=path, kind="number", value=flip, scale="points")
 
 
 # --- the families --------------------------------------------------------------------------------------------------
@@ -1406,6 +1422,7 @@ __all__ = [
     "Figure",
     "FigureKey",
     "figure_key_grammar",
+    "flip_margin",
     "format_figure",
     "keys_in",
     "literal_numbers",

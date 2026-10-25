@@ -19,10 +19,12 @@ from threetears.evals.analysis.report.charts import KIT_CHARTS
 from threetears.evals.analysis.report.charts import ChartReference as KitReference
 from threetears.evals.kernel import authored, report_plan
 from threetears.evals.kernel.report_plan import (
+    CaveatClause,
     ChartQuery,
     ChartReference,
     ChartSpec,
     Decision,
+    DecisionConfidence,
     DecisionSlot,
     DurableClaim,
     Explore,
@@ -59,6 +61,8 @@ DOCUMENTED: dict[tuple[str, ...], type[BaseModel]] = {
     ("arms", "[]"): PlanArm,
     ("flag", "[]"): Flag,
     ("decision",): Decision,
+    ("decision", "confidence"): DecisionConfidence,
+    ("decision", "confidence", "caveats", "[]"): CaveatClause,
     ("decision", "slots", "[]"): DecisionSlot,
     ("options",): Options,
     ("options", "rows", "[]"): OptionRow,
@@ -187,7 +191,15 @@ class TestThePlannersContract:
     def test_the_prose_is_typed_as_prose(self):
         prose = {
             (model.__name__, name)
-            for model in (PlannedReport, Flag, DecisionSlot, report_plan.PlannedSection, MethodItem, WarningAnswer)
+            for model in (
+                PlannedReport,
+                Flag,
+                DecisionSlot,
+                CaveatClause,
+                report_plan.PlannedSection,
+                MethodItem,
+                WarningAnswer,
+            )
             for name, field in model.model_fields.items()
             if field_is_prose(field)
         }
@@ -196,6 +208,7 @@ class TestThePlannersContract:
             ("PlannedReport", "lede"),
             ("Flag", "text"),
             ("DecisionSlot", "text"),
+            ("CaveatClause", "material_if"),
             ("PlannedSection", "headline"),
             ("MethodItem", "text"),
             ("WarningAnswer", "text"),
@@ -209,12 +222,24 @@ class TestTheStoredPlan:
         assert plan.schema_id == report_plan.REPORT_PLAN_SCHEMA
 
     def test_the_kairo_plan_decides_and_says_how_sure_it_is(self):
+        """Kairo round 2 reads "high, if the caveats below aren't material": the judge, the late aspect and the late
+        control are open, each with its clause, and no flag is left to carry them."""
         plan = ReportPlan.model_validate(_r5())
-        assert (plan.mode, plan.headline_kind, plan.decision.confidence) == ("decide", "decision", "high")
-        assert [disclosure for flag in plan.flag for disclosure in flag.discloses] == [
-            "late_criteria",
-            "judge_uncalibrated",
-        ]
+        confidence = plan.decision.confidence
+        assert (plan.mode, plan.headline_kind, confidence.form) == ("decide", "decision", "high_if_immaterial")
+        assert [clause.id for clause in confidence.caveats] == ["judge_uncalibrated", "late:aspect", "late:control"]
+        assert all(clause.material_if for clause in confidence.caveats)
+        assert plan.flag == []
+
+
+#: A flag as a low-confidence tradeoff plan writes it: no rule set, and one report-wide caveat.
+_FLAG: dict[str, Any] = {
+    "title": "No rule was set in advance, and the judge is uncalibrated.",
+    "text": "The product owner makes the call.",
+    "discloses": ["no_rule", "judge_uncalibrated"],
+    "weakens": [],
+    "survives": [],
+}
 
 
 def _kairo(**changes: Any) -> dict[str, Any]:
@@ -253,26 +278,65 @@ class TestFieldConstraints:
         explore = _r5()["explore"][0]
         _refused(_kairo(explore=[{**explore, "controls": (explore["controls"] * 2)[:count]}]))
 
-    @pytest.mark.parametrize("field", ["flag", "explore"])
-    def test_an_optional_part_is_at_most_one_and_never_null(self, field: str):
-        _refused(_kairo(**{field: _r5()[field] * 2}))
+    @pytest.mark.parametrize(("field", "part"), [("flag", _FLAG), ("explore", None)])
+    def test_an_optional_part_is_at_most_one_and_never_null(self, field: str, part: dict[str, Any] | None):
+        one = [part] if part is not None else _r5()[field]
+        ReportPlan.model_validate(_kairo(**{field: one}))
+        _refused(_kairo(**{field: one * 2}))
         _refused(_kairo(**{field: None}))
         ReportPlan.model_validate(_kairo(**{field: []}))
 
     def test_a_flag_carries_no_confidence(self):
-        flag = _r5()["flag"][0]
-        _refused(_kairo(flag=[{**flag, "confidence": "high"}]))
+        _refused(_kairo(flag=[{**_FLAG, "confidence": "high"}]))
 
-    @pytest.mark.parametrize("disclosure", ["late", "confound:", "judge_uncalibrated:x", "no_rule:x", ""])
+    @pytest.mark.parametrize(
+        "disclosure",
+        ["late", "late_criteria", "confound:", "judge_uncalibrated:x", "no_rule:x", "latency", "unreported:tokens", ""],
+    )
     def test_a_disclosure_off_the_vocabulary_is_refused(self, disclosure: str):
-        flag = _r5()["flag"][0]
-        _refused(_kairo(flag=[{**flag, "discloses": [disclosure]}]))
+        """The flag discloses report-wide caveats by id, or no_rule; latency and unreported observations are
+        method-level and never the flag's, and the old bare `late_criteria` gave way to one id per criterion."""
+        _refused(_kairo(flag=[{**_FLAG, "discloses": [disclosure]}]))
 
     def test_no_rule_and_the_named_disclosures_are_accepted(self):
-        flag = _r5()["flag"][0]
-        ReportPlan.model_validate(
-            _kairo(flag=[{**flag, "discloses": ["confound:observed:reasoning_ratio", "short_run:01a170ab", "no_rule"]}])
-        )
+        named = [
+            "confound:observed:reasoning_ratio",
+            "short_run:01a170ab",
+            "no_rule",
+            "late:margin",
+            "late:floor:character adherence (v2)/rate_drop/*",
+            "apparatus:simulator_sent_settings",
+        ]
+        ReportPlan.model_validate(_kairo(flag=[{**_FLAG, "discloses": named}]))
+
+    @pytest.mark.parametrize("caveat", ["late", "no_rule", "judge", "unreported:", "confound"])
+    def test_a_caveat_id_off_the_vocabulary_is_refused_wherever_it_lands(self, caveat: str):
+        plan = _r5()
+        plan["decision"]["slots"][2]["caveats"] = [caveat]
+        _refused(plan)
+        plan = _r5()
+        plan["method"][0]["caveats"] = [caveat]
+        _refused(plan)
+        plan = _r5()
+        plan["sections"][0]["caveats"] = [caveat]
+        _refused(plan)
+        plan = _r5()
+        plan["decision"]["confidence"]["caveats"][0]["id"] = caveat
+        _refused(plan)
+
+    def test_every_caveat_kind_is_accepted_on_a_landing_list(self):
+        plan = _r5()
+        plan["method"][0]["caveats"] = [
+            "late:aspect",
+            "late:floor:x",
+            "judge_uncalibrated",
+            "confound:model",
+            "apparatus:simulator_sent_settings",
+            "short_run:01a170ab",
+            "latency",
+            "unreported:input_tokens",
+        ]
+        ReportPlan.model_validate(plan)
 
     def test_an_empty_id_is_refused(self):
         options = _r5()["options"]
@@ -285,9 +349,15 @@ class TestFieldConstraints:
         summary = _r5()["summary"]
         _refused(_kairo(summary=[{**summary[0], "domain": [0.0]}]))
 
-    def test_a_confidence_off_the_memos_tiers_is_refused(self):
+    @pytest.mark.parametrize("form", ["moderate", "very_high", "medium", "high if immaterial"])
+    def test_a_confidence_off_the_three_forms_is_refused(self, form: str):
         decision = _r5()["decision"]
-        _refused(_kairo(decision={**decision, "confidence": "moderate"}))
+        _refused(_kairo(decision={**decision, "confidence": {**decision["confidence"], "form": form}}))
+
+    def test_a_bare_confidence_tier_is_refused(self):
+        """The memo's stated tier gave way to the three-form object: a bare string is no longer a confidence."""
+        decision = _r5()["decision"]
+        _refused(_kairo(decision={**decision, "confidence": "high"}))
 
 
 class TestTheVocabularies:
@@ -299,9 +369,22 @@ class TestTheVocabularies:
         kinds = get_args(ChartReference.model_fields["kind"].annotation)
         assert set(kinds) == set(get_args(KitReference.model_fields["kind"].annotation))
 
-    def test_the_confidence_tiers_are_the_memos(self):
-        assert get_args(Decision.model_fields["confidence"].annotation) == get_args(authored.Confidence)
+    def test_the_decisions_confidence_takes_three_forms(self):
+        forms = get_args(DecisionConfidence.model_fields["form"].annotation)
+        assert forms == ("high", "high_if_immaterial", "low")
+        assert Decision.model_fields["confidence"].annotation is DecisionConfidence
+
+    def test_a_durable_claims_confidence_keeps_the_memos_tiers(self):
         assert get_args(DurableClaim.model_fields["confidence"].annotation) == get_args(authored.Confidence)
+
+    @pytest.mark.parametrize("legacy", ["outcome_bar", "interval_rows", "cost_quality"])
+    def test_a_legacy_chart_kind_is_not_in_the_plans_chart_enum(self, legacy: str):
+        """The old block kinds render as a table at most (interval_rows carries no interval level), so the planner can
+        never choose one."""
+        kinds = get_args(report_plan.PlannedChart.model_fields["kind"].annotation)
+        assert legacy not in kinds
+        chart = _r5()["summary"][0]
+        _refused(_kairo(summary=[{**chart, "kind": legacy}]))
 
 
 class TestTheDocumentationCopy:

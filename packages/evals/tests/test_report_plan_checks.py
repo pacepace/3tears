@@ -5,9 +5,14 @@ Contracts held here (``threetears.evals.analysis.report_plan_checks``, GENERATOR
 - the kit's Kairo round 2 plan passes against r5's input: the base case every refusal below breaks one thing of;
 - :func:`classify` looks r1–r5 up as A, B, C, D, D, and an ordered-versions input as E; the criteria signal wins a
   control under hard gates;
-- each check refuses at the field path it names: code's facts, mode, slots, roles, ids, the recommendation (the
-  memo's refusals ported), the warning answers (``floor_unclear`` among them), the flag, the charts, the figure keys
-  and D3, over every prose field the plan holds.
+- each check refuses at the field path it names: code's facts, mode (one code allows), slots, roles, ids, the
+  recommendation (the memo's refusals ported, and the one option that dominates), the warning answers
+  (``floor_unclear`` among them), the confidence's form and clauses, the flag, caveat coverage, the charts, the figure
+  keys and D3, over every prose field the plan holds.
+
+Modes other than r5's own need inputs that allow them (:mod:`threetears.evals.analysis.report_decision`): a tradeoff
+variant where 1017 is the cheapest arm and nothing shows it no worse, a no-call variant where a standing guardrail
+removes every arm, and a flash variant where qwen3.8-flash is the cheapest arm and so dominates.
 """
 
 from __future__ import annotations
@@ -104,6 +109,50 @@ def _recommending_flash(plan: dict[str, Any]) -> dict[str, Any]:
     ]
     plan["summary"][0]["query"]["arms"] = ["qwen3.8-flash", "1017"]
     plan["summary"][1]["query"]["arms"] = ["qwen3.8-flash", "September", "1017"]
+    return plan
+
+
+def _cost(data: dict[str, Any], arm: str, usd: float) -> dict[str, Any]:
+    """Set one arm's cost per reply on the cost axis (and so its cost per 1,000 replies)."""
+    data["measures"]["production_replicating_cost"]["per_arm"][arm]["mean"] = usd
+    return data
+
+
+def _flash_data() -> dict[str, Any]:
+    """r5 with qwen3.8-flash the cheapest arm: shown no worse at the declared margin, it dominates."""
+    return _cost(_input_dict(), "qwen3.8-flash", 0.0015)
+
+
+#: What a plan recommending qwen3.8-flash on the flash input lists: the late margin and floor now decide the call
+#: (below its flip margin qwen3.8-flash is no longer shown no worse), so neither is immaterial.
+_FLASH_CLAUSES = ("late:margin", f"late:floor:{FLOOR}")
+
+
+def _tradeoff_data() -> dict[str, Any]:
+    """r5 with 1017 the cheapest arm and its floor unread, so nothing shows it no worse: September and 1017 survive and
+    neither dominates."""
+    data = _cost(_input_dict(), "1017", 0.0015)
+    data["floors"] = [floor for floor in data["floors"] if floor["arm"] != "1017"]
+    return data
+
+
+def _no_call_data() -> dict[str, Any]:
+    """r5 under a standing guardrail every arm fails: no option survives."""
+    data = _input_dict()
+    data["criteria"] = [
+        {"id": "tone", "kind": "guardrail", "measure": "persona.holds_character", "direction": "higher_is_better",
+         "threshold": 0.95, "standing": True},
+    ]  # fmt: skip
+    return data
+
+
+def _clause(caveat: str) -> dict[str, str]:
+    return {"id": caveat, "material_if": "Material only if it changed which option is cheaper."}
+
+
+def _listing(plan: dict[str, Any], *caveats: str) -> dict[str, Any]:
+    """The plan with each caveat added to its confidence's clauses."""
+    plan["decision"]["confidence"]["caveats"] += [_clause(caveat) for caveat in caveats]
     return plan
 
 
@@ -204,12 +253,22 @@ def _no_call(plan: dict[str, Any]) -> dict[str, Any]:
     return plan
 
 
+#: The flag a tradeoff plan with no declared ranking rule carries.
+_NO_RULE_FLAG: dict[str, Any] = {
+    "title": "No rule was set in advance to rank cost against character.",
+    "text": "The product owner makes the call.",
+    "discloses": ["no_rule"],
+    "weakens": [],
+    "survives": [],
+}
+
+
 def _tradeoff(plan: dict[str, Any]) -> dict[str, Any]:
     plan.update(mode="tradeoff", headline_kind="trade")
     for slot, key in zip(plan["decision"]["slots"], ("the_trade", "where_it_flips", "our_lean", "what_settles_it")):
         slot["key"] = key
     plan["options"]["rows"][0]["role"] = "control"
-    plan["flag"][0]["discloses"] = ["no_rule", *plan["flag"][0]["discloses"]]
+    plan["flag"] = [dict(_NO_RULE_FLAG)]
     return plan
 
 
@@ -225,23 +284,23 @@ class TestMode:
 
     def test_tradeoff_slots_in_decide_mode_are_refused(self):
         plan = _tradeoff(_plan())
-        plan.update(mode="decide", headline_kind="decision")
+        plan.update(mode="decide", headline_kind="decision", flag=[])
         plan["options"]["rows"][0]["role"] = "recommended"
         assert "decision.slots" in _paths(plan)
 
     def test_a_tradeoff_plan_with_its_slots_and_no_recommendation_passes(self):
-        _passes(_tradeoff(_plan()))
+        _passes(_tradeoff(_plan()), _tradeoff_data())
 
     def test_a_tradeoff_plan_may_lean_toward_one_option(self):
-        _passes(_set(_tradeoff(_plan()), "options.rows[1].role", "lean"))
+        _passes(_set(_tradeoff(_plan()), "options.rows[1].role", "lean"), _tradeoff_data())
 
     def test_a_no_call_takes_decide_modes_slots(self):
-        _passes(_no_call(_plan()))
+        _passes(_no_call(_plan()), _no_call_data())
 
     def test_a_no_call_with_tradeoff_slots_is_refused(self):
         plan = _tradeoff(_plan())
-        plan.update(mode="no_call", headline_kind="no_call")
-        assert "decision.slots" in _paths(plan)
+        plan.update(mode="no_call", headline_kind="no_call", flag=[])
+        assert "decision.slots" in _paths(plan, _no_call_data())
 
 
 class TestOptionRoles:
@@ -260,16 +319,16 @@ class TestOptionRoles:
 
     def test_a_tradeoff_plan_recommends_nothing(self):
         plan = _set(_tradeoff(_plan()), "options.rows[1].role", "recommended")
-        assert "recommends no option" in _why(plan, "options.rows[1].role")
+        assert "recommends no option" in _why(plan, "options.rows[1].role", _tradeoff_data())
 
     def test_a_tradeoff_plan_leans_toward_one_option_at_most(self):
         plan = _tradeoff(_plan())
         plan["options"]["rows"][1]["role"] = plan["options"]["rows"][2]["role"] = "lean"
-        assert "one option at most" in _why(plan, "options.rows")
+        assert "one option at most" in _why(plan, "options.rows", _tradeoff_data())
 
     def test_a_no_call_leans_toward_nothing(self):
         plan = _set(_no_call(_plan()), "options.rows[1].role", "lean")
-        assert "options.rows[1].role" in _paths(plan)
+        assert "options.rows[1].role" in _paths(plan, _no_call_data())
 
 
 class TestIds:
@@ -299,17 +358,17 @@ class TestTheRecommendation:
     def test_a_choice_nothing_separated_is_picked_only_at_low_confidence(self):
         data = _input_dict()
         data["arms"][0]["role"] = "challenger"
-        assert "'low'" in _why(_plan(), "decision.confidence", data)
-        assert "decision.confidence" not in _paths(_set(_plan(), "decision.confidence", "low"), data)
+        assert "'low'" in _why(_plan(), "decision.confidence.form", data)
+        assert "decision.confidence.form" not in _paths(_set(_plan(), "decision.confidence.form", "low"), data)
 
     def test_a_choice_shown_ahead_may_be_picked_at_any_confidence(self):
         data = _input_dict()
         data["arms"][0]["role"] = "challenger"
         data["aspects"][0]["pairs"] = [{"arms": ["September", "1017"], "change": 3.0, "ahead": "September"}]
-        assert "decision.confidence" not in _paths(_plan(), data)
+        assert "decision.confidence.form" not in _paths(_plan(), data)
 
     def test_switching_to_a_candidate_every_floor_holds_for_passes(self):
-        _passes(_recommending_flash(_plan()))
+        _passes(_listing(_recommending_flash(_plan()), *_FLASH_CLAUSES), _flash_data())
 
     def test_an_exploratory_change_switches_to_nothing(self):
         data = _input_dict()
@@ -335,14 +394,15 @@ class TestTheRecommendation:
         assert "declares no floor" in _why(_recommending_flash(_plan()), "options.rows[0].option", data)
 
     def test_a_confirmatory_better_reading_licenses_the_switch(self):
-        data = _floor_status(_input_dict(), "qwen3.8-flash", "broken")
+        """Shown better, qwen3.8-flash dominates at any margin or floor, so the late margin and floor stay checked."""
+        data = _floor_status(_flash_data(), "qwen3.8-flash", "broken")
         data["aspects"][0]["readings"][0]["reading"] = "better"
         plan = _recommending_flash(_plan())
         plan["answers"] = [_answer("floor_broken", ASPECT, FLOOR)]
         _passes(plan, data)
 
     def test_an_improved_contrast_on_an_asked_aspect_licenses_the_switch(self):
-        data = _floor_status(_input_dict(), "qwen3.8-flash", "broken")
+        data = _floor_status(_flash_data(), "qwen3.8-flash", "broken")
         contrast = data["contrasts"][3]
         contrast.update(verdict="improved", aspect=ASPECT)
         plan = _recommending_flash(_plan())
@@ -388,7 +448,7 @@ class TestAnswers:
         assert "floor_broken" in _why(_recommending_flash(_plan()), "answers", data)
 
     def test_an_unclear_floor_needs_an_answer_of_its_own_kind(self):
-        data = _floor_status(_input_dict(), "qwen3.8-flash", "unclear")
+        data = _floor_status(_flash_data(), "qwen3.8-flash", "unclear")
         data["aspects"][0]["readings"][0]["reading"] = "better"
         plan = _recommending_flash(_plan())
         assert "what sample would settle it" in _why(plan, "answers", data)
@@ -425,20 +485,31 @@ class TestAnswers:
 # --- the flag ------------------------------------------------------------------------------------------------------
 
 
-def _with_flag(discloses: list[str]) -> dict[str, Any]:
-    return _set(_plan(), "flag[0].discloses", discloses)
+#: Kairo's open report-wide caveats, in the order code lists them.
+KAIRO_OPEN = ["late:aspect", "late:control", "judge_uncalibrated"]
+
+
+def _low(plan: dict[str, Any], flagged: list[str]) -> dict[str, Any]:
+    """The plan at a low confidence, with ``flagged`` moved from its clauses to a flag."""
+    confidence = plan["decision"]["confidence"]
+    confidence["form"] = "low"
+    confidence["caveats"] = [clause for clause in confidence["caveats"] if clause["id"] not in flagged]
+    plan["flag"] = [{**_NO_RULE_FLAG, "title": "The judge is uncalibrated.", "discloses": flagged}]
+    return plan
 
 
 class TestImpliedDisclosures:
-    def test_kairo_implies_late_criteria_and_an_uncalibrated_judge_only(self):
-        assert implied_disclosures(_input(), "decide") == ["late_criteria", "judge_uncalibrated"]
+    def test_kairo_implies_its_open_late_criteria_and_the_judge(self):
+        """The late margin and floor were proved immaterial, so they are not disclosures; the aspect, the control and
+        the judge are."""
+        assert implied_disclosures(_input(), "decide") == KAIRO_OPEN
 
     def test_a_calibrated_judge_is_not_disclosed(self):
         data = _input_dict()
         data["caveats"]["judge_tiers"] = {}
         for judged in data["judged"].values():
             judged.update(tier="calibrated", calibration="calibrated")
-        assert implied_disclosures(_input(data=data), "decide") == ["late_criteria"]
+        assert implied_disclosures(_input(data=data), "decide") == ["late:aspect", "late:control"]
 
     def test_one_calibrated_dimension_leaves_the_judge_undisclosed(self):
         data = _input_dict()
@@ -468,6 +539,12 @@ class TestImpliedDisclosures:
         runs = [f"short_run:{run['run']}" for run in data["caveats"]["short_runs"]]
         assert set(runs) <= set(implied_disclosures(_input(data=data), "decide"))
 
+    def test_an_apparatus_confound_on_every_comparison_is_report_wide(self):
+        data = _input_dict()
+        for contrast in data["contrasts"]:
+            contrast["confounds"] = ["simulator_sent_settings"]
+        assert "apparatus:simulator_sent_settings" in implied_disclosures(_input(data=data), "decide")
+
 
 class TestNoRule:
     def test_a_tradeoff_with_no_declared_rule_implies_no_rule(self):
@@ -483,45 +560,47 @@ class TestNoRule:
         assert implied_disclosures(_input(data=data), "tradeoff") == []
 
     def test_a_tradeoff_flag_disclosing_no_rule_passes(self):
-        _passes(_tradeoff(_plan()))
+        _passes(_tradeoff(_plan()), _tradeoff_data())
 
     def test_a_tradeoff_plan_with_no_flag_is_refused(self):
         plan = _set(_tradeoff(_plan()), "flag", [])
-        assert "no_rule" in _why(plan, "flag")
+        assert "no_rule" in _why(plan, "flag", _tradeoff_data())
 
     def test_a_tradeoff_flag_leaving_out_no_rule_is_refused(self):
-        plan = _set(_tradeoff(_plan()), "flag[0].discloses", ["late_criteria", "judge_uncalibrated"])
-        assert "no_rule" in _why(plan, "flag[0].discloses")
+        plan = _low(_tradeoff(_plan()), ["judge_uncalibrated"])
+        assert "no_rule" in _why(plan, "flag[0].discloses", _tradeoff_data())
 
     def test_a_decide_plan_disclosing_no_rule_is_refused(self):
-        plan = _with_flag(["no_rule", "late_criteria", "judge_uncalibrated"])
+        plan = _low(_plan(), ["no_rule", "judge_uncalibrated"])
         assert "a decide plan makes the call" in _why(plan, "flag[0].discloses")
 
     def test_a_tradeoff_with_a_declared_rule_discloses_no_no_rule(self):
-        data = _input_dict()
+        data = _tradeoff_data()
         data["contrast_families"][0]["merit_axes"] = ["quality", "cost"]
-        assert "merit priority" in _why(_tradeoff(_plan()), "flag[0].discloses", data)
+        plan = _low(_tradeoff(_plan()), ["no_rule", "judge_uncalibrated"])
+        assert "merit priority" in _why(plan, "flag[0].discloses", data)
 
 
 class TestTheFlag:
-    def test_a_missing_flag_is_refused_naming_what_it_must_disclose(self):
-        plan = _set(_plan(), "flag", [])
-        assert "late_criteria" in _why(plan, "flag")
+    def test_kairos_open_caveats_sit_in_its_confidence_so_it_has_no_flag(self):
+        assert _plan()["flag"] == []
+        _passes(_plan())
 
-    def test_a_flag_leaving_a_disclosure_out_is_refused(self):
-        assert "judge_uncalibrated" in _why(_with_flag(["late_criteria"]), "flag[0].discloses")
+    def test_under_a_low_confidence_a_report_wide_caveat_may_be_flagged_instead(self):
+        _passes(_low(_plan(), ["judge_uncalibrated"]))
 
     def test_a_scoped_confound_in_the_flag_is_refused(self):
-        plan = _with_flag(["late_criteria", "judge_uncalibrated", "confound:observed:reasoning_ratio"])
+        plan = _low(_plan(), ["judge_uncalibrated", "confound:observed:reasoning_ratio"])
         assert "Watch" in _why(plan, "flag[0].discloses")
 
     def test_a_scoped_short_run_in_the_flag_is_refused(self):
         run = _input_dict()["caveats"]["short_runs"][0]["run"]
-        plan = _with_flag(["late_criteria", "judge_uncalibrated", f"short_run:{run}"])
+        plan = _low(_plan(), ["judge_uncalibrated", f"short_run:{run}"])
         assert "flag[0].discloses" in _paths(plan)
 
     def test_a_disclosure_named_twice_is_refused(self):
-        assert "flag[0].discloses" in _paths(_with_flag(["late_criteria", "judge_uncalibrated", "late_criteria"]))
+        plan = _low(_plan(), ["judge_uncalibrated", "judge_uncalibrated"])
+        assert "flag[0].discloses" in _paths(plan)
 
     def test_a_flag_with_nothing_report_wide_to_disclose_is_refused(self):
         data = _input_dict()
@@ -529,7 +608,132 @@ class TestTheFlag:
         data["caveats"]["judge_tiers"] = {}
         for judged in data["judged"].values():
             judged.update(tier="calibrated", calibration="calibrated")
-        assert "drop the flag" in _why(_plan(), "flag[0]", data)
+        plan = _set(_plan(), "decision.confidence", {"form": "low", "caveats": []})
+        plan["flag"] = [{**_NO_RULE_FLAG, "discloses": ["confound:model"]}]
+        assert "drop the flag" in _why(plan, "flag[0]", data)
+
+
+# --- the confidence ------------------------------------------------------------------------------------------------
+
+
+class TestTheConfidence:
+    def test_plain_high_while_caveats_stay_open_is_refused_naming_them(self):
+        plan = _set(_plan(), "decision.confidence", {"form": "high", "caveats": []})
+        why = _why(plan, "decision.confidence.form")
+        assert all(repr(caveat) in why for caveat in KAIRO_OPEN)
+
+    def test_plain_high_with_nothing_open_passes(self):
+        data = _input_dict()
+        data["caveats"]["late_criteria"] = [late for late in data["caveats"]["late_criteria"] if late["name"]]
+        data["caveats"]["late_criteria"].append({"criterion": "margin", "name": None, "set_at": "25 Oct 2026"})
+        data["caveats"]["judge_tiers"] = {}
+        for judged in data["judged"].values():
+            judged.update(tier="calibrated", calibration="calibrated")
+        _passes(_set(_plan(), "decision.confidence", {"form": "high", "caveats": []}), data)
+
+    def test_plain_high_listing_a_caveat_is_refused(self):
+        data = _input_dict()
+        data["caveats"]["late_criteria"] = []
+        data["caveats"]["judge_tiers"] = {}
+        for judged in data["judged"].values():
+            judged.update(tier="calibrated", calibration="calibrated")
+        plan = _set(_plan(), "decision.confidence", {"form": "high", "caveats": [_clause("confound:model")]})
+        plan["decision"]["slots"][2]["caveats"].remove("confound:model")
+        assert "conditional on none" in _why(plan, "decision.confidence.caveats", data)
+
+    def test_an_open_caveat_left_out_of_a_conditional_confidence_is_refused(self):
+        plan = _plan()
+        plan["decision"]["confidence"]["caveats"].pop(1)
+        assert "'late:aspect'" in _why(plan, "decision.confidence.caveats")
+
+    def test_an_open_caveat_moved_to_the_flag_under_a_conditional_confidence_is_refused(self):
+        plan = _low(_plan(), ["judge_uncalibrated"])
+        plan["decision"]["confidence"]["form"] = "high_if_immaterial"
+        assert "'judge_uncalibrated'" in _why(plan, "decision.confidence.caveats")
+
+    @pytest.mark.parametrize("text", ["", "   "])
+    def test_an_open_caveat_without_its_clause_is_refused(self, text: str):
+        plan = _set(_plan(), "decision.confidence.caveats[0].material_if", text)
+        assert "judge_uncalibrated" in _why(plan, "decision.confidence.caveats[0].material_if")
+
+    def test_conditional_confidence_with_nothing_open_is_refused(self):
+        data = _input_dict()
+        data["caveats"]["late_criteria"] = []
+        data["caveats"]["judge_tiers"] = {}
+        for judged in data["judged"].values():
+            judged.update(tier="calibrated", calibration="calibrated")
+        plan = _set(_plan(), "decision.confidence.caveats", [])
+        assert "'high'" in _why(plan, "decision.confidence.form", data)
+
+    def test_low_is_allowed_whatever_the_caveats(self):
+        _passes(_set(_plan(), "decision.confidence.form", "low"))
+
+    def test_a_caveat_code_proved_immaterial_is_refused_in_the_confidence(self):
+        plan = _listing(_plan(), "late:margin")
+        why = _why(plan, "decision.confidence.caveats[3].id")
+        assert "immaterial" in why and "the call holds at every margin" in why
+
+    def test_the_flash_recommendation_must_list_the_late_margin_it_now_rests_on(self):
+        plan = _recommending_flash(_plan())
+        assert "'late:margin'" in _why(plan, "decision.confidence.caveats", _flash_data())
+
+
+# --- coverage ------------------------------------------------------------------------------------------------------
+
+
+class TestCoverage:
+    def test_a_dropped_scoped_caveat_is_refused_naming_it(self):
+        plan = _plan()
+        plan["decision"]["slots"][2]["caveats"].remove("confound:model")
+        assert "'confound:model'" in _why(plan, "decision.slots")
+
+    def test_a_dropped_method_caveat_is_refused_naming_it(self):
+        plan = _plan()
+        plan["method"][5]["caveats"] = []
+        assert "'latency'" in _why(plan, "method")
+
+    def test_a_caveat_stated_twice_is_refused(self):
+        plan = _set(_plan(), "sections[0].caveats", ["confound:model"])
+        assert "exactly once" in _why(plan, "sections[0].caveats[0]")
+
+    def test_a_report_wide_caveat_also_in_the_flag_is_refused(self):
+        plan = _plan()
+        plan["flag"] = [{**_NO_RULE_FLAG, "discloses": ["judge_uncalibrated"]}]
+        assert "exactly once" in _why(plan, "flag[0].discloses[0]")
+
+    @pytest.mark.parametrize("caveat", ["latency", "unreported:input_tokens", "apparatus:simulator_sent_settings"])
+    def test_a_method_level_caveat_may_sit_beside_a_claim_instead(self, caveat: str):
+        plan = _plan()
+        plan["method"] = [{**item, "caveats": [c for c in item["caveats"] if c != caveat]} for item in plan["method"]]
+        plan["decision"]["slots"][2]["caveats"].append(caveat)
+        _passes(plan)
+
+    def test_method_takes_a_scoped_caveat_never(self):
+        plan = _plan()
+        plan["decision"]["slots"][2]["caveats"].remove("confound:model")
+        plan["method"][0]["caveats"] = ["confound:model"]
+        assert "method-level" in _why(plan, "method[0].caveats[0]")
+
+    def test_method_takes_a_report_wide_caveat_never(self):
+        plan = _plan()
+        plan["decision"]["confidence"]["caveats"].pop(1)
+        plan["method"][0]["caveats"] = ["late:aspect"]
+        assert "report-wide" in _why(plan, "method[0].caveats[0]")
+
+    def test_a_report_wide_caveat_beside_one_claim_is_refused(self):
+        plan = _plan()
+        plan["decision"]["confidence"]["caveats"].pop(0)
+        plan["decision"]["slots"][2]["caveats"].append("judge_uncalibrated")
+        assert "report-wide" in _why(plan, "decision.slots[2].caveats[4]")
+
+    def test_an_immaterial_caveat_landed_anywhere_is_refused(self):
+        plan = _plan()
+        plan["method"][0]["caveats"] = [f"late:floor:{FLOOR}"]
+        assert "immaterial" in _why(plan, "method[0].caveats[0]")
+
+    def test_an_unknown_caveat_is_refused(self):
+        plan = _set(_plan(), "sections[1].caveats", ["confound:temperature"])
+        assert "no caveat of this input" in _why(plan, "sections[1].caveats[0]")
 
 
 # --- charts --------------------------------------------------------------------------------------------------------
@@ -616,9 +820,8 @@ class TestFigureKeys:
 KAIRO_PROSE = [
     "headline",
     "lede",
-    "flag[0].title",
-    "flag[0].text",
     *(f"decision.slots[{index}].text" for index in range(4)),
+    *(f"decision.confidence.caveats[{index}].material_if" for index in range(3)),
     "summary[0].title",
     "summary[1].title",
     *(
@@ -630,7 +833,7 @@ KAIRO_PROSE = [
     "explore[0].recomputes",
     "explore[0].controls[0].title",
     "explore[0].controls[1].title",
-    *(f"method[{index}].{field}" for index in range(8) for field in ("term", "text")),
+    *(f"method[{index}].{field}" for index in range(9) for field in ("term", "text")),
     "durable_claims[0].text",
     "durable_claims[1].text",
 ]
@@ -642,6 +845,7 @@ PROSE_FIELDS = {
     ("Flag", "title"),
     ("Flag", "text"),
     ("DecisionSlot", "text"),
+    ("CaveatClause", "material_if"),
     ("WarningAnswer", "text"),
     ("DurableClaim", "text"),
     ("PlannedSection", "eyebrow"),
@@ -683,6 +887,12 @@ class TestD3:
         plan = _plan()
         _set(plan, path, f"{_get(plan, path)} 7")
         assert "['7']" in _why(plan, path)
+
+    @pytest.mark.parametrize("path", ["flag[0].title", "flag[0].text"])
+    def test_a_typed_digit_in_the_flag_is_refused(self, path: str):
+        plan = _tradeoff(_plan())
+        _set(plan, path, f"{_get(plan, path)} 7")
+        assert "['7']" in _why(plan, path, _tradeoff_data())
 
     def test_a_typed_digit_in_an_answer_is_refused(self):
         data = _input_dict()

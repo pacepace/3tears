@@ -7,8 +7,8 @@ holds the two to the same fields and vocabularies.
 
 **Two writers, one document.** Code computes facts and the planner writes choices and prose:
 
-- **The planner writes** :class:`PlannedReport`: mode, headline kind, headline, lede, flag, decision (with its stated
-  confidence), options, summary and section charts (kind, title, a structured :class:`ChartQuery`, reference,
+- **The planner writes** :class:`PlannedReport`: mode, headline kind, headline, lede, flag, decision (with its
+  conditional confidence), options, summary and section charts (kind, title, a structured :class:`ChartQuery`, reference,
   emphasis), explore controls, which full-results tables to print, method, durable claims and answers to the
   warnings code raised. :func:`planner_response_format` is its strict projection, and nothing in it is a field code
   fills.
@@ -119,22 +119,44 @@ _FullResultsTable = Literal["arms_by_measure", "contrasts", "strata", "gate_matr
 #: another arm ahead of it on, an absolute bar it missed.
 _WarningKind = Literal["floor_broken", "floor_unclear", "behind_on", "bar_missed"]
 
-#: What a flag discloses, by kind: criteria set after the results, a judge with no human calibration, a tradeoff the
-#: campaign declared no rule to rank (``no_rule``, GENERATOR §4.2: the flag names who makes the call), one confound
-#: (``confound:<id>``, its id in the report input's ``caveats.confounds``) and one short run (``short_run:<run id>``).
-_DISCLOSURE_KINDS: tuple[str, ...] = ("late_criteria", "judge_uncalibrated", "no_rule", "confound", "short_run")
-#: The disclosure kinds that name one thing after a colon.
-_NAMED_DISCLOSURES = ("confound", "short_run")
-#: A disclosure as the flag writes it: a bare kind, or a named kind with its id.
-_DISCLOSURE_PATTERN = (
-    "^("
-    + "|".join(kind for kind in _DISCLOSURE_KINDS if kind not in _NAMED_DISCLOSURES)
-    + "|"
-    + "|".join(f"{kind}:.+" for kind in _NAMED_DISCLOSURES)
-    + ")$"
+#: Every caveat a report input carries, by a stable id code assigns
+#: (:func:`threetears.evals.analysis.report_decision.report_caveats`): ``late:<criterion>`` or
+#: ``late:<criterion>:<name>`` for each criterion set after the results (``late:margin``,
+#: ``late:floor:<floor key>``), ``judge_uncalibrated``, ``confound:<id>`` for each confound,
+#: ``apparatus:<dimension>`` for each apparatus confound, ``short_run:<run id>`` for each short run, ``latency`` and
+#: ``unreported:<observation>`` for each observation recorded but not reported.
+_CAVEAT_KINDS: tuple[str, ...] = (
+    "late",
+    "judge_uncalibrated",
+    "confound",
+    "apparatus",
+    "short_run",
+    "latency",
+    "unreported",
 )
-#: One disclosure.
-_Disclosure = Annotated[str, StringConstraints(pattern=_DISCLOSURE_PATTERN)]
+#: The caveat kinds that name one thing after a colon.
+_NAMED_CAVEATS = ("late", "confound", "apparatus", "short_run", "unreported")
+#: What a flag may disclose: the report-wide caveat kinds, plus ``no_rule``, a tradeoff the campaign declared no rule
+#: to rank (GENERATOR §4.2: the flag names who makes the call). ``latency`` and ``unreported`` are method-level and
+#: never the flag's.
+_FLAG_KINDS: tuple[str, ...] = ("no_rule", "late", "judge_uncalibrated", "confound", "apparatus", "short_run")
+
+
+def _id_pattern(kinds: Sequence[str]) -> str:
+    """The pattern a caveat id of one of ``kinds`` matches: a bare kind, or a named kind with its id."""
+    bare = [kind for kind in kinds if kind not in _NAMED_CAVEATS]
+    named = [f"{kind}:.+" for kind in kinds if kind in _NAMED_CAVEATS]
+    return "^(" + "|".join([*bare, *named]) + ")$"
+
+
+#: One caveat, by its id.
+_CaveatId = Annotated[str, StringConstraints(pattern=_id_pattern(_CAVEAT_KINDS))]
+#: One disclosure as the flag writes it: a report-wide caveat's id, or ``no_rule``.
+_Disclosure = Annotated[str, StringConstraints(pattern=_id_pattern(_FLAG_KINDS))]
+#: GENERATOR §2.5: how sure the decision is. ``high``: no open caveat remains; ``high_if_immaterial``: the evidence is
+#: strong, and open caveats remain, each with the condition that would make it material; ``low``: the evidence is weak
+#: even if every caveat is immaterial.
+_ConfidenceForm = Literal["high", "high_if_immaterial", "low"]
 
 
 class _Plan(BaseModel):
@@ -147,10 +169,12 @@ class _Plan(BaseModel):
 
 
 class Flag(_Plan):
-    """The one amber line under the lede that discloses every caveat at once (GENERATOR §2.4). Planner-written.
+    """The one amber line under the lede for report-wide disclosures that no confidence clause carries (GENERATOR
+    §2.4). Planner-written.
 
-    It carries no confidence: neither a late criterion nor an uncalibrated judge lowers the recommendation's
-    confidence (owner ruling, 2026-10-25); the flag says what it weakens and what survives, and the reader weighs it.
+    It carries no confidence: the decision's :class:`DecisionConfidence` does. A tradeoff's ``no_rule`` is always the
+    flag's; a report-wide caveat is the flag's only under a ``low`` confidence, since a ``high_if_immaterial`` one lists
+    every open report-wide caveat with its clause.
     """
 
     title: ModelProse = Field(min_length=1, description="The flag in one line.")
@@ -158,8 +182,8 @@ class Flag(_Plan):
     discloses: list[_Disclosure] = Field(
         min_length=1,
         description=(
-            "Each caveat it discloses, once: `late_criteria`, `judge_uncalibrated`, `no_rule`, `confound:<id>` or "
-            "`short_run:<run id>`."
+            "Each report-wide caveat it discloses, once, by id (`late:<criterion>`, `late:<criterion>:<name>`, "
+            "`judge_uncalibrated`, `confound:<id>`, `apparatus:<dimension>`, `short_run:<run id>`), or `no_rule`."
         ),
     )
     weakens: list[str] = Field(description="The measures whose findings it weakens, as the input names them.")
@@ -167,21 +191,49 @@ class Flag(_Plan):
 
 
 class DecisionSlot(_Plan):
-    """One of the decision block's four slots: which, and what it says. Planner-written."""
+    """One of the decision block's four slots: which, what it says, and the scoped caveats said beside it.
+    Planner-written."""
 
     key: _SlotKey
     text: ModelProse = Field(min_length=1, description="The slot's text, figures by key.")
+    caveats: list[_CaveatId] = Field(
+        description="The ids of the caveats this slot's text states beside the claim they qualify; may be empty."
+    )
+
+
+class CaveatClause(_Plan):
+    """One open caveat the decision's confidence is conditional on, and what would make it material. Planner-written.
+
+    ``material_if`` is the clause the page prints for it: what the caveat is, then the condition that would make it
+    material ("The judge is uncalibrated. Material only if it misreads in-character replies"), and, where the deciding
+    finding does not rest on the caveat, that it does not.
+    """
+
+    id: _CaveatId = Field(description="The caveat's id, as code assigns it.")
+    material_if: ModelProse = Field(
+        description="The clause the page prints: what the caveat is, and what would make it material."
+    )
+
+
+class DecisionConfidence(_Plan):
+    """How sure the decision is, in one of three forms, with the open caveats it is conditional on. Planner-written.
+
+    Code enforces the form against the caveats (:mod:`threetears.evals.analysis.report_plan_checks`): plain ``high``
+    only when no open report-wide caveat remains; ``high_if_immaterial`` lists every open report-wide caveat, each
+    with its clause; ``low`` is an evidence judgement allowed whatever the caveats. A caveat code proved immaterial is
+    never listed: code renders its checked line.
+    """
+
+    form: _ConfidenceForm
+    caveats: list[CaveatClause] = Field(description="The open caveats the confidence is conditional on, each once.")
 
 
 class Decision(_Plan):
-    """The decision block (GENERATOR §2.5): four slots in the mode's order, and how sure the planner is. Planner-written.
-
-    ``confidence`` is stated, never capped: a late criterion or an uncalibrated judge is disclosed by the flag and does
-    not lower it. The tiers are the memo's (:data:`threetears.evals.kernel.authored.Confidence`).
-    """
+    """The decision block (GENERATOR §2.5): four slots in the mode's order, and how sure the decision is.
+    Planner-written."""
 
     slots: list[DecisionSlot] = Field(min_length=4, max_length=4, description="The four slots, in the mode's order.")
-    confidence: Confidence = Field(description="How sure the planner is of the decision, as stated.")
+    confidence: DecisionConfidence = Field(description="How sure the decision is, and on which open caveats.")
 
 
 class OptionRow(_Plan):
@@ -245,6 +297,9 @@ class PlannedSection(_Plan):
     takeaway: ModelProse = Field(description="One or two sentences on how to read the chart; empty for none.")
     chart: PlannedChart
     caption: ModelProse = Field(description="One line under the chart; empty for none.")
+    caveats: list[_CaveatId] = Field(
+        description="The ids of the caveats the section states beside its finding; may be empty."
+    )
 
 
 class ExploreControl(_Plan):
@@ -278,10 +333,13 @@ class Explore(_Plan):
 
 
 class MethodItem(_Plan):
-    """One term and its definition in Method. Planner-written."""
+    """One term and its definition in Method, and the method-level caveats it states. Planner-written."""
 
     term: ModelProse = Field(min_length=1)
     text: ModelProse = Field(min_length=1)
+    caveats: list[_CaveatId] = Field(
+        description="The ids of the method-level caveats (apparatus, latency, unreported) it states; may be empty."
+    )
 
 
 class DurableClaim(_Plan):
@@ -429,8 +487,10 @@ __all__ = [
     "REPORT_PLAN_SCHEMA",
     "ChartQuery",
     "ChartReference",
+    "CaveatClause",
     "ChartSpec",
     "Decision",
+    "DecisionConfidence",
     "DecisionSlot",
     "DurableClaim",
     "Explore",
