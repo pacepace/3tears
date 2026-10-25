@@ -61,7 +61,7 @@
       },
       {
         "key": "why_not",
-        "text": "**{arm:qwen3.8-flash}:** {cost.uplift.qwen3.8-flash|pct} more per reply, in-character {contrast.qwen3.8-flash.persona.holds_character|pts} points, pass rate {reading.qwen3.8-flash.change|pts}.\n**{arm:1017}:** {cost.uplift.1017|pct} more per reply, in-character {contrast.1017.persona.holds_character|pts} points."
+        "text": "**{arm:qwen3.8-flash}:** {cost.uplift.qwen3.8-flash|pct} more per reply, in-character {contrast.qwen3.8-flash.persona.holds_character.delta|pts} points, pass rate {reading.qwen3.8-flash.change|pts}.\n**{arm:1017}:** {cost.uplift.1017|pct} more per reply, in-character {contrast.1017.persona.holds_character.delta|pts} points."
       },
       {
         "key": "watch",
@@ -299,11 +299,11 @@
     },
     {
       "term": "Corrected comparisons",
-      "text": "{contrast_families[0].disclosure}"
+      "text": "{family.disclosure}"
     },
     {
       "term": "Judge",
-      "text": "{judge_model}; evidence tier {judge_tier} for all dimensions: no human calibration and no test-retest yet."
+      "text": "{judge.model}; evidence tier {judge.tier} for all dimensions: no human calibration and no test-retest yet."
     },
     {
       "term": "Cost",
