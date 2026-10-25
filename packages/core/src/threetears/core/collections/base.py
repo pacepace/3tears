@@ -933,6 +933,31 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         ...
 
+    async def fetch_from_store_in_transaction(self, entity_id: Any, *, conn: Any) -> dict[str, Any] | None:
+        """fetch one entity's row as a caller's open transaction sees it, its own uncommitted writes included.
+
+        Public extension point, paired with :meth:`fetch_from_store`. A save that joins a caller's
+        transaction (``save_entity(entity, conn=conn)``) and leaves columns for the database to
+        decide (:meth:`columns_decided_by_store`) reads its row back through this, over ``conn``,
+        so the saving handle holds the row L3 holds inside that transaction, not the row as sent.
+        Nothing is cached from it: the caches take the row only once the transaction has ended
+        (:class:`~threetears.core.collections.caller_transaction.CallerTransaction`).
+
+        The default reads nothing and answers ``None``, and the handle keeps the row as sent: a
+        backend that can read on the caller's connection says so by overriding this.
+        :class:`~threetears.core.collections.schema_backed.SchemaBackedCollection` does, through
+        its durable store.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values (composite-pk)
+        :ptype entity_id: Any
+        :param conn: the caller's connection, with its transaction open
+        :ptype conn: Any
+        :return: row dict on hit; ``None`` on miss, or when this collection cannot read on ``conn``
+        :rtype: dict[str, Any] | None
+        """
+        del entity_id, conn
+        return None
+
     async def fetch_from_store_with_tier(self, entity_id: Any) -> tuple[dict[str, Any] | None, ReadTier]:
         """the read a pull-through makes past L2, and the tier that answered it, for the tier counts.
 
@@ -3550,7 +3575,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             # enrolled before the write, so a write whose outcome is unknown -- it raised, but the
             # caller may still commit what reached L3 -- is settled with the rest.
             caller_transaction.enroll(self, entity_id, row=data)
-            await self._store_uncommitted(entity, entity_id, data, original_timestamp, working, conn)
+            held = await self._store_uncommitted(entity, entity_id, data, original_timestamp, working, conn)
+            # the eviction's broadcast takes its invalidation columns from the row as stored
+            caller_transaction.restate(self, entity_id, row=held)
             # nothing is cached and nothing is broadcast until the caller's transaction ends
             # (CallerTransaction settles every key its writes touched).
             return
@@ -3621,13 +3648,21 @@ class BaseCollection(ABC, Generic[EntityT]):
         original_timestamp: datetime | None,
         working: dict[str, Any],
         conn: Any,
-    ) -> None:
+    ) -> dict[str, Any]:
         """write a row to L3 inside a caller's transaction, leaving no tier holding it.
 
         The row is not final until the caller's transaction ends, so no cache may take it: the
         entity's working copy leaves L1 for the entity's own change buffer, and nothing reaches L2
         or the broadcast. The :class:`CallerTransaction` evicts the key from every tier once the
         transaction has ended.
+
+        The handle holds the row as stored. A row that leaves columns for the database to decide
+        (:meth:`columns_decided_by_store`) is read back over ``conn``
+        (:meth:`fetch_from_store_in_transaction`), which sees this uncommitted write, and the
+        handle holds that read, with any key of the row as sent that the table does not hold. A
+        read back that raises is raised, as a failed write is, and the handle keeps its unsaved
+        edits: a failed statement leaves the caller's transaction unusable, so the caller must
+        learn of it. A read that answers ``None`` leaves the handle holding the row as sent.
 
         :param entity: the entity being saved
         :ptype entity: BaseEntity
@@ -3641,8 +3676,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         :ptype working: dict[str, Any]
         :param conn: the caller's connection, with its transaction open
         :ptype conn: Any
-        :return: nothing
-        :rtype: None
+        :return: the row the handle holds: as stored, or as sent when it was not read back
+        :rtype: dict[str, Any]
         :raises ConcurrentModificationError: on an optimistic-lock fence mismatch
         :raises RuntimeError: when an insert affects no row
         """
@@ -3658,10 +3693,26 @@ class BaseCollection(ABC, Generic[EntityT]):
             if entity.is_new:
                 raise RuntimeError(f"L3 insert failed for {self.table_name} entity {entity_id}: 0 rows affected")
             raise ConcurrentModificationError(self.table_name, entity_id, original_timestamp or datetime.min)
+        # never completed (complete_written_row): an update keeps the stored value of a column the
+        # row leaves out, so only a read on the caller's connection knows that value.
+        held = data
+        if self.l3_pool is not None and self.columns_decided_by_store(data):
+            try:
+                stored = await self.fetch_from_store_in_transaction(entity_id, conn=conn)
+            # BaseException, not Exception: a cancelled read leaves the handle as unsettled as a
+            # failed one, and CancelledError is not an Exception.
+            except BaseException:
+                self._withdraw_unstored(entity, entity_id, working)
+                raise
+            if stored is not None:
+                # a key the stored row does not carry is the caller's own; the handle keeps it
+                carried = {key: value for key, value in data.items() if key not in stored}
+                held = {**carried, **stored}
         entity.mark_clean()
-        entity.original_date_updated = data.get("date_updated")
+        entity.original_date_updated = held.get("date_updated")
         self._evict_l1(entity_id)
-        entity.hold_row(data)
+        entity.hold_row(held)
+        return held
 
     def _withdraw_unstored(self, entity: BaseEntity, entity_id: Any, working: dict[str, Any]) -> None:
         """take an entity's working copy out of L1 after its write did not land.
