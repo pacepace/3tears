@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, NamedTuple
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from threetears.evals.analysis.bundle.insights import insight_restatement_key
 from threetears.evals.analysis.errors import SoundnessRefusal
@@ -55,6 +55,7 @@ __all__ = [
     "plan_recommended_arm",
     "planned_analysis",
     "report_input_digest",
+    "report_input_document_digest",
     "report_plan_of",
 ]
 
@@ -75,9 +76,21 @@ def report_input_digest(report_input: ReportInput) -> str:
     :return: A 64-character lowercase hex digest.
     :rtype: str
     """
-    canonical = json.dumps(
-        report_input.model_dump(mode="json", by_alias=True), sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    )
+    return report_input_document_digest(report_input.model_dump(mode="json", by_alias=True))
+
+
+def report_input_document_digest(document: Mapping[str, Any]) -> str:
+    """The digest of a report input already dumped to JSON (by alias), as :func:`report_input_digest` takes it.
+
+    What lets a frozen report input be checked against the digest stored beside it without being validated by the
+    model the running build holds, which may have moved since the freeze.
+
+    :param document: ``ReportInput.model_dump(mode="json", by_alias=True)``, or a document read back from one.
+    :ptype document: Mapping[str, Any]
+    :return: A 64-character lowercase hex digest.
+    :rtype: str
+    """
+    canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return bytes_digest(canonical.encode("utf-8"))
 
 

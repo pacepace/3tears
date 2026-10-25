@@ -48,18 +48,20 @@ from threetears.evals.analysis.campaign_readings import campaign_readings
 from threetears.evals.analysis.campaigns import campaign_arms
 from threetears.evals.analysis.generator import GenerationTally
 from threetears.evals.kernel.inner_ceilings import MAX_GENERATION_CALLS
-from threetears.evals.analysis.planned_analysis import generate_planned_analysis, report_plan_of
-from threetears.evals.analysis.planner import first_plan_request
+from threetears.evals.analysis.planned_analysis import generate_planned_analysis, report_input_digest, report_plan_of
+from threetears.evals.analysis.planner import first_plan_request, plan_user_message
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input as build_report_input
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporter_bank import case_limits, decidable_reporter_case_bank, read_calibration
 from threetears.evals.analysis.reporter_kind import (
+    PLAN_CASE_VERSION,
     REPORTER_KIND,
     LabelCriterion,
     ReporterCase,
     ReporterLabel,
     render_memo_as_written,
+    render_plan_for_judge,
     reporter_case_of,
     reporter_case_payload,
 )
@@ -2228,6 +2230,69 @@ def _refuse_an_excerpt_not_in_the_memo(labels: Sequence[ReporterLabel], memo: st
         )
 
 
+class _PlanCase(NamedTuple):
+    """What a plan reporter case freezes of a planned analysis, read once.
+
+    :ivar stored: The analysis's stored plan.
+    :ivar bundle: The campaign bundle frozen with the analysis: what its planner planned over.
+    :ivar report_input: The report input built from it, which the plan's keys resolve against.
+    :ivar digest: That input's digest.
+    :ivar text: The plan as the judge reads it (:func:`render_plan_for_judge`).
+    :ivar message: What the planner read of that input (:func:`plan_user_message`).
+    :ivar limits: Where the frozen input is not the one the plan was written against, as sentences.
+    """
+
+    stored: EvalReportPlan
+    bundle: CampaignBundle
+    report_input: ReportInput
+    digest: str
+    text: str
+    message: str
+    limits: list[str]
+
+
+def _plan_case(storage: AnalysisStore, analysis: EvalAnalysis) -> _PlanCase:
+    """Read what a plan reporter case freezes of a planned analysis.
+
+    **The bundle is the one frozen with the analysis, never a re-assembly.** A plan's prose holds figure keys, not
+    numbers, so what a reader of it sees is the keys written out against the report input built from that bundle, as
+    the campaign's page writes them (:func:`_planned_page`). A re-assembly could move every number under unchanged
+    prose, so the judged text would not be the one the planner wrote or a reader read.
+
+    :raises NotFoundError: The analysis's plan does not resolve.
+    :raises ValidationFailedError: A figure key of the plan does not resolve against the input built from its frozen
+        bundle, or that input's view is over the planner's budget: the plan cannot be judged as written.
+    """
+    stored = get_report_plan(storage, analysis)
+    if stored is None:
+        raise ValueError(f"analysis {analysis.id} was read as planned and names no report plan")
+    bundle = analysis_campaign_bundle(analysis)
+    built = build_report_input(bundle)
+    remedy = "generate the analysis again (analysis_generate), and freeze the new one"
+    try:
+        text = render_plan_for_judge(report_plan_of(stored), built)
+        message = plan_user_message(built)
+    except UnresolvableReference as unresolved:
+        raise ValidationFailedError(
+            f"analysis {analysis.id}'s plan names a figure its frozen evidence no longer holds, so it cannot be judged "
+            f"as written: {unresolved}",
+            remedy=remedy,
+        ) from unresolved
+    except RefusedInput as refused:
+        raise ValidationFailedError(
+            f"what analysis {analysis.id}'s planner read cannot be rendered again: {refused.fault}", remedy=remedy
+        ) from refused
+    digest = report_input_digest(built)
+    limits: list[str] = []
+    if digest != stored.report_input_digest:
+        limits.append(
+            f"The report input this build makes from the analysis's frozen bundle (digest {digest}) is not the one "
+            f"the plan was written against (recorded {stored.report_input_digest}): how a report input is built "
+            "changed since. The plan's figures are written out, and the judge's evidence rendered, from this build's."
+        )
+    return _PlanCase(stored, bundle, built, digest, text, message, limits)
+
+
 def freeze_reporter_case(
     host: EvalHost,
     *,
@@ -2241,8 +2306,18 @@ def freeze_reporter_case(
 ) -> EvalTestCase:
     """Freeze a campaign's bundle into a reporter case of ``template_id``.
 
-    The case freezes the campaign bundle whole — what the writer of its one memo reads. In this build a campaign of
-    one aspect only: a freeze of a campaign of several is refused, naming the remedy.
+    The case freezes the campaign bundle whole — what the writer of its one memo reads. A memo case (or one pinning
+    no analysis) freezes a campaign of one aspect only: a freeze of a campaign of several is refused, naming the
+    remedy.
+
+    **An analysis the report planner wrote freezes a plan case** (``kind_version`` 2), of a campaign of any number of
+    aspects: the bundle frozen with that analysis (never a re-assembly, since the plan's prose holds keys whose
+    numbers a re-assembly could move), the report input built from it and its digest, the plan in key form and the
+    planner's prompt version. Its ``recorded_memo`` is the plan as the judge reads it
+    (:func:`~threetears.evals.analysis.reporter_kind.render_plan_for_judge`), and its ``writer_message`` what the
+    planner read of that input (:func:`~threetears.evals.analysis.planner.plan_user_message`), checked against the
+    digest the plan's generation recorded. Every other rule below holds of it as of a memo case. A report input built
+    today that is not the one the plan was written against is frozen anyway and stated in ``limits``.
 
     A case is reproducible only if its evidence stops moving, and a bundle is otherwise
     re-assembled on demand from a store and a schema that both move. So the case carries the
@@ -2353,7 +2428,8 @@ def freeze_reporter_case(
         validate or names an unscored dimension, a label whose form (direction or verdict) is not its dimension's
         scale, a ``memo_excerpt`` that is not a passage of the recorded memo,
         labels with no recorded memo to be about, an analysis of another campaign,
-        a campaign of several aspects, a bundle resolving no runs, a label change or a moved re-assembly that
+        a campaign of several aspects frozen with a memo or none, a plan whose figure keys its frozen evidence no
+        longer resolves, a bundle resolving no runs, a label change or a moved re-assembly that
         does not name the live case in ``supersedes``, a ``supersedes`` naming a case outside this pair or one
         already superseded or retired, ``supersedes`` on a pair with no live case, a label
         arriving with a criterion, a pair with more than one live case that ``supersedes`` does
@@ -2408,34 +2484,37 @@ def freeze_reporter_case(
 
     storage = host.storage
     campaign = _load_campaign(storage, campaign_id, scope_id)
-    if len(campaign.aspects) > 1:
-        # Slice 1 of one memo per campaign: a reporter case judges a memo over one aspect's evidence, and the
-        # reporter eval has not yet been measured over several.
+    analysis = get_analysis(storage, analysis_id, scope_id) if analysis_id else None  # NotFoundError if absent
+    if analysis is not None and analysis.campaign_id != campaign_id:
+        raise ValidationFailedError(
+            f"analysis {analysis.id!r} belongs to campaign {analysis.campaign_id!r}, not {campaign_id!r} — "
+            "its memo would be judged against another campaign's evidence",
+            remedy=f"pass an analysis of campaign {campaign_id!r} ({FIND_ANALYSIS})",
+        )
+    planned = analysis is not None and analysis.report_plan_id is not None
+    if len(campaign.aspects) > 1 and not planned:
+        # A memo case judges a memo over one aspect's evidence, and the memo reporter eval has not been measured over
+        # several. A plan case judges the planner, which plans every aspect of its campaign.
         raise ValidationFailedError(
             f"campaign {campaign_id!r} has {len(campaign.aspects)} aspects "
             f"({', '.join(aspect.label for aspect in campaign.aspects)}), and a reporter case freezes a campaign of "
-            "one aspect only in this build",
-            remedy="freeze a campaign of one aspect: create one over the aspect's runs (campaign_create) and freeze it",
+            "one aspect only when it pins a memo or none",
+            remedy=(
+                "freeze a campaign of one aspect: create one over the aspect's runs (campaign_create) and freeze it; "
+                f"or freeze an analysis the report planner wrote of this campaign, as a plan case ({FIND_ANALYSIS})"
+            ),
         )
-    analysis = get_analysis(storage, analysis_id, scope_id) if analysis_id else None  # NotFoundError if absent
-    if analysis is not None:
-        if analysis.campaign_id != campaign_id:
-            raise ValidationFailedError(
-                f"analysis {analysis.id!r} belongs to campaign {analysis.campaign_id!r}, not {campaign_id!r} — "
-                "its memo would be judged against another campaign's evidence",
-                remedy=f"pass an analysis of campaign {campaign_id!r} ({FIND_ANALYSIS})",
-            )
-        if analysis.document is None:
-            # A reporter case replays and judges a recorded memo; a planned analysis has a plan, which the reporter
-            # eval does not yet read.
-            raise ValidationFailedError(
-                f"analysis {analysis.id!r} was written by the report planner and holds no memo, and a reporter case "
-                "pins a recorded memo in this build",
-                remedy=f"pass an analysis the memo writer wrote ({FIND_ANALYSIS}), or freeze the case with no analysis",
-            )
+    plan_case: _PlanCase | None = None
+    if analysis is not None and planned:
+        plan_case = _plan_case(storage, analysis)
+        _refuse_an_excerpt_not_in_the_memo(parsed, plan_case.text)
+        recorded_memo: str | None = plan_case.text
+        assembled_at = analysis.generation.bundle_assembled_at
+        bundle = plan_case.bundle
+    elif analysis is not None:
         memo = render_memo_as_written(analysis)
         _refuse_an_excerpt_not_in_the_memo(parsed, memo)
-        recorded_memo: str | None = memo
+        recorded_memo = memo
         # The ledger as the generation read it, on `inspect_analysis_bundle`'s terms.
         assembled_at = analysis.generation.bundle_assembled_at
         bundle = _assembled_campaign_bundle(
@@ -2448,10 +2527,11 @@ def freeze_reporter_case(
         assembled_at = utc_now_iso()
         bundle = _assembled_campaign_bundle(campaign, storage=storage, profile=host.profile)
     if not bundle.run_ids:
-        (aspect,) = bundle.aspects
+        unresolved = [run_id for aspect in bundle.aspects for run_id in aspect.unresolved_run_ids]
+        archived = [run_id for aspect in bundle.aspects for run_id in aspect.archived_run_ids]
         raise ValidationFailedError(
             f"campaign {campaign_id!r} resolves no runs in scope {scope_id!r} (unresolved: "
-            f"{aspect.unresolved_run_ids or 'none attached'}; archived: {aspect.archived_run_ids or 'none'}) — "
+            f"{unresolved or 'none attached'}; archived: {archived or 'none'}) — "
             "a case with no evidence can ground no judgement",
             remedy="freeze a campaign whose runs this scope holds, un-archived",
         )
@@ -2462,8 +2542,13 @@ def freeze_reporter_case(
     # `ReporterCase.writer_message`): rendered here, from the bundle this freeze pins, because the
     # stored analysis keeps no copy of the message its writer was sent — only its digest, which
     # the case carries so the text stays checkable against it.
-    writer_message = build_campaign_user_message(bundle) if analysis is not None else None
-    recorded_message_digest = analysis.generation.user_message_digest if analysis is not None else None
+    if plan_case is not None:
+        # What the planner read, rendered from the report input the case freezes; its digest is the plan's own record.
+        writer_message: str | None = plan_case.message
+        recorded_message_digest: str | None = plan_case.stored.generation.user_message_digest
+    else:
+        writer_message = build_campaign_user_message(bundle) if analysis is not None else None
+        recorded_message_digest = analysis.generation.user_message_digest if analysis is not None else None
     wanted_labels = _label_set(parsed, criterion=True)
     memo_text = f"analysis {wanted_analysis!r}" if wanted_analysis else "no recorded memo"
     bank = reporter_case_bank(storage, template.id, scope_id)
@@ -2575,6 +2660,23 @@ def freeze_reporter_case(
             remedy=f"pass supersedes={pointer}",
         )
 
+    limits = case_limits(
+        bundle,
+        recorded_fingerprint=analysis.generation.bundle_fingerprint if analysis is not None else None,
+        writer_message=writer_message,
+        recorded_message_digest=recorded_message_digest,
+    )
+    planned_fields: dict[str, Any] = {}
+    if plan_case is not None:
+        limits += plan_case.limits
+        planned_fields = {
+            "kind_version": PLAN_CASE_VERSION,
+            "report_input": plan_case.report_input.model_dump(mode="json", by_alias=True),
+            "report_input_digest": plan_case.digest,
+            "recorded_report_input_digest": plan_case.stored.report_input_digest,
+            "recorded_plan": plan_case.stored.plan,
+            "planner_prompt_version": plan_case.stored.generation.prompt_version,
+        }
     case = ReporterCase(
         bundle=bundle.to_dict(),
         bundle_fingerprint=fingerprint,
@@ -2584,13 +2686,9 @@ def freeze_reporter_case(
         writer_message=writer_message,
         recorded_writer_message_digest=recorded_message_digest,
         labels=parsed,
-        limits=case_limits(
-            bundle,
-            recorded_fingerprint=analysis.generation.bundle_fingerprint if analysis is not None else None,
-            writer_message=writer_message,
-            recorded_message_digest=recorded_message_digest,
-        ),
+        limits=limits,
         supersedes=named,
+        **planned_fields,
     )
     test_case = EvalTestCase(template_id=template.id, scope_id=scope_id, host_payload=reporter_case_payload(case))
     try:
@@ -2709,6 +2807,7 @@ def reporter_calibration(
         judge_model=run.judge_model,
         effective_judges=run.effective_judges,
         ratings=storage.query_calibration_ratings(scope_id, run_id=run.id),
+        template_digest=run.template_digest,
     )
 
 

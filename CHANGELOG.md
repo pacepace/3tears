@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the reporter eval judges report plans
+
+**Added:** a reporter case may judge a report plan (`ReporterCase.kind_version` 2; durable v16.6). `reporter_case_freeze`
+accepts an analysis the report planner wrote, of a campaign of one aspect or several, and freezes the bundle frozen
+with it, the report input built from it, the plan in key form and the planner's prompt version. The judge reads the
+plan as `render_plan_for_judge` renders it (the planner's part of the plan, every figure key written out by the
+renderer the campaign's page uses) against what the planner read (`plan_user_message`). Memo cases are stored, read
+and judged as before. Receipts gain `kind_version`, `report_input_digest` and `planner_prompt_version`; calibration
+groups cases by kind version and prompt version and never pools agreement across groups. A generating reporter launch
+over a plan case is refused. See `packages/evals/MIGRATIONS.toml`.
+
 ### evals: a template may declare the display name a page prints for each stratum
 
 **Added:** `EvalTemplate.stratum_names` (a stratum id to its name, each at most 32 characters, never blank, one per

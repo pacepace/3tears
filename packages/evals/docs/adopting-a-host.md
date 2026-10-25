@@ -1601,7 +1601,8 @@ call stays unpriced, since the memo it judges does not exist yet.
    alias's target moves;
 4. a template with no live case, or a campaign-and-memo pair holding two live cases. When the launch
    names a case set, its cases run instead, and each must carry a reporter case;
-5. the replay over a case with no recorded memo.
+5. the replay over a case with no recorded memo, and a generator model over a plan case (a case judging a report
+   plan, which only the replay runs).
 
 Your launcher calls `admit_reporter_launch` again, off the event loop. It builds `ReporterKind` (prompt id
 `ANALYSIS_GEN_PROMPT`) or `AsRecordedReporterKind` from what that returns, and wires its client, subject,

@@ -671,7 +671,21 @@ DURABLE_SCHEMA_VERSION: int = 16
 #:   ``stratum_names``, since the bundle's shape did not move. So during a rolling deploy across 16.4 and 16.5, declare
 #:   no stratum name until every pod reading the store runs 16.5.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 5
+#: - **v16.6** — a reporter case may judge a report plan: the reporter case a reporter template's test case carries
+#:   (``ReporterCase``, in ``EvalTestCase.host_payload``) gains ``kind_version`` (1, a memo, the default; 2, a plan)
+#:   and, on a plan case only, ``report_input`` (the report input built from the bundle frozen with the planned
+#:   analysis, whole), ``report_input_digest``, ``recorded_report_input_digest`` (the stored plan's), ``recorded_plan``
+#:   (the plan in key form) and ``planner_prompt_version``. A plan case's ``recorded_memo`` is the plan as the judge
+#:   reads it and its ``writer_message`` what the planner read. Each is written only on a plan case, so a memo case is
+#:   stored exactly as v16.5 stored it, and every case stored before reads as a memo case, judged as it was.
+#:   **The sentence below is false for the reporter kind's read of a plan case, as it was at v16.1 and v16.2.** A
+#:   v16.5 build's ``ReporterCase`` refuses a key it does not declare, so it cannot read a plan case, and a reporter
+#:   template's bank is undecidable while any of its cases is unreadable: on a v16.5 build, the first plan case frozen
+#:   into a template stops that whole template, refusing its launches, their prices, its freezes, its calibration
+#:   reads and its restores, until that build upgrades. So during a rolling deploy across 16.5 and 16.6, freeze no
+#:   plan case until every pod runs 16.6. A v16.5 build keeps the test case's payload verbatim on every write.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 6
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 

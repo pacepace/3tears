@@ -469,7 +469,9 @@ def _costs(report_input: ReportInput) -> dict[str, float]:
         try:
             figure = resolve(f"cost_per_1k.{arm.id}", report_input)
         except UnresolvableReference:
-            continue  # no figure-key cost for this arm: the next source may hold one
+            # NOSILENT: an arm with no cost figure key is an expected absence, not a failure: it is left out of the costs
+            # this source states, and when no arm has one the sources below are read instead.
+            continue
         if isinstance(figure.value, (int, float)):
             costs[arm.id] = float(figure.value)
     if costs:

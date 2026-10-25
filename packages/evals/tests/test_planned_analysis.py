@@ -9,7 +9,8 @@ Contracts held here (``threetears.evals.analysis.planned_analysis``, ``threetear
   the arms and aspects the claim's keys name;
 - ``recommended_variant_key`` is the variant key of the plan's recommended option;
 - an analysis the memo writer wrote, as every analysis stored before the planner was, still lists, reads and renders
-  as it did, and says it is a memo;
+  as it did, and says it is a memo; a reporter case freezes it as a memo case, and a planned analysis as a plan case
+  (``test_reporter_plan_cases.py`` holds the plan case);
 - the plan is regenerable: ``drop_derived`` sweeps it, and deleting its analysis deletes it (its insights stay);
 - the campaign's page for a planned analysis carries the plan's first screen, and the actions round-trip: a generation
   started through ``analysis_generate`` is listed by ``analyses_list`` as a plan and read by ``report_read`` with its
@@ -41,7 +42,6 @@ from threetears.evals.analysis.service import (
     prepare_analysis_generation,
     run_analysis_generation,
 )
-from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.kernel.campaign import report_plan_id
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.prompts.catalogue import REPORT_PLAN_PROMPT
@@ -214,14 +214,15 @@ class TestStoredMemos:
         assert off_loop(get_report_plan, fixture.host.eval_host.storage, memo) is None
         assert build_report(memo).basis == "analysis"
 
-    async def test_a_reporter_case_pins_a_memo_and_refuses_a_plan(self) -> None:
+    async def test_a_reporter_case_pins_a_memo_as_a_memo_case_and_a_plan_as_a_plan_case(self) -> None:
         fixture = off_loop(reporter_fixture)
         (job,) = (await _generate_through_the_action(fixture)).jobs
         planned = (await settled(fixture.host, job.job_id)).analysis_id
         assert planned is not None
+        memo, _ = await stored_memo_analysis(fixture.host.eval_host, fixture.campaign)
 
-        with pytest.raises(ValidationFailedError, match="written by the report planner and holds no memo"):
-            off_loop(freeze_corpus_campaign, fixture, recorded_analysis_id=planned)
+        assert off_loop(freeze_corpus_campaign, fixture, recorded_analysis_id=memo.id).kind_version == 1
+        assert off_loop(freeze_corpus_campaign, fixture, recorded_analysis_id=planned).kind_version == 2
 
 
 async def _generate_through_the_action(fixture: Any) -> Any:

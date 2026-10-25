@@ -96,7 +96,13 @@ from threetears.evals.schema.models import utc_now_iso
 if TYPE_CHECKING:  # the model-provider PORT — a protocol, injected; never constructed here.
     from threetears.evals.schema.completion import CompletionGenerator, CompletionResult
 
-__all__ = ["PlanGeneration", "first_plan_request", "generate_report_plan", "prose_plan_request"]
+__all__ = [
+    "PlanGeneration",
+    "first_plan_request",
+    "generate_report_plan",
+    "plan_user_message",
+    "prose_plan_request",
+]
 
 log = get_logger(__name__)
 
@@ -251,9 +257,36 @@ def first_plan_request(
     :raises RefusedInput: The view is over its budget once every trim is made; nothing is sent.
     :raises ValueError: ``allowed_modes`` is empty or names a mode no plan takes.
     """
+    return (
+        _system(prompt, profile, STRUCTURE_CALL),
+        plan_user_message(report_input, allowed_modes=allowed_modes, budget=budget),
+        structure_response_format(),
+    )
+
+
+def plan_user_message(
+    report_input: ReportInput, *, allowed_modes: Sequence[str] | None = None, budget: int | None = None
+) -> str:
+    """The user message a plan generation's structure call opens with: what the planner reads of the evidence.
+
+    The report input's planner view, then code's facts (:func:`first_plan_request` says what they hold). One function,
+    called by :func:`first_plan_request` and by the reporter eval, which judges a recorded plan against exactly what its
+    planner read (:class:`~threetears.evals.analysis.reporter_kind.ReporterCase`), so the two cannot drift. Its digest
+    is what a generation records as ``user_message_digest``.
+
+    :param report_input: The campaign's report input.
+    :ptype report_input: ReportInput
+    :param allowed_modes: The modes the planner may pick; None for the modes code computes from the input.
+    :ptype allowed_modes: Sequence[str] | None
+    :param budget: The most characters the report input's view may take; None for the view's default.
+    :ptype budget: int | None
+    :return: The message.
+    :rtype: str
+    :raises RefusedInput: The view is over its budget once every trim is made.
+    :raises ValueError: ``allowed_modes`` is empty or names a mode no plan takes.
+    """
     facts = plan_facts(report_input)
-    prefix = _prefix(report_input, facts, _modes(allowed_modes, facts), budget)
-    return _system(prompt, profile, STRUCTURE_CALL), prefix, structure_response_format()
+    return _prefix(report_input, facts, _modes(allowed_modes, facts), budget)
 
 
 def prose_plan_request(

@@ -37,6 +37,8 @@ from threetears.evals.analysis.reporter_contract import (
 )
 from threetears.evals.analysis.reporter_kind import (
     AS_RECORDED_MODEL,
+    MEMO_CASE_VERSION,
+    PLAN_CASE_VERSION,
     REPORTER_KIND,
     LabelDirection,
     LabelVerdict,
@@ -79,7 +81,8 @@ class ReporterCaseFreeze(EvalBaseModel):
         default=None,
         min_length=1,
         description="A stored analysis of the campaign whose memo the case pins as the one it got, as analyses_list "
-        "names it; omitted freezes the bundle alone, which only a generating candidate can run.",
+        "names it; one the report planner wrote pins its plan, as a plan case; omitted freezes the bundle alone, which "
+        "only a generating candidate can run.",
     )
     labels: list[dict[str, Any]] = Field(
         default_factory=list,
@@ -468,6 +471,19 @@ def _cases(request: LaunchRequest, storage: EvalStorage) -> list[tuple[EvalTestC
     return read
 
 
+def _refuse_a_memo_writer_over_plans(cases: Sequence[tuple[EvalTestCase, ReporterCase]]) -> None:
+    """Refuse a generating arm over a plan case: a generating reporter writes memos, and a plan case judges a plan."""
+    if planned := [stored.id for stored, case in cases if case.kind_version != MEMO_CASE_VERSION]:
+        raise ValidationFailedError(
+            f"a generating reporter writes memos, and case(s) {', '.join(planned)} judge a report plan (reporter kind "
+            f"version {PLAN_CASE_VERSION}), against a rubric and evidence for plans",
+            remedy=(
+                f"launch model {AS_RECORDED_MODEL!r} to judge the recorded plans, or launch the generator over a case "
+                "set of memo cases"
+            ),
+        )
+
+
 def _refuse_a_replay_with_nothing_recorded(cases: Sequence[tuple[EvalTestCase, ReporterCase]]) -> None:
     """Refuse the as-recorded replay over a case that pins no recorded memo, which it would have nothing to replay of."""
     if unrecorded := [stored.id for stored, case in cases if case.recorded_memo is None]:
@@ -509,8 +525,8 @@ def admit_reporter_launch(
     :rtype: ReporterAdmitted
     :raises ValidationFailedError: The template asks for what a reporter cannot honour; the preset is not stored, or
         no default is; the model is an alias, or the host refuses it; there is no live case, a pair holds two,
-        a case of the bank does not read, or a case-set case carries no reporter case; or the replay is
-        launched over a case pinning no recorded memo.
+        a case of the bank does not read, or a case-set case carries no reporter case; the replay is
+        launched over a case pinning no recorded memo; or a generating model is launched over a plan case.
     """
     refuse_undeliverable_reporter_template(request.template)
     preset = request.overlays_as(ReporterOverlays).prompt_preset if request.overlays is not None else None
@@ -519,6 +535,8 @@ def admit_reporter_launch(
     cases = _cases(request, storage)
     if candidate_model == AS_RECORDED_MODEL:
         _refuse_a_replay_with_nothing_recorded(cases)
+    else:
+        _refuse_a_memo_writer_over_plans(cases)
     judge_model = request.judge_model or resolve_judge_pin(
         request, resolve_model("judge", None), candidate_model=candidate_model
     )
