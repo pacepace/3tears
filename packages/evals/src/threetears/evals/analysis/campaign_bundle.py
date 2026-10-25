@@ -801,9 +801,10 @@ def aspect_view(
 
 def _aspect_parts(
     bundle: CampaignBundle, budget: int, namer: _Namer
-) -> tuple[dict[str, list[dict[str, Any]]], dict[str, str], list[dict[str, Any]]]:
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
     """Every aspect's part, each trimmed to ``budget`` once what the report shares is taken out of them: the
-    campaign's disclosures, the explanations of confounds two or more aspects carry alike, and the parts."""
+    campaign's disclosures, the explanations of confounds two or more aspects carry alike (each naming them), and the
+    parts."""
     parts = [_untrimmed(bundle, aspect, namer) for aspect in bundle.aspects]
     disclosures = _shared_disclosures(bundle, parts)
     catalog = _shared_catalog(parts)
@@ -852,23 +853,32 @@ def _shared_disclosures(bundle: CampaignBundle, parts: Sequence[dict[str, Any]])
     return said
 
 
-def _shared_catalog(parts: Sequence[dict[str, Any]]) -> dict[str, str]:
-    """Each confound's explanation two or more aspects' parts carry, alike in every part carrying it, taken out of them
-    to be said once; an aspect left with none of its own carries no catalog."""
-    reasons: dict[str, list[str]] = {}
-    for part in parts:
-        for dimension, reason in part.get("confound_catalog", {}).items():
-            reasons.setdefault(dimension, []).append(reason)
-    shared = {dimension: said[0] for dimension, said in reasons.items() if len(said) > 1 and len(set(said)) == 1}
+def _shared_catalog(parts: Sequence[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Each confound's explanation two or more aspects' parts carry alike, taken out of them and said once, naming the
+    aspects that carry it, as :func:`_shared_disclosures` says a disclosure: each wording of one confound apart, so
+    two aspects agreeing beside a third worded otherwise say theirs once. A wording one aspect alone carries stays in
+    its part; an aspect left with none of its own carries no catalog."""
+    dimensions = dict.fromkeys(dimension for part in parts for dimension in part.get("confound_catalog", {}))
+    said: dict[str, list[dict[str, Any]]] = {}
+    for dimension in dimensions:
+        groups = _alike(
+            [
+                (part["aspect"], part["confound_catalog"][dimension])
+                for part in parts
+                if dimension in part.get("confound_catalog", {})
+            ]
+        )
+        if shared := [group for group in groups if len(group["aspects"]) > 1]:
+            said[dimension] = shared
     for part in parts:
         own = {
             dimension: reason
             for dimension, reason in part.pop("confound_catalog", {}).items()
-            if dimension not in shared
+            if not any(part["aspect"] in group["aspects"] for group in said.get(dimension, []))
         }
         if own:
             part["confound_catalog"] = own
-    return shared
+    return said
 
 
 class _Namer:

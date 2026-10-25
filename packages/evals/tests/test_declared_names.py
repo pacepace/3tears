@@ -323,8 +323,8 @@ PINNED: dict[str, str] = {
 #: fingerprint keys on it, so it is pinned apart from :data:`PINNED`: it moves whenever the writer's view does, and
 #: the names reach it, since the writer names an aspect by its short name and a check by its display name.
 PINNED_WRITER_MESSAGES: dict[bool, str] = {
-    False: "285838a812be6486944d9c4addbd24580c18750afb2d469b0544b419802a6ce6",
-    True: "461b680ebfc6c1b29b84dd39f055e4cb2c73781b536cc4accd7b6ff0d8f85caf",
+    False: "c13de82bf41eeab055119e8ab140c412907e1e3221aaca1135d89d966a762abc",
+    True: "058280f3f0756762087ae7842c51256cb3f665b9044bf53f1790b2249cc05609",
 }
 
 #: The fixture's stored documents naming nothing, as the tree at ``00107a5b7`` wrote them (:func:`documents`).

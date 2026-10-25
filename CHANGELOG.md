@@ -37,7 +37,8 @@ or more aspects the view gains `aggregate`: each arm's `pass_rate_pct`, a change
 the top) holds `late_criteria` (each criterion with the `aspects` it was set late on; each aspect part's
 `late_criteria` is gone), `latency_contended` and `request_settings_disclosure` wherever carried, and any other
 disclosure two or more aspects carry alike, each as `[{aspects, said}]`, which those aspects' parts no longer repeat;
-a confound's explanation two or more aspects carry alike moves to a top-level `confound_catalog`. An aspect's part
+a confound's explanation two or more aspects carry alike moves to a top-level `confound_catalog`, each wording as
+`[{aspects, said}]`. An aspect's part
 gains `short_name` where one is declared and `control_floor` (`{control, cannot_show: ["drop" | "gain"]}`) where the
 control's pass rate leaves no candidate able to show a drop past the margin or a gain, the rule the Scorecard marks
 (`report.decision.control_cannot_show`, new). Each measure in `measures` gains `name`, as the page names it: a check

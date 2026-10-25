@@ -161,6 +161,27 @@ def test_a_disclosure_aspects_carry_alike_is_said_once_naming_them_and_one_aspec
             assert all(key not in part["disclosures"] for part in carriers)
     assert view["confound_catalog"], "every S1 aspect explains its confounds alike"
     assert all("confound_catalog" not in part for part in view["aspects"])
+    for dimension, groups in view["confound_catalog"].items():
+        assert [group["aspects"] for group in groups] == [labels], dimension
+
+
+def test_a_confound_two_aspects_explain_alike_beside_a_third_worded_otherwise_is_said_once_for_the_two() -> None:
+    plain = _view(s1_change())
+    dimension, (group,) = next(iter(plain["confound_catalog"].items()))
+    otherwise = "worded otherwise on this aspect alone"
+
+    def reworded(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
+        if bundle.aspect != "refunds":
+            return bundle
+        return bundle.model_copy(update={"confound_catalog": {**bundle.confound_catalog, dimension: otherwise}})
+
+    view = writer_view(_bundle(s1_change(), reworded))
+    assert view["confound_catalog"][dimension] == [{"aspects": ["billing", "tone"], "said": group["said"]}]
+    parts = {part["aspect"]: part for part in view["aspects"]}
+    assert parts["refunds"]["confound_catalog"] == {dimension: otherwise}
+    assert "confound_catalog" not in parts["billing"] and "confound_catalog" not in parts["tone"]
+    rest = {key: groups for key, groups in view["confound_catalog"].items() if key != dimension}
+    assert rest == {key: groups for key, groups in plain["confound_catalog"].items() if key != dimension}
 
 
 def test_a_campaign_of_one_aspect_keeps_that_aspect_s_own_disclosures_in_its_part() -> None:
