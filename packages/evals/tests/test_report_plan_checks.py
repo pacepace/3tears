@@ -209,6 +209,7 @@ def _tradeoff(plan: dict[str, Any]) -> dict[str, Any]:
     for slot, key in zip(plan["decision"]["slots"], ("the_trade", "where_it_flips", "our_lean", "what_settles_it")):
         slot["key"] = key
     plan["options"]["rows"][0]["role"] = "control"
+    plan["flag"][0]["discloses"] = ["no_rule", *plan["flag"][0]["discloses"]]
     return plan
 
 
@@ -430,42 +431,76 @@ def _with_flag(discloses: list[str]) -> dict[str, Any]:
 
 class TestImpliedDisclosures:
     def test_kairo_implies_late_criteria_and_an_uncalibrated_judge_only(self):
-        assert implied_disclosures(_input()) == ["late_criteria", "judge_uncalibrated"]
+        assert implied_disclosures(_input(), "decide") == ["late_criteria", "judge_uncalibrated"]
 
     def test_a_calibrated_judge_is_not_disclosed(self):
         data = _input_dict()
         data["caveats"]["judge_tiers"] = {}
         for judged in data["judged"].values():
             judged.update(tier="calibrated", calibration="calibrated")
-        assert implied_disclosures(_input(data=data)) == ["late_criteria"]
+        assert implied_disclosures(_input(data=data), "decide") == ["late_criteria"]
 
     def test_one_calibrated_dimension_leaves_the_judge_undisclosed(self):
         data = _input_dict()
         data["judged"]["__outcome__"].update(calibration="calibrated")
-        assert "judge_uncalibrated" not in implied_disclosures(_input(data=data))
+        assert "judge_uncalibrated" not in implied_disclosures(_input(data=data), "decide")
 
     def test_a_confound_on_every_candidates_contrasts_is_report_wide(self):
         data = _input_dict()
         for contrast in data["contrasts"]:
             if contrast["arm"] == "qwen3.8-flash":
                 contrast["confounds"] = ["observed:reasoning_ratio"]
-        assert "confound:observed:reasoning_ratio" in implied_disclosures(_input(data=data))
+        assert "confound:observed:reasoning_ratio" in implied_disclosures(_input(data=data), "decide")
 
     def test_a_confound_on_one_candidate_is_scoped(self):
-        assert not [item for item in implied_disclosures(_input()) if item.startswith("confound:")]
+        assert not [item for item in implied_disclosures(_input(), "decide") if item.startswith("confound:")]
 
     def test_a_short_run_of_the_control_is_report_wide_and_of_one_candidate_scoped(self):
         data = _input_dict()
-        assert not [item for item in implied_disclosures(_input(data=data)) if item.startswith("short_run:")]
+        assert not [item for item in implied_disclosures(_input(data=data), "decide") if item.startswith("short_run:")]
         data["caveats"]["short_runs"][0]["arm"] = "September"
         run = data["caveats"]["short_runs"][0]["run"]
-        assert f"short_run:{run}" in implied_disclosures(_input(data=data))
+        assert f"short_run:{run}" in implied_disclosures(_input(data=data), "decide")
 
     def test_a_change_with_one_candidate_makes_its_short_run_report_wide(self):
         data = _input_dict()
         data["arms"] = data["arms"][:2]
         runs = [f"short_run:{run['run']}" for run in data["caveats"]["short_runs"]]
-        assert set(runs) <= set(implied_disclosures(_input(data=data)))
+        assert set(runs) <= set(implied_disclosures(_input(data=data), "decide"))
+
+
+class TestNoRule:
+    def test_a_tradeoff_with_no_declared_rule_implies_no_rule(self):
+        assert implied_disclosures(_input("r4"), "tradeoff") == ["no_rule"]
+
+    @pytest.mark.parametrize("mode", ["decide", "no_call"])
+    def test_only_a_tradeoff_implies_no_rule(self, mode: str):
+        assert implied_disclosures(_input("r4"), mode) == []
+
+    def test_a_declared_merit_priority_is_a_rule(self):
+        data = _input_dict("r4")
+        data["contrast_families"][0]["merit_axes"] = ["quality", "cost"]
+        assert implied_disclosures(_input(data=data), "tradeoff") == []
+
+    def test_a_tradeoff_flag_disclosing_no_rule_passes(self):
+        _passes(_tradeoff(_plan()))
+
+    def test_a_tradeoff_plan_with_no_flag_is_refused(self):
+        plan = _set(_tradeoff(_plan()), "flag", [])
+        assert "no_rule" in _why(plan, "flag")
+
+    def test_a_tradeoff_flag_leaving_out_no_rule_is_refused(self):
+        plan = _set(_tradeoff(_plan()), "flag[0].discloses", ["late_criteria", "judge_uncalibrated"])
+        assert "no_rule" in _why(plan, "flag[0].discloses")
+
+    def test_a_decide_plan_disclosing_no_rule_is_refused(self):
+        plan = _with_flag(["no_rule", "late_criteria", "judge_uncalibrated"])
+        assert "a decide plan makes the call" in _why(plan, "flag[0].discloses")
+
+    def test_a_tradeoff_with_a_declared_rule_discloses_no_no_rule(self):
+        data = _input_dict()
+        data["contrast_families"][0]["merit_axes"] = ["quality", "cost"]
+        assert "merit priority" in _why(_tradeoff(_plan()), "flag[0].discloses", data)
 
 
 class TestTheFlag:

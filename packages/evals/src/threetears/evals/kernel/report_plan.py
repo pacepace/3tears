@@ -119,9 +119,10 @@ _FullResultsTable = Literal["arms_by_measure", "contrasts", "strata", "gate_matr
 #: another arm ahead of it on, an absolute bar it missed.
 _WarningKind = Literal["floor_broken", "floor_unclear", "behind_on", "bar_missed"]
 
-#: What a flag discloses, by kind: criteria set after the results, a judge with no human calibration, one confound
+#: What a flag discloses, by kind: criteria set after the results, a judge with no human calibration, a tradeoff the
+#: campaign declared no rule to rank (``no_rule``, GENERATOR §4.2: the flag names who makes the call), one confound
 #: (``confound:<id>``, its id in the report input's ``caveats.confounds``) and one short run (``short_run:<run id>``).
-_DISCLOSURE_KINDS: tuple[str, ...] = ("late_criteria", "judge_uncalibrated", "confound", "short_run")
+_DISCLOSURE_KINDS: tuple[str, ...] = ("late_criteria", "judge_uncalibrated", "no_rule", "confound", "short_run")
 #: The disclosure kinds that name one thing after a colon.
 _NAMED_DISCLOSURES = ("confound", "short_run")
 #: A disclosure as the flag writes it: a bare kind, or a named kind with its id.
@@ -157,7 +158,7 @@ class Flag(_Plan):
     discloses: list[_Disclosure] = Field(
         min_length=1,
         description=(
-            "Each caveat it discloses, once: `late_criteria`, `judge_uncalibrated`, `confound:<id>` or "
+            "Each caveat it discloses, once: `late_criteria`, `judge_uncalibrated`, `no_rule`, `confound:<id>` or "
             "`short_run:<run id>`."
         ),
     )

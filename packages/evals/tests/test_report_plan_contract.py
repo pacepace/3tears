@@ -263,15 +263,15 @@ class TestFieldConstraints:
         flag = _r5()["flag"][0]
         _refused(_kairo(flag=[{**flag, "confidence": "high"}]))
 
-    @pytest.mark.parametrize("disclosure", ["late", "confound:", "judge_uncalibrated:x", ""])
+    @pytest.mark.parametrize("disclosure", ["late", "confound:", "judge_uncalibrated:x", "no_rule:x", ""])
     def test_a_disclosure_off_the_vocabulary_is_refused(self, disclosure: str):
         flag = _r5()["flag"][0]
         _refused(_kairo(flag=[{**flag, "discloses": [disclosure]}]))
 
-    def test_a_named_disclosure_is_accepted(self):
+    def test_no_rule_and_the_named_disclosures_are_accepted(self):
         flag = _r5()["flag"][0]
         ReportPlan.model_validate(
-            _kairo(flag=[{**flag, "discloses": ["confound:observed:reasoning_ratio", "short_run:01a170ab"]}])
+            _kairo(flag=[{**flag, "discloses": ["confound:observed:reasoning_ratio", "short_run:01a170ab", "no_rule"]}])
         )
 
     def test_an_empty_id_is_refused(self):

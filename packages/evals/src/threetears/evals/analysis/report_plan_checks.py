@@ -77,7 +77,10 @@ of it (``behind_on``), by aspect and that arm's id; an absolute bar it ``missed`
 measure.
 
 **Disclosures** (:func:`implied_disclosures`), what the flag must hold, and only report-wide ones (GENERATOR §2.4):
-``late_criteria`` when any criterion was set after the results; ``judge_uncalibrated`` when every judged dimension's
+``no_rule`` when the plan is in tradeoff mode and the campaign declared no rule ranking the axes (GENERATOR §4.2:
+the flag says "no rule set in advance" and names who makes the call). The report input's one declared rule is a
+contrast family's ``merit_axes`` (the merit priority); it carries no exchange rate, so a tradeoff with every family's
+merit priority empty, or no family at all, is the case. Decide mode and a no call never disclose it. ``late_criteria`` when any criterion was set after the results; ``judge_uncalibrated`` when every judged dimension's
 tier and calibration, as stated, are ``undetermined`` or ``insufficient``; ``confound:<id>`` and
 ``short_run:<run>`` only when the caveat touches the **whole comparison**. The comparisons a report makes are read
 from its arms: each candidate against the control in a change, every pair in a choice, the one arm in a
@@ -279,16 +282,22 @@ def raised_warnings(report_input: ReportInput, arm: str) -> list[WarningRef]:
     return [WarningRef.model_validate({"kind": k, "aspect": a, "name": n}) for k, a, n in raised]
 
 
-def implied_disclosures(report_input: ReportInput) -> list[str]:
-    """The report-wide disclosures the caveats imply, which the flag holds exactly (this module's Disclosures).
+def implied_disclosures(report_input: ReportInput, mode: str) -> list[str]:
+    """The report-wide disclosures a plan in ``mode`` must make, which its flag holds exactly (this module's
+    Disclosures).
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
-    :return: Each disclosure as the flag writes it, in the flag's order: late criteria, the judge, confounds, runs.
+    :param mode: The plan's mode: ``decide``, ``tradeoff`` or ``no_call``.
+    :ptype mode: str
+    :return: Each disclosure as the flag writes it, in the flag's order: no rule, late criteria, the judge, confounds,
+        runs.
     :rtype: list[str]
     """
     caveats = report_input.caveats
     implied: list[str] = []
+    if mode == "tradeoff" and not any(family.merit_axes for family in report_input.contrast_families):
+        implied.append("no_rule")
     if caveats.late_criteria:
         implied.append("late_criteria")
     if _judge_uncalibrated(report_input):
@@ -573,25 +582,35 @@ def _said(key: tuple[str, str, str]) -> str:
 
 
 def _flag_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
-    implied = implied_disclosures(report_input)
+    implied = implied_disclosures(report_input, plan.mode)
     if not plan.flag:
         if implied:
-            yield "flag", f"is empty, and the report input implies the report-wide disclosure(s) {implied}"
+            yield "flag", f"is empty, and this {plan.mode} plan must disclose {implied}"
         return
     discloses = plan.flag[0].discloses
     if not implied:
         yield (
             "flag[0]",
             (
-                f"discloses {discloses}, and the report input implies no report-wide disclosure: drop the flag, and say "
+                f"discloses {discloses}, and this {plan.mode} plan has no report-wide disclosure: drop the flag, and say "
                 "any scoped caveat beside the claim it qualifies"
             ),
         )
         return
     yield from _repeated("flag[0].discloses", discloses, "disclosure")
     if missing := [item for item in implied if item not in discloses]:
-        yield "flag[0].discloses", f"leaves out {missing}, which the report input implies are report-wide"
-    if extra := [item for item in discloses if item not in implied]:
+        yield "flag[0].discloses", f"leaves out {missing}, which this {plan.mode} plan must disclose"
+    if "no_rule" in discloses and "no_rule" not in implied:
+        yield (
+            "flag[0].discloses",
+            (
+                f"holds 'no_rule', and a {plan.mode} plan makes the call: only a tradeoff plan with no declared ranking "
+                "rule discloses that no rule was set in advance"
+                if plan.mode != "tradeoff"
+                else "holds 'no_rule', and the campaign declared a merit priority that ranks the axes"
+            ),
+        )
+    if extra := [item for item in discloses if item not in implied and item != "no_rule"]:
         yield (
             "flag[0].discloses",
             (

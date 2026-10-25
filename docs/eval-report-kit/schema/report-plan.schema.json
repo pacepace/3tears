@@ -58,7 +58,7 @@
         "properties": {
           "title": {"type": "string", "minLength": 1},
           "text": {"type": "string", "minLength": 1},
-          "discloses": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^(late_criteria|judge_uncalibrated|confound:.+|short_run:.+)$"}, "description": "late_criteria, judge_uncalibrated, confound:<id in caveats.confounds>, short_run:<run id>"},
+          "discloses": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^(late_criteria|judge_uncalibrated|no_rule|confound:.+|short_run:.+)$"}, "description": "late_criteria, judge_uncalibrated, no_rule (a tradeoff with no declared ranking rule), confound:<id in caveats.confounds>, short_run:<run id>"},
           "weakens": {"type": "array", "items": {"type": "string"}},
           "survives": {"type": "array", "items": {"type": "string"}}
         }
