@@ -323,7 +323,7 @@
     {
       "id": "examples",
       "eyebrow": "What the failures look like",
-      "headline": "The remaining failures are collapsed hops and off-by-one date windows",
+      "headline": "{arm:brisk-s.low.r1}'s shown failures are a collapsed hop, an off-by-one date window and a missed clarification",
       "takeaway": "Representative failures of the recommended configuration, with the expected call.",
       "chart": {
         "kind": "examples",

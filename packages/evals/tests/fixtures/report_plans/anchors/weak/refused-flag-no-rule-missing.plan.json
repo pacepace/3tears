@@ -54,7 +54,7 @@
     },
     {
       "term": "Hybrid",
-      "text": "Modeled, not run: the cheaper model serves early turns and Production the rest, weighted by the share of replies at each depth.",
+      "text": "The cheaper model serves early turns and Production the rest, weighted by the share of replies at each depth.",
       "caveats": []
     },
     {
