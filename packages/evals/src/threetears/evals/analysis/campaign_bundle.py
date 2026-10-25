@@ -80,11 +80,13 @@ from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import CellAddress, campaign_cell_aliases
 from threetears.evals.analysis.report.decision import (
     CasesNeeded,
+    FloorReadings,
     SampleProjection,
     case_cost_usd,
     control_cannot_show,
     floor_projection,
     floor_readings,
+    projected_usd_value,
     read_floor,
 )
 from threetears.evals.analysis.style import measure_name
@@ -984,16 +986,32 @@ def _across(figure: AggregateFigure, spelled: Callable[[float | None], float | N
 
 def _floors(bundle: CampaignBundle, floors: Sequence[FloorStatus]) -> list[dict[str, Any]]:
     """Every floor's status, arm by arm (an arm with a broken floor first): the floors it breaks, leaves unclear and
-    holds, each with the aspect and the rate it read, and for an unclear one what would settle it."""
+    holds, each with the aspect and the rate it read, and for an unclear one what would settle it.
+
+    :raises RuntimeError: A floor is read with no control, or names a floor or a rate the campaign's declaration and
+        its aspect's evidence do not hold — the bundle was built inconsistently.
+    """
+    if not floors:
+        return []
+    control = bundle.readings.control
+    if control is None:
+        raise RuntimeError("the campaign's readings hold floors but name no control they were read against")
     declared = {floor.key: floor for floor in bundle.declaration.floors}
+    figures: dict[tuple[str, str], FloorReadings] = {}
     by_arm: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for status in floors:
         aspect = bundle.aspect(status.aspect)
+        if (status.aspect, status.arm) not in figures:
+            # Named as the page names them: the aspect's own page passes its declared check names.
+            figures[status.aspect, status.arm] = floor_readings(
+                aspect, control, status.arm, check_names=aspect.goal_check_names
+            )
+        read = figures[status.aspect, status.arm]
         rate = status.margin is not None
         entry: dict[str, Any] = {
             "floor": status.floor,
             "aspect": status.aspect,
-            "reads": _read_name(aspect, status.reading)
+            "reads": _read_name(aspect, read, status.reading)
             if status.reading is not None
             else ("the pass rate" if rate else "the cost per reply"),
             "interval": _points_pair(status.interval) if rate else _figures(status.interval),
@@ -1003,7 +1021,7 @@ def _floors(bundle: CampaignBundle, floors: Sequence[FloorStatus]) -> list[dict[
             "why": status.reason,
         }
         if status.status == "unclear":
-            entry["to_settle"] = _to_settle(_floor_projection(bundle, status, declared.get(status.floor)))
+            entry["to_settle"] = _to_settle(_floor_projection(bundle, status, declared[status.floor], read))
         by_arm.setdefault(status.arm_label, {}).setdefault(status.status, []).append(
             {key: value for key, value in entry.items() if value is not None}
         )
@@ -1013,27 +1031,30 @@ def _floors(bundle: CampaignBundle, floors: Sequence[FloorStatus]) -> list[dict[
     ]
 
 
-def _read_name(aspect: AnalysisContextBundle, reading: str) -> str:
-    """The rate a floor read, as the page names it: a check by its declared name, else its expression; a measure or
-    judged dimension by its key."""
-    return aspect.goal_check_names.get(reading, reading)
+def _read_name(aspect: AnalysisContextBundle, figures: FloorReadings, reading: str) -> str:
+    """The rate a floor read, by the name the page gives the rate its floor table reads (``figures``, built as the
+    page builds them): a measure by its reader name, a judged dimension in words; a check by its declared name, else
+    its whole expression, as the view's ``measures`` names it.
+
+    :raises RuntimeError: No rate in ``figures`` is the one the floor's status names — the bundle was built
+        inconsistently, and the writer could not name that rate at all.
+    """
+    rate = next((rate for rate in figures.rates if rate.answers(reading)), None)
+    if rate is None or rate.measure is None:
+        raise RuntimeError(f"aspect {aspect.aspect!r} holds no rate a floor reading {reading!r} names")
+    if (check := goal_check_of(rate.measure)) is not None:
+        return aspect.check_name(rate.measure) or check
+    return rate.name
 
 
-def _floor_projection(bundle: CampaignBundle, status: FloorStatus, floor: Floor | None) -> SampleProjection | None:
+def _floor_projection(
+    bundle: CampaignBundle, status: FloorStatus, floor: Floor, figures: FloorReadings
+) -> SampleProjection | None:
     """The cases that would show an unclear floor holds, counted as its aspect's page and the scorecard's To settle
-    count it: read again from the aspect's evidence. None where the campaign has no control or the floor no
-    declaration."""
-    control = bundle.readings.control
-    if control is None or floor is None:
-        return None
-    aspect = bundle.aspect(status.aspect)
-    verdict = read_floor(
-        floor,
-        floor_readings(aspect, control, status.arm),
-        control=bundle.readings.control_label,
-        candidate=status.arm_label,
-    )
-    return floor_projection(verdict, per_case_usd=case_cost_usd(aspect))
+    count it: read again from the aspect's evidence (``figures``). None where the floor's reading cannot be projected
+    (:func:`~threetears.evals.analysis.report.decision.floor_projection`)."""
+    verdict = read_floor(floor, figures, control=bundle.readings.control_label, candidate=status.arm_label)
+    return floor_projection(verdict, per_case_usd=case_cost_usd(bundle.aspect(status.aspect)))
 
 
 def _to_settle(projection: SampleProjection | None) -> dict[str, Any] | None:
@@ -1051,7 +1072,7 @@ def _need(projection: SampleProjection, need: CasesNeeded) -> dict[str, Any]:
     if need.kind in _COUNTED:
         said["cases"] = need.cases
     if (cost := projection.cost(need)) is not None:
-        said["usd"] = _priced(cost)
+        said["usd"] = projected_usd_value(cost)
     return said
 
 
@@ -1515,13 +1536,6 @@ def _points(value: float | None) -> float | None:
 def _points_pair(values: Sequence[float] | None) -> list[float | None] | None:
     """An interval in points, each end as :func:`_points` spells it."""
     return None if values is None else [_points(value) for value in values]
-
-
-def _priced(value: float) -> float:
-    """A projected cost to two significant figures, since the cases it prices are about."""
-    if value <= 0:
-        return 0.0
-    return round(value, 1 - math.floor(math.log10(value)))
 
 
 def _tail(text: str, limit: int) -> str:
