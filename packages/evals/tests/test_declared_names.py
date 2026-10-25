@@ -304,8 +304,8 @@ PINNED: dict[str, str] = {
     "campaign_evidence_digest": "v2:1896767143a9454239aebb4a33710a0d4167bd4fced79c5fd236c217a8f1834b",
     "case content hash": "2427afda4a091bccfdeffbdc0ef058b06862b1c310f68df406edf30604604ae2",
     # The one entry that moves with the durable minor: ``00107a5b7`` was at 16.2, aspect and check names are 16.3 and
-    # arm names 16.4. It is no part of what a run, cell, pool, pairing, analysis or reporter case keys on.
-    "durable version": "16.4",
+    # arm names 16.4, stratum names 16.5. It is no part of what a run, cell, pool, pairing, analysis or reporter case keys on.
+    "durable version": "16.5",
     "measured_template_digest": "16e80e0cbd36ae4d39ca180c5f08bcb9d165afaab0e7e014ff42464f11e4f3df",
     "readings": "29f0e8ce68005f27cfc8ff7c76ef3623a174125af4a46b8e587bb7af7d88ebc9",
     "run-0-candidate case_set_fingerprint": "89df90840e5dc430494c9d36ab9ae0dff05c199d54ddf7027f3f339c44bcfe56",
@@ -661,18 +661,18 @@ class TestNamingAStoredTemplateCutsNoRunOff:
             "fingerprint": assemble_context_bundle(campaign, storage=host.storage, profile=host.profile).fingerprint(),
         }
 
-    def test_naming_a_check_leaves_criteria_rejudging_take_up_and_fingerprint_as_they_were(self) -> None:
+    @pytest.mark.parametrize("field", ["goal_check_names", "stratum_names"])
+    def test_naming_leaves_criteria_rejudging_take_up_and_fingerprint_as_they_were(self, field: str) -> None:
         fixture, template, runs = self._stored()
         before = self._readings(fixture, template.id, runs)
+        names = {
+            "goal_check_names": {template.goal_state_checks[0]: "Every field"},
+            "stratum_names": {"off_lane": "Off-lane asks"},
+        }[field]
 
-        named = update_template(
-            fixture.host.eval_host,
-            template.id,
-            TOYHOST_SCOPE,
-            {"goal_check_names": {template.goal_state_checks[0]: "Every field"}},
-        )
+        named = update_template(fixture.host.eval_host, template.id, TOYHOST_SCOPE, {field: names})
 
-        assert named.goal_check_names == {template.goal_state_checks[0]: "Every field"}
+        assert getattr(named, field) == names
         after = self._readings(fixture, template.id, runs)
         assert after == before
         assert all(before["rejudgeable"]), "a run launched after its template's last edit may be rejudged"
@@ -687,13 +687,15 @@ class TestNamingAStoredTemplateCutsNoRunOff:
         assert after["updated_at"] > before["updated_at"]
         assert not any(after["rejudgeable"]) and not any(after["taken up as read"])
 
-    def test_names_beside_a_measured_edit_still_stamp_it(self) -> None:
+    @pytest.mark.parametrize("field", ["goal_check_names", "stratum_names"])
+    def test_names_beside_a_measured_edit_still_stamp_it(self, field: str) -> None:
         fixture, template, _ = self._stored()
+        names = {
+            "goal_check_names": {template.goal_state_checks[0]: "Every field"},
+            "stratum_names": {"off_lane": "Off-lane asks"},
+        }[field]
         edited = update_template(
-            fixture.host.eval_host,
-            template.id,
-            TOYHOST_SCOPE,
-            {"goal_check_names": {template.goal_state_checks[0]: "Every field"}, "description": "renamed"},
+            fixture.host.eval_host, template.id, TOYHOST_SCOPE, {field: names, "description": "renamed"}
         )
         assert edited.updated_at > template.updated_at
 

@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a template may declare the display name a page prints for each stratum
+
+**Added:** `EvalTemplate.stratum_names` (a stratum id to its name, each at most 32 characters, never blank, one per
+stratum; durable v16.5) is what a page prints for a stratum: the report input's `Stratum.name` (so a figure key's
+`strata.<id>.name` and a plan's stratum labels print it), and an aspect page's stratum columns and cases table. A
+stratum naming none prints as its id. It rides `AnalysisContextBundle.stratum_names`, written only when declared, and
+is settable through `template_update` like `goal_check_names`, which leaves the template's `updated_at`. It is in no
+digest or fingerprint and no bundle shape moves. See `packages/evals/MIGRATIONS.toml`.
+
 ### evals: an arm may declare the short name a page prints for it
 
 **Added:** `CampaignArm.short_name` (at most 32 characters, no other arm's label or short name; durable v16.4) is

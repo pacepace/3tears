@@ -205,7 +205,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`DURABLE_DOC_TYPES`** · constant (frozenset) · What people author, by `doc_type`: the `durable` entries of `DOC_TYPE_FACTS`, derived as `CORE_DOC_TYPES` is.
 - **`DURABLE_SCHEMA_MINOR`** · *host contract* · constant (int) · The durable minor this build writes within `DURABLE_SCHEMA_VERSION`, under the core's minor rules.
-  <br>`= 4`
+  <br>`= 5`
 - **`DURABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The durable version this build writes.
   <br>`= 16`
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
@@ -1223,6 +1223,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `aspect` | `str` | required | The label of the campaign's aspect this bundle reads: one template's runs, its design and its floors. |
 | `short_name` | `str \| None` | `None` | What a page prints for this aspect in place of its label, as the campaign declares it. |
 | `goal_check_names` | `dict[str, str]` | `{}` | What a page prints for a goal check, by its expression, as the member runs' templates declare it (`EvalTemplate.goal_check_names`). |
+| `stratum_names` | `dict[str, str]` | `{}` | What a page prints for a stratum, by the stratum id a case declares, as the member runs' templates declare it (`EvalTemplate.stratum_names`). |
 | `template_id` | `str \| None` | `None` | Referenced eval_template (the Behavior), or None. |
 | `scope_id` | `str` | required | Storage scope the member runs were loaded from. |
 | `run_ids` | `list[str]` | `[]` | Resolved member-run ids (sorted). |

@@ -1926,7 +1926,9 @@ def _contrast_blocks(
     blocks.extend(_comparison_blocks(bundle, surface, contrasts_read, charts, arm, rulers))
     blocks.extend(_readings_blocks(bundle, surface, names, rulers))
     blocks.extend(_guardrail_blocks(surface, bundle.guardrails, guardrails_read, rulers))
-    blocks.extend(_strata_blocks(surface, names, rulers, check_names=bundle.goal_check_names))
+    blocks.extend(
+        _strata_blocks(surface, names, rulers, check_names=bundle.goal_check_names, stratum_names=bundle.stratum_names)
+    )
     blocks.extend(_label_blocks(surface, names, rulers))
     return blocks
 
@@ -2925,7 +2927,12 @@ def _figure_text(mean: float, sem: float | None, ruler: MeasureRuler) -> str:
 
 
 def _strata_blocks(
-    surface: DecisionSurface, arms: dict[str, ArmName], rulers: Rulers, *, check_names: Mapping[str, str]
+    surface: DecisionSurface,
+    arms: dict[str, ArmName],
+    rulers: Rulers,
+    *,
+    check_names: Mapping[str, str],
+    stratum_names: Mapping[str, str],
 ) -> list[ReportBlock]:
     """Each arm's figures per stratum beside its pooled figure — or nothing, when no case declares a stratum."""
     control = surface.control_variant_key
@@ -2963,7 +2970,9 @@ def _strata_blocks(
             if stratum.n_cases < STRATUM_MIN_CASES:
                 cases[columns[name]] = f"{cases[columns[name]]} — {TOO_FEW_CASES}"
                 plural = "" if stratum.n_cases == 1 else "s"
-                thin.append(f"{_stratum_word(name)} in {arm.removeprefix('▸ ')} ({stratum.n_cases} case{plural})")
+                thin.append(
+                    f"{_stratum_word(name, stratum_names)} in {arm.removeprefix('▸ ')} ({stratum.n_cases} case{plural})"
+                )
         rows.append(cases)
         rows.extend(_measure_rows(arm, cell, by_name, columns, surface, rulers, check_names=check_names))
         rows.extend(_judged_rows(arm, cell, by_name, columns, rulers))
@@ -2976,7 +2985,10 @@ def _strata_blocks(
                 TableColumn(key="arm", header="Arm", term="control" if control is not None else None),
                 TableColumn(key="reading", header="Reading"),
                 TableColumn(key="all", header="All cases", term="cases"),
-                *(TableColumn(key=columns[name], header=_stratum_word(name), term="stratum") for name in names),
+                *(
+                    TableColumn(key=columns[name], header=_stratum_word(name, stratum_names), term="stratum")
+                    for name in names
+                ),
             ],
             rows=[table_row(row) for row in rows],
             order=surface_order_sentence(has_control_row=any(cell.variant_key == control for cell in cells))
@@ -2997,9 +3009,10 @@ def _strata_blocks(
     return blocks
 
 
-def _stratum_word(name: str | None) -> str:
-    """A stratum as a column header and a disclosure name it: its own name, or :data:`NO_STRATUM`."""
-    return NO_STRATUM if name is None else name
+def _stratum_word(name: str | None, declared: Mapping[str, str]) -> str:
+    """A stratum as a column header and a disclosure name it: its declared display name, else its id, else
+    :data:`NO_STRATUM`."""
+    return NO_STRATUM if name is None else declared.get(name, name)
 
 
 def _cases_text(n_trials: int, n_cases: int | None) -> str:
@@ -3298,7 +3311,7 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
             "flag": {0: "regression", 1: "no usable trial", 2: None}[group(case)],
         }
         if strata:
-            row["stratum"] = trials[0].stratum
+            row["stratum"] = _stratum_word(trials[0].stratum, bundle.stratum_names) if trials[0].stratum else None
         for index, key in enumerate(arms):
             row[f"arm_{index}"] = _marks([trial for trial in trials if trial.arm == key])
         # The ids are navigation, not information: the failed and lost ones lead, since those are the records a

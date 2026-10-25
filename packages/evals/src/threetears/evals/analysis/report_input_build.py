@@ -641,7 +641,13 @@ class _Builder:
                         for reading in held.judged
                     }
             strata.extend(
-                Stratum(id=name, aspect=aspect.aspect, n_cases=row["n_cases"], per_arm=row["per_arm"])
+                Stratum(
+                    id=name,
+                    name=aspect.stratum_names.get(name),
+                    aspect=aspect.aspect,
+                    n_cases=row["n_cases"],
+                    per_arm=row["per_arm"],
+                )
                 for name, row in rows.items()
             )
         return sorted(strata, key=lambda stratum: -(stratum.n_cases or 0))

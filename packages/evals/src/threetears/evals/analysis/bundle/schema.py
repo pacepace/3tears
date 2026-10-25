@@ -2540,7 +2540,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # frontier point's delivered `depth`, `n_cases_short_of_k`, common-depth reading (`common_pass_hat_k`,
     # `n_common_cases`, `n_cases_left_out`) and each subject's `common_depth`, `shares_no_case` and `unmeasured_for`; a point's opt-in
     # `model_pass_hat_k` (`basis: "model"`), None unless the host asks for it.
-    # Unmoved by declared names: `short_name` and `goal_check_names` are written only when declared and are no part of
+    # Unmoved by declared names: `short_name`, `goal_check_names` and `stratum_names` are written only when declared and are no part of
     # the fingerprint, so a bundle naming nothing is this shape byte for byte and every fingerprint stays put.
     schema_version: int = Field(
         default=64, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
@@ -2581,6 +2581,15 @@ class AnalysisContextBundle(EvalDocumentModel):
             "(`EvalTemplate.goal_check_names`). A check absent here is printed as its whole expression. Presentation "
             "only: written only when a name is declared and no part of the bundle's fingerprint, and never in "
             "`measure_catalog`, whose names every reading is read under."
+        ),
+    )
+    stratum_names: dict[str, str] = Field(
+        default_factory=dict,
+        exclude_if=lambda names: not names,
+        description=(
+            "What a page prints for a stratum, by the stratum id a case declares, as the member runs' templates declare "
+            "it (`EvalTemplate.stratum_names`). A stratum absent here is printed as its id. Presentation only: written "
+            "only when a name is declared and no part of the bundle's fingerprint."
         ),
     )
     template_id: str | None = Field(default=None, description="Referenced eval_template (the Behavior), or None.")

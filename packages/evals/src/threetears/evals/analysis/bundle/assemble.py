@@ -595,6 +595,7 @@ def assemble_context_bundle(
         aspect=view.aspect,
         short_name=view.short_name,
         goal_check_names=_check_names(runs, templates),
+        stratum_names=_stratum_names(runs, templates),
         subject_id=view.subject_id,
         subject_kind=view.subject_kind,
         behavior=view.behavior,
@@ -914,6 +915,40 @@ def _check_names(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate])
                 ", ".join(f"{template_id}={name!r}" for template_id, name in sorted(by_template.items())),
             )
     return names
+
+
+def _stratum_names(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) -> dict[str, str]:
+    """Each stratum's display name as the member runs' templates declare it, by the stratum id.
+
+    A template that no longer resolves names nothing, and a stratum no template names is absent, printed as its id. A
+    stratum two templates name differently is absent too, and a name two strata would take from different templates is
+    kept by neither, so a page never prints two strata alike; the warning log names each.
+    """
+    given: dict[str, dict[str, str]] = {}
+    for template_id in sorted({run.template_id for run in runs if run.template_id}):
+        template = templates.get(template_id)
+        if template is None:
+            continue
+        for stratum, name in template.stratum_names.items():
+            given.setdefault(stratum, {})[template_id] = name
+    names: dict[str, str] = {}
+    for stratum, by_template in given.items():
+        if len(set(by_template.values())) == 1:
+            names[stratum] = next(iter(by_template.values()))
+        else:
+            log.warning(
+                "eval.stratum_names_differ stratum=%r names=%s: printed as its id until its templates name it alike",
+                stratum,
+                ", ".join(f"{template_id}={name!r}" for template_id, name in sorted(by_template.items())),
+            )
+    held = list(names.values())
+    clashing = {name for name in held if held.count(name) > 1}
+    if clashing:
+        log.warning(
+            "eval.stratum_names_clash names=%s: strata of different templates share a name, printed as their ids",
+            ", ".join(sorted(map(repr, clashing))),
+        )
+    return {stratum: name for stratum, name in names.items() if name not in clashing}
 
 
 def _package_version() -> str | None:

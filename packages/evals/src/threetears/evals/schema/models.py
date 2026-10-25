@@ -1668,7 +1668,7 @@ class CalibrationRating(DurableDocumentModel):
 # EvalTemplate
 # =============================================================================
 
-#: The most characters a declared display name holds: an aspect's short name, a goal check's name. A count of
+#: The most characters a declared display name holds: an aspect's short name, a goal check's name, a stratum's name. A count of
 #: characters rather than of words, since what a word is differs from one language to the next.
 DECLARED_NAME_CHARS: Final[int] = 32
 
@@ -1677,7 +1677,7 @@ DECLARED_NAME_CHARS: Final[int] = 32
 #: (:func:`~threetears.evals.run.definition_digests.template_digest`, ``measured_template_digest``), out of every
 #: bundle fingerprint (a bundle carries them under the same names), and an edit of these alone leaves the template's
 #: ``updated_at`` as it was, since that stamp decides which runs still read the template's criteria and intent.
-TEMPLATE_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"goal_check_names"})
+TEMPLATE_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"goal_check_names", "stratum_names"})
 
 
 def declared_name(name: str, *, what: str) -> str:
@@ -1848,6 +1848,17 @@ class EvalTemplate(DurableDocumentModel):
             "or candidate, so naming a check changes nothing a run measures."
         ),
     )
+    # What a page calls each stratum: presentation only, like `goal_check_names`.
+    stratum_names: dict[str, str] = Field(
+        default_factory=dict,
+        exclude_if=lambda names: not names,
+        description=(
+            "A display name for a stratum, by the stratum id a case declares (`EvalTestCase.stratum`): what a page "
+            f"prints for the stratum, at most {DECLARED_NAME_CHARS} characters, one name per stratum. A stratum with no "
+            "name here is printed as its id. Read by no judge, simulator or candidate, so naming a stratum changes "
+            "nothing a run measures."
+        ),
+    )
 
     # Lifecycle
     revision: int = Field(
@@ -1935,8 +1946,8 @@ class EvalTemplate(DurableDocumentModel):
 
     @model_validator(mode="after")
     def _names_its_own_checks_once(self) -> Self:
-        """Refuse a check name for a check the template does not declare, a blank or over-long one, or one name
-        given to two checks, which a page would print alike.
+        """Refuse a check name for a check the template does not declare, a blank or over-long name, or one name
+        given to two checks or to two strata, which a page would print alike.
 
         :return: The validated template.
         :rtype: EvalTemplate
@@ -1954,6 +1965,15 @@ class EvalTemplate(DurableDocumentModel):
         if twice := sorted({name for name in names if names.count(name) > 1}):
             raise ValueError(
                 f"goal_check_names gives {', '.join(map(repr, twice))} to more than one check; name each check apart"
+            )
+        for stratum, name in self.stratum_names.items():
+            if not stratum.strip():
+                raise ValueError("stratum_names holds a blank stratum id; key each name by the stratum a case declares")
+            declared_name(name, what=f"stratum {stratum!r}")
+        given = list(self.stratum_names.values())
+        if twice := sorted({name for name in given if given.count(name) > 1}):
+            raise ValueError(
+                f"stratum_names gives {', '.join(map(repr, twice))} to more than one stratum; name each stratum apart"
             )
         return self
 
