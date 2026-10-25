@@ -17,13 +17,18 @@ public surface:
 - the messages (``messages``): registration (:class:`ToolManifestEntry`,
   :class:`RegistrationManifest`, :class:`RefusedTool`,
   :class:`RegistrationResponse`), the call (:class:`CallRequest`,
-  :class:`CallAccepted`, :class:`CallResponse`) and :class:`HeartbeatMessage`.
+  :class:`CallAccepted`, :class:`CallResponse`), :class:`HeartbeatMessage`,
+  the reachability probe's acknowledgement (:class:`ProbeAck`) and the
+  discovery request (:class:`DiscoveryProbeRequest`,
+  :class:`DiscoveryProbeToolEntry`).
 
-pod policy and machinery -- which refusals are final, readiness polling, the
-probe acknowledgement, ``ToolServer`` itself -- stay in
+pod policy and machinery -- which refusals are final, readiness polling and
+the discovery reply it reads, ``ToolServer`` itself -- stay in
 ``threetears.agent.tools.server``. each name here keeps its old path:
 ``context_envelope`` re-exports the context, ``http_operation`` the REST
-affordance, and ``server`` the messages.
+affordance, and ``server`` the messages. the registry re-exports the probe
+acknowledgement, the discovery request and the call reply under its own
+names.
 """
 
 from __future__ import annotations
@@ -33,7 +38,10 @@ from threetears.core.tool_wire.messages import (
     CallAccepted,
     CallRequest,
     CallResponse,
+    DiscoveryProbeRequest,
+    DiscoveryProbeToolEntry,
     HeartbeatMessage,
+    ProbeAck,
     RefusedTool,
     RegistrationManifest,
     RegistrationResponse,
@@ -58,10 +66,13 @@ __all__ = [
     "CallContext",
     "CallRequest",
     "CallResponse",
+    "DiscoveryProbeRequest",
+    "DiscoveryProbeToolEntry",
     "HeartbeatMessage",
     "HttpMethod",
     "ParameterBinding",
     "PathTemplateBinding",
+    "ProbeAck",
     "RefusedTool",
     "RegistrationManifest",
     "RegistrationResponse",

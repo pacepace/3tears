@@ -26,6 +26,7 @@ from pydantic import (
 )
 
 from threetears.core.tool_wire import CallAccepted, CallContext, CallRequest, bind_log_context
+from threetears.core.tool_wire import CallResponse as ProxyCallResponse
 from threetears.core.security.freshness import DEFAULT_PROOF_MAX_AGE, ISSUE_TIME_FUTURE_TOLERANCE
 from threetears.core.security.identity_token import (
     IDENTITY_REFUSED,
@@ -87,6 +88,9 @@ __all__ = [
     "CallProxy",
     "ProxyCallAccepted",
     "ProxyCallRequest",
+    # RE-EXPORTED: ``threetears.core.tool_wire.CallResponse``, the pod's reply, under the name
+    # this module has always published. the proxy forwards the reply in the shape the pod sent
+    # it, so both hops share one class rather than two copies of one shape.
     "ProxyCallResponse",
 ]
 
@@ -240,43 +244,6 @@ class ProxyCallRequest(TolerantWireModel):
                     f"threetears.core.tool_wire.CallContext"
                 )
         return data
-
-
-class ProxyCallResponse(BaseModel):
-    """outgoing tool call response to the caller.
-
-    the response echoes the inbound :class:`CallContext` verbatim so
-    identity has one shape on both sides of the proxy hop. there is no
-    top-level ``correlation_id`` string; log-border stringification
-    reads ``str(response.context.correlation_id)`` when needed. the
-    field is ``None`` only when the inbound request carried no context
-    at all (which is also rejected upstream because routing requires
-    ``context.agent_id``; ``None`` survives only in error responses
-    built from a malformed inbound request).
-
-    :param success: whether tool execution succeeded
-    :ptype success: bool
-    :param content: result content string
-    :ptype content: str
-    :param metadata: optional additional metadata
-    :ptype metadata: dict[str, Any] | None
-    :param error: error message if execution failed
-    :ptype error: str | None
-    :param error_code: machine-readable error code
-    :ptype error_code: str | None
-    :param context: unified identity + trace envelope echoed from the
-        inbound :class:`ProxyCallRequest`; ``None`` only on
-        malformed-request error responses where no context could be
-        parsed
-    :ptype context: CallContext | None
-    """
-
-    success: bool
-    content: str
-    metadata: dict[str, Any] | None = None
-    error: str | None = None
-    error_code: str | None = None
-    context: CallContext | None = None
 
 
 class ProxyCallAccepted(BaseModel):

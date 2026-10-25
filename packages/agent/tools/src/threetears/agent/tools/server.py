@@ -16,14 +16,17 @@ from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
 
 from datetime import timedelta
 
-from pydantic import BaseModel, SerializerFunctionWrapHandler, ValidationError, model_serializer
+from pydantic import BaseModel, ValidationError
 from threetears.core.collections.tier_reads import hold_tier_reads_timer, release_tier_reads_timer
 from threetears.core.tool_wire.context import CallContext, bind_log_context
 from threetears.core.tool_wire.messages import (
     CallAccepted,
     CallRequest,
     CallResponse,
+    DiscoveryProbeRequest,
+    DiscoveryProbeToolEntry,
     HeartbeatMessage,
+    ProbeAck,
     RefusedTool,
     RegistrationManifest,
     RegistrationResponse,
@@ -467,70 +470,6 @@ def refusals_in_reply(reply: RegistrationResponse, offered: Iterable[tuple[str, 
 #: A wedged registry therefore delays readiness by this much, ONCE. The heartbeat re-asks while
 #: the answer is still unknown, so nothing is lost permanently.
 _IDENTITY_REPLY_TIMEOUT: Final[timedelta] = timedelta(seconds=10)
-
-
-class ProbeAck(BaseModel):
-    """acknowledgment of a reachability probe from the registry.
-
-    :param pod_id: unique identifier for this tool pod
-    :ptype pod_id: str
-    :param ready: whether pod is ready to serve calls
-    :ptype ready: bool
-    """
-
-    pod_id: str
-    ready: bool = True
-
-
-class DiscoveryProbeToolEntry(BaseModel):
-    """single tool in a discovery probe request.
-
-    :param name: namespaced tool name
-    :ptype name: str
-    :param version: semver-compatible version string
-    :ptype version: str
-    """
-
-    name: str
-    version: str
-
-
-class DiscoveryProbeRequest(BaseModel):
-    """discovery request used by :meth:`ToolServer.wait_until_ready`.
-
-    mirrors :class:`threetears.registry.discovery.DiscoverRequest` so
-    the pod can poll the registry without importing from the registry
-    package (which would create a circular dependency).
-
-    ``pod_id`` is OMITTED from the serialized form when ``None``, so it never crosses the wire as
-    an explicit ``null``.
-
-    :param agent_id: pod identifier standing in for agent_id in the wire
-    :ptype agent_id: str
-    :param tool_manifest: list of pinned tools to resolve
-    :ptype tool_manifest: list[DiscoveryProbeToolEntry]
-    :param pod_id: the polling pod's own id, so the registry reports the state of THIS pod's copy
-        of each tool as ``requester_copy_status``
-    :ptype pod_id: str | None
-    """
-
-    agent_id: str
-    tool_manifest: list[DiscoveryProbeToolEntry]
-    pod_id: str | None = None
-
-    @model_serializer(mode="wrap")
-    def _omit_absent_pod_id(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
-        """drop ``pod_id`` from the serialized form when it is ``None``.
-
-        :param handler: pydantic's default serializer
-        :ptype handler: SerializerFunctionWrapHandler
-        :return: the serialized fields
-        :rtype: dict[str, Any]
-        """
-        data: dict[str, Any] = handler(self)
-        if data.get("pod_id") is None:
-            data.pop("pod_id", None)
-        return data
 
 
 class DiscoveryProbeResultEntry(BaseModel):

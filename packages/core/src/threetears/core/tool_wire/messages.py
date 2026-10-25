@@ -1,4 +1,4 @@
-"""the tool server's wire messages: registration, call, reply, heartbeat.
+"""the tool server's wire messages: registration, call, reply, heartbeat, probe.
 
 the envelopes a tool pod and the registry exchange over NATS. both ends parse
 them, so they live in core, which both depend on, rather than beside either
@@ -7,7 +7,7 @@ end's implementation: ``threetears.agent.tools.server`` (the pod) and
 has to depend on the other to read what the other sends.
 
 pure value types. no IO, no lifecycle, no pod policy: which refusals are final,
-how a pod waits for readiness and how it answers a probe stay with the pod.
+how a pod waits for readiness and when it answers a probe stay with the pod.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 from threetears.core.tool_wire.context import CallContext
 from threetears.core.tool_wire.rest import RestAffordance
@@ -25,7 +25,10 @@ __all__ = [
     "CallAccepted",
     "CallRequest",
     "CallResponse",
+    "DiscoveryProbeRequest",
+    "DiscoveryProbeToolEntry",
     "HeartbeatMessage",
+    "ProbeAck",
     "RefusedTool",
     "RegistrationManifest",
     "RegistrationResponse",
@@ -340,6 +343,10 @@ class CallResponse(BaseModel):
     between "flat echo field" and "nested envelope" -- one shape in
     both directions.
 
+    the registry answers its own caller with this same class, re-exported
+    as :class:`threetears.registry.proxy.ProxyCallResponse`: the reply has
+    one shape on both hops.
+
     :param success: whether tool execution succeeded
     :ptype success: bool
     :param content: result content string
@@ -411,3 +418,70 @@ class HeartbeatMessage(BaseModel):
     pod_id: str
     timestamp: str
     tools_count: int
+
+
+class ProbeAck(BaseModel):
+    """acknowledgment of a reachability probe from the registry.
+
+    :param pod_id: unique identifier for this tool pod
+    :ptype pod_id: str
+    :param ready: whether pod is ready to serve calls
+    :ptype ready: bool
+    """
+
+    pod_id: str
+    ready: bool = True
+
+
+class DiscoveryProbeToolEntry(BaseModel):
+    """single tool in a discovery probe request.
+
+    :param name: namespaced tool name
+    :ptype name: str
+    :param version: semver-compatible version string
+    :ptype version: str
+    """
+
+    name: str
+    version: str
+
+
+class DiscoveryProbeRequest(BaseModel):
+    """discovery request: what an agent, or a tool pod polling for its own readiness, asks the registry.
+
+    the pod sends it from :meth:`threetears.agent.tools.server.ToolServer.wait_until_ready`; the
+    registry parses it as :class:`threetears.registry.discovery.DiscoverRequest`, which is this
+    class re-exported.
+
+    ``pod_id`` is OMITTED from the serialized form when ``None``, so it never crosses the wire as
+    an explicit ``null``.
+
+    :param agent_id: the requesting agent's id, or -- when a ToolServer polls for its own
+        readiness -- the polling server's pod-id; an agent's in-process server polls under its
+        ``{agent_id}.{instance}`` composite, which names that agent. self-asserted: it decides what
+        the requester is SHOWN, never what it may call
+    :ptype agent_id: str
+    :param tool_manifest: list of pinned tools to resolve
+    :ptype tool_manifest: list[DiscoveryProbeToolEntry]
+    :param pod_id: the polling pod's own id, so the registry reports the state of THIS pod's copy
+        of each tool as ``requester_copy_status``
+    :ptype pod_id: str | None
+    """
+
+    agent_id: str
+    tool_manifest: list[DiscoveryProbeToolEntry]
+    pod_id: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_pod_id(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """drop ``pod_id`` from the serialized form when it is ``None``.
+
+        :param handler: pydantic's default serializer
+        :ptype handler: SerializerFunctionWrapHandler
+        :return: the serialized fields
+        :rtype: dict[str, Any]
+        """
+        data: dict[str, Any] = handler(self)
+        if data.get("pod_id") is None:
+            data.pop("pod_id", None)
+        return data

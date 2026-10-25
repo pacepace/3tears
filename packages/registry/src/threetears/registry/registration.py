@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ValidationError
 
+from threetears.core.tool_wire import ProbeAck as ProbeResponse
 from threetears.core.tool_wire import (
     RefusedTool,
     RegistrationManifest,
@@ -54,6 +55,9 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ProbeRequest",
+    # RE-EXPORTED: the pod's own ``threetears.core.tool_wire.ProbeAck``, under the name this
+    # module has always published. the pod builds it and the registry parses it, so they share
+    # the class rather than keep two copies of one shape.
     "ProbeResponse",
     # RE-EXPORTED beside ``RegistrationResponse``, for the same reason.
     "RefusedTool",
@@ -82,19 +86,6 @@ class ProbeRequest(BaseModel):
     """
 
     pod_id: str
-
-
-class ProbeResponse(BaseModel):
-    """reachability probe acknowledgment returned by pod.
-
-    :param pod_id: identifier of pod that answered the probe
-    :ptype pod_id: str
-    :param ready: whether pod reports itself ready to serve calls
-    :ptype ready: bool
-    """
-
-    pod_id: str
-    ready: bool = True
 
 
 def _provider_node_names(nodes: "Iterable[str]", pod_id: str) -> tuple[str, ...]:

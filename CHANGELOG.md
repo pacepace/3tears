@@ -17,16 +17,25 @@ agent-tools did.
 `RestAffordanceError`, `PathTemplateBinding`, `ParameterBinding`, `HttpMethod`, `QUERY_METHODS`,
 `CACHEABLE_METHODS`, `MAX_POINTER_AGE_SECONDS`) and `tool_wire.messages` (`ToolManifestEntry`,
 `RegistrationManifest`, `RefusedTool`, `RegistrationResponse`, `CallRequest`, `CallAccepted`, `CallResponse`,
-`HeartbeatMessage`). The package re-exports all of them.
+`HeartbeatMessage`, `ProbeAck`, `DiscoveryProbeRequest`, `DiscoveryProbeToolEntry`). The package re-exports all
+of them.
 
 **Changed:** those names moved there unchanged from `threetears.agent.tools.context_envelope`,
 `threetears.agent.tools.http_operation` and `threetears.agent.tools.server`. Each old path still imports them
 and names the same object, so `isinstance` and nested validation hold across both paths; their `__module__`
 is now the core module, which moves only what is keyed on the dotted name (tracebacks, documentation
 cross-references, a list of models by qualified name); pickles, reprs and JSON schema titles are unchanged. The pod's own policy and machinery (`ToolRegistrationRefused`, `FINAL_REFUSAL_CODES`,
-`refusal_is_final`, `refusals_in_reply`, `ProbeAck`, the `DiscoveryProbe*` models, `ToolServer`) stay in
-`threetears.agent.tools.server`. `CallRequest`'s and the registry's `ProxyCallRequest`'s legacy-field refusal now points at
+`refusal_is_final`, `refusals_in_reply`, `DiscoveryProbeResponse`, `DiscoveryProbeResultEntry`, `ToolServer`)
+stay in `threetears.agent.tools.server`. `CallRequest`'s and the registry's `ProxyCallRequest`'s legacy-field refusal now points at
 `threetears.core.tool_wire.CallContext`, which a registry-only install carries, instead of the agent-tools path.
+
+The registry's own copies of four wire shapes the pod defines are now the shared classes, still importable
+from the same registry modules under the same names: `threetears.registry.registration.ProbeResponse` is
+`ProbeAck`, `threetears.registry.discovery.DiscoverRequest` and `DiscoverToolEntry` are `DiscoveryProbeRequest`
+and `DiscoveryProbeToolEntry`, and `threetears.registry.proxy.ProxyCallResponse` is `CallResponse`. Fields,
+defaults and serialization are unchanged, so nothing on the wire changes; their `__module__` and `__name__` are now
+core's, so a repr, a JSON schema title or a pickle reads the core name. `DiscoverResultEntry` and `DiscoverResponse` stay the registry's own: they carry fields the pod's
+readiness models leave out.
 
 **Removed:** `3tears-registry` no longer depends on `3tears-agent-tools`. An app that reached agent-tools
 through registry now declares it itself.
