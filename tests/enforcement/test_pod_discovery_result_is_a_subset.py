@@ -12,14 +12,15 @@ shared field renamed, retyped or given another default on one side would parse a
 wrong value on the other, and a pod would wait for a status it can never read.
 
 **What it holds.** Every field of each pod model exists in the registry model with the same name,
-annotation and default. The response's ``tools`` is compared by its element types, which are the
-entry pair. A base class would hold the same (backlogged), at the cost of reordering the registry's
-serialized fields.
+wire aliases, annotation, default and requiredness, and both models name their fields on the wire the
+same way. The response's ``tools`` is compared by its container and its element types, which are the
+entry pair. The owner chose this test over a base class (2026-10-25), which would hold the same at the
+cost of reordering the registry's serialized fields; the base class is weighed in pacepace/3tears#960.
 """
 
 from __future__ import annotations
 
-from typing import get_args
+from typing import get_args, get_origin
 
 import pytest
 from pydantic import BaseModel
@@ -39,23 +40,32 @@ _PAIRED_ANNOTATIONS = {(DiscoveryProbeResponse, "tools"): (DiscoveryProbeResultE
 
 
 def _default(field: FieldInfo) -> object:
-    """the default a field takes, from a value or a factory; ``...`` when it has none."""
-    if field.default_factory is not None:
-        return field.default_factory()  # type: ignore[call-arg]
-    return field.default
+    """the default a field takes, from a value or either kind of factory; ``PydanticUndefined`` when it has none."""
+    return field.get_default(call_default_factory=True, validated_data={})
+
+
+def _wire_names(field: FieldInfo) -> tuple[object, object, object]:
+    """the names a field is read and written under on the wire, where they differ from its own."""
+    return (field.alias, field.validation_alias, field.serialization_alias)
 
 
 @pytest.mark.parametrize(("pod", "registry"), _PAIRS, ids=lambda model: model.__name__)
 def test_every_pod_field_is_the_registrys_field(pod: type[BaseModel], registry: type[BaseModel]) -> None:
     assert pod.model_fields, f"{pod.__name__} declares no fields: the comparison would pass over nothing"
+    assert pod.model_config.get("alias_generator") == registry.model_config.get("alias_generator"), (
+        f"{pod.__name__} and {registry.__name__} name their fields on the wire differently"
+    )
     for name, field in pod.model_fields.items():
         assert name in registry.model_fields, f"{pod.__name__}.{name} has no field of that name on {registry.__name__}"
         theirs = registry.model_fields[name]
         if (pod, name) in _PAIRED_ANNOTATIONS:
-            ours_args, theirs_args = get_args(field.annotation), get_args(theirs.annotation)
-            assert (ours_args, theirs_args) == (
-                (_PAIRED_ANNOTATIONS[pod, name][0],),
-                (_PAIRED_ANNOTATIONS[pod, name][1],),
+            ours_entry, theirs_entry = _PAIRED_ANNOTATIONS[pod, name]
+            assert get_origin(field.annotation) is get_origin(theirs.annotation), (
+                f"{pod.__name__}.{name} and {registry.__name__}.{name} hold their entries in different containers"
+            )
+            assert (get_args(field.annotation), get_args(theirs.annotation)) == ((ours_entry,), (theirs_entry,)), (
+                f"{pod.__name__}.{name} holds {get_args(field.annotation)}, {registry.__name__}.{name} holds "
+                f"{get_args(theirs.annotation)}"
             )
         else:
             assert field.annotation == theirs.annotation, (
@@ -65,6 +75,7 @@ def test_every_pod_field_is_the_registrys_field(pod: type[BaseModel], registry: 
             f"{pod.__name__}.{name} and {registry.__name__}.{name} default apart"
         )
         assert field.is_required() == theirs.is_required(), f"{name} is required on one side only"
+        assert _wire_names(field) == _wire_names(theirs), f"{name} goes by another name on the wire on one side"
 
 
 def test_the_registry_entry_carries_more_than_the_pods() -> None:

@@ -146,6 +146,13 @@ fields and the same `_omit_absent_pod_id` validator). `ProxyCallRequest` is NOT 
 - Tests: the same-object checks for the new re-exports; existing registry discovery/registration/proxy tests pass
   unchanged.
 
+### 06: the discovery subset is held by a parity test (owner, 2026-10-25)
+- [RULING 2026-10-25, owner, asked whether to add the base class now: "Yes to test, and backlog the base class
+  as part of a general 'sweep for things that should be base classes' GitHub issues, assigned to me" |
+  `tests/enforcement/test_pod_discovery_result_is_a_subset.py` holds every pod discovery field to the
+  registry's name, aliases, annotation, default and requiredness; the base class is weighed in
+  pacepace/3tears#960, assigned to the owner]
+
 ## Gates (main session)
 Full unit suite on the testament pool; integration `./scripts/test-integration.sh -rs` for registry and
 agent-tools after telling discodon; cumulative Critic.
