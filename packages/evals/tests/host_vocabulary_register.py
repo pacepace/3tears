@@ -144,6 +144,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "kernel/analysis_measures.py": {},
     "kernel/arguments.py": {},
     "kernel/authored.py": {},
+    "kernel/report_plan.py": {},
     "kernel/authoring_fields.py": {},
     "schema/base.py": {},
     "schema/call_ledger.py": {},
