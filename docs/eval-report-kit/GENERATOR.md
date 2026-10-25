@@ -17,9 +17,9 @@ The planner is the part that makes the structure fit the data. A fixed template 
 
 ---
 
-## 1. Classify the eval (planner, step 1)
+## 1. Classify the eval (code, before the planner)
 
-Read these signals from the report input. Write each into `plan.signals` before choosing anything else.
+Code reads these signals from the report input, applies the shape lookup below, and writes `plan.signals` and `plan.shape` before the planner runs; the planner receives them as facts and never writes them. The same holds for the masthead, arm colours, and each chart's interval level, unit and axis range (owner ruling, 2026-10-25: code computes facts; the planner chooses the mode, the sections, the charts and every sentence).
 
 | Signal | Read from | Values |
 |---|---|---|
@@ -60,7 +60,7 @@ Top to bottom. The renderer enforces the order; the planner fills the slots and 
 1. **Masthead.** One line: kind · system under test · counts (arms, aspects or tasks, cases × repeats) · run date · `Synthetic example data` when it is. Never a paragraph.
 2. **Headline: the decision as an instruction with its reason.** "Keep September. Both candidates cost 27–28% more per reply and stay in character less often." Never the eval question restated. In tradeoff mode it states the trade (§4).
 3. **Lede.** At most two sentences: the strongest supporting fact, and what would change the answer.
-4. **Flag** (only when needed). One amber line that combines every disclosure: criteria set after the results, an uncalibrated judge, confounds. It says which findings it weakens and which survive. It is said once, here, and not repeated beside each finding. Neither a late criterion nor an uncalibrated judge lowers the recommendation's confidence: the flag discloses them, and the reader weighs them (owner ruling, 2026-10-25).
+4. **Flag** (only when needed). One amber line that combines every report-wide disclosure: criteria set after the results, an uncalibrated judge, and any confound or short run that touches the whole comparison. It says which findings it weakens and which survive. It is said once, here, and not repeated beside each finding. A confound that touches one arm or one finding (an arm's reasoning budget, one short run) is said once beside the claim it qualifies, usually in Watch, and not in the flag: a caveat is stated once, at the level it applies to (owner ruling, 2026-10-24). Neither a late criterion nor an uncalibrated judge lowers the recommendation's confidence: the flag discloses them, and the reader weighs them (owner ruling, 2026-10-25).
 5. **Decision block.** Four slots. Decide mode: Recommendation (with its numbers) · Why not the others · Watch (the weakest margin, a confound, what wasn't measured) · Next. Tradeoff mode: The trade · Where the answer flips · Our lean · What would settle it.
 6. **Options table.** 3–5 rows: the recommendation first, then the near-miss, the most accurate, and the cheapest (skip duplicates). Columns are the criteria plus cost, at real volume when the volume is known.
 7. **Summary charts.** One or two (at most three), beside or under the options table, in the same row order and colors (§5.3).
@@ -216,6 +216,6 @@ A page is done when all of these pass. `scripts/check.py` automates the first fi
 5. The explore controls change the outcome text and the chart, and the text says where the answer flips (or that it can't, and where each reading flips).
 6. The headline is a decision (or a trade, or a stated no-call) and matches the options table and the first chart.
 7. Every number in prose appears in the input or is computed by the renderer from it.
-8. The flag discloses every late criterion, uncalibrated judge and confound in `caveats`, once, and no other section repeats them.
+8. Every late criterion, uncalibrated judge and confound in `caveats` is disclosed exactly once: report-wide ones in the flag, arm- or finding-scoped ones beside the claim they qualify.
 9. No internal id, hash or measure key appears above Full results. Trial and case ids may appear on example cards, in small mono type, as references a reader can look up.
 10. A reviewer who sees only the first screen can say what to do, why, and what the main risk is.
