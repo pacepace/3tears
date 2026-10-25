@@ -124,6 +124,14 @@ Registry kept its own copies of three wire shapes the pod defines. Field-by-fiel
 `DiscoverRequest`/`DiscoverResponse` == agent-tools `DiscoveryProbeRequest`/`DiscoveryProbeResponse` (same
 fields and the same `_omit_absent_pod_id` validator). `ProxyCallRequest` is NOT a copy (a different hop: `pop`,
 `input_schema_digest` vs `proxy_assertion`) and stays.
+- [DECISION 2026-10-25, after the builder's comparison: NARROWED. `DiscoverResultEntry` carries seven fields the
+  pod's `DiscoveryProbeResultEntry` leaves out on purpose (its docstring: "only the fields needed by readiness
+  polling"), so `DiscoverResponse`/`DiscoveryProbeResponse` are a subset pair, not a copy. Folding them would grow
+  the pod's surface, a change rather than a move. Chunk 05 folds only the exact matches: `ProbeResponse` ->
+  `ProbeAck`, `DiscoverToolEntry` -> `DiscoveryProbeToolEntry`, `DiscoverRequest` -> `DiscoveryProbeRequest`,
+  `ProxyCallResponse` -> `CallResponse`. Registry keeps `DiscoverResultEntry` and `DiscoverResponse` as its own,
+  and their docstrings say they are the registry's full view of what the pod's probe models in part | do it right;
+  a verbatim move cannot change a shape]
 - Verify the nested entry types match exactly (`DiscoverToolEntry`/`DiscoverResultEntry` vs
   `DiscoveryProbeToolEntry`/`DiscoveryProbeResultEntry`, and any further nesting), and every validator and
   serializer. Any difference: stop and report rather than fold.
