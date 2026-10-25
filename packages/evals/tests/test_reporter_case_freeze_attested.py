@@ -48,7 +48,6 @@ from threetears.evals.ops import (
     FrozenReporterCase,
     OpsHost,
     ReporterCaseFreeze,
-    analysis_generate,
     reporter_case_archive,
     reporter_case_freeze,
     reporter_cases_list,
@@ -56,7 +55,8 @@ from threetears.evals.ops import (
 from threetears.evals.schema import EvalTestCase
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture, settled
+from packages.evals.tests.report_support import stored_memo_analysis
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
 from packages.evals.tests.reporter_case_support import GROUNDED, USEFUL, reporter_fixture, reporter_template
 
 PERSON = "ana@example.com"
@@ -85,10 +85,10 @@ def _host(fixture: OpsFixture, attests: Any) -> OpsHost:
 
 
 async def _analysis_id(fixture: OpsFixture) -> str:
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
-    analysis_id = (await settled(fixture.host, job.job_id)).analysis_id
-    assert analysis_id is not None
-    return analysis_id
+    """A memo analysis of the corpus campaign, stored: a reporter case pins a recorded memo, which the memo writer
+    writes (a generation through the host is the report planner's)."""
+    analysis, _ = await stored_memo_analysis(fixture.host.eval_host, fixture.campaign)
+    return analysis.id
 
 
 def _label(**changes: Any) -> dict[str, Any]:

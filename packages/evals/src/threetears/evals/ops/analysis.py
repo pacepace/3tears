@@ -31,6 +31,7 @@ from threetears.evals.analysis.campaigns import (
     update_campaign,
 )
 from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.planned_analysis import report_plan_of
 from threetears.evals.analysis.report import ReportBasis, TrialDetail, analysis_verdict
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
 from threetears.evals.analysis.service import (
@@ -39,6 +40,7 @@ from threetears.evals.analysis.service import (
     describe_insight_id_filters,
     estimate_analysis_generation,
     get_analysis,
+    get_report_plan,
     list_analyses,
     list_insights,
     PreparedGeneration,
@@ -50,7 +52,14 @@ from threetears.evals.analysis.service import (
 )
 from threetears.evals.schema.base import EvalBaseModel, VerbatimText
 from threetears.evals.kernel.declaration import CampaignCall, Margin, OverriddenBar
-from threetears.evals.kernel.campaign import AttemptOutcome, ConfidenceTier, EvalAnalysis, EvalCampaign, EvalInsight
+from threetears.evals.kernel.campaign import (
+    AttemptOutcome,
+    ConfidenceTier,
+    EvalAnalysis,
+    EvalCampaign,
+    EvalInsight,
+    EvalReportPlan,
+)
 from threetears.evals.kernel.errors import (
     ConflictError,
     EvalServiceError,
@@ -247,11 +256,25 @@ class CampaignChanges(EvalBaseModel):
     control_from_run_id: str | None = Field(default=None, min_length=1, description=CONTROL_RUN_DESCRIPTION)
 
 
+#: What wrote a stored analysis: ``memo``, the memo writer (every analysis stored before the report planner), or
+#: ``plan``, the report planner (every analysis generated since).
+AnalysisBasis = Literal["memo", "plan"]
+
+
 class AnalysisLine(EvalBaseModel):
     """One stored analysis, as a listing shows it."""
 
     id: str
     campaign_id: str
+    basis: AnalysisBasis = Field(
+        description=(
+            "What wrote the analysis: `memo` (the memo writer; findings count the memo's findings) or `plan` (the "
+            "report planner; findings count the plan's evidence sections, and report_read carries the plan)."
+        )
+    )
+    report_plan_id: str | None = Field(
+        description="The id of the report plan a `plan` analysis was written as; None for a memo."
+    )
     verdict: str = Field(
         description=(
             "The report's verdict line over the evidence the analysis was written from, as code writes it — never a "
@@ -259,11 +282,16 @@ class AnalysisLine(EvalBaseModel):
             "a candidate breaks, each in the report's own words; with neither, it is the verdict alone."
         )
     )
-    findings: int = Field(ge=0, description="How many findings the memo holds.")
+    findings: int = Field(
+        ge=0, description="How many findings the memo holds, or how many evidence sections the plan holds."
+    )
     recommendations: int = Field(
         ge=0,
         le=1,
-        description="How many recommendations it makes: one, or none for a measurement or a choice with no clear winner.",
+        description=(
+            "How many recommendations it makes: one, or none for a measurement, a choice with no clear winner, or a "
+            "plan's trade-off or no call."
+        ),
     )
     generator_model: str
     generated_at: str
@@ -293,6 +321,20 @@ class ReportDocument(EvalBaseModel):
         description="`analysis` when the report renders the campaign's analysis; `code_only` when it has none."
     )
     analysis_id: str | None = Field(description="The analysis the report renders; None on a code-only report.")
+    analysis_basis: AnalysisBasis | None = Field(
+        default=None,
+        description=(
+            "What wrote the analysis the report renders: `memo` or `plan` (whose plan is `plan`); None on a code-only "
+            "report."
+        ),
+    )
+    plan: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "The report plan a `plan` analysis was written as, as `report-plan/1` JSON (its prose names figures by "
+            "key); None for a memo or a code-only report."
+        ),
+    )
     format: ReportFormat
     body: VerbatimText = Field(
         description="The report in that form, exactly as its serializer wrote it: Markdown, canonical JSON, or "
@@ -622,22 +664,33 @@ def campaign_archive(host: EvalHost, campaign_id: str, scope_id: str, *, archive
     return _campaign_line(set_campaign_archived(host.storage, campaign_id, scope_id, archived=archived))
 
 
-def _analysis_line(analysis: EvalAnalysis) -> AnalysisLine:
-    # One analysis frozen over a bundle this build cannot read is listed as needing regeneration, never allowed to
-    # refuse the listing of every other one.
+def _analysis_line(host: EvalHost, analysis: EvalAnalysis) -> AnalysisLine:
+    # One analysis frozen over a bundle this build cannot read, or whose plan no longer resolves, is listed as needing
+    # regeneration, never allowed to refuse the listing of every other one.
     needs_regeneration: str | None = None
     try:
         verdict = analysis_verdict(analysis)
     except RefusedInput as unreadable:
         needs_regeneration = f"{unreadable.fault}; {unreadable.remedy}" if unreadable.remedy else unreadable.fault
         verdict = f"Needs regeneration: {needs_regeneration}"
+    plan: EvalReportPlan | None = None
+    try:
+        plan = get_report_plan(host.storage, analysis)
+    except NotFoundError as missing:
+        needs_regeneration = needs_regeneration or f"{missing.message}; {missing.remedy}"
+    if analysis.document is not None:
+        findings = len(analysis.document.findings)
+    else:
+        findings = len(report_plan_of(plan).sections) if plan is not None else 0
     return AnalysisLine(
         id=analysis.id,
         campaign_id=analysis.campaign_id,
+        basis=analysis.basis,
+        report_plan_id=analysis.report_plan_id,
         verdict=verdict,
         needs_regeneration=needs_regeneration,
-        findings=len(analysis.document.findings),
-        recommendations=0 if analysis.document.recommended() is None else 1,
+        findings=findings,
+        recommendations=0 if analysis.recommended_variant_key is None else 1,
         generator_model=analysis.generation.generator_model,
         generated_at=analysis.generation.generated_at,
         archived=analysis.archived,
@@ -668,7 +721,9 @@ def analysis_archive(
     :raises NotFoundError: No analysis with that id in the scope.
     :raises StorageError: The write failed.
     """
-    return _analysis_line(set_analysis_archived(host.storage, analysis_id, scope_id, archived=archived, reason=reason))
+    return _analysis_line(
+        host, set_analysis_archived(host.storage, analysis_id, scope_id, archived=archived, reason=reason)
+    )
 
 
 def analyses_list(host: EvalHost, campaign_id: str, scope_id: str) -> AnalysisListing:
@@ -685,7 +740,7 @@ def analyses_list(host: EvalHost, campaign_id: str, scope_id: str) -> AnalysisLi
     """
     return AnalysisListing(
         campaign_id=campaign_id,
-        analyses=[_analysis_line(analysis) for analysis in list_analyses(host.storage, campaign_id, scope_id)],
+        analyses=[_analysis_line(host, analysis) for analysis in list_analyses(host.storage, campaign_id, scope_id)],
     )
 
 
@@ -815,8 +870,9 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
     (``LaunchSettings.max_out_of_run_cost_usd``, when enforcement is on) and ledgered under purpose
     ``analysis``, so :func:`~threetears.evals.ops.scope_out_of_run_spend` reads it beside case generations
     and rubric proposals. The first call is priced in the job before it is sent, so one over the cap ends the job
-    refused with nothing spent (:func:`analysis_estimate` asks the same question in its call); the repair round-trip
-    a refused output buys is priced when its prompt exists, against what is left of the same cap.
+    refused with nothing spent (:func:`analysis_estimate` asks the same question in its call). The report planner writes
+    the analysis in two calls, its structure and then its prose, each repaired at most once; the prose call and any
+    repair round-trip are priced when their prompts exist, against what is left of the same cap.
 
     :param host: The host: its generation settings, its clients and the job manager the task runs under.
     :ptype host: OpsHost
@@ -1109,7 +1165,10 @@ def report_read(
 
     What "the campaign's report" is has one answer,
     :func:`~threetears.evals.analysis.campaign_report`: its newest analysis that is not archived, else a
-    code-only report of its evidence. ``basis`` on the result says which.
+    code-only report of its evidence. ``basis`` on the result says which, and ``analysis_basis`` what wrote the
+    analysis: ``memo`` (one stored before the report planner, laid out as written) or ``plan``, whose report plan is
+    ``plan``, as ``report-plan/1`` JSON. A planned analysis's page is the code-only page with the plan's first screen
+    (its headline, lede, confidence and decision slots) where a memo's summary and recommendation sit.
 
     **The trials.** By default each aspect's trials section is the census line, the table of its failed and lost
     trials, each row naming its stored result (read one with ``result_get``), and the table of its passed trials;
@@ -1133,10 +1192,14 @@ def report_read(
     :raises NotFoundError: No campaign with that id in the scope.
     """
     report = campaign_report(host, campaign_id, scope_id, trials=trials)
+    analysis = get_analysis(host.storage, report.analysis_id, scope_id) if report.analysis_id is not None else None
+    plan = get_report_plan(host.storage, analysis) if analysis is not None else None
     return ReportDocument(
         campaign_id=campaign_id,
         basis=report.basis,
         analysis_id=report.analysis_id,
+        analysis_basis=analysis.basis if analysis is not None else None,
+        plan=dict(plan.plan) if plan is not None else None,
         format=format,
         body=serialize_report(report, format),
     )

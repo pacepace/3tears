@@ -69,8 +69,9 @@ from threetears.evals.kernel.candidate_kind import (
     VariantConfig,
 )
 from threetears.evals.kernel.capped_completion import CappedCompletion, call_ceiling
+from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.cassettes import CellCassettes
-from threetears.evals.kernel.inner_ceilings import generation_ceiling_s, judge_phase_ceiling_s
+from threetears.evals.kernel.inner_ceilings import judge_phase_ceiling_s
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.schema.models import (
     DimName,
@@ -99,6 +100,11 @@ AS_RECORDED_MODEL = "as-recorded"
 REPORTER_CASE_KEY = "reporter_case"
 
 
+#: Requests the memo writer's generation can make, which a reporter cell measures: the memo, and one repair
+#: round-trip a refused output buys (:func:`~threetears.evals.analysis.generator.generate_analysis`).
+MEMO_WRITER_CALLS = 2
+
+
 def reporter_cell_timeout_s(
     *,
     judge_dims: int,
@@ -110,8 +116,9 @@ def reporter_cell_timeout_s(
 ) -> float:
     """The wall-clock ceiling of one reporter cell, derived from the ceilings it wraps.
 
-    A reporter cell is one generation (:func:`~threetears.evals.analysis.generator.generation_ceiling_s`,
-    so the generation's request count lives in one place), then its rubric's judge phase
+    A reporter cell is one memo writer's generation, :data:`MEMO_WRITER_CALLS` requests at the generator's cap (an
+    analysis generation is the planner's, :func:`~threetears.evals.kernel.inner_ceilings.generation_ceiling_s`, and
+    makes more), then its rubric's judge phase
     (:func:`judge_phase_ceiling_s`). Every request in either is bounded by the host's own answer for one
     request at its output cap (``request_s``), so the ceiling sits above the slowest finishing cell
     rather than at a sampled duration: the engine's generic 600s cancelled a generation that was still
@@ -137,7 +144,7 @@ def reporter_cell_timeout_s(
     :return: The cell ceiling in seconds: the generation's ceiling plus the judge phase's.
     :rtype: float
     """
-    generation_s = generation_ceiling_s(request_s=request_s, generator_max_tokens=generator_max_tokens)
+    generation_s = MEMO_WRITER_CALLS * request_s(generator_max_tokens)
     judging_s = judge_phase_ceiling_s(
         judge_dims=judge_dims,
         judge_concurrency=judge_concurrency,
@@ -1082,8 +1089,14 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
     :ptype analysis: EvalAnalysis
     :return: The text the judge reads as the output under review.
     :rtype: str
+    :raises RefusedInput: The analysis was written by the report planner, so it holds no memo.
     """
     document = analysis.document
+    if document is None:
+        raise RefusedInput(
+            f"analysis {analysis.id} was written by the report planner and holds no memo to render",
+            remedy="render a memo the memo writer wrote; a planned analysis is read through its plan",
+        )
     arm = arm_namer(analysis)
     resolutions: list[FindingResolution | None] = (
         list(analysis.resolutions) if analysis.resolutions else [None] * len(document.findings)

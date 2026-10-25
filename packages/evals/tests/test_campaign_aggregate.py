@@ -49,9 +49,9 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_case_payload,
 )
 from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.ops import analysis_generate
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture, settled
+from packages.evals.tests.report_support import stored_memo_analysis
+from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture
 from packages.evals.tests.report_shapes_support import (
     SHAPES,
     ArmTrials,
@@ -441,10 +441,10 @@ def test_a_bundle_and_a_frame_frozen_at_shape_2_read_as_this_shape_fingerprintin
 
 
 async def _analysis_id(fixture: OpsFixture) -> str:
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
-    analysis_id = (await settled(fixture.host, job.job_id)).analysis_id
-    assert analysis_id is not None
-    return analysis_id
+    """A memo analysis of the corpus campaign, stored: a reporter case pins a recorded memo, which the memo writer
+    writes (a generation through the host is the report planner's)."""
+    analysis, _ = await stored_memo_analysis(fixture.host.eval_host, fixture.campaign)
+    return analysis.id
 
 
 async def test_a_reporter_case_frozen_at_shape_2_still_generates_calibrates_and_keeps_its_labels() -> None:

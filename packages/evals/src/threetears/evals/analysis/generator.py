@@ -768,15 +768,15 @@ def _resolved_analysis(
             document=document,
             resolutions=resolutions,
             judged_tier_rule=JUDGED_TIER_RULE,
-            aspects=[_aspect_analysis(aspect, surfaces[aspect.aspect]) for aspect in bundle.aspects],
+            aspects=[aspect_analysis(aspect, surfaces[aspect.aspect]) for aspect in bundle.aspects],
             campaign_bundle=bundle.frame(),
         )
     except ValueError as refused:
         raise SoundnessRefusal(f"generator output failed analysis validation: {refused}") from refused
-    return analysis, _insights_of(analysis, bundle, surfaces, aspects_of)
+    return analysis, _insights_of(analysis, document, bundle, surfaces, aspects_of)
 
 
-def _aspect_analysis(bundle: AnalysisContextBundle, surface: DecisionSurface) -> AspectAnalysis:
+def aspect_analysis(bundle: AnalysisContextBundle, surface: DecisionSurface) -> AspectAnalysis:
     """What a stored analysis keeps of one aspect: its frozen bundle, and what code read off it.
 
     :param bundle: The aspect's bundle.
@@ -1336,6 +1336,7 @@ def _resolution_of(
 
 def _insights_of(
     analysis: EvalAnalysis,
+    document: AuthoredCampaignAnalysis,
     bundle: CampaignBundle,
     surfaces: Mapping[str, DecisionSurface],
     aspects_of: Sequence[Sequence[str]],
@@ -1355,7 +1356,7 @@ def _insights_of(
         f"Retracted if analysis {analysis.id} is archived; replaced in place when a later analysis of this "
         "subject states the same claim."
     )
-    for finding, aspects in zip(analysis.document.findings, aspects_of, strict=True):
+    for finding, aspects in zip(document.findings, aspects_of, strict=True):
         if not finding.durable.strip():
             continue
         key = insight_restatement_key(finding.durable)

@@ -175,7 +175,7 @@ from threetears.evals.analysis.quantities import (
     with_unit,
 )
 from threetears.evals.kernel.analysis_measures import MeasureSummary
-from threetears.evals.kernel.authored import Finding, NextStep
+from threetears.evals.kernel.authored import AuthoredCampaignAnalysis, Finding, NextStep
 from threetears.evals.kernel.campaign import (
     AspectAnalysis,
     EvalAnalysis,
@@ -255,8 +255,10 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None, tr
     :ptype trials: TrialDetail
     :return: The report, ``basis="analysis"``.
     :rtype: Report
-    :raises RefusedInput: The analysis covers several aspects, or its bundle predates one aspect per bundle.
+    :raises RefusedInput: The analysis covers several aspects, its bundle predates one aspect per bundle, or it was
+        written by the report planner (it holds no memo).
     """
+    _memo(analysis)
     generation = analysis.generation
     bundle = analysis_bundle(analysis)
     source = ReportSource(
@@ -277,11 +279,28 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None, tr
         basis="analysis",
         source=source,
         memo=lambda charts, names: _memo_blocks(analysis, bundle, charts, names),
-        finding_count=len(analysis.document.findings),
+        finding_count=len(_memo(analysis).findings),
         writer=analysis_writer(analysis),
         arm_short_names=declared_arm_names(arms),
         trials=trials,
     )
+
+
+def _memo(analysis: EvalAnalysis) -> AuthoredCampaignAnalysis:
+    """The memo a stored analysis holds.
+
+    :raises RefusedInput: The analysis was written by the report planner, so it holds no memo; its page is the
+        campaign's.
+    """
+    if analysis.document is None:
+        raise RefusedInput(
+            f"analysis {analysis.id} was written by the report planner and holds no memo, and this page lays out a memo",
+            remedy=(
+                "read the campaign's page, which lays out a planned analysis, through report_read, or "
+                "threetears.evals.analysis.analysis_report by its id"
+            ),
+        )
+    return analysis.document
 
 
 def analysis_writer(analysis: EvalAnalysis) -> str:
@@ -1354,7 +1373,7 @@ def _memo_blocks(
     not laid out here but noted in one line with what was not tested (``The analysis also noted: …``). The coverage
     map goes to the methods, folded: it restates nothing the findings say.
     """
-    document = analysis.document
+    document = _memo(analysis)
     held = _only_aspect(analysis)
     # The analysis's own variant index names the cells its memo cites, by the page's rule.
     arm = _ref_namer(held.decision_surface, {**names, **_arm_names(bundle, held.variant_index)})
@@ -1435,7 +1454,7 @@ def _recommendation_blocks(analysis: EvalAnalysis, bundle: AnalysisContextBundle
     """
     listed = analysis.campaign_bundle.get("arms")
     arms = [CampaignArm.model_validate(arm) for arm in listed] if isinstance(listed, list) else []
-    recommended = analysis.document.recommended()
+    recommended = _memo(analysis).recommended()
     if recommended is None:
         kind = campaign_kind(arms)
         return [DisclosureBlock(section="memo", source="memo", text=NO_RECOMMENDATION_WORDS[kind])]
@@ -1483,7 +1502,7 @@ def _recommendation_blocks(analysis: EvalAnalysis, bundle: AnalysisContextBundle
         )
     # The findings a recommendation rests on are the ones printed just above it: its block carries them for a
     # program (``rests_on``), and the page does not cite them again.
-    if cases := _cases_of(bundle, recommended.rests_on, analysis.document.findings, analysis):
+    if cases := _cases_of(bundle, recommended.rests_on, _memo(analysis).findings, analysis):
         facts.append(Fact(name="See", value=", ".join(cases)))
     blocks: list[ReportBlock] = [
         TextBlock(
@@ -1561,7 +1580,7 @@ def _coverage_blocks(analysis: EvalAnalysis, kept: Sequence[NextStep], steps: Se
     levers = _only_aspect(analysis).coverage.levers
     if not levers:
         return []
-    findings = analysis.document.findings
+    findings = _memo(analysis).findings
     rows: list[dict[str, CellValue]] = []
     for row in levers:
         named = sum(1 for finding in findings if row.name in finding.axes)

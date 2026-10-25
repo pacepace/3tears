@@ -28,7 +28,8 @@ from typing import Any
 import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
-from threetears.evals.kernel import ANALYSIS_GEN_PROMPT, ConflictError, NotFoundError, ValidationFailedError
+from threetears.evals.kernel import ConflictError, NotFoundError, ValidationFailedError
+from threetears.evals.kernel.prompts.catalogue import REPORT_PLAN_PROMPT
 from threetears.evals.ops import (
     AnalysisGeneration,
     CampaignDefinition,
@@ -50,7 +51,8 @@ from threetears.evals.ops import (
     run_job_id,
     run_launch,
 )
-from threetears.evals.analysis import EVAL_ANALYSIS_GEN_DEFAULT, judge_agreement
+from threetears.evals.analysis import judge_agreement
+from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
 from threetears.evals.run import LAUNCH_CANCEL_REASON
 from threetears.evals.analysis.summary import budget_stop_line
 from threetears.evals.schema.models import BudgetStop
@@ -226,11 +228,14 @@ async def test_a_generation_is_a_job_polled_to_the_analysis_it_stored() -> None:
     markdown = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown")
     assert (markdown.basis, markdown.analysis_id) == ("analysis", line.id)
     # The page is that campaign's: it opens on its title, its name, with nothing above it, and the question it
-    # declared quoted alone on the line under the title; then the memo's recommendation.
+    # declared quoted alone on the line under the title; then the plan's decision, its recommendation among it. The
+    # report planner wrote it, and the read says so and carries the plan.
     assert fixture.campaign.question
     asked = " ".join(fixture.campaign.question.split())
     assert markdown.body.startswith(f'# {fixture.campaign.name}\n"{asked}"\n')
-    assert "**Recommended:**" in markdown.body and line.findings >= 1
+    assert "**Recommendation:**" in markdown.body and line.findings >= 1
+    assert (line.basis, markdown.analysis_basis) == ("plan", "plan") and line.report_plan_id is not None
+    assert markdown.plan is not None and markdown.plan["schema"] == "report-plan/1"
     html = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="html")
     assert what_runs(html.body) == [], "the page runs the kit's script and nothing else"
     canonical = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="json")
@@ -373,11 +378,11 @@ def test_generation_settings_that_cannot_bound_a_generation_are_refused(fields: 
 
 
 async def test_a_generation_naming_no_prompt_runs_the_shipped_default() -> None:
-    """A host with no prompt registry names no prompt: the generator runs the default under the engine's id."""
+    """A host with no prompt registry names no prompt: the report planner runs its default under the engine's id."""
     generation = AnalysisGeneration(max_output_tokens=10, budget_s=1.0)
 
-    assert generation.prompt_id == ANALYSIS_GEN_PROMPT
-    assert await generation.prompt() == EVAL_ANALYSIS_GEN_DEFAULT
+    assert generation.prompt_id == REPORT_PLAN_PROMPT
+    assert await generation.prompt() == EVAL_REPORT_PLAN_DEFAULT
 
 
 async def test_a_generation_naming_a_prompt_runs_the_override() -> None:

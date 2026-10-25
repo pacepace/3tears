@@ -14,10 +14,10 @@ import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 
-from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
+from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.job_timeout import default_job_timeout
-from threetears.evals.kernel.prompts.catalogue import ANALYSIS_GEN_PROMPT
+from threetears.evals.kernel.prompts.catalogue import REPORT_PLAN_PROMPT
 from threetears.evals.run.definition_seed import SeedCorpus
 from threetears.evals.run.launch import LaunchHost, LaunchSettings
 from threetears.evals.schema import EvalRun, WorldPlacement
@@ -58,14 +58,17 @@ ANALYSIS_PREPARATION_BUDGET_S = 900.0
 class AnalysisGeneration:
     """How this host generates an analysis as a background job.
 
-    :ivar prompt_id: The registry key the generator prompt resolves under, recorded on every analysis as
-        its provenance; :data:`~threetears.evals.kernel.ANALYSIS_GEN_PROMPT` unless the host names its own.
-    :ivar resolve_prompt: The host's override of the generator prompt, awaited once a generation's bundle has
+    :ivar prompt_id: The registry key the report planner's prompt resolves under, recorded on every analysis and its
+        plan as their provenance; :data:`~threetears.evals.kernel.prompts.catalogue.REPORT_PLAN_PROMPT` unless the
+        host names its own. A generation is written by the report planner, so this is the planner's prompt, never
+        the memo writer's (``eval_analysis_gen``).
+    :ivar resolve_prompt: The host's override of the planner prompt, awaited once a generation's bundle has
         evidence; ``None`` (the default) runs the shipped default,
-        :data:`~threetears.evals.analysis.EVAL_ANALYSIS_GEN_DEFAULT`.
+        :data:`~threetears.evals.analysis.plan_prompt.EVAL_REPORT_PLAN_DEFAULT`.
     :ivar max_output_tokens: The output cap the host's generator clients are built with, for the
         pre-spend disclosure.
-    :ivar budget_s: The job's wall-clock ceiling on its generator calls; a generation that outruns it is recorded
+    :ivar budget_s: The job's wall-clock ceiling on its planner calls (up to
+        :data:`~threetears.evals.kernel.inner_ceilings.MAX_GENERATION_CALLS`); a generation that outruns it is recorded
         ``timed_out``. Derive it ABOVE the generation's own ceiling
         (``Ceilings().generation_ceiling_s`` of :class:`~threetears.evals.run.Ceilings`, over the host's own ceiling for
         one request on its client): a budget below it cancels a repair round-trip still writing inside
@@ -76,20 +79,20 @@ class AnalysisGeneration:
         call, so a host may set it per call.
     """
 
-    prompt_id: str = ANALYSIS_GEN_PROMPT
+    prompt_id: str = REPORT_PLAN_PROMPT
     resolve_prompt: Callable[[], Awaitable[str]] | None = None
     max_output_tokens: int
     budget_s: float
     preparation_budget_s: float = ANALYSIS_PREPARATION_BUDGET_S
 
     async def prompt(self) -> str:
-        """The generator prompt a generation runs: the host's override when it registered one, else the shipped default.
+        """The planner prompt a generation runs: the host's override when it registered one, else the shipped default.
 
         :return: The prompt text.
         :rtype: str
         """
         if self.resolve_prompt is None:
-            return EVAL_ANALYSIS_GEN_DEFAULT
+            return EVAL_REPORT_PLAN_DEFAULT
         return await self.resolve_prompt()
 
     def __post_init__(self) -> None:

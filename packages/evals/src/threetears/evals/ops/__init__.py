@@ -50,6 +50,7 @@ from __future__ import annotations
 from threetears.evals.ops.analysis import (
     AnalysisDeleted,
     AnalysisGenerationEstimate,
+    AnalysisBasis,
     AnalysisLine,
     AnalysisListing,
     BarProposals,
@@ -282,6 +283,7 @@ __all__ = [
     "AnalysisGenerationEstimate",
     "ArmEstimate",
     "AnalysisGeneration",
+    "AnalysisBasis",
     "AnalysisLine",
     "AnalysisListing",
     "BarProposals",

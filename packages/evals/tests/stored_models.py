@@ -37,6 +37,8 @@ from threetears.evals.kernel.campaign import EvalGenerationSlot, EvalSweep, Swee
 from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
 from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileAgreement
+from threetears.evals.kernel.campaign import EvalReportPlan, ReportPlanProvenance, report_plan_id
+from packages.evals.tests.report_plan_support import r5_plan
 from threetears.evals.run import EvalActionJob, EvalJudgeTemperatureCheck, EvalLaunch, EvalSecondJudgePass
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import (
@@ -285,6 +287,27 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     ),
     "EvalCassette": _cassette,
     "EvalInsight": make_insight,
+    # The reference Kairo plan, as a planned generation stores it beside its analysis.
+    "EvalReportPlan": lambda: EvalReportPlan(
+        id=report_plan_id("analysis-1"),
+        scope_id="uni-1",
+        analysis_id="analysis-1",
+        campaign_id="campaign-1",
+        report_input_digest="0" * 64,
+        plan=r5_plan(),
+        generation=ReportPlanProvenance(
+            prompt_id="eval_report_plan",
+            prompt_version="abcdef012345",
+            generator_model="planner-a",
+            calls=3,
+            repair_attempts=1,
+            structure_refusal="the report plan is refused (1 fault(s)): `mode` is 'tradeoff'",
+            prose_refusal=None,
+            token_cost=0.12,
+            user_message_digest="1" * 64,
+            generated_at="2026-10-25T00:00:00+00:00",
+        ),
+    ),
     # Judged as the judge service records it: the score's axis, temperature, sent settings and label key, the dim's
     # judge identity, and the judge's usage row with what its calls were sent with, so the frozen corpus holds every
     # field a judge phase writes.

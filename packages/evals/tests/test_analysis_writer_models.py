@@ -26,6 +26,7 @@ from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture, settled
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.toyhost_plan import PLAN_CALLS
 
 #: A writer the host has not measured, so does not allow.
 UNLISTED = "vendor/unlisted-writer"
@@ -50,7 +51,7 @@ class TestAnalysisGenerate:
         (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE, model=MODEL)).jobs
 
         assert (await settled(fixture.host, job.job_id)).state == "completed"
-        assert len(fixture.writers[0].calls) == 1
+        assert len(fixture.writers[0].calls) == PLAN_CALLS
 
     async def test_the_hosts_default_writer_is_held_to_the_list_too(self) -> None:
         """Checked in the job, once its client names the default writer: the job ends refused, before any call."""

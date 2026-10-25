@@ -10,9 +10,9 @@ Pinned here:
   refused with nothing spent and the client it built released (a behaviour change: the start used to refuse it in its
   call, which meant assembling the whole bundle inside the host's call budget). The start itself returns without
   assembling anything.
-- **The repair round-trip is priced when it exists**: a refused first output buys a repair, which is
-  refused before it is sent when it would pass what is left of the cap — the attempt records only the call
-  that was made.
+- **Every call after the first is priced when it exists**: the report planner writes in two calls, its structure
+  and then its prose, and a refused reply of either buys a repair; each is refused before it is sent when it would
+  pass what is left of the cap — the attempt records only the calls that were made.
 - **Every call is ledgered**, so ``scope_out_of_run_spend`` (operation and action) reads the generation's
   spend, under purpose ``analysis`` and the campaign it was for; with enforcement off the call is still
   ledgered, under no cap.
@@ -52,6 +52,9 @@ from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, MemoWriter, ops_fixture, settled
 from packages.evals.tests.toyhost_memo import FIXTURED_CALL_CEILING_USD
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.toyhost_plan import PLAN_CALLS
+from threetears.evals.analysis.planner import REPORT_INPUT_HEADING
+from threetears.evals.kernel.inner_ceilings import MAX_GENERATION_CALLS
 
 #: The out-of-run cap the toy host holds a generation to.
 CAP = TOYHOST_LAUNCH_SETTINGS.max_out_of_run_cost_usd
@@ -125,17 +128,20 @@ async def test_a_generation_within_the_cap_is_ledgered_and_read_by_the_spend_len
     (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     assert (await settled(fixture.host, job.job_id)).state == "completed"
 
-    (row,) = off_loop(_ledger, fixture)
-    assert (row.purpose, row.campaign_id, row.subject_id, row.outcome) == (
-        "analysis",
-        fixture.campaign.id,
-        fixture.campaign.subject_id,
-        "completed",
-    )
-    assert (row.priced_ceiling_usd, row.cap_usd) == (FIXTURED_CALL_CEILING_USD, CAP)
-    assert row.cost_usd is not None and row.cost_usd > 0
+    # The planner's two calls, its structure and its prose, each priced, admitted and ledgered.
+    rows = off_loop(_ledger, fixture)
+    assert len(rows) == PLAN_CALLS
+    for row in rows:
+        assert (row.purpose, row.campaign_id, row.subject_id, row.outcome) == (
+            "analysis",
+            fixture.campaign.id,
+            fixture.campaign.subject_id,
+            "completed",
+        )
+        assert (row.priced_ceiling_usd, row.cap_usd) == (FIXTURED_CALL_CEILING_USD, CAP)
+        assert row.cost_usd is not None and row.cost_usd > 0
     report = off_loop(scope_out_of_run_spend, fixture.host.eval_host, TOYHOST_SCOPE)
-    assert report.by_purpose["analysis"].priced_usd == pytest.approx(row.cost_usd)
+    assert report.by_purpose["analysis"].priced_usd == pytest.approx(sum(row.cost_usd or 0.0 for row in rows))
 
     evals = eval_catalogue().mount_all(standard_tools())[0]
     outcome = await evals.call(
@@ -160,7 +166,7 @@ async def test_the_logged_input_size_is_a_ballpark_over_the_exact_first_request_
 
     (writer,) = [each for each in fixture.writers if each.calls]
     sent, response_format = writer.calls[0], writer.response_formats[0]
-    assert sent["user"].startswith("CAMPAIGN BUNDLE (JSON):") and response_format is not None
+    assert sent["user"].startswith(f"{REPORT_INPUT_HEADING}\n") and response_format is not None
     (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("eval.generate_analysis campaign=")]
     logged = int(line.split("approx_input_tokens=")[1].split(" ", 1)[0])
 
@@ -175,13 +181,32 @@ async def test_with_enforcement_off_a_generation_is_still_ledgered_under_no_cap(
     (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     assert (await settled(fixture.host, job.job_id)).state == "completed"
 
-    (row,) = off_loop(_ledger, fixture)
-    assert (row.cap_usd, row.priced_ceiling_usd) == (None, None)
+    rows = off_loop(_ledger, fixture)
+    assert [(row.cap_usd, row.priced_ceiling_usd) for row in rows] == [(None, None)] * PLAN_CALLS
 
 
 # =============================================================================
-# The repair round-trip: priced when its prompt exists, against what is left
+# Every call after the first: priced when its prompt exists, against what is left
 # =============================================================================
+
+
+async def test_a_prose_call_that_would_pass_the_cap_is_refused_before_it_is_sent() -> None:
+    """The structure call fits and is accepted; its prose call would pass what is left, so it is never sent."""
+    fixture = off_loop(ops_fixture, ceiling_usd=CAP * 0.6)
+    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    status = await settled(fixture.host, job.job_id)
+
+    (writer,) = fixture.writers
+    assert len(writer.calls) == 1, "the prose call was refused before it was sent"
+    assert status.state == "failed" and status.detail is not None
+    assert "call 2 of the plan was refused before it was sent" in status.detail
+    assert "above the out-of-run cap" in status.detail
+    (attempt,) = off_loop(
+        fixture.host.eval_host.storage.list_analysis_attempts_by_campaign, fixture.campaign.id, TOYHOST_SCOPE
+    )
+    assert (attempt.outcome, attempt.calls, attempt.analysis_id) == ("failed", 1, None)
+    assert [row.outcome for row in off_loop(_ledger, fixture)] == ["completed"]
+    assert off_loop(fixture.host.eval_host.storage.list_analyses_by_campaign, fixture.campaign.id, TOYHOST_SCOPE) == []
 
 
 async def test_a_repair_that_would_pass_the_cap_is_refused_before_it_is_sent() -> None:
@@ -194,7 +219,7 @@ async def test_a_repair_that_would_pass_the_cap_is_refused_before_it_is_sent() -
     (writer,) = fixture.writers
     assert len(writer.calls) == 1, "the repair was refused before it was sent"
     assert status.state == "failed" and status.detail is not None
-    assert "the repair round-trip was refused before it was sent" in status.detail
+    assert "call 2 of the plan was refused before it was sent" in status.detail
     assert "above the out-of-run cap" in status.detail
     (attempt,) = off_loop(
         fixture.host.eval_host.storage.list_analysis_attempts_by_campaign, fixture.campaign.id, TOYHOST_SCOPE
@@ -203,13 +228,14 @@ async def test_a_repair_that_would_pass_the_cap_is_refused_before_it_is_sent() -
     assert [row.outcome for row in off_loop(_ledger, fixture)] == ["completed"]
 
 
-async def test_a_repair_within_what_is_left_is_sent_and_both_calls_are_ledgered() -> None:
-    fixture = off_loop(ops_fixture, ceiling_usd=CAP * 0.4, first_output="not json at all")
+async def test_a_repair_within_what_is_left_is_sent_and_every_call_is_ledgered() -> None:
+    """A refused structure buys its repair; the repaired structure's prose follows: three calls, all within the cap."""
+    fixture = off_loop(ops_fixture, ceiling_usd=CAP * 0.3, first_output="not json at all")
     (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     assert (await settled(fixture.host, job.job_id)).state == "completed"
 
-    assert len(fixture.writers[0].calls) == 2
-    assert [row.outcome for row in off_loop(_ledger, fixture)] == ["completed", "completed"]
+    assert len(fixture.writers[0].calls) == PLAN_CALLS + 1
+    assert [row.outcome for row in off_loop(_ledger, fixture)] == ["completed"] * (PLAN_CALLS + 1)
 
 
 # =============================================================================
@@ -227,7 +253,7 @@ async def test_an_estimate_prices_the_first_call_against_the_cap_and_makes_no_ca
 
     assert (estimate.first_call_ceiling_usd, estimate.cap_usd, estimate.would_start) == (ceiling, CAP, would_start)
     assert (estimate.refusal is None) is would_start
-    assert estimate.max_calls == 2
+    assert estimate.max_calls == MAX_GENERATION_CALLS == 4
     (writer,) = fixture.writers
     assert writer.calls == [] and writer.closed == 1, "priced, released, never called"
     assert off_loop(_ledger, fixture) == []

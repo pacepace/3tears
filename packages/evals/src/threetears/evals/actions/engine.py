@@ -2063,10 +2063,13 @@ def engine_actions() -> tuple[Action, ...]:
             example={"campaign_id": campaign_id},
             long_running=True,
             detail=(
+                "The report planner writes the analysis as a report plan, in two calls (its structure, then its "
+                "prose), each repaired at most once: up to four calls. "
                 "Refused before any spend when the campaign has no evidence or a generation of it is already "
                 "running. Every call is priced before it is sent against the host's out-of-run cap: the first here, "
-                "so one over the cap is refused with nothing spent; the one repair round-trip a refused output buys "
-                "when its prompt exists, against what is left. analysis_estimate prices it first without spending. "
+                "so one over the cap is refused with nothing spent; the prose call and any repair round-trip a refused "
+                "reply buys when its prompt exists, against what is left. analysis_estimate prices it first without "
+                "spending. "
                 "Each call is ledgered under purpose analysis, so scope_out_of_run_spend reads it; the job's record "
                 "is the generation attempt, written however it ends."
             ),
@@ -2184,6 +2187,11 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_analyses_list,
             render=render.render_model,
             example={"campaign_id": campaign_id},
+            detail=(
+                "Each analysis says what wrote it (basis): memo, for one stored before the report planner, or plan, "
+                "for one the planner wrote, with its report plan's id; report_read carries the reported analysis's "
+                "plan."
+            ),
         ),
         Action(
             name="insights_list",
@@ -2243,7 +2251,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "Each aspect's trials section lists its failed and lost trials, one row each naming its stored result "
                 "(read it with result_get), then its passed trials. trials='all' adds each failed or lost trial's full "
                 "record (what it asked, what the judge saw and said, and why): most of a large campaign's page, so "
-                "read it when you need the records, or read one trial with result_get."
+                "read it when you need the records, or read one trial with result_get. analysis_basis says what wrote "
+                "the analysis: memo (an analysis stored before the report planner) or plan, whose report plan is "
+                "plan (report-plan/1 JSON, figures by key)."
             ),
         ),
         Action(

@@ -50,6 +50,7 @@ from threetears.evals.kernel.campaign import (
     EvalCampaign,
     EvalGenerationSlot,
     EvalInsight,
+    EvalReportPlan,
     EvalSweep,
     generation_slot_id,
 )
@@ -1462,6 +1463,18 @@ class EvalStorage:
     def delete_analysis(self, analysis_id: str, scope_id: str) -> bool:
         """Delete an analysis by id within a scope."""
         return self._store.delete(analysis_id, scope_id)
+
+    def save_report_plan(self, plan: EvalReportPlan) -> None:
+        """Persist the report plan a planned analysis was written as, in the scope it names."""
+        self._save(plan.to_dict())
+
+    def load_report_plan(self, plan_id: str, scope_id: str) -> EvalReportPlan | None:
+        """Load a report plan by id (``EvalAnalysis.report_plan_id``) within a scope, or ``None`` when none resolves."""
+        return self._load(EvalReportPlan, plan_id, scope_id)
+
+    def delete_report_plan(self, plan_id: str, scope_id: str) -> bool:
+        """Delete a report plan by id within a scope, reporting whether there was one."""
+        return self._store.delete(plan_id, scope_id)
 
     def save_analysis_attempt(self, attempt: EvalAnalysisAttempt, *, if_match: str | None = None) -> None:
         """Persist one generation attempt's record in the scope it names; conditionally when ``if_match`` is given.
