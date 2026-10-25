@@ -97,8 +97,8 @@ logarithmic when the arms' cost per 1,000 replies spans more than ten times.
   (:func:`~threetears.evals.analysis.report.figure_keys.reader_name`). It is matched as D3 matches a name: keys set
   aside, then every name a reader is shown (arms, reader names), then the id where a non-word character or the text's
   edge bounds it, in any case. A plain-word id (``billing``) reads as a word and is the rubric's to judge. Nor does
-  such prose quote the campaign's question (``{meta.question}``): the campaign wrote it in its own ids
-  (``dj_character_v2``), which no reader name can replace, so the page says what it asks in reader names instead.
+  such prose quote the campaign's question (``{meta.question}``): the campaign writes it in its own words and ids,
+  which no reader name can replace, so the page says what it asks in reader names instead.
 
 **Warnings** (:func:`raised_warnings`), what code raises on an arm and the plan must answer: a floor read ``broken``
 (``floor_broken``) or ``unclear`` (``floor_unclear``: GENERATOR §3's borderline, whose answer says what sample
@@ -1093,7 +1093,7 @@ def _internal_ids(report_input: ReportInput) -> dict[str, tuple[str, str]]:
     """Every id that reads as an id and differs from its reader name: id, then its kind and reader name.
 
     An id reads as an id when it holds a character no reader name carries (an underscore, a dot, a colon, a slash, an
-    equals sign, a bracket or a quote); a plain word (``billing``, ``persona``) reads as a word, and a percentile's
+    equals sign, a bracket or a quote); a plain word (``billing``, ``overall``) reads as a word, and a percentile's
     name (``p95``) is the reader's own."""
     found: dict[str, tuple[str, str]] = {}
     for kind, names in reader_names(report_input).items():
