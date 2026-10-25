@@ -6,6 +6,31 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### langgraph: a checkpoint L2 entry that cannot be refreshed is deleted, not left holding an older checkpoint
+
+**Fixed:** `ThreeTierCheckpointSaver`'s L2 key is per thread and namespace, not per checkpoint, so a
+put that failed left the PREVIOUS checkpoint under it, and another worker whose L1 missed was served
+that older state from L2 without reaching Postgres. A production turn whose checkpoints were over the
+NATS server's `max_payload` did exactly that (`KvError: ... nats: maximum payload exceeded`, three
+times for one turn). `l2_put` now deletes the key whenever the put does not land, and only if that
+delete also fails adds the thread to the saver's cache bypass, so this process reads it from L3 until
+a purge of it succeeds. A read pinned to a `checkpoint_id` no longer warms the caches: the keys are
+read as "latest", and warming them from an older checkpoint served it to every later unpinned read.
+
+**Added:** `threetears.langgraph.CheckpointL2ValueLimit`, an optional protocol beside
+`CheckpointL2PrefixCache`: an L2 cache with a `max_value_bytes` property (`int | None`). The saver
+does not attempt a put over it; it deletes the key and logs one WARNING with `size_bytes` and
+`max_value_bytes`. A NATS-backed cache answers with `NatsClient.max_payload`. A separate protocol, not
+a member of `CheckpointL2Cache`, so adapters written against that one still satisfy it; without the
+limit the saver still deletes the key after the refused put.
+
+### nats: an oversized KV value is not retried through a bucket re-open
+
+**Fixed:** `NatsKvBucket` re-raises nats-py's `MaxPayloadError` instead of treating it as a transport
+failure, re-opening the bucket and retrying once. The refusal is client-side against the server's
+advertised `max_payload`, so the retry could only fail the same way. It still reaches the caller as a
+`KvError` naming the bucket and key.
+
 ## v0.75.0 -- 2026-10-21
 
 ### agent-memory: a host can restrict every memory read with its own predicate over the row's tags

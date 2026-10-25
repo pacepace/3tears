@@ -86,6 +86,7 @@ from threetears.langgraph.protocols import (
     CheckpointL1Cache,
     CheckpointL2Cache,
     CheckpointL2PrefixCache,
+    CheckpointL2ValueLimit,
     FlushCallback,
 )
 from threetears.langgraph.serde import UUIDSafeSerializer
@@ -719,7 +720,20 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         return result
 
     async def l2_put(self, thread_id: str, checkpoint_ns: str, data: bytes, *, customer: UUID | None = None) -> None:
-        """write to L2 cache, swallowing errors.
+        """write to L2 cache; a blob that cannot be cached leaves no entry rather than an old one.
+
+        The key is per thread and namespace, not per checkpoint, so a put that does
+        not land leaves the PREVIOUS checkpoint under it -- and every worker whose
+        L1 misses is served that older state from L2 and never reaches L3. So:
+
+        - a blob over the cache's :attr:`CheckpointL2ValueLimit.max_value_bytes` is
+          not put; the key is deleted instead, with one WARNING naming both sizes;
+        - any other put failure is contained and the key is deleted too;
+        - only when that delete also fails is the thread added to this saver's
+          bypass set, so it reads from L3 alone until a purge of it succeeds. Other
+          processes are not reached by that set; for them the delete was the fix.
+
+        Nothing here raises: the L3 row was written first and is the answer of record.
 
         :param thread_id: conversation/thread identifier
         :ptype thread_id: str
@@ -736,10 +750,33 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         if self._l2 is None:
             return
         key = self.l2_key(thread_id, checkpoint_ns, customer=customer)
+        limit = self._l2.max_value_bytes if isinstance(self._l2, CheckpointL2ValueLimit) else None
+        if limit is not None and len(data) > limit:
+            log.warning(
+                "L2 checkpoint blob is over the cache's value limit; deleting the cached entry so readers use L3",
+                extra={
+                    "l2_bucket": self._l2_bucket,
+                    "thread_id": thread_id,
+                    "checkpoint_ns": checkpoint_ns,
+                    "size_bytes": len(data),
+                    "max_value_bytes": limit,
+                },
+            )
+        else:
+            try:
+                await self._l2.put(self._l2_bucket, key, data)
+                return
+            except Exception as exc:
+                contain(exc, log=log, what="L2 checkpoint write failed; deleting the cached entry so readers use L3")
         try:
-            await self._l2.put(self._l2_bucket, key, data)
-        except Exception as exc:
-            contain(exc, log=log, what="L2 checkpoint write failed")
+            await self.l2_delete(thread_id, checkpoint_ns, customer=customer)
+        except CheckpointCacheError as exc:
+            contain(
+                exc,
+                log=log,
+                what="L2 checkpoint entry could not be deleted after a failed write; this saver reads the thread from L3",
+            )
+            self._cache_bypassed_threads.add(self.storage_thread_id(thread_id, customer=customer))
 
     async def l2_delete(self, thread_id: str, checkpoint_ns: str, *, customer: UUID | None = None) -> None:
         """delete one thread+namespace L2 entry.
@@ -1131,18 +1168,22 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             pending_writes=pending_writes,
         )
 
-        # Warm L1 and L2
-        try:
-            cache_blob = self.serialize_checkpoint_tuple(
-                checkpoint,
-                metadata,
-                parent_id,
-                pending_writes,
-            )
-            await self.l2_put(thread_id, checkpoint_ns, cache_blob, customer=customer)
-            await self.l1_put(thread_id, checkpoint_ns, cache_blob, customer=customer)
-        except Exception as exc:
-            contain(exc, log=log, what="Failed to warm caches after L3 read")
+        # Warm L1 and L2 -- only from a read of the LATEST checkpoint. The cache keys are per
+        # thread and namespace and are read as "latest", so warming them from a read pinned to an
+        # older checkpoint_id would serve that older state to every later unpinned read. The test is
+        # the one that chose the statement above, so "warmed" and "read the latest" cannot disagree.
+        if not checkpoint_id:
+            try:
+                cache_blob = self.serialize_checkpoint_tuple(
+                    checkpoint,
+                    metadata,
+                    parent_id,
+                    pending_writes,
+                )
+                await self.l2_put(thread_id, checkpoint_ns, cache_blob, customer=customer)
+                await self.l1_put(thread_id, checkpoint_ns, cache_blob, customer=customer)
+            except Exception as exc:
+                contain(exc, log=log, what="Failed to warm caches after L3 read")
 
         return tup
 

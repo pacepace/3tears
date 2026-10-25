@@ -24,6 +24,7 @@ __all__ = [
     "CheckpointL1Cache",
     "CheckpointL2Cache",
     "CheckpointL2PrefixCache",
+    "CheckpointL2ValueLimit",
     "FlushCallback",
 ]
 
@@ -97,6 +98,34 @@ class CheckpointL2PrefixCache(Protocol):
 
     async def delete_prefix(self, bucket: str, prefix: str) -> None:
         """Delete every key in ``bucket`` whose name starts with ``prefix``."""
+        ...
+
+
+@runtime_checkable
+class CheckpointL2ValueLimit(Protocol):
+    """Optional capability: say the largest value the L2 cache will store.
+
+    A separate protocol for the reason :class:`CheckpointL2PrefixCache` is one: a
+    member added to :class:`CheckpointL2Cache` would stop every adapter already
+    written against it from satisfying the protocol.
+
+    Why it exists: the saver's L2 key is per thread and namespace, not per
+    checkpoint, so a put that fails leaves the PREVIOUS checkpoint under the key,
+    and every worker whose L1 misses is then served that older state from L2.
+    A cache with a size limit (a NATS KV bucket refuses a value over the server's
+    ``max_payload``) fails every put of an oversized blob. Told the limit, the
+    saver deletes the key instead of attempting a put that cannot land, so
+    readers fall through to L3. Without it the saver still deletes the key after
+    the put fails; the limit saves the doomed attempt and names the sizes.
+    """
+
+    @property
+    def max_value_bytes(self) -> int | None:
+        """The largest value :meth:`CheckpointL2Cache.put` accepts, or None when unknown.
+
+        None means no limit is known right now (for NATS: not connected, so no
+        server has advertised one); the saver then attempts the put.
+        """
         ...
 
 
