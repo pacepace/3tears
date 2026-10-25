@@ -20,6 +20,7 @@ from threetears.evals.analysis import (
     campaign_report_html,
     campaign_report_markdown,
 )
+from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
 from threetears.evals.analysis.report.campaign_page import NO_CALL, NO_RECOMMENDATION
 from threetears.evals.analysis.report.model import (
     CampaignReport,
@@ -113,7 +114,13 @@ async def test_the_first_screen_runs_title_question_summary_recommendation_warni
         whole, warning, table = campaign_report_html(page), '<p class="warning">', _SCORECARD["change"][2]
     assert whole.index(warning) < whole.index(table)
     assert page.basis == "analysis" and page.finding_count == 1
-    assert opening(page) == [("text", "summary"), ("text", "recommendation"), ("text", "reason")]
+    # The arms are priced, so the report-wide cost caveat closes what warns, once.
+    assert opening(page) == [
+        ("text", "summary"),
+        ("text", "recommendation"),
+        ("text", "reason"),
+        ("cost", COST_ROUTING_CAVEAT),
+    ]
 
 
 async def test_a_code_only_page_has_no_summary_and_says_no_recommendation_was_written_before_the_table() -> None:
@@ -134,7 +141,7 @@ async def test_a_measurement_opens_on_its_summary_then_its_warning_then_its_meas
     page = await kind_page_of("solo", memo=recommending_nothing(summary))
     _, caption, mark = _SCORECARD["measurement"]
     assert page.readings.kind == "measurement"
-    assert opening(page) == [("text", "summary")]
+    assert opening(page) == [("text", "summary"), ("cost", COST_ROUTING_CAVEAT)]
     first = first_screen_markdown(page)
     assert first.startswith("# ")
     assert first.index(summary) < first.index("**alpha falls short of the bar on solo.**")
@@ -175,9 +182,10 @@ def test_each_warning_is_one_plain_line_per_arm_with_no_expression_or_figure_of_
     assert len(said) == len(set(said)), "one line per arm per kind"
 
 
-def test_a_page_with_nothing_that_warns_has_no_warnings_section() -> None:
+def test_a_page_with_nothing_that_warns_holds_only_its_report_caveat_where_warnings_go() -> None:
     page = s4_change().page()
-    assert not [block for block in page.blocks if block.section == "warnings"]
+    # Its one report-wide caveat, that its costs are as routed, is all the section holds: nothing warns.
+    assert [block.anchor for block in page.blocks if block.section == "warnings"] == ["caveat-cost"]
     assert '<p class="warning">' not in campaign_report_html(page)
 
 

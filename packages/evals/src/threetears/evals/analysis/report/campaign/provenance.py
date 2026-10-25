@@ -6,15 +6,18 @@ means for the readings, and its detail in one place. On a campaign's page the de
 provenance, and no aspect's fold repeats it; on an aspect's own page it is the aspect's methods. It is never recited
 per aspect or per finding, and it never lowers a reading or a recommendation: a criterion set after its readings
 were visible is disclosed, never a demotion, since its readings read as any others. When the runs ran is never said.
-Four disclosures are report-wide:
+Five disclosures are report-wide:
 
 - **criteria set late**: a criterion (an aspect, the control, a margin, a bar, a guardrail's margin or a floor) set
   after the readings it judges were visible, or whose time is not recorded;
 - **results with no ordered time**, of which whether a criterion came after them is not known;
 - **latency read under concurrency**, which every comparison leaves out;
-- **request settings not confirmed**, for the judge or the simulated user.
+- **request settings not confirmed**, for the judge or the simulated user;
+- **cost as routed**: every cost figure is what the runs' provider routing charged, not the model's alone, said on a
+  campaign's page wherever it prints one (:func:`cost_caveat_blocks`), with no row of detail, since the package does
+  not record which provider served a call.
 
-Each is built here and only here: its line (:func:`caveat_blocks`), its detail (:func:`provenance_blocks`,
+Each is built here and only here: its line (:func:`caveat_blocks`, :func:`cost_caveat_blocks`), its detail (:func:`provenance_blocks`,
 :func:`aspect_provenance_blocks`, :func:`setup_disclosure`), and what an aspect's fold on a campaign's page leaves out
 because the campaign states it (:func:`for_the_campaign`), which reads the marks those carry, never their words.
 """
@@ -43,9 +46,12 @@ from threetears.evals.analysis.style import ArmName, humanize
 from threetears.evals.kernel.campaign import EvalCampaign
 
 __all__ = [
+    "COST_ROUTING_CAVEAT",
     "aspect_provenance_blocks",
     "caveat_blocks",
+    "cost_caveat_blocks",
     "for_the_campaign",
+    "priced_aspects",
     "provenance_blocks",
     "question_blocks",
     "setup_disclosure",
@@ -171,6 +177,46 @@ def caveat_blocks(bundles: Sequence[AnalysisContextBundle], *, section: ReportSe
         )
         for kind, line in _lines(bundles)
     ]
+
+
+#: The line on a page that prints any cost figure: what an eval spent depends on which providers served its calls, which
+#: can differ by several times for one model, while its quality does not (owner, 2026-10-25).
+COST_ROUTING_CAVEAT = (
+    "Each cost figure reflects the provider routing of the runs it was measured on, not the model alone."
+)
+
+#: The id the cost caveat line carries.
+_COST_ANCHOR = "caveat-cost"
+
+
+def priced_aspects(bundles: Sequence[AnalysisContextBundle]) -> list[str]:
+    """The aspects on which any arm carries a cost, by label, in the campaign's order: where the page prints a cost
+    figure and the writer's view hands one.
+
+    :param bundles: Each aspect's evidence, in the campaign's order.
+    :ptype bundles: Sequence[AnalysisContextBundle]
+    :return: The labels; none where no arm on any aspect was priced.
+    :rtype: list[str]
+    """
+    return [
+        bundle.aspect
+        for bundle in bundles
+        if any(board.test_cost_usd is not None or board.reply_cost_usd is not None for board in bundle.scoreboard)
+    ]
+
+
+def cost_caveat_blocks(bundles: Sequence[AnalysisContextBundle]) -> list[ReportBlock]:
+    """A campaign page's one line saying its cost figures are its runs' provider routing's, not the model's alone,
+    after the other report-wide caveats; only where the page prints a cost figure. No figure restates it.
+
+    :param bundles: Each aspect's evidence, in the campaign's order.
+    :ptype bundles: Sequence[AnalysisContextBundle]
+    :return: The line, or nothing where no arm was priced.
+    :rtype: list[ReportBlock]
+    """
+    if not priced_aspects(bundles):
+        return []
+    return [DisclosureBlock(section="warnings", source="cost", text=COST_ROUTING_CAVEAT, anchor=_COST_ANCHOR)]
 
 
 def setup_disclosure(

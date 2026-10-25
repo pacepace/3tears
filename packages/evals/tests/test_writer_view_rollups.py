@@ -188,7 +188,8 @@ def test_a_campaign_of_one_aspect_keeps_that_aspect_s_own_disclosures_in_its_par
     view = _view(s2_choice())
     (part,) = view["aspects"]
     assert part["disclosures"] and part["confound_catalog"]
-    assert "disclosures" not in view and "confound_catalog" not in view
+    # Only the report-wide cost caveat is the campaign's own, since its arms are priced; nothing of the aspect's moves.
+    assert list(view["disclosures"]) == ["cost_routing"] and "confound_catalog" not in view
 
 
 @pytest.mark.parametrize("name", list(_SHAPES))
