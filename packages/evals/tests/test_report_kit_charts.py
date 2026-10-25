@@ -383,3 +383,26 @@ def test_arms_whose_labels_share_a_long_prefix_are_told_apart_on_the_drawn_outco
     assert len({(row["label"], row["tag"]) for row in drawn}) == 3
     assert not any("…" in row["label"] for row in drawn), drawn
     assert all(row["label"] in {"", arm, short} for row, (arm, _, short) in zip(drawn, arms, strict=True)), drawn
+
+
+#: The kit's arm naming over a control and thirty candidates: each arm's tag, in order.
+_ARM_TAGS = """() => armLabels(
+  [{id: 'c', role: 'control', spec: {model: 'm'}},
+   ...Array.from({length: 30}, (_, i) => ({id: 'a' + i, role: 'challenger', spec: {model: 'm' + i}}))],
+  [{k: 'model'}]).map(a => a.tag)"""
+
+
+@pytest.mark.integration
+def test_the_kit_tags_no_candidate_p_however_many_there_are(tmp_path: Path) -> None:
+    """GENERATOR.md §6.1, in the kit as in the package (``arm_tags``): P is the control's, so thirty candidates are
+    lettered A to O, Q to Z, then AA on; the sixteenth is Q, never P."""
+    reason = chromium_unavailable()
+    if reason is not None:
+        pytest.skip(f"headless Chromium cannot launch: {reason}")
+    page = tmp_path / "tags.html"
+    page.write_text(report_page([]), encoding="utf-8")
+    tags, errors = rendered(page, _ARM_TAGS)
+    assert errors == []
+    assert tags[0] == "P"
+    assert "P" not in tags[1:] and len(set(tags)) == len(tags)
+    assert tags[1:18] == [*"ABCDEFGHIJKLMNOQR"] and tags[26:] == ["AA", "AB", "AC", "AD", "AE"]

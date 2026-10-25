@@ -334,6 +334,7 @@ def build_code_only_report(
     assembled_at: str,
     campaign_name: str | None = None,
     arm_labels: Mapping[str, str] | None = None,
+    arm_tags: Mapping[str, str] | None = None,
     writer: str | None = None,
     bundle_fingerprint: str | None = None,
     trials: TrialDetail = "all",
@@ -355,6 +356,11 @@ def build_code_only_report(
         (:meth:`~threetears.evals.analysis.campaign_readings.CampaignReadings.arm_labels`), which name those arms
         everywhere on the page in place of their variants' names; None names every arm by its variant.
     :ptype arm_labels: Mapping[str, str] | None
+    :param arm_tags: The letter tag each arm carries across the campaign's page, by variant key
+        (:func:`~threetears.evals.analysis.report.words.campaign_arm_tags`), so an arm this aspect shares with others
+        is tagged and coloured as on every other chart of that page; None tags this page's arms by themselves, as
+        does a map that leaves out an arm of this page.
+    :ptype arm_tags: Mapping[str, str] | None
     :param writer: Who wrote the memo of the campaign page this page is a fold of, as the methods name a writer; None
         says no analysis was written. The memo is the campaign page's: this page lays out none of its words.
     :ptype writer: str | None
@@ -386,6 +392,7 @@ def build_code_only_report(
         finding_count=0,
         writer=writer,
         arm_labels=arm_labels,
+        tags=arm_tags,
         trials=trials,
     )
 
@@ -487,12 +494,14 @@ def _page(
     finding_count: int,
     writer: str | None,
     arm_labels: Mapping[str, str] | None = None,
+    tags: Mapping[str, str] | None = None,
     trials: TrialDetail = "all",
 ) -> Report:
     """The page every door renders: the same screens, from one bundle, whatever wrote the memo.
 
     ``arm_labels`` are a campaign's own labels for its arms, by variant key, which name those arms everywhere on the
-    page in place of their variants' names. ``trials`` says whether each failed or lost trial's record is laid out.
+    page in place of their variants' names; ``tags`` the campaign's letter tags for them, which tag and colour them on
+    its charts. ``trials`` says whether each failed or lost trial's record is laid out.
 
     The memo and the contrasts are laid out before the scoreboard, though they print after it: each chart they leave
     out is counted on the way, for the scoreboard's one line about what was not charted.
@@ -540,7 +549,7 @@ def _page(
         ),
         *_floor_warning_blocks(bundle, arm),
         *caveat_blocks([bundle], section="header"),
-        *_scoreboard_blocks(bundle, arm, _short_names(bundle, names, arm_labels or {})),
+        *_scoreboard_blocks(bundle, arm, _short_names(bundle, names, arm_labels or {}), tags),
         *_decision_blocks(bundle, arm),
         *written,
         *contrasts,
@@ -832,9 +841,10 @@ def _short_names(
     bundle: AnalysisContextBundle, names: Mapping[str, ArmName], given: Mapping[str, str]
 ) -> dict[str, str]:
     """Each arm's short name, for a chart's tight places (GENERATOR.md §6.1): the label the campaign gives it; the
-    control's ``control``; else only the levels where it differs from the control, a model trimmed of the prefix it
-    shares with the control's. With no control, or nothing that differs, an arm's short name is its name; two arms
-    whose short names agree are each named in full, so no two read alike."""
+    control's ``control``; else only the levels where it differs from the control, the model first and trimmed of the
+    prefix it shares with the control's. With no control, or nothing that differs, an arm's short name is its name,
+    and so is it where that name is no longer than the short one (a quick run's ``v4-flash``, never ``candidate
+    v4-flash``); two arms whose short names agree are each named in full, so no two read alike."""
     control = _control_key(bundle)
     entries = {entry.variant_key: entry for entry in bundle.variant_index}
     distinguishing = distinguishing_axes(bundle.variant_index)
@@ -848,14 +858,20 @@ def _short_names(
         elif control is None:
             shorts[key] = name.label
         else:
+            differing = [
+                level
+                for level in arm_levels(entries.get(key), distinguishing)
+                if level.axis_id not in base or base[level.axis_id].content_hash != level.content_hash
+            ]
             parts = [
                 _trimmed(level.display, base[level.axis_id].display)
                 if level.axis_id == CANDIDATE_MODEL_LEVER and level.axis_id in base
                 else f"{humanize('dimension', level.axis_id)} {elide_level(level.display)}"
-                for level in arm_levels(entries.get(key), distinguishing)
-                if level.axis_id not in base or base[level.axis_id].content_hash != level.content_hash
+                for level in sorted(differing, key=lambda level: level.axis_id != CANDIDATE_MODEL_LEVER)
             ]
             shorts[key] = " · ".join(parts) or name.label
+        if len(name.label) <= len(shorts[key]):
+            shorts[key] = name.label
     taken = list(shorts.values())
     return {key: short if taken.count(short) == 1 else names[key].label for key, short in shorts.items()}
 
@@ -879,9 +895,15 @@ def _trimmed(model: str, base: str) -> str:
 
 
 def _scoreboard_blocks(
-    bundle: AnalysisContextBundle, arm: Callable[[str], str], shorts: Mapping[str, str]
+    bundle: AnalysisContextBundle,
+    arm: Callable[[str], str],
+    shorts: Mapping[str, str],
+    given_tags: Mapping[str, str] | None = None,
 ) -> list[ReportBlock]:
     """The scoreboard table, its outcome bar, then only what changes how the verdict is read, in normal weight.
+
+    The outcome bar tags each arm by ``given_tags``, a campaign's, where they tag every arm of the scoreboard, and
+    else by this page's own order.
 
     A fact that changes how the verdict should be read belongs on the first screen, and nothing else does: the case
     floor, then an arm whose every trial failed. Everything else that qualifies the table is a
@@ -897,7 +919,12 @@ def _scoreboard_blocks(
             )
         ]
     control = _control_key(bundle)
-    tags = arm_tags([board.variant_key for board in boards], control)
+    keys = [board.variant_key for board in boards]
+    tags = (
+        dict(given_tags)
+        if given_tags is not None and all(key in given_tags for key in keys)
+        else arm_tags(keys, control)
+    )
     earlier = bundle.design.earlier_control
     lost_any = any(board.lost for board in boards)
     other_causes = sorted({cause for board in boards for cause in board.failed if cause not in ("check", "judged")})

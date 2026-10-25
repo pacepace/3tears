@@ -34,7 +34,7 @@ from threetears.evals.analysis.campaign_readings import (
 )
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
 from threetears.evals.analysis.report.campaign.names import AspectNames
-from threetears.evals.analysis.report.words import arm_tags
+from threetears.evals.analysis.report.words import campaign_arm_tags
 from threetears.evals.analysis.report.model import (
     ChartBlock,
     CostQualityPoint,
@@ -121,14 +121,11 @@ def aggregate_blocks(
             if (figure := _row_figure(arm)[0]).value is None
         ]
     if charted:
-        # Tagged in the order the aspects' scoreboards list the arms, so an arm is one tag, and one colour, on this
-        # chart and on every aspect's outcome bar the page lays out.
-        listed = list(
-            dict.fromkeys(board.variant_key for report in reports.values() for board in report.bundle.scoreboard)
+        # The campaign's tags, which each aspect's page is built with too, so an arm is one tag, and one colour, on
+        # this chart and on every aspect's outcome bar the page lays out.
+        tags = campaign_arm_tags(
+            (report.bundle for report in reports.values()), readings.control, also=(arm.arm for arm in aggregate.arms)
         )
-        rank = {key: index for index, key in enumerate(listed)}
-        order = sorted(aggregate.arms, key=lambda arm: (arm.arm != readings.control, rank.get(arm.arm, len(rank))))
-        tags = arm_tags([arm.arm for arm in order], readings.control)
         points = [point for arm in aggregate.arms if (point := _point(arm, tags[arm.arm])) is not None]
         if len(points) >= 2:
             blocks.append(

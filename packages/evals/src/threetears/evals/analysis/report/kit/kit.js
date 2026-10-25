@@ -118,6 +118,8 @@ function kTexture(g,name,x,y,w,h,color,opacity=1){kPatternName(name);const t=S("
 // ---------- arm naming ----------
 // arms: [{id, role:'control'|'challenger', alias?, spec:{model, ...}}]; attrs: [{k, fmt(v)}] in display order
 // short = alias, else only the attributes that differ from control (model trimmed of the shared prefix); tag = A, B, C…
+// (AA after Z), never P, which is the control's alone
+const kCandidateTag=n=>{let t="";for(n++;n;n=Math.floor((n-1)/26))t=String.fromCharCode(65+(n-1)%26)+t;return t;};
 function armLabels(arms,attrs,controlName="Production"){
   const ctl=arms.find(a=>a.role==="control");const fmtA=(k,v)=>{const a=attrs.find(x=>x.k===k);return a&&a.fmt?a.fmt(v):String(v);};
   const trimModel=(m,base)=>{if(!base||m===base)return m;let i=0;while(i<m.length&&i<base.length&&m[i]===base[i])i++;
@@ -125,7 +127,7 @@ function armLabels(arms,attrs,controlName="Production"){
   let n=0;
   for(const a of arms){a.long=attrs.map(x=>fmtA(x.k,a.spec[x.k])).join(" · ");
     if(a===ctl){a.short=a.alias||controlName;a.tag="P";continue;}
-    a.tag=String.fromCharCode(65+n++);
+    do a.tag=kCandidateTag(n++);while(a.tag==="P");
     if(a.alias){a.short=a.alias;continue;}
     const diffs=attrs.filter(x=>a.spec[x.k]!==ctl.spec[x.k]);
     a.short=diffs.map(x=>x.k==="model"?trimModel(a.spec.model,ctl.spec.model):(x.sfmt?x.sfmt(a.spec[x.k]):fmtA(x.k,a.spec[x.k]))).join(" · ")||a.long;}

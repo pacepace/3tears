@@ -138,8 +138,11 @@ def test_a_cost_quality_chart_draws_a_point_per_arm_and_prints_every_figure_as_a
         points=[_point("alpha", 0.004, 85.0), _point("beta", 0.0008, 60.0)],
     )
     headers, rows = chart.values_table()
-    assert headers == ["Arm", "Cost ($)", "Cost interval ($)", "Pass rate (%)", "Interval (%)"]
+    # The table states cost per 1,000 replies, as the chart's axis does: $0.004 a reply is $4.
+    assert headers == ["Arm", "Cost per 1,000 replies ($)", "Interval ($)", "Pass rate (%)", "Interval (%)"]
+    assert chart.kit_chart()[1]["x_title"] == "Cost per 1,000 replies ($)"  # type: ignore[index]
     assert [row[0] for row in rows] == ["alpha", "beta"]
+    assert (rows[0][1], rows[0][2], rows[1][1]) == ("4", "[3.6, 4.4]", "0.8"), rows
     assert rows[0][3] == "85" and rows[0][4] == "[80, 90]"
 
 

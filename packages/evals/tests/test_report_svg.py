@@ -43,6 +43,7 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.bundle.schema import FailCause
 from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.svg import GLYPH_STYLE, interval_glyph_svg
+from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals import Eval
 
 
@@ -347,6 +348,29 @@ def test_each_arm_of_an_outcome_bar_carries_its_tag_its_colour_and_its_short_nam
     assert [row["short_label"] for row in rows] == ["control", "reasoning high", "reasoning medium"]
     assert [row["label"] for row in rows] == [row["tip"][0] for row in rows] == [_CONTROL_ARM, *_CANDIDATE_ARMS]
     assert [row[0] for row in block.values_table()[1]] == [_CONTROL_ARM, *_CANDIDATE_ARMS]
+
+
+def test_no_candidate_is_tagged_p_however_many_there_are() -> None:
+    """GENERATOR.md §6.1: P is the control's. Thirty candidates are lettered A to O, then Q to Z, then AA on, so the
+    sixteenth is Q, never P; each candidate's row on the outcome bar is a series colour, never the control's
+    ink-gray."""
+    keys = ["control", *(f"candidate {index}" for index in range(30))]
+    tags = arm_tags(keys, "control")
+    assert tags["control"] == "P"
+    lettered = [tags[key] for key in keys[1:]]
+    assert "P" not in lettered and len(set(lettered)) == len(lettered)
+    assert lettered[:17] == [*"ABCDEFGHIJKLMNOQR"] and lettered[25:] == ["AA", "AB", "AC", "AD", "AE"]
+    assert arm_tags(keys[1:], None)["candidate 15"] == "Q"
+    passed = [OutcomeSegment(state="passed", label="passed", count=4)]
+    block = ChartBlock(
+        section="scoreboard",
+        chart="outcome_bar",
+        title="Outcomes",
+        bars=[OutcomeBar(arm=key, segments=passed, tag=tags[key]) for key in keys],
+    )
+    _, data = _drawn(block)
+    colours = [row["color"] for row in data["rows"]]
+    assert colours[0] == "--ink-2" and "--ink-2" not in colours[1:]
 
 
 def test_each_arm_of_a_cost_chart_is_its_colour_and_its_mark_and_the_legend_names_its_tag() -> None:

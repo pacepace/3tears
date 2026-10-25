@@ -256,7 +256,9 @@ def test_s2_draws_its_arms_on_one_aspect_with_that_aspect_s_own_figures_and_no_r
     assert '<figure class="fig" data-figure="cost_quality">' in html and 'data-kind="scatter_frontier"' in html
     assert '<div class="tbl chart-values"><table><caption>Cost and pass rate</caption>' in html
     markdown = campaign_report_markdown(page)
-    assert "| alpha | 0.004 | [0.004, 0.004] | 88.3 |" in markdown
+    # The table reads cost per 1,000 replies, as the chart's axis and the scoreboard do: $0.004 a reply is $4.
+    assert "| Arm | Cost per 1,000 replies ($) | Interval ($) | Pass rate (%) | Interval (%) |" in markdown
+    assert "| alpha | 4 | [4, 4] | 88.3 |" in markdown
 
 
 def test_s1_draws_every_arm_across_its_aspects() -> None:
@@ -276,12 +278,34 @@ def test_s1_draws_every_arm_across_its_aspects() -> None:
     assert all(f"<td>{arm}</td>" in html for arm in ("production", "v2", "v3", "v4"))
 
 
-@pytest.mark.parametrize("name", ["s1", "s2"])
+def _sparse() -> Shape:
+    """A campaign whose second aspect lacks an arm: ``billing`` runs production, v2 and v3, ``tone`` production and v3,
+    so v3 is the second candidate the campaign lists but the first ``tone`` does."""
+    return shape_of(
+        "sparse",
+        [
+            AspectTrials(
+                "billing",
+                [ArmTrials("production", passing=18), ArmTrials("v2", passing=6), ArmTrials("v3", passing=17)],
+            ),
+            AspectTrials("tone", [ArmTrials("production", passing=10), ArmTrials("v3", passing=12)]),
+        ],
+        control=True,
+    )
+
+
+#: The campaigns whose pages tag their arms: dense ones, and one whose aspect lacks an arm.
+_TAGGED = {"s1": SHAPES["s1"], "s2": SHAPES["s2"], "sparse": _sparse}
+
+
+@pytest.mark.parametrize("name", sorted(_TAGGED))
 def test_an_arm_is_one_tag_and_one_colour_on_every_chart_of_the_campaign_page(name: str) -> None:
     """GENERATOR.md §5.2: one colour per arm for the whole page. The cost/quality chart and every aspect's outcome bar
-    on the campaign page tag an arm alike (the control P, the others A, B, C in the campaign's order), so each draws it
-    in one colour; the control, where there is one, ink-gray."""
-    shape = SHAPES[name]()
+    on the campaign page tag an arm alike (the control P, the others A, B, C in the order the campaign's aspects list
+    them), so each draws it in one colour; the control, where there is one, ink-gray. An aspect that lacks an arm
+    shifts no other arm's tag: on the sparse campaign v3 is B on ``tone`` too, as on ``billing`` and the chart, where
+    v2, run on one aspect, is withheld."""
+    shape = _TAGGED[name]()
     page = shape.page()
     (chart,) = _charts(page)
     tags = {point.arm: point.tag for point in chart.points}
@@ -296,12 +320,21 @@ def test_an_arm_is_one_tag_and_one_colour_on_every_chart_of_the_campaign_page(na
         for bar in block.bars
     ]
     assert bars, "every aspect's page draws its outcome bar"
+    worn: dict[str, set[str | None]] = {}
     for bar in bars:
+        worn.setdefault(bar.arm, set()).add(bar.tag)
+    assert all(len(held) == 1 for held in worn.values()), worn
+    assert len({tag for held in worn.values() for tag in held}) == len(worn), worn
+    for bar in bars:
+        if bar.arm not in tags:
+            continue
         assert bar.tag == tags[bar.arm], bar.arm
         row = next(row for row in _outcome_rows(page) if row["label"] == bar.arm)
         assert row["color"] == colours[bar.short_name or bar.arm]
     if shape.readings.control is not None:
         assert colours[shape.readings.control_label] == "--ink-2"
+    if name == "sparse":
+        assert sorted(tags) == ["production", "v3"] and worn == {"production": {"P"}, "v2": {"A"}, "v3": {"B"}}
 
 
 def _outcome_rows(page: CampaignReport) -> list[dict[str, Any]]:

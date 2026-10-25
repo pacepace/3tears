@@ -969,13 +969,17 @@ class ChartBlock(_Block):
                 body.append([bar.arm, str(bar.total), *(str(counts.get(label, 0)) for label in labels)])
             return headers, body
         if self.chart == "cost_quality":
+            # On the chart's own scale, per 1,000 replies, and saying so, so the table beside the figure (or in its
+            # place where no script runs) reads what the axis does; each figure's interval follows it, as the pass
+            # rate's does.
             cost = f" ({unit_label(self.unit)})" if self.unit else ""
-            headers = ["Arm", f"Cost{cost}", f"Cost interval{cost}", "Pass rate (%)", "Interval (%)"]
+            per = _REPLIES_PER_COST_UNIT
+            headers = ["Arm", f"Cost per 1,000 replies{cost}", f"Interval{cost}", "Pass rate (%)", "Interval (%)"]
             return headers, [
                 [
                     point.arm,
-                    interval_value_text(point.cost, self.unit),
-                    interval_text(point.cost_low, point.cost_high, self.unit),
+                    interval_value_text(point.cost * per, self.unit),
+                    interval_text(point.cost_low * per, point.cost_high * per, self.unit),
                     interval_value_text(point.pass_rate, PERCENT),
                     interval_text(point.pass_rate_low, point.pass_rate_high, PERCENT),
                 ]
