@@ -35,6 +35,14 @@ Out of scope: removing registry's mirror models (`ProbeResponse`, `DiscoverReque
   only; moving them is churn with no consumer]
 - [DECISION: the pinned `context_envelope` error string (agent-tools test_context_envelope.py:147,
   registry proxy.py:241) keeps its text | the old path still works]
+- [DECISION: agent-tools' `test_context_envelope.py` moves whole to core as `test_tool_wire_context.py`;
+  the tool-free classes and methods of `test_rest_affordance.py` move to core's `test_tool_wire_rest.py`
+  and the rest stay | every case in the first file is pure, so a move, not a copy, keeps one home per
+  assertion]
+- [DECISION: at chunk 01's commit core and agent-tools both define the names, so the tolerant-reader
+  inventory carries both `CallRequest` keys and `test_public_api_has_a_caller` is red for the five core
+  names only agent-tools' own definitions referenced; chunk 02's re-export imports are their caller, and
+  chunk 02 drops the old inventory key | a chunk boundary inside one move; the branch is judged at its tip]
 
 ## What moves (line numbers on develop c65ecdf8c)
 

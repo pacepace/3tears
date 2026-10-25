@@ -20,8 +20,7 @@ from uuid import UUID, uuid7
 import pytest
 from pydantic import ValidationError
 
-from threetears.agent.tools.context_envelope import CallContext, bind_log_context
-from threetears.agent.tools.server import CallRequest
+from threetears.core.tool_wire import CallContext, CallRequest, bind_log_context
 from threetears.observe import clear_context
 from threetears.observe.logging import get_context
 
