@@ -8,6 +8,46 @@ packages (bumped in lock-step).
 
 ## v0.78.0 -- 2026-10-24
 
+### models: the bare registry entry is readable without lifting the layers above it
+
+**Added:** `threetears.models.get_registered_capabilities(model_id)` returns a model's static registry entry,
+with no published facts or override applied, read under the registry lock. A caller that needed it lifted both
+layers off for one `get_capabilities` read and put them back, which another thread could read in between.
+
+### core, datasources, scheduled-jobs: a declared collection derives its row types and write columns from its schema
+
+A `DeclaredTableCollection` kept a hand-written field-type map for its L2 codec and hand-written INSERT/UPSERT
+column lists beside its `TableSchema`, and nothing checked the copies against the schema, so a column was
+declared two or three times and a migration could add it to one copy only.
+
+**Added:** a `DeclaredTableCollection` reads off its schema, at class definition, `field_types` (each
+column's Python type), `datetime_columns`, `insert_columns` (every written column, in declared order) and
+`update_columns` (all but the key, the conflict target, `immutable` columns and the class's
+`insert_only_columns`). Its default `serialize`/`deserialize` rehydrate each column by `field_types` (the wire
+format of `serialize_to_json`, unchanged). `write_row(data, *, conn=None)` writes the upsert built from those
+lists: only the columns the row carries, `ON CONFLICT` on `conflict_columns` (the primary key unless the class
+names a natural key, when it returns the stored key and calls `settle_stored_key`), a plain `UPDATE` for a row
+short of a `NOT NULL` column, raising `RowCannotBeInsertedError` (a `RuntimeError`) when that finds no row.
+`write_statement(data)` returns the statement and parameters without running it.
+
+**Changed:** a class that still states `datetime_columns`, `field_types`, `insert_columns` or `update_columns`
+must agree with its schema, or it is refused with a `TypeError` at class definition naming every difference;
+`conflict_columns` and `insert_only_columns` must name schema columns. A `SchemaBackedCollection` is held to
+the same rule for `datetime_columns` and `field_types`, and its `datetime_columns` is now exactly the schema's
+instants rather than a union with an inherited set. `serialization.resolve_base_type` is public.
+
+**Changed:** the datasource collections (tables, columns, relations, schema digests, templates) and
+`ScheduledJobCollection` / `JobFireCollection` keep no field-type map and no column list: each writes through
+`write_row` and decodes through the derived codec. The scheduled-jobs collections are now
+`DeclaredTableCollection`s whose schemas match the v001 migration (a live test holds them to it), so a host's L1
+gets their tables. A row they write is written by what it carries: a column it omits takes the table's default
+on an insert and keeps its stored value on an update, where the job and fire upserts used to bind
+Python-side defaults for every column (a fire row inserted without `status` is now refused by the table rather
+than written as `dispatching`). `DataSourceColumnCollection`, `DataSourceTableCollection`,
+`DataSourceRelationCollection` and `TableTemplateCollection` keep `date_created` on an update (declared
+`immutable`); the datasource writes join the caller's connection when given one. The coordination collections
+drop their restated `datetime_columns`.
+
 ### core, datasources, scheduled-jobs: a host gets L1 for every collection, and every write keeps it exact
 
 A host that hands its registry an L1 gives it to every collection the registry builds. The hub did, and had

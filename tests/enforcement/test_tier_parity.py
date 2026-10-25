@@ -79,6 +79,12 @@ def test_every_collection_hands_back_from_every_tier_what_was_written() -> None:
     collections = _collections_with_a_schema()
     names = {cls.__qualname__ for cls in collections}
     # the gate would pass vacuously on a discovery that found nothing
-    assert {"CapabilitySourceCollection", "DataSourceColumnCollection", "McpToolGrantCollection"} <= names
+    assert {
+        "CapabilitySourceCollection",
+        "DataSourceColumnCollection",
+        "JobFireCollection",
+        "McpToolGrantCollection",
+        "ScheduledJobCollection",
+    } <= names
     findings = tier_parity_findings(collections, build=_build)
     assert not findings, "\n".join(findings)
