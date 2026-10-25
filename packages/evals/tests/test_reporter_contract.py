@@ -5,7 +5,8 @@ and which model a name resolves to. Every other refusal is the kind's and is hel
 apparatus a memo writer cannot honour; a bank with no live case, or with a (campaign, memo) pair holding two;
 a preset the registry does not hold, which must never fall back to the default and bill the incumbent under
 the candidate's name; a model named by alias, which the run would record under a name whose target moves;
-and the as-recorded replay over a case with no recorded memo to replay.
+the as-recorded replay over a case with no recorded memo to replay; and a generating reporter, a memo writer, over a
+case judging a report plan.
 """
 
 from __future__ import annotations
@@ -26,7 +27,9 @@ from threetears.evals.analysis import (
     reporter_kind_contract,
 )
 from threetears.evals.analysis.generator import user_message_digest
-from threetears.evals.analysis.reporter_kind import reporter_case_payload
+from threetears.evals.analysis.planned_analysis import report_input_digest
+from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.reporter_kind import PLAN_CASE_VERSION, reporter_case_payload
 from threetears.evals.kernel import ANALYSIS_GEN_PROMPT, EvalStorage, ValidationFailedError
 from threetears.evals.kernel.host import EvalHost, ProfileRegistrationError
 from threetears.evals.ops import (
@@ -50,6 +53,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.report_plan_support import r5_input, r5_plan
 
 SCOPE = "reporter-scope"
 TEMPLATE_ID = "tpl-reporter"
@@ -92,6 +96,27 @@ def _case(*, campaign: str = "camp-1", memo: str | None = "memo-1", supersedes: 
         writer_message=message,
         recorded_writer_message_digest=None if message is None else user_message_digest(message),
         supersedes=list(supersedes),
+    )
+
+
+def _plan_case() -> ReporterCase:
+    """A plan case of another campaign: its plan, the report input it resolves against, and what its planner read."""
+    report = ReportInput.model_validate(r5_input())
+    message = "what the planner read"
+    return ReporterCase(
+        bundle={"campaign_id": "camp-plan"},
+        bundle_fingerprint="fp",
+        bundle_assembled_at="2026-01-01T00:00:00+00:00",
+        recorded_analysis_id="plan-1",
+        recorded_memo="the plan as the judge reads it",
+        writer_message=message,
+        recorded_writer_message_digest=user_message_digest(message),
+        kind_version=PLAN_CASE_VERSION,
+        report_input=report.model_dump(mode="json", by_alias=True),
+        report_input_digest=report_input_digest(report),
+        recorded_report_input_digest=report_input_digest(report),
+        recorded_plan=r5_plan(),
+        planner_prompt_version="abc123",
     )
 
 
@@ -358,6 +383,14 @@ class TestAdmittingALaunch:
     def test_a_generator_runs_a_case_with_no_recorded_memo(self):
         host = _host(_stored("c-1", _case(memo=None)))
         assert [case.id for case in _admit(host, _request()).cases] == ["c-1"]
+
+    def test_a_generator_over_a_plan_case_is_refused_and_the_replay_runs_it(self):
+        """A generating reporter writes memos; a plan case judges a plan, so only the replay runs one."""
+        host = _host(_stored("c-1", _case()), _stored("c-2", _plan_case()))
+        with pytest.raises(ValidationFailedError, match=r"case\(s\) c-2 judge a report plan") as refused:
+            _admit(host, _request())
+        assert AS_RECORDED_MODEL in (refused.value.remedy or "")
+        assert [case.id for case in _admit(host, _request(model=AS_RECORDED_MODEL)).cases] == ["c-1", "c-2"]
 
     def test_an_undeliverable_template_is_refused_first(self):
         prompts = _Prompts()

@@ -394,6 +394,7 @@ from threetears.evals.analysis.reads import LensStore, RowColumns, RunLister
 from threetears.evals.analysis.reporter_bank import (
     CalibrationCase,
     CalibrationCell,
+    CalibrationGroup,
     CriterionDrift,
     DimensionReading,
     LabelReading,
@@ -412,6 +413,7 @@ from threetears.evals.analysis.reporter_kind import (
     LabelVerdict,
     PreparedReporter,
     ReporterCase,
+    ReporterKindVersion,
     WriterMessageCheck,
 )
 from threetears.evals.analysis.reporting import (
@@ -682,6 +684,7 @@ __all__ = [
     "BundleInspection",
     "CalibrationCase",
     "CalibrationCell",
+    "CalibrationGroup",
     "CampaignReadStore",
     "CampaignStore",
     "CaseSetIdentity",
@@ -824,6 +827,7 @@ __all__ = [
     "VerdictOrder",
     "WholeSwing",
     "WriterMessageCheck",
+    "ReporterKindVersion",
     "add_runs_to_campaign",
     "analysis_report",
     "build_code_only_report",

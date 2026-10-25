@@ -205,7 +205,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`DURABLE_DOC_TYPES`** · constant (frozenset) · What people author, by `doc_type`: the `durable` entries of `DOC_TYPE_FACTS`, derived as `CORE_DOC_TYPES` is.
 - **`DURABLE_SCHEMA_MINOR`** · *host contract* · constant (int) · The durable minor this build writes within `DURABLE_SCHEMA_VERSION`, under the core's minor rules.
-  <br>`= 5`
+  <br>`= 6`
 - **`DURABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The durable version this build writes.
   <br>`= 16`
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
@@ -1724,7 +1724,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `rating_reason` | `string` | Why that score, in the rater's own words. |
 | `rating_source` | `string` | Where the person gave the rating, e.g. a blind read's id. |
 | `reason` | `string` or `null` | Why, recorded on a cancelled run. |
-| `recorded_analysis_id` | `string` or `null` | A stored analysis of the campaign whose memo the case pins as the one it got, as analyses_list names it; omitted freezes the bundle alone, which only a generating candidate can run. |
+| `recorded_analysis_id` | `string` or `null` | A stored analysis of the campaign whose memo the case pins as the one it got, as analyses_list names it; one the report planner wrote pins its plan, as a plan case; omitted freezes the bundle alone, which only a generating candidate can run. |
 | `repeats` | `integer` | How many times each dim is judged at each temperature. |
 | `reporter_case_id` | `string` | A reporter case's id, as reporter_case_freeze or reporter_cases_list returns it. |
 | `result_id` | `string` | A result's id, as results_list names it. |
