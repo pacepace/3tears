@@ -1,0 +1,489 @@
+<meta charset="utf-8">
+<title>Turn Router Classifier Sweep</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap">
+<style>/* Layout: decision-memo column (68ch prose) with charts breaking out to a wide band.
+   Host apps override the --host-* tokens only; everything else derives from them. */
+:root{
+  --host-accent:#1f5fbf;
+  --bg:#f5f6f8; --surface:#ffffff; --sunk:#eef0f3;
+  --ink:#11151b; --ink-2:#465061; --muted:#7f8896;
+  --line:#e1e5eb; --base:#c3cad4;
+  --accent:var(--host-accent); --accent-wash:#e6eefa;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#c98500; --s5:#6250d6;
+  --good:#0b7f0b; --good-wash:#e3f3e3; --warn:#a86a00; --warn-wash:#fbf0d9; --bad:#c22f2f; --bad-wash:#fbe5e5;
+  --seq-0:#eef4fc; --seq-1:#cde2fb; --seq-2:#9ec5f4; --seq-3:#5598e7; --seq-4:#256abf; --seq-5:#104281;
+  --seq-t0:#11151b; --seq-t1:#11151b; --seq-t2:#11151b; --seq-t3:#ffffff; --seq-t4:#ffffff; --seq-t5:#ffffff;
+  --div-neg:#d03b3b; --div-mid:#f0efec; --div-pos:#2a78d6;
+  --f-display:"IBM Plex Sans Condensed","Arial Narrow",system-ui,sans-serif;
+  --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --t-xs:.75rem; --t-sm:.8125rem; --t-base:.9375rem; --t-md:1.0625rem; --t-lg:1.375rem; --t-xl:1.875rem; --t-hero:2.25rem;
+  --col:44rem; --wide:68rem; --r:6px;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --host-accent:#6aa2f0; --bg:#0e1115; --surface:#161a20; --sunk:#1d222a;
+  --ink:#eef1f5; --ink-2:#b5bdc9; --muted:#828b99; --line:#262c35; --base:#3a424e;
+  --accent-wash:#1a2a42;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#9085e9;
+  --good:#3cbf3c; --good-wash:#15291a; --warn:#e0a32e; --warn-wash:#2e2512; --bad:#ef6a6a; --bad-wash:#331a1b;
+  --seq-0:#18202b; --seq-1:#173252; --seq-2:#1c4b84; --seq-3:#2a6cc0; --seq-4:#5598e7; --seq-5:#a8cdf6;
+  --seq-t0:#eef1f5; --seq-t1:#eef1f5; --seq-t2:#eef1f5; --seq-t3:#ffffff; --seq-t4:#0e1115; --seq-t5:#0e1115;
+  --div-neg:#e66767; --div-mid:#383835; --div-pos:#3987e5; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --host-accent:#6aa2f0; --bg:#0e1115; --surface:#161a20; --sunk:#1d222a;
+  --ink:#eef1f5; --ink-2:#b5bdc9; --muted:#828b99; --line:#262c35; --base:#3a424e;
+  --accent-wash:#1a2a42;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#9085e9;
+  --good:#3cbf3c; --good-wash:#15291a; --warn:#e0a32e; --warn-wash:#2e2512; --bad:#ef6a6a; --bad-wash:#331a1b;
+  --seq-0:#18202b; --seq-1:#173252; --seq-2:#1c4b84; --seq-3:#2a6cc0; --seq-4:#5598e7; --seq-5:#a8cdf6;
+  --seq-t0:#eef1f5; --seq-t1:#eef1f5; --seq-t2:#eef1f5; --seq-t3:#ffffff; --seq-t4:#0e1115; --seq-t5:#0e1115;
+  --div-neg:#e66767; --div-mid:#383835; --div-pos:#3987e5; color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:var(--t-base);line-height:1.55;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:0 4rem}
+.page{max-width:var(--wide);margin:0 auto}
+.prose{max-width:var(--col)}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;margin:0;letter-spacing:-.005em}
+h1{font-size:var(--t-hero);line-height:1.12;font-weight:600}
+h2{font-size:var(--t-lg);font-weight:600;line-height:1.2}
+h3{font-size:var(--t-md);font-weight:600}
+p{margin:0}
+a{color:var(--accent)}
+code,.mono{font-family:var(--f-mono);font-size:.92em}
+.num{font-variant-numeric:tabular-nums}
+
+/* masthead */
+.mast{display:flex;flex-wrap:wrap;gap:.25rem 1rem;align-items:baseline;padding-block:1.5rem .75rem;border-bottom:1px solid var(--line);
+  font-size:var(--t-xs);color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+.mast b{color:var(--ink-2);font-weight:600}
+.mast .kind{color:var(--accent);font-weight:600}
+.bluf{display:grid;gap:1.25rem;padding-block:1.75rem 2rem}
+.bluf .lede{font-size:var(--t-md);color:var(--ink-2);max-width:var(--col)}
+.decision{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.decision>div{background:var(--surface);padding:1rem 1.1rem;display:grid;gap:.35rem;align-content:start;min-width:0}
+.decision .k{font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:600}
+.decision .v{font-size:var(--t-base)}
+.decision .v strong{font-weight:600}
+.decision .rec{background:var(--accent-wash)}
+.decision .rec .k{color:var(--accent)}
+
+/* sections */
+section{padding-block:2.25rem 0;display:grid;gap:1rem}
+section>header{display:grid;gap:.35rem;max-width:var(--col)}
+.eyebrow{font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600}
+.takeaway{color:var(--ink-2)}
+.part{margin-top:2.5rem;padding-top:1rem;border-top:2px solid var(--ink);display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;align-items:baseline}
+.part h2{font-size:var(--t-xl)}
+.part span{font-size:var(--t-sm);color:var(--muted)}
+
+/* figure */
+.fig{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:1rem 1rem .75rem;min-width:0}
+.fig .cap{font-size:var(--t-xs);color:var(--muted);margin-top:.5rem}
+.chart{width:100%;min-width:0;position:relative}
+.chart svg{display:block;overflow:visible}
+.chart text{font-family:var(--f-body);fill:var(--ink-2)}
+.chart .tick{font-size:11px;fill:var(--muted);font-variant-numeric:tabular-nums}
+.chart .lbl{font-size:12px;fill:var(--ink-2)}
+.chart .lbl-strong{font-size:12px;fill:var(--ink);font-weight:600}
+.chart .grid{stroke:var(--line);stroke-width:1}
+.chart .axis{stroke:var(--base);stroke-width:1}
+.chart .floor{stroke:var(--ink-2);stroke-width:1.25;stroke-dasharray:3 3}
+.chart [data-tip]{cursor:default}
+.legend{display:flex;flex-wrap:wrap;gap:.35rem 1rem;font-size:var(--t-sm);color:var(--ink-2);margin-bottom:.5rem}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:.4rem;vertical-align:-1px}
+.legend i.sq{border-radius:2px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,30rem),1fr));gap:1rem}
+.mult{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,15.5rem),1fr));gap:1rem}
+.mult .fig{padding:.8rem .8rem .5rem;display:flex;flex-direction:column}
+.mult .fig .chart{margin-top:auto;padding-top:.4rem}
+.mult h4{margin:0 0 .15rem;font-family:var(--f-display);font-size:var(--t-base);font-weight:600}
+.mult .sub{font-size:var(--t-xs);color:var(--muted)}
+
+/* tooltip */
+#tip{position:fixed;z-index:20;pointer-events:none;background:var(--ink);color:var(--bg);font-size:var(--t-sm);line-height:1.4;
+  padding:.45rem .6rem;border-radius:4px;max-width:17rem;opacity:0;transition:opacity .08s}
+#tip.on{opacity:1}
+#tip b{font-weight:600}
+
+/* tables */
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r);background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:var(--t-sm)}
+th,td{padding:.5rem .7rem;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-weight:600;color:var(--muted);font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.05em;background:var(--sunk);position:sticky;top:0}
+td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
+tr:last-child td{border-bottom:0}
+tr.hl td{background:var(--accent-wash)}
+tr.hl td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
+td.wrap{white-space:normal;min-width:14rem}
+th.sort{cursor:pointer;user-select:none}
+th.sort:hover{color:var(--ink)}
+th.sort[aria-sort]::after{content:" ↓";color:var(--accent)}
+th.sort[aria-sort="ascending"]::after{content:" ↑"}
+
+/* status pills: always icon + label */
+.pill{display:inline-flex;align-items:center;gap:.3rem;font-size:var(--t-xs);font-weight:600;padding:.1rem .45rem;border-radius:999px;white-space:nowrap}
+.pill.good{background:var(--good-wash);color:var(--good)}
+.pill.warn{background:var(--warn-wash);color:var(--warn)}
+.pill.bad{background:var(--bad-wash);color:var(--bad)}
+.pill.neutral{background:var(--sunk);color:var(--ink-2)}
+.sw{display:inline-block;width:.65rem;height:.65rem;border-radius:50%;margin-right:.4rem;vertical-align:0}
+
+/* controls */
+.controls{display:flex;flex-wrap:wrap;gap:.75rem 1.5rem;align-items:end;padding:1rem;background:var(--sunk);border-radius:var(--r)}
+.ctl{display:grid;gap:.25rem;font-size:var(--t-sm);color:var(--ink-2);min-width:0}
+.ctl label{font-weight:600;font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.ctl output{font-variant-numeric:tabular-nums;color:var(--ink);font-weight:600}
+input[type=range]{accent-color:var(--accent);width:12rem;max-width:100%}
+select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid var(--base);border-radius:4px;background:var(--surface);color:var(--ink)}
+.seg{display:inline-flex;border:1px solid var(--base);border-radius:5px;overflow:hidden}
+.seg button{font:inherit;font-size:var(--t-sm);border:0;background:var(--surface);color:var(--ink-2);padding:.35rem .7rem;cursor:pointer}
+.seg button+button{border-left:1px solid var(--base)}
+.seg button[aria-pressed="true"]{background:var(--accent);color:#fff}
+.toggle{display:flex;align-items:center;gap:.45rem;font-size:var(--t-sm);color:var(--ink-2);cursor:pointer}
+.toggle input{accent-color:var(--accent);width:1rem;height:1rem}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.result{display:grid;gap:.75rem}
+.callout{border-left:3px solid var(--accent);padding:.6rem .9rem;background:var(--surface);font-size:var(--t-sm);color:var(--ink-2)}
+.callout.warn{border-color:var(--warn)}
+.stat{display:grid;gap:.1rem}
+.stat .big{font-size:var(--t-xl);font-weight:600;line-height:1.1}
+.stat .lab{font-size:var(--t-xs);color:var(--muted)}
+.stats{display:flex;flex-wrap:wrap;gap:1rem 2.25rem}
+.method{font-size:var(--t-sm);color:var(--ink-2);display:grid;gap:.5rem;max-width:var(--col)}
+.method dt{font-weight:600;color:var(--ink)}
+.method dd{margin:0 0 .4rem;overflow-wrap:anywhere}
+@media (max-width:640px){h1{font-size:1.75rem}.part h2{font-size:var(--t-lg)}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+.armchip{display:inline-flex;align-items:center;gap:.4rem;white-space:nowrap}
+.armchip .tag{display:inline-grid;place-items:center;width:1.25rem;height:1.25rem;border-radius:4px;color:#fff;font-size:var(--t-xs);font-weight:600;font-family:var(--f-mono)}
+.vsum{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:1rem;align-items:start}
+@media (max-width:820px){.vsum{grid-template-columns:1fr}}
+.flag{display:flex;gap:.6rem;align-items:flex-start;font-size:var(--t-sm);color:var(--ink-2);background:var(--warn-wash);border-radius:var(--r);padding:.6rem .8rem;max-width:var(--col)}
+.flag b{color:var(--warn)}
+.ex{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,28rem),1fr));gap:1rem}
+.excard{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:.9rem 1rem;display:grid;gap:.5rem;min-width:0}
+.excard .top{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;font-size:var(--t-xs);color:var(--muted)}
+.excard .reason{font-size:var(--t-sm)}
+.excard pre{margin:0;font-family:var(--f-mono);font-size:var(--t-xs);color:var(--ink-2);white-space:pre-wrap;overflow-wrap:anywhere;background:var(--sunk);padding:.5rem .6rem;border-radius:4px;max-height:9rem;overflow:auto}
+
+.lattice{display:grid;grid-template-columns:auto repeat(3,minmax(0,1fr));gap:2px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.lattice>div{background:var(--surface);padding:.7rem .8rem;min-width:0}
+.lattice .hd{background:var(--sunk);font-size:var(--t-xs);font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:flex;align-items:end}
+.lattice .rh{background:var(--sunk);font-family:var(--f-display);font-weight:600;display:flex;align-items:center}
+.lattice .cell{display:grid;gap:.3rem;align-content:start}
+.lattice .acc{font-size:var(--t-xl);font-weight:600;line-height:1}
+.lattice .meta{font-size:var(--t-xs);color:var(--ink-2);font-variant-numeric:tabular-nums}
+.lattice .cell.rec{box-shadow:inset 0 0 0 2px var(--accent)}
+.lattice .bar{height:4px;border-radius:2px;background:var(--sunk);position:relative}
+.lattice .bar i{position:absolute;inset:0 auto 0 0;border-radius:2px;background:var(--s1)}
+.mx{display:grid;grid-template-columns:auto repeat(3,minmax(0,1fr));gap:2px;font-size:var(--t-sm)}
+.mx .h{font-size:var(--t-xs);color:var(--muted);font-weight:600;padding:.25rem .35rem;display:flex;align-items:end;justify-content:center;text-align:center}
+.mx .rl{font-size:var(--t-xs);color:var(--muted);font-weight:600;padding:.25rem .5rem .25rem 0;display:flex;align-items:center;justify-content:flex-end}
+.mx .c{border-radius:3px;padding:.5rem .35rem;text-align:center;font-variant-numeric:tabular-nums;display:grid;gap:.05rem;min-width:0}
+.mx .c b{font-size:var(--t-md);font-weight:600}
+.mx .c span{font-size:var(--t-xs);opacity:.85}
+.mx .c.low{outline:2px solid var(--bad);outline-offset:-2px}
+.mxwrap{display:grid;gap:.5rem}
+.mxwrap h4{margin:0;font-family:var(--f-display);font-size:var(--t-base)}
+.mxwrap .sub{font-size:var(--t-xs);color:var(--muted)}
+.axis-note{font-size:var(--t-xs);color:var(--muted)}
+@media (max-width:560px){.lattice .acc{font-size:var(--t-lg)}.lattice>div{padding:.5rem}}
+</style>
+<div class="page">
+<div class="mast"><span class="kind">Classifier</span><span><b>Turn router: complexity × domain</b></span><span>9 configurations · 48,210 annotated turns · 9 target cells</span><span>Run 2026-10-24</span><span>Synthetic example data</span></div>
+
+<div class="bluf">
+  <h1>Use Brisk-S with the few-shot prompt. It is the cheapest configuration that stays above 80% in every cell.</h1>
+  <p class="lede" id="b-lede"></p>
+  <div class="decision">
+    <div class="rec"><span class="k">Recommendation</span><span class="v" id="b-rec"></span></div>
+    <div><span class="k">Weakest cell</span><span class="v" id="b-weak"></span></div>
+    <div><span class="k">Kind of error</span><span class="v">Mostly medium turns labeled complex, and the reverse. Domain errors are rare and split between science and news.</span></div>
+    <div><span class="k">Surprise</span><span class="v">The best prompt depends on the model. The rubric prompt helps Atlas-M and Brisk-S but costs Nano-XS 6 points.</span></div>
+  </div>
+  <div class="grid2"><div class="fig mini"><h3>Overall error rate</h3><p class="cap" style="margin:0 0 .4rem">Cells weighted equally; the limit is 10%. Sorted by cost, cheapest first.</p><div class="chart" id="sum-err"></div></div>
+  <div class="fig mini"><h3>Error rate in the worst cell</h3><p class="cap" style="margin:0 0 .4rem">The limit is 20%. Faded bars fail at least one gate.</p><div class="chart" id="sum-cell"></div></div></div>
+  <div class="tbl"><table id="opt"></table></div>
+</div>
+
+<section>
+  <header><span class="eyebrow">Model × prompt</span><h2>Few-shot examples lift the small models most. Rubric reasoning only pays off on the larger ones.</h2>
+  <p class="takeaway">Balanced accuracy averages the nine target cells equally, so the large conversational-simple segment can't hide weak cells. Each tile shows cost per million turns and p95 latency.</p></header>
+  <div class="lattice" id="lat"></div>
+</section>
+
+<section>
+  <header><span class="eyebrow">Accuracy against cost</span><h2>Cost spans 470×. Accuracy spans 15 points.</h2>
+  <p class="takeaway">Hollow markers fail at least one gate (overall 90%, every cell 80%, p95 250 ms). The dashed line is the 90% overall floor; the gray line traces the cheapest option at each accuracy level. Hover for the reason.</p></header>
+  <div class="fig"><div class="legend" id="lg"></div><div class="chart" id="front"></div></div>
+</section>
+
+<section>
+  <header><span class="eyebrow">The target matrix</span><h2>Complex news is the hardest cell for every configuration, and the one that rules out Nano-XS.</h2>
+  <p class="takeaway">Accuracy per cell with turn counts. Red outlines mark cells below the 80% floor.</p></header>
+  <div class="grid2" id="mats" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,20rem),1fr))"></div>
+</section>
+
+<section>
+  <header><span class="eyebrow">Where the errors go, recommended configuration</span><h2>Almost every complexity error is off by one step.</h2>
+  <p class="takeaway">Rows are the true label; each row sums to 100%. Simple turns are almost never called complex.</p></header>
+  <div class="grid2" id="conf"></div>
+</section>
+
+<div class="part"><h2>Explore the sweep</h2><span>Compare any two configurations, or change the gates</span></div>
+<section>
+  <div class="controls">
+    <div class="ctl"><label for="e-a">Baseline</label><select id="e-a"></select></div>
+    <div class="ctl"><label for="e-b">Compare</label><select id="e-b"></select></div>
+    <div class="ctl"><label for="e-f">Cell floor</label><input type="range" id="e-f" min="70" max="88" step="1" value="80"><output id="o-f"></output></div>
+    <div class="ctl"><label>Overall accuracy weighted by</label><div class="seg" id="e-w"><button type="button" data-v="balanced">Cells equally</button><button type="button" data-v="traffic">Traffic</button></div></div>
+  </div>
+  <div class="result">
+    <div class="callout" id="e-pick"></div>
+    <div class="grid2" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,20rem),1fr))">
+      <div class="fig mxwrap"><h4>Difference by cell</h4><div class="sub" id="e-sub"></div><div id="e-diff"></div><div class="axis-note">Blue: the compared configuration is better. Red: worse. Gray: within ±0.5 points.</div></div>
+      <div class="fig"><div class="stats" id="e-stats" style="flex-direction:column;gap:.9rem"></div></div>
+    </div>
+  </div>
+</section>
+
+<div class="part"><h2>Full results</h2><span>All 9 configurations and 9 cells</span></div>
+<section>
+  <div class="tbl"><table id="full"></table></div>
+  <dl class="method">
+    <dt>Corpus</dt><dd>48,210 user turns from August and September, each labeled by two annotators (complexity agreement κ = 0.78, domain κ = 0.91). Disagreements were adjudicated.</dd>
+    <dt>Accuracy</dt><dd>A turn is correct only if both complexity and domain match. Balanced accuracy weights the nine cells equally. Traffic-weighted accuracy uses corpus counts, which follow production traffic.</dd>
+    <dt>Intervals</dt><dd>95% binomial intervals per cell; the smallest cell (complex conversational, n = 1,960) has intervals of about ±1.7 points.</dd>
+    <dt>Cost</dt><dd>Measured tokens times list price per million turns. Monthly figures assume 30 million turns.</dd>
+  </dl>
+</section>
+</div>
+
+<script>// Minimal chart kit: pixel-true SVG rendered at container width, shared tooltip, sortable tables.
+const NS="http://www.w3.org/2000/svg";
+function S(tag,attrs={},parent){const e=document.createElementNS(NS,tag);for(const k in attrs){if(k==="text")e.textContent=attrs[k];else e.setAttribute(k,attrs[k]);}if(parent)parent.appendChild(e);return e;}
+function H(tag,attrs={},html){const e=document.createElement(tag);for(const k in attrs)e.setAttribute(k,attrs[k]);if(html!=null)e.innerHTML=html;return e;}
+const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+function lin(d0,d1,r0,r1){const f=x=>r0+(x-d0)/(d1-d0)*(r1-r0);f.inv=y=>d0+(y-r0)/(r1-r0)*(d1-d0);f.d=[d0,d1];return f;}
+function logs(d0,d1,r0,r1){const a=Math.log10(d0),b=Math.log10(d1);const f=x=>r0+(Math.log10(x)-a)/(b-a)*(r1-r0);f.d=[d0,d1];return f;}
+function ticks(a,b,n=5){if(n>1){let k=n,t=ticksRaw(a,b,k);while(t.length>n+1&&k>1){k--;t=ticksRaw(a,b,k);}return t;}return ticksRaw(a,b,n);}
+function ticksRaw(a,b,n=5){const step=Math.pow(10,Math.floor(Math.log10((b-a)/n)));const err=(b-a)/n/step;const m=err>=7.5?10:err>=3.5?5:err>=1.5?2:1;const s=m*step;const out=[];for(let v=Math.ceil(a/s)*s;v<=b+1e-9;v+=s)out.push(+v.toFixed(10));return out;}
+const fmt={
+  pct:(v,d=1)=>v.toFixed(d)+"%",
+  usd:v=>v>=100?"$"+Math.round(v).toLocaleString():v>=10?"$"+v.toFixed(1):v>=1?"$"+v.toFixed(2):"$"+v.toFixed(3),
+  s:v=>v.toFixed(v<10?1:0)+"s", ms:v=>Math.round(v)+" ms", x:v=>v.toFixed(1)+"×"
+};
+// tooltip
+const tip=H("div",{id:"tip",role:"tooltip"});document.addEventListener("DOMContentLoaded",()=>document.body.appendChild(tip));
+function showTip(html,x,y){tip.innerHTML=html;tip.classList.add("on");const w=tip.offsetWidth,h=tip.offsetHeight;
+  let L=x+14,T=y+14;if(L+w>innerWidth-8)L=x-w-14;if(T+h>innerHeight-8)T=y-h-14;tip.style.left=Math.max(8,L)+"px";tip.style.top=Math.max(8,T)+"px";}
+function hideTip(){tip.classList.remove("on");}
+document.addEventListener("pointermove",e=>{const t=e.target.closest&&e.target.closest("[data-tip]");if(t)showTip(t.getAttribute("data-tip"),e.clientX,e.clientY);else hideTip();});
+document.addEventListener("focusin",e=>{const t=e.target.closest&&e.target.closest("[data-tip]");if(t){const r=t.getBoundingClientRect();showTip(t.getAttribute("data-tip"),r.right,r.top);}});
+document.addEventListener("focusout",hideTip);
+// responsive render: fn(el,width) called on resize
+const charts=[];
+function chart(el,fn){const go=()=>{const w=Math.max(180,Math.floor(el.clientWidth));if(el._w===w)return;el._w=w;el.innerHTML="";fn(el,w);};new ResizeObserver(go).observe(el);go();return ()=>{el._w=0;go();};}
+function svgIn(el,w,h){return S("svg",{width:w,height:h,viewBox:`0 0 ${w} ${h}`,role:"img"},el);}
+// hit target helper: transparent rect larger than mark
+function hit(g,x,y,w,h,html){const r=S("rect",{x,y,width:w,height:h,fill:"transparent","data-tip":html,tabindex:0},g);return r;}
+// sortable tables: th.sort[data-k], rows rendered by fn(sortedRows)
+function sortable(tableEl,rows,render,defKey,defDir=-1){let key=defKey,dir=defDir;
+  const ths=tableEl.querySelectorAll("th.sort");
+  const draw=()=>{ths.forEach(th=>{th.removeAttribute("aria-sort");if(th.dataset.k===key)th.setAttribute("aria-sort",dir<0?"descending":"ascending");});
+    const s=[...rows].sort((a,b)=>{const A=a[key],B=b[key];return (A>B?1:A<B?-1:0)*dir;});render(s);};
+  ths.forEach(th=>{th.tabIndex=0;const f=()=>{if(key===th.dataset.k)dir=-dir;else{key=th.dataset.k;dir=-1;}draw();};th.onclick=f;th.onkeydown=e=>{if(e.key==="Enter")f();};});draw();}
+function pill(kind,text){const ic={good:"✓",warn:"!",bad:"✕",neutral:"–"}[kind];return `<span class="pill ${kind}"><span aria-hidden="true">${ic}</span>${text}</span>`;}
+// colors are applied via style="fill:var(--token)" so theme changes need no re-render
+// label placement: try right, left, above, below, then nudges; avoids other labels and obstacle boxes [x0,y0,x1,y1]
+function placeLabels(items,bounds,obstacles=[]){const W=t=>t.length*6.6+2;const placed=[...obstacles];
+  const hitAny=b=>b[0]<bounds[0]||b[2]>bounds[2]||b[1]<bounds[1]||b[3]>bounds[3]||placed.some(p=>b[0]<p[2]&&b[2]>p[0]&&b[1]<p[3]&&b[3]>p[1]);
+  for(const it of items){const w=W(it.text);const opts=[[it.px+9,it.py+4,"start"],[it.px-9,it.py+4,"end"],[it.px,it.py-10,"middle"],[it.px,it.py+18,"middle"]];
+    for(const d of [12,-12,24,-24])opts.push([it.px+9,it.py+4+d,"start"],[it.px-9,it.py+4+d,"end"]);
+    const score=b=>(b[0]<bounds[0]||b[2]>bounds[2]||b[1]<bounds[1]||b[3]>bounds[3]?100:0)+placed.filter(p=>b[0]<p[2]&&b[2]>p[0]&&b[1]<p[3]&&b[3]>p[1]).length;
+    let pick=opts[0],bs=1e9;for(const o of opts){const x0=o[2]==="end"?o[0]-w:o[2]==="middle"?o[0]-w/2:o[0];const b=[x0,o[1]-10,x0+w,o[1]+3];const sc=score(b);if(sc<bs){bs=sc;pick=o;}if(sc===0)break;}
+    it.x=pick[0];it.y=pick[1];it.anchor=pick[2];const x0=it.anchor==="end"?it.x-w:it.anchor==="middle"?it.x-w/2:it.x;placed.push([x0,it.y-10,x0+w,it.y+3]);}
+  return items;}
+
+// ---------- arm naming ----------
+// arms: [{id, role:'control'|'challenger', alias?, spec:{model, ...}}]; attrs: [{k, fmt(v)}] in display order
+// short = alias, else only the attributes that differ from control (model trimmed of the shared prefix); tag = A, B, C…
+function armLabels(arms,attrs,controlName="Production"){
+  const ctl=arms.find(a=>a.role==="control");const fmtA=(k,v)=>{const a=attrs.find(x=>x.k===k);return a&&a.fmt?a.fmt(v):String(v);};
+  const trimModel=(m,base)=>{if(!base||m===base)return m;let i=0;while(i<m.length&&i<base.length&&m[i]===base[i])i++;
+    if(!(i===base.length&&/[-_ .]/.test(m[i]||"")))while(i>0&&!/[-_ .]/.test(m[i-1]))i--;const rest=m.slice(i).replace(/^[-_ .]+/,"");return i>=4&&rest?rest:m;};
+  let n=0;
+  for(const a of arms){a.long=attrs.map(x=>fmtA(x.k,a.spec[x.k])).join(" · ");
+    if(a===ctl){a.short=a.alias||controlName;a.tag="P";continue;}
+    a.tag=String.fromCharCode(65+n++);
+    if(a.alias){a.short=a.alias;continue;}
+    const diffs=attrs.filter(x=>a.spec[x.k]!==ctl.spec[x.k]);
+    a.short=diffs.map(x=>x.k==="model"?trimModel(a.spec.model,ctl.spec.model):(x.sfmt?x.sfmt(a.spec[x.k]):fmtA(x.k,a.spec[x.k]))).join(" · ")||a.long;}
+  // collisions: append the next attribute that separates them
+  const seen={};for(const a of arms){(seen[a.short]=seen[a.short]||[]).push(a);}
+  for(const k in seen)if(seen[k].length>1)for(const a of seen[k]){const extra=attrs.find(x=>seen[k].some(b=>b!==a&&b.spec[x.k]!==a.spec[x.k]));if(extra)a.short+=" · "+fmtA(extra.k,a.spec[extra.k]);}
+  return arms;}
+function armChip(a,color){return `<span class="armchip"><span class="tag" style="background:var(${color})">${a.tag}</span>${a.short}</span>`;}
+
+// ---------- horizontal bars (optionally diverging, with whiskers and a reference line) ----------
+// rows:[{label, value, lo?, hi?, color, strong?, muted?, note?, tip?}] opt:{domain:[a,b], fmt, ref?:{value,label}, labelW?, rowH?}
+function barsH(el,w,rows,opt){const rowH=opt.rowH||28,narrow=w<480,lw=opt.labelW||(narrow?Math.min(130,w*.36):Math.min(220,w*.3));const m={l:lw,r:narrow?52:70,t:opt.ref?20:6,b:22};
+  const h=m.t+m.b+rowH*rows.length;const s=svgIn(el,w,h);const [d0,d1]=opt.domain;const x=lin(d0,d1,m.l,w-m.r);
+  const tf=opt.tickFmt||opt.fmt;const tw=Math.max(...[d0,d1,(d0+d1)/2].map(v=>tf(v).length))*6.4+14;
+  for(const v of ticks(d0,d1,Math.max(2,Math.floor((w-m.l-m.r)/tw)))){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:tf(v)},s);}
+  const z=x(Math.max(d0,Math.min(d1,0)));S("line",{x1:z,x2:z,y1:m.t-2,y2:h-m.b,class:"axis"},s);
+  rows.forEach((r,i)=>{const cy=m.t+rowH*i+rowH/2;const g=S("g",{},s);const v=Math.max(d0,Math.min(d1,r.value));
+    const maxC=Math.floor((m.l-14)/6.6);let lab=r.label;if(lab.length>maxC)lab=(r.sl&&r.sl.length<=maxC)?r.sl:lab.slice(0,maxC-1)+"…";
+    S("text",{x:m.l-10,y:cy+4,"text-anchor":"end",class:r.strong?"lbl-strong":"lbl",text:lab},g);
+    const x0=Math.min(z,x(v)),bw=Math.max(1.5,Math.abs(x(v)-z));
+    S("rect",{x:x0,y:cy-(rowH*.28),width:bw,height:rowH*.56,rx:3,style:`fill:var(${r.color||"--s1"});opacity:${r.muted?.45:1}`},g);
+    if(r.lo!=null){S("line",{x1:x(Math.max(d0,r.lo)),x2:x(Math.min(d1,r.hi)),y1:cy,y2:cy,style:"stroke:var(--ink);stroke-width:1.25"},g);
+      for(const e of [r.lo,r.hi])S("line",{x1:x(Math.max(d0,Math.min(d1,e))),x2:x(Math.max(d0,Math.min(d1,e))),y1:cy-4,y2:cy+4,style:"stroke:var(--ink);stroke-width:1.25"},g);}
+    const right=r.value>=0;const edge=r.lo!=null?(right?x(Math.min(d1,r.hi)):x(Math.max(d0,r.lo))):x(v);
+    let nt=(r.note!=null?r.note:opt.fmt(r.value));if(right&&edge+6+nt.length*6.4>w)nt=opt.fmt(r.value);let nw=nt.length*6.4;const flip=!right&&edge-6-nw<m.l+4;
+    if(flip&&Math.max(z,x(Math.min(d1,r.hi!=null?r.hi:0)))+6+nw>w){nt=opt.fmt(r.value);nw=nt.length*6.4;}
+    S("text",{x:right?edge+6:flip?Math.max(z,x(Math.min(d1,r.hi!=null?r.hi:0)))+6:edge-6,y:cy+4,"text-anchor":right||flip?"start":"end",class:r.strong?"lbl-strong":"tick",text:nt},g);
+    hit(g,0,cy-rowH/2,w,rowH,r.tip||`<b>${r.label}</b><br>${opt.fmt(r.value)}`);});
+  if(opt.ref){const rx=x(opt.ref.value);S("line",{x1:rx,x2:rx,y1:m.t-6,y2:h-m.b,class:"floor"},s);S("text",{x:rx+4,y:m.t-8,class:"tick",text:opt.ref.label},s);}
+  return s;}
+
+// ---------- line chart over ordered categories ----------
+// cats:[label], series:[{name, color, values:[...], lo?:[], hi?:[], strong?, dash?}], opt:{domain, fmt, xTitle?, yTitle?, h?}
+function lineChart(el,w,cats,series,opt){const narrow=w<480;const h=opt.h||(narrow?260:300);const m={l:44,r:narrow?92:130,t:14,b:opt.xTitle?44:28};const s=svgIn(el,w,h);
+  const x=i=>m.l+(cats.length===1?0:i/(cats.length-1))*(w-m.l-m.r),[d0,d1]=opt.domain,y=lin(d0,d1,h-m.b,m.t);
+  for(const v of ticks(d0,d1,5)){S("line",{x1:m.l,x2:w-m.r,y1:y(v),y2:y(v),class:"grid"},s);if(v>d0)S("text",{x:m.l-8,y:y(v)+4,"text-anchor":"end",class:"tick",text:opt.fmt(v)},s);}
+  cats.forEach((c,i)=>S("text",{x:x(i),y:h-m.b+16,"text-anchor":"middle",class:"tick",text:c},s));
+  if(opt.xTitle)S("text",{x:(m.l+w-m.r)/2,y:h-6,"text-anchor":"middle",class:"tick",text:opt.xTitle},s);
+  const ends=[];const obs=[];
+  for(const se of series){if(se.lo)S("path",{d:"M"+se.hi.map((v,i)=>`${x(i)},${y(v)}`).join("L")+"L"+se.lo.map((v,i)=>[i,v]).reverse().map(([i,v])=>`${x(i)},${y(v)}`).join("L")+"Z",style:`fill:var(${se.color});opacity:.12`},s);}
+  for(const se of series){S("path",{d:"M"+se.values.map((v,i)=>`${x(i)},${y(v)}`).join("L"),style:`fill:none;stroke:var(${se.color});stroke-width:${se.strong?2.5:2};${se.dash?"stroke-dasharray:5 4;":""}`},s);
+    se.values.forEach((v,i)=>{const g=S("g",{},s);S("circle",{cx:x(i),cy:y(v),r:se.strong?4.5:3.5,style:`fill:var(${se.color});stroke:var(--surface);stroke-width:2`},g);obs.push([x(i)-5,y(v)-5,x(i)+5,y(v)+5]);
+      hit(g,x(i)-10,y(v)-10,20,20,`<b>${se.name}</b> · ${cats[i]}<br>${opt.fmt(v)}${se.lo?` (${opt.fmt(se.lo[i])}–${opt.fmt(se.hi[i])})`:""}`);});
+    ends.push({px:x(cats.length-1),py:y(se.values.at(-1)),text:opt.endLabel?opt.endLabel(se):se.name,strong:se.strong});}
+  // end labels stacked to avoid collisions, to the right of the last point
+  ends.sort((a,b)=>a.py-b.py);let last=-1e9;for(const e of ends){e.y=Math.max(e.py+4,last+16);last=e.y;}
+  const maxE=Math.floor((m.r-12)/6.6);for(const e of ends)S("text",{x:e.px+10,y:e.y,class:e.strong?"lbl-strong":"lbl",text:e.text.length>maxE?e.text.slice(0,maxE-1)+"…":e.text},s);
+  return s;}
+
+// ---------- forest plot: change against a control, with interval and an optional margin ----------
+// rows:[{label, value, lo, hi, color, strong?, note?, group?, tip?}] opt:{domain:[a,b], fmt, margin?:number (drawn at -margin), marginLabel?, level?:"95%"}
+function forest(el,w,rows,opt){const narrow=w<480,rowH=opt.rowH||30,need=Math.max(...rows.map(r=>r.label.length))*6.6+18,lw=opt.labelW||Math.min(need,narrow?w*.42:Math.min(230,w*.32));
+  const m={l:lw,r:narrow?60:96,t:22,b:24};let gaps=0;rows.forEach((r,i)=>{if(i&&r.group!==rows[i-1].group)gaps++;});
+  const h=m.t+m.b+rowH*rows.length+gaps*14+(rows.some(r=>r.group)?14:0);const s=svgIn(el,w,h);const [d0,d1]=opt.domain;const x=lin(d0,d1,m.l,w-m.r);
+  if(opt.margin!=null){const mx=x(Math.max(d0,-opt.margin));S("rect",{x:mx,y:m.t,width:x(d1)-mx,height:h-m.t-m.b,style:"fill:var(--good-wash);opacity:.6"},s);
+    S("line",{x1:mx,x2:mx,y1:m.t-4,y2:h-m.b,class:"floor"},s);S("text",{x:mx+4,y:narrow&&opt.level?h-m.b-6:m.t-8,class:"tick",text:opt.marginLabel||`margin −${opt.margin}`},s);}
+  for(const v of ticks(d0,d1,Math.max(2,Math.floor((w-m.l-m.r)/(Math.max(opt.fmt(d0).length,opt.fmt(d1).length)*6.4+16))))){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:opt.fmt(v)},s);}
+  S("line",{x1:x(0),x2:x(0),y1:m.t-4,y2:h-m.b,class:"axis",style:"stroke-width:1.5"},s);
+  if(opt.level)S("text",{x:w-m.r,y:m.t-8,"text-anchor":"end",class:"tick",text:`${opt.level} intervals`},s);
+  let y0=m.t+(rows.some(r=>r.group)?14:0);
+  rows.forEach((r,i)=>{if(r.group&&(i===0||r.group!==rows[i-1].group)){if(i)y0+=14;S("text",{x:0,y:y0-4,class:"lbl-strong",text:r.group},s);}
+    const cy=y0+rowH/2;y0+=rowH;const g=S("g",{},s);const cl=v=>x(Math.max(d0,Math.min(d1,v)));
+    const maxC=Math.floor((m.l-14)/6.6);const lab=r.label.length<=maxC?r.label:(r.sl&&r.sl.length<=maxC)?r.sl:r.label.slice(0,maxC-1)+"…";
+    S("text",{x:m.l-10,y:cy+4,"text-anchor":"end",class:r.strong?"lbl-strong":"lbl",text:lab},g);
+    S("line",{x1:cl(r.lo),x2:cl(r.hi),y1:cy,y2:cy,style:`stroke:var(${r.color||"--s1"});stroke-width:3;stroke-linecap:round`},g);
+    S("rect",{x:cl(r.value)-5,y:cy-5,width:10,height:10,rx:2,style:`fill:var(${r.color||"--s1"});stroke:var(--surface);stroke-width:2`},g);
+    let nt=r.note!=null?r.note:opt.fmt(r.value);if(nt.length*6.4>m.r-10)nt=opt.fmt(r.value);S("text",{x:w-m.r+8,y:cy+4,class:r.strong?"lbl-strong":"tick",text:nt},g);
+    hit(g,0,cy-rowH/2,w,rowH,r.tip||`<b>${r.label}</b><br>${opt.fmt(r.value)} [${opt.fmt(r.lo)}, ${opt.fmt(r.hi)}]`);});
+  return s;}
+
+const D={"n":48210,"complexity":[{"id":"simple","name":"Simple"},{"id":"medium","name":"Medium"},{"id":"complex","name":"Complex"}],"domain":[{"id":"science","name":"Science"},{"id":"conv","name":"Conversational"},{"id":"news","name":"News"}],"models":[{"id":"atlas-m","name":"Atlas-M"},{"id":"brisk-s","name":"Brisk-S"},{"id":"nano-xs","name":"Nano-XS"}],"prompts":[{"id":"zero","name":"Zero-shot"},{"id":"few","name":"Few-shot (12 ex.)"},{"id":"rubric","name":"Rubric + reasoning"}],"volume_per_month":30000000,"criteria":{"overall":90.0,"cell_floor":80.0,"p95":250},"counts":{"simple|science":3120,"simple|conv":14880,"simple|news":4410,"medium|science":4260,"medium|conv":7350,"medium|news":5190,"complex|science":3440,"complex|conv":1960,"complex|news":3600},"configs":[{"id":"atlas-m.zero","model":"atlas-m","prompt":"zero","balanced":89.8,"traffic":91.2,"macro_f1":88.7,"cost":180,"p95":420,"cells":{"simple|science":{"acc":93.8,"ci":0.8},"simple|conv":{"acc":95.8,"ci":0.3},"simple|news":{"acc":93.1,"ci":0.7},"medium|science":{"acc":88.8,"ci":0.9},"medium|conv":{"acc":90.8,"ci":0.7},"medium|news":{"acc":86.9,"ci":0.9},"complex|science":{"acc":87.5,"ci":1.1},"complex|conv":{"acc":88.8,"ci":1.4},"complex|news":{"acc":82.9,"ci":1.2}},"conf_complexity":[[96.4,3.3,0.3],[6.2,87.7,6.2],[0.6,7.4,92.1]],"conf_domain":[[97.3,0.7,2.0],[0.9,98.2,0.9],[3.2,1.4,95.4]]},{"id":"atlas-m.few","model":"atlas-m","prompt":"few","balanced":92.1,"traffic":93.5,"macro_f1":91.0,"cost":260,"p95":483,"cells":{"simple|science":{"acc":96.3,"ci":0.7},"simple|conv":{"acc":97.8,"ci":0.2},"simple|news":{"acc":94.9,"ci":0.6},"medium|science":{"acc":90.8,"ci":0.9},"medium|conv":{"acc":93.3,"ci":0.6},"medium|news":{"acc":89.3,"ci":0.8},"complex|science":{"acc":89.7,"ci":1.0},"complex|conv":{"acc":91.5,"ci":1.2},"complex|news":{"acc":85.5,"ci":1.2}},"conf_complexity":[[97.2,2.6,0.2],[4.8,90.5,4.8],[0.4,5.7,93.9]],"conf_domain":[[97.9,0.6,1.5],[0.7,98.6,0.7],[2.4,1.1,96.5]]},{"id":"atlas-m.rubric","model":"atlas-m","prompt":"rubric","balanced":93.2,"traffic":94.6,"macro_f1":92.1,"cost":610,"p95":1302,"cells":{"simple|science":{"acc":97.5,"ci":0.5},"simple|conv":{"acc":99.2,"ci":0.1},"simple|news":{"acc":96.1,"ci":0.6},"medium|science":{"acc":92.0,"ci":0.8},"medium|conv":{"acc":94.4,"ci":0.5},"medium|news":{"acc":90.0,"ci":0.8},"complex|science":{"acc":91.2,"ci":0.9},"complex|conv":{"acc":92.2,"ci":1.2},"complex|news":{"acc":86.0,"ci":1.1}},"conf_complexity":[[97.6,2.2,0.2],[4.1,91.8,4.1],[0.4,4.9,94.7]],"conf_domain":[[98.2,0.5,1.3],[0.6,98.8,0.6],[2.2,0.9,96.9]]},{"id":"brisk-s.zero","model":"brisk-s","prompt":"zero","balanced":86.0,"traffic":87.5,"macro_f1":84.9,"cost":28,"p95":160,"cells":{"simple|science":{"acc":90.1,"ci":1.0},"simple|conv":{"acc":92.1,"ci":0.4},"simple|news":{"acc":89.4,"ci":0.9},"medium|science":{"acc":85.1,"ci":1.1},"medium|conv":{"acc":87.2,"ci":0.8},"medium|news":{"acc":83.1,"ci":1.0},"complex|science":{"acc":84.2,"ci":1.2},"complex|conv":{"acc":85.1,"ci":1.6},"complex|news":{"acc":77.9,"ci":1.4}},"conf_complexity":[[95.1,4.6,0.3],[8.4,83.1,8.4],[0.8,10.1,89.1]],"conf_domain":[[96.2,0.9,2.8],[1.3,97.5,1.3],[4.4,1.9,93.7]]},{"id":"brisk-s.few","model":"brisk-s","prompt":"few","balanced":90.7,"traffic":92.2,"macro_f1":89.6,"cost":40,"p95":184,"cells":{"simple|science":{"acc":95.1,"ci":0.8},"simple|conv":{"acc":97.1,"ci":0.3},"simple|news":{"acc":94.0,"ci":0.7},"medium|science":{"acc":89.9,"ci":0.9},"medium|conv":{"acc":91.6,"ci":0.6},"medium|news":{"acc":87.5,"ci":0.9},"complex|science":{"acc":88.5,"ci":1.1},"complex|conv":{"acc":89.4,"ci":1.4},"complex|news":{"acc":82.9,"ci":1.2}},"conf_complexity":[[96.7,3.0,0.2],[5.6,88.7,5.6],[0.5,6.8,92.7]],"conf_domain":[[97.5,0.7,1.9],[0.8,98.3,0.8],[2.9,1.3,95.8]]},{"id":"brisk-s.rubric","model":"brisk-s","prompt":"rubric","balanced":91.5,"traffic":93.1,"macro_f1":90.4,"cost":95,"p95":496,"cells":{"simple|science":{"acc":95.5,"ci":0.7},"simple|conv":{"acc":97.9,"ci":0.2},"simple|news":{"acc":94.5,"ci":0.7},"medium|science":{"acc":91.0,"ci":0.9},"medium|conv":{"acc":92.9,"ci":0.6},"medium|news":{"acc":88.2,"ci":0.9},"complex|science":{"acc":89.4,"ci":1.0},"complex|conv":{"acc":90.9,"ci":1.3},"complex|news":{"acc":83.6,"ci":1.2}},"conf_complexity":[[97.0,2.8,0.2],[5.1,89.8,5.1],[0.5,6.1,93.4]],"conf_domain":[[97.7,0.6,1.7],[0.8,98.5,0.8],[2.7,1.1,96.2]]},{"id":"nano-xs.zero","model":"nano-xs","prompt":"zero","balanced":78.2,"traffic":80.2,"macro_f1":77.1,"cost":1.3,"p95":70,"cells":{"simple|science":{"acc":84.4,"ci":1.3},"simple|conv":{"acc":86.4,"ci":0.6},"simple|news":{"acc":82.4,"ci":1.1},"medium|science":{"acc":77.8,"ci":1.2},"medium|conv":{"acc":80.5,"ci":0.9},"medium|news":{"acc":73.5,"ci":1.2},"complex|science":{"acc":76.1,"ci":1.4},"complex|conv":{"acc":77.6,"ci":1.8},"complex|news":{"acc":65.1,"ci":1.6}},"conf_complexity":[[92.3,7.1,0.5],[13.2,73.6,13.2],[1.2,15.8,83.0]],"conf_domain":[[94.1,1.4,4.5],[2.0,96.1,2.0],[6.9,2.9,90.2]]},{"id":"nano-xs.few","model":"nano-xs","prompt":"few","balanced":90.1,"traffic":92.0,"macro_f1":89.0,"cost":1.9,"p95":80,"cells":{"simple|science":{"acc":96.2,"ci":0.7},"simple|conv":{"acc":98.2,"ci":0.2},"simple|news":{"acc":94.5,"ci":0.7},"medium|science":{"acc":89.4,"ci":0.9},"medium|conv":{"acc":91.9,"ci":0.6},"medium|news":{"acc":86.0,"ci":0.9},"complex|science":{"acc":88.2,"ci":1.1},"complex|conv":{"acc":89.8,"ci":1.3},"complex|news":{"acc":76.7,"ci":1.4}},"conf_complexity":[[96.5,3.2,0.2],[6.0,88.0,6.0],[0.5,7.2,92.3]],"conf_domain":[[97.3,0.7,2.1],[0.9,98.2,0.9],[3.2,1.3,95.5]]},{"id":"nano-xs.rubric","model":"nano-xs","prompt":"rubric","balanced":83.9,"traffic":86.0,"macro_f1":82.8,"cost":4.6,"p95":217,"cells":{"simple|science":{"acc":89.5,"ci":1.1},"simple|conv":{"acc":92.5,"ci":0.4},"simple|news":{"acc":88.2,"ci":1.0},"medium|science":{"acc":83.6,"ci":1.1},"medium|conv":{"acc":85.7,"ci":0.8},"medium|news":{"acc":79.5,"ci":1.1},"complex|science":{"acc":82.0,"ci":1.3},"complex|conv":{"acc":83.3,"ci":1.6},"complex|news":{"acc":70.9,"ci":1.5}},"conf_complexity":[[94.4,5.3,0.4],[9.7,80.5,9.7],[0.9,11.7,87.5]],"conf_domain":[[95.7,1.1,3.2],[1.4,97.1,1.4],[5.0,2.2,92.8]]}]};
+const MN=Object.fromEntries(D.models.map(m=>[m.id,m.name])),PN=Object.fromEntries(D.prompts.map(p=>[p.id,p.name]));
+const COL={"atlas-m":"--s2","brisk-s":"--s3","nano-xs":"--s1"};const SH={zero:"circle",few:"square",rubric:"diamond"};
+const C=Object.fromEntries(D.configs.map(c=>[c.id,c]));const CX=D.complexity,DM=D.domain;
+const name=c=>`${MN[c.model]} · ${PN[c.prompt]}`;
+const monthly=c=>c.cost*D.volume_per_month/1e6;
+const minCell=c=>{let k=null,v=1e9;for(const kk in c.cells)if(c.cells[kk].acc<v){v=c.cells[kk].acc;k=kk;}return {k,v};};
+const cellName=k=>{const [a,b]=k.split("|");return `${CX.find(x=>x.id===a).name} ${DM.find(x=>x.id===b).name.toLowerCase()}`;};
+function check(c,cr){const f=[];const ov=c[cr.weight];if(ov<cr.overall)f.push(`overall ${ov.toFixed(1)}% < ${cr.overall}%`);const mc=minCell(c);if(mc.v<cr.floor)f.push(`${cellName(mc.k)} ${mc.v.toFixed(1)}% < ${cr.floor}%`);if(c.p95>cr.p95)f.push(`p95 ${c.p95} ms > ${cr.p95} ms`);return f;}
+const CR0={overall:D.criteria.overall,floor:D.criteria.cell_floor,p95:D.criteria.p95,weight:"balanced"};
+const pick=cr=>D.configs.filter(c=>!check(c,cr).length).sort((a,b)=>a.cost-b.cost)[0];
+const REC=pick(CR0);
+function gp(c,cr=CR0){const f=check(c,cr);return f.length?pill("bad",f.length>1?`${f.length} gates`:f[0].split(" ")[0]==="p95"?"Latency":f[0].startsWith("overall")?"Overall":"Cell floor"):pill("good","All gates");}
+
+// BLUF
+(function(){const nano=C["nano-xs.few"],best=[...D.configs].sort((a,b)=>b.balanced-a.balanced)[0];const wc=minCell(REC);
+  document.getElementById("b-lede").textContent=`Nano-XS with few-shot is ${Math.round(REC.cost/nano.cost)}× cheaper and close on overall accuracy (${nano.balanced}%), but drops to ${minCell(nano).v}% on complex news. ${name(best)} is the most accurate at ${best.balanced}%, but its p95 of ${best.p95} ms is five times the budget.`;
+  document.getElementById("b-rec").innerHTML=`<strong>${name(REC)}.</strong> ${REC.balanced}% balanced accuracy, p95 ${REC.p95} ms, ${fmt.usd(REC.cost)} per million turns (about ${fmt.usd(monthly(REC))} a month).`;
+  document.getElementById("b-weak").innerHTML=`${cellName(wc.k)}: ${wc.v}% ±${REC.cells[wc.k].ci} on ${D.counts[wc.k].toLocaleString()} turns. It clears the 80% floor by about 3 points.`;
+  const rows=[[REC,"Recommended"],[nano,"Cheaper, fails a cell"],[C["brisk-s.rubric"],"Same model, rubric prompt"],[best,"Most accurate"]];
+  document.getElementById("opt").innerHTML=`<thead><tr><th>Configuration</th><th>Role</th><th>Gates</th><th class="r">Balanced</th><th class="r">Worst cell</th><th class="r">p95</th><th class="r">Per 1M turns</th><th class="r">Per month</th></tr></thead><tbody>`+
+    rows.map(([c,r])=>{const mc=minCell(c);return `<tr class="${c===REC?"hl":""}"><td>${c===REC?"<strong>":""}${name(c)}${c===REC?"</strong>":""}</td><td>${r}</td><td>${gp(c)}</td><td class="r">${c.balanced.toFixed(1)}%</td><td class="r">${mc.v.toFixed(1)}%</td><td class="r">${c.p95} ms</td><td class="r">${fmt.usd(c.cost)}</td><td class="r">${fmt.usd(monthly(c))}</td></tr>`;}).join("")+"</tbody>";})();
+
+// summary bars
+(function(){const rows=[...D.configs].sort((a,b)=>a.cost-b.cost);const lab=c=>`${MN[c.model]} · ${PN[c.prompt].split(" ")[0].toLowerCase()}`;
+  chart(document.getElementById("sum-err"),(el,w)=>barsH(el,w,rows.map(c=>({label:lab(c)+"  "+fmt.usd(monthly(c))+"/mo",sl:lab(c),value:100-c.balanced,color:COL[c.model],muted:check(c,CR0).length>0,strong:c===REC,note:(100-c.balanced).toFixed(1)+"%"})),{domain:[0,25],fmt:v=>v.toFixed(0)+"%",ref:{value:100-D.criteria.overall,label:"limit 10%"},rowH:24}));
+  chart(document.getElementById("sum-cell"),(el,w)=>barsH(el,w,rows.map(c=>{const mc=minCell(c);return {label:lab(c),value:100-mc.v,color:COL[c.model],muted:check(c,CR0).length>0,strong:c===REC,note:(100-mc.v).toFixed(1)+"% · "+cellName(mc.k)};}),{domain:[0,40],fmt:v=>v.toFixed(0)+"%",ref:{value:100-D.criteria.cell_floor,label:"limit 20%"},rowH:24}));})();
+
+// lattice
+(function(){let h=`<div class="hd"></div>`+D.prompts.map(p=>`<div class="hd">${p.name}</div>`).join("");
+  for(const m of D.models){h+=`<div class="rh"><span class="sw" style="background:var(${COL[m.id]})"></span>${m.name}</div>`;
+    for(const p of D.prompts){const c=C[`${m.id}.${p.id}`];const pct=(c.balanced-75)/20*100;
+      h+=`<div class="cell ${c===REC?"rec":""}" tabindex="0" data-tip="<b>${name(c)}</b><br>Balanced ${c.balanced}% · traffic-weighted ${c.traffic}%<br>Worst cell ${cellName(minCell(c).k)} ${minCell(c).v}%<br>${check(c,CR0).join('<br>')||'Passes all gates'}"><span class="acc">${c.balanced.toFixed(1)}%</span><div class="bar"><i style="width:${pct}%"></i></div><span class="meta">${fmt.usd(c.cost)} / 1M · ${c.p95} ms</span>${gp(c)}</div>`;}}
+  document.getElementById("lat").innerHTML=h;})();
+
+// frontier
+document.getElementById("lg").innerHTML=D.models.map(m=>`<span><i style="background:var(${COL[m.id]})"></i>${m.name}</span>`).join("")+D.prompts.map(p=>`<span><svg width="12" height="12" style="vertical-align:-1px;margin-right:.35rem" data-sh="${p.id}"></svg>${p.name}</span>`).join("");
+function mk(g,shape,x,y,r,color,hollow){const st=hollow?`fill:var(--surface);stroke:var(${color});stroke-width:2`:`fill:var(${color});stroke:var(--surface);stroke-width:2`;
+  if(shape==="circle")return S("circle",{cx:x,cy:y,r,style:st},g);if(shape==="square")return S("rect",{x:x-r*.88,y:y-r*.88,width:r*1.76,height:r*1.76,rx:1.5,style:st},g);
+  return S("path",{d:`M${x},${y-r*1.2}L${x+r*1.15},${y}L${x},${y+r*1.2}L${x-r*1.15},${y}Z`,style:st},g);}
+document.querySelectorAll("#lg svg[data-sh]").forEach(s=>mk(s,SH[s.dataset.sh],6,6,4.5,"--ink-2",false));
+chart(document.getElementById("front"),(el,w)=>{const narrow=w<560;const h=narrow?380:Math.min(380,Math.max(300,w*.42)),m={l:44,r:20,t:14,b:40};const s=svgIn(el,w,h);const x=logs(1,1000,m.l,w-m.r),y=lin(76,96,h-m.b,m.t);
+  for(const v of [80,85,90,95]){S("line",{x1:m.l,x2:w-m.r,y1:y(v),y2:y(v),class:"grid"},s);S("text",{x:m.l-8,y:y(v)+4,"text-anchor":"end",class:"tick",text:v+"%"},s);}
+  for(const v of [1,3,10,30,100,300,1000]){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-m.b+16,"text-anchor":"middle",class:"tick",text:"$"+v},s);}
+  S("text",{x:(m.l+w-m.r)/2,y:h-6,"text-anchor":"middle",class:"tick",text:"cost per million turns (log)"},s);
+  S("line",{x1:m.l,x2:w-m.r,y1:y(90),y2:y(90),class:"floor"},s);if(!narrow)S("text",{x:x(4),y:y(90)+15,class:"tick",text:"overall floor 90%"},s);
+  // pareto frontier (cost asc, accuracy must increase)
+  const sorted=[...D.configs].sort((a,b)=>a.cost-b.cost);let best=-1;const fr=[];for(const c of sorted)if(c.balanced>best){fr.push(c);best=c.balanced;}
+  S("path",{d:"M"+fr.map(c=>`${x(c.cost)},${y(c.balanced)}`).join("L"),style:"fill:none;stroke:var(--base);stroke-width:1.5"},s);
+  const obs=[[x(4),y(90)+3,x(4)+100,y(90)+18]];
+  for(const c of D.configs){const px=x(c.cost),py=y(Math.max(76.5,c.balanced));const f=check(c,CR0);const g=S("g",{},s);mk(g,SH[c.prompt],px,py,6,COL[c.model],f.length>0);
+    if(c===REC)S("circle",{cx:px,cy:py,r:11,style:"fill:none;stroke:var(--ink);stroke-width:1.5"},g);obs.push([px-8,py-8,px+8,py+8]);
+    hit(g,px-12,py-12,24,24,`<b>${name(c)}</b><br>Balanced ${c.balanced}% · ${fmt.usd(c.cost)} / 1M · p95 ${c.p95} ms<br>${f.length?"Fails: "+f.join("; "):"Passes all gates"}`);}
+  const cheapest=[...D.configs].sort((a,b)=>a.cost-b.cost)[0],topAcc=[...D.configs].sort((a,b)=>b.balanced-a.balanced)[0];
+  placeLabels(D.configs.filter(c=>!narrow||c===REC||c===cheapest||c===topAcc).map(c=>({px:x(c.cost),py:y(Math.max(76.5,c.balanced)),text:(c===REC&&!narrow?"Recommended: ":"")+(narrow?`${MN[c.model].split("-")[0]} ${c.prompt}`:`${MN[c.model]} ${c.prompt==="few"?"few-shot":c.prompt==="zero"?"zero-shot":"rubric"}`),c})),[m.l,m.t,w-m.r,h-m.b],obs)
+    .forEach(l=>S("text",{x:l.x,y:l.y,"text-anchor":l.anchor,class:l.c===REC?"lbl-strong":"lbl",text:l.text},s));});
+
+// matrices
+function seqColor(v){const steps=["--seq-0","--seq-1","--seq-2","--seq-3","--seq-4","--seq-5"];const i=Math.max(0,Math.min(5,Math.floor((v-70)/5)));return [steps[i],`--seq-t${i}`];}
+function matrix(c,floor=80){let h=`<div class="mx"><div></div>${DM.map(d=>`<div class="h">${d.name}</div>`).join("")}`;
+  for(const x of CX){h+=`<div class="rl">${x.name}</div>`;for(const d of DM){const k=`${x.id}|${d.id}`,v=c.cells[k];const [col,dark]=seqColor(v.acc);
+    h+=`<div class="c ${v.acc<floor?"low":""}" tabindex="0" style="background:var(${col});color:var(${dark})" data-tip="<b>${x.name} ${d.name.toLowerCase()}</b><br>${v.acc}% ±${v.ci} · n = ${D.counts[k].toLocaleString()}${v.acc<floor?"<br>Below the "+floor+"% floor":""}"><b>${v.acc.toFixed(1)}</b><span>${(D.counts[k]/1000).toFixed(1)}k</span></div>`;}}
+  return h+"</div>";}
+(function(){const host=document.getElementById("mats");for(const [id,t] of [[REC.id,"Recommended"],["nano-xs.few","Cheaper alternative"],["atlas-m.rubric","Most accurate"]]){const c=C[id];
+  host.insertAdjacentHTML("beforeend",`<div class="fig mxwrap"><h4>${name(c)}</h4><div class="sub">${t} · worst cell ${minCell(c).v}%</div>${matrix(c)}</div>`);}
+  host.insertAdjacentHTML("afterend",`<p class="axis-note">Rows are complexity, columns are domain. Small number: turns in the cell. Shading steps every 5 points from 70%.</p>`);})();
+
+// confusion
+(function(){const host=document.getElementById("conf");
+  for(const [key,axis,title] of [["conf_complexity",CX,"Complexity"],["conf_domain",DM,"Domain"]]){const M=REC[key];
+    let h=`<div class="fig mxwrap"><h4>${title}</h4><div class="sub">True label (rows) against predicted label (columns)</div><div class="mx"><div></div>${axis.map(a=>`<div class="h">${a.name}</div>`).join("")}`;
+    M.forEach((row,i)=>{h+=`<div class="rl">${axis[i].name}</div>`;row.forEach((v,j)=>{const diag=i===j;const shade=diag?"var(--seq-1)":v>=3?"var(--bad-wash)":v>=1?"var(--warn-wash)":"var(--sunk)";
+      h+=`<div class="c" tabindex="0" style="background:${shade};color:var(--ink)" data-tip="True ${axis[i].name.toLowerCase()}, predicted ${axis[j].name.toLowerCase()}: ${v.toFixed(1)}% of the row"><b>${v.toFixed(1)}%</b></div>`;});});
+    host.insertAdjacentHTML("beforeend",h+`</div></div>`);}})();
+
+// explorer
+const ea=document.getElementById("e-a"),eb=document.getElementById("e-b"),ef=document.getElementById("e-f");let weight="balanced";
+const opts=D.configs.map(c=>`<option value="${c.id}">${name(c)}</option>`).join("");ea.innerHTML=opts;eb.innerHTML=opts;ea.value=REC.id;eb.value="nano-xs.few";
+document.querySelectorAll("#e-w button").forEach(b=>b.onclick=()=>{weight=b.dataset.v;explore();});
+function explore(){document.querySelectorAll("#e-w button").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.v===weight)));
+  const cr={...CR0,floor:+ef.value,weight};document.getElementById("o-f").textContent=cr.floor+"%";
+  const a=C[ea.value],b=C[eb.value];const p=pick(cr);
+  document.getElementById("e-pick").innerHTML=p?`With a ${cr.floor}% cell floor and ${weight==="balanced"?"cells weighted equally":"traffic weighting"}, the cheapest passing configuration is <strong>${name(p)}</strong> at ${fmt.usd(monthly(p))} a month${p!==REC?` (${p.cost<REC.cost?"saves":"adds"} ${fmt.usd(Math.abs(monthly(p)-monthly(REC)))} a month against the recommendation)`:", the same as the recommendation"}.`:`No configuration passes with a ${cr.floor}% cell floor.`;
+  document.getElementById("e-sub").textContent=`${name(b)} minus ${name(a)}, in points`;
+  let h=`<div class="mx"><div></div>${DM.map(d=>`<div class="h">${d.name}</div>`).join("")}`;
+  for(const x of CX){h+=`<div class="rl">${x.name}</div>`;for(const d of DM){const k=`${x.id}|${d.id}`;const dv=b.cells[k].acc-a.cells[k].acc;
+    const mag=Math.min(1,Math.abs(dv)/8);const bg=Math.abs(dv)<0.5?"var(--div-mid)":`color-mix(in oklab, var(${dv>0?"--div-pos":"--div-neg"}) ${Math.round(18+mag*72)}%, var(--surface))`;
+    h+=`<div class="c" tabindex="0" style="background:${bg};color:${mag>.55&&Math.abs(dv)>=.5?"#fff":"var(--ink)"}" data-tip="<b>${x.name} ${d.name.toLowerCase()}</b><br>${name(a)} ${a.cells[k].acc}%<br>${name(b)} ${b.cells[k].acc}%"><b>${dv>0?"+":""}${dv.toFixed(1)}</b><span>${b.cells[k].acc.toFixed(1)}%</span></div>`;}}
+  document.getElementById("e-diff").innerHTML=h+"</div>";
+  const ov=c=>c[weight];const st=(l,va,vb,f,better)=>{const d=vb-va;const good=better==="higher"?d>0:d<0;return `<div class="stat"><span class="lab">${l}</span><span class="big" style="font-size:var(--t-lg)">${f(va)} → ${f(vb)}</span><span class="lab" style="color:${Math.abs(d)<1e-9?"var(--muted)":good?"var(--good)":"var(--bad)"}">${Math.abs(d)<1e-9?"No change":(good?"Better":"Worse")}</span></div>`;};
+  document.getElementById("e-stats").innerHTML=st(`Overall accuracy (${weight==="balanced"?"cells equally":"traffic"})`,ov(a),ov(b),v=>v.toFixed(1)+"%","higher")+st("Worst cell",minCell(a).v,minCell(b).v,v=>v.toFixed(1)+"%","higher")+st("Cost per month",monthly(a),monthly(b),fmt.usd,"lower")+st("p95 latency",a.p95,b.p95,v=>v+" ms","lower")+
+    `<div class="stat"><span class="lab">Gates under current settings</span><span>${name(a).split(" · ")[0]} ${PN[a.prompt].split(" ")[0].toLowerCase()}: ${gp(a,cr)} &nbsp; ${name(b).split(" · ")[0]} ${PN[b.prompt].split(" ")[0].toLowerCase()}: ${gp(b,cr)}</span></div>`;}
+[ea,eb,ef].forEach(e=>e.addEventListener("input",explore));explore();
+
+// full table
+(function(){const keys=CX.flatMap(x=>DM.map(d=>`${x.id}|${d.id}`));const rows=D.configs.map(c=>({...c,nm:name(c),worst:minCell(c).v,...Object.fromEntries(keys.map(k=>[k,c.cells[k].acc]))}));
+  const tbl=document.getElementById("full");tbl.innerHTML=`<thead><tr><th class="sort" data-k="nm">Configuration</th><th>Gates</th><th class="sort r" data-k="balanced">Balanced</th><th class="sort r" data-k="traffic">Traffic-wtd</th><th class="sort r" data-k="macro_f1">Macro F1</th><th class="sort r" data-k="worst">Worst cell</th><th class="sort r" data-k="cost">Per 1M</th><th class="sort r" data-k="p95">p95</th>${keys.map(k=>`<th class="sort r" data-k="${k}">${cellName(k).replace("conversational","conv.")}</th>`).join("")}</tr></thead><tbody></tbody>`;
+  sortable(tbl,rows,s=>{tbl.querySelector("tbody").innerHTML=s.map(c=>`<tr class="${c.id===REC.id?"hl":""}"><td><span class="sw" style="background:var(${COL[c.model]})"></span>${c.nm}</td><td>${gp(c)}</td><td class="r">${c.balanced.toFixed(1)}%</td><td class="r">${c.traffic.toFixed(1)}%</td><td class="r">${c.macro_f1.toFixed(1)}</td><td class="r">${c.worst.toFixed(1)}%</td><td class="r">${fmt.usd(c.cost)}</td><td class="r">${c.p95} ms</td>${keys.map(k=>`<td class="r" style="${c[k]<80?"color:var(--bad);font-weight:600":""}">${c[k].toFixed(1)}</td>`).join("")}</tr>`).join("");},"balanced",-1);})();
+</script>

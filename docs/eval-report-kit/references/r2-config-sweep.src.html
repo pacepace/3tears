@@ -1,0 +1,236 @@
+<meta charset="utf-8">
+<title>Query Planner Config Sweep</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap">
+<style>/*KIT_CSS*/
+.ex{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,22rem),1fr));gap:1rem}
+.excard{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:.9rem 1rem;display:grid;gap:.5rem;min-width:0}
+.excard .top{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;font-size:var(--t-xs);color:var(--muted)}
+.excard .q{font-weight:600}
+.excard dl{display:grid;grid-template-columns:4.5rem 1fr;gap:.25rem .6rem;margin:0;font-size:var(--t-sm)}
+.excard dt{color:var(--muted)}
+.excard dd{margin:0;font-family:var(--f-mono);font-size:var(--t-xs);overflow-wrap:anywhere;min-width:0}
+.excard dd.got{color:var(--bad)}
+.excard .note{font-size:var(--t-sm);color:var(--ink-2)}
+</style>
+<div class="page">
+<div class="mast"><span class="kind">Inner tool model</span><span><b>Research query planner</b></span><span>18 configurations · 1,200 test cases · exact-match grading</span><span>Run 2026-10-23</span><span>Synthetic example data</span></div>
+
+<div class="bluf">
+  <h1>Use Brisk-S with low reasoning and one retry. It is the only configuration that passes 97% within 600 ms.</h1>
+  <p class="lede">The retry is the cheapest lever in the sweep: it adds about 2 points of pass rate for 5% more cost. More reasoning helps every model, but its latency cost knocks Atlas-M and high-reasoning Brisk-S out of the budget.</p>
+  <div class="decision">
+    <div class="rec"><span class="k">Recommendation</span><span class="v" id="b-rec"></span></div>
+    <div><span class="k">Efficiency</span><span class="v" id="b-eff"></span></div>
+    <div><span class="k">Risk</span><span class="v" id="b-risk"></span></div>
+    <div><span class="k">Where it fails</span><span class="v" id="b-fail"></span></div>
+  </div>
+  <div class="grid2"><div class="fig mini"><h3>Failure rate, configurations within 600 ms</h3><p class="cap" style="margin:0 0 .4rem">Share of tasks that fail; the budget is 3%. Lower is better.</p><div class="chart" id="sum-fail"></div></div>
+  <div class="fig mini"><h3>Cost per month, same configurations</h3><p class="cap" style="margin:0 0 .4rem">At 4 million planner calls a month.</p><div class="chart" id="sum-cost"></div></div></div>
+  <div class="tbl"><table id="opt"></table></div>
+</div>
+
+<section>
+  <header><span class="eyebrow">All 18 configurations against both gates</span><h2>Only one configuration lands in the box.</h2>
+  <p class="takeaway">Each line follows one model from reasoning off to low to high. Solid lines have one retry, faint lines have none. Moving up costs latency; Atlas-M starts outside the budget.</p></header>
+  <div class="fig"><div class="legend" id="lg"></div><div class="chart" id="sweep"></div><p class="cap">Latency axis is log scale. Shaded region meets both gates: pass rate at least 97% and p95 at most 600 ms. Dot size grows with reasoning budget (off, low, high); hollow dots have no retry.</p></div>
+</section>
+
+<section>
+  <header><span class="eyebrow">What each lever buys</span><h2>A retry buys accuracy for almost nothing. Reasoning buys accuracy with latency.</h2>
+  <p class="takeaway">Average effect of each change, by model. Rows are sorted within each lever by pass-rate gain.</p></header>
+  <div class="fig"><div class="chart" id="levers"></div></div>
+</section>
+
+<section>
+  <header><span class="eyebrow">Failure anatomy, recommended configuration</span><h2>The retry fixes malformed calls. It barely helps with wrong arguments.</h2>
+  <p class="takeaway">Failure rate by type, before and after one retry. Wrong arguments are now the largest remaining failure, and date windows cause most of them.</p></header>
+  <div class="grid2">
+    <div class="fig"><div class="legend"><span><i class="sq" style="background:var(--s2)"></i>Still failing after retry</span><span><i class="sq" style="background:var(--seq-1)"></i>Recovered by retry</span></div><div class="chart" id="anat"></div></div>
+    <div class="fig"><h3 style="margin-bottom:.25rem">Extra calls per task</h3><p class="cap" style="margin:0 0 .5rem">Share of passing tasks that used more calls than the minimum. Brisk-S at low reasoning wastes a call on 9% of tasks.</p><div class="chart" id="eff"></div></div>
+  </div>
+</section>
+
+<section>
+  <header><span class="eyebrow">By task type</span><h2>Multi-hop questions are the weak spot for every fast configuration.</h2>
+  <p class="takeaway">Pass rate by task type for the six configurations within the latency budget, plus the most accurate one for reference.</p></header>
+  <div class="tbl"><table id="types"></table></div>
+</section>
+
+<section>
+  <header><span class="eyebrow">What the failures look like</span><h2>Four representative failures</h2></header>
+  <div class="ex" id="ex"></div>
+</section>
+
+<div class="part"><h2>Explore the sweep</h2><span>Pick any configuration</span></div>
+<section>
+  <div class="controls">
+    <div class="ctl"><label>Model</label><div class="seg" id="e-m"></div></div>
+    <div class="ctl"><label>Reasoning budget</label><div class="seg" id="e-b"></div></div>
+    <div class="ctl"><label>Retry on failure</label><div class="seg" id="e-r"></div></div>
+  </div>
+  <div class="result">
+    <div class="stats" id="e-stats"></div>
+    <div class="callout" id="e-note"></div>
+    <div class="fig"><div class="chart" id="e-types"></div></div>
+  </div>
+</section>
+
+<div class="part"><h2>Full results</h2><span>All 18 configurations</span></div>
+<section>
+  <div class="tbl"><table id="full"></table></div>
+  <dl class="method">
+    <dt>Test set</dt><dd>1,200 planner inputs captured from the research tool, labeled with gold call sequences. Task mix: single lookup 40%, multi-hop 25%, date and unit math 20%, ambiguous entity 15%.</dd>
+    <dt>Pass</dt><dd>The executed call sequence returns the gold result, or asks for clarification where the gold answer does. Extra calls still pass but are counted against efficiency.</dd>
+    <dt>Minimum calls</dt><dd>The gold sequence averages 1.38 calls per task.</dd>
+    <dt>Intervals</dt><dd>95% binomial intervals on pass rate (about ±1 point at n = 1,200).</dd>
+    <dt>Cost</dt><dd>Measured tokens times list price per 1,000 planner calls, including retries. Volume is about 4 million calls per month.</dd>
+  </dl>
+</section>
+</div>
+
+<script>/*KIT_JS*/
+const D=/*DATA*/;
+const MN=Object.fromEntries(D.models.map(m=>[m.id,m.name])),BN=Object.fromEntries(D.budgets.map(b=>[b.id,b.name]));
+const COL={"atlas-m":"--s2","brisk-s":"--s3","nano-xs":"--s1"};
+const C=Object.fromEntries(D.configs.map(c=>[c.id,c]));const CR=D.criteria;const VOL=4e6;
+const ci=p=>1.96*Math.sqrt(p/100*(1-p/100)/D.n)*100;
+const label=c=>`${MN[c.model]} · reasoning ${BN[c.budget].toLowerCase()} · ${c.retry?"1 retry":"no retry"}`;
+const short=c=>`${MN[c.model]} ${BN[c.budget].toLowerCase()}${c.retry?" +retry":""}`;
+const ok=c=>c.pass_rate>=CR.pass_rate&&c.p95<=CR.p95;
+const gates=c=>{const a=c.pass_rate>=CR.pass_rate,b=c.p95<=CR.p95;return a&&b?pill("good","Both gates"):!a&&!b?pill("bad","Fails both"):!a?pill("bad","Pass rate"):pill("bad","Latency");};
+const passing=D.configs.filter(ok).sort((a,b)=>a.cost-b.cost);const REC=passing[0];
+const monthly=c=>c.cost*VOL/1000;
+const TT=D.task_types;
+
+// BLUF
+const worstT=TT.map(t=>({t,v:REC.by_type[t.id]})).sort((a,b)=>a.v-b.v)[0];
+document.getElementById("b-rec").innerHTML=`<strong>${label(REC)}.</strong> ${REC.pass_rate.toFixed(1)}% pass, p95 ${fmt.ms(REC.p95)}, ${fmt.usd(REC.cost)} per 1k calls (about ${fmt.usd(monthly(REC))} a month).`;
+document.getElementById("b-eff").innerHTML=`${REC.calls.toFixed(2)} calls per task against a minimum of ${D.optimal_calls.toFixed(2)}, so ${Math.round((REC.calls/D.optimal_calls-1)*100)}% overhead. Most of it is a wasted first search on multi-hop questions.`;
+document.getElementById("b-risk").innerHTML=`The pass rate clears 97% by only ${(REC.pass_rate-97).toFixed(1)} points, inside its ±${ci(REC.pass_rate).toFixed(1)} interval. Run 3,000 more cases before locking it in.`;
+document.getElementById("b-fail").innerHTML=`${worstT.t.name}: ${worstT.v.toFixed(1)}% pass. Wrong arguments are the largest remaining failure; most are off-by-one date windows.`;
+
+// options table
+(function(){const best=[...D.configs].sort((a,b)=>b.pass_rate-a.pass_rate)[0];const cheap=[...D.configs].sort((a,b)=>a.cost-b.cost)[0];
+  const near=D.configs.filter(c=>c.p95<=CR.p95&&!ok(c)).sort((a,b)=>b.pass_rate-a.pass_rate)[0];
+  const rows=[[REC,"Recommended"],[near,"Best within latency, misses pass rate"],[best,"Most accurate"],[cheap,"Cheapest"]];
+  document.getElementById("opt").innerHTML=`<thead><tr><th>Configuration</th><th>Role</th><th>Gates</th><th class="r">Pass rate</th><th class="r">p95</th><th class="r">Cost / 1k</th><th class="r">Per month</th><th class="r">Calls / task</th></tr></thead><tbody>`+
+  rows.map(([c,r])=>`<tr class="${c===REC?"hl":""}"><td>${c===REC?"<strong>":""}${label(c)}${c===REC?"</strong>":""}</td><td>${r}</td><td>${gates(c)}</td><td class="r">${c.pass_rate.toFixed(1)}%</td><td class="r">${fmt.ms(c.p95)}</td><td class="r">${fmt.usd(c.cost)}</td><td class="r">${fmt.usd(monthly(c))}</td><td class="r">${c.calls.toFixed(2)}</td></tr>`).join("")+"</tbody>";})();
+
+// summary bars
+(function(){const rows=D.configs.filter(c=>c.p95<=CR.p95).sort((a,b)=>a.pass_rate>b.pass_rate?-1:1);
+  chart(document.getElementById("sum-fail"),(el,w)=>barsH(el,w,rows.map(c=>({label:short(c),value:100-c.pass_rate,color:COL[c.model],muted:!ok(c),strong:c===REC,note:(100-c.pass_rate).toFixed(1)+"%"})),{domain:[0,20],fmt:v=>v.toFixed(0)+"%",ref:{value:100-CR.pass_rate,label:"budget 3%"},rowH:24}));
+  chart(document.getElementById("sum-cost"),(el,w)=>barsH(el,w,rows.map(c=>({label:short(c),value:monthly(c),color:COL[c.model],muted:!ok(c),strong:c===REC,note:fmt.usd(monthly(c))})),{domain:[0,1400],fmt:v=>"$"+v.toLocaleString(),rowH:24}));})();
+
+// legend
+document.getElementById("lg").innerHTML=D.models.map(m=>`<span><i style="background:var(${COL[m.id]})"></i>${m.name}</span>`).join("")+`<span><svg width="22" height="10" style="vertical-align:0;margin-right:.35rem"><line x1="1" x2="21" y1="5" y2="5" style="stroke:var(--ink-2);stroke-width:2"></line></svg>1 retry</span><span><svg width="22" height="10" style="vertical-align:0;margin-right:.35rem"><line x1="1" x2="21" y1="5" y2="5" style="stroke:var(--ink-2);stroke-width:2;opacity:.35"></line></svg>No retry</span>`;
+
+// sweep scatter
+chart(document.getElementById("sweep"),(el,w)=>{const h=Math.min(420,Math.max(300,w*.5)),m={l:44,r:18,t:16,b:40};const s=svgIn(el,w,h);
+  const x=logs(100,3000,m.l,w-m.r),y=lin(80,100,h-m.b,m.t);
+  S("rect",{x:m.l,y:y(100),width:x(CR.p95)-m.l,height:y(CR.pass_rate)-y(100),style:"fill:var(--good-wash)"},s);
+  S("text",{x:m.l+8,y:y(100)+16,class:"lbl",style:"fill:var(--good);font-weight:600",text:"Meets both gates"},s);
+  for(const v of [80,85,90,95,100]){S("line",{x1:m.l,x2:w-m.r,y1:y(v),y2:y(v),class:"grid"},s);if(v>80)S("text",{x:m.l-8,y:y(v)+4,"text-anchor":"end",class:"tick",text:v+"%"},s);}
+  for(const v of (w<560?[100,200,600,1000,3000]:[100,200,300,600,1000,2000,3000])){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-m.b+16,"text-anchor":"middle",class:"tick",text:v>=1000?(v/1000)+"s":v+"ms"},s);}
+  S("line",{x1:x(CR.p95),x2:x(CR.p95),y1:m.t,y2:h-m.b,class:"floor"},s);S("line",{x1:m.l,x2:w-m.r,y1:y(CR.pass_rate),y2:y(CR.pass_rate),class:"floor"},s);
+  S("text",{x:(m.l+w-m.r)/2,y:h-6,"text-anchor":"middle",class:"tick",text:"p95 latency (log)"},s);
+  const obs=[];const labs=[];
+  for(const mo of D.models)for(const r of [0,1]){const cs=D.budgets.map(b=>C[`${mo.id}.${b.id}.r${r}`]);
+    S("path",{d:"M"+cs.map(c=>`${x(c.p95)},${y(c.pass_rate)}`).join("L"),style:`fill:none;stroke:var(${COL[mo.id]});stroke-width:2;opacity:${r?1:.35}`},s);}
+  for(const c of D.configs){const px=x(c.p95),py=y(Math.max(80,c.pass_rate)),isR=c===REC;const g=S("g",{},s);
+    const rr=c.budget==="off"?3.5:c.budget==="low"?5:6.5;
+    S("circle",{cx:px,cy:py,r:rr,style:`fill:${c.retry?`var(${COL[c.model]})`:"var(--surface)"};stroke:${c.retry?"var(--surface)":`var(${COL[c.model]})`};stroke-width:2`},g);
+    if(isR)S("circle",{cx:px,cy:py,r:rr+4,style:"fill:none;stroke:var(--ink);stroke-width:1.5"},g);
+    obs.push([px-rr-2,py-rr-2,px+rr+2,py+rr+2]);
+    hit(g,px-12,py-12,24,24,`<b>${label(c)}</b><br>Pass ${c.pass_rate.toFixed(1)}% ±${ci(c.pass_rate).toFixed(1)} · p95 ${fmt.ms(c.p95)}<br>${fmt.usd(c.cost)} per 1k calls · ${c.calls.toFixed(2)} calls/task`);}
+  const narrow=w<560;const show=narrow?[REC]:[REC,C["atlas-m.high.r1"],C["nano-xs.off.r0"],C["nano-xs.high.r1"],C["brisk-s.high.r1"]];
+  placeLabels(show.map(c=>({px:x(c.p95),py:y(c.pass_rate),text:c===REC?(narrow?"Recommended":"Recommended: "+short(c)):short(c),c})),[m.l,m.t,w-m.r,h-m.b],obs)
+    .forEach(l=>S("text",{x:l.x,y:l.y,"text-anchor":l.anchor,class:l.c===REC?"lbl-strong":"lbl",text:l.text},s));
+  });
+
+// levers: average deltas per model
+(function(){const rows=[];const avg=a=>a.reduce((s,v)=>s+v,0)/a.length;
+  const levers=[["Add one retry",(mo)=>D.budgets.map(b=>[C[`${mo}.${b.id}.r0`],C[`${mo}.${b.id}.r1`]])],
+    ["Reasoning off → low",(mo)=>[0,1].map(r=>[C[`${mo}.off.r${r}`],C[`${mo}.low.r${r}`]])],
+    ["Reasoning low → high",(mo)=>[0,1].map(r=>[C[`${mo}.low.r${r}`],C[`${mo}.high.r${r}`]])]];
+  for(const [name,f] of levers){const grp=D.models.map(mo=>{const pairs=f(mo.id);return {lever:name,m:mo.id,dp:avg(pairs.map(([a,b])=>b.pass_rate-a.pass_rate)),dl:avg(pairs.map(([a,b])=>b.p95-a.p95)),dc:avg(pairs.map(([a,b])=>(b.cost/a.cost-1)*100))};}).sort((a,b)=>b.dp-a.dp);rows.push(...grp);}
+  chart(document.getElementById("levers"),(el,w)=>{const narrow=w<620;const rowH=24,gap=14,m={t:34,b:8,l:narrow?118:210};
+    const panels=[["Pass rate","dp",[0,8],v=>"+"+v.toFixed(1)+" pts"],["p95 latency","dl",[0,1600],v=>"+"+Math.round(v)+" ms"],["Cost","dc",[0,140],v=>"+"+Math.round(v)+"%"]];
+    const cols=narrow?1:3;const pw=(w-m.l-gap*(cols-1))/cols;const blockH=rows.length*rowH+20+m.t+18;const h=narrow?blockH*3+m.b:m.t+m.b+rows.length*rowH+20;const s=svgIn(el,w,h);
+    const ys0=[];{let yy=0;rows.forEach((r,i)=>{if(i&&rows[i-1].lever!==r.lever)yy+=10;ys0.push(yy+rowH/2);yy+=rowH;});}
+    panels.forEach(([title,k,dom,f],pi)=>{const off=narrow?pi*blockH:0;const x0=narrow?m.l:m.l+pi*(pw+gap);const x=lin(dom[0],dom[1],x0,x0+pw-6);const ys=ys0.map(v=>v+m.t+off);
+      if(narrow||pi===0)rows.forEach((r,i)=>{if(i===0||rows[i-1].lever!==r.lever)S("text",{x:0,y:ys[i]+4,class:"lbl-strong",text:narrow?r.lever.replace("Reasoning ","").replace("Add one retry","Retry"):r.lever},s);
+        S("text",{x:m.l-8,y:ys[i]+4,"text-anchor":"end",class:"lbl",text:MN[r.m]},s);});
+      S("text",{x:x0,y:off+14,class:"lbl-strong",text:title},s);S("line",{x1:x(0),x2:x(0),y1:off+m.t-6,y2:ys[ys.length-1]+rowH/2,class:"axis"},s);
+      rows.forEach((r,i)=>{const v=Math.max(0,r[k]);const g=S("g",{},s);const bw=Math.max(2,x(Math.min(v,dom[1]))-x(0));
+        S("rect",{x:x(0),y:ys[i]-6,width:bw,height:12,rx:2,style:`fill:var(${COL[r.m]})`},g);
+        const t=f(r[k]);const inside=bw>t.length*6.5+8;
+        S("text",{x:inside?x(0)+bw-5:x(0)+bw+5,y:ys[i]+4,"text-anchor":inside?"end":"start",class:"tick",style:inside?"fill:#fff":"",text:t},g);
+        hit(g,x0,ys[i]-rowH/2,pw,rowH,`<b>${r.lever}</b>, ${MN[r.m]}<br>Pass ${f(r.dp)} · p95 +${Math.round(r.dl)} ms · cost +${Math.round(r.dc)}%`);});});});})();
+
+// failure anatomy for REC
+(function(){const r0=C[`${REC.model}.${REC.budget}.r0`];const types=[["wrong_args","Wrong arguments"],["malformed","Malformed call"],["missing_call","Missing call"],["wrong_tool","Wrong tool"],["timeout","Timeout"]];
+  chart(document.getElementById("anat"),(el,w)=>{const rowH=30,m={l:118,r:56,t:8,b:24};const h=m.t+m.b+rowH*types.length;const s=svgIn(el,w,h);const x=lin(0,2.2,m.l,w-m.r);
+    for(const v of [0,.5,1,1.5,2]){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:v+"%"},s);}
+    types.forEach(([k,n],i)=>{const cy=m.t+rowH*i+rowH/2;const after=REC.outcomes[k],before=r0.outcomes[k];const g=S("g",{},s);
+      S("text",{x:m.l-8,y:cy+4,"text-anchor":"end",class:"lbl",text:n},g);
+      S("rect",{x:x(0),y:cy-8,width:Math.max(1,x(after)-x(0)),height:16,rx:2,style:"fill:var(--s2)"},g);
+      S("rect",{x:x(after)+2,y:cy-8,width:Math.max(0,x(before)-x(after)-2),height:16,rx:2,style:"fill:var(--seq-1)"},g);
+      const rec=before?Math.round((1-after/before)*100):0;S("text",{x:x(before)+6,y:cy+4,class:"tick",text:rec+"% fixed"},g);
+      hit(g,m.l,cy-rowH/2,w-m.l-m.r,rowH,`<b>${n}</b><br>${before.toFixed(2)}% of tasks without retry<br>${after.toFixed(2)}% with one retry (${rec}% recovered)`);});});})();
+
+// efficiency: extra-call distribution for retry configs (budget rows per model)
+(function(){const rows=D.configs.filter(c=>c.retry===1);const steps=["--seq-2","--seq-4","--seq-5"];
+  chart(document.getElementById("eff"),(el,w)=>{const rowH=22,m={l:120,r:40,t:22,b:8};const h=m.t+m.b+rowH*rows.length+12;const s=svgIn(el,w,h);const x=lin(0,30,m.l,w-m.r);
+    ["+1 call","+2","+3 or more"].forEach((t,i)=>{const lx=m.l+i*74;S("rect",{x:lx,y:2,width:10,height:10,rx:2,style:`fill:var(${steps[i]})`},s);S("text",{x:lx+14,y:11,class:"tick",text:t},s);});
+    let yy=m.t;rows.forEach((c,i)=>{if(i&&rows[i-1].model!==c.model)yy+=6;const cy=yy+rowH/2;yy+=rowH;const g=S("g",{},s);
+      S("text",{x:m.l-8,y:cy+4,"text-anchor":"end",class:c===REC?"lbl-strong":"lbl",text:`${MN[c.model]} · ${BN[c.budget]}`},g);
+      let acc=0;c.excess_dist.slice(1).forEach((v,j)=>{S("rect",{x:x(acc)+(j?1:0),y:cy-6,width:Math.max(0,x(acc+v)-x(acc)-(j?1:0)),height:12,rx:1.5,style:`fill:var(${steps[j]})`},g);acc+=v;});
+      S("text",{x:x(acc)+5,y:cy+4,class:"tick",text:acc.toFixed(0)+"%"},g);
+      hit(g,m.l,cy-rowH/2,w-m.l-m.r,rowH,`<b>${label(c)}</b><br>${c.excess_dist[1]}% used 1 extra call, ${c.excess_dist[2]}% used 2, ${c.excess_dist[3]}% used 3+`);});});})();
+
+// by type table (heat cells)
+(function(){const cs=D.configs.filter(c=>c.p95<=CR.p95).sort((a,b)=>b.pass_rate-a.pass_rate).slice(0,6);const best=[...D.configs].sort((a,b)=>b.pass_rate-a.pass_rate)[0];cs.push(best);
+  const heat=v=>v>=97?"var(--good-wash)":v>=94?"var(--warn-wash)":"var(--bad-wash)";
+  document.getElementById("types").innerHTML=`<thead><tr><th>Configuration</th>${TT.map(t=>`<th class="r">${t.name}<br><span style="font-weight:400;text-transform:none;letter-spacing:0">${Math.round(t.share*100)}% of traffic</span></th>`).join("")}<th class="r">Overall</th></tr></thead><tbody>`+
+  cs.map(c=>`<tr class="${c===REC?"hl":""}"><td>${c===REC?"<strong>":""}${short(c)}${c===REC?"</strong>":""}${c===best?' <span style="color:var(--muted)">(over latency)</span>':""}</td>${TT.map(t=>`<td class="r" style="background:${heat(c.by_type[t.id])}">${c.by_type[t.id].toFixed(1)}%</td>`).join("")}<td class="r"><strong>${c.pass_rate.toFixed(1)}%</strong></td></tr>`).join("")+"</tbody>";})();
+document.getElementById("types").insertAdjacentHTML("afterend",`<p class="cap" style="font-size:var(--t-xs);color:var(--muted)">Green at least 97%, amber 94 to 97%, red below 94%.</p>`);
+
+// examples
+document.getElementById("ex").innerHTML=D.examples.map(e=>{const c=C[e.config];const tn=TT.find(t=>t.id===e.type).name;const on={wrong_args:"Wrong arguments",missing_call:"Missing call",wrong_tool:"Wrong tool",malformed:"Malformed call"}[e.outcome];
+  return `<div class="excard"><div class="top"><span class="mono">${e.id}</span><span>${tn}</span>${pill("bad",on)}<span>${short(c)}</span></div><div class="q">${e.q}</div><dl><dt>Expected</dt><dd>${e.expected}</dd><dt>Got</dt><dd class="got">${e.got.replace(/</g,"&lt;")}</dd></dl><div class="note">${e.note}</div></div>`;}).join("");
+
+// explorer
+const sel={m:REC.model,b:REC.budget,r:REC.retry};
+function seg(id,opts,key){const el=document.getElementById(id);el.innerHTML=opts.map(([v,t])=>`<button type="button" data-v="${v}">${t}</button>`).join("");
+  el.querySelectorAll("button").forEach(b=>b.onclick=()=>{sel[key]=key==="r"?+b.dataset.v:b.dataset.v;explore();});}
+seg("e-m",D.models.map(m=>[m.id,m.name]),"m");seg("e-b",D.budgets.map(b=>[b.id,b.name]),"b");seg("e-r",[["0","None"],["1","One"]],"r");
+let redrawTypes;
+function explore(){for(const [id,k] of [["e-m","m"],["e-b","b"],["e-r","r"]])document.querySelectorAll(`#${id} button`).forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.v==String(sel[k]))));
+  const c=C[`${sel.m}.${sel.b}.r${sel.r}`];const d=(v,u,f=1)=>{const x=v;return (x>0?"+":"")+x.toFixed(f)+u;};
+  document.getElementById("e-stats").innerHTML=[[c.pass_rate.toFixed(1)+"%","Pass rate",d(c.pass_rate-REC.pass_rate," pts")],[fmt.ms(c.p95),"p95 latency",d(c.p95-REC.p95," ms",0)],[fmt.usd(c.cost),"Cost per 1k calls",d((c.cost/REC.cost-1)*100,"%",0)],[c.calls.toFixed(2),"Calls per task",d(c.calls-REC.calls,"",2)]]
+    .map(([v,l,dd])=>`<div class="stat"><span class="big">${v}</span><span class="lab">${l}${c===REC?"":` · ${dd} vs. recommended`}</span></div>`).join("")+`<div class="stat" style="align-self:center">${gates(c)}</div>`;
+  const note=document.getElementById("e-note");
+  if(c===REC){note.textContent="This is the recommended configuration. Change one setting to see what it costs or buys.";}
+  else{const why=[];if(c.pass_rate<CR.pass_rate)why.push(`pass rate is ${(CR.pass_rate-c.pass_rate).toFixed(1)} points short of 97%`);if(c.p95>CR.p95)why.push(`p95 is ${Math.round(c.p95-CR.p95)} ms over budget`);
+    note.textContent=why.length?`Not eligible: ${why.join(" and ")}.`:`Eligible, but ${fmt.usd(c.cost)} per 1k calls is ${Math.round((c.cost/REC.cost-1)*100)}% more than the recommended configuration.`;}
+  redrawTypes&&redrawTypes();}
+explore();
+redrawTypes=chart(document.getElementById("e-types"),(el,w)=>{const c=C[`${sel.m}.${sel.b}.r${sel.r}`];const rowH=32,m={l:Math.min(170,w*.38),r:56,t:24,b:24};const h=m.t+m.b+rowH*TT.length;const s=svgIn(el,w,h);const x=lin(85,100,m.l,w-m.r);
+  S("text",{x:0,y:12,class:"lbl-strong",text:"Pass rate by task type"},s);
+  for(const v of [85,90,95,100]){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:v+"%"},s);}
+  S("line",{x1:x(97),x2:x(97),y1:m.t-4,y2:h-m.b,class:"floor"},s);
+  TT.forEach((t,i)=>{const cy=m.t+rowH*i+rowH/2,v=c.by_type[t.id],rv=REC.by_type[t.id];const g=S("g",{},s);
+    S("text",{x:m.l-8,y:cy+4,"text-anchor":"end",class:"lbl",text:t.name},g);
+    S("line",{x1:x(Math.max(85,Math.min(v,rv))),x2:x(Math.max(85,Math.max(v,rv))),y1:cy,y2:cy,style:"stroke:var(--base);stroke-width:2"},g);
+    S("circle",{cx:x(Math.max(85,rv)),cy,r:4,style:"fill:var(--surface);stroke:var(--muted);stroke-width:1.5"},g);
+    S("circle",{cx:x(Math.max(85,v)),cy,r:6,style:`fill:var(${COL[c.model]});stroke:var(--surface);stroke-width:2`},g);
+    S("text",{x:x(Math.max(85,Math.max(v,rv)))+10,y:cy+4,class:"tick",text:v.toFixed(1)+"%"},g);
+    hit(g,m.l,cy-rowH/2,w-m.l-m.r,rowH,`<b>${t.name}</b><br>This config ${v.toFixed(1)}% · recommended ${rv.toFixed(1)}%`);});
+  S("text",{x:w-m.r+50,y:12,"text-anchor":"end",class:"tick",text:"○ recommended  ● selected"},s);});
+
+// full table
+(function(){const rows=D.configs.map(c=>({...c,name:label(c),mo:MN[c.model],ok:ok(c)?1:0}));const tbl=document.getElementById("full");
+  tbl.innerHTML=`<thead><tr><th class="sort" data-k="mo">Model</th><th>Reasoning</th><th>Retry</th><th>Gates</th><th class="sort r" data-k="pass_rate">Pass rate</th><th class="sort r" data-k="p95">p95</th><th class="sort r" data-k="cost">Cost / 1k</th><th class="sort r" data-k="calls">Calls / task</th>${TT.map(t=>`<th class="r">${t.name.split(" ")[0]}</th>`).join("")}</tr></thead><tbody></tbody>`;
+  sortable(tbl,rows,s=>{tbl.querySelector("tbody").innerHTML=s.map(c=>`<tr class="${c.id===REC.id?"hl":""}"><td><span class="sw" style="background:var(${COL[c.model]})"></span>${c.mo}</td><td>${BN[c.budget]}</td><td>${c.retry?"One":"None"}</td><td>${gates(c)}</td><td class="r">${c.pass_rate.toFixed(1)}% <span style="color:var(--muted)">±${ci(c.pass_rate).toFixed(1)}</span></td><td class="r">${fmt.ms(c.p95)}</td><td class="r">${fmt.usd(c.cost)}</td><td class="r">${c.calls.toFixed(2)}</td>${TT.map(t=>`<td class="r">${c.by_type[t.id].toFixed(1)}%</td>`).join("")}</tr>`).join("");},"pass_rate",-1);})();
+</script>

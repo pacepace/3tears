@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "report-plan/1",
+  "title": "Report plan",
+  "description": "What the planner (LLM) writes and the renderer draws. Prose uses figure keys like {reading.<arm>.change|pts}, never typed numbers. See GENERATOR.md §2 and §6.2.",
+  "type": "object",
+  "required": ["schema", "signals", "shape", "mode", "headline", "lede", "decision", "options", "summary", "sections", "full_results", "method"],
+  "properties": {
+    "schema": {"const": "report-plan/1"},
+    "signals": {
+      "type": "object",
+      "description": "GENERATOR.md §1, recorded before anything is chosen.",
+      "properties": {
+        "candidate_structure": {"enum": ["unordered", "ordered_versions", "factorial", "control_plus_candidates"]},
+        "baseline": {"enum": ["none", "control"]},
+        "score_type": {"enum": ["graded", "pass_fail", "class_label", "mixed"]},
+        "strata": {"enum": ["none", "tasks", "many_strata", "target_matrix"]},
+        "criteria": {"enum": ["hard_gates", "margin", "none_declared"]},
+        "cross_cutting": {"type": "array", "items": {"type": "string"}},
+        "log_cost_axis": {"type": "boolean"}
+      }
+    },
+    "shape": {"enum": ["A", "B", "C", "D", "E"]},
+    "mode": {"enum": ["decide", "tradeoff", "no_call"]},
+    "masthead": {"type": "object", "properties": {"kind": {"type": "string"}, "system": {"type": "string"}, "counts": {"type": "string"}, "run_date": {"type": "string"}, "synthetic": {"type": "boolean"}}},
+    "headline": {"type": "string", "description": "The decision as an instruction with its reason; in tradeoff mode, the trade."},
+    "lede": {"type": "string", "maxLength": 420},
+    "flag": {
+      "type": ["object", "null"],
+      "properties": {"title": {"type": "string"}, "text": {"type": "string"}, "confidence": {"enum": ["low", "moderate", "high"]}, "weakens": {"type": "array", "items": {"type": "string"}}, "survives": {"type": "array", "items": {"type": "string"}}}
+    },
+    "decision": {
+      "type": "object",
+      "required": ["slots"],
+      "properties": {"slots": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "object", "required": ["key", "text"], "properties": {"key": {"enum": ["recommendation", "why_not", "watch", "next", "the_trade", "where_it_flips", "our_lean", "what_settles_it"]}, "text": {"type": "string"}}}}}
+    },
+    "arms": {
+      "type": "array",
+      "description": "Display names resolved by the renderer with armLabels(); the planner may set an alias.",
+      "items": {"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}, "alias": {"type": "string"}, "color_slot": {"type": "integer", "minimum": -1, "description": "-1 = the control (ink gray); 0.. = series colors in fixed order"}}}
+    },
+    "options": {
+      "type": "object",
+      "required": ["rows", "columns"],
+      "properties": {
+        "rows": {"type": "array", "minItems": 1, "maxItems": 5, "items": {"type": "object", "required": ["option", "role"], "properties": {"option": {"type": "string", "description": "an arm id, or a modeled option id"}, "role": {"enum": ["recommended", "lean", "control", "near_miss", "most_accurate", "cheapest", "alternative"]}}}},
+        "columns": {"type": "array", "items": {"type": "string", "description": "a figure key family, e.g. pass_rate, change, reading, judged:<dim>, cost_per_1k, monthly_cost, gate"}}
+      }
+    },
+    "summary": {"type": "array", "maxItems": 3, "items": {"$ref": "#/$defs/chart"}},
+    "show_arms_key": {"type": "boolean"},
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "eyebrow", "headline", "chart"],
+        "properties": {
+          "id": {"type": "string"},
+          "eyebrow": {"type": "string"},
+          "headline": {"type": "string", "description": "A finding with subject and direction."},
+          "takeaway": {"type": "string", "description": "One or two sentences on how to read the chart."},
+          "chart": {"$ref": "#/$defs/chart"},
+          "caption": {"type": "string"}
+        }
+      }
+    },
+    "explore": {
+      "type": ["object", "null"],
+      "properties": {
+        "title": {"type": "string"},
+        "controls": {"type": "array", "minItems": 1, "maxItems": 3, "items": {"type": "object", "required": ["id", "kind", "label"], "properties": {"id": {"type": "string"}, "kind": {"enum": ["slider", "segmented", "toggle", "select"]}, "label": {"type": "string"}, "binds": {"type": "string", "description": "criterion it replaces: margin, floor:<id>, p95, price_per_point, weighting, lever:<factor>"}, "min": {"type": "number"}, "max": {"type": "number"}, "step": {"type": "number"}, "default": {}, "options": {"type": "array"}}}},
+        "outcome": {"type": "string", "description": "What is recomputed and stated, e.g. reading per arm + flip point"}
+      }
+    },
+    "full_results": {"type": "array", "items": {"enum": ["arms_by_measure", "contrasts", "strata", "gate_matrix_full", "configs", "cells"]}},
+    "method": {"type": "array", "minItems": 3, "maxItems": 9, "items": {"type": "object", "required": ["term", "text"], "properties": {"term": {"type": "string"}, "text": {"type": "string"}}}}
+  },
+  "$defs": {
+    "chart": {
+      "type": "object",
+      "required": ["kind", "data"],
+      "properties": {
+        "kind": {"enum": ["forest", "bars", "diverging_bars", "lines", "scatter_frontier", "gate_scatter", "dot_interval", "range_bars", "gate_matrix", "lattice", "heatmap", "diff_heatmap", "confusion", "examples", "table"]},
+        "title": {"type": "string"},
+        "data": {"type": "string", "description": "a query over the report input, e.g. contrasts[measure in (passed, judged:persona.holds_character)], strata[:12] x judged:persona.holds_character"},
+        "level": {"type": "string", "description": "interval level printed on the chart, e.g. 95% or 99.69%"},
+        "unit": {"type": "string"},
+        "domain": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+        "reference": {"type": "object", "properties": {"value": {"type": "number"}, "label": {"type": "string"}, "kind": {"enum": ["floor", "budget", "margin", "no_preference"]}}},
+        "small_multiples_by": {"type": "string", "description": "arm, aspect, task or none"},
+        "emphasis": {"type": "string", "description": "the one thing bolded or ringed"}
+      }
+    }
+  }
+}

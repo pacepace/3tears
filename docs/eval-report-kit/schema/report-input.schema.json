@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "report-input/1",
+  "title": "Report input",
+  "description": "Normalized campaign results. Produced by an adapter from the pipeline's campaign bundle (adapters/bundle_to_report.py). Statistics are copied through, never recomputed. The shape A-C references (r1-r3) use simpler synthetic data built for their pages, not this schema.",
+  "type": "object",
+  "required": ["schema", "meta", "arms", "aspects", "scoreboard", "measures", "judged", "contrasts", "caveats"],
+  "properties": {
+    "schema": {"const": "report-input/1"},
+    "meta": {"type": "object", "required": ["campaign", "kind"], "properties": {
+      "campaign": {"type": "string"}, "question": {"type": "string"}, "behavior": {"type": ["string", "null"]},
+      "kind": {"type": "string", "description": "pipeline kind, e.g. change (control + candidates)"}, "kind_means": {"type": "string"},
+      "design_shape": {"type": ["string", "null"], "description": "e.g. one_factor_at_a_time, factorial"},
+      "run_date": {"type": ["string", "null"]}, "provenance": {"type": ["string", "null"]}, "synthetic": {"type": "boolean"},
+      "volume_per_month": {"type": ["number", "null"], "description": "replies or calls per month, when the host declares it; enables monthly cost"}}},
+    "arms": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["id", "role", "settings"], "properties": {
+      "id": {"type": "string"}, "name": {"type": "string", "description": "campaign alias"}, "role": {"enum": ["control", "challenger"]},
+      "served_model": {"type": "string"}, "variant_key": {"type": ["string", "null"]},
+      "settings": {"type": "object", "description": "model plus every lever that differs from the control", "additionalProperties": {"type": ["string", "number", "null"]}},
+      "reasoning_ratio": {"type": "number"}}}},
+    "aspects": {"type": "array", "items": {"type": "object", "required": ["id", "readings"], "properties": {
+      "id": {"type": "string"}, "name": {"type": "string"}, "margin": {"type": ["number", "null"]}, "asked": {"type": "boolean"},
+      "readings": {"type": "array", "items": {"type": "object", "required": ["arm", "reading", "change", "within_interval"], "properties": {
+        "arm": {"type": "string"}, "reading": {"type": "string"}, "change": {"type": "number", "description": "points"},
+        "within_interval": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}, "gain_confidence": {"type": "number"},
+        "control_passed": {"type": "string"}, "arm_passed": {"type": "string"}, "cases": {"type": "array"}, "confirmatory": {"type": "boolean"}, "precision": {"type": "object"}}}},
+      "depth": {"type": ["object", "null"]}, "pass_k": {"type": ["array", "null"]}}}},
+    "floors": {"type": "array"}, "bars": {"type": "array"}, "guardrails": {"type": "array"},
+    "scoreboard": {"type": "object", "description": "by arm id: ran, lost, usable, passed, failed, cases, reply_cost_usd"},
+    "measures": {"type": "object", "description": "by measure key: unit, higher_is_better, merit_axis, means (definition), per_arm{mean, ci, n, n_cases, p95}"},
+    "judged": {"type": "object", "description": "by judged dimension: scale, tier, judge_model, calibration, per_arm{mean, n, n_cases}"},
+    "primary_judged": {"type": ["string", "null"]},
+    "contrasts": {"type": "array", "items": {"type": "object", "required": ["arm", "measure", "verdict", "delta", "interval"], "properties": {
+      "arm": {"type": "string"}, "control": {"type": "string"}, "kind": {"type": "string"}, "measure": {"type": "string"}, "verdict": {"type": "string"},
+      "delta": {"type": "number"}, "interval": {"type": "array"}, "p_adjusted": {"type": ["number", "null"]}, "materiality": {"type": ["string", "null"]}, "confounds": {"type": "array"}}}},
+    "contrast_families": {"type": "array", "description": "correction method, alpha, family size, disclosure"},
+    "strata": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "n_cases": {"type": "integer"}, "per_arm": {"type": "object"}}}},
+    "examples": {"type": "array", "items": {"type": "object", "properties": {"trial": {"type": "string"}, "case": {"type": "string"}, "stratum": {"type": "string"}, "arm": {"type": "string"}, "repeat": {"type": "integer"}, "reason": {"type": ["string", "null"]}, "excerpt": {"type": "string"}}}},
+    "caveats": {"type": "object", "properties": {
+      "late_criteria": {"type": "array"}, "judge_tiers": {"type": "object"}, "confounds": {"type": "object"}, "apparatus_confounds": {"type": "array"},
+      "latency": {"type": ["string", "null"]}, "short_runs": {"type": "array", "items": {"type": "object", "properties": {"run": {"type": "string"}, "arm": {"type": ["string", "null"]}, "note": {"type": "string"}}}}, "unreported": {"type": "array"}}},
+    "prior_insights": {"type": "array"}
+  }
+}
