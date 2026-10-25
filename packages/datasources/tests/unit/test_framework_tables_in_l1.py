@@ -37,25 +37,6 @@ from threetears.datasources.collections import (
 )
 
 #: the columns ``DataSourceColumnCollection``'s upsert binds, in its parameter order
-_COLUMN_INSERT_ORDER = (
-    "id",
-    "datasource_id",
-    "schema_name",
-    "table_name",
-    "column_name",
-    "data_type",
-    "is_nullable",
-    "ordinal_position",
-    "description",
-    "valid_range",
-    "caveats",
-    "tags",
-    "caveats_replaces_definition",
-    "date_introspected",
-    "date_described",
-    "date_created",
-    "date_updated",
-)
 _NATURAL_KEY = ("datasource_id", "schema_name", "table_name", "column_name")
 
 
@@ -70,18 +51,22 @@ class _ColumnTable:
         self.rows: dict[UUID, dict[str, Any]] = {}
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
+        if sql.startswith("INSERT"):
+            return self._upsert(sql, args)
         row = self.rows.get(args[0])
         return None if row is None else dict(row)
 
-    async def fetchval(self, sql: str, *args: Any) -> Any:
-        sent = dict(zip(_COLUMN_INSERT_ORDER, args, strict=True))
+    def _upsert(self, sql: str, args: tuple[Any, ...]) -> dict[str, Any]:
+        """the upsert on the natural key, its columns named by the statement, returning the stored id."""
+        columns = [c.strip() for c in sql[sql.index("(") + 1 : sql.index(")")].split(",")]
+        sent = dict(zip(columns, args, strict=True))
         natural = tuple(sent[c] for c in _NATURAL_KEY)
         held = next((r for r in self.rows.values() if tuple(r[c] for c in _NATURAL_KEY) == natural), None)
         if held is None:
             self.rows[sent["id"]] = sent
-            return sent["id"]
+            return {"id": sent["id"]}
         held.update({k: v for k, v in sent.items() if k not in {"id", "date_created", *_NATURAL_KEY}})
-        return held["id"]
+        return {"id": held["id"]}
 
     async def execute(self, sql: str, *args: Any) -> str:
         return "INSERT 0 1"
