@@ -604,6 +604,19 @@ class TestAWriteBypassLiftsWhenTheKeyIsWrittenAgain:
 
         assert l2.gets == ["t-1"]
 
+    async def test_a_landed_l2_delete_lifts_it(self) -> None:
+        l2 = _DictL2Cache()
+        l2.fail_put = RuntimeError("nats: timeout")
+        l2.fail_delete = RuntimeError("nats: timeout")
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=l2, scope=_UNSCOPED)
+        await saver.l2_put("t-1", "", b"cp-1")
+
+        l2.fail_delete = None
+        await saver.l2_delete("t-1", "")
+        await saver.aget_tuple(self._CONFIG)
+
+        assert l2.gets == ["t-1"], "the key holds nothing older now, so it is read from cache again"
+
     async def test_the_bypass_is_per_namespace(self) -> None:
         l2 = _DictL2Cache()
         l2.fail_put = RuntimeError("nats: timeout")
@@ -662,3 +675,20 @@ class TestAWriteBypassLiftsWhenTheKeyIsWrittenAgain:
             await saver.l2_put(f"t-{n}", "", b"cp")
 
         assert l2.fail_put.__traceback__ is None, "the stored failure is never raised itself"
+
+
+class TestACacheThatCannotFence:
+    """a cache without the revision protocol is never refilled from a read, and the saver says so once."""
+
+    def test_the_saver_says_so_once_when_it_is_built(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.INFO):
+            ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=_DictL2Cache(), scope=_UNSCOPED)
+
+        said = [r for r in caplog.records if "cannot fence a refill" in r.getMessage()]
+        assert len(said) == 1 and said[0].l2_cache == "_DictL2Cache"
+
+    def test_a_cache_that_can_fence_is_not_mentioned(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.INFO):
+            ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=_RevisionDictL2Cache(), scope=_UNSCOPED)
+
+        assert not [r for r in caplog.records if "cannot fence a refill" in r.getMessage()]

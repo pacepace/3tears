@@ -487,6 +487,12 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         # l2_write_bypass_limit, oldest first.
         self._l2_write_bypassed: OrderedDict[str, None] = OrderedDict()
         self._l2_write_bypass_limit = l2_write_bypass_limit
+        if l2_cache is not None and not isinstance(l2_cache, CheckpointL2RevisionCache):
+            # said once per saver, not per read: such a cache is never refilled from an L3 read
+            log.info(
+                "L2 checkpoint cache cannot fence a refill; a read that misses L1 asks L3 until the next write",
+                extra={"l2_bucket": l2_bucket, "l2_cache": type(l2_cache).__name__},
+            )
 
     # ------------------------------------------------------------------
     # Tenancy helpers
@@ -802,9 +808,6 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 what="L2 checkpoint entry could not be deleted after a failed write; this saver reads it from L3",
             )
             self._bypass_l2_key(key)
-        else:
-            # the key holds nothing now, so nothing older can be read from it
-            self._l2_write_bypassed.pop(key, None)
 
     def _bypass_l2_key(self, key: str) -> None:
         """keep ``key`` off this saver's caches until a put or delete of it lands, within the bound.
@@ -852,6 +855,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             await self._l2.delete(self._l2_bucket, key)
         except Exception as exc:
             raise CheckpointCacheError(f"L2 checkpoint delete failed ({type(exc).__name__})") from exc
+        # the key holds nothing now, so nothing older can be read from it
+        self._l2_write_bypassed.pop(key, None)
 
     async def l2_delete_prefix(self, prefix: str) -> bool:
         """sweep every L2 key under ``prefix``, reporting whether it happened.
