@@ -9,7 +9,9 @@ zero is on it, the declared margin as a quiet band, the interval as a whisker an
 column in one unit on the same scale, so the rows compare as small multiples and the scale's ends are written once
 under the table. *Interval rows* are the same marks as a standalone chart (a dot and its interval per row, the
 value, the interval and the cases written as words under the marks), which the builder no longer draws, since the
-tables carry the intervals; this module draws what it is handed.
+tables carry the intervals; this module draws what it is handed. The *cost/quality chart* places each arm once, its
+cost per reply across and its pass rate up, each with its interval as a whisker, the arm's name beside its dot: a
+picture of where the arms sit, read by eye, with no line drawn between them, since no frontier is tested.
 
 **Legible without colour, a script or a stylesheet of its own.** Every mark's value is written as text, and each
 segment says what it is in words, so colour never carries identity alone. Colours are classes the page's stylesheet
@@ -26,8 +28,14 @@ from __future__ import annotations
 import html
 from collections.abc import Mapping, Sequence
 
-from threetears.evals.analysis.report.model import ChartBlock, IntervalRow, OutcomeBar, interval_text
-from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
+from threetears.evals.analysis.report.model import (
+    ChartBlock,
+    CostQualityPoint,
+    IntervalRow,
+    OutcomeBar,
+    interval_text,
+)
+from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, unit_label, with_unit
 from threetears.evals.analysis.style import GLOSSARY
 
 #: The chart's own coordinate width; the SVG scales to the page's width from it. A line of words that would run past
@@ -128,13 +136,11 @@ def chart_svg(block: ChartBlock, *, chart_id: str) -> str:
     :ptype chart_id: str
     :return: The ``<svg>`` element.
     :rtype: str
-    :raises ValueError: The chart is a cost/quality chart, which no drawing exists for yet: it is refused rather than
-        drawn as an empty interval chart.
     """
     if block.chart == "outcome_bar":
         return outcome_bar_svg(block.title, block.bars, chart_id=chart_id)
     if block.chart == "cost_quality":
-        raise ValueError(f"the cost/quality chart {block.title!r} has no drawing yet, so it is not drawn")
+        return _cost_quality_svg(block.title, block.points, unit=block.unit, chart_id=chart_id)
     return interval_rows_svg(
         block.title, block.rows, unit=block.unit, zero_line=block.zero_line, margin=block.margin, chart_id=chart_id
     )
@@ -449,6 +455,103 @@ def interval_rows_svg(
     return _svg(chart_id, title, desc, height, marks)
 
 
+#: The cost/quality chart's plot, in the chart's coordinates: the room left for the pass rate's ticks and title, the
+#: plot's right edge, its top, and its height. Its scale runs from no cost to the dearest interval's end across, and
+#: from nought to 100% up, so an arm's place reads against the whole range a rate can take.
+_CQ_LEFT = 64
+_CQ_RIGHT = 690
+_CQ_TOP = 30
+_CQ_HEIGHT = 260
+
+#: The pass rates the chart writes a tick and a quiet rule at.
+_CQ_TICKS = (0.0, 50.0, 100.0)
+
+#: How far an arm's name sits from its dot, and the height a name takes when two would overlap.
+_CQ_LABEL_GAP = 7
+_CQ_LABEL_HEIGHT = 15
+
+
+def _cost_quality_svg(title: str, points: Sequence[CostQualityPoint], *, unit: str, chart_id: str) -> str:
+    """The cost/quality chart: one dot per arm at its cost per reply (across) and its pass rate (up), each interval a
+    whisker through it, the arm's name beside it.
+
+    The pass rate's scale is the whole of nought to 100%, and the cost's runs from nought to the dearest interval's
+    end, so no axis is cut to flatter a gap. A name that would sit on another is moved down a line, never dropped;
+    each dot and each whisker carries a ``<title>`` stating the arm's figures, and the ``<desc>`` states every one.
+
+    :param title: What the chart shows.
+    :ptype title: str
+    :param points: One point per arm, in drawn order.
+    :ptype points: Sequence[CostQualityPoint]
+    :param unit: The unit the costs are in.
+    :ptype unit: str
+    :param chart_id: The chart's id on the page.
+    :ptype chart_id: str
+    :return: The ``<svg>`` element.
+    :rtype: str
+    """
+    dearest = max((point.cost_high for point in points), default=0.0)
+    span = dearest * 1.05 or 1.0
+    bottom = _CQ_TOP + _CQ_HEIGHT
+
+    def x_of(cost: float) -> float:
+        return _CQ_LEFT + cost / span * (_CQ_RIGHT - _CQ_LEFT)
+
+    def y_of(rate: float) -> float:
+        return bottom - rate / 100.0 * _CQ_HEIGHT
+
+    marks: list[str] = []
+    for tick in _CQ_TICKS:
+        y = y_of(tick)
+        marks.append(f'<line class="viz-rule" x1="{_CQ_LEFT}" y1="{y:.1f}" x2="{_CQ_RIGHT}" y2="{y:.1f}"></line>')
+        marks.append(_text(_CQ_LEFT - 8, y + 4, number_in(tick, PERCENT), muted=True, anchor="end"))
+    marks.append(f'<line class="viz-zero" x1="{_CQ_LEFT}" y1="{_CQ_TOP}" x2="{_CQ_LEFT}" y2="{bottom}"></line>')
+    placed: list[tuple[float, float, float]] = []
+    for point in points:
+        said = _cost_quality_words(point, unit)
+        x, y = x_of(point.cost), y_of(point.pass_rate)
+        marks.append(
+            f'<line class="viz-whisker" x1="{x_of(point.cost_low):.1f}" y1="{y:.1f}" x2="{x_of(point.cost_high):.1f}" '
+            f'y2="{y:.1f}"><title>{_escape(said)}</title></line>'
+        )
+        marks.append(
+            f'<line class="viz-whisker" x1="{x:.1f}" y1="{y_of(point.pass_rate_low):.1f}" x2="{x:.1f}" '
+            f'y2="{y_of(point.pass_rate_high):.1f}"><title>{_escape(said)}</title></line>'
+        )
+        marks.append(
+            f'<circle class="viz-dot" cx="{x:.1f}" cy="{y:.1f}" r="4.5"><title>{_escape(said)}</title></circle>'
+        )
+        width = len(point.arm) * _CHAR_WIDTH
+        left = x + _CQ_LABEL_GAP if x + _CQ_LABEL_GAP + width <= _WIDTH - 8 else x - _CQ_LABEL_GAP - width
+        top = y - _CQ_LABEL_GAP
+        while any(
+            abs(top - other_top) < _CQ_LABEL_HEIGHT and left < other_right and other_left < left + width
+            for other_left, other_right, other_top in placed
+        ):
+            top += _CQ_LABEL_HEIGHT
+        placed.append((left, left + width, top))
+        marks.append(_text(left, top, point.arm))
+    marks.append(f'<line class="viz-rule" x1="{_CQ_LEFT}" y1="{bottom}" x2="{_CQ_RIGHT}" y2="{bottom}"></line>')
+    marks.append(_text(_CQ_LEFT, bottom + 16, number_in(0.0, unit), muted=True))
+    marks.append(_text(_CQ_RIGHT, bottom + 16, number_in(span, unit), muted=True, anchor="end"))
+    money = f" ({unit_label(unit)})" if unit else ""
+    marks.append(_text((_CQ_LEFT + _CQ_RIGHT) / 2, bottom + 34, f"Cost per reply{money}", muted=True, anchor="middle"))
+    marks.append(_text(8, 14, "Pass rate (%)", muted=True))
+    desc = "; ".join(_cost_quality_words(point, unit) for point in points)
+    return _svg(chart_id, title, desc, bottom + 44, marks)
+
+
+def _cost_quality_words(point: CostQualityPoint, unit: str) -> str:
+    """One arm on the cost/quality chart in words: its cost per reply and its pass rate, each with its interval, as the
+    chart's table spells them."""
+    return (
+        f"{point.arm}: {with_unit(point.cost, unit)} {_interval_words(point.cost_low, point.cost_high, unit)} "
+        "per reply, "
+        f"pass rate {with_unit(point.pass_rate, PERCENT)} "
+        f"{_interval_words(point.pass_rate_low, point.pass_rate_high, PERCENT)}"
+    )
+
+
 def _interval_words(low: float, high: float, unit: str) -> str:
     """An interval as a glyph's title says it, as the row's own interval cell spells it: the unit on each end where
     it sits on the number (``[88.1%, 100%]``, ``[-$0.01, $0.06]``), once after the bracket otherwise
@@ -506,9 +609,10 @@ def _svg(chart_id: str, title: str, desc: str, height: int, marks: Sequence[str]
 def _text(
     x: float, y: float, words: str, *, muted: bool = False, anchor: str = "start", title: str | None = None
 ) -> str:
-    """A text mark, its words escaped, in the page's ink; ``title`` the whole of a label cut to fit."""
+    """A text mark, its words escaped, in the page's ink, anchored at its ``start``, ``middle`` or ``end``; ``title``
+    the whole of a label cut to fit."""
     css = ' class="viz-muted"' if muted else ""
-    end = ' text-anchor="end"' if anchor == "end" else ""
+    end = f' text-anchor="{anchor}"' if anchor != "start" else ""
     whole = f"<title>{_escape(title)}</title>" if title else ""
     return f'<text x="{x:.1f}" y="{y:.1f}"{css}{end}>{whole}{_escape(words)}</text>'
 

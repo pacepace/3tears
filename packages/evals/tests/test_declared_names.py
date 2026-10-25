@@ -221,7 +221,9 @@ def identities(*, named: bool) -> dict[str, str]:
             {name: d.model_dump(mode="json") for name, d in bundle.measure_catalog.items()}
         )
     campaign_bundle = built["campaign_bundle"]
-    found["readings"] = _sha(built["readings"].model_dump(mode="json"))
+    # Every reading as 00107a5b7 read it; the figures across aspects came later, read off these readings and the
+    # bundles pinned above, and the campaign fingerprint below leaves them out.
+    found["readings"] = _sha(built["readings"].model_dump(mode="json", exclude={"aggregate"}))
     found["campaign fingerprint"] = campaign_bundle.fingerprint()
     found["campaign_evidence_digest"] = campaign_evidence_digest(campaign_bundle.to_dict())
     found["writer message"] = hashlib.sha256(build_campaign_user_message(campaign_bundle).encode()).hexdigest()

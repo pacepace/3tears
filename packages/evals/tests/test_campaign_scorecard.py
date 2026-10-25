@@ -230,7 +230,12 @@ async def test_a_choice_shows_an_arm_ahead_on_one_aspect_and_no_separation_on_an
     # The matrix marks the arm ahead in its own cell, and no other.
     matrix = _table(page, "scorecard")
     marks = {row["aspect"].text: {arm: cell.flag for arm, cell in _by_arm(matrix, row).items()} for row in matrix.rows}
-    assert marks == {"tone": {"alpha": "ahead of beta", "beta": None}, "billing": {"alpha": None, "beta": None}}
+    assert marks == {
+        "tone": {"alpha": "ahead of beta", "beta": None},
+        "billing": {"alpha": None, "beta": None},
+        # Two aspects: each arm's pass rate across them closes the matrix, marking nothing.
+        aggregate.EQUAL_WEIGHT_ROW: {"alpha": None, "beta": None},
+    }
     said = _scorecard(page)
     assert CHOICE_NOTE in said
     # The writer's summary and recommendation, then the scorecard; no control-based table.
@@ -375,9 +380,10 @@ async def test_a_measurement_states_its_pass_rate_as_a_count_and_each_rig_apart(
     ("build", "rows", "columns"),
     [
         # A change: aspects × candidates, the control's rate and the cases beside each aspect.
+        # Over two or more aspects, each arm's figure across them closes the matrix.
         (
             s1_change,
-            ["billing", "tone", "refunds"],
+            ["billing", "tone", "refunds", aggregate.EQUAL_WEIGHT_ROW],
             ["Aspect", "Cases", "▸ production (%)", "v2 (pts)", "v3 (pts)", "v4 (pts)"],
         ),
         # A choice: aspects × arms.
@@ -412,14 +418,19 @@ def test_the_scorecard_is_one_matrix_of_aspects_by_the_kind_s_columns_with_its_r
         {"change": "aspects", "choice": "pairs", "measurement": "measures"}[shape.readings.kind]
     ]
     assert page.blocks.index(matrix) < page.blocks.index(folded[0])
-    # None of the scorecard's tables sits on the first screen's scoreboard any more, and no chart is drawn for it.
+    # None of the scorecard's tables sits on the first screen's scoreboard any more, and no chart is drawn for it: the
+    # one chart in the section is the cost/quality chart across arms.
     owned = {"scorecard", "aspects", "pairs", "measures", "to_settle", "bars"}
     assert not [
         block
         for block in page.blocks
         if isinstance(block, TableBlock) and block.name in owned and block.section != "scorecard"
     ]
-    assert not [block for block in page.blocks if isinstance(block, ChartBlock) and block.section == "scorecard"]
+    assert not [
+        block
+        for block in page.blocks
+        if isinstance(block, ChartBlock) and block.section == "scorecard" and block.chart != "cost_quality"
+    ]
 
 
 def test_a_change_s_cell_is_its_change_its_interval_against_the_margin_and_its_reading() -> None:
@@ -453,7 +464,13 @@ def test_a_control_that_cannot_move_is_marked_and_one_that_can_is_not() -> None:
     on billing and tone it can move either way."""
     matrix = _table(s1_change().page(), "scorecard")
     controls = {row["aspect"].text: _by_arm(matrix, row)["production"].text for row in matrix.rows}
-    assert controls == {"billing": "90", "tone": "50", "refunds": "0 (cannot show a drop)"}
+    assert controls == {
+        "billing": "90",
+        "tone": "50",
+        "refunds": "0 (cannot show a drop)",
+        # Its pass rate across the aspects reads no margin, so it is marked neither way.
+        aggregate.EQUAL_WEIGHT_ROW: "46.7",
+    }
 
 
 async def test_a_control_passing_every_trial_cannot_show_a_gain() -> None:
@@ -760,7 +777,7 @@ def test_an_equal_weight_cell_where_no_matrix_holds_arms_is_refused_not_dropped(
 
 
 def test_with_no_equal_weight_cell_the_matrix_has_only_its_aspects() -> None:
-    shape = s1_change()
+    shape = s4_change()
     assert aggregate.equal_weight_cells(shape.campaign, shape.readings, shape.reports) == {}
     assert aggregate.EQUAL_WEIGHT_ROW not in {row["aspect"].text for row in _table(shape.page(), "scorecard").rows}
 

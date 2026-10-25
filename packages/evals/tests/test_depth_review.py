@@ -155,7 +155,7 @@ def test_a_frozen_campaign_bundle_or_frame_of_the_old_shape_is_refused_naming_wh
 
     with pytest.raises(RefusedInput, match="frozen by a build whose readings carried another shape") as refused:
         CampaignBundle.from_dict(frozen)
-    assert "this build's shape (2)" in str(refused.value)
+    assert "this build's shape (3)" in str(refused.value)
     with pytest.raises(RefusedInput, match="frozen by a build whose readings carried another shape"):
         CampaignBundle.from_frame(frame, bundle.aspects)
 

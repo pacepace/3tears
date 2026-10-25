@@ -64,6 +64,30 @@ every row, and moves under Methods where every arm ran each case once. What extr
 in Design & provenance, where a comparison reads a between-case share. The writer's view is unchanged. See
 `packages/evals/MIGRATIONS.toml`.
 
+### evals: a campaign's readings carry each arm's figures across aspects, each aspect weighed alike, and its page draws cost against pass rate
+
+**Added:** `CampaignReadings.aggregate` (`CampaignAggregate`, new, with `ArmAggregate`, `AggregateFigure` and
+`AggregateWeighting`, from `campaign_readings.campaign_aggregate`) holds, for a change or a choice, each arm's pass
+rate and cost per reply across every aspect and, for a change's candidate, its change against the control, each the
+plain mean of the aspects' own figures with a 95% interval that takes the aspects as independent; and the aspects where
+a candidate's cost per reply is below or above the control's (`cheaper_on`, `dearer_on`). The weighting is stated in
+the JSON (`weighting`: `basis` `equal`, each aspect's `weights`, summing to 1, `intervals` `aspects_independent`). A
+figure any aspect lacks, or lacks a standard error for, is withheld (`value` null) and names those aspects
+(`missing`), never a mean over the rest. Descriptive only: nothing in it is tested, and no figure decides a reading, a
+floor or a bar. A measurement has none (`aggregate` null). Over two or more aspects the Scorecard matrix closes with
+an **All aspects (equal weight)** row (a change: the control's pass rate and each candidate's change; a choice: each
+arm's pass rate; a withheld one `— (withheld)`, with a line naming the aspects), and the methods say once how the
+aspects are weighed. Where the campaign compares more than one pair of figures (two or more aspects, or three or more
+arms), the Scorecard draws a **Cost and pass rate** chart (`ChartBlock` `cost_quality`, which `chart_svg` now draws):
+one point per arm, its cost per reply across and its pass rate up, both intervals drawn, no line between them, with a
+visually hidden table of every figure (Markdown prints the table); on one aspect its points are that aspect's own
+figures. An arm whose cost or pass rate is withheld is left off it, with a line naming the aspects. The campaign
+bundle's shape is 3 (`CAMPAIGN_BUNDLE_SHAPE`): a campaign bundle or frame frozen at shape 2 (a reporter case, a stored
+analysis) is read back as shape 3, its aggregate read off its own readings and aspects' bundles, and its fingerprint
+is unchanged, since the fingerprint reads a bundle at shape 2 without the aggregate: a frozen case still generates,
+calibrates and keeps its labels, a re-freeze of the same labels is still its live case, and a stored analysis still
+reproduces. See `packages/evals/MIGRATIONS.toml`.
+
 ### evals: every page's first screen is the decision, and each report-wide caveat is said once
 
 **Changed:** A campaign's page and an aspect's own page open on their title, nothing above it and nothing announced

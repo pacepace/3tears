@@ -207,6 +207,11 @@ decision line below, prefixed `B:`.
 - B: [DECISION: Q7 is deferred: one plan through 08, since the chunks share seams (names, the Scorecard, the provenance and aggregate slots); archive it at the end, when 08 lands | the plan's Q7 recommendation, the Advisory and the after-Wave-B checkpoint said to archive and redraw here; Wave C's to-dos and Status already continue in this file, and splitting now would leave the seams described in two plans. This line overrides those three for now]
 - B: [DECISION: the declared names are durable v16.3 (`DURABLE_SCHEMA_MINOR` 3), in a ledger line of their own, with the rolling-deploy rule "declare no name until every pod runs 16.3" | coordinator 2026-10-24: 0.78.0 shipped 16.2 without the names, and two builds must never claim one minor with different fields. Verified before committing: every identity pin in `test_declared_names` holds (context and variant keys, case-set fingerprint, case content hash, both template digests, cells, aspect and campaign fingerprints, evidence digests, readings, writer message); `schema_minor` is in none of them (`definition_digests` excludes it). Only the `durable version` entry and the durable shape pins move, and a template or campaign naming nothing differs from 00107a5b7's bytes in its minor stamp alone, which the test now checks]
 - B: [DECISION: MIGRATIONS' unreleased section is `since = "v0.78.0"` | coordinator 2026-10-24: never back-dated. Expected reds until the maintainer tags v0.78.0: `test_api_surface::test_the_installed_surface_is_the_snapshot_and_its_record`, `::test_each_section_is_checked_against_its_own_tags`, `::test_the_newest_release_the_tree_follows_has_its_own_section`; `generate_api_snapshot.py` refuses for the same reason, so `surface.json` is regenerated after the tag]
+- C: [DECISION: the cost/quality chart is drawn where a campaign compares more than one pair of figures: two or more aspects, or three or more arms | 06 builder; the plan contradicted itself (principle 4 says 2+ aspects, chunk 06's tests have S2, one aspect and three arms, drawing and S4 not); this rule meets both tests]
+- C: [DECISION: a shape-2 campaign bundle is read as shape 3 (`from_dict`/`from_frame` compute the aggregate from its own readings and aspect bundles), and the fingerprint reads a shape-3 bundle as shape 2 without `readings.aggregate` | binding decision on frozen reporter cases; the aggregate is a pure function of what the fingerprint already covers, so every recorded fingerprint still matches and no identity pin moves]
+- C: [DECISION: S2 "tables kept" means its Pass^k depth and Precision tables; its Depth table, every row alike, is one sentence | 05 builder, rule 2]
+- C: [DECISION: the level paragraph drops "Correcting across arms would lower it, at the price of wider intervals" and "the reading beside it always agrees with it" as recitation | c3 builder; owner may want the first back]
+- C: [DECISION: the "seams are empty today" skeleton test is removed at integration, since 05 and 06 fill all three seams and their own tests pin what fills them | main session]
 
 ## Advisory: what I would do differently
 
@@ -821,7 +826,7 @@ The main session:
 - [x] Chunk 02: split and scaffold
 - [x] Chunk 03: first screen, caveats once, provenance
 - [x] Chunk 04: scorecard and reconciliation
-- [ ] Chunk 05: degenerate collapse
-- [ ] Chunk 06: aggregates and chart
+- [x] Chunk 05: degenerate collapse
+- [x] Chunk 06: aggregates and chart
 - [ ] Chunk 07: writer view
 - [ ] Chunk 08: writer prompt (then the main session re-records)
