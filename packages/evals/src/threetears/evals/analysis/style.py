@@ -186,7 +186,7 @@ GLOSSARY: dict[str, str] = {
     ),
     "failed by check": "A trial that broke a rule code checks, such as a required tool call.",
     "failed by judge": "A trial the judge model scored below the bar on some dimension.",
-    "cost per reply": "What production would spend per reply, from the models the arm runs.",
+    "cost per reply": "What production would spend per reply on the models the arm runs, as its runs were routed.",
     "case floor": (
         "Five independent cases per arm: below it a gap has no interval; from there an interval says whether the "
         "gap would hold on more cases."
