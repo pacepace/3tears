@@ -71,7 +71,10 @@ column and tier of every difference. `tests/enforcement/test_tier_parity.py` run
 collections with a schema; the datasources live parity test runs the second. It caught
 `CapabilitySourceCollection`'s schema drifting from the hub's `datasources` table: `kind`, `access_mode` and
 `visibility` have server defaults and `allowed_schemas` is `NOT NULL DEFAULT '[]'`, none of which the schema
-declared; it now does, so a save that leaves one out reads the stored value back.
+declared; it now does, so a save that leaves one out reads the stored value back. The hub's run of the live gate over its
+own tables caught the same in `threetears.agent.knowledge`: `ConceptCollection` now declares the `concepts`
+defaults on `visibility`, `aliases`, `tags` and `always_inject`, and `PlaybookEntryCollection` those of
+`playbook_entries` on `visibility`, `tags` and `always_inject`.
 
 ### agent-acl: a delegated agent call's namespaces are asked with the call's own credential
 
