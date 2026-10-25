@@ -276,6 +276,45 @@ def test_s1_draws_every_arm_across_its_aspects() -> None:
     assert all(f"<td>{arm}</td>" in html for arm in ("production", "v2", "v3", "v4"))
 
 
+@pytest.mark.parametrize("name", ["s1", "s2"])
+def test_an_arm_is_one_tag_and_one_colour_on_every_chart_of_the_campaign_page(name: str) -> None:
+    """GENERATOR.md §5.2: one colour per arm for the whole page. The cost/quality chart and every aspect's outcome bar
+    on the campaign page tag an arm alike (the control P, the others A, B, C in the campaign's order), so each draws it
+    in one colour; the control, where there is one, ink-gray."""
+    shape = SHAPES[name]()
+    page = shape.page()
+    (chart,) = _charts(page)
+    tags = {point.arm: point.tag for point in chart.points}
+    assert len(set(tags.values())) == len(tags) and None not in tags.values()
+    assert ("P" in tags.values()) == (shape.readings.control is not None)
+    colours = {point["label"]: point["color"] for point in chart.kit_chart()[1]["points"]}  # type: ignore[index]
+    bars = [
+        bar
+        for aspect in page.aspects
+        for block in aspect.report.blocks
+        if isinstance(block, ChartBlock) and block.chart == "outcome_bar"
+        for bar in block.bars
+    ]
+    assert bars, "every aspect's page draws its outcome bar"
+    for bar in bars:
+        assert bar.tag == tags[bar.arm], bar.arm
+        row = next(row for row in _outcome_rows(page) if row["label"] == bar.arm)
+        assert row["color"] == colours[bar.short_name or bar.arm]
+    if shape.readings.control is not None:
+        assert colours[shape.readings.control_label] == "--ink-2"
+
+
+def _outcome_rows(page: CampaignReport) -> list[dict[str, Any]]:
+    """Every drawn row of every aspect's outcome bar on the campaign page."""
+    return [
+        row
+        for aspect in page.aspects
+        for block in aspect.report.blocks
+        if isinstance(block, ChartBlock) and block.chart == "outcome_bar"
+        for row in block.kit_chart()[1]["rows"]  # type: ignore[index,union-attr]
+    ]
+
+
 @pytest.mark.parametrize("build", [s3_measurement, s4_change], ids=["s3", "s4"])
 def test_a_measurement_and_one_candidate_on_one_aspect_draw_no_chart(build: Any) -> None:
     shape = build()

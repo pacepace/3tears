@@ -38,7 +38,15 @@ from itertools import chain
 from typing import Literal, Protocol
 
 from threetears.evals.analysis.agreement import tier_sentence
-from threetears.evals.analysis.arms import arm_names, multi_rig_variants, short_digest, surface_order
+from threetears.evals.analysis.arms import (
+    arm_levels,
+    arm_names,
+    distinguishing_axes,
+    elide_level,
+    multi_rig_variants,
+    short_digest,
+    surface_order,
+)
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     ArmScoreboard,
@@ -137,6 +145,7 @@ from threetears.evals.analysis.report.words import (
     CONFIDENCE_WORDS,
     NO_RECOMMENDATION_WORDS,
     UNTRACED,
+    arm_tags,
     comparison_words,
     evidence_rows,
     guardrail_words,
@@ -145,6 +154,7 @@ from threetears.evals.analysis.report.words import (
     stands_on_words,
 )
 from threetears.evals.analysis.reporting import self_judging_text
+from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
 from threetears.evals.analysis.style import (
     ArmName,
     arm_name,
@@ -530,7 +540,7 @@ def _page(
         ),
         *_floor_warning_blocks(bundle, arm),
         *caveat_blocks([bundle], section="header"),
-        *_scoreboard_blocks(bundle, arm),
+        *_scoreboard_blocks(bundle, arm, _short_names(bundle, names, arm_labels or {})),
         *_decision_blocks(bundle, arm),
         *written,
         *contrasts,
@@ -818,7 +828,59 @@ def _per_reply(bundle: AnalysisContextBundle | None) -> str:
     return per or "per reply"
 
 
-def _scoreboard_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[ReportBlock]:
+def _short_names(
+    bundle: AnalysisContextBundle, names: Mapping[str, ArmName], given: Mapping[str, str]
+) -> dict[str, str]:
+    """Each arm's short name, for a chart's tight places (GENERATOR.md §6.1): the label the campaign gives it; the
+    control's ``control``; else only the levels where it differs from the control, a model trimmed of the prefix it
+    shares with the control's. With no control, or nothing that differs, an arm's short name is its name; two arms
+    whose short names agree are each named in full, so no two read alike."""
+    control = _control_key(bundle)
+    entries = {entry.variant_key: entry for entry in bundle.variant_index}
+    distinguishing = distinguishing_axes(bundle.variant_index)
+    base = {level.axis_id: level for level in arm_levels(entries.get(control) if control else None, distinguishing)}
+    shorts: dict[str, str] = {}
+    for key, name in names.items():
+        if key in given:
+            shorts[key] = given[key]
+        elif key == control:
+            shorts[key] = "control"
+        elif control is None:
+            shorts[key] = name.label
+        else:
+            parts = [
+                _trimmed(level.display, base[level.axis_id].display)
+                if level.axis_id == CANDIDATE_MODEL_LEVER and level.axis_id in base
+                else f"{humanize('dimension', level.axis_id)} {elide_level(level.display)}"
+                for level in arm_levels(entries.get(key), distinguishing)
+                if level.axis_id not in base or base[level.axis_id].content_hash != level.content_hash
+            ]
+            shorts[key] = " · ".join(parts) or name.label
+    taken = list(shorts.values())
+    return {key: short if taken.count(short) == 1 else names[key].label for key, short in shorts.items()}
+
+
+#: What separates the parts of a model's name, where a shared prefix may be cut.
+_MODEL_SEPARATORS = frozenset("-_ .")
+
+
+def _trimmed(model: str, base: str) -> str:
+    """``model`` without the prefix it shares with ``base``, cut at a separator, as GENERATOR.md §6.1 trims a
+    candidate's model against the control's (``Meridian-4.1-flash`` against ``Meridian-4.1`` is ``flash``); the whole
+    model where under four characters are shared or nothing is left."""
+    shared = 0
+    while shared < min(len(model), len(base)) and model[shared] == base[shared]:
+        shared += 1
+    if not (shared == len(base) and shared < len(model) and model[shared] in _MODEL_SEPARATORS):
+        while shared > 0 and model[shared - 1] not in _MODEL_SEPARATORS:
+            shared -= 1
+    rest = model[shared:].lstrip("".join(_MODEL_SEPARATORS))
+    return rest if shared >= 4 and rest else model
+
+
+def _scoreboard_blocks(
+    bundle: AnalysisContextBundle, arm: Callable[[str], str], shorts: Mapping[str, str]
+) -> list[ReportBlock]:
     """The scoreboard table, its outcome bar, then only what changes how the verdict is read, in normal weight.
 
     A fact that changes how the verdict should be read belongs on the first screen, and nothing else does: the case
@@ -835,6 +897,7 @@ def _scoreboard_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str])
             )
         ]
     control = _control_key(bundle)
+    tags = arm_tags([board.variant_key for board in boards], control)
     earlier = bundle.design.earlier_control
     lost_any = any(board.lost for board in boards)
     other_causes = sorted({cause for board in boards for cause in board.failed if cause not in ("check", "judged")})
@@ -894,7 +957,7 @@ def _scoreboard_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str])
             section="scoreboard",
             chart="outcome_bar",
             title="Outcomes",
-            bars=[_outcome_bar(board, arm) for board in boards],
+            bars=[_outcome_bar(board, arm, tags[board.variant_key], shorts.get(board.variant_key)) for board in boards],
         ),
     ]
     blocks += [
@@ -954,8 +1017,9 @@ def _unpriced_cost_line(bundle: AnalysisContextBundle, arm: Callable[[str], str]
     )
 
 
-def _outcome_bar(board: ArmScoreboard, arm: Callable[[str], str]) -> OutcomeBar:
-    """One arm's census as its stacked bar: passed, then each failure cause, then each loss cause."""
+def _outcome_bar(board: ArmScoreboard, arm: Callable[[str], str], tag: str, short: str | None) -> OutcomeBar:
+    """One arm's census as its stacked bar, tagged and short-named as every chart of the page tags and names it:
+    passed, then each failure cause, then each loss cause."""
     segments = [OutcomeSegment(state="passed", label="passed", count=board.passed)] if board.passed else []
     segments += [
         OutcomeSegment(state="failed", label=f"failed: {cause_short(cause)}", count=count)
@@ -965,7 +1029,7 @@ def _outcome_bar(board: ArmScoreboard, arm: Callable[[str], str]) -> OutcomeBar:
         OutcomeSegment(state="lost", label=f"lost: {cause_short(cause)}", count=count)
         for cause, count in sorted(board.lost.items(), key=lambda item: (-item[1], item[0]))
     ]
-    return OutcomeBar(arm=arm(board.variant_key), segments=segments)
+    return OutcomeBar(arm=arm(board.variant_key), segments=segments, tag=tag, short_name=short)
 
 
 def _design_words(bundle: AnalysisContextBundle) -> str:

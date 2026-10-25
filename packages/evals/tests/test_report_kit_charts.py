@@ -19,6 +19,9 @@ marker; where Chromium cannot launch it skips and says why.
 
 from __future__ import annotations
 
+import html
+import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -148,3 +151,235 @@ def test_a_chart_s_table_is_what_a_reader_sees_where_no_chart_is_drawn(tmp_path:
         {"figure": "bars", "seen": True, "drawn": False},
         {"figure": "interval_rows", "seen": True, "drawn": False},
     ]
+
+
+# =============================================================================
+# What the kit refuses, and what a reader sees then
+# =============================================================================
+
+#: Each refusal API.md lists, as a hand-written chart: its id, its kind, its raw ``data-chart`` and the words the
+#: kit's console error gives as the reason. A bar chart's fields fill the rest so each case breaks one thing.
+_BARS_OK = '"domain":[0,4],"fmt":"int","rows":[{"label":"a","value":2}]'
+REFUSALS = [
+    ("unknown-kind", "pie", "{}", "unknown kind; the kit draws bars"),
+    ("inherited-name", "constructor", "{}", "unknown kind; the kit draws bars"),
+    ("table-kind", "table", "{}", "a table is written as an HTML table"),
+    ("bad-json", "bars", '{"rows":', "data-chart is not JSON"),
+    ("not-an-object", "bars", "[1,2]", "data-chart must be a JSON object"),
+    ("missing-field", "bars", '{"fmt":"int","rows":[{"label":"a","value":2}]}', '"domain" is required'),
+    (
+        "css-colour",
+        "bars",
+        '{"domain":[0,4],"fmt":"int","rows":[{"label":"a","value":2,"color":"--s1);background:url(x)"}]}',
+        'color "--s1);background:url(x)" is not a token name',
+    ),
+    ("unknown-fmt", "bars", '{"domain":[0,4],"fmt":"pie","rows":[{"label":"a","value":2}]}', 'fmt "pie" is not one of'),
+    (
+        "inherited-fmt",
+        "bars",
+        '{"domain":[0,4],"fmt":"constructor","rows":[{"label":"a","value":2}]}',
+        'fmt "constructor" is not one of',
+    ),
+    (
+        "level-less-intervals",
+        "bars",
+        '{"domain":[0,4],"fmt":"int","rows":[{"label":"a","value":2,"lo":1,"hi":3}]}',
+        'rows carry intervals, so "level" is required',
+    ),
+    (
+        "level-less-forest",
+        "forest",
+        '{"domain":[-4,4],"fmt":"num","rows":[{"label":"a","value":1,"lo":0,"hi":2}]}',
+        '"level" is required',
+    ),
+    (
+        "unknown-pattern",
+        "bars",
+        '{"domain":[0,4],"fmt":"int","rows":[{"label":"a","segments":[{"value":2,"color":"--bad","pattern":"url(x)"}]}]}',
+        'pattern "url(x)" is not one of',
+    ),
+    (
+        "css-path-width",
+        "scatter_frontier",
+        '{"x_domain":[0,4],"y_domain":[0,4],"x_fmt":"num","y_fmt":"num","points":[{"x":1,"y":1,"id":"a"},'
+        '{"x":2,"y":2,"id":"b"}],"paths":[{"ids":["a","b"],"width":"2;cursor:url(https://x/c.png),auto"}]}',
+        'path width "2;cursor:url(https://x/c.png),auto" is not a finite number',
+    ),
+    (
+        "css-path-opacity",
+        "scatter_frontier",
+        '{"x_domain":[0,4],"y_domain":[0,4],"x_fmt":"num","y_fmt":"num","points":[{"x":1,"y":1,"id":"a"},'
+        '{"x":2,"y":2,"id":"b"}],"paths":[{"ids":["a","b"],"opacity":"1;cursor:url(x)"}]}',
+        'path opacity "1;cursor:url(x)" is not a finite number',
+    ),
+    (
+        "css-legend-opacity",
+        "bars",
+        "{" + _BARS_OK + ',"legend":[{"label":"l","mark":"line","opacity":"1;cursor:url(x)"}]}',
+        'legend opacity "1;cursor:url(x)" is not a finite number',
+    ),
+    (
+        "css-point-size",
+        "scatter_frontier",
+        '{"x_domain":[0,4],"y_domain":[0,4],"x_fmt":"num","y_fmt":"num","points":[{"x":1,"y":1,"size":"5;x:y"}]}',
+        'point size "5;x:y" is not a finite number',
+    ),
+]
+
+#: The page's own figures and its hand-written charts: whether each drew anything, and, for a figure, whether its
+#: table is what a reader sees.
+_REFUSED = """() => ({
+  charts: [...document.querySelectorAll('div.chart.refusal')].map(e => ({id: e.id, drawn: e.children.length > 0})),
+  figures: [...document.querySelectorAll('figure.fig')].map(f => ({
+    seen: f.querySelector('.chart-values').getBoundingClientRect().width > 1,
+    drawn: !!(f.querySelector('div.chart') && f.querySelector('div.chart').children.length)})),
+  styled: [...document.querySelectorAll('[style*="url(x)"], [style*="cursor"]')].length,
+})"""
+
+
+def _with_charts(markup: str, charts: str) -> str:
+    """A package page with hand-written chart elements put in before the kit's script, as a host's page would carry
+    them."""
+    at = markup.rindex("<script>")
+    return markup[:at] + charts + markup[at:]
+
+
+@pytest.mark.integration
+def test_the_kit_refuses_each_bad_chart_draws_nothing_and_says_why(tmp_path: Path) -> None:
+    """Every refusal kit/API.md lists draws nothing for its element and logs ``kit: chart "<kind>" #<id>: <reason>``;
+    nothing the data tried to write into a style reaches one; and a package figure whose data the kit refuses shows
+    its table, which is then what the figure shows."""
+    reason = chromium_unavailable()
+    if reason is not None:
+        pytest.skip(f"headless Chromium cannot launch: {reason}")
+    bars = {"rows": [{"label": "a", "value": 2, "color": "--s1"}], "domain": [0, 4], "fmt": "int"}
+    markup = report_page(
+        [{"kind": "chart", "section": "memo", "finding": 0, "chart": "bars", "title": "B", "data": bars}]
+    )
+    # The package's models refuse a colour that is not a token, so the figure's data is broken in the page itself.
+    broken = markup.replace("&quot;--s1&quot;", "&quot;--s1);background:url(x)&quot;")
+    assert broken != markup
+    charts = "".join(
+        f'<div class="chart refusal" id="{chart_id}" data-kind="{kind}" data-chart="{html.escape(data)}"></div>'
+        for chart_id, kind, data, _ in REFUSALS
+    )
+    page = tmp_path / "refusals.html"
+    page.write_text(_with_charts(broken, charts), encoding="utf-8")
+    seen, errors = rendered(page, _REFUSED)
+    assert seen["charts"] == [{"id": chart_id, "drawn": False} for chart_id, *_ in REFUSALS]
+    for chart_id, kind, _, words in REFUSALS:
+        logged = [error for error in errors if error.startswith(f'kit: chart "{kind}" #{chart_id}: ')]
+        assert len(logged) == 1 and words in logged[0], (chart_id, errors)
+    assert seen["figures"] == [{"seen": True, "drawn": False}], "the refused figure shows its table"
+    assert [error for error in errors if re.match(r'kit: chart "bars" #chart-\d+: color "--s1\);', error)], errors
+    assert len(errors) == len(REFUSALS) + 1, errors
+    assert seen["styled"] == 0
+
+
+@pytest.mark.integration
+def test_a_null_panel_field_inherits_the_chart_s_value_in_the_kit_as_in_the_model(tmp_path: Path) -> None:
+    """The models read ``null`` as unset, so a panel's ``null`` field inherits the chart's; the kit draws it so too:
+    the panel whose ``reference`` is ``null`` draws the chart's floor, and a row whose ``group`` is ``null`` sits
+    under no heading, as one with none."""
+    reason = chromium_unavailable()
+    if reason is not None:
+        pytest.skip(f"headless Chromium cannot launch: {reason}")
+    data: dict[str, Any] = {
+        "domain": [0, 4],
+        "fmt": "int",
+        "reference": {"value": 3, "label": "floor 3", "kind": "floor"},
+        "panels": [
+            {"title": "own", "rows": [{"label": "a", "value": 2}]},
+            {
+                "title": "null",
+                "reference": None,
+                "rows": [{"label": "a", "value": 2, "group": None}, {"label": "b", "value": 1}],
+            },
+        ],
+    }
+    block = ChartBlock(section="memo", finding=0, chart="bars", title="t", data=data)
+    _, rows = block.values_table()
+    assert [row for row in rows if row[1] == "floor 3"] == [["own", "floor 3", "3"], ["null", "floor 3", "3"]]
+    page = tmp_path / "nulls.html"
+    chart = (
+        f'<div class="chart refusal" id="nulls" data-kind="bars" data-chart="{html.escape(json.dumps(data))}"></div>'
+    )
+    page.write_text(_with_charts(report_page([]), chart), encoding="utf-8")
+    probe = """() => [...document.querySelectorAll('#nulls .fig')].map(f => ({
+      floors: f.querySelectorAll('line.floor').length, headings: f.querySelectorAll('text.lbl-strong').length}))"""
+    seen, errors = rendered(page, probe)
+    assert errors == []
+    assert seen == [{"floors": 1, "headings": 0}, {"floors": 1, "headings": 0}]
+
+
+# =============================================================================
+# What the converted charts draw: a readable cost axis, and arms told apart
+# =============================================================================
+
+#: The tick labels of the page's scatter's x axis: those under the plot, which carry the currency sign.
+_COST_TICKS = """() => [...document.querySelectorAll('div.chart[data-kind="scatter_frontier"] text.tick')]
+  .map(t => t.textContent).filter(t => t.startsWith('$'))"""
+
+
+@pytest.mark.integration
+def test_a_cost_axis_at_a_real_reply_cost_draws_distinct_ticks_none_reading_as_zero(tmp_path: Path) -> None:
+    """At $0.00042 and $0.00018 a reply, the drawn cost axis (per 1,000 replies) prints a distinct figure at each
+    tick, none past the origin reading as zero."""
+    reason = chromium_unavailable()
+    if reason is not None:
+        pytest.skip(f"headless Chromium cannot launch: {reason}")
+    points = [
+        {
+            "arm": arm,
+            "tag": tag,
+            "short_name": arm,
+            "cost": cost,
+            "cost_low": cost * 0.9,
+            "cost_high": cost * 1.1,
+            "pass_rate": rate,
+            "pass_rate_low": rate - 5,
+            "pass_rate_high": rate + 5,
+        }
+        for arm, tag, cost, rate in (("control arm", "P", 0.00042, 80.0), ("cheap arm", "A", 0.00018, 70.0))
+    ]
+    block = {"kind": "chart", "section": "memo", "finding": 0, "chart": "cost_quality", "title": "Cost", "unit": "usd"}
+    page = tmp_path / "cost.html"
+    page.write_text(report_page([{**block, "points": points}]), encoding="utf-8")
+    ticks, errors = rendered(page, _COST_TICKS)
+    assert errors == []
+    assert len(ticks) >= 3 and len(set(ticks)) == len(ticks), ticks
+    assert all(re.search(r"[1-9]", tick) for tick in ticks[1:]), ticks
+
+
+#: Each drawn row of the page's bar chart: the label the kit drew and the tag beside it.
+_BAR_LABELS = """() => [...document.querySelectorAll('div.chart[data-kind="bars"] svg g')]
+  .filter(g => g.querySelector('rect[data-tip]'))
+  .map(g => ({label: g.querySelector('text').textContent, tag: (g.querySelector('text.tag') || {}).textContent || null}))"""
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("width", [1200, 390])
+def test_arms_whose_labels_share_a_long_prefix_are_told_apart_on_the_drawn_outcome_bar(
+    tmp_path: Path, width: int
+) -> None:
+    """Three arms named alike up to their reasoning level: at 1200 and at 390 px each drawn row reads apart from the
+    others, by its short name or, where that does not fit, its tag alone; none is cut to a shared prefix."""
+    reason = chromium_unavailable()
+    if reason is not None:
+        pytest.skip(f"headless Chromium cannot launch: {reason}")
+    passed = [{"state": "passed", "label": "passed", "count": 4}]
+    arms = [
+        ("model=claude-haiku-5-5, reasoning=low (control)", "P", "control"),
+        ("model=claude-haiku-5-5, reasoning=high", "A", "reasoning high"),
+        ("model=claude-haiku-5-5, reasoning=medium", "B", "reasoning medium"),
+    ]
+    bars = [{"arm": arm, "tag": tag, "short_name": short, "segments": passed} for arm, tag, short in arms]
+    page = tmp_path / "arms.html"
+    block = {"kind": "chart", "section": "memo", "finding": 0, "chart": "outcome_bar", "title": "Outcomes"}
+    page.write_text(report_page([{**block, "bars": bars}]), encoding="utf-8")
+    drawn, errors = rendered(page, _BAR_LABELS, width=width)
+    assert errors == []
+    assert [row["tag"] for row in drawn] == ["P", "A", "B"]
+    assert len({(row["label"], row["tag"]) for row in drawn}) == 3
+    assert not any("…" in row["label"] for row in drawn), drawn
+    assert all(row["label"] in {"", arm, short} for row, (arm, _, short) in zip(drawn, arms, strict=True)), drawn

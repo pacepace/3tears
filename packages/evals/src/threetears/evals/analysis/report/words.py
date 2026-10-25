@@ -415,6 +415,32 @@ def positions(numbers: list[int]) -> str:
     return ", ".join(f"F{position + 1}" for position in numbers)
 
 
+def arm_tags(variant_keys: Sequence[str], control: str | None) -> dict[str, str]:
+    """Each arm's letter tag (GENERATOR.md §6.1): ``P`` for the control, then ``A``, ``B``, ``C``… for the others in
+    the order given (``AA`` after ``Z``), so every chart of one page tags an arm alike and colours it by its tag.
+
+    :param variant_keys: The arms, in the page's order.
+    :ptype variant_keys: Sequence[str]
+    :param control: The control's variant key; None where there is none.
+    :ptype control: str | None
+    :return: Variant key -> tag, for every arm given.
+    :rtype: dict[str, str]
+    """
+    tags: dict[str, str] = {}
+    place = 0
+    for key in variant_keys:
+        if key == control:
+            tags[key] = "P"
+            continue
+        tag, number = "", place + 1
+        while number:
+            number, letter = divmod(number - 1, 26)
+            tag = chr(ord("A") + letter) + tag
+        tags[key] = tag
+        place += 1
+    return tags
+
+
 def counted(n: int, of: int, what: str) -> str:
     """``n of m <what>``: a count, never a rate."""
     return f"{n} of {of} {what}"
@@ -435,6 +461,7 @@ __all__ = [
     "GUARDRAIL_DECISION_WORDS",
     "LOWER_IS_BETTER",
     "arm_namer",
+    "arm_tags",
     "cell_arm_labels",
     "comparison_words",
     "counted",

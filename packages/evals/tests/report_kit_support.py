@@ -66,16 +66,16 @@ def render_checked(page: Path, shots: Path) -> tuple[subprocess.CompletedProcess
     return checked, runs
 
 
-#: Loads a page in headless Chromium at 1200 px, waits for its script to draw and its fonts to load, runs a probe
+#: Loads a page in headless Chromium at a width (1200 px unless given), waits for its script to draw and its fonts to load, runs a probe
 #: (a JavaScript function's source, from stdin) and prints its result with every console error and page error.
 _PROBE_RUNNER = """
 import json, pathlib, sys
 from playwright.sync_api import sync_playwright
-page_path, probe = pathlib.Path(sys.argv[1]), sys.stdin.read()
+page_path, width, probe = pathlib.Path(sys.argv[1]), int(sys.argv[2]), sys.stdin.read()
 errors = []
 with sync_playwright() as p:
     browser = p.chromium.launch()
-    page = browser.new_page(viewport={"width": 1200, "height": 900})
+    page = browser.new_page(viewport={"width": width, "height": 900})
     page.on("pageerror", lambda e: errors.append(str(e)))
     page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
     page.goto(page_path.resolve().as_uri())
@@ -86,11 +86,11 @@ print(json.dumps({"result": result, "errors": errors}))
 """
 
 
-def rendered(page: Path, probe: str) -> tuple[Any, list[str]]:
-    """``page`` as headless Chromium draws it: what the JavaScript function ``probe`` returns once the page's script
-    has run, and every console error and page error it logged."""
+def rendered(page: Path, probe: str, *, width: int = 1200) -> tuple[Any, list[str]]:
+    """``page`` as headless Chromium draws it at ``width`` px: what the JavaScript function ``probe`` returns once the
+    page's script has run, and every console error and page error it logged."""
     run = subprocess.run(
-        [sys.executable, "-I", "-c", _PROBE_RUNNER, str(page)],
+        [sys.executable, "-I", "-c", _PROBE_RUNNER, str(page), str(width)],
         input=probe,
         capture_output=True,
         text=True,

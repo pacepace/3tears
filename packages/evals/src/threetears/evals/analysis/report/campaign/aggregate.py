@@ -34,6 +34,7 @@ from threetears.evals.analysis.campaign_readings import (
 )
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
 from threetears.evals.analysis.report.campaign.names import AspectNames
+from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report.model import (
     ChartBlock,
     CostQualityPoint,
@@ -120,7 +121,15 @@ def aggregate_blocks(
             if (figure := _row_figure(arm)[0]).value is None
         ]
     if charted:
-        points = [point for arm in aggregate.arms if (point := _point(arm)) is not None]
+        # Tagged in the order the aspects' scoreboards list the arms, so an arm is one tag, and one colour, on this
+        # chart and on every aspect's outcome bar the page lays out.
+        listed = list(
+            dict.fromkeys(board.variant_key for report in reports.values() for board in report.bundle.scoreboard)
+        )
+        rank = {key: index for index, key in enumerate(listed)}
+        order = sorted(aggregate.arms, key=lambda arm: (arm.arm != readings.control, rank.get(arm.arm, len(rank))))
+        tags = arm_tags([arm.arm for arm in order], readings.control)
+        points = [point for arm in aggregate.arms if (point := _point(arm, tags[arm.arm])) is not None]
         if len(points) >= 2:
             blocks.append(
                 ChartBlock(
@@ -175,13 +184,16 @@ def _charted(readings: CampaignReadings, aggregate: CampaignAggregate) -> bool:
     return len(aggregate.arms) >= 2 and (len(readings.aspects) >= 2 or len(aggregate.arms) >= 3)
 
 
-def _point(arm: ArmAggregate) -> CostQualityPoint | None:
-    """An arm's point on the chart; None where its cost or its pass rate is withheld."""
+def _point(arm: ArmAggregate, tag: str) -> CostQualityPoint | None:
+    """An arm's point on the chart, tagged as the page tags it and named by its label, which a campaign gives each
+    arm; None where its cost or its pass rate is withheld."""
     rate, cost = arm.pass_rate, arm.cost
     if rate.value is None or rate.interval is None or cost.value is None or cost.interval is None:
         return None
     return CostQualityPoint(
         arm=arm.arm_label,
+        tag=tag,
+        short_name=arm.arm_label,
         cost=cost.value,
         cost_low=cost.interval[0],
         cost_high=cost.interval[1],

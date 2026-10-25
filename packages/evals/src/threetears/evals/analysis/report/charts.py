@@ -25,7 +25,7 @@ import re
 from collections.abc import Callable, Sequence
 from typing import Annotated, Any, ClassVar, Literal, Self
 
-from pydantic import ConfigDict, Field, JsonValue, model_validator
+from pydantic import ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, signed_with_unit, with_unit
@@ -48,6 +48,10 @@ ChartShape = Literal["circle", "square", "triangle", "diamond"]
 
 #: A status as the kit's pill draws it: an icon and the producer's word, never a colour alone.
 ChartStatus = Literal["good", "warn", "bad", "neutral"]
+
+#: A fill's texture, drawn in its colour over a wash of it, so marks that share a colour (one status, several causes)
+#: read apart by more than colour.
+ChartPattern = Literal["hatch", "cross", "dots", "rows", "cols"]
 
 #: The panel fields that are text: a panel holding only these is drawn as a text card.
 _PANEL_TEXT = frozenset({"title", "subtitle", "tag", "color"})
@@ -127,6 +131,9 @@ class LegendItem(_KitModel):
     )
     hollow: bool | None = Field(default=None, description="Whether the mark is drawn hollow.")
     opacity: float | None = Field(default=None, description="A line mark's opacity.")
+    pattern: ChartPattern | None = Field(
+        default=None, description="A swatch filled with this texture, as a bar segment carrying it is drawn."
+    )
 
 
 class ChartColumn(_KitModel):
@@ -251,6 +258,7 @@ class BarSegment(_KitModel):
 
     value: float = Field(description="The part's size, in value units.")
     color: Token | None = Field(default=None, description="The part's colour token; the row's when none.")
+    pattern: ChartPattern | None = Field(default=None, description="A texture over the part's colour; solid when none.")
 
 
 class BarRow(_KitModel):
@@ -261,6 +269,11 @@ class BarRow(_KitModel):
     segments: list[BarSegment] | None = Field(default=None, description="Stacked parts, from zero.")
     id: str | None = Field(default=None, description="What `emphasis` names.")
     short_label: str | None = Field(default=None, description="Used when `label` does not fit.")
+    tag: str | None = Field(
+        default=None,
+        description="An arm's letter tag, drawn in a square of the row's colour beside the label; alone where neither "
+        "label fits.",
+    )
     lo: float | None = Field(default=None, description="The interval's low end.")
     hi: float | None = Field(default=None, description="The interval's high end.")
     color: Token | None = Field(default=None, description="The bar's colour token.")
@@ -309,7 +322,9 @@ class _BarsFields(_Kind):
 
     def table(self, legend: Sequence[LegendItem]) -> tuple[list[str], list[list[str]]]:
         rows = self.rows or []
-        names = {item.color: item.label for item in legend if item.color is not None}
+        names: dict[tuple[str | None, ChartPattern | None], str] = {
+            (item.color, item.pattern): item.label for item in legend if item.color is not None
+        }
         grouped = any(row.group is not None for row in rows)
         stacked = any(row.segments for row in rows)
         intervals = any(row.lo is not None for row in rows)
@@ -325,7 +340,8 @@ class _BarsFields(_Kind):
         body: list[list[str]] = []
         for row in rows:
             parts = " · ".join(
-                (f"{names[seg.color]} " if seg.color in names else "") + _formatted(self._format, seg.value)
+                (f"{names[seg.color, seg.pattern]} " if (seg.color, seg.pattern) in names else "")
+                + _formatted(self._format, seg.value)
                 for seg in row.segments or []
             )
             body.append(
@@ -648,6 +664,13 @@ class RangeRow(_KitModel):
     shape: ChartShape | None = Field(default=None, description="The end mark's shape.")
     hollow: bool | None = Field(default=None, description="A hollow end mark (over budget).")
     tip: list[str] | None = Field(default=None, description="Tooltip lines, the first bold.")
+
+    @model_serializer(mode="wrap")
+    def _from_as_the_contract_spells_it(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """Write ``from_`` as ``from`` however the row is dumped, so a stored report spells the field as the kit's
+        contract does; a report stored with ``from_`` still loads, by the field's name."""
+        dumped: dict[str, Any] = handler(self)
+        return {("from" if key == "from_" else key): value for key, value in dumped.items()}
 
 
 class RangeGroup(_KitModel):
@@ -1109,6 +1132,7 @@ __all__ = [
     "BarsChart",
     "BarsPanel",
     "ChartColumn",
+    "ChartPattern",
     "ChartShape",
     "ChartStatus",
     "ChartReference",
@@ -1126,7 +1150,6 @@ __all__ = [
     "ExampleMetaStatus",
     "ExampleMetaText",
     "ExamplesChart",
-    "Fmt",
     "ForestChart",
     "ForestRow",
     "GateCell",
@@ -1153,5 +1176,4 @@ __all__ = [
     "ScatterPanel",
     "ScatterPath",
     "ScatterPoint",
-    "Token",
 ]

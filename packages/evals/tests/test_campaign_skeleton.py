@@ -180,7 +180,12 @@ def test_a_cost_quality_chart_is_drawn_one_point_per_arm_with_its_figures_in_wor
     assert kind == "scatter_frontier" and "frontier" not in data, "no frontier is tested, so none is drawn"
     points = data["points"]
     assert isinstance(points, list) and [point["label"] for point in points] == ["alpha", "beta"]  # type: ignore[index]
-    assert points[0]["tip"] == ["alpha", "$0.004 [$0.0036, $0.0044] per reply", "pass rate 85% [80%, 90%]"]  # type: ignore[index]
+    assert points[0]["tip"] == [  # type: ignore[index]
+        "alpha",
+        "$4 per 1,000 replies",
+        "$0.004 [$0.0036, $0.0044] per reply",
+        "pass rate 85% [80%, 90%]",
+    ]
     assert data["y_domain"] == [0, 100] and data["x_domain"][0] == 0, "no axis is cut to flatter a gap"  # type: ignore[index]
 
 

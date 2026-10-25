@@ -32,6 +32,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import (
+    KIT_CHARTS,
     CampaignReport,
     build_campaign_report,
     build_code_only_report,
@@ -66,9 +67,11 @@ _HOSTILE = (
 
 
 def _hostile_kit_charts() -> list[dict[str, Any]]:
-    """A chart of each kind whose every string the kit draws carries markup: titles, labels, notes, tooltips, legend
-    entries, panel titles, column headings, pill words, reasons and an example card's every part."""
+    """A chart of each of the kit's fourteen kinds whose every string the kit draws carries markup: titles, labels,
+    short labels, tags, notes, tooltips, legend entries, panel titles, column headings, pill words (a lattice's built
+    as markup by ``pill()``), reasons, region labels, a confusion matrix's labels and an example card's every part."""
     h = _HOSTILE
+    chart = {"kind": "chart", "section": "memo", "finding": 0, "title": h}
     return [
         {
             "kind": "chart",
@@ -83,10 +86,108 @@ def _hostile_kit_charts() -> list[dict[str, Any]]:
                 "legend": [{"label": h, "color": "--s1"}],
                 "reference": {"value": 5, "label": h, "kind": "floor"},
                 "rows": [
-                    {"label": h, "short_label": h, "value": 4, "lo": 3, "hi": 6, "note": h, "tip": [h, h], "group": h}
+                    {"label": h, "short_label": h, "value": 4, "lo": 3, "hi": 6, "note": h, "tip": [h, h], "group": h},
+                    {
+                        "label": h,
+                        "tag": h,
+                        "segments": [{"value": 2, "color": "--bad", "pattern": "hatch"}],
+                        "tip": [h],
+                    },
                 ],
             },
         },
+        {
+            **chart,
+            "chart": "diverging_bars",
+            "data": {
+                "domain": [-10, 10],
+                "fmt": "+pts",
+                "reference": {"value": 0, "label": h, "kind": "no_preference"},
+                "legend": [{"label": h, "color": "--bad", "mark": "square", "pattern": "dots"}],
+                "rows": [{"label": h, "short_label": h, "value": -4, "note": h, "tip": [h], "group": h}],
+            },
+        },
+        {
+            **chart,
+            "chart": "forest",
+            "data": {
+                "domain": [-10, 10],
+                "fmt": "+pts",
+                "level": h,
+                "reference": {"value": 2, "label": h, "kind": "margin"},
+                "rows": [
+                    {"label": h, "short_label": h, "value": 1, "lo": -2, "hi": 4, "note": h, "tip": [h], "group": h}
+                ],
+            },
+        },
+        {
+            **chart,
+            "chart": "dot_interval",
+            "data": {
+                "domain": [0, 100],
+                "fmt": "pct",
+                "level": h,
+                "reference": {"value": 80, "label": h, "kind": "floor"},
+                "rows": [{"label": h, "value": 85, "lo": 80, "hi": 90, "tip": [h]}, {"label": h, "value": 70}],
+            },
+        },
+        {
+            **chart,
+            "chart": "range_bars",
+            "data": {
+                "domain": [0, 10],
+                "fmt": "s",
+                "reference": {"value": 5, "label": h, "kind": "budget"},
+                "legend": [{"label": h}],
+                "groups": [{"label": h, "short_label": h, "rows": [{"label": h, "from": 1, "to": 3, "tip": [h]}]}],
+            },
+        },
+        {
+            **chart,
+            "chart": "gate_scatter",
+            "data": {
+                "x_domain": [0, 10],
+                "y_domain": [0, 100],
+                "x_fmt": "usd",
+                "y_fmt": "pct",
+                "region_label": h,
+                "reference": {"value": 80, "label": h, "kind": "floor"},
+                "x_reference": {"value": 5, "label": h, "kind": "budget"},
+                "points": [{"x": 2, "y": 90, "label": h, "narrow_label": h, "tip": [h]}],
+            },
+        },
+        {
+            **chart,
+            "chart": "lattice",
+            "data": {
+                "fmt": "pct",
+                "cost_fmt": "usd",
+                "cost_unit": h,
+                "latency_fmt": "s",
+                "bar_domain": [0, 100],
+                "columns": [{"label": h}],
+                "rows": [
+                    {
+                        "label": h,
+                        "color": "--s1",
+                        "cells": [
+                            {"value": 80, "cost": 1, "latency": 2, "status": "bad", "status_label": h, "tip": [h]}
+                        ],
+                    }
+                ],
+            },
+        },
+        {
+            **chart,
+            "chart": "diff_heatmap",
+            "data": {
+                "fmt": "+pts",
+                "detail_fmt": "pct",
+                "columns": [{"label": h}],
+                "rows": [{"label": h, "cells": [{"value": 3, "detail": 80, "tip": [h]}]}],
+            },
+        },
+        {**chart, "chart": "confusion", "data": {"labels": [h, h], "matrix": [[90, 10], [5, 95]]}},
         {
             "kind": "chart",
             "section": "memo",
@@ -430,7 +531,8 @@ def test_a_chart_carries_the_labels_it_is_given_as_escaped_text_in_its_data() ->
     page = report_html(_hostile_report())
     charts = _chart_data(page)
     kinds = [kind for kind, _ in charts]
-    assert kinds == ["bars", "bars", "scatter_frontier", "gate_matrix", "heatmap", "examples", "lines"]
+    assert kinds == ["bars", *(chart["chart"] for chart in _hostile_kit_charts())]
+    assert set(kinds) == set(KIT_CHARTS), "every kind the kit draws"
     for kind, data in charts:
         assert _HOSTILE in _strings(data), f"a {kind} chart's labels survive as words"
     # In the markup the JSON is escaped into its double-quoted attribute: not one raw angle bracket or quote in it.
@@ -478,7 +580,7 @@ def test_once_the_kit_has_drawn_the_charts_no_injected_markup_is_an_element(tmp_
     assert errors == []
     assert seen["scripts"] == 1
     assert seen["injected"] == []
-    assert seen["charts"] == 7 and seen["undrawn"] == []
+    assert seen["charts"] == 1 + len(KIT_CHARTS) and seen["undrawn"] == []
     assert seen["words"] >= 5, "the markup is drawn as words"
     assert seen["tipCount"] > 0 and set(seen["tips"]) <= {"b", "br"}
 

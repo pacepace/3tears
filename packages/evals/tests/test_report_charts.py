@@ -213,3 +213,16 @@ def test_markdown_prints_every_chart_s_values_table() -> None:
     markdown = report_markdown(report)
     assert "**Spend**\n\n| Row | Value |\n" in markdown and "| a | 2 |" in markdown
     assert "| Panel |  | x |" in markdown and "| P | r | 50% (n = 1200) |" in markdown
+
+
+def test_a_range_bar_s_start_is_spelled_from_in_a_stored_report_as_in_the_kit_s_data() -> None:
+    """A stored report spells a range row's start ``from``, as the kit's contract and ``kit_data`` do; one stored as
+    ``from_`` before still loads."""
+    data = {"domain": [0, 4], "fmt": "s", "groups": [{"label": "g", "rows": [{"label": "a", "from": 1, "to": 2}]}]}
+    block = ChartBlock(section="memo", finding=0, chart="range_bars", title="t", data=data)
+    stored = report_of([block]).to_dict()
+    (row,) = next(b for b in stored["blocks"] if b.get("chart") == "range_bars")["data"]["groups"][0]["rows"]
+    assert "from" in row and "from_" not in row
+    assert block.kit_chart() == ("range_bars", data)
+    old = {**data, "groups": [{"label": "g", "rows": [{"label": "a", "from_": 1, "to": 2}]}]}
+    assert RangeBarsChart.model_validate(old) == RangeBarsChart.model_validate(data)

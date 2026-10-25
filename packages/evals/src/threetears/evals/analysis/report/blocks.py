@@ -11,6 +11,7 @@ from there.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal, Self, get_args
@@ -24,6 +25,8 @@ from threetears.evals.analysis.report.charts import (
     BarRow,
     BarSegment,
     BarsChart,
+    ChartPattern,
+    ChartShape,
     KitChart,
     LegendItem,
     ScatterChart,
@@ -630,13 +633,60 @@ ChartKind = Literal[
 #: The report's own chart kinds, which carry their marks in fields of the block rather than as the kit's data.
 _OWN_CHARTS = frozenset({"outcome_bar", "interval_rows", "cost_quality"})
 
-#: Each outcome's colour token on an outcome bar, by state: passed the kit's first series, each failure cause a series
-#: of its own in a fixed order, each loss cause a neutral, so a loss never reads as a series.
-_OUTCOME_TOKENS: dict[TrialState, tuple[str, ...]] = {
-    "passed": ("--s1",),
-    "failed": ("--s2", "--s4", "--s5", "--s3"),
-    "lost": ("--base", "--muted"),
+#: The textures a failure cause or a loss cause takes, in order.
+_PATTERNS: tuple[ChartPattern, ...] = ("hatch", "cross", "dots", "rows", "cols")
+
+#: Each outcome's look on an outcome bar, by state, as ``(colour token, pattern)``, each cause taking the next in its
+#: state's order. Status colours, never a series colour, since series colours name arms (GENERATOR.md §5.2): passed is
+#: the kit's good, solid; every failure cause is the kit's bad, each under a texture of its own, so a failure never
+#: reads as a pass even without colour, and the five failure causes (``FailCause``) are five looks; a loss cause is a
+#: neutral, solid and then textured, so a loss reads as neither. Loss causes past the twelfth repeat a look; the
+#: legend and the tooltip name every cause in words.
+_OUTCOME_STYLES: dict[TrialState, tuple[tuple[str, ChartPattern | None], ...]] = {
+    "passed": (("--good", None),),
+    "failed": tuple(("--bad", pattern) for pattern in _PATTERNS),
+    "lost": (
+        ("--base", None),
+        ("--muted", None),
+        *((token, pattern) for pattern in _PATTERNS for token in ("--base", "--muted")),
+    ),
 }
+
+#: Each candidate's identity colour, by its tag's place after the control (A the first): the kit's series in fixed
+#: order (GENERATOR.md §5.2), repeating past the fifth.
+_SERIES = ("--s1", "--s2", "--s3", "--s4", "--s5")
+
+#: The control's identity colour: the kit's ink-gray.
+_CONTROL_TOKEN = "--ink-2"
+
+#: The control's tag (GENERATOR.md §6.1).
+_CONTROL_TAG = "P"
+
+#: Each candidate's mark on a scatter, by its tag's place, so an arm reads apart without its colour; the control's is
+#: a square.
+_SHAPES: tuple[ChartShape, ...] = ("circle", "triangle", "diamond")
+
+
+def _tag_place(tag: str) -> int:
+    """A candidate's place after the control by its tag: A is 0, Z 25, AA 26."""
+    place = 0
+    for letter in tag:
+        place = place * 26 + (ord(letter) - ord("A") + 1)
+    return place - 1
+
+
+def _arm_token(tag: str | None) -> str | None:
+    """An arm's identity colour by its tag: the control's ink-gray, a candidate's series colour; None untagged."""
+    if tag is None:
+        return None
+    return _CONTROL_TOKEN if tag == _CONTROL_TAG else _SERIES[_tag_place(tag) % len(_SERIES)]
+
+
+def _arm_shape(tag: str | None) -> ChartShape | None:
+    """An arm's scatter mark by its tag: the control's square, a candidate's shape in order; None untagged."""
+    if tag is None:
+        return None
+    return "square" if tag == _CONTROL_TAG else _SHAPES[_tag_place(tag) % len(_SHAPES)]
 
 
 class OutcomeSegment(EvalDocumentModel):
@@ -652,6 +702,22 @@ class OutcomeBar(EvalDocumentModel):
 
     arm: str = Field(min_length=1, description="The arm, as the report names it.")
     segments: list[OutcomeSegment] = Field(description="Passed, then failed, then lost, each cause its own segment.")
+    tag: str | None = Field(
+        default=None,
+        pattern=r"^[A-Z]+$",
+        description=(
+            "The arm's letter tag (GENERATOR.md §6.1): P for the control, then A, B, C… in the page's order; it names "
+            "the arm in tight places and picks its colour. None for a bar stored before arms carried one."
+        ),
+    )
+    short_name: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The arm's short name, drawn where `arm` does not fit: its given label, else what differs from the "
+            "control (GENERATOR.md §6.1). None to cut `arm`."
+        ),
+    )
 
     @property
     def total(self) -> int:
@@ -684,6 +750,19 @@ class CostQualityPoint(EvalDocumentModel):
     """One arm on a cost/quality chart: what a reply costs it, on x, and its pass rate, on y, each with its interval."""
 
     arm: str = Field(min_length=1, description="The arm, as the page names it.")
+    tag: str | None = Field(
+        default=None,
+        pattern=r"^[A-Z]+$",
+        description=(
+            "The arm's letter tag (GENERATOR.md §6.1): P for the control, then A, B, C… in the page's order; it labels "
+            "the point on a phone and picks its colour and mark. None for a point stored before arms carried one."
+        ),
+    )
+    short_name: str | None = Field(
+        default=None,
+        min_length=1,
+        description="The arm's short name, the point's label: its given label, else what differs from the control.",
+    )
     cost: float = Field(ge=0, allow_inf_nan=False, description="What a reply costs the arm, in the chart's `unit`.")
     cost_low: float = Field(allow_inf_nan=False, description="The low end of the cost's interval.")
     cost_high: float = Field(allow_inf_nan=False, description="The high end of the cost's interval.")
@@ -774,9 +853,10 @@ class ChartBlock(_Block):
     def kit_chart(self) -> tuple[str, dict[str, JsonValue]] | None:
         """The chart as the eval report kit draws it: its kind and its ``data-chart`` JSON.
 
-        A kit kind is its data. An outcome bar is ``bars``, each arm's census stacked from zero, a colour per outcome
-        named in the legend. A cost/quality chart is ``scatter_frontier``, each arm at its cost across and its pass
-        rate up, on axes from zero; its intervals are in the chart's table. Interval rows are ``None``: they carry no
+        A kit kind is its data. An outcome bar is ``bars``, each arm's census stacked from zero, a look per outcome
+        named in the legend, each arm's tag in its colour beside its label. A cost/quality chart is
+        ``scatter_frontier``, each arm in its colour and mark at its cost per 1,000 replies across and its pass rate
+        up, on axes from zero; its intervals are in the chart's table. Interval rows are ``None``: they carry no
         interval level, and the kit never draws an interval without one, so they read as their table alone.
 
         :return: ``(kind, data)``, or None for a chart the kit does not draw.
@@ -791,43 +871,60 @@ class ChartBlock(_Block):
         return None
 
     def _outcome_bars(self) -> BarsChart:
-        """An outcome bar as the kit's stacked bars: one row per arm, a segment per outcome, each outcome's colour the
-        same on every arm and named in the legend, the census in each row's tooltip."""
-        colours: dict[str, str] = {}
-        used = dict.fromkeys(_OUTCOME_TOKENS, 0)
+        """An outcome bar as the kit's stacked bars: one row per arm, its tag in its colour beside its label (its short
+        name where the label does not fit), a segment per outcome, each outcome's look (:data:`_OUTCOME_STYLES`) the
+        same on every arm and named in the legend, the whole label and the census in each row's tooltip."""
+        looks: dict[str, tuple[str, ChartPattern | None]] = {}
+        used = dict.fromkeys(_OUTCOME_STYLES, 0)
         for bar in self.bars:
             for segment in bar.segments:
-                if segment.label not in colours:
-                    tokens = _OUTCOME_TOKENS[segment.state]
-                    colours[segment.label] = tokens[used[segment.state] % len(tokens)]
+                if segment.label not in looks:
+                    styles = _OUTCOME_STYLES[segment.state]
+                    looks[segment.label] = styles[used[segment.state] % len(styles)]
                     used[segment.state] += 1
         longest = max(bar.total for bar in self.bars)
         rows = [
             BarRow(
                 label=bar.arm,
-                segments=[BarSegment(value=segment.count, color=colours[segment.label]) for segment in bar.segments],
+                short_label=bar.short_name if bar.short_name != bar.arm else None,
+                tag=bar.tag,
+                color=_arm_token(bar.tag),
+                segments=[
+                    BarSegment(value=segment.count, color=looks[segment.label][0], pattern=looks[segment.label][1])
+                    for segment in bar.segments
+                ],
                 note=f"{bar.total} trials",
                 tip=[bar.arm, f"{bar.total} trials", *(f"{s.label} {s.count}" for s in bar.segments)],
             )
             for bar in self.bars
         ]
-        legend = [LegendItem(label=label, color=colour, mark="square") for label, colour in colours.items()]
+        legend = [
+            LegendItem(label=label, color=colour, mark="square", pattern=pattern)
+            for label, (colour, pattern) in looks.items()
+        ]
         return BarsChart(rows=rows, domain=(0, longest or 1), fmt="int", legend=legend)
 
     def _cost_quality_scatter(self) -> ScatterChart:
-        """A cost/quality chart as the kit's scatter: each arm a labelled point at its cost and pass rate, the cost
-        axis from zero to past the dearest arm, the pass rate's from zero to 100%, so no axis is cut to flatter a
-        gap. No frontier is drawn, since none is tested."""
-        dearest = max(point.cost for point in self.points)
+        """A cost/quality chart as the kit's scatter: each arm a point in its colour and mark at its cost per 1,000
+        replies and its pass rate, labelled by its short name (by its tag on a phone), the legend naming each tag's
+        arm; the cost axis from zero to past the dearest arm, the pass rate's from zero to 100%, so no axis is cut to
+        flatter a gap. Cost is drawn per 1,000 replies, since a reply's own cost is a fraction of a cent an axis
+        cannot print, and the axis carries the digits its ticks need (:func:`_cost_axis_format`). No frontier is
+        drawn, since none is tested."""
+        top = max(point.cost for point in self.points) * _REPLIES_PER_COST_UNIT * 1.15 or 1
         unit = f" ({unit_label(self.unit)})" if self.unit else ""
+        tagged = all(point.tag is not None for point in self.points)
         points = [
             ScatterPoint(
-                x=point.cost,
+                x=point.cost * _REPLIES_PER_COST_UNIT,
                 y=point.pass_rate,
-                label=point.arm,
-                narrow_label=point.arm,
+                label=point.short_name or point.arm,
+                narrow_label=point.tag or point.short_name or point.arm,
+                color=_arm_token(point.tag),
+                shape=_arm_shape(point.tag),
                 tip=[
                     point.arm,
+                    f"{with_unit(point.cost * _REPLIES_PER_COST_UNIT, self.unit)} per 1,000 replies",
                     f"{with_unit(point.cost, self.unit)} "
                     f"[{with_unit(point.cost_low, self.unit)}, {with_unit(point.cost_high, self.unit)}] per reply",
                     f"pass rate {with_unit(point.pass_rate, PERCENT)} "
@@ -836,14 +933,23 @@ class ChartBlock(_Block):
             )
             for point in self.points
         ]
+        legend = (
+            [
+                LegendItem(label=f"{point.tag} · {point.arm}", color=_arm_token(point.tag), mark=_arm_shape(point.tag))
+                for point in self.points
+            ]
+            if tagged
+            else None
+        )
         return ScatterChart(
             points=points,
-            x_domain=(0, dearest * 1.15 or 1),
+            x_domain=(0, top),
             y_domain=(0, 100),
-            x_fmt="usd" if is_money(self.unit) else "num",
+            x_fmt=_cost_axis_format(top, money=is_money(self.unit)),
             y_fmt="pct",
-            x_title=f"Cost per reply{unit}",
+            x_title=f"Cost per 1,000 replies{unit}",
             y_title="Pass rate",
+            legend=legend,
         )
 
     def values_table(self) -> tuple[list[str], list[list[str]]]:
@@ -895,6 +1001,29 @@ class ChartBlock(_Block):
                 cells.append(row.verdict or "—")
             body.append(cells)
         return headers, body
+
+
+#: The replies a cost/quality chart states each cost over: a reply's cost per 1,000 replies, as the scoreboard's
+#: cost ruler states a cost under a cent.
+_REPLIES_PER_COST_UNIT = 1000
+
+
+def _cost_axis_format(top: float, *, money: bool) -> str:
+    """The kit format of a cost axis running from zero to ``top``: as many decimals as a tick a fifth of the way up
+    needs to print a digit of its own, so no two ticks read alike and none reads as zero; money keeps at least the
+    cents and drops them from $100.
+
+    :param top: The axis's top, in the cost's unit, above zero.
+    :ptype top: float
+    :param money: Whether the cost is money (``usd``) rather than a plain number (``num``).
+    :ptype money: bool
+    :return: The format, e.g. ``usd:2`` for an axis to $0.48, ``usd:4`` for one to $0.0048.
+    :rtype: str
+    """
+    digits = max(0, math.ceil(-math.log10(top / 5)))
+    if money:
+        digits = 0 if top >= 100 else max(2, digits)
+    return f"{'usd' if money else 'num'}:{min(digits, 9)}"
 
 
 def interval_value_text(value: float, unit: str = "") -> str:
