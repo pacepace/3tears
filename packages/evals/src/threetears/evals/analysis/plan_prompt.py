@@ -50,9 +50,9 @@ the registry.
 
 from __future__ import annotations
 
-#: The prompt's character ceiling: the analysis writer's, which this prompt replaces. It only falls; making the prompt
-#: shorter is a measured change (an eval of the planner), not a cut by eye.
-PLAN_PROMPT_CHAR_BUDGET = 24_300
+#: The prompt's character ceiling, set just above the prompt as written. It only falls; making the prompt shorter is a
+#: measured change (an eval of the planner), not a cut by eye.
+PLAN_PROMPT_CHAR_BUDGET = 15_500
 
 #: The most rules the prompt carries, not its numbered headings. It only falls.
 PLAN_PROMPT_RULE_BUDGET = 13
