@@ -9,7 +9,6 @@ it restates instead of adding a row per regeneration (#614).
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from typing import Any
 
@@ -30,7 +29,8 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
 )
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.toyhost_memo import PROMPT_ID, FixturedClient, memo_payload
+from packages.evals.tests.toyhost_memo import PROMPT_ID
+from packages.evals.tests.toyhost_plan import PlanWriter
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.factories import make_campaign
 
@@ -152,7 +152,7 @@ class TestARestatedInsightReplacesTheOneItRestates:
 
 
 def _corpus_host() -> tuple[EvalHost, str, str]:
-    host = toyhost_host(clients=lambda role, model, *, temperature=None: FixturedClient(""))
+    host = toyhost_host(clients=lambda role, model, *, temperature=None: PlanWriter())
     campaign, corpus = toyhost_campaign()
     for run in corpus.load_eval_runs(campaign.run_ids, campaign.scope_id):
         host.storage.save_eval_run(run)
@@ -170,9 +170,8 @@ async def _generate_once(host: EvalHost, campaign_id: str, scope_id: str) -> Any
     prepared = await prepare_analysis_generation(
         host, campaign_id, scope_id, model=None, resolve_prompt=_prompt, out_of_run_cap_usd=None
     )
-    payload = memo_payload(prepared.bundle)
-    payload["findings"][0]["durable"] = _CLAIM
-    prepared.client.completion.content = json.dumps(payload)  # type: ignore[attr-defined]
+    # The planner's one durable claim, stated the same way over the same evidence each time.
+    prepared.client.report_input = prepared.report_input  # type: ignore[attr-defined]
     return await run_analysis_generation(host, prepared, prompt_id=PROMPT_ID, max_output_tokens=4000)
 
 

@@ -1,0 +1,181 @@
+"""A report planner's two replies, written by code for any report input a decide-mode plan fits — test support.
+
+A generation is written by the report planner in two calls (``threetears.evals.analysis.planner``): a structure, then
+its prose. A test that drives a generation end to end needs a planner whose replies pass the plan checks for whatever
+campaign it generates over, so :func:`structure_reply` chooses the structure code's own facts permit (the dominant
+option recommended, each open caveat landed once, one scoreboard section, one durable claim), and :func:`prose_reply`
+writes every prose key that structure creates, with no digit outside a figure key. :class:`PlanReplies` answers each
+call of a generation by the contract it was sent.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable
+from typing import Any
+
+from threetears.evals.analysis.plan_assembly import check_structure, prose_slots
+from threetears.evals.analysis.report_decision import dominant_options, surviving_options
+from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_plan_facts import plan_facts
+from threetears.evals.kernel.report_plan import PROSE_SCHEMA_NAME, STRUCTURE_SCHEMA_NAME, PlanStructure
+from packages.evals.tests.toyhost_memo import FixturedClient, FixturedCompletion
+
+__all__ = ["PLAN_CALLS", "PlanWriter", "contract_name", "prose_reply", "replies_for", "structure_reply"]
+
+#: The calls an unrepaired plan takes: its structure and its prose.
+PLAN_CALLS = 2
+
+#: The one section's chart: every arm's trials, from the scoreboard.
+_SCOREBOARD_CHART: dict[str, Any] = {
+    "kind": "bars",
+    "query": {
+        "source": "scoreboard",
+        "aspect": "",
+        "measures": [],
+        "arms": [],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none",
+    },
+    "reference": [],
+    "emphasis": "",
+}
+
+
+def contract_name(response_format: Any) -> str | None:
+    """The name a strict response format was sent under; None for a call sent without one.
+
+    :param response_format: What the call was sent with.
+    :return: Its schema's name.
+    """
+    if not isinstance(response_format, dict):
+        return None
+    schema = response_format.get("json_schema")
+    return str(schema.get("name")) if isinstance(schema, dict) else None
+
+
+def _recommended(report_input: ReportInput) -> str:
+    dominant = dominant_options(report_input)
+    if dominant:
+        return dominant[0]
+    survivors = surviving_options(report_input)
+    return survivors[0] if survivors else report_input.arms[-1].id
+
+
+def _claim_key(report_input: ReportInput, arm: str) -> str:
+    return f"pass_rate.{arm}" if arm in report_input.scoreboard else f"arm:{arm}"
+
+
+def structure_reply(report_input: ReportInput) -> dict[str, Any]:
+    """A decide-mode structure the plan checks accept for ``report_input``.
+
+    :param report_input: The report input the generation planned over.
+    :return: The structure call's reply.
+    :raises AssertionError: Code allows no decide mode for this input, or the checks refuse the structure.
+    """
+    facts = plan_facts(report_input)
+    assert "decide" in facts.allowed_modes, (
+        f"a decide-mode test plan needs decide allowed; code allows {facts.allowed_modes}"
+    )
+    recommended = _recommended(report_input)
+    control = next((arm.id for arm in report_input.arms if arm.role == "control"), None)
+    rows = [{"option": recommended, "role": "recommended"}]
+    rows += [
+        {"option": arm.id, "role": "control" if arm.id == control else "alternative"}
+        for arm in report_input.arms
+        if arm.id != recommended
+    ][:4]
+    open_caveats = [caveat for caveat in facts.caveats if not caveat.checked]
+    landings = [
+        {
+            "caveat": caveat.id,
+            "at": "confidence"
+            if caveat.reach == "report"
+            else ("method.0" if caveat.reach == "method" else "decision.watch"),
+        }
+        for caveat in open_caveats
+    ]
+    structure = {
+        "mode": "decide",
+        "headline_kind": "decision",
+        "confidence": "low",
+        "caveat_landings": landings,
+        "options": {"rows": rows},
+        "summary": [],
+        "sections": [{"id": "outcomes", "chart": _SCOREBOARD_CHART}],
+        "explore": [],
+        "method_items": 3,
+        "durable_claims": [{"confidence": "low", "keys": [_claim_key(report_input, recommended)]}],
+    }
+    check_structure(PlanStructure.model_validate(structure), report_input, facts, facts.allowed_modes)
+    return structure
+
+
+def prose_reply(report_input: ReportInput, structure: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Every prose key ``structure`` creates, each written, figures by key and no digit outside one.
+
+    :param report_input: The report input the generation planned over.
+    :param structure: The structure the prose is for; :func:`structure_reply`'s when None.
+    :return: The prose call's reply.
+    """
+    chosen = PlanStructure.model_validate(structure or structure_reply(report_input))
+    recommended = next(row.option for row in chosen.options.rows if row.role == "recommended")
+    key = _claim_key(report_input, recommended)
+    claim = (
+        f"{{arm:{recommended}}} passed {{{key}|pct}} of its trials."
+        if key.startswith("pass_rate.")
+        else f"{{arm:{recommended}}} was the option recommended."
+    )
+    texts: dict[str, str] = {
+        "headline": f"Choose {{arm:{recommended}}}: it is the option the evidence favours.",
+        "lede": f"{{arm:{recommended}}} is ahead where it counts. More cases would settle it.",
+        "durable_claims.0": claim,
+    }
+    return {
+        "prose": [
+            {"key": slot.key, "text": texts.get(slot.key, "The evidence reads this way, as the chart shows.")}
+            for slot in prose_slots(chosen, plan_facts(report_input))
+        ]
+    }
+
+
+def replies_for(report_input: Callable[[], ReportInput]) -> Callable[[Any], str]:
+    """A reply writer for a generation: the structure or the prose, by the contract a call was sent.
+
+    :param report_input: Reads the report input the generation planned over.
+    :return: What answers a call, given its response format.
+    """
+
+    def reply(response_format: Any) -> str:
+        name = contract_name(response_format)
+        built = report_input()
+        if name == STRUCTURE_SCHEMA_NAME:
+            return json.dumps(structure_reply(built))
+        if name == PROSE_SCHEMA_NAME:
+            return json.dumps(prose_reply(built))
+        raise AssertionError(f"a planner call was sent under {name!r}, which is neither of the planner's contracts")
+
+    return reply
+
+
+class PlanWriter(FixturedClient):
+    """A fixtured planner: each call answered by the contract it was sent, over the report input it is given.
+
+    Set :attr:`report_input` (a prepared generation's) before the generation runs.
+    """
+
+    def __init__(self) -> None:
+        """Start with no report input: the generation's is set once it is prepared."""
+        super().__init__("")
+        self.report_input: ReportInput | None = None
+
+    async def generate(
+        self, *, system: str, user: str, response_format: Any = None, tools: Any = None
+    ) -> FixturedCompletion:
+        """Write the reply the call's contract asks for, then hand it back as the completion."""
+        built = self.report_input
+        assert built is not None, "set the prepared generation's report input before it runs"
+        self.completion.content = replies_for(lambda: built)(response_format)
+        return await super().generate(system=system, user=user, response_format=response_format, tools=tools)

@@ -1,7 +1,8 @@
 """The analysis service — generating, reading and curating a campaign's analyses, insights and reporter cases.
 
 Every operation here is one a client of the packages needs to drive the analysis lens: generate
-a campaign's memo and record how the attempt ended, read analyses and their attempts back,
+a campaign's analysis (the report planner writes it as a report plan, stored beside it) and record how the attempt
+ended, read analyses and their attempts back,
 re-assemble the bundle a generation read, read a stored analysis as its report, read
 the insight ledger, and freeze, bank and calibrate the reporter cases that measure the generator
 itself. They are module functions whose dependencies are parameters, so a host calls them
@@ -45,9 +46,12 @@ from threetears.evals.analysis.campaign_bundle import (
 )
 from threetears.evals.analysis.campaign_readings import campaign_readings
 from threetears.evals.analysis.campaigns import campaign_arms
-from threetears.evals.analysis.generator import GenerationTally, first_request
+from threetears.evals.analysis.generator import GenerationTally
 from threetears.evals.kernel.inner_ceilings import MAX_GENERATION_CALLS
-from threetears.evals.analysis.generator import generate_analysis as _generate_analysis
+from threetears.evals.analysis.planned_analysis import generate_planned_analysis, report_plan_of
+from threetears.evals.analysis.planner import first_plan_request
+from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_input_build import report_input as build_report_input
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporter_bank import case_limits, decidable_reporter_case_bank, read_calibration
 from threetears.evals.analysis.reporter_kind import (
@@ -61,6 +65,9 @@ from threetears.evals.analysis.reporter_kind import (
 )
 from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleInspection
 from threetears.evals.analysis.report import CampaignReport, Verdict, build_campaign_report, build_code_only_report
+from threetears.evals.analysis.report.blocks import DisclosureBlock
+from threetears.evals.analysis.report.campaign.plan_blocks import plan_first_screen_blocks
+from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.model import TrialDetail
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
 from threetears.evals.analysis.report.words import campaign_arm_tags, declared_arm_names
@@ -101,7 +108,13 @@ from pydantic import ValidationError
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
     from threetears.evals.analysis.reporter_bank import ReporterCalibration, ReporterCaseBank
-    from threetears.evals.kernel.campaign import AspectAnalysis, AttemptOutcome, EvalAnalysis, EvalInsight
+    from threetears.evals.kernel.campaign import (
+        AspectAnalysis,
+        AttemptOutcome,
+        EvalAnalysis,
+        EvalInsight,
+        EvalReportPlan,
+    )
     from threetears.evals.kernel.host.profile import HostProfile
     from threetears.evals.schema.models import CalibrationRating, EvalResult, EvalRun, EvalTemplate
     from threetears.evals.kernel.host.eval_host import EvalHost
@@ -160,6 +173,19 @@ class AnalysisStore(CampaignReadStore, JobRecordStore, Protocol):
 
     def delete_analysis(self, analysis_id: str, scope_id: str, /) -> bool:
         """Delete one analysis — a generation withdrawing what it stored for an attempt written lost."""
+        ...
+
+    def save_report_plan(self, plan: EvalReportPlan, /) -> None:
+        """Write the report plan a planned analysis was written as; raises ``StorageError`` rather than returning a
+        flag."""
+        ...
+
+    def load_report_plan(self, plan_id: str, scope_id: str, /) -> EvalReportPlan | None:
+        """Load one report plan by id (``EvalAnalysis.report_plan_id``), or ``None`` when it does not resolve."""
+        ...
+
+    def delete_report_plan(self, plan_id: str, scope_id: str, /) -> bool:
+        """Delete one report plan — a generation withdrawing what it stored."""
         ...
 
     def list_analyses_by_campaign(self, campaign_id: str, scope_id: str, /) -> list[EvalAnalysis]:
@@ -233,6 +259,8 @@ class PreparedGeneration(NamedTuple):
     campaign_id: str
     scope_id: str
     bundle: CampaignBundle
+    #: The report input built from ``bundle``, which the planner reads (:func:`~threetears.evals.analysis.report_input_build.report_input`).
+    report_input: ReportInput
     assembled_at: str
     prompt: str
     #: Built from the host's client factory for the analysis role. The model is read back off it
@@ -375,9 +403,10 @@ class AnalysisGenerationEstimate(EvalBaseModel):
     :ivar generator_model: The model the generation would call, as the host's client resolved it.
     :ivar first_call_ceiling_usd: The most the first call can cost, as the client prices it; ``None`` when it
         cannot say.
-    :ivar max_calls: How many calls a generation can make: the first, and the one repair round-trip a refused
-        output buys. The repair's prompt carries the refused output, so it is priced only when it exists —
-        against what is left of the same cap, before it is sent.
+    :ivar max_calls: How many calls a generation can make: the planner's structure call and its prose call, and the
+        one repair round-trip a refused reply of either buys. Only the first is priced here: the prose call's prompt
+        carries the structure, and a repair's the refused reply, so each is priced only when it exists — against what
+        is left of the same cap, before it is sent.
     :ivar cap_usd: The out-of-run cap the generation is held to; ``None`` when the host enforces none.
     :ivar would_start: Whether the first call would be admitted.
     :ivar refusal: Why it would not, when it would not.
@@ -393,10 +422,12 @@ class AnalysisGenerationEstimate(EvalBaseModel):
 
 
 class _Assembled(NamedTuple):
-    """What a generation reads, checked and built: the bundle, the prompt, the client and its first call."""
+    """What a generation reads, checked and built: the bundle and its report input, the prompt, the client and its first
+    call."""
 
     campaign: EvalCampaign
     bundle: CampaignBundle
+    report_input: ReportInput
     assembled_at: str
     prompt: str
     client: BoundCompletionClient
@@ -411,14 +442,15 @@ async def _assemble(
     model: str | None,
     resolve_prompt: Callable[[], Awaitable[str]],
 ) -> _Assembled:
-    """Load the campaign, assemble its campaign bundle off the event loop, refuse an empty one, resolve the prompt,
-    build the client.
+    """Load the campaign, assemble its campaign bundle and its report input off the event loop, refuse an empty one,
+    resolve the prompt, build the planner's first request and the client.
 
-    Every aspect is assembled, and one memo is generated over all of them; a campaign of one aspect is the same call.
+    Every aspect is assembled, and one plan is generated over all of them; a campaign of one aspect is the same call.
 
     :raises NotFoundError: No campaign with that id.
     :raises ValidationFailedError: The bundle has no resolvable runs, the preset does not exist, or the writer
         model is not one the host allows (``HostProfile.analysis_writer_models``).
+    :raises ValidationFailedError: The report input's planner view is over its budget once every trim is made.
     :raises ValueError: The host supplies no completion clients.
     """
     clients = host.completion_clients("an analysis generation")
@@ -464,7 +496,15 @@ async def _assemble(
     if model is not None and (ineligible := host.profile.analysis_writer_refusal(model)) is not None:
         raise ValidationFailedError(ineligible, remedy=WRITER_REMEDY)
     prompt = await resolve_prompt()
-    system, user, contract = first_request(bundle, prompt, host.profile)
+    # The report input is read off the bundle's typed objects, every reading and contrast of it: arithmetic over the
+    # whole bundle, so it runs where the assembly did, never on the loop.
+    report = await run_blocking(executor, build_report_input, bundle)
+    try:
+        system, user, contract = await run_blocking(executor, first_plan_request, report, prompt, host.profile)
+    except RefusedInput as refused:
+        # Over the planner's budget once every trim is made: nothing is sent, and a caller is told why as it is told
+        # every other refusal a generation meets before it spends.
+        raise ValidationFailedError(refused.fault, remedy=refused.remedy) from refused
 
     # The effective model is read back off the built client (its bound ``model_name``) for the
     # pre-spend disclosure log and stored provenance, rather than re-implementing the host's
@@ -476,6 +516,7 @@ async def _assemble(
     return _Assembled(
         campaign=campaign,
         bundle=bundle,
+        report_input=report,
         assembled_at=assembled_at,
         prompt=prompt,
         client=client,
@@ -635,6 +676,7 @@ async def prepare_analysis_generation(
         campaign_id=campaign_id,
         scope_id=scope_id,
         bundle=assembled.bundle,
+        report_input=assembled.report_input,
         assembled_at=assembled.assembled_at,
         prompt=assembled.prompt,
         client=assembled.client,
@@ -788,7 +830,13 @@ async def run_analysis_generation(
     deadline: AbstractAsyncContextManager[Any] | None = None,
     leases: JobLeases | None = None,
 ) -> tuple[EvalAnalysis, list[EvalInsight]]:
-    """Make the paid generator call(s) for a prepared generation, then store and record the result.
+    """Make the paid planner calls for a prepared generation, then store and record the result.
+
+    **The report planner writes the analysis.** The planner reads the generation's report input and writes the
+    campaign's report plan in two calls, a structure and its prose, each repaired at most once
+    (:func:`~threetears.evals.analysis.planned_analysis.generate_planned_analysis`). What is stored is a planned
+    analysis (no memo; ``report_plan_id`` names its plan), its plan (:class:`~threetears.evals.kernel.campaign.EvalReportPlan`)
+    and an insight per durable claim the plan states. The memo writer writes no new analysis.
 
     **Every attempt is recorded.** Once the generator is called, the attempt is stored as an
     :class:`~threetears.evals.kernel.campaign.EvalAnalysisAttempt` however it ends — stored,
@@ -824,16 +872,16 @@ async def run_analysis_generation(
         generation stores and records nothing more (:meth:`~threetears.evals.kernel.JobLeases.let_go`), even
         when the store would still take the write. ``None`` for a generation no process holds a lease for.
     :ptype leases: JobLeases | None
-    :return: The stored analysis and the insights it minted.
+    :return: The stored analysis and the insights it minted; its plan is read with :func:`get_report_plan`.
     :rtype: tuple[EvalAnalysis, list[EvalInsight]]
-    :raises ValidationFailedError: The generator's output failed the generation contract, or the repair
-        round-trip it bought was refused by the generation's budget before it was sent.
+    :raises ValidationFailedError: The planner's output failed the generation contract, or a call after the first (the
+        prose call, or a repair round-trip) was refused by the generation's budget before it was sent.
     :raises JobFenced: The generation's attempt was written lost by another process, or this process let go of its
         lease, before its analysis was stored; nothing was stored.
     :raises EvalJobTimeout: ``deadline`` ran out while the generator was being called; the attempt reads ``timed_out``.
-    :raises StorageError: The analysis or one of its insights could not be stored. An insight that fails
+    :raises StorageError: The analysis, its plan or one of its insights could not be stored. An insight that fails
         leaves the attempt recorded ``stored`` all the same — the analysis is — so a background
-        generation's poll reports the memo stored while its insight ledger is incomplete; the
+        generation's poll reports the analysis stored while its insight ledger is incomplete; the
         background task catches that failure and logs it, and nothing else reports it.
     :raises ProviderRefusedError: The generator call raised and the host describer withheld its payload
         (a provider status error in its chain, or no describer able to say otherwise). The attempt is recorded
@@ -867,7 +915,7 @@ async def run_analysis_generation(
         scope_id,
         resolved_model,
         len(bundle.run_ids),
-        _approx_input_tokens(*first_request(bundle, prompt, host.profile)),
+        _approx_input_tokens(*first_plan_request(prepared.report_input, prompt, host.profile)),
         APPROX_INPUT_TOKENS_BASIS,
         max_output_tokens,
     )
@@ -924,8 +972,9 @@ async def run_analysis_generation(
         # lifetime; `async with` releases it on the raising path too, which
         # is a path this call reaches often enough to have its own handler.
         async with client, deadline if deadline is not None else contextlib.nullcontext():
-            analysis, insights = await _generate_analysis(
+            analysis, plan, insights = await generate_planned_analysis(
                 bundle,
+                prepared.report_input,
                 prompt=prompt,
                 model=resolved_model,
                 client=calls,
@@ -940,7 +989,7 @@ async def run_analysis_generation(
         await record("timed_out", error=timed_out_detail(timed_out))
         raise
     except GenerationError as e:
-        # Both calls' output refused is `refused`; every other generation-contract failure (a
+        # A call's reply refused twice is `refused`; every other generation-contract failure (a
         # call cut short, a precondition refused before any call) is `failed`.
         # A generation-contract violation is caller-restatable (retry, or edit
         # the prompt), not a server fault — surface it as a 422, like the
@@ -954,7 +1003,7 @@ async def run_analysis_generation(
         # A caller's budget or disconnect, or a shutdown cancelling a background generation.
         # Recorded synchronously, before the cancellation propagates, because this is the
         # ending no exception message ever carries to a caller.
-        repairing = ", so the repair round-trip was running" if tally.calls > 1 else ""
+        repairing = ", so a call after the first was running" if tally.calls > 1 else ""
         await record(
             "cancelled",
             error=(
@@ -964,16 +1013,19 @@ async def run_analysis_generation(
         )
         raise
     except ValidationFailedError as e:
-        # The budget refused a call before it was sent — only the repair round-trip can reach this, since
-        # the first call was admitted when the generation was prepared. Nothing was sent for it, so the
-        # tally counts only what was; what the first call cost is on the record.
+        # The budget refused a call before it was sent — only a call after the first can reach this (the prose
+        # call, or a repair round-trip), since the first was admitted when the generation was prepared. Nothing was
+        # sent for it, so the tally counts only what was; what the earlier calls cost is on the record.
         unrepaired = ValidationFailedError(
-            f"analysis generation failed: its output was refused and the one repair round-trip was refused before "
-            f"it was sent ({e}); ${format_number(tally.token_cost)} was billed on the first call and nothing was stored",
-            remedy="start the generation again, under a cap with room for its repair round-trip",
+            f"analysis generation failed: call {tally.calls + 1} of the plan was refused before it was sent ({e}); "
+            f"${format_number(tally.token_cost)} was billed on the {tally.calls} call(s) before it and nothing was "
+            "stored",
+            remedy="start the generation again, under a cap with room for every call a plan can make",
         )
         await record(
-            "failed", error=f"the repair round-trip was refused before it was sent: {e}", refused_by=unrepaired
+            "failed",
+            error=f"call {tally.calls + 1} of the plan was refused before it was sent: {e}",
+            refused_by=unrepaired,
         )
         raise unrepaired from e
     # prawduct:ok-broad-except — eval names no provider exception type; the host describer classifies what the call raised
@@ -1022,12 +1074,24 @@ async def run_analysis_generation(
     # The ending stays last because a poll reading ``completed`` must find the ledger already written.
     await _offloaded(executor, _still_held, storage, prepared, leases)
     try:
-        cancelled = await _offloaded(executor, storage.save_analysis, analysis)
+        # The plan first: an analysis is never stored naming a plan that is not. A plan whose analysis then fails to
+        # store is withdrawn below, so neither is left alone.
+        cancelled = await _offloaded(executor, storage.save_report_plan, plan)
+        cancelled = await _offloaded(executor, storage.save_analysis, analysis) or cancelled
     except StorageError as e:
         unstored = StorageError(
-            f"failed to persist generated analysis '{analysis.id}' for campaign '{campaign_id}' "
+            f"failed to persist generated analysis '{analysis.id}' and its plan for campaign '{campaign_id}' "
             f"(the generation cost ${format_number(analysis.generation.token_cost)} was already incurred)"
         )
+        try:
+            await _offloaded(executor, storage.delete_report_plan, plan.id, scope_id)
+        except StorageError:
+            # NOSILENT: logged for the operator; the failure to store is what the caller is told, below, and a plan
+            # left behind names an analysis that does not resolve and is swept with the derived documents
+            log.exception(
+                "eval.generate_analysis plan %s of an analysis that failed to store could not be withdrawn",
+                plan.id,
+            )
         await record("failed", error=f"the generated analysis could not be stored: {e}", refused_by=unstored)
         raise unstored from e
     # A restated claim replaces the live insight that states it rather than adding a row beside it, so
@@ -1090,7 +1154,8 @@ async def run_analysis_generation(
             )
             raise JobFenced(
                 f"{lost}, and withdrawing what it stored failed part-way ({type(unwithdrawn).__name__}: "
-                f"{unwithdrawn}): analysis '{analysis.id}' may still be stored — delete it, and put back or delete "
+                f"{unwithdrawn}): analysis '{analysis.id}' may still be stored, with its plan '{plan.id}' — delete both, and "
+                f"put back or delete "
                 f"insights {[insight.id for insight in stored_insights]} by hand"
             ) from unwithdrawn
         raise JobFenced(f"{lost}; analysis '{analysis.id}' and its insights were withdrawn")
@@ -1098,9 +1163,10 @@ async def run_analysis_generation(
         raise unfinished
 
     log.info(
-        "eval.generate_analysis stored campaign=%s analysis=%s insights=%d cost=$%.4f model=%s",
+        "eval.generate_analysis stored campaign=%s analysis=%s plan=%s insights=%d cost=$%.4f model=%s",
         campaign_id,
         analysis.id,
+        plan.id,
         len(insights),
         analysis.generation.token_cost,
         analysis.generation.generator_model,
@@ -1226,7 +1292,8 @@ def _withdraw_generation(
     """Undo what a generation stored when its attempt turned out lost before its ending was recorded.
 
     Each insight it wrote is put back as the ledger held it (a restatement written over a live insight) or
-    deleted (a new one); then the analysis is deleted, so the lost attempt is left with nothing it did not record.
+    deleted (a new one); then the analysis is deleted, and its plan, so the lost attempt is left with nothing it did
+    not record.
     Blocking. A withdrawal that fails part-way raises what the store raised; the caller raises the fence that made
     it necessary, saying the withdrawal failed and what is left to remove by hand, rather than that it happened.
 
@@ -1248,6 +1315,8 @@ def _withdraw_generation(
         else:
             storage.delete_insight(insight.id, scope_id)
     storage.delete_analysis(analysis.id, scope_id)
+    if analysis.report_plan_id is not None:
+        storage.delete_report_plan(analysis.report_plan_id, scope_id)
     log.warning(
         "eval.generate_analysis analysis %s withdrawn: its attempt was written lost before its ending was recorded "
         "(%d insight(s) put back or deleted)",
@@ -1502,13 +1571,17 @@ def _campaign_page(
     *,
     assembled_at: str,
     analysis: EvalAnalysis | None = None,
+    plan: EvalReportPlan | None = None,
     fingerprints: Mapping[str, str] | None = None,
     trials: TrialDetail = "table",
 ) -> CampaignReport:
-    """Lay a campaign bundle out as the campaign's page: code's readings, the memo where there is one, the call.
+    """Lay a campaign bundle out as the campaign's page: code's readings, the memo or the plan where there is one, the
+    call.
 
     Each aspect's fold is that aspect's code-only page over its bundle, its arms named by the campaign's labels; the
-    memo, when there is one, is laid out once, on the campaign's page, never again inside a fold.
+    memo, when there is one, is laid out once, on the campaign's page, never again inside a fold. A planned analysis is
+    laid out as the code-only page with the plan's first screen in its answer section
+    (:func:`~threetears.evals.analysis.report.campaign.plan_blocks.plan_first_screen_blocks`).
 
     :param campaign: The campaign, declaring what the bundle was assembled against.
     :ptype campaign: EvalCampaign
@@ -1516,8 +1589,10 @@ def _campaign_page(
     :ptype bundle: CampaignBundle
     :param assembled_at: When the bundle was assembled (ISO-8601), which dates each aspect's page.
     :ptype assembled_at: str
-    :param analysis: The stored analysis whose memo the page lays out; None for a code-only page.
+    :param analysis: The stored analysis whose memo or plan the page lays out; None for a code-only page.
     :ptype analysis: EvalAnalysis | None
+    :param plan: The plan a planned ``analysis`` was written as; None for a memo or a code-only page.
+    :ptype plan: EvalReportPlan | None
     :param fingerprints: Each aspect's bundle fingerprint in the current version, by label, where it was just checked
         against the bundle; an aspect not named is hashed.
     :ptype fingerprints: Mapping[str, str] | None
@@ -1556,7 +1631,45 @@ def _campaign_page(
         resolutions=analysis.resolutions if analysis is not None else (),
         trial_ids=bundle.trial_ids(),
     )
-    return page if analysis is None else page.model_copy(update={"analysis_id": analysis.id})
+    if analysis is None:
+        return page
+    if plan is None:
+        return page.model_copy(update={"analysis_id": analysis.id})
+    return _planned_page(page, bundle, plan, analysis_id=analysis.id)
+
+
+def _planned_page(
+    page: CampaignReport, bundle: CampaignBundle, plan: EvalReportPlan, *, analysis_id: str
+) -> CampaignReport:
+    """The code-only page with the plan's first screen where a memo's summary and recommendation sit.
+
+    The line saying no recommendation was written is the code-only page's; the plan replaces it.
+
+    :raises RefusedInput: A figure key in the plan's first screen no longer resolves against the report input built
+        from the frozen bundle.
+    """
+    try:
+        planned = plan_first_screen_blocks(report_plan_of(plan), build_report_input(bundle))
+    except UnresolvableReference as unresolved:
+        raise RefusedInput(
+            f"analysis {analysis_id}'s plan names a figure its frozen evidence no longer holds: {unresolved}",
+            remedy="generate the analysis again (analysis_generate), which plans over the campaign's evidence as it stands",
+        ) from unresolved
+    blocks = list(page.blocks)
+    unwritten = [
+        index
+        for index, block in enumerate(blocks)
+        if isinstance(block, DisclosureBlock) and block.section == "answer" and block.source == "memo"
+    ]
+    at = (
+        unwritten[0]
+        if unwritten
+        else next((index for index, block in enumerate(blocks) if block.section != "answer"), len(blocks))
+    )
+    blocks[at : at + (1 if unwritten else 0)] = planned
+    return CampaignReport.model_validate(
+        {**dict(page), "basis": "analysis", "analysis_id": analysis_id, "blocks": blocks}
+    )
 
 
 def _as_analysed(analysis: EvalAnalysis, campaign: EvalCampaign | None) -> EvalCampaign:
@@ -1589,8 +1702,11 @@ def _as_analysed(analysis: EvalAnalysis, campaign: EvalCampaign | None) -> EvalC
     )
 
 
-def _analysis_page(analysis: EvalAnalysis, campaign: EvalCampaign | None, *, trials: TrialDetail) -> CampaignReport:
-    """A stored analysis laid out as its campaign's page, over everything frozen with it."""
+def _analysis_page(
+    analysis: EvalAnalysis, campaign: EvalCampaign | None, *, trials: TrialDetail, plan: EvalReportPlan | None = None
+) -> CampaignReport:
+    """A stored analysis laid out as its campaign's page, over everything frozen with it, and its plan's first screen
+    for a planned one."""
     bundle = analysis_campaign_bundle(analysis)
     # Putting the bundle back together refused it unless each aspect's entry in the frame is that aspect's bundle
     # fingerprint in the entry's version, so an entry in the current version is the one each fold's source names.
@@ -1605,9 +1721,34 @@ def _analysis_page(analysis: EvalAnalysis, campaign: EvalCampaign | None, *, tri
         bundle,
         assembled_at=analysis.generation.bundle_assembled_at,
         analysis=analysis,
+        plan=plan,
         fingerprints=fingerprints,
         trials=trials,
     )
+
+
+def get_report_plan(storage: AnalysisStore, analysis: EvalAnalysis) -> EvalReportPlan | None:
+    """The report plan a stored analysis was written as; None for one the memo writer wrote.
+
+    :param storage: Where the plan is read.
+    :ptype storage: AnalysisStore
+    :param analysis: The analysis.
+    :ptype analysis: EvalAnalysis
+    :return: The plan, or None for a memo.
+    :rtype: EvalReportPlan | None
+    :raises NotFoundError: The analysis is planned and its plan does not resolve (deleted outside the analysis's
+        delete).
+    """
+    if analysis.report_plan_id is None:
+        return None
+    plan = storage.load_report_plan(analysis.report_plan_id, analysis.scope_id)
+    if plan is None:
+        raise NotFoundError(
+            "report plan",
+            analysis.report_plan_id,
+            remedy="generate the analysis again (analysis_generate); its plan was deleted apart from it",
+        )
+    return plan
 
 
 def analysis_report(
@@ -1636,7 +1777,12 @@ def analysis_report(
     :raises RefusedInput: The analysis was written over a bundle of another shape.
     """
     analysis = get_analysis(storage, analysis_id, scope_id)
-    return _analysis_page(analysis, storage.load_campaign(analysis.campaign_id, scope_id), trials=trials)
+    return _analysis_page(
+        analysis,
+        storage.load_campaign(analysis.campaign_id, scope_id),
+        trials=trials,
+        plan=get_report_plan(storage, analysis),
+    )
 
 
 def campaign_report(
@@ -1675,7 +1821,7 @@ def campaign_report(
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
     reported = host.storage.load_reported_analysis(campaign_id, scope_id)
     if reported is not None:
-        return _analysis_page(reported, campaign, trials=trials)
+        return _analysis_page(reported, campaign, trials=trials, plan=get_report_plan(host.storage, reported))
     return _code_only_page(host, campaign, trials=trials)
 
 
@@ -2278,6 +2424,14 @@ def freeze_reporter_case(
                 f"analysis {analysis.id!r} belongs to campaign {analysis.campaign_id!r}, not {campaign_id!r} — "
                 "its memo would be judged against another campaign's evidence",
                 remedy=f"pass an analysis of campaign {campaign_id!r} ({FIND_ANALYSIS})",
+            )
+        if analysis.document is None:
+            # A reporter case replays and judges a recorded memo; a planned analysis has a plan, which the reporter
+            # eval does not yet read.
+            raise ValidationFailedError(
+                f"analysis {analysis.id!r} was written by the report planner and holds no memo, and a reporter case "
+                "pins a recorded memo in this build",
+                remedy=f"pass an analysis the memo writer wrote ({FIND_ANALYSIS}), or freeze the case with no analysis",
             )
         memo = render_memo_as_written(analysis)
         _refuse_an_excerpt_not_in_the_memo(parsed, memo)

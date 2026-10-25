@@ -44,7 +44,6 @@ from threetears.evals.analysis.reporter_kind import (
     ReporterKind,
     reporter_case_of,
 )
-from threetears.evals.kernel.inner_ceilings import MAX_GENERATION_CALLS
 from threetears.evals.analysis.service import freeze_reporter_case
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
@@ -642,7 +641,7 @@ async def price_largest_reporter_call(
     return CallCeiling(
         usd=usd,
         call=(
-            f"the generator call on case {case_id!r} (the first request of up to {MAX_GENERATION_CALLS}: the memo, "
+            f"the generator call on case {case_id!r} (the first of the memo writer's two requests: the memo, "
             f"then one repair if its output is refused) on {admitted.candidate_model!r}"
         ),
         lowered_by=(

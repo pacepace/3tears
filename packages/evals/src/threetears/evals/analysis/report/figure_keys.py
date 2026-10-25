@@ -1067,6 +1067,69 @@ def resolve(key: str, report_input: ReportInput) -> Figure:
     return reading.family.resolve(report_input, reading.values, key)
 
 
+@dataclass(frozen=True)
+class KeySubjects:
+    """What one key is about: the arms and aspects its path names, and whether it reads an arm against the control.
+
+    ``arms`` are the ids the path's arm or candidate slots matched (or the arm of ``{arm:<id>}``); ``aspects`` the
+    aspect ids it named, or the asked aspect for a family that reads it without naming it (``reading``, ``aspect``,
+    ``cases``, ``flip_margin``). ``against_control`` is True for a figure that is a difference from the control (a
+    reading, a contrast, a cost uplift, a flip margin, a stratum's loss share), whose evidence is the control's too.
+    """
+
+    arms: tuple[str, ...]
+    aspects: tuple[str, ...]
+    against_control: bool
+
+
+#: The slots an arm id fills.
+_ARM_SLOTS = frozenset({"<arm>", "<candidate>"})
+
+#: The families that read the asked aspect without naming it.
+_ASKED_FAMILIES = frozenset({"aspect", "reading", "cases", "flip_margin"})
+
+#: The words that make a figure a difference from the control.
+_AGAINST_CONTROL = frozenset({"reading", "contrast", "cost.uplift", "cost.uplift_range", "flip_margin", "loss_share"})
+
+
+def key_subjects(key: str, report_input: ReportInput) -> KeySubjects:
+    """The arms and aspects one key's path names, read off its one reading of the input.
+
+    What a durable claim rests on is read from its keys: the runs behind each arm the key names on each aspect it
+    names (:func:`~threetears.evals.analysis.planned_analysis.planned_insights`).
+
+    :param key: The path, without braces or filters.
+    :ptype key: str
+    :param report_input: The report input the plan was written against.
+    :ptype report_input: ReportInput
+    :return: What the key is about.
+    :rtype: KeySubjects
+    :raises UnresolvableReference: The path does not resolve (:func:`resolve`).
+    """
+    resolve(key, report_input)
+    if key.startswith(_ARM_PREFIX):
+        return KeySubjects(arms=(key.removeprefix(_ARM_PREFIX),), aspects=(), against_control=False)
+    (reading,), _ = _readings(key, report_input)
+    arms: list[str] = []
+    aspects: list[str] = []
+    words: list[str] = []
+    values = iter(reading.values)
+    for slot in reading.family.slots:
+        if isinstance(slot, _Word):
+            words.append(slot.text)
+            continue
+        value = next(values)
+        if isinstance(slot, _Ids) and slot.name in _ARM_SLOTS:
+            arms.append(value)
+        elif isinstance(slot, _Ids) and slot.name == "<aspect>":
+            aspects.append(value)
+    if not aspects and words[0] in _ASKED_FAMILIES and (asked := _asked(report_input)) is not None:
+        aspects.append(asked.id)
+    return KeySubjects(
+        arms=tuple(arms), aspects=tuple(aspects), against_control=any(word in _AGAINST_CONTROL for word in words)
+    )
+
+
 def _beginnings() -> list[str]:
     return list(dict.fromkeys(_slot_name(family.slots[0]) for family in _FAMILIES))
 
@@ -1422,9 +1485,11 @@ def figure_key_grammar() -> str:
 __all__ = [
     "Figure",
     "FigureKey",
+    "KeySubjects",
     "figure_key_grammar",
     "flip_margin",
     "format_figure",
+    "key_subjects",
     "keys_in",
     "literal_numbers",
     "parse_key",

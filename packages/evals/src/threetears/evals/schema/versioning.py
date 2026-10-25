@@ -382,6 +382,13 @@ MINOR_ADDITIVITY_SENTENCE: Final[str] = (
 #:   campaign's page opens on after code's warnings. A v12 analysis has no summary to read, so it is refused on read,
 #:   never given an empty one, and the operator step is v12's: ``EvalStorage.drop_derived(scopes)``, then generate
 #:   again. Insights and judge profiles are refused with it, as every regenerable bump refuses them.
+#:
+#:   Within v13, the report planner writes every new analysis, with no bump, because nothing stored changes: a planned
+#:   analysis holds no memo (``EvalAnalysis.document`` None) and names its plan (``EvalAnalysis.report_plan_id``, None
+#:   on every memo), a new regenerable type stored beside it (``eval_report_plan``, swept by ``drop_derived``). Every
+#:   v13 memo stored before it reads and renders as it did. A bump here would refuse them, so none is taken; a build
+#:   from before the planner refuses a planned analysis on read (a field it does not know), which is the regenerable
+#:   rule's own answer, and never misreads it.
 REGENERABLE_SCHEMA_VERSION: int = 13
 """The version every regenerable document but the cassette is written under, and the only one a read of one accepts.
 

@@ -126,6 +126,10 @@ class CurationStore(Protocol):
         """Destroy one analysis, reporting whether it was there."""
         ...
 
+    def delete_report_plan(self, plan_id: str, scope_id: str, /) -> bool:
+        """Destroy one report plan, reporting whether it was there."""
+        ...
+
     def load_campaign(self, campaign_id: str, scope_id: str, /) -> EvalCampaign | None:
         """Load one campaign within a scope, or ``None`` — what an archive reads before it writes."""
         ...
@@ -737,7 +741,7 @@ def delete_result(
 
 
 def delete_analysis(storage: CurationStore, analysis: EvalAnalysis, *, confirm: str | None = None) -> dict[str, Any]:
-    """Delete a stored analysis, leaving the insights it minted in place.
+    """Delete a stored analysis, and the report plan it was written as, leaving the insights it minted in place.
 
     Insights are the durable ledger — they outlive the analysis that observed
     them and are referenced by later work — so cascading here would destroy
@@ -772,6 +776,15 @@ def delete_analysis(storage: CurationStore, analysis: EvalAnalysis, *, confirm: 
     require_delete_confirmation("analysis", analysis_id, confirm)
     if not storage.delete_analysis(analysis_id, analysis.scope_id):
         raise StorageError(f"failed to delete analysis '{analysis_id}'")
+    # The plan is the analysis's own words, not a conclusion that outlives it the way an insight does.
+    if analysis.report_plan_id is not None and not storage.delete_report_plan(
+        analysis.report_plan_id, analysis.scope_id
+    ):
+        log.warning(
+            "eval.delete_analysis analysis=%s: its report plan %s was already gone",
+            analysis_id,
+            analysis.report_plan_id,
+        )
     log.warning("eval.delete_analysis analysis=%s campaign=%s", analysis_id, analysis.campaign_id)
     return {"analysis_id": analysis_id, "campaign_id": analysis.campaign_id}
 
