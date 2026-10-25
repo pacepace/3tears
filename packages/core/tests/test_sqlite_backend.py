@@ -12,15 +12,23 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Float,
     Integer,
     LargeBinary,
     MetaData,
+    Numeric,
     String,
     Table,
 )
 from sqlalchemy.dialects.postgresql import BYTEA, JSONB, UUID
 
 from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.collections.schema_backed import (
+    NUMERIC_TYPE,
+    STRING_TYPE,
+    TableSchema,
+)
+from threetears.core.collections.schema_backed import Column as SchemaColumn
 
 
 def _make_metadata() -> MetaData:
@@ -525,5 +533,67 @@ class TestAdditiveInitialize:
             b.upsert("multi_b", {"id": "b", "name": "beta"})
             assert b.select_by_id("multi_a", "a") is not None
             assert b.select_by_id("multi_b", "b") is not None
+        finally:
+            b.reset()
+
+
+class TestNumericReadsBackAsDecimal:
+    """an exact NUMERIC column reads back from L1 as the Decimal L3 answers, at the column's scale.
+
+    The defect: the L1 stored NUMERIC as REAL and answered a float, so money read through L1 was a
+    float, and ``Decimal * float`` raised wherever it was priced.
+    """
+
+    def _backend(self) -> SQLiteBackend:
+        metadata = MetaData()
+        TableSchema(
+            name="rates",
+            primary_key="id",
+            columns=[
+                SchemaColumn("id", STRING_TYPE),
+                SchemaColumn("price", NUMERIC_TYPE, precision=12, scale=4, nullable=True),
+            ],
+        ).to_sqlalchemy_table(metadata)
+        Table(
+            "loose",
+            metadata,
+            Column("id", String(255), primary_key=True),
+            Column("amount", Numeric()),
+            Column("ratio", Float()),
+        )
+        b = SQLiteBackend(db_name=f"test_numeric_{uuid.uuid4().hex[:8]}")
+        b.initialize(metadata)
+        return b
+
+    def test_a_numeric_column_reads_back_as_its_decimal_at_scale(self) -> None:
+        b = self._backend()
+        try:
+            b.upsert("rates", {"id": "a", "price": Decimal("1.5")})
+            b.upsert("rates", {"id": "b", "price": 2.125})
+            b.upsert("rates", {"id": "c", "price": Decimal("12345678.12345")})
+            a = b.select_by_id("rates", "a")
+            assert a is not None
+            assert isinstance(a["price"], Decimal)
+            assert str(a["price"]) == "1.5000"
+            assert a["price"] * Decimal(3) == Decimal("4.5000")
+            row_b = b.select_by_id("rates", "b")
+            assert row_b is not None and str(row_b["price"]) == "2.1250"
+            # Postgres rounds half away from zero to the column's scale
+            row_c = b.select_by_id("rates", "c")
+            assert row_c is not None and str(row_c["price"]) == "12345678.1235"
+            assert b.column_types("rates")["price"] == "TEXT_DECIMAL_4"
+        finally:
+            b.reset()
+
+    def test_a_numeric_column_with_no_scale_keeps_every_digit(self) -> None:
+        b = self._backend()
+        try:
+            b.upsert("loose", {"id": "a", "amount": Decimal("123456789012345678901.000000001"), "ratio": 0.25})
+            row = b.select_by_id("loose", "a")
+            assert row is not None
+            assert row["amount"] == Decimal("123456789012345678901.000000001")
+            assert isinstance(row["amount"], Decimal)
+            # a float column stays a float: Postgres stores it as one, and asyncpg answers one
+            assert row["ratio"] == 0.25 and isinstance(row["ratio"], float)
         finally:
             b.reset()

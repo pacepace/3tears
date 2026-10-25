@@ -3,7 +3,13 @@
 Uses a named in-memory database (memdb VFS) so multiple connections can access
 the same data. The anchor connection keeps the database alive. Schema is derived
 from SQLAlchemy metadata, with type-aware serialization/deserialization for
-UUID, datetime, JSON, boolean, vector, and bytea columns.
+UUID, datetime, JSON, boolean, vector, bytea and exact NUMERIC columns.
+
+An exact ``NUMERIC`` column is kept as the text of its ``Decimal`` at the column's scale and read
+back as that ``Decimal``, the type and value L3 answers (``TEXT_DECIMAL_<scale>``, or
+``TEXT_DECIMAL`` with no declared scale). SQLite's own ``NUMERIC`` and ``REAL`` are binary floats:
+money read back from them is a ``float``, and ``Decimal * float`` raises. Being text, such a column
+compares as text in SQL run against L1 directly; every read through the backend is typed.
 """
 
 from __future__ import annotations
@@ -19,7 +25,7 @@ from decimal import Decimal
 from types import MappingProxyType
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, LargeBinary, Numeric, String, Text
+from sqlalchemy import Boolean, DateTime, Float, Integer, LargeBinary, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, TSVECTOR, UUID
 from sqlalchemy.sql.sqltypes import ARRAY
 from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
@@ -28,6 +34,8 @@ from threetears.core.backends.schema_sql import PGVECTOR_TYPES, json_default
 from threetears.core.cache.base import (
     build_select_clause,
     bulk_columns,
+    decimal_scale_of,
+    stored_decimal,
 )
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import contain, get_logger
@@ -53,6 +61,23 @@ except ImportError:  # NOSILENT: the uuid-utils extra is optional; its values ne
 
 
 log = get_logger(__name__)
+
+#: the type code of an exact ``NUMERIC`` column, before its ``_<scale>`` suffix
+_DECIMAL_CODE = "TEXT_DECIMAL"
+
+
+def _decimal_code_scale(col_type: str) -> tuple[bool, int | None]:
+    """whether ``col_type`` is an exact ``NUMERIC`` column's code, and the scale it carries.
+
+    :param col_type: a type code (:meth:`SQLiteBackend.column_types`)
+    :ptype col_type: str
+    :return: ``(True, scale)`` for a ``TEXT_DECIMAL`` code (``scale`` ``None`` when it carries
+        none), ``(False, None)`` otherwise
+    :rtype: tuple[bool, int | None]
+    """
+    is_decimal = col_type == _DECIMAL_CODE or col_type.startswith(f"{_DECIMAL_CODE}_")
+    suffix = col_type[len(_DECIMAL_CODE) + 1 :] if is_decimal else ""
+    return is_decimal, (int(suffix) if suffix else None)
 
 
 class _PooledConnection:
@@ -493,11 +518,18 @@ class SQLiteBackend:
         return [dict(row) for row in rows]
 
     def serialize_value(self, value: Any, col_type: str) -> Any:
-        """Serialize a Python value for SQLite storage based on column type."""
+        """Serialize a Python value for SQLite storage based on column type.
+
+        An exact ``NUMERIC`` column stores the text of the value as L3 stores it, at the column's
+        scale (:func:`~threetears.core.cache.base.stored_decimal`).
+        """
         if value is None:
             return None
 
         result: Any = value
+        is_decimal, scale = _decimal_code_scale(col_type)
+        if is_decimal and not isinstance(value, bool):
+            return str(stored_decimal(value, scale))
 
         # JSON values encode with the platform default L2 uses, so a UUID, datetime or
         # Decimal nested in one caches as its string, as the other tiers store it. a bare
@@ -528,7 +560,10 @@ class SQLiteBackend:
             return None
 
         result: Any = value
-        if col_type == "TEXT_UUID":
+        is_decimal, scale = _decimal_code_scale(col_type)
+        if is_decimal:
+            result = stored_decimal(value, scale)
+        elif col_type == "TEXT_UUID":
             result = uuid.UUID(value) if value else None
         elif col_type in ("TEXT_JSON", "TEXT_ARRAY", "TEXT_VECTOR"):
             if value and isinstance(value, str):
@@ -616,7 +651,10 @@ class SQLiteBackend:
             return "TEXT_JSON"
         if isinstance(sa_type, Boolean):
             return "INTEGER_BOOL"
-        if isinstance(sa_type, (Float, Numeric)):
+        is_decimal, scale = decimal_scale_of(sa_type)
+        if is_decimal:
+            return _DECIMAL_CODE if scale is None else f"{_DECIMAL_CODE}_{scale}"
+        if isinstance(sa_type, Float):
             return "REAL"
         if isinstance(sa_type, Integer):
             return "INTEGER"

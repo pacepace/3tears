@@ -12,15 +12,22 @@ collections in this module:
   gu-task-08) to hold database datasources, API imports, and MCP
   imports discriminated by ``kind``. flat PK ``id`` with a
   ``find_by_id`` helper that uses the v054 ``UNIQUE (id)`` constraint.
-- :class:`DataSourceTableCollection` -- ``BaseCollection`` for the
+- :class:`DataSourceTableCollection` -- ``DeclaredTableCollection`` for the
   ``datasource_tables`` row set.
-- :class:`DataSourceColumnCollection` -- ``BaseCollection`` for
+- :class:`DataSourceColumnCollection` -- ``DeclaredTableCollection`` for
   ``datasource_columns``. natural-key upsert on
   ``(datasource_id, schema_name, table_name, column_name)``.
-- :class:`DataSourceRelationCollection` -- ``BaseCollection`` for
+- :class:`DataSourceSchemaDigestCollection` -- ``DeclaredTableCollection``
+  for ``datasource_schema_digests``, keyed by ``datasource_id``.
+- :class:`DataSourceRelationCollection` -- ``DeclaredTableCollection`` for
   ``datasource_relations``.
-- :class:`TableTemplateCollection` -- ``BaseCollection`` for
+- :class:`TableTemplateCollection` -- ``DeclaredTableCollection`` for
   ``table_templates``. PK ``id`` (hub v007).
+
+the collections that write their own SQL each declare their table as a
+``TableSchema``, as the hub's migrations leave it, so a host that gives its
+registry an L1 gets each one's L1 table generated and created for it
+(:class:`~threetears.core.collections.declared_table.DeclaredTableCollection`).
 
 the hand-written upserts (tables, relations, templates) are built from one
 :class:`_UpsertShape` each, and write only the columns a row carries: a column
@@ -40,10 +47,12 @@ from uuid import UUID
 
 from threetears.core.collections import WRITE_GENERATION, DeleteCascade
 from threetears.core.backends import L3Backend, parse_rowcount
-from threetears.core.collections.base import BaseCollection
+from threetears.core.collections.declared_table import DeclaredTableCollection
 from threetears.core.collections.schema_backed import (
+    BIGINT_TYPE,
     BOOL_TYPE,
     DATETIMETZ_TYPE,
+    INT_TYPE,
     JSONB_TYPE,
     STRING_TYPE,
     UUID_TYPE,
@@ -427,6 +436,106 @@ _TEMPLATE_SHAPE = _UpsertShape(
 )
 
 
+#: ``datasource_tables`` as hub v001, v006, v010 and v033 leave it
+_DATASOURCE_TABLES_SCHEMA = TableSchema(
+    name="datasource_tables",
+    primary_key="id",
+    columns=[
+        Column("id", UUID_TYPE),
+        Column("datasource_id", UUID_TYPE),
+        Column("schema_name", STRING_TYPE),
+        Column("table_name", STRING_TYPE),
+        Column("description", STRING_TYPE, nullable=True),
+        Column("row_count_approx", BIGINT_TYPE, nullable=True),
+        Column("caveats", STRING_TYPE, nullable=True),
+        Column("template_id", UUID_TYPE, nullable=True),
+        Column("caveats_replaces_definition", BOOL_TYPE, server_default="false"),
+        Column("date_introspected", DATETIMETZ_TYPE, nullable=True),
+        Column("date_described", DATETIMETZ_TYPE, nullable=True),
+        Column("date_created", DATETIMETZ_TYPE),
+        Column("date_updated", DATETIMETZ_TYPE),
+        Column("column_hash", STRING_TYPE, nullable=True),
+        Column("coverage_dimension", STRING_TYPE, nullable=True),
+    ],
+    write_generation=WRITE_GENERATION,
+)
+
+#: ``datasource_columns`` as hub v001 and v006 leave it
+_DATASOURCE_COLUMNS_SCHEMA = TableSchema(
+    name="datasource_columns",
+    primary_key="id",
+    columns=[
+        Column("id", UUID_TYPE),
+        Column("datasource_id", UUID_TYPE),
+        Column("schema_name", STRING_TYPE),
+        Column("table_name", STRING_TYPE),
+        Column("column_name", STRING_TYPE),
+        Column("data_type", STRING_TYPE, nullable=True),
+        Column("is_nullable", BOOL_TYPE, nullable=True),
+        Column("ordinal_position", INT_TYPE, nullable=True),
+        Column("description", STRING_TYPE, nullable=True),
+        Column("valid_range", STRING_TYPE, nullable=True),
+        Column("caveats", STRING_TYPE, nullable=True),
+        Column("tags", JSONB_TYPE, nullable=True, server_default="'[]'::jsonb"),
+        Column("caveats_replaces_definition", BOOL_TYPE, server_default="false"),
+        Column("date_introspected", DATETIMETZ_TYPE, nullable=True),
+        Column("date_described", DATETIMETZ_TYPE, nullable=True),
+        Column("date_created", DATETIMETZ_TYPE),
+        Column("date_updated", DATETIMETZ_TYPE),
+    ],
+)
+
+#: ``datasource_schema_digests`` as hub v029 leaves it: keyed by ``datasource_id``, no ``id`` column
+_DATASOURCE_SCHEMA_DIGESTS_SCHEMA = TableSchema(
+    name="datasource_schema_digests",
+    primary_key="datasource_id",
+    columns=[
+        Column("datasource_id", UUID_TYPE),
+        Column("customer_id", UUID_TYPE, nullable=True),
+        Column("tables", JSONB_TYPE, server_default="'[]'::jsonb"),
+        Column("source_fingerprint", STRING_TYPE, nullable=True),
+        Column("date_created", DATETIMETZ_TYPE),
+        Column("date_updated", DATETIMETZ_TYPE),
+    ],
+)
+
+#: ``datasource_relations`` as hub v001, v055 and v056 leave it
+_DATASOURCE_RELATIONS_SCHEMA = TableSchema(
+    name="datasource_relations",
+    primary_key="id",
+    columns=[
+        Column("id", UUID_TYPE),
+        Column("customer_id", UUID_TYPE, nullable=True),
+        Column("name", STRING_TYPE),
+        Column("description", STRING_TYPE, nullable=True),
+        Column("datasource_ids", JSONB_TYPE, server_default="'[]'::jsonb"),
+        Column("join_paths", JSONB_TYPE, server_default="'[]'::jsonb"),
+        Column("edges", JSONB_TYPE, server_default="'[]'::jsonb"),
+        Column("aggregation_notes", STRING_TYPE, nullable=True),
+        Column("caveats", STRING_TYPE, nullable=True),
+        Column("date_created", DATETIMETZ_TYPE),
+        Column("date_updated", DATETIMETZ_TYPE),
+    ],
+)
+
+#: ``table_templates`` as hub v006 and v007 leave it
+_TABLE_TEMPLATES_SCHEMA = TableSchema(
+    name="table_templates",
+    primary_key="id",
+    columns=[
+        Column("id", UUID_TYPE),
+        Column("customer_id", UUID_TYPE, nullable=True),
+        Column("name", STRING_TYPE),
+        Column("description", STRING_TYPE, nullable=True),
+        Column("caveats", STRING_TYPE, nullable=True),
+        Column("visibility", STRING_TYPE, server_default="'private'"),
+        Column("origin_template_id", UUID_TYPE, nullable=True),
+        Column("date_created", DATETIMETZ_TYPE),
+        Column("date_updated", DATETIMETZ_TYPE),
+    ],
+)
+
+
 class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity]):
     """three-tier collection for capability-source entities.
 
@@ -749,25 +858,18 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
         return origin
 
 
-class DataSourceTableCollection(BaseCollection[DataSourceTableEntity]):
+class DataSourceTableCollection(DeclaredTableCollection[DataSourceTableEntity]):
     """three-tier collection for data source table entities.
 
     provides CRUD operations with L1 -> L2 -> L3 caching.
     data source tables are hard-deleted (no soft-delete pattern).
     """
 
+    schema: ClassVar[TableSchema] = _DATASOURCE_TABLES_SCHEMA
+
     #: switched on (epoch-task-06): its writes advance the table's write generation, so a cache
     #: derived from it (a visibility scan) is evicted when a broadcast is missed, not timed out
     write_generation = WRITE_GENERATION
-
-    @property
-    def table_name(self) -> str:
-        """return database table name.
-
-        :return: table name string
-        :rtype: str
-        """
-        return "datasource_tables"
 
     @property
     def entity_class(self) -> type[DataSourceTableEntity]:
@@ -922,7 +1024,7 @@ class DataSourceTableCollection(BaseCollection[DataSourceTableEntity]):
         return result
 
 
-class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
+class DataSourceColumnCollection(DeclaredTableCollection[DataSourceColumnEntity]):
     """three-tier collection for data source column entities.
 
     provides CRUD operations with L1 -> L2 -> L3 caching.
@@ -930,14 +1032,7 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
     tags is stored as JSONB array in L3.
     """
 
-    @property
-    def table_name(self) -> str:
-        """return database table name.
-
-        :return: table name string
-        :rtype: str
-        """
-        return "datasource_columns"
+    schema: ClassVar[TableSchema] = _DATASOURCE_COLUMNS_SCHEMA
 
     @property
     def entity_class(self) -> type[DataSourceColumnEntity]:
@@ -1000,18 +1095,25 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
 
         uses ON CONFLICT on (datasource_id, schema_name, table_name, column_name)
         natural key for upsert, allowing re-introspection to update existing columns.
+        the statement returns the id of the row it wrote. two introspections racing
+        on one new column each send a fresh id; the second lands on the row the first
+        stored, under the first's id. that row is evicted from every tier, and the
+        second's own id, which holds no row, is cached nowhere
+        (:meth:`~threetears.core.collections.declared_table.DeclaredTableCollection.settle_stored_key`).
 
         :param data: entity field data to persist
         :ptype data: dict[str, Any]
         :param original_timestamp: original date_updated for concurrency check
         :ptype original_timestamp: datetime | None
+        :param conn: the caller's connection the write joins, or ``None`` for the pool
+        :ptype conn: Any
         :return: number of rows affected
         :rtype: int
         """
         if self.l3_pool is None:
             return 0
 
-        result = await self.l3_pool.execute(
+        stored_id = await (conn if conn is not None else self.l3_pool).fetchval(
             """
             INSERT INTO datasource_columns (
                 id, datasource_id, schema_name, table_name, column_name,
@@ -1037,6 +1139,7 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
                 date_introspected = EXCLUDED.date_introspected,
                 date_described = EXCLUDED.date_described,
                 date_updated = EXCLUDED.date_updated
+            RETURNING id
             """,
             data.get("id"),
             data.get("datasource_id"),
@@ -1059,7 +1162,9 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
             data.get("date_created"),
             data.get("date_updated"),
         )
-        return parse_rowcount(result)
+        # a column already stored under another id is the row this upsert updated
+        await self.settle_stored_key(data.get("id"), stored_id, conn=conn)
+        return 0 if stored_id is None else 1
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """hard-delete data source column from L3.
@@ -1123,7 +1228,7 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
 
 
 class DataSourceSchemaDigestCollection(
-    BaseCollection[DataSourceSchemaDigestEntity],
+    DeclaredTableCollection[DataSourceSchemaDigestEntity],
 ):
     """three-tier collection for the materialized documented-schema digest.
 
@@ -1139,23 +1244,9 @@ class DataSourceSchemaDigestCollection(
     hard-deleted (no soft-delete) — a datasource removal drops its digest.
     """
 
-    # the L1/L2 key is the SEPARATE ``primary_key_column`` attribute, NOT
-    # the entity's ``primary_key_field``; it defaults to ``"id"`` on
-    # BaseCollection. this table has NO ``id`` column (PK is
-    # ``datasource_id``), so the default would emit ``WHERE id = ?`` /
-    # ``ON CONFLICT (id)`` against the agent SQLite mirror + the hub L1
-    # upsert and break every by-pk read + invalidation. it MUST name
-    # ``datasource_id`` to match the entity PK + the v029 DDL.
-    primary_key_column: str = "datasource_id"
-
-    @property
-    def table_name(self) -> str:
-        """return database table name.
-
-        :return: table name string
-        :rtype: str
-        """
-        return "datasource_schema_digests"
+    # the L1/L2 key is the schema's primary key, ``datasource_id``: this table has NO ``id``
+    # column, and keying by the ``"id"`` default would break every by-pk read and invalidation.
+    schema: ClassVar[TableSchema] = _DATASOURCE_SCHEMA_DIGESTS_SCHEMA
 
     @property
     def entity_class(self) -> type[DataSourceSchemaDigestEntity]:
@@ -1281,7 +1372,7 @@ class DataSourceSchemaDigestCollection(
         )
 
 
-class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
+class DataSourceRelationCollection(DeclaredTableCollection[DataSourceRelationEntity]):
     """three-tier collection for data source relation entities.
 
     provides CRUD operations with L1 -> L2 -> L3 caching.
@@ -1289,14 +1380,7 @@ class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
     datasource_ids and join_paths are stored as JSONB arrays in L3.
     """
 
-    @property
-    def table_name(self) -> str:
-        """return database table name.
-
-        :return: table name string
-        :rtype: str
-        """
-        return "datasource_relations"
+    schema: ClassVar[TableSchema] = _DATASOURCE_RELATIONS_SCHEMA
 
     @property
     def entity_class(self) -> type[DataSourceRelationEntity]:
@@ -1411,7 +1495,7 @@ class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
         )
 
 
-class TableTemplateCollection(BaseCollection[TableTemplateEntity]):
+class TableTemplateCollection(DeclaredTableCollection[TableTemplateEntity]):
     """three-tier collection for table-template entities.
 
     provides CRUD with L1 -> L2 -> L3 caching for template definition
@@ -1434,20 +1518,13 @@ class TableTemplateCollection(BaseCollection[TableTemplateEntity]):
     CASCADE`` so the per-template column list goes with it.
     """
 
+    schema: ClassVar[TableSchema] = _TABLE_TEMPLATES_SCHEMA
+
     # datasource_tables.template_id is ON DELETE SET NULL: a bound table's cached row would keep
     # naming the deleted template, so every delete announces the tables it unbinds
     delete_cascades: ClassVar[tuple[DeleteCascade, ...]] = (
         DeleteCascade("datasource_tables", "template_id", "SET NULL"),
     )
-
-    @property
-    def table_name(self) -> str:
-        """return database table name.
-
-        :return: table name string
-        :rtype: str
-        """
-        return "table_templates"
 
     @property
     def entity_class(self) -> type[TableTemplateEntity]:

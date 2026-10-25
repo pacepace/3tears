@@ -2,6 +2,12 @@
 
 Uses an in-memory DuckDB database. Schema is derived from SQLAlchemy metadata,
 with type-aware serialization/deserialization. DuckDB is an optional dependency.
+
+An exact ``NUMERIC(p, s)`` column (``p`` at most 38, DuckDB's widest) is a DuckDB ``DECIMAL(p, s)``,
+which answers the ``Decimal`` L3 answers and still sums and compares as a number. One wider, or with
+no declared precision, has no exact DuckDB type: it is kept as a ``DOUBLE`` (code
+``DOUBLE_DECIMAL``, with ``_<scale>`` when declared), so analytics over it still run, and read back
+as a ``Decimal`` at its scale, exact for any value of at most 15 significant digits.
 """
 
 from __future__ import annotations
@@ -20,13 +26,13 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, LargeBinary, Numeric, String, Text
+from sqlalchemy import Boolean, DateTime, Float, Integer, LargeBinary, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, TSVECTOR, UUID
 from sqlalchemy.sql.sqltypes import ARRAY
 from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
 
 from threetears.core.backends.schema_sql import PGVECTOR_TYPES, json_default
-from threetears.core.cache.base import build_select_clause, bulk_columns
+from threetears.core.cache.base import build_select_clause, bulk_columns, decimal_scale_of, stored_decimal
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import contain, get_logger
 
@@ -127,6 +133,30 @@ def fetch_arrow(result: Any, rows: int) -> Any:
     # ``to_arrow_table`` replaced ``fetch_arrow_table`` (deprecated in 1.4); older releases have only the latter
     fetch = getattr(result, "to_arrow_table", None) or result.fetch_arrow_table
     return fetch(min(max(int(rows), 1), _ARROW_BATCH_ROWS))
+
+
+#: DuckDB's widest exact ``DECIMAL``
+_DUCKDB_MAX_DECIMAL_PRECISION = 38
+#: the type code of an exact ``NUMERIC`` too wide for a DuckDB ``DECIMAL``, before its ``_<scale>``
+_DOUBLE_DECIMAL_CODE = "DOUBLE_DECIMAL"
+
+
+def _decimal_code_scale(code: str) -> tuple[bool, int | None]:
+    """whether ``code`` is an exact ``NUMERIC`` column's code, and the scale it declares.
+
+    :param code: the type code (:meth:`DuckDBBackend.column_types`)
+    :ptype code: str
+    :return: ``(True, scale)`` for a ``DECIMAL(p,s)`` or ``DOUBLE_DECIMAL`` code (``scale``
+        ``None`` when undeclared), ``(False, None)`` otherwise
+    :rtype: tuple[bool, int | None]
+    """
+    result: tuple[bool, int | None] = (False, None)
+    if code.startswith("DECIMAL(") and code.endswith(")"):
+        result = (True, int(code[len("DECIMAL(") : -1].split(",")[1]))
+    elif code == _DOUBLE_DECIMAL_CODE or code.startswith(f"{_DOUBLE_DECIMAL_CODE}_"):
+        suffix = code[len(_DOUBLE_DECIMAL_CODE) + 1 :]
+        result = (True, int(suffix) if suffix else None)
+    return result
 
 
 def _ddl_type(code: str) -> str:
@@ -874,8 +904,12 @@ class DuckDBBackend:
             return None
 
         result: Any = value
+        is_decimal, scale = _decimal_code_scale(col_type)
 
-        if isinstance(value, enum.Enum):
+        if is_decimal and not isinstance(value, bool):
+            stored = stored_decimal(value, scale)
+            result = stored if col_type.startswith("DECIMAL(") else float(stored)
+        elif isinstance(value, enum.Enum):
             result = value.value
         elif isinstance(value, dict):
             result = json.dumps(value, default=json_default)
@@ -900,7 +934,10 @@ class DuckDBBackend:
             return None
 
         result: Any = value
-        if col_type == "VARCHAR_UUID":
+        is_decimal, scale = _decimal_code_scale(col_type)
+        if is_decimal:
+            result = stored_decimal(value, scale)
+        elif col_type == "VARCHAR_UUID":
             result = uuid.UUID(value) if value else None
         elif col_type in ("VARCHAR_JSON", "VARCHAR_ARRAY", "VARCHAR_VECTOR"):
             if value and isinstance(value, str):
@@ -1004,7 +1041,18 @@ class DuckDBBackend:
             return "VARCHAR_JSON"
         if isinstance(sa_type, Boolean):
             return "BOOLEAN"
-        if isinstance(sa_type, (Float, Numeric)):
+        is_decimal, scale = decimal_scale_of(sa_type)
+        precision = sa_type.precision if is_decimal else None
+        if (
+            is_decimal
+            and precision is not None
+            and scale is not None
+            and 0 <= scale <= precision <= _DUCKDB_MAX_DECIMAL_PRECISION
+        ):
+            return f"DECIMAL({precision},{scale})"
+        if is_decimal:
+            return _DOUBLE_DECIMAL_CODE if scale is None else f"{_DOUBLE_DECIMAL_CODE}_{scale}"
+        if isinstance(sa_type, Float):
             return "DOUBLE"
         if isinstance(sa_type, Integer):
             return "BIGINT"

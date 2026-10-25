@@ -43,7 +43,7 @@ from typing import Any
 
 import asyncpg
 import pytest
-from threetears.core.collections import init_connection
+from threetears.core.collections import DeclaredTableCollection, init_connection
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
@@ -672,6 +672,33 @@ async def test_every_table_column_is_owned_by_the_collection_or_listed_as_hub_ow
     assert table_columns, f"no columns found for {case.table}, so this check would pass vacuously"
     accounted = set(case.row()) | set(case.hub_owned) | _STAMPED
     assert accounted == table_columns
+
+
+@pytest.mark.parametrize(
+    "case",
+    [case for case in _CASES if issubclass(case.collection, DeclaredTableCollection)],
+    ids=lambda case: case.table,
+)
+async def test_the_declared_schema_is_the_table(store: _Store, case: _Case) -> None:
+    """the ``TableSchema`` a Collection declares, which its L1 table is generated from, is the hub's table.
+
+    Every column, its nullability, and whether it has a server default: a column missing from the
+    schema is missing from every L1, and a default it does not declare is a column a save leaves to
+    the database without reading it back.
+    """
+    live = {
+        row["column_name"]: (row["is_nullable"] == "YES", row["column_default"] is not None)
+        for row in await store.pool.fetch(
+            "SELECT column_name, is_nullable, column_default FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = $1",
+            case.table,
+        )
+    }
+    assert live, f"no columns found for {case.table}, so this check would pass vacuously"
+    schema = case.collection.schema  # type: ignore[attr-defined]
+    declared = {column.name: (column.nullable, column.server_default is not None) for column in schema.columns}
+    assert declared == live
+    assert schema.pk_columns == (case.pk,)
 
 
 @pytest.mark.parametrize("case", _CASES, ids=lambda case: case.table)

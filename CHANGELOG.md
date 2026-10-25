@@ -8,6 +8,49 @@ packages (bumped in lock-step).
 
 ## v0.78.0 -- 2026-10-24
 
+### core, datasources, scheduled-jobs: a host gets L1 for every collection, and every write keeps it exact
+
+A host that hands its registry an L1 gives it to every collection the registry builds. The hub did, and had
+to work around five gaps; each is closed here.
+
+**Fixed:** a `NUMERIC` column read back from the SQLite L1 as a `float`. The L1 kept it as `REAL`, so money
+read through L1 was a float and `Decimal * float` raised. An exact `NUMERIC` column is now kept as the text of
+its `Decimal` and read back as the `Decimal` L3 answers, rounded to the column's scale as Postgres rounds it
+(`1.5` in `NUMERIC(12, 4)` reads back as `Decimal("1.5000")`); one with no scale keeps every digit. A `Float`
+column stays a float, as Postgres and asyncpg keep it. The DuckDB L1 keeps a `NUMERIC(p, s)` of `p` at most 38
+as a native `DECIMAL(p, s)`, which answers the same `Decimal` and still sums as a number; a wider or
+unconstrained one stays a `DOUBLE` and reads back as a `Decimal`. In the SQLite L1 such a column compares as
+text in SQL run against L1 directly; every read through the backend is typed.
+
+**Fixed:** `ScheduledJobCollection` and `JobFireCollection` wrote past `save_entity` and evicted nothing:
+`set_status`, `update_schedule`, `request_immediate_fire`, `claim_and_reschedule`, `create_dispatching`,
+`finalize_success`, `finalize_failed`, `reap_stale_dispatching` and `reap_fires` now each run in
+`bypassing_write`, so L1 and L2 never serve the row a write replaced (a paused job read back as active). A
+write that changed nothing (a lost claim, an unmatched guard) evicts nothing. `ScheduledJobCollection`
+declares the `job_fires` `ON DELETE CASCADE`, so a job's delete evicts its fires too.
+
+**Fixed:** `DataSourceColumnCollection.save_to_store` upserted on the column's natural key without returning
+the id it stored. Two introspections racing on one new column each sent a fresh id; the second landed on the
+first's row, and every tier went on serving that row as it was while caching the second's row under an id no
+row holds. The upsert now returns the stored id: that row is evicted from every tier and the sent id caches
+nothing. It also writes on the caller's connection when given one.
+
+**Fixed:** the datasource collections that write their own SQL (tables, columns, relations, schema digests,
+table templates) declared no table, so a host whose L1 had not been told about them failed at its first read
+(`no such table: datasource_columns`). Each now declares its table as a `TableSchema`, as the hub's migrations
+leave it, and creates its L1 table on whatever L1 it is given. A live test holds each schema to the hub
+table's columns, nullability and defaults.
+
+**Added:** `threetears.core.collections.DeclaredTableCollection`, the base for a collection that writes its
+own SQL over a table it declares as `schema: ClassVar[TableSchema]`. From the schema it takes its key
+(`primary_key_column`, refused at class definition if declared otherwise), its instants (`datetime_columns`)
+and its `table_name`; it creates its L1 table on the registry's L1 at construction; it answers
+`columns_decided_by_store` (a declared column the write leaves out, or a `NOT NULL` default sent as `None`, is
+read back from L3 after the write); and `settle_stored_key(sent, stored, *, conn=None)`, called from a
+natural-key upsert's `save_to_store` with the key its `RETURNING` gave, evicts a row stored under another key
+and caches nothing under the key sent. `threetears.core.cache.base` adds `decimal_scale_of` and
+`stored_decimal`, which both L1 backends type `NUMERIC` columns by.
+
 ### core, nats: a released lease leaves nothing in its bucket
 
 **Fixed:** `KVLease` release filled the shared `{ns}-leases` bucket until every lease write on the platform was

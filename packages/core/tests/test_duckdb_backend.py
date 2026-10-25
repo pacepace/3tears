@@ -17,9 +17,11 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Float,
     Integer,
     LargeBinary,
     MetaData,
+    Numeric,
     String,
     Table,
 )
@@ -742,3 +744,33 @@ class TestMemoryAnExportHolds:
     def test_the_database_gives_freed_memory_back_from_a_thread_of_its_own(self, backend: DuckDBBackend) -> None:
         found = backend.execute_query("SELECT current_setting('allocator_background_threads') AS on")
         assert found == [{"on": True}]
+
+
+class TestNumericReadsBackAsDecimal:
+    """an exact NUMERIC column reads back from the DuckDB L1 as the Decimal L3 answers."""
+
+    def test_numeric_columns_read_back_as_decimals_at_their_scale(self) -> None:
+        metadata = MetaData()
+        Table(
+            "rates",
+            metadata,
+            Column("id", String(255), primary_key=True),
+            Column("price", Numeric(12, 4)),
+            Column("wide", Numeric(60, 2)),
+            Column("loose", Numeric()),
+            Column("ratio", Float()),
+        )
+        b = DuckDBBackend()
+        b.initialize(metadata)
+        try:
+            b.upsert("rates", {"id": "a", "price": Decimal("1.5"), "wide": Decimal("2.5"), "loose": 3, "ratio": 0.25})
+            row = b.select_by_id("rates", "a")
+            assert row is not None
+            assert isinstance(row["price"], Decimal) and str(row["price"]) == "1.5000"
+            assert isinstance(row["wide"], Decimal) and str(row["wide"]) == "2.50"
+            assert row["loose"] == Decimal(3) and isinstance(row["loose"], Decimal)
+            assert row["ratio"] == 0.25 and isinstance(row["ratio"], float)
+            # DECIMAL(12,4) stays a number to DuckDB: analytics over it still run
+            assert b.execute_query("SELECT SUM(price) AS total FROM rates")[0]["total"] == Decimal("1.5000")
+        finally:
+            b.reset()
