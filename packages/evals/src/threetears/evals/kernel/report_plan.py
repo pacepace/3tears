@@ -8,19 +8,25 @@ holds the two to the same fields and vocabularies.
 **Two writers, one document.** Code computes facts and the planner writes choices and prose:
 
 - **The planner writes** :class:`PlannedReport`: mode, headline kind, headline, lede, flag, decision (with its stated
-  confidence), options, summary and section charts (kind, title, a structured :class:`ChartQuery`, reference,
-  emphasis), explore controls, which full-results tables to print, method, durable claims and answers to the
-  warnings code raised. :func:`planner_response_format` is its strict projection, and nothing in it is a field code
-  fills.
+  confidence), options, summary and section charts (kind, title, a structured :class:`ChartQuery`, reference kind,
+  emphasis), explore controls, method, durable claims and the answers to the warnings code raised, each answer naming
+  its warning by position in code's list.
 - **Code fills** the rest of :class:`ReportPlan`: the schema id, the :class:`Signals` and the shape (GENERATOR §1
   read as a lookup over the report input), the :class:`Masthead`, each arm's colour slot, whether the arms key
-  shows, and each chart's level, unit and domain (:class:`ChartSpec`). The stored plan carries both, so a page
-  renders from the plan alone.
+  shows, each chart's level, unit and domain (:class:`ChartSpec`), the flag's disclosures and the measures it weakens
+  and leaves standing (:class:`Flag`), the options table's columns (:class:`Options`), each chart reference's figure
+  key (:class:`ChartReference`), which full-results tables print, and the warning each answer names
+  (:class:`WarningAnswer`). The stored plan carries both, so a page renders from the plan alone;
+  :mod:`threetears.evals.analysis.report_plan_facts` fills it.
 
-**Sized like the memo's contract.** Nothing in the planner's contract is nullable or a union: an optional part is a
-list of at most one (the flag, the explore part, a chart's reference) and an optional scalar is an empty string.
-Prose refers to figures by key (``{reading.<arm>.change|pts}``, GENERATOR §6.2), never by typed numbers, so no prose
-field carries a number code would read.
+**The planner writes in two calls, so neither contract grows with the page.** A page's prose slots multiply with its
+sections, and a strict schema naming each slot outgrew what strict-schema writers accept
+(:data:`~threetears.evals.kernel.authored.SLOT_BUDGET`). So the planner first writes the page's
+:class:`PlanStructure` (every choice, no prose: :func:`structure_response_format`), then its :class:`PlanProse`, a
+flat list of ``{key, text}`` pairs addressing the prose slots that structure created (:func:`prose_response_format`),
+and code assembles :class:`PlannedReport` from the two (:mod:`threetears.evals.analysis.plan_assembly`). Nothing in
+either contract is nullable or a union: an optional part is a list of at most one and an optional scalar an empty
+string. Prose refers to figures by key (``{reading.<arm>.change|pts}``, GENERATOR §6.2), never by typed numbers.
 
 **Field-level constraints only.** Lengths, enums, non-empty ids and list bounds are checked here. Whether the parts
 agree with each other and with the report input (a headline kind that suits the mode, slot keys in the mode's order,
@@ -40,8 +46,11 @@ from threetears.evals.schema.prose import ModelProse
 #: The schema id a stored plan carries.
 REPORT_PLAN_SCHEMA = "report-plan/1"
 
-#: The name the planner's contract is sent under.
-PLAN_SCHEMA_NAME = "report_plan"
+#: The name the planner's structure contract is sent under.
+STRUCTURE_SCHEMA_NAME = "report_plan_structure"
+
+#: The name the planner's prose contract is sent under.
+PROSE_SCHEMA_NAME = "report_plan_prose"
 
 #: An id the plan names something by: never empty.
 _PlanId = Annotated[str, StringConstraints(min_length=1)]
@@ -146,8 +155,8 @@ class _Plan(BaseModel):
 # --- what the planner writes ---------------------------------------------------------------------------------------
 
 
-class Flag(_Plan):
-    """The one amber line under the lede that discloses every caveat at once (GENERATOR §2.4). Planner-written.
+class PlannedFlag(_Plan):
+    """The flag as the planner writes it: its line and what it weakens and what survives, in words.
 
     It carries no confidence: neither a late criterion nor an uncalibrated judge lowers the recommendation's
     confidence (owner ruling, 2026-10-25); the flag says what it weakens and what survives, and the reader weighs it.
@@ -155,6 +164,15 @@ class Flag(_Plan):
 
     title: ModelProse = Field(min_length=1, description="The flag in one line.")
     text: ModelProse = Field(min_length=1, description="What it weakens and what survives, in a sentence or two.")
+
+
+class Flag(PlannedFlag):
+    """The one amber line under the lede that discloses every caveat at once (GENERATOR §2.4).
+
+    The planner writes the words; code fills what it discloses (the report-wide disclosures the input implies for the
+    plan's mode) and the measures whose findings it weakens and leaves standing.
+    """
+
     discloses: list[_Disclosure] = Field(
         min_length=1,
         description=(
@@ -191,10 +209,16 @@ class OptionRow(_Plan):
     role: _OptionRole
 
 
-class Options(_Plan):
-    """The options table (GENERATOR §2.6): rows in reading order, the recommended one first. Planner-written."""
+class PlannedOptions(_Plan):
+    """The options table's rows as the planner chooses them: in reading order, the recommended one first."""
 
     rows: list[OptionRow] = Field(min_length=1, max_length=5)
+
+
+class Options(PlannedOptions):
+    """The options table (GENERATOR §2.6): the planner's rows, and the columns code reads off the input's criteria
+    and cost (§2.6: "the criteria plus cost")."""
+
     columns: list[_PlanId] = Field(
         min_length=1,
         description="A figure key family per column: pass_rate, reading.change, judged:<dim>, cost_per_1k, gate, ...",
@@ -218,12 +242,17 @@ class ChartQuery(_Plan):
     small_multiples_by: _SmallMultiplesBy
 
 
-class ChartReference(_Plan):
-    """A reference line on a chart: which figure it sits at and what kind of line it is. Planner-written; the
-    renderer reads the value from the key and writes the label."""
+class PlannedChartReference(_Plan):
+    """A reference line as the planner asks for it: what kind of line it is."""
+
+    kind: _ReferenceKind
+
+
+class ChartReference(PlannedChartReference):
+    """A reference line on a chart: what kind of line it is, and the figure it sits at. The planner picks the kind;
+    code fills the key from the chart's aspect, and the renderer reads the value from it and writes the label."""
 
     key: _PlanId = Field(description="The figure key of the line's value, e.g. aspect.margin.")
-    kind: _ReferenceKind
 
 
 class PlannedChart(_Plan):
@@ -232,7 +261,7 @@ class PlannedChart(_Plan):
     kind: _PlanChartKind
     title: ModelProse = Field(description="The chart's title; empty when the section headline says it.")
     query: ChartQuery
-    reference: list[ChartReference] = Field(max_length=1, description="At most one reference line.")
+    reference: Sequence[PlannedChartReference] = Field(max_length=1, description="At most one reference line.")
     emphasis: str = Field(description="The one arm or row bolded or ringed, by id; empty for none.")
 
 
@@ -310,19 +339,25 @@ class WarningRef(_Plan):
     name: _PlanId
 
 
+class PlannedAnswer(_Plan):
+    """Why the recommendation stands over one warning code raised on its arm, as the planner writes it: the warning by
+    its position in code's list of the warnings raised on that arm, and the answer."""
+
+    warning: int = Field(ge=0, description="The warning's position in code's list for the recommended arm.")
+    text: ModelProse = Field(min_length=1, description="Why recommending the arm over it is acceptable here.")
+
+
 class WarningAnswer(_Plan):
-    """Why the recommendation stands over one warning code raised on its arm. Planner-written; every warning raised
+    """Why the recommendation stands over one warning code raised on its arm, the warning named in the input's ids.
+    The planner writes the text; code names the warning from the position the planner gave. Every warning raised
     gets exactly one."""
 
     warning: WarningRef
     text: ModelProse = Field(min_length=1, description="Why recommending the arm over it is acceptable here.")
 
 
-class PlannedReport(_Plan):
-    """What the planner writes: the planner's contract, sent strictly (:func:`planner_response_format`).
-
-    It holds no field code fills; :class:`ReportPlan` adds those.
-    """
+class _PlanCore(_Plan):
+    """The parts the planner writes whole, which the planner's reply and the stored plan share as they are."""
 
     mode: _Mode
     headline_kind: _HeadlineKind
@@ -330,16 +365,23 @@ class PlannedReport(_Plan):
         min_length=1, description="The decision as an instruction with its reason; in tradeoff mode, the trade."
     )
     lede: ModelProse = Field(min_length=1, max_length=420, description="At most two sentences.")
-    flag: list[Flag] = Field(max_length=1, description="The flag, or none when nothing needs disclosing.")
     decision: Decision
-    options: Options
+    method: list[MethodItem] = Field(min_length=3, max_length=9)
+
+
+class PlannedReport(_PlanCore):
+    """What the planner writes, assembled from its two replies (:class:`PlanStructure` and :class:`PlanProse`).
+
+    It holds no field code fills; :class:`ReportPlan` adds those, and completes each unit code has a part of.
+    """
+
+    flag: list[PlannedFlag] = Field(max_length=1, description="The flag, or none when nothing needs disclosing.")
+    options: PlannedOptions
     summary: Sequence[PlannedChart] = Field(max_length=3, description="Summary charts beside the options table.")
     sections: Sequence[PlannedSection] = Field(description="The evidence sections, in reading order.")
     explore: list[Explore] = Field(max_length=1, description="The explore part, or none.")
-    full_results: list[_FullResultsTable]
-    method: list[MethodItem] = Field(min_length=3, max_length=9)
     durable_claims: list[DurableClaim] = Field(description="Claims for later campaigns' prior insights; may be empty.")
-    answers: list[WarningAnswer] = Field(description="One per warning code raised on the recommended arm.")
+    answers: list[PlannedAnswer] = Field(description="One per warning code raised on the recommended arm.")
 
 
 # --- what code fills ------------------------------------------------------------------------------------------------
@@ -378,6 +420,7 @@ class ChartSpec(PlannedChart):
     """A chart as stored: the planner's choice plus what code reads off the data. ``level``, ``unit`` and ``domain``
     are code-filled; an empty ``domain`` lets the renderer fit the axis."""
 
+    reference: Sequence[ChartReference] = Field(max_length=1, description="At most one reference line.")
     level: str = Field(description="The interval level printed on the chart, e.g. 95%; empty without intervals.")
     unit: str = Field(description="The chart's one unit.")
     domain: list[float] = Field(max_length=2, description="The value axis, [low, high], or empty.")
@@ -400,8 +443,9 @@ class Section(PlannedSection):
     chart: ChartSpec
 
 
-class ReportPlan(PlannedReport):
-    """The stored plan: the planner's :class:`PlannedReport` with the fields code fills, which the renderer draws."""
+class ReportPlan(_PlanCore):
+    """The stored plan: the planner's :class:`PlannedReport` completed with the fields code fills, which the renderer
+    draws."""
 
     model_config = ConfigDict(extra="forbid", validate_by_name=True, validate_by_alias=True, serialize_by_alias=True)
 
@@ -411,22 +455,113 @@ class ReportPlan(PlannedReport):
     masthead: Masthead
     arms: list[PlanArm] = Field(min_length=1)
     show_arms_key: bool
+    flag: list[Flag] = Field(max_length=1, description="The flag, or none when nothing needs disclosing.")
+    options: Options
     summary: Sequence[ChartSpec] = Field(max_length=3, description="Summary charts beside the options table.")
     sections: Sequence[Section] = Field(description="The evidence sections, in reading order.")
+    explore: list[Explore] = Field(max_length=1, description="The explore part, or none.")
+    full_results: list[_FullResultsTable]
+    durable_claims: list[DurableClaim] = Field(description="Claims for later campaigns' prior insights; may be empty.")
+    answers: list[WarningAnswer] = Field(description="One per warning code raised on the recommended arm.")
 
 
-def planner_response_format() -> dict[str, Any]:
-    """The strict ``json_schema`` directive that asks the planner for exactly :class:`PlannedReport`.
+# --- the planner's two calls ---------------------------------------------------------------------------------------
+
+
+class StructureChart(_Plan):
+    """A chart as the structure call chooses it: kind, what it reads, a reference line and the one thing it stresses.
+    Its title is prose, written by the prose call."""
+
+    kind: _PlanChartKind
+    query: ChartQuery
+    reference: list[PlannedChartReference] = Field(max_length=1, description="At most one reference line.")
+    emphasis: str = Field(description="The one arm or row bolded or ringed, by id; empty for none.")
+
+
+class StructureSection(_Plan):
+    """An evidence section as the structure call chooses it: its id, which its prose keys address, and its chart."""
+
+    id: _PlanId
+    chart: StructureChart
+
+
+class StructureControl(_Plan):
+    """An explore control as the structure call chooses it: everything but its title, which is prose."""
+
+    id: _PlanId
+    kind: _ControlKind
+    binds: str = Field(
+        description="The criterion it replaces: margin, floor:<id>, p95, price_per_point, weighting, lever:<factor>."
+    )
+    min: float
+    max: float
+    step: float
+    default: float
+    options: list[str]
+
+
+class StructureExplore(_Plan):
+    """The explore part's controls, as the structure call chooses them."""
+
+    controls: list[StructureControl] = Field(min_length=1, max_length=3)
+
+
+class StructureClaim(_Plan):
+    """A durable claim's skeleton: the figure keys it rests on and its confidence. Its text is prose."""
+
+    confidence: Confidence
+    keys: list[_PlanId] = Field(min_length=1, description="The figure keys it rests on, as paths without filters.")
+
+
+class PlanStructure(_Plan):
+    """The planner's first reply: every choice the page makes and no prose (:func:`structure_response_format`)."""
+
+    mode: _Mode = Field(description="One of the modes code allows for this input.")
+    headline_kind: _HeadlineKind
+    confidence: Confidence = Field(description="How sure the planner is of the decision, as stated.")
+    options: PlannedOptions
+    summary: list[StructureChart] = Field(max_length=3, description="Summary charts beside the options table.")
+    sections: list[StructureSection] = Field(description="The evidence sections, in reading order.")
+    explore: list[StructureExplore] = Field(max_length=1, description="The explore part, or none.")
+    method_items: int = Field(ge=3, le=9, description="How many term and definition pairs Method holds.")
+    durable_claims: list[StructureClaim] = Field(description="Claims for later campaigns; may be empty.")
+
+
+class ProseItem(_Plan):
+    """One prose slot the structure created, by its key, and its text."""
+
+    key: _PlanId = Field(description="The slot's key, from the list of keys this call is asked for.")
+    text: ModelProse = Field(description="The slot's text, figures by key; empty only where the slot is optional.")
+
+
+class PlanProse(_Plan):
+    """The planner's second reply: the page's prose, one item per key (:func:`prose_response_format`)."""
+
+    prose: list[ProseItem]
+
+
+def structure_response_format() -> dict[str, Any]:
+    """The strict ``json_schema`` directive that asks the planner for exactly :class:`PlanStructure`.
 
     :return: The OpenAI-shaped directive.
     :rtype: dict[str, Any]
     """
-    return strict_response_format(PLAN_SCHEMA_NAME, PlannedReport.model_json_schema())
+    return strict_response_format(STRUCTURE_SCHEMA_NAME, PlanStructure.model_json_schema())
+
+
+def prose_response_format() -> dict[str, Any]:
+    """The strict ``json_schema`` directive that asks the planner for exactly :class:`PlanProse`.
+
+    :return: The OpenAI-shaped directive.
+    :rtype: dict[str, Any]
+    """
+    return strict_response_format(PROSE_SCHEMA_NAME, PlanProse.model_json_schema())
 
 
 __all__ = [
-    "PLAN_SCHEMA_NAME",
+    "PROSE_SCHEMA_NAME",
     "REPORT_PLAN_SCHEMA",
+    "STRUCTURE_SCHEMA_NAME",
     "ChartQuery",
     "ChartReference",
     "ChartSpec",
@@ -441,13 +576,26 @@ __all__ = [
     "OptionRow",
     "Options",
     "PlanArm",
+    "PlanProse",
+    "PlanStructure",
+    "PlannedAnswer",
     "PlannedChart",
+    "PlannedChartReference",
+    "PlannedFlag",
+    "PlannedOptions",
     "PlannedReport",
     "PlannedSection",
+    "ProseItem",
     "ReportPlan",
     "Section",
     "Signals",
+    "StructureChart",
+    "StructureClaim",
+    "StructureControl",
+    "StructureExplore",
+    "StructureSection",
     "WarningAnswer",
     "WarningRef",
-    "planner_response_format",
+    "prose_response_format",
+    "structure_response_format",
 ]

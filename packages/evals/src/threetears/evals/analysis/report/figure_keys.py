@@ -1385,12 +1385,13 @@ def figure_key_grammar() -> str:
         statistic = family.statistic()
         listed = f" ({statistic.name}: {', '.join(statistic.options)})" if statistic else ""
         tag = " Derived: descriptive, no interval." if family.derived else ""
-        lines.append(f"- `{family.form()}`: {family.what}{listed}.{tag}")
+        lines.append(f"- `{family.form()}`: {family.what}{listed}.{tag}")  # one line: module constants
     lines.append("Filters (one spelling at most, plus `abs` and `interval`):")
     for name in _FILTERS:
         key = parse_key(_FILTER_EXAMPLES[name])
         shown = format_figure(resolve(key.path, example), key.filters)
-        lines.append(f'- `{name}`: {_FILTER_MEANS[name]}. `{{{_FILTER_EXAMPLES[name]}}}` reads "{shown}".')
+        means, example_key = _FILTER_MEANS[name], _FILTER_EXAMPLES[name]
+        lines.append(f'- `{name}`: {means}. `{{{example_key}}}` reads "{shown}".')  # one line: module constants
     sentence = "{arm:fast.v2} is down {reading.fast.v2.change|abs|pts} points ({reading.fast.v2.interval|pts})."
     lines.append(f'For example, "{sentence}" reads "{render(sentence, example, names)}".')
     lines.append(

@@ -1,7 +1,7 @@
 """The package's own prompts, declared once: each id as a constant, and the catalogue a host registers them from.
 
-The engine steers three LLM calls of its own with a prompt — the analysis generator, the capability
-proposer and the boundary proposer — and each prompt is store-master: a host seeds an empty slot of its
+The engine steers four LLM calls of its own with a prompt — the analysis generator, the report planner, the
+capability proposer and the boundary proposer — and each prompt is store-master: a host seeds an empty slot of its
 prompt registry from the shipped default, and an operator tunes the stored copy with no deploy. So a
 host needs two things from the engine for each one: the id its registry keys the slot by, and where
 the shipped default lives. :data:`SEED_PROMPTS` is both, as
@@ -32,6 +32,10 @@ from threetears.evals.kernel.prompts.seed import KIND_TEMPLATE, KIND_TEXT, SeedP
 #: and the subject a reporter run measures.
 ANALYSIS_GEN_PROMPT = "eval_analysis_gen"
 
+#: The report planner's system prompt — a single string, seeded into a shared-prompt registry like the analysis
+#: generator's, and host-overridable the same way: the store is master once a slot is set.
+REPORT_PLAN_PROMPT = "eval_report_plan"
+
 #: The capability-rubric proposer's prompt — a sectioned template, seeded into a template registry.
 PROPOSER_PROMPT = "eval_proposer"
 
@@ -46,6 +50,12 @@ SEED_PROMPTS: tuple[SeedPrompt, ...] = (
         prompt_type=ANALYSIS_GEN_PROMPT,
         seed_module="threetears.evals.analysis.gen_prompt",
         constant="EVAL_ANALYSIS_GEN_DEFAULT",
+    ),
+    SeedPrompt(
+        kind=KIND_TEXT,
+        prompt_type=REPORT_PLAN_PROMPT,
+        seed_module="threetears.evals.analysis.plan_prompt",
+        constant="EVAL_REPORT_PLAN_DEFAULT",
     ),
     SeedPrompt(
         kind=KIND_TEMPLATE,
@@ -66,5 +76,6 @@ __all__ = [
     "ANALYSIS_GEN_PROMPT",
     "BOUNDARY_GEN_PROMPT",
     "PROPOSER_PROMPT",
+    "REPORT_PLAN_PROMPT",
     "SEED_PROMPTS",
 ]
