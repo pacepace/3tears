@@ -10,7 +10,9 @@ prints once, so a reader can read each short name back to its label.
 A measure is named here too, by :func:`measure_name_of`: a goal check by the display name its template declares
 (``EvalTemplate.goal_check_names``, carried on the bundle beside the catalog and never in it, so a name moves no
 reading or fingerprint), else by its whole expression; every other measure as
-:func:`~threetears.evals.analysis.style.measure_name` names it.
+:func:`~threetears.evals.analysis.style.measure_name` names it. Where a name stands in for a check, the page prints the
+pair once, in its Design & provenance (:func:`check_legend_blocks`), so a reader can read each name back to the
+expression it stands for.
 """
 
 from __future__ import annotations
@@ -19,11 +21,18 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.report.model import TableCell, fold_anchor, fold_ids
-from threetears.evals.analysis.style import measure_name
+from threetears.evals.analysis.report.model import (
+    ReportBlock,
+    TableBlock,
+    TableCell,
+    TableColumn,
+    fold_anchor,
+    fold_ids,
+)
+from threetears.evals.analysis.style import code, measure_name
 from threetears.evals.kernel.declaration import printed_aspect_name
 
-__all__ = ["AspectNames", "aspect_name", "legend", "measure_name_of"]
+__all__ = ["AspectNames", "aspect_name", "check_legend_blocks", "legend", "measure_name_of"]
 
 
 def aspect_name(bundle: AnalysisContextBundle) -> str:
@@ -116,6 +125,68 @@ def legend(names: AspectNames) -> list[tuple[str, str]]:
     :rtype: list[tuple[str, str]]
     """
     return [(name, label) for label, name in names.by_label.items() if name != label]
+
+
+def _legend_rows(names: AspectNames) -> list[tuple[str, str, list[str]]]:
+    """The rows the check legend prints: each declared check name with the expression it stands for and the aspects,
+    by label, that declare it so, as ``(name, expression, labels)``.
+
+    One row per name and expression, in the campaign's order and then each aspect's declared order: a check two
+    aspects name alike is one row holding both, and a check two aspects name apart is a row per name. A check no
+    aspect names is printed whole wherever it is named, so it needs no row, and a campaign naming no check has an
+    empty legend.
+
+    :param names: What the page calls each aspect, with each one's declared check names.
+    :ptype names: AspectNames
+    :return: ``(name, expression, labels)`` for each declared name.
+    :rtype: list[tuple[str, str, list[str]]]
+    """
+    rows: dict[tuple[str, str], list[str]] = {}
+    for label in names.by_label:
+        for check, name in names.check_names(label).items():
+            rows.setdefault((name, check), []).append(label)
+    return [(name, check, labels) for (name, check), labels in rows.items()]
+
+
+def check_legend_blocks(names: AspectNames) -> list[ReportBlock]:
+    """A campaign's check legend, in its Design & provenance: each declared check name beside the expression it
+    stands for, once, as code; with the aspects declaring it only where some row holds on fewer than every aspect.
+    Nothing where no check is named.
+
+    :param names: What the page calls each aspect, with each one's declared check names.
+    :ptype names: AspectNames
+    :return: The legend's table, or nothing.
+    :rtype: list[ReportBlock]
+    """
+    rows = _legend_rows(names)
+    if not rows:
+        return []
+    every = list(names.by_label)
+    apart = any(labels != every for _, _, labels in rows)
+    columns = [TableColumn(key="name", header="Check"), TableColumn(key="expression", header="Expression")]
+    if apart:
+        columns.append(TableColumn(key="aspects", header="Aspects", term="aspect"))
+    cells: list[dict[str, TableCell]] = []
+    for name, check, labels in rows:
+        row = {"name": TableCell(value=name), "expression": TableCell(value=code(check))}
+        if apart:
+            # One aspect's cell links its fold; a list of several links none, since a cell links one place.
+            row["aspects"] = TableCell(
+                value=", ".join(names(label) for label in labels),
+                ref=names.folds.get(labels[0]) if len(labels) == 1 else None,
+            )
+        cells.append(row)
+    return [
+        TableBlock(
+            section="provenance",
+            name="check_names",
+            title="Checks",
+            columns=columns,
+            rows=cells,
+            order="as the aspects declare them, in the campaign's order",
+            total_rows=len(cells),
+        )
+    ]
 
 
 def measure_name_of(bundle: AnalysisContextBundle, measure: str) -> str:

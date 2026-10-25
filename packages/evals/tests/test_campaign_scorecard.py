@@ -136,21 +136,14 @@ async def test_a_row_no_worse_than_the_margin_reads_so_beside_its_held_floor_and
     # The headline row and the floor read one interval, so neither contradicts the other, and nothing is to settle.
     assert not any(isinstance(block, TableBlock) and block.name == "to_settle" for block in page.blocks)
     said = _scorecard(page)
-    assert "A row no worse than the margin reads a plain 95% interval, as a floor does." in said
-    assert (
-        "An arm is no worse only where it holds on every asked aspect at once, so more aspects never make that "
-        "easier, and it needs no correction." in said
-    )
+    # How the intervals were read is one paragraph: the level, the error rate, then the rows no worse.
     # The one corrected row is tone's, read in v2's family of two at 97.5%, so it is not called a floor's level; the
-    # error-rate line is said whatever the rows read.
+    # error-rate sentence is said whatever the rows read.
     assert (
-        "Intervals here are wider than a plain 95% interval, because each arm's 2 readings are corrected together."
-        in said
-    )
-    assert "Each is read at 97.5%, and the reading beside it always agrees with it." in said
-    assert (
-        "For any one arm, the chance of being wrongly shown better on some aspect is at most 2.5%, and likewise for "
-        "wrongly shown worse." in said
+        "Each arm's 2 readings are corrected together. So each interval is read at 97.5%, not 95%. For any one arm, "
+        "the chance of being wrongly shown better on some aspect is at most 2.5%, and likewise for wrongly shown "
+        "worse. A row no worse than the margin reads 95%, uncorrected: an arm is no worse only where it holds on "
+        "every asked aspect at once." in said
     )
     assert "Where such an interval sits above zero" not in said
     # One arm: nothing is said across arms.
@@ -176,17 +169,16 @@ async def test_a_page_whose_every_row_is_no_worse_still_states_the_error_rate_an
 
     page = await page_of("steady", "tone", readings=all_within)
     said = _scorecard(page)
-    assert "The interval is read at" not in said and "Intervals here are wider" not in said
+    assert "interval is read at" not in said and "corrected together" not in said
     assert (
         "For any one arm, the chance of being wrongly shown better on some aspect is at most 2.5%, and likewise for "
         "wrongly shown worse." in said
     )
     # Two arms: the bound across them is the page's count of arms times each one's.
     assert (
-        "That correction runs within each arm, not across the 2 arms, so the chance that some arm is wrongly shown "
-        "better is up to 5%, and likewise for worse." in said
+        "The correction does not run across the 2 arms, so the chance that some arm is wrongly shown better is up to "
+        "5%, and likewise for worse." in said
     )
-    assert "Correcting across arms would lower it, at the price of wider intervals." in said
     # The clause that the recommendation does not rest on it is wrong: a recommendation can rest on a corrected gain.
     assert "does not rest on it" not in said and "do not rest on it" not in said
     assert "Where such an interval sits above zero, as for v2 on steady" in said
@@ -544,10 +536,7 @@ async def test_the_level_line_counts_only_the_readings_corrected_together() -> N
     """With no margin on billing, v2's drops are read on tone alone while its gains are read on both: the line says
     each family's own size."""
     said = _scorecard(await page_of("billing", "tone", margins={"billing": None}))
-    assert (
-        "Intervals here are wider than a plain 95% interval, because each arm's gains on 2 aspects, and its drops on 1, "
-        "are each corrected together." in said
-    )
+    assert "Each arm's gains on 2 aspects, and its drops on 1, are each corrected together." in said
 
 
 def test_cases_and_trials_are_stated_apart_where_an_arm_ran_a_case_more_than_once() -> None:
@@ -563,8 +552,8 @@ def test_cases_and_trials_are_stated_apart_where_an_arm_ran_a_case_more_than_onc
 
 def test_one_sizing_table_holds_the_row_s_count_and_the_floor_s_with_the_rate_that_decides_it() -> None:
     """A18 on S1: billing's floor reads every rate, so for v4 it is decided by `reply.cites_policy` and needs more cases
-    as observed than v4's pass rate alone; for v3 the pass rate decides both, and the two counts agree. The floor's
-    counts are the aspect fold's own."""
+    as observed than v4's pass rate alone; for v3 the pass rate decides both at the margin's own points, so the two
+    are one quantity and one row, saying both. The floor's counts are the aspect fold's own."""
     page = s1_change().page()
     settle = _table(page, "to_settle")
     rows = {(row["aspect"].text, row["arm"].text, row["shows"].text): row for row in settle.rows}
@@ -574,8 +563,14 @@ def test_one_sizing_table_holds_the_row_s_count_and_the_floor_s_with_the_rate_th
     )
     assert (row["decided_by"].text, row["observed"].text) == ("pass rate", "31 cases, $0.22")
     assert (floor["decided_by"].text, floor["observed"].text) == ("`reply.cites_policy`", "41 cases, $0.29")
-    v3 = [rows[("billing", "v3", shows)] for shows in ("no worse than the 10-point margin", "the 10-point floor holds")]
-    assert {(cells["none"].text, cells["observed"].text) for cells in v3} == {("75 cases, $0.53", "233 cases, $1.6")}
+    v3 = [key for key in rows if key[:2] == ("billing", "v3")]
+    assert v3 == [("billing", "v3", "no worse than the 10-point margin, and the 10-point floor holds")]
+    merged = rows[v3[0]]
+    assert (merged["decided_by"].text, merged["none"].text, merged["observed"].text) == (
+        "pass rate",
+        "75 cases, $0.53",
+        "233 cases, $1.6",
+    )
     (fold,) = [fold for fold in page.aspects if fold.aspect == "billing"]
     projected = next(
         block for block in fold.report.blocks if isinstance(block, TableBlock) and block.name == "projection"
@@ -599,9 +594,10 @@ def test_the_level_lines_are_counted_off_the_page_s_own_arms_and_aspects(build: 
         assert "For any one arm, the chance of being wrongly shown better is at most 2.5%" in said
         assert "not across the" not in said
     else:
-        assert "because each arm's 3 readings are corrected together" in said
-        assert "Each is read at 98.33%, and the reading beside it always agrees with it." in said
-        assert f"not across the {arms} arms, so the chance that some arm is wrongly shown better is up to 7.5%" in said
+        assert "Each arm's 3 readings are corrected together. So each interval is read at 98.33%, not 95%." in said
+        assert (
+            f"not run across the {arms} arms, so the chance that some arm is wrongly shown better is up to 7.5%" in said
+        )
     assert "does not rest on it" not in said
 
 

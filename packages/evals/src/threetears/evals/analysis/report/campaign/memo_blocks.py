@@ -409,8 +409,10 @@ class _Trace:
         return rows
 
     def _trial(self, trial: str) -> dict[str, TableCell]:
-        """A trial the finding names by its campaign id, shown by its id in its aspect's fold, where the reader finds
-        its record, and linked to that fold; an id the campaign does not hold, listed as written and linked nowhere."""
+        """A trial the finding names by its campaign id, shown by its id in its aspect's fold and linked to that fold,
+        where a failed or lost trial's row names its stored result (its full record only on a page laid out with
+        ``trials="all"``) and a passed one's sits in the passed trials' table; an id the campaign does not hold,
+        listed as written and linked nowhere."""
         if (where := self.trial_ids.get(trial)) is None:
             return {
                 "aspect": TableCell(value=None),

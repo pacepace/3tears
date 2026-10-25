@@ -163,12 +163,14 @@ no difference and if as observed, with the cost: a row left unclear against its 
 each rate floor left unclear, read on every rate its clause names. Each count is the total cases, not cases to add,
 read at 95% over this run's cases and values, as the aspect's own floor table is. The two counts on one arm and
 aspect differ only where the floor reads other rates than the pass rate alone (every rate, or a check it names) or
-reads them against other points than the margin. **Decided by** names the rate deciding the floor's as-observed
+reads them against other points than the margin; where they would not, the two are one row
+(`no worse than the 10-point margin, and the 10-point floor holds`). **Decided by** names the rate deciding the floor's as-observed
 count; its no-difference count may be another rate's.
 
 **Findings, Next steps, Design & provenance.** The memo's findings and next steps follow the Scorecard, each its
 own section ([below](#the-rest-of-the-page)). **Design & provenance** states once what holds for the whole report:
-**Criteria set late** (each criterion set after its readings were visible, when, and the aspects whose results
+**Checks** (each declared check name beside the expression it stands for, with the aspects declaring it where they
+differ), **Criteria set late** (each criterion set after its readings were visible, when, and the aspects whose results
 existed by then) and **Test setup** (each aspect's own sentence, verbatim, for results with no ordered time, latency
 read under concurrency, or request settings not confirmed). Each section appears only where it has something to say.
 
@@ -332,7 +334,8 @@ heading.
   aspect's own page (`build_report`, `build_code_only_report`, the quick path's `Result.report`) lays out every
   record unless asked. A failed check is named by its declared name, else by its expression, as code
   (``check: `call_count("music.queue_track") >= 2` ``), and a judge's fail by its dimensions (`judge: tone`), else
-  `failed by the judge`. The passed trials are one closed `Passed trials` table
+  `failed by the judge`. A record names a named check by its name and its expression; whatever the trial detail,
+  the campaign's **Checks** legend, under Design & provenance, pairs each declared name with its expression once. The passed trials are one closed `Passed trials` table
   (trial, case, arm, stored result), so each result id stays reachable with `result_get`; when every trial passed,
   the census line stands alone.
 - **Not tested**: what the campaign could not speak to, one line each. A lever that ran at one level

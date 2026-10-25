@@ -682,7 +682,9 @@ class TestANamedCheckPrintsByNameOnThePage:
         markdown = campaign_report_markdown(page)
         for check, name in CHECK_NAMES.items():
             assert name in markdown, name
-            assert f"| `{check}` |" not in markdown, f"{check} still heads a row by its expression"
+            # Only the check legend states the expression, beside the name; no row is headed by it.
+            assert markdown.count(f"| {name} | `{check}` |") == 1, f"{check} has no legend row"
+            assert f"\n| `{check}` |" not in markdown, f"{check} still heads a row by its expression"
 
     def test_with_no_name_each_check_prints_its_whole_expression(self) -> None:
         _, page = _page(named=False)
