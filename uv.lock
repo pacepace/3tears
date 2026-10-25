@@ -810,7 +810,7 @@ requires-dist = [
     { name = "3tears-media-contracts", editable = "packages/media-contracts" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "mapbox-vector-tile", specifier = ">=2.1" },
-    { name = "shapely", specifier = ">=2.0" },
+    { name = "shapely", specifier = ">=2.1" },
 ]
 
 [[package]]

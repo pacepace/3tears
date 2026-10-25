@@ -306,7 +306,7 @@ async def test_the_fastmcp_tool_hands_the_launch_its_apparatus_settings():
         tools = {tool.name: tool for tool in await client.list_tools()}
         result = await client.call_tool("evals", call, raise_on_error=False)
 
-    assert "apparatus_settings" in tools["evals"].inputSchema["properties"]
+    assert "apparatus_settings" in tools["evals"].input_schema["properties"]
     assert result.is_error and "no apparatus setting named 'grader_version'" in result.content[0].text
 
 

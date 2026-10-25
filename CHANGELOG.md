@@ -43,6 +43,14 @@ that started Postgres. The `3tears[testing]` extra and the workspace dev group n
 testcontainers must move up with it. The workspace pytest config makes a shim's warning an error, so
 an import of an old path fails rather than warns.
 
+### geo: tile projection uses `shapely.transform`; requires shapely>=2.1
+
+**Changed:** `threetears.geo.mvt.project_to_tile` projects with `shapely.transform(...,
+include_z=False, interleaved=False)` instead of `shapely.ops.transform`, which shapely 2.2 deprecates.
+Each coordinate still goes through the same scalar projection, and a test pins the output to the
+exact WKB the old call produced (every geometry type, a dropped Z, an empty geometry, a latitude
+past the Mercator clamp). `interleaved=` arrived in shapely 2.1, so the floor moves from `>=2.0`.
+
 ### nats: an oversized KV value is not retried through a bucket re-open
 
 **Fixed:** `NatsKvBucket` re-raises nats-py's `MaxPayloadError` instead of treating it as a transport
