@@ -361,7 +361,7 @@ identifier passes on its way to a reader. Those rules hold the text code writes.
 written, whitespace aside: code checks code, and a model's prose is measured by a model, a host's reporter eval on the dimensions its rubric declares, calibrated
 by people, in whatever language the memo is written. The writer's prompt states the same rules (no restated numbers,
 no sample size or cost of its own, no dispute of a floor code settled, no discount of a reading for when its runs
-ran), and the writer view carries the facts they rest on (`cases_to_settle`, each run's `k_runs`, `late_criteria`).
+ran), and the writer view carries the facts they rest on (`to_settle`, each run's `k_runs`, the late criteria in `disclosures`).
 No floor rewrites a memo's recommendation: a floor only warns, and the page's first line is the warning.
 
 ### The marks

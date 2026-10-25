@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the writer prompt reads the view's new fields, and says each report-wide caveat no more than the page does
+
+**Changed:** the seeded writer prompt (`EVAL_ANALYSIS_GEN_DEFAULT`) moves, so every host pushes the new seed to its
+`eval_analysis_gen` store (`eval_prompt_reset`); a stored preset keeps the old text, which names `cases_to_settle`
+and an aspect's `late_criteria`, fields the view no longer carries. WHAT THE BUNDLE HOLDS names the view's new fields
+(`aggregate`, the per-arm `floors` rollup with the rate each floor `reads`, the campaign's `disclosures`, `to_settle`,
+`precision_means`, `control_floor`, `short_name`, each measure's `name`) and drops the descriptions they replace.
+Rule 11 no longer asks the summary to state each late criterion (a caveat is said once, at the level it applies to,
+and the page says it), keeps "Never discount a reading for when its runs ran", says only a `better` reading or an
+`improved` contrast is a gain, and points a choice at the view's `kind_means` instead of restating it. Rule 12 quotes
+`to_settle` with its kind, `never` calling for a change to the candidate, not more cases. Rule 9 raises a flagged
+`control_floor` first, as a validity finding, and names an aspect by its `short_name`. The prompt stays within its
+budget (24,299 of 24,300 characters, 13 rules); the rule ledger (`analysis/GEN_PROMPT_RULES.md`) names the words
+each added clause replaces. The recorded writer fixture is stale until it is re-recorded. See
+`packages/evals/MIGRATIONS.toml`.
+
 ### evals: the writer's view hands each fact once, at the altitude the memo claims it, spelled as the page spells it
 
 **Changed:** the campaign writer's view (`writer_view`, so `build_campaign_user_message` and what a reporter case
