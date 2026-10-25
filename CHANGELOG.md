@@ -8,6 +8,80 @@ packages (bumped in lock-step).
 
 ## v0.78.0 -- 2026-10-24
 
+### core, datasources, scheduled-jobs: a host gets L1 for every collection, and every write keeps it exact
+
+A host that hands its registry an L1 gives it to every collection the registry builds. The hub did, and had
+to work around five gaps; each is closed here.
+
+**Fixed:** a `NUMERIC` column read back from the SQLite L1 as a `float`. The L1 kept it as `REAL`, so money
+read through L1 was a float and `Decimal * float` raised. An exact `NUMERIC(p, s)` column is now an `INTEGER`
+holding the value times `10**s` (`9.50` in `NUMERIC(12, 2)` is `950`), read back as the `Decimal` at scale `s`
+L3 answers, rounded as Postgres rounds. It is exact, and SQL run against L1 directly compares, sorts, takes
+`MIN`/`MAX` and sums it by value (a `SUM` is the scaled total; `deserialize_field` turns it back into the
+`Decimal`); an operand compared with it is scaled through `serialize_value` first. A `Float` column stays a
+float. The DuckDB L1 keeps `NUMERIC(p, s)` as a native `DECIMAL(p, s)`.
+
+**Changed:** an L1 refuses, when its table is created, a `NUMERIC` it cannot hold exactly: one with no declared
+precision and scale, or wider than 18 digits in SQLite (a 64-bit integer) or 38 in DuckDB. It raises
+`UnsupportedL1ColumnError` naming the table and column, and the collection when a `DeclaredTableCollection`
+creates the table. Nothing is kept as a binary float any more. A dynamic collection
+(`create_dynamic_collection`) with a `decimal` column, which declares no scale, is refused on a registry with an
+L1. A DuckDB L1 whose `NUMERIC(p, s)` columns were `DOUBLE` now answers `Decimal` for them. `answer_json`
+writes a `Decimal` as the JSON number its `float` writes, so an answer built from those columns reads on the
+wire as it did when they were floats, not as a quoted string. `tier_parity_findings` checks a collection with
+`caches_in_l1 = False` on its L2 codec alone.
+
+**Fixed:** `ScheduledJobCollection` and `JobFireCollection` wrote past `save_entity` and evicted nothing:
+`set_status`, `update_schedule`, `request_immediate_fire`, `claim_and_reschedule`, `create_dispatching`,
+`finalize_success`, `finalize_failed`, `reap_stale_dispatching` and `reap_fires` now each run in
+`bypassing_write`, so L1 and L2 never serve the row a write replaced (a paused job read back as active). A
+write that changed nothing (a lost claim, an unmatched guard) evicts nothing. `ScheduledJobCollection`
+declares the `job_fires` `ON DELETE CASCADE`, so a job's delete evicts its fires too.
+
+**Fixed:** `DataSourceColumnCollection.save_to_store` upserted on the column's natural key without returning
+the id it stored. Two introspections racing on one new column each sent a fresh id; the second landed on the
+first's row, and every tier went on serving that row as it was while caching the second's row under an id no
+row holds. The upsert now returns the stored id: that row is evicted from every tier and the sent id caches
+nothing. It also writes on the caller's connection when given one.
+
+**Fixed:** the datasource collections that write their own SQL (tables, columns, relations, schema digests,
+table templates) declared no table, so a host whose L1 had not been told about them failed at its first read
+(`no such table: datasource_columns`). Each now declares its table as a `TableSchema`, as the hub's migrations
+leave it, and creates its L1 table on whatever L1 it is given. A live test holds each schema to the hub
+table's columns, nullability and defaults.
+
+**Added:** `threetears.core.collections.DeclaredTableCollection`, the base for a collection that writes its
+own SQL over a table it declares as `schema: ClassVar[TableSchema]`. From the schema it takes its key
+(`primary_key_column`, refused at class definition if declared otherwise), its instants (`datetime_columns`)
+and its `table_name`; it creates its L1 table on the registry's L1 at construction; it answers
+`columns_decided_by_store` (a declared column the write leaves out, or a `NOT NULL` default sent as `None`, is
+read back from L3 after the write); and `settle_stored_key(sent, stored, *, conn=None)`, called from a
+natural-key upsert's `save_to_store` with the key its `RETURNING` gave, evicts a row stored under another key
+and caches nothing under the key sent. `threetears.core.cache.base` adds `exact_decimal_type`,
+`stored_decimal` and `UnsupportedL1ColumnError`, which both L1 backends type and refuse `NUMERIC` columns by.
+
+**Added:** `threetears.core.testing.tier_parity`, a gate holding every tier of a collection's table to its
+`TableSchema`, for any host to run over its own collections. `tier_parity_findings(collections, *, build=None)`
+needs nothing live: it creates each schema's table on a fresh SQLite L1 and DuckDB L1, writes one row of
+exacting values (a `Decimal` at its column's full precision, negative; an aware instant to the microsecond; a
+UUID; nested JSON; a bool; bytes; an integer beyond a float's precision) and reads it back, and passes it
+through the collection's L2 codec. `live_tier_parity_findings(conn, collections, *, not_owned=None)` holds the
+migrated Postgres table to the schema (columns, type, precision and scale, nullability, default, primary key)
+and writes each value to a scratch copy of the table to hold asyncpg's read of it: a string cut to its
+column's `varchar(n)`, each column in its own savepoint so a value the table refuses is that column's finding,
+and a schema-qualified table name (`platform_audit.audit_events`) looked up and copied by its schema and table. Each names the collection,
+column and tier of every difference. `tests/enforcement/test_tier_parity.py` runs the first over all 33 3tears
+collections with a schema; the datasources live parity test runs the second. It caught
+`CapabilitySourceCollection`'s schema drifting from the hub's `datasources` table: `kind`, `access_mode` and
+`visibility` have server defaults and `allowed_schemas` is `NOT NULL DEFAULT '[]'`, none of which the schema
+declared; it now does, so a save that leaves one out reads the stored value back. The hub's run of the live gate over its
+own tables caught the same in `threetears.agent.knowledge`: `ConceptCollection` now declares the `concepts`
+defaults on `visibility`, `aliases`, `tags` and `always_inject`, and `PlaybookEntryCollection` those of
+`playbook_entries` on `visibility`, `tags` and `always_inject`. In `threetears.agent.acl`, `row_scope` on
+`NamespaceCollection`, `GroupCollection` and `RoleAssignmentCollection` declares the hub's `DEFAULT 'customer'`,
+and `RoleAssignmentCollection.managed_by` its `DEFAULT 'manual'`. The live gate treats a declared
+`server_default="NULL"` (which a schema uses so generated writes leave a nullable column out) as no default.
+
 ### agent-acl: a delegated agent call's namespaces are asked with the call's own credential
 
 **Fixed:** `CallerNamespaces.names_for` refused every agent call to a tool pod that proves delegation. The registry

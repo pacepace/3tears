@@ -12,15 +12,24 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Float,
     Integer,
     LargeBinary,
     MetaData,
+    Numeric,
     String,
     Table,
 )
 from sqlalchemy.dialects.postgresql import BYTEA, JSONB, UUID
 
+from threetears.core.cache.base import UnsupportedL1ColumnError
 from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.collections.schema_backed import (
+    NUMERIC_TYPE,
+    STRING_TYPE,
+    TableSchema,
+)
+from threetears.core.collections.schema_backed import Column as SchemaColumn
 
 
 def _make_metadata() -> MetaData:
@@ -525,5 +534,92 @@ class TestAdditiveInitialize:
             b.upsert("multi_b", {"id": "b", "name": "beta"})
             assert b.select_by_id("multi_a", "a") is not None
             assert b.select_by_id("multi_b", "b") is not None
+        finally:
+            b.reset()
+
+
+class TestNumericReadsBackAsDecimal:
+    """an exact NUMERIC(p, s) column is an INTEGER scaled by 10**s, read back as the Decimal L3 answers.
+
+    The defect: the L1 stored NUMERIC as REAL and answered a float, so money read through L1 was a
+    float, and ``Decimal * float`` raised wherever it was priced. Kept as a scaled integer, the
+    column is exact, and compares, sorts and sums by value in SQL run against L1 directly.
+    """
+
+    def _backend(self) -> SQLiteBackend:
+        metadata = MetaData()
+        TableSchema(
+            name="rates",
+            primary_key="id",
+            columns=[
+                SchemaColumn("id", STRING_TYPE),
+                SchemaColumn("price", NUMERIC_TYPE, precision=12, scale=2, nullable=True),
+            ],
+        ).to_sqlalchemy_table(metadata)
+        Table("ratios", metadata, Column("id", String(255), primary_key=True), Column("ratio", Float()))
+        b = SQLiteBackend(db_name=f"test_numeric_{uuid.uuid4().hex[:8]}")
+        b.initialize(metadata)
+        return b
+
+    def test_a_numeric_column_reads_back_as_its_decimal_at_scale(self) -> None:
+        b = self._backend()
+        try:
+            b.upsert("rates", {"id": "a", "price": Decimal("1.5")})
+            b.upsert("rates", {"id": "b", "price": 2.125})
+            b.upsert("rates", {"id": "c", "price": Decimal("-12345678.125")})
+            a = b.select_by_id("rates", "a")
+            assert a is not None
+            assert isinstance(a["price"], Decimal) and str(a["price"]) == "1.50"
+            assert a["price"] * Decimal(3) == Decimal("4.50")
+            row_b = b.select_by_id("rates", "b")
+            assert row_b is not None and str(row_b["price"]) == "2.13"
+            # Postgres rounds half away from zero to the column's scale, negatives too
+            row_c = b.select_by_id("rates", "c")
+            assert row_c is not None and str(row_c["price"]) == "-12345678.13"
+            assert b.column_types("rates")["price"] == "INTEGER_DECIMAL_2"
+            b.upsert("ratios", {"id": "a", "ratio": 0.25})
+            ratio = b.select_by_id("ratios", "a")
+            # a float column stays a float: Postgres stores it as one, and asyncpg answers one
+            assert ratio is not None and ratio["ratio"] == 0.25 and isinstance(ratio["ratio"], float)
+        finally:
+            b.reset()
+
+    def test_sql_against_l1_compares_sorts_and_sums_by_value(self) -> None:
+        """``'10.00' < '9.50'`` as text; as the scaled integers the column holds, 1000 > 950."""
+        b = self._backend()
+        try:
+            for key, price in (("a", "9.50"), ("b", "10.00"), ("c", "-2.25"), ("d", "-10.00")):
+                b.upsert("rates", {"id": key, "price": Decimal(price)})
+            code = b.column_types("rates")["price"]
+            ordered = b.execute_query('SELECT "id" FROM "rates" ORDER BY "price"')
+            assert [row["id"] for row in ordered] == ["d", "c", "a", "b"]
+            bounds = b.execute_query('SELECT MIN("price") AS low, MAX("price") AS high FROM "rates"')[0]
+            assert b.deserialize_field(bounds["low"], code) == Decimal("-10.00")
+            assert b.deserialize_field(bounds["high"], code) == Decimal("10.00")
+            # an operand is scaled the same way before it is compared
+            above = b.execute_query(
+                'SELECT "id" FROM "rates" WHERE "price" > ? ORDER BY "id"', (b.serialize_value(Decimal("9.6"), code),)
+            )
+            assert [row["id"] for row in above] == ["b"]
+            total = b.execute_query('SELECT SUM("price") AS total FROM "rates"')[0]["total"]
+            assert b.deserialize_field(total, code) == Decimal("7.25")
+            assert str(b.deserialize_field(total, code)) == "7.25"
+        finally:
+            b.reset()
+
+    @pytest.mark.parametrize(
+        ("sa_type", "reason"),
+        [(Numeric(), "no declared precision and scale"), (Numeric(19, 2), r"NUMERIC\(19, 2\)")],
+    )
+    def test_a_numeric_this_l1_cannot_hold_exactly_is_refused_naming_its_column(
+        self, sa_type: Numeric, reason: str
+    ) -> None:
+        metadata = MetaData()
+        Table("wide", metadata, Column("id", String(255), primary_key=True), Column("amount", sa_type))
+        b = SQLiteBackend(db_name=f"test_numeric_refused_{uuid.uuid4().hex[:8]}")
+        try:
+            with pytest.raises(UnsupportedL1ColumnError, match=rf"wide\.amount: .*{reason}"):
+                b.initialize(metadata)
+            assert not b.has_table("wide")
         finally:
             b.reset()

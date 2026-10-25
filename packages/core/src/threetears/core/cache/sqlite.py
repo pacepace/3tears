@@ -3,7 +3,19 @@
 Uses a named in-memory database (memdb VFS) so multiple connections can access
 the same data. The anchor connection keeps the database alive. Schema is derived
 from SQLAlchemy metadata, with type-aware serialization/deserialization for
-UUID, datetime, JSON, boolean, vector, and bytea columns.
+UUID, datetime, JSON, boolean, vector, bytea and exact NUMERIC columns.
+
+An exact ``NUMERIC(p, s)`` column is kept as an ``INTEGER``: its value scaled by ``10**s``
+(``9.50`` in ``NUMERIC(12, 2)`` is ``950``), and read back as the ``Decimal`` at scale ``s`` that L3
+answers (type code ``INTEGER_DECIMAL_<s>``). Being an integer it is exact, and compares, sorts, takes
+``MIN`` / ``MAX`` and sums correctly in SQL run against L1 directly; a ``SUM`` is the scaled total,
+exact, which :meth:`SQLiteBackend.deserialize_field` turns back into the ``Decimal``. An operand
+compared with such a column in that SQL is scaled the same way first, through
+:meth:`SQLiteBackend.serialize_value` with the column's code. A ``NUMERIC`` wider than 18 digits
+cannot fit a 64-bit integer, and one with no declared precision and scale has no scale to keep, so
+either is refused when its table is created (:class:`~threetears.core.cache.base.UnsupportedL1ColumnError`).
+SQLite's own ``NUMERIC`` and ``REAL`` are binary floats: money read back from them is a ``float``,
+and ``Decimal * float`` raises.
 """
 
 from __future__ import annotations
@@ -19,7 +31,7 @@ from decimal import Decimal
 from types import MappingProxyType
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, LargeBinary, Numeric, String, Text
+from sqlalchemy import Boolean, DateTime, Float, Integer, LargeBinary, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, TSVECTOR, UUID
 from sqlalchemy.sql.sqltypes import ARRAY
 from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
@@ -28,6 +40,8 @@ from threetears.core.backends.schema_sql import PGVECTOR_TYPES, json_default
 from threetears.core.cache.base import (
     build_select_clause,
     bulk_columns,
+    exact_decimal_type,
+    stored_decimal,
 )
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import contain, get_logger
@@ -53,6 +67,23 @@ except ImportError:  # NOSILENT: the uuid-utils extra is optional; its values ne
 
 
 log = get_logger(__name__)
+
+#: the type code of an exact ``NUMERIC`` column, before its ``_<scale>`` suffix
+_DECIMAL_CODE = "INTEGER_DECIMAL"
+#: the widest exact ``NUMERIC`` whose scaled value always fits SQLite's 64-bit ``INTEGER``
+_SQLITE_MAX_DECIMAL_PRECISION = 18
+
+
+def _decimal_code_scale(col_type: str) -> int | None:
+    """the scale an exact ``NUMERIC`` column's type code carries, or ``None`` for any other code.
+
+    :param col_type: a type code (:meth:`SQLiteBackend.column_types`)
+    :ptype col_type: str
+    :return: the column's scale, or ``None`` when the code is not an exact ``NUMERIC``'s
+    :rtype: int | None
+    """
+    prefix = f"{_DECIMAL_CODE}_"
+    return int(col_type[len(prefix) :]) if col_type.startswith(prefix) else None
 
 
 class _PooledConnection:
@@ -145,7 +176,13 @@ class SQLiteBackend:
         already-registered tables untouched, so several single-table
         initializations (the dynamic-collection path) compose on one
         shared backend exactly like a single all-tables metadata.
+
+        :raises UnsupportedL1ColumnError: when a column is one this L1 cannot hold exactly
         """
+        # a column this L1 cannot hold exactly refuses the whole call before anything is created
+        for table in sa_metadata.tables.values():
+            for column in table.columns:
+                self._column_code(table.name, column)
         if self._anchor_conn is None:
             self._anchor_conn = self._make_connection()
 
@@ -156,7 +193,7 @@ class SQLiteBackend:
                 continue
             ddl = self._generate_create_table(table)
             self._anchor_conn.execute(ddl)
-            self._schema_info[table.name] = {col.name: self._map_sqlalchemy_type(col.type) for col in table.columns}
+            self._schema_info[table.name] = {col.name: self._column_code(table.name, col) for col in table.columns}
             new_tables += 1
             log.debug(f"Created SQLite table: {table.name}")
 
@@ -493,11 +530,19 @@ class SQLiteBackend:
         return [dict(row) for row in rows]
 
     def serialize_value(self, value: Any, col_type: str) -> Any:
-        """Serialize a Python value for SQLite storage based on column type."""
+        """Serialize a Python value for SQLite storage based on column type.
+
+        An exact ``NUMERIC(p, s)`` column stores the value as L3 stores it, rounded to scale ``s``
+        (:func:`~threetears.core.cache.base.stored_decimal`), times ``10**s`` as an integer; an
+        operand compared with the column in SQL run against L1 is scaled through here too.
+        """
         if value is None:
             return None
 
         result: Any = value
+        scale = _decimal_code_scale(col_type)
+        if scale is not None and not isinstance(value, bool):
+            return int(stored_decimal(value, scale).scaleb(scale))
 
         # JSON values encode with the platform default L2 uses, so a UUID, datetime or
         # Decimal nested in one caches as its string, as the other tiers store it. a bare
@@ -528,7 +573,10 @@ class SQLiteBackend:
             return None
 
         result: Any = value
-        if col_type == "TEXT_UUID":
+        scale = _decimal_code_scale(col_type)
+        if scale is not None:
+            result = Decimal(value).scaleb(-scale)
+        elif col_type == "TEXT_UUID":
             result = uuid.UUID(value) if value else None
         elif col_type in ("TEXT_JSON", "TEXT_ARRAY", "TEXT_VECTOR"):
             if value and isinstance(value, str):
@@ -586,7 +634,7 @@ class SQLiteBackend:
 
         columns = []
         for column in table.columns:
-            col_type = self._map_sqlalchemy_type(column.type)
+            col_type = self._column_code(table.name, column)
             # Strip serialization hint suffix for DDL (TEXT_UUID -> TEXT, etc.)
             ddl_type = col_type.split("_")[0] if "_" in col_type else col_type
             nullable = ""
@@ -604,6 +652,27 @@ class SQLiteBackend:
         columns_sql = ", ".join(columns)
         return f"CREATE TABLE IF NOT EXISTS {quote_identifier(table.name)} ({columns_sql})"
 
+    def _column_code(self, table: str, column: Any) -> str:
+        """the type code a column of ``table`` is kept by, refusing one this L1 cannot hold exactly.
+
+        :param table: the table
+        :ptype table: str
+        :param column: the SQLAlchemy column
+        :ptype column: Any
+        :return: the type code
+        :rtype: str
+        :raises UnsupportedL1ColumnError: for an exact ``NUMERIC`` with no declared precision and
+            scale, or wider than 18 digits
+        """
+        exact = exact_decimal_type(
+            column.type,
+            table=table,
+            column=column.name,
+            max_precision=_SQLITE_MAX_DECIMAL_PRECISION,
+            backend="SQLite",
+        )
+        return self._map_sqlalchemy_type(column.type) if exact is None else f"{_DECIMAL_CODE}_{exact[1]}"
+
     @staticmethod
     def _map_sqlalchemy_type(sa_type: Any) -> str:
         """Map SQLAlchemy type to SQLite equivalent with serialization hints."""
@@ -616,7 +685,7 @@ class SQLiteBackend:
             return "TEXT_JSON"
         if isinstance(sa_type, Boolean):
             return "INTEGER_BOOL"
-        if isinstance(sa_type, (Float, Numeric)):
+        if isinstance(sa_type, Float):
             return "REAL"
         if isinstance(sa_type, Integer):
             return "INTEGER"

@@ -953,3 +953,21 @@ class TestGroupMembershipCycleGuard:
         pool.fetch.return_value = []
         coll = make_collection(GroupMemberCollection, l3_pool=pool)
         assert await coll.membership_would_cycle(group_id=uuid7(), member_group_id=uuid7()) is False
+
+
+class TestSchemasDeclareTheHubTablesDefaults:
+    """the schemas carry the defaults the hub migrates onto the access tables (hub v001).
+
+    Found by the hub's live tier-parity gate. A default the schema does not declare is a column a
+    save that leaves it out lets the database fill without reading the stored value back.
+    ``namespaces.metadata`` keeps its declared ``'{}'::jsonb`` (generated writes leave it out when a
+    row does not name it, so an update never clears it) and ``face_rest_declaration`` its ``NULL``,
+    for the same reason.
+    """
+
+    @pytest.mark.parametrize("collection", [NamespaceCollection, GroupCollection, RoleAssignmentCollection])
+    def test_row_scope_defaults_to_customer(self, collection: Any) -> None:
+        assert collection.schema.column("row_scope").server_default == "'customer'"
+
+    def test_an_assignment_is_managed_manually_by_default(self) -> None:
+        assert RoleAssignmentCollection.schema.column("managed_by").server_default == "'manual'"

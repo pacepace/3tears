@@ -12,7 +12,8 @@ import gzip
 import json
 import threading
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -86,6 +87,14 @@ class TestAnswerJson:
     )
     def test_it_is_exactly_what_json_dumps_writes(self, answer: Any) -> None:
         assert answer_json(answer) == json.dumps(answer, default=str)
+
+    def test_a_decimal_is_written_as_the_json_number_its_float_writes(self) -> None:
+        exact = Decimal("19380.254913924450")
+        answer = {"total": exact, "rows": [{"share": Decimal("0.125")}] * 300, "when": date(2026, 11, 3)}
+        expected = json.dumps(
+            {"total": float(exact), "rows": [{"share": 0.125}] * 300, "when": "2026-11-03"}, default=str
+        )
+        assert answer_json(answer) == expected
 
     def test_no_one_encoder_call_writes_a_long_list_or_a_whole_mapping(self, monkeypatch: pytest.MonkeyPatch) -> None:
         answer = {"rows": [{"id": n} for n in range(5000)], "meta": {"states": list(range(600))}}
