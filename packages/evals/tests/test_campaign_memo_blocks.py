@@ -15,6 +15,7 @@ from threetears.evals.analysis import (
     campaign_report_html,
     campaign_report_markdown,
 )
+from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
 from threetears.evals.analysis.report.campaign_page import NO_CALL, NO_RECOMMENDATION
 from threetears.evals.analysis.report.model import (
     DisclosureBlock,
@@ -135,7 +136,12 @@ async def test_a_choice_with_no_clear_winner_opens_on_its_summary_then_says_so_t
     summary = "Neither arm pulls ahead on billing or refunds, so cost is the only thing left to choose on."
     page = await kind_page_of("billing", "refunds", memo=recommending_nothing(summary))
     assert page.readings.kind == "choice" and page.recommendation is None
-    assert opening(page) == [("text", "summary"), ("memo", NO_RECOMMENDATION_WORDS["choice"])]
+    # The arms are priced, so the report-wide cost caveat follows, once.
+    assert opening(page) == [
+        ("text", "summary"),
+        ("memo", NO_RECOMMENDATION_WORDS["choice"]),
+        ("cost", COST_ROUTING_CAVEAT),
+    ]
     first = first_screen_markdown(page)
     assert first.index(summary) < first.index("No clear winner")
     # The pairs are code's readings, laid out after the answer wherever the scorecard puts them.

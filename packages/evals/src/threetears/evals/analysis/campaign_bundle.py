@@ -27,8 +27,9 @@ over budget; then it says so, and the overshoot is logged as a warning.
 aspect's part the view hands the campaign's own: each arm's figures across aspects with their weighting
 (``aggregate``, on two or more aspects); each arm's floors, broken, unclear and held, each with the rate it read and,
 when unclear, what would settle it (``floors``); and every disclosure the report shares (``disclosures``), each naming
-the aspects carrying it: the criteria set after their readings were visible, the latency and request-settings
-disclosures wherever they are carried, and any other two or more aspects carry alike, which no aspect's part then
+the aspects carrying it: the criteria set after their readings were visible, that each cost figure reflects its
+runs' provider routing wherever an arm is priced (``cost_routing``, as the page says it), the latency and
+request-settings disclosures wherever they are carried, and any other two or more aspects carry alike, which no aspect's part then
 repeats (a confound's explanation likewise, in ``confound_catalog``). A sizing carries its kind on each side
 (``to_settle``), a change and every other figure in points reads to the decimal the page prints, an aspect carries
 its declared ``short_name``, and a measure its page name, a goal check's its declared name.
@@ -78,6 +79,7 @@ from threetears.evals.analysis.depth_reading import aspect_depth
 from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines_bounded
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import CellAddress, campaign_cell_aliases
+from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT, priced_aspects
 from threetears.evals.analysis.report.decision import (
     CasesNeeded,
     FloorReadings,
@@ -828,8 +830,9 @@ def _alike(held: Sequence[tuple[str, Any]]) -> list[dict[str, Any]]:
 
 def _shared_disclosures(bundle: CampaignBundle, parts: Sequence[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     """Each disclosure the report shares, taken out of the aspects' parts and said once, naming the aspects that carry
-    it: the criteria set after their readings were visible, each report-wide kind (:data:`_REPORT_WIDE`) whatever
-    carries it, and any other a second aspect carries alike. A value one aspect alone carries stays in its part."""
+    it: the criteria set after their readings were visible, that every cost figure is its runs' provider routing's
+    wherever an arm is priced, each report-wide kind (:data:`_REPORT_WIDE`) whatever carries it, and any other a second
+    aspect carries alike. A value one aspect alone carries stays in its part."""
     said: dict[str, list[dict[str, Any]]] = {}
     late: dict[tuple[str, str | None, str | None], list[str]] = {}
     for aspect in bundle.aspects:
@@ -841,6 +844,9 @@ def _shared_disclosures(bundle: CampaignBundle, parts: Sequence[dict[str, Any]])
             {"criterion": criterion, "name": name, "set_at": set_at, "aspects": aspects}
             for (criterion, name, set_at), aspects in late.items()
         ]
+    if priced := priced_aspects(bundle.aspects):
+        # Said as the page says it, once: a cost is the runs' provider routing's, never the arm's alone.
+        said["cost_routing"] = [{"aspects": priced, "said": COST_ROUTING_CAVEAT}]
     for key in dict.fromkeys(key for part in parts for key in part["disclosures"]):
         groups = _alike([(part["aspect"], part["disclosures"][key]) for part in parts if key in part["disclosures"]])
         shared = [group for group in groups if key in _REPORT_WIDE or len(group["aspects"]) > 1]
