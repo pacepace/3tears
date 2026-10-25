@@ -8,7 +8,9 @@ leaves the template's ``updated_at``, so naming a stratum stales no analysis and
 It rides ``AnalysisContextBundle.stratum_names``, written only when declared (an aspect bundle of a template naming no
 stratum is shape 64 byte for byte), and prints where a stratum is named: the report input's ``Stratum.name``, so a
 figure key's ``strata.<id>.name`` and a plan's stratum labels, and an aspect page's stratum columns and cases table.
-Undeclared, a stratum prints as its id.
+Undeclared, a stratum prints as its id on an aspect page, and a figure key prints its reader name (the id with its
+underscores as spaces, :func:`~threetears.evals.analysis.report.figure_keys.reader_name`), so a plan's prose never
+prints an id above Full results through a key.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, evide
 from threetears.evals.analysis.campaign_bundle import CAMPAIGN_BUNDLE_SHAPE, build_campaign_bundle
 from threetears.evals.analysis import TableBlock, build_code_only_report
 from threetears.evals.analysis.report.build import NO_STRATUM
-from threetears.evals.analysis.report.figure_keys import render, resolve
+from threetears.evals.analysis.report.figure_keys import reader_name, render, resolve
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel import StratumFacts
 from threetears.evals.run.definition_digests import measured_template_digest, template_digest
@@ -220,11 +222,12 @@ class TestADeclaredNameReachesThePage:
         built = _input({"off_lane": "Off-lane asks"})
         assert [(stratum.id, stratum.name) for stratum in built.strata] == [("off_lane", "Off-lane asks")]
 
-    def test_an_undeclared_stratum_has_no_name_and_a_figure_key_falls_back_to_its_id(self) -> None:
+    def test_an_undeclared_stratum_has_no_name_and_a_figure_key_falls_back_to_its_reader_name(self) -> None:
         built = _input({})
         (stratum,) = built.strata
         assert stratum.name is None
-        assert resolve("strata.off_lane.name", built).value == "off_lane"
+        assert resolve("strata.off_lane.name", built).value == "off lane"
+        assert reader_name("stratum", "off_lane", built) == "off lane"
 
     def test_a_figure_key_and_rendered_prose_print_the_declared_name(self) -> None:
         built = _input({"off_lane": "Off-lane asks"})

@@ -1,0 +1,373 @@
+{
+  "mode": "decide",
+  "headline_kind": "decision",
+  "headline": "Keep {control.name}. Both candidates cost {cost.uplift_range|pct} more per reply and stay in character less often.",
+  "lede": "{arm:qwen3.8-flash} is worse on the asked pass rate, by {reading.qwen3.8-flash.high|abs|pts} to {reading.qwen3.8-flash.low|abs|pts} points, and neither candidate beats {control.name} on anything this campaign measured. A candidate priced at or below {control.name} that holds character as well would change the answer.",
+  "decision": {
+    "slots": [
+      {
+        "key": "recommendation",
+        "text": "**Keep {control.name}** ({control.served_model}). It has the highest pass rate ({pass_rate.September|pct}), the highest in-character rate ({judged.persona.holds_character.September|pct}) and the lowest cost ({cost_per_1k.September|usd_per_1k}).",
+        "caveats": []
+      },
+      {
+        "key": "why_not",
+        "text": "**{arm:qwen3.8-flash}:** {cost.uplift.qwen3.8-flash|pct} more per reply, in-character {contrast.qwen3.8-flash.persona.holds_character.delta|pts} points, pass rate {reading.qwen3.8-flash.change|pts}.\n**{arm:1017}:** {cost.uplift.1017|pct} more per reply, in-character {contrast.1017.persona.holds_character.delta|pts} points.",
+        "caveats": []
+      },
+      {
+        "key": "watch",
+        "text": "The weakest margin: {weakest.arm}'s worst drop, {weakest.value|abs|pts} points, sits {weakest.margin} points inside {weakest.criterion}; past that line {control.name} is still cheaper, so the call holds. {arm:1017} spent {reasoning_ratio.1017|pct} of its output reasoning against {control.name}'s {reasoning_ratio.September|pct}, and other swept levers varied with the model, so its result is not the model's alone. Two of {arm:qwen3.8-flash}'s runs each lost one trial to the test setup.",
+        "caveats": [
+          "confound:observed:reasoning_ratio",
+          "confound:model",
+          "short_run:01a170ab-d2da-750d-a1e3-f4b43716844d",
+          "short_run:01a17121-6e85-732d-ab3a-cf86aed8cdc6"
+        ]
+      },
+      {
+        "key": "next",
+        "text": "Run a candidate priced at or below {control.name} on the same cases, with off-lane asks oversampled, since they carry about {strata.off_lane.loss_share|pct10} of each candidate's loss: if it holds character within the margin, it replaces {control.name}; if not, {control.name} stays.",
+        "caveats": []
+      }
+    ],
+    "confidence": {
+      "form": "high_if_immaterial",
+      "caveats": [
+        {
+          "id": "judge_uncalibrated",
+          "material_if": "The judge is uncalibrated. Material only if it misreads in-character replies; cost, the deciding finding, is measured and doesn't depend on it."
+        },
+        {
+          "id": "late:aspect",
+          "material_if": "The aspect was chosen after the results. Material only if a different aspect would have favored a candidate."
+        },
+        {
+          "id": "late:control",
+          "material_if": "The control was chosen after the results. Material only if a different control would have favored a candidate."
+        }
+      ]
+    }
+  },
+  "method": [
+    {
+      "term": "Cases",
+      "text": "{cases} cases, each run {repeats} times per arm; arms answered the same cases, so differences are paired.",
+      "caveats": []
+    },
+    {
+      "term": "Pass",
+      "text": "A trial passes when every check and every judged dimension passes. The asked reading uses confirmatory {reading.qwen3.8-flash.level} intervals.",
+      "caveats": []
+    },
+    {
+      "term": "Corrected comparisons",
+      "text": "{family.disclosure}",
+      "caveats": []
+    },
+    {
+      "term": "Judge",
+      "text": "{judge.model}; evidence tier {judge.tier} for all dimensions: no human calibration and no test-retest yet.",
+      "caveats": []
+    },
+    {
+      "term": "Cost",
+      "text": "Production roles only, per reply, as each run's provider routing set it.",
+      "caveats": []
+    },
+    {
+      "term": "Latency",
+      "text": "{caveats.latency}",
+      "caveats": [
+        "latency"
+      ]
+    },
+    {
+      "term": "Not compared",
+      "text": "Token counts and model calls were recorded but not reported. The simulator's request settings were not recorded on every run, so whether they varied between arms is unknown.",
+      "caveats": [
+        "unreported:input_tokens",
+        "unreported:llm_calls",
+        "unreported:output_tokens",
+        "apparatus:simulator_sent_settings"
+      ]
+    },
+    {
+      "term": "Strata",
+      "text": "Per-stratum rates are descriptive. Their intervals are not corrected, and small strata move a lot on one case.",
+      "caveats": []
+    },
+    {
+      "term": "Source",
+      "text": "{meta.provenance}",
+      "caveats": []
+    }
+  ],
+  "schema": "report-plan/1",
+  "signals": {
+    "candidate_structure": "control_plus_candidates",
+    "baseline": "control",
+    "score_type": "mixed",
+    "strata": "many_strata",
+    "criteria": "margin",
+    "cross_cutting": [],
+    "log_cost_axis": false
+  },
+  "shape": "D",
+  "masthead": {
+    "kind": "Change · control vs candidates",
+    "system": "Kairo persona model, round 2",
+    "counts": "{control.name} vs {n_candidates} candidates · {aspect.name} · {cases} cases × {repeats} repeats",
+    "run_date": "{meta.run_date}",
+    "synthetic": false
+  },
+  "arms": [
+    {
+      "id": "September",
+      "color_slot": -1
+    },
+    {
+      "id": "qwen3.8-flash",
+      "color_slot": 0
+    },
+    {
+      "id": "1017",
+      "color_slot": 1
+    }
+  ],
+  "show_arms_key": true,
+  "flag": [],
+  "options": {
+    "rows": [
+      {
+        "option": "September",
+        "role": "recommended"
+      },
+      {
+        "option": "qwen3.8-flash",
+        "role": "alternative"
+      },
+      {
+        "option": "1017",
+        "role": "alternative"
+      }
+    ],
+    "columns": [
+      "pass_rate",
+      "reading.change",
+      "reading.verdict",
+      "judged:persona.holds_character",
+      "cost_per_1k"
+    ]
+  },
+  "summary": [
+    {
+      "kind": "forest",
+      "title": "Change against September, in points",
+      "query": {
+        "source": "contrasts",
+        "aspect": "",
+        "measures": [
+          "passed",
+          "persona.holds_character"
+        ],
+        "arms": [],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "",
+      "level": "99.69%",
+      "unit": "points",
+      "domain": [
+        -14.0,
+        4.0
+      ]
+    },
+    {
+      "kind": "bars",
+      "title": "Cost per thousand replies",
+      "query": {
+        "source": "measures",
+        "aspect": "",
+        "measures": [
+          "production_replicating_cost"
+        ],
+        "arms": [],
+        "strata": [],
+        "limit": 0,
+        "transform": "per_1k",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "",
+      "level": "",
+      "unit": "usd",
+      "domain": [
+        0.0,
+        3.0
+      ]
+    }
+  ],
+  "sections": [
+    {
+      "id": "question",
+      "eyebrow": "The asked question",
+      "headline": "Both candidates stay inside the {aspect.margin}-point margin, but {arm:qwen3.8-flash} is separated as worse",
+      "takeaway": "The question: {meta.question} The shaded region is the margin.",
+      "chart": {
+        "kind": "forest",
+        "title": "",
+        "query": {
+          "source": "readings",
+          "aspect": "character adherence (v2)",
+          "measures": [],
+          "arms": [],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [
+          {
+            "kind": "margin",
+            "key": "aspect.margin"
+          }
+        ],
+        "emphasis": "qwen3.8-flash",
+        "level": "95%",
+        "unit": "points",
+        "domain": [
+          -16.0,
+          4.0
+        ]
+      },
+      "caption": "Pass rate on {aspect.name}: a trial passes when every check and judged dimension passes. Confirmatory {reading.qwen3.8-flash.level} intervals on {cases} paired cases. The margin was set after the readings were visible.",
+      "caveats": []
+    },
+    {
+      "id": "strata",
+      "eyebrow": "Where character is lost",
+      "headline": "Off-lane asks, the largest stratum, carry about {strata.off_lane.loss_share|pct10} of each candidate's loss",
+      "takeaway": "Change in in-character rate against {control.name}, by kind of listener message. The twelve largest strata, by cases. Bold rows are separated from zero before any correction; read them as leads.",
+      "chart": {
+        "kind": "diverging_bars",
+        "title": "",
+        "query": {
+          "source": "strata",
+          "aspect": "",
+          "measures": [
+            "persona.holds_character"
+          ],
+          "arms": [],
+          "strata": [],
+          "limit": 12,
+          "transform": "arm_minus_control",
+          "small_multiples_by": "arm"
+        },
+        "reference": [],
+        "emphasis": "",
+        "level": "95% uncorrected",
+        "unit": "points",
+        "domain": [
+          -26.0,
+          8.0
+        ]
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "examples",
+      "eyebrow": "What the failures look like",
+      "headline": "Most failures answer an off-topic question instead of brushing it off",
+      "takeaway": "Failed trials on in-character, with the judge's reason and the end of the reply.",
+      "chart": {
+        "kind": "examples",
+        "title": "",
+        "query": {
+          "source": "examples",
+          "aspect": "",
+          "measures": [],
+          "arms": [
+            "qwen3.8-flash",
+            "1017",
+            "September"
+          ],
+          "strata": [
+            "off_lane",
+            "multi",
+            "about"
+          ],
+          "limit": 4,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    }
+  ],
+  "explore": [
+    {
+      "title": "Test the margin",
+      "controls": [
+        {
+          "id": "margin",
+          "kind": "slider",
+          "title": "Margin (points)",
+          "binds": "margin",
+          "min": 0.0,
+          "max": 15.0,
+          "step": 0.5,
+          "default": 15.0,
+          "options": []
+        },
+        {
+          "id": "measure",
+          "kind": "segmented",
+          "title": "Measure",
+          "binds": "",
+          "min": 0.0,
+          "max": 0.0,
+          "step": 0.0,
+          "default": 0.0,
+          "options": [
+            "Pass rate (confirmatory)",
+            "In-character (corrected)"
+          ]
+        }
+      ],
+      "recomputes": "per candidate: holds or fails at this margin, and the margin above which it holds (−lo); restate that the control stays recommended at any margin because no candidate improves on it"
+    }
+  ],
+  "full_results": [
+    "arms_by_measure",
+    "contrasts",
+    "strata"
+  ],
+  "durable_claims": [
+    {
+      "text": "{arm:qwen3.8-flash} costs {cost.uplift.qwen3.8-flash|pct} more per reply than {control.name} under production routing, so the earlier finding that it lowers cost does not hold here.",
+      "confidence": "high",
+      "keys": [
+        "cost.uplift.qwen3.8-flash"
+      ]
+    },
+    {
+      "text": "Off-lane asks are where persona models lose character: about {strata.off_lane.loss_share|pct10} of each candidate's in-character loss.",
+      "confidence": "medium",
+      "keys": [
+        "strata.off_lane.loss_share"
+      ]
+    }
+  ],
+  "answers": []
+}

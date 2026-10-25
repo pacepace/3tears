@@ -4,7 +4,8 @@ A generation is written by the report planner in two calls (``threetears.evals.a
 its prose. A test that drives a generation end to end needs a planner whose replies pass the plan checks for whatever
 campaign it generates over, so :func:`structure_reply` chooses the structure code's own facts permit (the dominant
 option recommended, each open caveat landed once, one scoreboard section, one durable claim), and :func:`prose_reply`
-writes every prose key that structure creates, with no digit outside a figure key. :class:`PlanReplies` answers each
+writes every prose key that structure creates, with no digit outside a figure key and, in Watch, the weakest margin
+by its keys. :class:`PlanReplies` answers each
 call of a generation by the contract it was sent.
 """
 
@@ -133,10 +134,15 @@ def prose_reply(report_input: ReportInput, structure: dict[str, Any] | None = No
         "lede": f"{{arm:{recommended}}} is ahead where it counts. More cases would settle it.",
         "durable_claims.0": claim,
     }
+    facts = plan_facts(report_input)
+    if facts.weakest is not None:
+        texts["decision.watch"] = (
+            "The weakest margin is {weakest.arm} on {weakest.criterion}, a gap of {weakest.margin}."
+        )
     return {
         "prose": [
             {"key": slot.key, "text": texts.get(slot.key, "The evidence reads this way, as the chart shows.")}
-            for slot in prose_slots(chosen, plan_facts(report_input))
+            for slot in prose_slots(chosen, facts)
         ]
     }
 

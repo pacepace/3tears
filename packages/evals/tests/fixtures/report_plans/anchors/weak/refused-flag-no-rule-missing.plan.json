@@ -12,7 +12,7 @@
       },
       {
         "key": "where_it_flips",
-        "text": "The answer turns on what one point of in-character rate is worth per month. Below the price where the savings equal the loss, {arm:f64} wins; above it, {control.name} does. Set the price in the explore part to see the flip.",
+        "text": "The answer turns on what one point of in-character rate is worth per month. {arm:f64} saves {cost.uplift.f64|abs|pct} per reply at {meta.volume_per_month|int} replies a month for {contrast.f64.persona.delta|abs|pts} points: while a point is worth less than that monthly saving shared across those points, {arm:f64} wins; past that price, {control.name} does.",
         "caveats": []
       },
       {
@@ -22,7 +22,7 @@
       },
       {
         "key": "what_settles_it",
-        "text": "A two-week live test of the hybrid on a slice of traffic, watching session length and thumbs-down rate in conversations past five turns, where raters already lean toward {control.name}.",
+        "text": "A two-week live test of the hybrid on a slice of traffic, watching session length and thumbs-down rate in conversations past five turns, where raters already lean toward {control.name}: if neither worsens, the hybrid takes the lean; if either does, {control.name} keeps those conversations.",
         "caveats": []
       }
     ],
@@ -175,7 +175,7 @@
     {
       "id": "aspects",
       "eyebrow": "Every aspect, against Production",
-      "headline": "Personality is the only judged loss for {arm:f64}; {arm:f16} also gets music facts wrong more often",
+      "headline": "In-character rate is the only judged loss for {arm:f64}; {arm:f16} also gets music facts wrong more often",
       "takeaway": "Change in points against {control.name} on the same conversations, for the two judged aspects. A whisker clear of zero is a real change.",
       "chart": {
         "kind": "forest",
@@ -204,7 +204,7 @@
     },
     {
       "id": "depth",
-      "eyebrow": "Where the personality goes",
+      "eyebrow": "Where in-character rate is lost",
       "headline": "The flash models hold character for a few turns, then drift",
       "takeaway": "In-character rate by how deep into the conversation the reply is. Short conversations are close; the gap opens past five turns.",
       "chart": {

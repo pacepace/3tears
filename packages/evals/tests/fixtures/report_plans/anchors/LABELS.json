@@ -34,7 +34,7 @@
       "input": "r5",
       "expect": "pass",
       "labeled_by": "pending_owner",
-      "note": "references/r5-kairo-round2.plan.json, whose Watch names the weakest margin (R7) and whose Next names the experiment that would change the answer (R10)."
+      "note": "references/r5-kairo-round2.plan.json: a two-sentence lede, no hedge above the fold, no quoted question, a Watch citing the weakest margin code found, and a Next naming the experiment that would change the answer and which way."
     },
     {
       "plan": "anchors/weak/refused-facts-shape.plan.json",
@@ -255,7 +255,7 @@
       "faults": [
         [
           "lede",
-          "reading.1017.drop"
+          "reading.qwen3.8-flash.drop"
         ]
       ],
       "labeled_by": "pending_owner",
@@ -270,11 +270,56 @@
       "faults": [
         [
           "lede",
-          "types the number(s) ['15']"
+          "types the number(s) ['3.4']"
         ]
       ],
       "labeled_by": "pending_owner",
       "note": "A typed number in prose (D3)."
+    },
+    {
+      "plan": "anchors/weak/refused-weakest.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "weakest",
+      "faults": [
+        [
+          "decision.slots[2].text",
+          "names no weakest margin"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "A decide plan's Watch citing no weakest-margin key."
+    },
+    {
+      "plan": "anchors/weak/refused-reader-ids.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "reader_ids",
+      "faults": [
+        [
+          "decision.slots[1].text",
+          "types the judged id 'persona.holds_character'"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "An internal id typed above Full results where its reader name differs."
+    },
+    {
+      "plan": "anchors/weak/refused-reader-ids-question.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "reader_ids",
+      "faults": [
+        [
+          "sections[0].takeaway",
+          "quotes the campaign's question"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "The campaign's question quoted above Full results, in the campaign's own ids."
     },
     {
       "plan": "anchors/weak/item-R2.plan.json",
@@ -319,7 +364,7 @@
       "expect": "fails_item",
       "item": "R6",
       "labeled_by": "pending_owner",
-      "note": "Why not the others names measures by their keys."
+      "note": "Why not the others names the judged measure by a fragment of its key, which no code check matches."
     },
     {
       "plan": "anchors/weak/item-R7.plan.json",
@@ -328,7 +373,7 @@
       "expect": "fails_item",
       "item": "R7",
       "labeled_by": "pending_owner",
-      "note": "Watch is generic monitoring advice and names no margin."
+      "note": "Watch cites the weakest margin's arm but is generic monitoring advice and names no margin."
     },
     {
       "plan": "anchors/weak/item-R8.plan.json",
@@ -365,6 +410,15 @@
       "item": "R11",
       "labeled_by": "pending_owner",
       "note": "Each confidence clause restates its caveat without saying what would make it material."
+    },
+    {
+      "plan": "anchors/weak/item-R12.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R12",
+      "labeled_by": "pending_owner",
+      "note": "Why not gives a candidate's own cost as what it costs more than the control."
     }
   ]
 }

@@ -220,6 +220,8 @@ def _prefix(report_input: ReportInput, facts: PlanFacts, modes: Sequence[str], b
         },
         "disclosures": {mode: list(implied) for mode, implied in facts.disclosures.items()},
         "caveats": [caveat.model_dump(mode="json") for caveat in facts.caveats],
+        "weakest_margin": facts.weakest.model_dump(mode="json") if facts.weakest is not None else None,
+        "reader_names": {kind: dict(names) for kind, names in facts.names.items()},
     }
     return f"{REPORT_INPUT_HEADING}\n{planner_view(report_input, budget=budget)}\n\n{FACTS_HEADING}\n{_compact(view)}"
 
@@ -239,8 +241,8 @@ def first_plan_request(
     (:func:`~threetears.evals.analysis.report_input_build.planner_view`), then code's facts
     (:func:`~threetears.evals.analysis.report_plan_facts.plan_facts`): the shape and signals, the allowed modes, the
     masthead, each arm with its tag, name and colour, whether the arms key shows, the options columns and full-results
-    tables, every warning code raises on each arm, numbered as an answer is keyed, and the disclosures each mode
-    implies.
+    tables, every warning code raises on each arm, numbered as an answer is keyed, the disclosures each mode implies,
+    the weakest margin with the keys that name it, and each id's reader name.
 
     :param report_input: The campaign's report input.
     :ptype report_input: ReportInput

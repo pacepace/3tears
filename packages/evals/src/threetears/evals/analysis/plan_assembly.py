@@ -8,7 +8,8 @@ the seam between them:
 - :func:`check_structure` refuses a structure before any prose is asked for: a mode outside the modes code allows, and
   every fault the plan checks find in its choices
   (:func:`~threetears.evals.analysis.report_plan_checks.validate_plan`, run on the structure completed with
-  a placeholder in every prose slot, which carries no key and no digit, so only the choices can be faulted).
+  a placeholder in every prose slot, which carries no digit and no key but, in a decide plan's Watch, the weakest
+  margin's, so only the choices can be faulted).
 - :func:`prose_slots` lists the prose slots a structure creates, each by its key, what it holds and whether it may be
   empty. The prose call is asked for exactly these keys.
 - :func:`read_prose` refuses a prose reply holding a key twice, a key no slot has, or a slot left out or left empty
@@ -55,6 +56,15 @@ __all__ = ["ProseSlot", "check_structure", "planned_report", "prose_slots", "rea
 
 #: What every prose slot holds while a structure is checked: no figure key and no digit, so no prose check can fault it.
 _PROSE_PLACEHOLDER = "To be written."
+
+#: What a decision slot holds where code checks more of it than its key, by mode and slot: a decide plan's Watch cites
+#: the weakest margin by a ``weakest.*`` key (:func:`~threetears.evals.analysis.report_plan_checks.validate_plan`).
+_SLOT_HOLDS = {
+    ("decide", "watch"): (
+        "the decision block's watch slot: open with the weakest margin, citing it by its `weakest.` keys "
+        "(weakest_margin under WHAT CODE HAS ALREADY DECIDED), then any scoped confound or unmeasured risk"
+    ),
+}
 
 #: A fault: the field path it sits at, and why.
 _Fault = tuple[str, str]
@@ -114,7 +124,7 @@ def _slots(structure: PlanStructure, facts: PlanFacts) -> Iterator[ProseSlot]:
             f"the clause for caveat {caveat!r}: what it is, and what would make it material",
         )
     for name in MODE_SLOTS[structure.mode]:
-        yield slot(f"decision.{name}", f"the decision block's {name} slot")
+        yield slot(f"decision.{name}", _SLOT_HOLDS.get((structure.mode, name), f"the decision block's {name} slot"))
     for index in range(len(structure.summary)):
         yield slot(f"summary.{index}.title", f"summary chart {index}'s title", optional=True)
     for section in structure.sections:
@@ -300,6 +310,14 @@ def _landed(structure: PlanStructure) -> dict[str, list[str]]:
     return landed
 
 
+def _placeholder(key: str, facts: PlanFacts) -> str:
+    """A slot's text while its structure is checked: the placeholder, and in Watch the weakest margin's key the prose
+    must cite, so the check faults only the choices."""
+    if key == "decision.watch" and facts.weakest is not None:
+        return f"{_PROSE_PLACEHOLDER} {{{facts.weakest.keys[0]}}}"
+    return _PROSE_PLACEHOLDER
+
+
 def check_structure(
     structure: PlanStructure, report_input: ReportInput, facts: PlanFacts, allowed_modes: Sequence[str]
 ) -> None:
@@ -319,7 +337,7 @@ def check_structure(
     faults: list[_Fault] = []
     if structure.mode not in allowed_modes:
         faults.append(("mode", f"is {structure.mode!r}, and code allows only {list(allowed_modes)} for this input"))
-    placeholder = {slot.key: _PROSE_PLACEHOLDER for slot in prose_slots(structure, facts)}
+    placeholder = {slot.key: _placeholder(slot.key, facts) for slot in prose_slots(structure, facts)}
     try:
         complete_plan(planned_report(structure, placeholder, facts), report_input, facts)
     except PlanRefusal as refused:

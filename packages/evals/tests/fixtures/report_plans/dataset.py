@@ -10,8 +10,9 @@ later. This module is the dataset's one reader:
   weakened on one plan-check rule or one rubric item (``weaken_anchors.py`` writes them). ``anchors/LABELS.json`` says
   what each anchor is expected to be and who labeled it: every anchor starts ``pending_owner`` and counts as a label
   only once the owner approves it. ``rN/runs/<run_id>.plan.json`` are the planner's plans (``plan_eval.py``).
-- **Rubric.** ``rubric/v1.md`` and ``rubric/v1.json``: immutable, pinned by ``rubric/DIGESTS.json``. R1 is code's
-  (:func:`code_score`); the rest are a model judge's.
+- **Rubric.** ``rubric/v<N>.md`` and ``rubric/v<N>.json``, one pair per version: immutable, pinned by
+  ``rubric/DIGESTS.json``. R1 is code's (:func:`code_score`); the rest are a model judge's. The brief and a record
+  use the newest version (:func:`latest_rubric`) unless told otherwise, and a record names the version it scored.
 - **Scores.** ``rN/runs/<run_id>.scores.json``, one :class:`PlanScores` per plan scored. A record is sound when
   :func:`score_faults` finds nothing: its digests match the files, every model-scored item is scored once, and every
   quote is text the plan holds. Records pool only by :func:`pool_key`: the planner prompt digest, the rubric digest and
@@ -71,9 +72,11 @@ __all__ = [
     "pools",
     "prose_fields",
     "report_input_of",
+    "latest_rubric",
     "rubric",
     "record",
     "rubric_digest",
+    "rubric_versions",
     "score_faults",
     "score_skeleton",
     "scores_json",
@@ -138,23 +141,34 @@ def plan_input(path: Path) -> str:
 # --- the rubric ------------------------------------------------------------------------------------------------------
 
 
-def rubric(version: str = "v1") -> dict[str, Any]:
-    """A rubric version's items, as data."""
-    loaded: dict[str, Any] = json.loads((RUBRICS / f"{version}.json").read_text(encoding="utf-8"))
+def rubric_versions() -> list[str]:
+    """Every rubric version, oldest first, as ``rubric/DIGESTS.json`` pins them."""
+    pinned: dict[str, Any] = json.loads((RUBRICS / "DIGESTS.json").read_text(encoding="utf-8"))
+    return sorted(pinned, key=lambda version: int(version.removeprefix("v")))
+
+
+def latest_rubric() -> str:
+    """The newest rubric version: what a brief and a record use unless told otherwise."""
+    return rubric_versions()[-1]
+
+
+def rubric(version: str | None = None) -> dict[str, Any]:
+    """A rubric version's items, as data; the newest version by default."""
+    loaded: dict[str, Any] = json.loads((RUBRICS / f"{version or latest_rubric()}.json").read_text(encoding="utf-8"))
     return loaded
 
 
-def rubric_digest(version: str = "v1") -> str:
-    """A rubric version's digest: the sha256 of its JSON file, which a score record names."""
-    return sha256_file(RUBRICS / f"{version}.json")
+def rubric_digest(version: str | None = None) -> str:
+    """A rubric version's digest: the sha256 of its JSON file, which a score record names; the newest by default."""
+    return sha256_file(RUBRICS / f"{version or latest_rubric()}.json")
 
 
-def model_items(version: str = "v1") -> list[str]:
-    """The items a model (or the owner) scores, in the rubric's order; the rest are code's."""
+def model_items(version: str | None = None) -> list[str]:
+    """The items a model (or the owner) scores, in the rubric's order; the rest are code's. The newest by default."""
     return [item["id"] for item in rubric(version)["items"] if item["scored_by"] == "model"]
 
 
-def code_score(plan: ReportPlan, report_input: ReportInput, version: str = "v1") -> tuple[str, str]:
+def code_score(plan: ReportPlan, report_input: ReportInput, version: str | None = None) -> tuple[str, str]:
     """R1, scored by code: the plan checks pass and the first evidence section draws the shape's spine chart.
 
     :return: ``(verdict, reason)``.
@@ -317,9 +331,10 @@ def _planner(plan_path: Path, name: str) -> PlannerInfo:
     )
 
 
-def score_skeleton(plan_path: Path, *, scorer: str = "claude-opus-5-5", version: str = "v1") -> dict[str, Any]:
+def score_skeleton(plan_path: Path, *, scorer: str = "claude-opus-5-5", version: str | None = None) -> dict[str, Any]:
     """A score record for the plan at ``plan_path`` with every field but the verdicts set."""
     name = plan_input(plan_path)
+    version = version or latest_rubric()
     return {
         "schema": SCORES_SCHEMA,
         "run_id": plan_path.name.removesuffix(".plan.json"),
@@ -375,12 +390,13 @@ class ScorerReply(_Record):
     scored_at: str = Field(default="", description="When it was scored, ISO-8601; empty for now.")
 
 
-def scoring_brief(plan_path: Path, *, version: str = "v1") -> str:
+def scoring_brief(plan_path: Path, *, version: str | None = None) -> str:
     """The brief a scorer reads for one plan: the task, the rubric, the plan, the input's facts and the reply's shape.
 
     It is blind: it names neither the plan's file nor what wrote it, since an anchor's file name says what it is
     weakened on and a run's names its planner model. :func:`record` adds both to the reply.
     """
+    version = version or latest_rubric()
     name = plan_input(plan_path)
     report_input = report_input_of(name)
     plan = load_plan(plan_path)
@@ -421,7 +437,7 @@ def scores_path(plan_path: Path) -> Path:
     return plan_path.with_name(plan_path.name.removesuffix(".plan.json") + ".scores.json")
 
 
-def record(plan_path: Path, reply: str, *, scorer: str, version: str = "v1") -> PlanScores:
+def record(plan_path: Path, reply: str, *, scorer: str, version: str | None = None) -> PlanScores:
     """A scorer's reply for one plan made into its score record, checked; the caller writes it.
 
     :param plan_path: The plan scored.
@@ -450,7 +466,9 @@ def scores_json(scores: PlanScores) -> str:
 
 _USAGE = """usage, from the repository root (paths relative to report_plans/):
   dataset.py brief <plan>                  print the plan's scoring brief
-  dataset.py record <plan> <reply> <scorer>  write <run_id>.scores.json beside the plan from a scorer's reply file"""
+  dataset.py record <plan> <reply> <scorer> [<rubric version>]
+                                           write <run_id>.scores.json beside the plan from a scorer's reply file,
+                                           scored against the newest rubric unless a version is named"""
 
 
 def main(argv: Sequence[str]) -> int:
@@ -463,9 +481,10 @@ def main(argv: Sequence[str]) -> int:
     if len(argv) == 2 and argv[0] == "brief":
         print(scoring_brief(at(argv[1])))
         return 0
-    if len(argv) == 4 and argv[0] == "record":
+    if len(argv) in (4, 5) and argv[0] == "record":
         plan = at(argv[1])
-        scores = record(plan, Path(argv[2]).read_text(encoding="utf-8"), scorer=argv[3])
+        version = argv[4] if len(argv) == 5 else None
+        scores = record(plan, Path(argv[2]).read_text(encoding="utf-8"), scorer=argv[3], version=version)
         scores_path(plan).write_text(scores_json(scores), encoding="utf-8")
         print(f"Wrote {scores_path(plan).relative_to(HERE)}.")
         return 0

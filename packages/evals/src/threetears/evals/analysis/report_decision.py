@@ -88,7 +88,7 @@ from itertools import combinations
 from typing import Literal
 
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.figure_keys import flip_margin, resolve
+from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report_input import (
     Aspect,
     Criterion,
@@ -96,8 +96,8 @@ from threetears.evals.analysis.report_input import (
     LateCriterion,
     Reading,
     ReportInput,
-    Stat,
 )
+from threetears.evals.analysis.report_margins import criterion_figures, flip_margin
 
 __all__ = [
     "Caveat",
@@ -283,30 +283,8 @@ def report_caveats(report_input: ReportInput) -> list[Caveat]:
 # --- gates and survivors -------------------------------------------------------------------------------------------
 
 
-def _criterion_figures(report_input: ReportInput, criterion: Criterion, arm: str) -> list[float]:
-    """The arm's figures a criterion reads, at its statistic, where its scope reads them."""
-    holders: list[Mapping[str, Stat]] = []
-    if criterion.scope == "each_cell":  # prose-canary: allow — Criterion.scope is the input's declared enum, not prose
-        holders = [cell.per_arm.get(arm, {}) for cell in report_input.cells.values()]
-    elif criterion.scope == "each_task" or criterion.task is not None:  # prose-canary: allow — the same declared enum
-        holders = [task.per_arm.get(arm, {}) for task in report_input.tasks if criterion.task in (None, task.id)]
-    else:
-        for table in (report_input.measures, report_input.judged):
-            figures = table.get(criterion.measure)
-            if figures is not None and arm in figures.per_arm:
-                holders = [{criterion.measure: figures.per_arm[arm]}]
-                break
-    values: list[float] = []
-    for holder in holders:
-        stat = holder.get(criterion.measure)
-        value = getattr(stat, criterion.statistic) if stat is not None else None
-        if value is not None:
-            values.append(float(value))
-    return values
-
-
 def _passes(report_input: ReportInput, criterion: Criterion, arm: str) -> bool:
-    values = _criterion_figures(report_input, criterion, arm)
+    values = [figure.value for figure in criterion_figures(report_input, criterion, arm)]
     if not values:
         return False
     if criterion.direction == "higher_is_better":

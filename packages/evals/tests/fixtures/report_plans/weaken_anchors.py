@@ -44,8 +44,9 @@ ANCHORS = {
     "r3": "Hand-written from references/r3-classifier.html.",
     "r4": "Hand-written from references/r4-tradeoff.html.",
     "r5": (
-        "references/r5-kairo-round2.plan.json, whose Watch names the weakest margin (R7) and whose Next names the "
-        "experiment that would change the answer (R10)."
+        "references/r5-kairo-round2.plan.json: a two-sentence lede, no hedge above the fold, no quoted question, a "
+        "Watch citing the weakest margin code found, and a Next naming the experiment that would change the answer "
+        "and which way."
     ),
 }
 
@@ -165,7 +166,12 @@ def _no_first_screen(plan: Plan) -> None:
     plan["lede"] = "This page reports the second round of the persona campaign. The sections below hold the evidence."
     _slot(plan, "recommendation")["text"] = "Keep {control.name}."
     _slot(plan, "why_not")["text"] = "The sections below compare the candidates."
-    _slot(plan, "watch")["text"] = "Method lists what to keep in mind."
+    _slot(plan, "watch")["text"] = "Method lists what to keep in mind, {weakest.arm} first."
+
+
+def _quoted_question(plan: Plan) -> None:
+    section = next(section for section in plan["sections"] if section["id"] == "question")
+    section["takeaway"] = "The question: {meta.question} The shaded region is the margin."
 
 
 WEAKENINGS: tuple[Weakening, ...] = (
@@ -284,18 +290,46 @@ WEAKENINGS: tuple[Weakening, ...] = (
     Weakening(
         "refused-keys",
         "r5",
-        _replace(("lede",), "{reading.1017.change|abs|pts}", "{reading.1017.drop|abs|pts}"),
+        _replace(("lede",), "{reading.qwen3.8-flash.high|abs|pts}", "{reading.qwen3.8-flash.drop|abs|pts}"),
         "A figure key naming a statistic no reading has.",
         rule="keys",
-        faults=(("lede", "reading.1017.drop"),),
+        faults=(("lede", "reading.qwen3.8-flash.drop"),),
     ),
     Weakening(
         "refused-literal-digits",
         "r5",
-        _replace(("lede",), "{aspect.margin}-point margin", "15-point margin"),
+        _replace(("lede",), "{reading.qwen3.8-flash.high|abs|pts} to", "3.4 to"),
         "A typed number in prose (D3).",
         rule="literal_digits",
-        faults=(("lede", "types the number(s) ['15']"),),
+        faults=(("lede", "types the number(s) ['3.4']"),),
+    ),
+    Weakening(
+        "refused-weakest",
+        "r5",
+        _slot_text("watch", "Keep monitoring the persona metrics in production after the decision."),
+        "A decide plan's Watch citing no weakest-margin key.",
+        rule="weakest",
+        faults=(("decision.slots[2].text", "names no weakest margin"),),
+    ),
+    Weakening(
+        "refused-reader-ids",
+        "r5",
+        _replace(
+            ("decision", "slots", 1, "text"),
+            "in-character {contrast.qwen3.8-flash",
+            "persona.holds_character {contrast.qwen3.8-flash",
+        ),
+        "An internal id typed above Full results where its reader name differs.",
+        rule="reader_ids",
+        faults=(("decision.slots[1].text", "types the judged id 'persona.holds_character'"),),
+    ),
+    Weakening(
+        "refused-reader-ids-question",
+        "r5",
+        _quoted_question,
+        "The campaign's question quoted above Full results, in the campaign's own ids.",
+        rule="reader_ids",
+        faults=(("sections[0].takeaway", "quotes the campaign's question"),),
     ),
     Weakening(
         "item-R2",
@@ -320,8 +354,8 @@ WEAKENINGS: tuple[Weakening, ...] = (
         "r5",
         _replace(
             ("lede",),
-            "Neither candidate improves anything this campaign measured.",
-            "The judge is uncalibrated, and the aspect and control were chosen after the results.",
+            "neither candidate beats {control.name} on anything this campaign measured",
+            "the judge is uncalibrated, and the aspect and control were chosen after the results",
         ),
         "The lede repeats caveats the confidence already carries.",
         item="R4",
@@ -332,19 +366,19 @@ WEAKENINGS: tuple[Weakening, ...] = (
         "r5",
         _slot_text(
             "why_not",
-            "**{arm:qwen3.8-flash}:** {cost.uplift.qwen3.8-flash|pct} more on production_replicating_cost, "
-            "persona.holds_character {contrast.qwen3.8-flash.persona.holds_character.delta|pts} points.\n"
-            "**{arm:1017}:** {cost.uplift.1017|pct} more on production_replicating_cost, persona.holds_character "
+            "**{arm:qwen3.8-flash}:** {cost.uplift.qwen3.8-flash|pct} more per reply, holds_character "
+            "{contrast.qwen3.8-flash.persona.holds_character.delta|pts} points.\n"
+            "**{arm:1017}:** {cost.uplift.1017|pct} more per reply, holds_character "
             "{contrast.1017.persona.holds_character.delta|pts} points.",
         ),
-        "Why not the others names measures by their keys.",
+        "Why not the others names the judged measure by a fragment of its key, which no code check matches.",
         item="R6",
     ),
     Weakening(
         "item-R7",
         "r5",
-        _slot_text("watch", "Keep monitoring the persona metrics in production after the decision."),
-        "Watch is generic monitoring advice and names no margin.",
+        _slot_text("watch", "Keep monitoring {weakest.arm} and the persona metrics in production after the decision."),
+        "Watch cites the weakest margin's arm but is generic monitoring advice and names no margin.",
         item="R7",
     ),
     Weakening(
@@ -379,6 +413,17 @@ WEAKENINGS: tuple[Weakening, ...] = (
         _restated_clauses,
         "Each confidence clause restates its caveat without saying what would make it material.",
         item="R11",
+    ),
+    Weakening(
+        "item-R12",
+        "r5",
+        _replace(
+            ("decision", "slots", 1, "text"),
+            "{cost.uplift.qwen3.8-flash|pct} more per reply",
+            "{cost_per_1k.qwen3.8-flash|usd_per_1k} more than {control.name}",
+        ),
+        "Why not gives a candidate's own cost as what it costs more than the control.",
+        item="R12",
     ),
 )
 

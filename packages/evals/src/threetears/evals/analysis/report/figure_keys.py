@@ -54,6 +54,8 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Task,
 )
+from threetears.evals.analysis.report_margins import Margin, flip_margin, weakest_margin
+from threetears.evals.analysis.style import humanize, measure_name
 from threetears.evals.analysis.summary import dollars_text
 
 #: What a figure is: a number, an interval (low, high), a piece of text, or an arm (rendered by name and tag).
@@ -95,7 +97,7 @@ DIRECTION_WORDS = {"higher_is_better": "higher is better", "lower_is_better": "l
 
 #: The percentile names prose may write with their digits (``p95 latency``): the statistics a criterion or a measure
 #: reads, and the other common ones. A fixed set, never read from the input's free text.
-_PERCENTILE_NAMES: tuple[str, ...] = ("p50", "p90", "p95", "p99")
+PERCENTILE_NAMES: tuple[str, ...] = ("p50", "p90", "p95", "p99")
 
 #: The package's own unit phrases, which prose may write whole with their digits: each one a template a rendered
 #: figure is joined with, so prose that says "per 1,000 replies" uses the package's words and no figure of its own.
@@ -362,7 +364,7 @@ _ASPECT_FIELDS = ("id", "name", "margin", "description")
 
 def _aspect_field(aspect: Aspect, field: str, path: str) -> Figure:
     if field == "name":
-        return _text(path, aspect.name or aspect.id, "the aspect's name")
+        return _text(path, aspect.name or humanize("dimension", aspect.id), "the aspect's name")
     if field == "margin":
         return _number(path, aspect.margin, "the aspect's margin", "points")
     return _text(path, getattr(aspect, field), f"the aspect's {field}")
@@ -472,7 +474,7 @@ def _judged_field(report_input: ReportInput, values: tuple[str, ...], path: str)
     dimension, field = values
     judged = report_input.judged[dimension]
     if field == "label":
-        return _text(path, judged.label or dimension, "the dimension's label")
+        return _text(path, reader_name("judged", dimension, report_input), "the dimension's label")
     return _judge_value(judged, field, path)
 
 
@@ -687,7 +689,7 @@ def _task_field(report_input: ReportInput, values: tuple[str, ...], path: str) -
     task_id, field = values
     task = _task(report_input, task_id)
     if field == "name":
-        return _text(path, task.name or task.id, "the task's name")
+        return _text(path, task.name or humanize("dimension", task.id), "the task's name")
     if field == "n_cases":
         return _number(path, task.n_cases, "the task's cases", "count")
     return _number(path, task.share, "the task's share of traffic", "share", whole=True)
@@ -720,8 +722,7 @@ def _criterion_field(report_input: ReportInput, values: tuple[str, ...], path: s
         scale, unit = _scale_of(report_input, criterion.measure, (threshold,))
         return _number(path, threshold, "the criterion's threshold", scale, unit=unit)
     if field == "measure":
-        held = report_input.measures.get(criterion.measure) or report_input.judged.get(criterion.measure)
-        return _text(path, (held.label if held else None) or criterion.measure, "the criterion's measure")
+        return _text(path, _measure_reader_name(criterion.measure, report_input), "the criterion's measure")
     if field == "statistic":
         return _text(path, criterion.statistic, "the criterion's statistic")
     return _text(path, DIRECTION_WORDS[criterion.direction], "the criterion's direction")
@@ -767,7 +768,7 @@ def _stratum_field(report_input: ReportInput, values: tuple[str, ...], path: str
     stratum_id, field = values
     stratum = _stratum(report_input, stratum_id)
     if field == "name":
-        return _text(path, stratum.name or stratum.id, "the stratum's name")
+        return _text(path, stratum.name or humanize("dimension", stratum.id), "the stratum's name")
     if field == "n_cases":
         return _number(path, stratum.n_cases, "the stratum's cases", "count")
     return _number(path, stratum.share, "the stratum's share of traffic", "share", whole=True)
@@ -812,26 +813,154 @@ def _loss_share(report_input: ReportInput, values: tuple[str, ...], path: str) -
     return Figure(path=path, kind="number", value=share, scale="share", whole=True)
 
 
-def flip_margin(reading: Reading) -> float | None:
-    """The margin at which a reading flips (GENERATOR §3, UPSTREAM U6): its interval's worst drop, ``-lo``, never below
-    zero. The reading is within any margin above it and outside any at or below it.
-
-    :param reading: An arm's reading on an aspect.
-    :ptype reading: Reading
-    :return: The flip margin, in points; None where the reading states no interval to read it on.
-    :rtype: float | None
-    """
-    if reading.within_interval is None:
-        return None
-    return max(0.0, -float(reading.within_interval[0]))
-
-
 def _flip_margin(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     reading = _reading(_asked_or_refuse(report_input, path), values[0])
     flip = flip_margin(reading)
     if flip is None:
         raise _refuse(path, "names the interval a flip is read on, which the input does not state")
     return Figure(path=path, kind="number", value=flip, scale="points")
+
+
+# --- reader names: the one name a reader is shown for each id -----------------------------------------------------
+
+#: The kinds of id a reader is given a name for (GENERATOR §6.3: reader names, not identifiers).
+NamedKind = Literal["aspect", "measure", "judged", "stratum", "task", "criterion"]
+NAMED_KINDS: tuple[NamedKind, ...] = get_args(NamedKind)
+
+
+def _measure_reader_name(key: str, report_input: ReportInput) -> str:
+    """A measure's or judged dimension's reader name, whichever the key names."""
+    if key in report_input.measures:
+        return reader_name("measure", key, report_input)
+    if key in report_input.judged:
+        return reader_name("judged", key, report_input)
+    return measure_name(key)
+
+
+def reader_name(kind: NamedKind, identifier: str, report_input: ReportInput) -> str:
+    """The one name a reader is shown for an id: the name the input declares, else the package's reader name for it.
+
+    An aspect, stratum or task by its declared name; a measure by its label (the catalog's reader name), a judged
+    dimension by its label, a criterion by its label; each, where none is declared, as the package names it otherwise
+    (:func:`~threetears.evals.analysis.style.measure_name` for a measure, the id with its underscores and dots as
+    spaces for anything else, :func:`~threetears.evals.analysis.style.humanize`), and a criterion by its measure's
+    reader name. The ``.name`` and ``.label`` figure keys print the same name.
+
+    :param kind: What the id names.
+    :ptype kind: NamedKind
+    :param identifier: The id, as the input keys it.
+    :ptype identifier: str
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The reader name.
+    :rtype: str
+    :raises KeyError: The input holds no such id of that kind.
+    """
+    if kind == "aspect":
+        aspect = _aspect_by_id(report_input, identifier)
+        return aspect.name or humanize("dimension", aspect.id)
+    if kind == "measure":
+        return report_input.measures[identifier].label or measure_name(identifier)
+    if kind == "judged":
+        return report_input.judged[identifier].label or humanize("dimension", identifier)
+    if kind == "stratum":
+        stratum = _stratum(report_input, identifier)
+        return stratum.name or humanize("dimension", stratum.id)
+    if kind == "task":
+        task = _task(report_input, identifier)
+        return task.name or humanize("dimension", task.id)
+    criterion = _criterion(report_input, identifier)
+    return criterion.label or _measure_reader_name(criterion.measure, report_input)
+
+
+def reader_names(report_input: ReportInput) -> dict[NamedKind, dict[str, str]]:
+    """Every id's reader name (:func:`reader_name`), by kind, then id, in the input's order.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: Aspects, measures, judged dimensions, strata, tasks and criteria, each kind present only where the input
+        holds one.
+    :rtype: dict[NamedKind, dict[str, str]]
+    """
+    ids: dict[NamedKind, list[str]] = {
+        "aspect": [aspect.id for aspect in report_input.aspects],
+        "measure": list(report_input.measures),
+        "judged": list(report_input.judged),
+        "stratum": [stratum.id for stratum in report_input.strata],
+        "task": [task.id for task in report_input.tasks],
+        "criterion": [criterion.id for criterion in report_input.criteria],
+    }
+    return {
+        kind: {identifier: reader_name(kind, identifier, report_input) for identifier in dict.fromkeys(held)}
+        for kind, held in ids.items()
+        if held
+    }
+
+
+# --- the weakest margin --------------------------------------------------------------------------------------------
+
+#: What every weakest-margin key begins with.
+WEAKEST_PREFIX = "weakest."
+_WEAKEST_FIELDS = ("margin", "arm", "criterion", "value", "threshold")
+
+
+def _cell_name(report_input: ReportInput, cell_id: str) -> str:
+    cell = report_input.cells[cell_id]
+    matrix = report_input.target_matrix
+    if matrix is None:
+        return cell_id
+    row = next((level.name or level.id for level in matrix.rows.levels if level.id == cell.row), cell.row)
+    column = next((level.name or level.id for level in matrix.columns.levels if level.id == cell.column), cell.column)
+    return f"{row} × {column}"
+
+
+def margin_name(margin: Margin, report_input: ReportInput) -> str:
+    """What a margin is read against, in reader words: a criterion by its reader name and where its figure sits, or an
+    aspect's margin or floor by the aspect's reader name.
+
+    :param margin: One margin (:mod:`~threetears.evals.analysis.report_margins`).
+    :ptype margin: Margin
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The words ``{weakest.criterion}`` prints.
+    :rtype: str
+    """
+    if margin.kind == "criterion":
+        name = reader_name("criterion", margin.source, report_input)
+        if margin.task is not None:
+            return f"{name} in {reader_name('task', margin.task, report_input)}"
+        if margin.cell is not None:
+            return f"{name} in {_cell_name(report_input, margin.cell)}"
+        return name
+    aspect = reader_name("aspect", margin.aspect or margin.source, report_input)
+    return f"the margin on {aspect}" if margin.kind == "margin" else f"the floor on {aspect}"
+
+
+def _weakest(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    found = weakest_margin(report_input)
+    if found is None:
+        raise _refuse(
+            path, "names the weakest margin, and the input reads no figure against a criterion, margin or floor"
+        )
+    field = values[0]
+    if field == "arm":
+        return Figure(path=path, kind="arm", value=found.arm)
+    if field == "criterion":
+        return _text(path, margin_name(found, report_input), "what the weakest margin is read against")
+    if found.kind != "criterion":
+        if field == "margin":
+            return _number(path, found.gap, "the weakest margin", "points")
+        return _number(
+            path, found.value if field == "value" else found.line, f"the weakest {field}", "points", change=True
+        )
+    scale, unit = _scale_of(report_input, found.measure or "", (found.line,))
+    if field == "value":
+        return _number(path, found.value, "the weakest margin's figure", scale, unit=unit)
+    if field == "threshold":
+        return _number(path, found.line, "the weakest margin's threshold", scale, unit=unit)
+    if scale in ("share", "percent"):
+        return _number(path, found.gap * 100 if scale == "share" else found.gap, "the weakest margin", "points")
+    return _number(path, found.gap, "the weakest margin", scale, unit=unit)
 
 
 # --- the families --------------------------------------------------------------------------------------------------
@@ -1029,6 +1158,16 @@ _FAMILIES: tuple[_Family, ...] = (
         _Ids("<candidate>", _candidates),
         what="the share of one candidate's loss the stratum carries",
         resolve=_loss_share,
+        derived=True,
+    ),
+    _family_of(
+        _Word("weakest"),
+        _Statistic(_WEAKEST_FIELDS, "<field>"),
+        what=(
+            "the weakest margin: the figure nearest the line it is read against (a criterion, an aspect's margin or a "
+            "floor), its arm, what it is read against, the figure, the line, and the gap between them"
+        ),
+        resolve=_weakest,
         derived=True,
     ),
     _family_of(
@@ -1485,7 +1624,7 @@ def literal_numbers(text: str, report_input: ReportInput) -> list[tuple[int, int
 
     for match in _KEY.finditer(text):
         mask(*match.span())
-    allowed = _allowed_names(report_input) | set(_PERCENTILE_NAMES) | set(_UNIT_PHRASES)
+    allowed = _allowed_names(report_input) | set(PERCENTILE_NAMES) | set(_UNIT_PHRASES)
     for name in sorted(allowed, key=len, reverse=True):
         pattern = re.compile(rf"(?<!\w){re.escape(name)}(?!\w)", re.IGNORECASE)
         for match in pattern.finditer("".join(masked)):
@@ -1629,7 +1768,7 @@ def figure_key_grammar() -> str:
         "refused unless it is part of a name the input holds: an arm's id or name, a served model, a setting as "
         "displayed (such as `64k`), an aspect, measure, dimension, stratum or task id or name, the campaign's name, "
         "a trial or case id. An id made only of digits is never such a name: write `{arm:1017}`, not `1017`. "
-        f"Percentile names ({', '.join(f'`{name}`' for name in _PERCENTILE_NAMES)}) and the package's unit phrases "
+        f"Percentile names ({', '.join(f'`{name}`' for name in PERCENTILE_NAMES)}) and the package's unit phrases "
         f"({', '.join(f'`{phrase}`' for phrase in _UNIT_PHRASES)}, whole) are written as they are; any other number "
         "is a key."
     )
@@ -1637,16 +1776,23 @@ def figure_key_grammar() -> str:
 
 
 __all__ = [
+    "NAMED_KINDS",
+    "PERCENTILE_NAMES",
+    "WEAKEST_PREFIX",
     "Figure",
     "FigureKey",
     "KeySubjects",
+    "NamedKind",
     "figure_key_grammar",
     "flip_margin",
     "format_figure",
     "key_subjects",
     "keys_in",
     "literal_numbers",
+    "margin_name",
     "parse_key",
+    "reader_name",
+    "reader_names",
     "render",
     "resolve",
 ]
