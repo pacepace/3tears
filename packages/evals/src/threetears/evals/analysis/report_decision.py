@@ -117,7 +117,7 @@ __all__ = [
 _UNCALIBRATED = frozenset({"undetermined", "insufficient"})
 
 #: Where a caveat may land: report-wide, scoped to some comparisons, or method-level.
-CaveatScope = Literal["report", "scoped", "method"]
+CaveatReach = Literal["report", "scoped", "method"]
 #: What a report is, from its arms.
 ReportKind = Literal["measurement", "change", "choice"]
 
@@ -136,12 +136,12 @@ class Caveat:
     :ivar id: The caveat's id (this module's id table).
     :ivar kind: The id's kind: ``late``, ``judge_uncalibrated``, ``confound``, ``apparatus``, ``short_run``,
         ``latency`` or ``unreported``.
-    :ivar scope: ``report`` (the confidence is conditional on it), ``scoped`` (said beside a claim) or ``method``.
+    :ivar reach: ``report`` (the confidence is conditional on it), ``scoped`` (said beside a claim) or ``method``.
     """
 
     id: str
     kind: str
-    scope: CaveatScope
+    reach: CaveatReach
 
 
 @dataclass(frozen=True)
@@ -286,9 +286,9 @@ def report_caveats(report_input: ReportInput) -> list[Caveat]:
 def _criterion_figures(report_input: ReportInput, criterion: Criterion, arm: str) -> list[float]:
     """The arm's figures a criterion reads, at its statistic, where its scope reads them."""
     holders: list[Mapping[str, Stat]] = []
-    if criterion.scope == "each_cell":
+    if criterion.scope == "each_cell":  # prose-canary: allow — Criterion.scope is the input's declared enum, not prose
         holders = [cell.per_arm.get(arm, {}) for cell in report_input.cells.values()]
-    elif criterion.scope == "each_task" or criterion.task is not None:
+    elif criterion.scope == "each_task" or criterion.task is not None:  # prose-canary: allow — the same declared enum
         holders = [task.per_arm.get(arm, {}) for task in report_input.tasks if criterion.task in (None, task.id)]
     else:
         for table in (report_input.measures, report_input.judged):

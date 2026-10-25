@@ -26,16 +26,16 @@ Building the Kairo round 2 reference from `kairo-round2-writer-input.json` worke
 **Need:** per stratum, per candidate: the pass-rate change and judged-dimension changes against the control, paired by case, with intervals and an exploratory flag.
 **Proposal:** a `strata_contrasts` list alongside `contrasts`, marked exploratory and excluded from the confirmatory family.
 
-### U5. One computed disclosure for late criteria and judge tiers
+### U5. Open caveats and their materiality
 
-**Seen:** all four criteria (aspect, control, margin, floor) were set after the readings were visible, and every judge tier is `undetermined` (0 of 20 calibration ratings). The writer has to assemble that disclosure from `late_criteria` and `judge_evidence_tiers` itself.
-**Need:** one disclosure the page states once, near the top: its reasons, the findings it weakens and the findings that survive (here, the cost regression is measured, not judged). It does not cap the recommendation's confidence (owner ruling, 2026-10-25).
-**Proposal:** `disclosure: {reasons[], weakens[], survives[]}`, computed in the bundle.
+**Seen:** all four criteria (aspect, control, margin, floor) were set after the readings were visible, and every judge tier is `undetermined` (0 of 20 calibration ratings). The writer has to assemble the caveats from `late_criteria`, `judge_evidence_tiers`, confounds and short runs itself, and has no way to tell which of them could change the call.
+**Need:** the caveat list, each entry with a stable id, and the sensitivity figures that let code prove a late criterion immaterial (U6's flip margins, and each floor read's interval). The decision's confidence is conditional on the caveats that stay open, in one of three forms (GENERATOR.md §2 item 5), never capped by them: here the late margin and floor are checked immaterial (the flip points, 10.8 and 5.8, sit under the 15-point margin, and keeping September holds at every margin), and the judge, the late aspect and the late control stay open, each with its clause.
+**Proposal:** carry every caveat with its kind and the arms it touches (`caveats[]: {kind, name, arms}`), and the sensitivity figures U6 names, in the bundle. The report input then assigns ids by rule (`report_decision.report_caveats`) without joining anything.
 
 ### U6. Margin diagnostics
 
 **Seen:** the 15-point margin was set after the readings; the worst plausible drops are 10.8 and 5.8 points, so the margin couldn't fail.
-**Need:** per arm, the margin at which the reading flips (`-lo`), and a flag when the declared margin is uninformative.
+**Need:** per arm, the margin at which the reading flips (`-lo`), and a flag when the declared margin is uninformative. Code computes `flip_margin` from the reading's interval today (`figure_keys.flip_margin`, one implementation for the page's figure key and the immateriality check, U5); carrying it in the bundle makes it the pipeline's figure.
 **Proposal:** add `flip_margin` to each reading, and `margin_informative: bool` with its rule to the aspect.
 
 ### U7. Volume for cost at scale

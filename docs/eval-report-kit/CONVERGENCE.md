@@ -52,7 +52,10 @@ Add `ReportPlan` (pydantic) mirroring `schema/report-plan.schema.json`. The writ
 - prose with a literal number that isn't a figure key;
 - a headline that isn't a decision, trade or stated no-call;
 - a summary chart whose rows differ from the options table;
-- a flag that leaves out a late criterion or an undetermined judge tier that `caveats` carries (they are disclosed once, in the flag, and never cap confidence).
+- a mode outside the modes code allows (GENERATOR.md §1.1: survivors after gates and guardrails, and dominance), or a decision that does not recommend the one option that dominates;
+- a confidence off its three forms' rule (GENERATOR.md §2 item 5): plain "high" while an open report-wide caveat remains; "high, if the caveats below aren't material" that leaves an open report-wide caveat out, or lists one without its clause; "low" is always allowed;
+- a caveat code proved immaterial (a late margin, floor or bar the call holds across) listed anywhere: code renders its checked line;
+- a caveat in `caveats` that lands nowhere or more than once, or where its scope does not allow (a scoped caveat in the flag or in Method, a report-wide one beside one claim; Method takes only apparatus confounds, latency and unreported observations), read off the caveat ids the plan records on its confidence, slots, sections and Method pairs.
 
 Keep the 24,300-character writer budget. The plan is smaller than the memo it replaces, because the renderer writes the tables.
 **Done when:** the planner produces valid plans for the five reference inputs, and the Kairo plan matches `references/r5-kairo-round2.plan.json` in shape, mode, spine and section order.
@@ -82,7 +85,7 @@ The plan declares the controls; the page ships the values they need (readings wi
 
 Regenerate Kairo round 2 from its stored bundle with the pipeline and compare it to `references/r5-kairo-round2.html`:
 
-1. The same decision and flag content, and the same four decision slots.
+1. The same decision, conditional-confidence form and caveat list (each open caveat with its clause, each checked one as code's line), and the same four decision slots.
 2. The same summary charts, with the same rows and interval levels.
 3. The arms key, the asked-question forest with the margin band, the stratum diverging bars, and the failure examples.
 4. A margin explorer that gives the same flip points.

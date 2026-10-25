@@ -303,6 +303,22 @@ class TestMode:
         assert "decision.slots" in _paths(plan, _no_call_data())
 
 
+class TestAllowedModes:
+    @pytest.mark.parametrize("make", [_tradeoff, _no_call])
+    def test_a_mode_code_does_not_allow_is_refused(self, make: Any):
+        why = _why(make(_plan()), "mode")
+        assert "allows only ['decide']" in why and "'September' dominates" in why
+
+    def test_a_decision_on_a_tradeoff_input_is_refused(self):
+        assert "allows only ['tradeoff']" in _why(_plan(), "mode", _tradeoff_data())
+
+    def test_a_decision_must_recommend_the_option_that_dominates(self):
+        assert "recommend 'September'" in _why(_recommending_flash(_plan()), "options.rows[0].option")
+
+    def test_the_option_that_dominates_may_be_a_candidate(self):
+        assert "mode" not in _paths(_recommending_flash(_plan()), _flash_data())
+
+
 class TestOptionRoles:
     def test_decide_needs_its_recommended_option_first(self):
         plan = _plan()

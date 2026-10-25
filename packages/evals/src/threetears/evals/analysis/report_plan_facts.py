@@ -128,7 +128,7 @@ class FactCaveat(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     id: str = Field(description="The caveat's id, as the plan names it.")
-    scope: str = Field(description="report (the confidence's or the flag's), scoped (beside a claim) or method.")
+    reach: str = Field(description="report (the confidence's or the flag's), scoped (beside a claim) or method.")
     checked: str = Field(description="The line code renders for a caveat it proved immaterial; empty for an open one.")
 
 
@@ -192,7 +192,7 @@ def plan_facts(report_input: ReportInput) -> PlanFacts:
         disclosures={mode: tuple(implied_disclosures(report_input, mode)) for mode in PLAN_MODES},
         allowed_modes=tuple(mode for mode in PLAN_MODES if mode in allowed_modes(report_input)),
         caveats=tuple(
-            FactCaveat(id=caveat.id, scope=caveat.scope, checked=materiality[caveat.id].checked or "")
+            FactCaveat(id=caveat.id, reach=caveat.reach, checked=materiality[caveat.id].checked or "")
             for caveat in report_caveats(report_input)
         ),
     )

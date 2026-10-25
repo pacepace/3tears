@@ -36,6 +36,8 @@ logarithmic when the arms' cost per 1,000 replies spans more than ten times.
 **The checks** (:func:`validate_plan`), each refusing at the field it names:
 
 - *Facts code filled*: ``signals`` and ``shape`` are :func:`classify`'s.
+- *Allowed mode*: ``mode`` is one :func:`~threetears.evals.analysis.report_decision.allowed_modes` allows, and a
+  decide plan whose input has one dominant survivor recommends that one.
 - *Mode*: ``headline_kind`` suits ``mode`` (decide: decision; tradeoff: trade; no call: no_call). The decision slots
   are the mode's, in its order: decide ``recommendation, why_not, watch, next``; tradeoff ``the_trade,
   where_it_flips, our_lean, what_settles_it``; a no call takes decide mode's four, since GENERATOR §1.1 has it say
@@ -44,14 +46,25 @@ logarithmic when the arms' cost per 1,000 replies spans more than ten times.
   and no ``lean``; tradeoff no ``recommended`` and at most one ``lean``; a no call neither.
 - *The recommendation* (the memo's refusals, ported onto the report input): a measurement (one arm) recommends
   nothing; a recommended option is an arm the input holds (a change's candidate or its control); a choice's pick that
-  no pair reading shows ahead is stated at ``low`` confidence; a change switches to a candidate only when some aspect
+  no pair reading shows ahead takes the ``low`` confidence form; a change switches to a candidate only when some aspect
   is asked, no guardrail on it breached, and it is shown better (a confirmatory ``better`` reading, or an
   ``improved`` contrast on an asked aspect) or no worse (every floor on every asked aspect ``held``, each declaring
   one). A change in tradeoff mode or a no call recommends nothing: GENERATOR §1.1's modes replace the memo's "a
   change always recommends".
 - *Answers*: every warning :func:`raised_warnings` raises on the recommended arm has exactly one answer, and no
   answer names a warning not raised.
-- *Flag*: present exactly when :func:`implied_disclosures` is not empty, and its ``discloses`` is that set, each once.
+- *Confidence* (GENERATOR §2.5): plain ``high`` only while no open report-wide caveat remains, and listing none;
+  ``high_if_immaterial`` lists at least one caveat and every open report-wide one, none of them stated elsewhere;
+  ``low`` is allowed whatever the caveats. Every listed caveat has a non-empty clause (``material_if``).
+- *Flag*: holds ``no_rule`` exactly when it applies; otherwise only report-wide caveats, each once; a flag on an input
+  with no report-wide disclosure is refused.
+- *Coverage*: every caveat :func:`~threetears.evals.analysis.report_decision.report_caveats` lists lands exactly
+  once, at a place its scope allows, read off the plan's structure and never its prose: a report-wide caveat in the
+  confidence's clauses or the flag; a scoped one in the ``caveats`` of the decision slot or section whose claim it
+  qualifies, or the confidence; a method-level one (latency, an unreported observation, an apparatus confound not
+  report-wide) in a Method pair's ``caveats``, beside a claim, or the confidence. A caveat code proved immaterial
+  (:func:`~threetears.evals.analysis.report_decision.caveat_materiality`) lands nowhere: code renders its checked
+  line. An id that names no caveat of the input is refused wherever it lands.
 - *Charts*: each chart's kind suits its source (a forest reads readings or contrasts, every row with an interval; a
   lattice reads configs; …); its query names only arms, aspects, measures and strata the input holds, and selects at
   least one row; its reference key and its emphasis name something present. The summary charts show the options
@@ -63,7 +76,7 @@ logarithmic when the arms' cost per 1,000 replies spans more than ten times.
 - *D3, no typed digit*: :func:`~threetears.evals.analysis.report.figure_keys.literal_numbers` over every prose
   field. **The prose fields are the plan's fields typed** :data:`~threetears.evals.schema.prose.ModelProse`, found
   by walking the plan's model, so a prose field added later is covered without a list to keep: the headline, the
-  lede, the flag's title and text, each decision slot's text, each answer's text, each durable claim's text, each
+  lede, the flag's title and text, each decision slot's text, each confidence clause, each answer's text, each durable claim's text, each
   section's eyebrow, headline, takeaway and caption, every chart's title, the explore part's title and
   ``recomputes``, each control's title, and each method term and text. The masthead is code's and not prose.
   **Explore option labels are layout**: printed as written, so a label holds no figure key (a brace is refused) and,
@@ -76,19 +89,15 @@ would settle it) on the arm, by its aspect and ``floor`` key; an aspect where a 
 of it (``behind_on``), by aspect and that arm's id; an absolute bar it ``missed`` (``bar_missed``), by aspect and
 measure.
 
-**Disclosures** (:func:`implied_disclosures`), what the flag must hold, and only report-wide ones (GENERATOR §2.4):
+**Disclosures** (:func:`implied_disclosures`), the report-wide disclosures a plan must make (GENERATOR §2.4):
 ``no_rule`` when the plan is in tradeoff mode and the campaign declared no rule ranking the axes (GENERATOR §4.2:
 the flag says "no rule set in advance" and names who makes the call). The report input's one declared rule is a
 contrast family's ``merit_axes`` (the merit priority); it carries no exchange rate, so a tradeoff with every family's
-merit priority empty, or no family at all, is the case. Decide mode and a no call never disclose it. ``late_criteria`` when any criterion was set after the results; ``judge_uncalibrated`` when every judged dimension's
-tier and calibration, as stated, are ``undetermined`` or ``insufficient``; ``confound:<id>`` and
-``short_run:<run>`` only when the caveat touches the **whole comparison**. The comparisons a report makes are read
-from its arms: each candidate against the control in a change, every pair in a choice, the one arm in a
-measurement. A short run touches the comparisons its arm is in (a run naming no arm touches every one); a confound
-touches the comparisons whose contrasts name it (``Contrast.confounds``). A caveat touching every comparison is
-report-wide: a short run of the control, a confound on every candidate's contrasts, or either on a change's only
-candidate. One touching some comparisons is said beside the claim it qualifies, usually in Watch, and not in the
-flag.
+merit priority empty, or no family at all, is the case. Decide mode and a no call never disclose it. Then every
+report-wide caveat code did not prove immaterial, by id (:mod:`~threetears.evals.analysis.report_decision` defines
+the ids and which caveats are report-wide: every late criterion, an uncalibrated judge, and a confound, apparatus
+confound or short run touching every comparison). ``no_rule`` is always the flag's; each caveat lands once, in the
+decision's confidence or, where the confidence does not list it, the flag.
 """
 
 from __future__ import annotations
@@ -309,7 +318,7 @@ def implied_disclosures(report_input: ReportInput, mode: str) -> list[str]:
     implied += [
         caveat.id
         for caveat in report_caveats(report_input)
-        if caveat.scope == "report" and not materiality[caveat.id].immaterial
+        if caveat.reach == "report" and not materiality[caveat.id].immaterial
     ]
     return implied
 
@@ -631,7 +640,7 @@ def _flag_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault
                 else "holds 'no_rule', and the campaign declared a merit priority that ranks the axes"
             ),
         )
-    scopes = {caveat.id: caveat.scope for caveat in report_caveats(report_input)}
+    scopes = {caveat.id: caveat.reach for caveat in report_caveats(report_input)}
     if scoped := [item for item in discloses if scopes.get(item) in ("scoped", "method")]:
         yield (
             "flag[0].discloses",
@@ -699,7 +708,7 @@ def _coverage_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_F
         for path, _place in where[1:]:
             yield path, f"states {item!r} again (also at {where[0][0]}): a caveat is stated exactly once"
         path, place = where[0]
-        if place != "flag" and place not in _PLACES[caveat.scope]:
+        if place != "flag" and place not in _PLACES[caveat.reach]:
             yield path, f"holds {item!r}, and {_where_it_lands(caveat, plan)}"
 
 
@@ -709,17 +718,17 @@ def _checked(materiality: Materiality) -> str:
 
 def _home(caveat: Caveat) -> str:
     """The field a dropped caveat belongs at, named in its refusal."""
-    if caveat.scope == "report":
+    if caveat.reach == "report":
         return "decision.confidence.caveats"
-    return "method" if caveat.scope == "method" else "decision.slots"
+    return "method" if caveat.reach == "method" else "decision.slots"
 
 
 def _where_it_lands(caveat: Caveat, plan: ReportPlan) -> str:
-    if caveat.scope == "report":
+    if caveat.reach == "report":
         if plan.decision.confidence.form == "low":
             return "it is report-wide: list it in `decision.confidence.caveats` with its clause, or disclose it in the flag"
         return "it is report-wide: list it in `decision.confidence.caveats` with what would make it material"
-    if caveat.scope == "scoped":
+    if caveat.reach == "scoped":
         return (
             "it touches some comparisons, not all: name it in the `caveats` of the decision slot or section whose claim "
             "it qualifies (usually Watch), or list it in `decision.confidence.caveats`; Method takes only method-level "
