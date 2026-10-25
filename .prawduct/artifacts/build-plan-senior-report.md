@@ -834,4 +834,4 @@ The main session:
 - [x] Chunk 05: degenerate collapse
 - [x] Chunk 06: aggregates and chart
 - [x] Chunk 07: writer view
-- [ ] Chunk 08: writer prompt (then the main session re-records)
+- [x] Chunk 08: writer prompt (then the main session re-records)
