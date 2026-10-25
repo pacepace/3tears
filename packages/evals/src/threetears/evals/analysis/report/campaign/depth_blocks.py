@@ -1,6 +1,17 @@
 """How deep a campaign's arms ran, for every kind: each arm's cases, trials and repeats on each aspect, pass^k at the
-common depth, the opt-in model of pass^k at a depth no arm reached, and what limits each comparison's interval;
-tables, with one sentence under each where the arms differ."""
+common depth, the opt-in model of pass^k at a depth no arm reached, and what limits each comparison's interval.
+
+A table is printed only where it says more than a sentence would (rule 2 of the senior-report plan):
+
+- the depth table is one sentence where every arm ran each case alike on every aspect but a few, which it names
+  (:func:`~threetears.evals.analysis.depth.repeats_sentence`);
+- the pass^k depth table is one sentence where pass^k compares pass rates on every aspect, at a common and planned
+  depth of 1 with no case left out;
+- the precision table drops a column empty on every row, and sits under the Methods where every arm ran each case
+  once, since no repeat then splits its noise;
+- what extra repeats cannot lower is said once, in Design & provenance, where a between-case share is read
+  (:func:`depth_provenance_blocks`).
+"""
 
 from __future__ import annotations
 
@@ -9,14 +20,21 @@ from collections.abc import Callable, Mapping, Sequence
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
-from threetears.evals.analysis.depth import MODEL_ASSUMES, REPEATS_FLOOR, Precision
-from threetears.evals.analysis.depth_reading import AspectDepth, aspect_depth
+from threetears.evals.analysis.depth import (
+    COMMON_DEPTH_ONE_EVERYWHERE,
+    MODEL_ASSUMES,
+    REPEATS_FLOOR,
+    Precision,
+    repeats_sentence,
+)
+from threetears.evals.analysis.depth_reading import AspectDepth, SubjectDepth, aspect_depth
 from threetears.evals.analysis.report.campaign.common import named_arms
 from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.report.model import (
     DisclosureBlock,
     Report,
     ReportBlock,
+    ReportSection,
     TableBlock,
     TableCell,
     TableColumn,
@@ -37,7 +55,7 @@ def depth_blocks(
     campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames
 ) -> list[ReportBlock]:
     """How deep each arm ran on each aspect, what pass^k compares at, and what limits each comparison's interval:
-    tables, with one sentence under each where the arms differ.
+    each a table with one sentence under it where the arms differ, or one sentence where that says all a table would.
 
     :param campaign: The campaign.
     :ptype campaign: EvalCampaign
@@ -79,7 +97,20 @@ def depth_blocks(
     ]
     if not rows:
         return []
-    blocks: list[ReportBlock] = [
+    once = repeats_sentence({names(depth.aspect): depth.arms for _, depth in depths})
+    if once is not None:
+        blocks: list[ReportBlock] = [DisclosureBlock(section="scorecard", source="comparisons", text=once)]
+    else:
+        blocks = [*_depth_table(rows), *_differ_lines(depths)]
+    blocks += _pass_k_depth_blocks(depths, labels, names)
+    once_each = all(held.uniform() and held.repeats_min == 1 for _, depth in depths for held in depth.arms.values())
+    blocks += _precision_blocks(readings, names, section="methods" if once_each else "scorecard")
+    return blocks
+
+
+def _depth_table(rows: list[dict[str, TableCell]]) -> list[ReportBlock]:
+    """Each arm's cases, trials and repeats on each aspect, in one table."""
+    return [
         TableBlock(
             section="scorecard",
             name="depth",
@@ -98,14 +129,23 @@ def depth_blocks(
             total_rows=len(rows),
         )
     ]
-    blocks += [
+
+
+def _differ_lines(depths: Sequence[tuple[AnalysisContextBundle, AspectDepth]]) -> list[ReportBlock]:
+    """Under the depth table, each aspect's sentence saying its arms ran to different depths."""
+    return [
         DisclosureBlock(section="scorecard", source="comparisons", text=depth.said)
         for _, depth in depths
         if depth.said is not None
     ]
-    blocks += _pass_k_depth_blocks(depths, labels, names)
-    blocks += _precision_blocks(readings, names)
-    return blocks
+
+
+def _pass_rates_alike(subjects: Sequence[SubjectDepth]) -> bool:
+    """Whether every compared subject reads pass^k as a pass rate and nothing more: planned and compared at depth 1,
+    with no case left out, so its table would print each arm's pass rate again."""
+    return bool(subjects) and all(
+        subject.k == 1 and subject.common_depth == 1 and subject.left_out == 0 for subject in subjects
+    )
 
 
 def _pass_k_depth_blocks(
@@ -113,7 +153,17 @@ def _pass_k_depth_blocks(
 ) -> list[ReportBlock]:
     """Each frontier point's depth beside its pass^k: the planned depth, the cases short of it, and its reading at the
     common depth, the fewest runs any arm gave a shared case; a sentence on the common depth, or that the arms share no
-    case, and on each arm pass^k is unmeasured for. Every subject of every aspect."""
+    case, and on each arm pass^k is unmeasured for. Every subject of every aspect.
+
+    Where every subject compares pass rates (:func:`_pass_rates_alike`), one sentence says so in place of the table:
+    the subject's own where there is one, else one for the campaign."""
+    compared = [subject for _, depth in depths for subject in depth.subjects if subject.compared]
+    if _pass_rates_alike(compared):
+        lines = compared[0].lines() if len(compared) == 1 else [COMMON_DEPTH_ONE_EVERYWHERE]
+        return [
+            *(DisclosureBlock(section="scorecard", source="comparisons", text=line) for line in lines),
+            *_model_blocks(depths, labels, names),
+        ]
     rows: list[dict[str, TableCell]] = []
     for bundle, depth in depths:
         name = _label_of(bundle, labels)
@@ -217,9 +267,9 @@ def _model_blocks(
     ]
 
 
-def _precision_blocks(readings: CampaignReadings, names: AspectNames) -> list[ReportBlock]:
+def _precision_blocks(readings: CampaignReadings, names: AspectNames, *, section: ReportSection) -> list[ReportBlock]:
     """What limits each pass-rate comparison's interval: its half-width, each arm's own, the arm limiting it and the
-    between-case share of its variance, with the one sentence saying what extra repeats can and cannot lower."""
+    between-case share of its variance, in ``section``; a column no row fills is left out."""
     compared: list[tuple[str, Precision]] = [(row.aspect, row.precision) for row in readings.readings if row.precision]
     compared += [(pair.aspect, pair.precision) for pair in readings.pairs if pair.precision]
     if not compared:
@@ -246,36 +296,40 @@ def _precision_blocks(readings: CampaignReadings, names: AspectNames) -> list[Re
                 }
             )
         )
+    columns = [
+        TableColumn(key="aspect", header="Aspect", term="aspect"),
+        TableColumn(key="arms", header="Arms"),
+        TableColumn(key="half_width", header="Half-width (pts)", term="interval"),
+        TableColumn(key="first", header="First arm's own (pts)", term="interval"),
+        TableColumn(key="second", header="Second arm's own (pts)", term="interval"),
+        TableColumn(key="limited_by", header="Limited by"),
+        TableColumn(key="between", header="Between cases (%)", term="between cases"),
+    ]
+    filled = [column for column in columns if any(row[column.key].value is not None for row in rows)]
     return [
         TableBlock(
-            section="scorecard",
+            section=section,
             name="precision",
             title="Precision",
-            columns=[
-                TableColumn(key="aspect", header="Aspect", term="aspect"),
-                TableColumn(key="arms", header="Arms"),
-                TableColumn(key="half_width", header="Half-width (pts)", term="interval"),
-                TableColumn(key="first", header="First arm's own (pts)", term="interval"),
-                TableColumn(key="second", header="Second arm's own (pts)", term="interval"),
-                TableColumn(key="limited_by", header="Limited by"),
-                TableColumn(key="between", header="Between cases (%)", term="between cases"),
-            ],
-            rows=rows,
+            columns=filled,
+            rows=[{column.key: row[column.key] for column in filled} for row in rows],
             order="aspect by aspect, each comparison as the readings list it",
             total_rows=len(rows),
-        ),
-        DisclosureBlock(section="scorecard", source="comparisons", text=REPEATS_FLOOR),
+        )
     ]
 
 
 def depth_provenance_blocks(readings: CampaignReadings) -> list[ReportBlock]:
     """What depth says once in the page's Design & provenance section, in the slot
-    :mod:`~threetears.evals.analysis.report.campaign.page` gives it there: nothing yet, since the depth tables say it
-    under them.
+    :mod:`~threetears.evals.analysis.report.campaign.page` gives it there: that extra repeats of a case cannot lower
+    the spread between cases, wherever a comparison's between-case share is read, which needs a repeated case.
 
     :param readings: What code read off the campaign.
     :ptype readings: CampaignReadings
-    :return: No block.
+    :return: The one sentence; nothing where no comparison reads a between-case share.
     :rtype: list[ReportBlock]
     """
-    return []
+    read = [row.precision for row in readings.readings] + [pair.precision for pair in readings.pairs]
+    if not any(precision is not None and precision.between_share is not None for precision in read):
+        return []
+    return [DisclosureBlock(section="provenance", source="comparisons", text=REPEATS_FLOOR)]
