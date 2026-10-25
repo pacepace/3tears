@@ -248,8 +248,8 @@ def tier_parity_findings(
 ) -> list[str]:
     """every difference between a collection's schema and what its SQLite L1, DuckDB L1 and L2 hand back.
 
-    For each class that declares a ``TableSchema``: the schema's table is created on a fresh SQLite
-    L1 and, when DuckDB is installed, a fresh DuckDB L1, each of which refuses a column it cannot
+    For each class that declares a ``TableSchema``: unless it keeps no L1 copy (``caches_in_l1 = False``),
+    the schema's table is created on a fresh SQLite L1 and, when DuckDB is installed, a fresh DuckDB L1, each of which refuses a column it cannot
     hold exactly; the sample row is written to each and read back; and it is passed through the
     collection's own L2 codec (``serialize``, then ``decode_row``). A class with no schema is skipped.
 
@@ -269,9 +269,10 @@ def tier_parity_findings(
         if schema is None:
             continue
         name = cls.__qualname__
-        findings.extend(_l1_findings(name, "SQLite L1", SQLiteBackend(f"tier_parity_{uuid.uuid7().hex}"), schema))
-        if _DUCKDB is not None:
-            findings.extend(_l1_findings(name, "DuckDB L1", _DUCKDB(), schema))
+        if cls.caches_in_l1:
+            findings.extend(_l1_findings(name, "SQLite L1", SQLiteBackend(f"tier_parity_{uuid.uuid7().hex}"), schema))
+            if _DUCKDB is not None:
+                findings.extend(_l1_findings(name, "DuckDB L1", _DUCKDB(), schema))
         row = _sample_row(schema)
         try:
             collection = builder(cls)

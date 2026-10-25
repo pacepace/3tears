@@ -73,6 +73,12 @@ class _Widest(_Exact):
     )
 
 
+class _WidestUncached(_Widest):
+    """the same NUMERIC on a collection that keeps no L1 copy: no L1 has to hold it."""
+
+    caches_in_l1: ClassVar[bool] = False
+
+
 class _UntypedCodec(_Exact):
     """an L2 codec that hands back JSON's own types: a UUID as text, a Decimal as text."""
 
@@ -98,6 +104,10 @@ def test_a_numeric_wider_than_the_default_decimal_context_is_sampled_whole() -> 
     assert [finding for finding in findings if "DuckDB" in finding] == [], findings
     assert len(findings) == 1, findings
     assert findings[0].startswith("_Widest: SQLite L1: tier_widest.amount: NUMERIC(38, 12)")
+
+
+def test_a_collection_that_keeps_no_l1_copy_is_checked_on_its_l2_alone() -> None:
+    assert tier_parity_findings([_WidestUncached]) == []
 
 
 def test_an_l2_codec_that_changes_a_type_is_named_per_column() -> None:

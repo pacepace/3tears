@@ -79,6 +79,7 @@ import re
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any, ClassVar, Final, Literal
 
@@ -326,8 +327,24 @@ class VersionedAnswer(BaseEntity):
 _JSON_PIECE: Final = 256
 
 
+def _json_default(value: Any) -> Any:
+    """what an answer's JSON writes for a value ``json`` has no type for.
+
+    A ``Decimal`` is a JSON number, the one its ``float`` writes: a reader parses a number into a
+    double either way, and an exact L1 hands back the ``Decimal`` a float copy used to hold. Anything
+    else is its ``str``.
+
+    :param value: the value
+    :ptype value: Any
+    :return: the value ``json`` writes in its place
+    :rtype: Any
+    """
+    written: Any = float(value) if isinstance(value, Decimal) else str(value)
+    return written
+
+
 def answer_json(answer: Any) -> str:
-    """``json.dumps(answer, default=str)``, the same text, written a piece at a time.
+    """``json.dumps(answer, default=str)``, the same text, written a piece at a time; a ``Decimal`` is a number.
 
     The C JSON encoder holds the interpreter lock for its whole call, so an answer of megabytes written in
     one call holds every other thread for as long, the event loop among them, whichever thread writes it.
@@ -336,19 +353,19 @@ def answer_json(answer: Any) -> str:
 
     :param answer: the answer
     :ptype answer: Any
-    :return: its JSON, exactly as ``json.dumps(answer, default=str)`` writes it
+    :return: its JSON, exactly as ``json.dumps`` writes it with :func:`_json_default`
     :rtype: str
     """
     if isinstance(answer, dict) and all(type(key) is str for key in answer):
         text = "{" + ", ".join(f"{json.dumps(key)}: {answer_json(value)}" for key, value in answer.items()) + "}"
     elif isinstance(answer, (list, tuple)) and len(answer) > _JSON_PIECE:
         pieces = (
-            json.dumps(list(answer[start : start + _JSON_PIECE]), default=str)[1:-1]
+            json.dumps(list(answer[start : start + _JSON_PIECE]), default=_json_default)[1:-1]
             for start in range(0, len(answer), _JSON_PIECE)
         )
         text = "[" + ", ".join(pieces) + "]"
     else:
-        text = json.dumps(answer, default=str)
+        text = json.dumps(answer, default=_json_default)
     return text
 
 
