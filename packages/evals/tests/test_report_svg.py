@@ -7,7 +7,7 @@
   ``url(#...)`` fill.
 - **A row needs its cases.** An arm with fewer than ``MIN_CASES`` usable cases has no interval drawn, and a contrast
   under the floor is no row at all; the methods say once what was not drawn.
-- **Light and dark.** The marks take their colours from the page's CSS variables, which are set for both; a glyph
+- **Light and dark.** The marks take their colours from the kit's tokens, which the kit defines for both; a glyph
   is ink alone, its verdict the word beside it.
 - **A label is never cut.** An arm's label is the line above its bar, wrapped where it is long.
 """
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from importlib.resources import files
 from typing import Any, get_args
 
 import pytest
@@ -129,7 +130,7 @@ def test_two_failure_causes_are_two_inks_of_one_hue_and_the_key_names_each() -> 
     ]
     key = svg[: svg.index("v1</text>")]
     assert re.findall(r">(passed|failed: \w+|failed|lost)</text>", key) == ["passed", "failed: check", "failed: judge"]
-    assert "--viz-failed-" not in SVG_STYLE, "one hue, ink only"
+    assert _failure_hues() == {"--s2"}, "one hue, ink only"
 
 
 def test_each_failure_cause_has_a_style_of_its_own_in_ink_alone() -> None:
@@ -156,14 +157,32 @@ def test_each_failure_cause_has_a_style_of_its_own_in_ink_alone() -> None:
     for classes, _ in styles.values():
         selector = "svg.viz ." + ".".join(classes.split())
         assert classes == "viz-failed" or selector + " {" in SVG_STYLE, classes
-    assert "--viz-failed-" not in SVG_STYLE and "url(" not in svg, "one hue, ink only, nothing fetched"
+    assert _failure_hues() == {"--s2"} and "url(" not in svg, "one hue, ink only, nothing fetched"
 
 
-def test_the_marks_are_coloured_by_css_variables_set_for_light_and_dark() -> None:
-    assert "prefers-color-scheme: dark" in SVG_STYLE and ':root[data-theme="dark"]' in SVG_STYLE
-    for variable in ("--viz-passed", "--viz-failed", "--viz-lost", "--viz-ink"):
-        assert SVG_STYLE.count(f"{variable}:") == 3, variable
-    assert "fill: var(--viz-passed)" in SVG_STYLE
+def _failure_hues() -> set[str]:
+    """Every colour token a failed segment's rules name, its tone, edge and hatching alike."""
+    rules = re.findall(r"svg\.viz \.viz-(?:failed|hatch)[^{]*\{([^}]*)\}", SVG_STYLE)
+    return set(re.findall(r"var\((--[\w-]+)\)", " ".join(rules)))
+
+
+def _kit_roots() -> list[str]:
+    """The kit stylesheet's three token blocks: light, dark by preference, dark by attribute."""
+    kit = (files("threetears.evals.analysis.report") / "kit" / "kit.css").read_text(encoding="utf-8")
+    return re.findall(r":root[^{]*\{([^}]*)\}", kit)
+
+
+def test_the_marks_are_coloured_by_kit_tokens_set_for_light_and_dark() -> None:
+    """The chart stylesheet defines no colour of its own: every token it names is one the kit sets in its light
+    block and in both dark ones, so a chart follows the page's theme, a host's ``data-theme`` included."""
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", SVG_STYLE), "a colour of the chart's own"
+    roots = _kit_roots()
+    assert len(roots) == 3
+    used = set(re.findall(r"var\((--[\w-]+)\)", SVG_STYLE)) - {"--f-body"}
+    assert {"--s1", "--s2", "--base", "--ink"} <= used
+    for variable in used:
+        assert all(f"{variable}:" in root for root in roots), variable
+    assert "svg.viz .viz-passed { fill: var(--s1); }" in SVG_STYLE
     svg = chart_svg(_bar_chart(), chart_id="c1")
     assert "#" not in re.sub(r'id="[^"]*"|aria-labelledby="[^"]*"', "", svg).replace("&#x27;", ""), "no colour inline"
 
@@ -208,8 +227,8 @@ def test_a_glyph_is_ink_on_one_scale_with_its_numbers_in_its_title() -> None:
         assert f'class="{mark}"' in svg, mark
     assert "<script" not in svg and "url(" not in svg and "#" not in svg and "href" not in svg
     # Ink alone: the point and the whisker take the page's ink, never a series colour.
-    assert "svg.viz-glyph .viz-point { fill: var(--viz-ink); }" in SVG_STYLE
-    assert "svg.viz-glyph .viz-whisker { stroke: var(--viz-ink)" in SVG_STYLE
+    assert "svg.viz-glyph .viz-point { fill: var(--ink); }" in SVG_STYLE
+    assert "svg.viz-glyph .viz-whisker { stroke: var(--ink)" in SVG_STYLE
 
 
 def test_a_glyph_off_zero_draws_no_zero_line_and_no_band() -> None:

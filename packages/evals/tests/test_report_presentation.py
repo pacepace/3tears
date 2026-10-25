@@ -393,6 +393,8 @@ async def test_a_trial_s_summary_is_never_the_first_line_of_what_it_asked() -> N
     trial_summaries = [summary for summary in summaries if re.match(r"T\d+ · ", summary)]
     assert len(trial_summaries) == 2 * len(trials)
     for summary in trial_summaries:
+        # Read as a reader hears it: the HTML's state is a pill, whose icon a screen reader skips and whose word it reads.
+        summary = re.sub(r"<[^>]+>", "", re.sub(r'<span aria-hidden="true">[^<]*</span>', "", summary))
         assert "{" not in summary and "The world" not in summary
         assert re.fullmatch(r"T\d+ · case \d · [ab] · (passed|failed|lost)", summary), summary
     (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "trials"]
@@ -547,13 +549,23 @@ async def test_every_colour_is_a_variable_both_schemes_define() -> None:
     page = report_html(await g2_report())
     (style,) = re.findall(r"<style>(.*?)</style>", page, re.S)
     roots = _root_blocks(style)
-    assert len(roots) == 6, "light, dark by preference and dark by attribute, for the page and for the charts"
+    assert len(roots) == 3, "light, dark by preference and dark by attribute: the kit's, which the charts draw from too"
     rules = re.sub(r":root[^{]*\{[^}]*\}", "", style)
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", rules), "a hard-coded colour outside :root"
-    light = " ".join(roots[0::3])
-    dark = " ".join(roots[1::3])
-    used = set(re.findall(r"var\((--[\w-]+)", rules)) - {"--font-sans", "--font-mono"}
+    light, dark_by_preference, dark_by_attribute = roots
+    # The kit's faces, type steps and measures are tokens too, set once for both schemes; the colours are the rest.
+    used = {
+        variable
+        for variable in re.findall(r"var\((--[\w-]+)", rules)
+        if not re.match(r"--(f|t)-|--(col|wide|r)$", variable)
+    }
+    # A colour the light block derives from another token (``--accent: var(--host-accent)``) follows that token,
+    # which each dark block sets in its place.
+    derived = dict(re.findall(r"(--[\w-]+):\s*var\((--[\w-]+)\)", light))
     for variable in used:
-        assert f"{variable}:" in light and f"{variable}:" in dark, variable
+        defined = derived.get(variable, variable)
+        assert f"{variable}:" in light, variable
+        for dark in (dark_by_preference, dark_by_attribute):
+            assert re.search(rf"(?<![\w-]){defined}:", dark), variable
     svg = "".join(re.findall(r"<svg\b.*?</svg>", page, re.S))
     assert not re.search(r'(fill|stroke|color|style)="[^"]*(#|rgb)', svg), "a colour drawn inline"

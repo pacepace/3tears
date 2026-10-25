@@ -32,6 +32,7 @@ from threetears.evals.analysis.report.model import (
     TableBlock,
 )
 from threetears.evals.analysis.report.words import FIRST_SCREEN_BANNED
+from packages.evals.tests.page_contract_support import FONT_LINKS, font_links, what_runs
 from packages.evals.tests.style_support import lint_page
 from threetears.evals.kernel.errors import RefusedInput
 
@@ -64,7 +65,7 @@ async def test_a_campaign_of_one_aspect_has_one_row_and_its_fold_holds_the_aspec
     # Every section the aspect's own page holds is in the fold, under the fold's prefix.
     sections = re.findall(r'<section id="([a-z_]+)">', own)
     assert sections and all(
-        f'<section id="a-billing-{section}">' in html for section in sections if section != "glossary"
+        f'<section id="a-billing--{section}">' in html for section in sections if section != "glossary"
     )
     assert html.count("<h1>") == 1
 
@@ -84,11 +85,14 @@ async def test_the_page_keeps_the_embed_s_invariants() -> None:
     parser = _Tags()
     parser.feed(html)
     tags = parser.tags
-    assert not [tag for tag, _ in tags if tag in {"script", "iframe", "object", "embed", "link", "base", "img"}]
+    # Nothing runs or loads but the kit's fonts, through the package's own three links in the head.
+    assert what_runs(html) == []
+    assert font_links(html) == list(FONT_LINKS)
     assert not [name for _, attrs in tags for name in attrs if name.startswith("on")]
     ids = [attrs["id"] for _, attrs in tags if attrs.get("id")]
     assert len(ids) == len(set(ids)), "an id is repeated"
-    hrefs = [attrs["href"] for _, attrs in tags if "href" in attrs]
+    # Every other link is to a place on the page itself.
+    hrefs = [attrs["href"] for tag, attrs in tags if "href" in attrs and tag != "link"]
     assert all(href is not None and href.startswith("#") for href in hrefs)
     assert {href[1:] for href in hrefs if href} <= set(ids), "a link lands nowhere"
     assert "<header>" in html and '<section id="aspect-billing">' in html and '<section id="glossary">' in html
@@ -219,3 +223,13 @@ async def test_a_fold_of_a_choice_names_the_arms_by_the_campaign_s_labels() -> N
     page = build_campaign_report(tone.campaign, read, {"tone": report}, None)
     fold = campaign_report_markdown(page).split("\n## tone", 1)[1]
     assert "| ALPHA |" in fold and "| alpha |" not in fold
+
+
+@pytest.mark.parametrize("second", ["billing body", "billing trials", "billing 2"])
+async def test_an_aspect_whose_label_extends_anothers_never_takes_its_ids(second: str) -> None:
+    """An aspect's slug may read as another's plus a word ("billing" and "billing body"); the ids derived from a slug
+    join it with a separator no slug holds, so neither fold claims the other's ids, in HTML or Markdown."""
+    page = await page_of("billing", second)
+    for rendered in (campaign_report_html(page), campaign_report_markdown(page)):
+        ids = re.findall(r'\bid="([^"]+)"', rendered)
+        assert ids and len(ids) == len(set(ids)), sorted(i for i in ids if ids.count(i) > 1)

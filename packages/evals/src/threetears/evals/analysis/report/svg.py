@@ -15,12 +15,12 @@ picture of where the arms sit, read by eye, with no line drawn between them, sin
 
 **Legible without colour, a script or a stylesheet of its own.** Every mark's value is written as text, and each
 segment says what it is in words, so colour never carries identity alone. Colours are classes the page's stylesheet
-sets from CSS variables (:data:`SVG_STYLE`), stepped for light and dark; a glyph is drawn in the page's ink alone,
+sets from the kit's tokens (:data:`SVG_STYLE`), defined for light and dark; a glyph is drawn in the page's ink alone,
 the margin band in its one quiet tint, and its verdict is the word in the next cell, never a hue. Each chart has a
 ``<title>`` and a ``<desc>`` stating its values, each mark and each glyph a ``<title>`` of its own, and the page keeps
 a visually hidden table of a chart's values beside it. There is no ``<script>``, no event attribute, no external
-reference and no URL of any kind — not even a ``url(#...)`` fill — so the page's ``default-src 'none'`` policy holds
-unchanged.
+reference and no URL of any kind — not even a ``url(#...)`` fill: a chart loads nothing, whatever the page around it
+does.
 """
 
 from __future__ import annotations
@@ -73,51 +73,43 @@ _LINE = 17
 #: The gap between two stacked segments, so each reads as its own mark.
 _SEGMENT_GAP = 2
 
-#: The page's chart stylesheet: each mark's class, from CSS variables stepped for light and for dark. The categorical
-#: steps are the validated default palette's first two slots (blue, orange); a lost segment is a neutral grey with a
-#: dashed outline, the convention for "not measured", so it never reads as a third series. A failure's causes share
-#: the one failed hue and differ in ink alone (:data:`_FAILURE_INK`): tone, edge weight and hatching. The chart scales
-#: to the
-#: page's width down to a floor that keeps its 13px text at 11px or more on a phone; past the floor its figure
-#: scrolls, as a table does, rather than shrinking the words.
+#: The page's chart stylesheet: each mark's class, coloured from the kit's tokens (``kit/kit.css``), which define
+#: every one for light and for dark, so a chart follows the page's theme with no colour of its own. Passed and failed
+#: are the kit's first two series (blue, orange), a pair that reads apart under every common colour-vision
+#: deficiency; a lost segment is the kit's neutral base with a dashed edge, the convention for "not measured", so it
+#: never reads as a third series. A failure's causes share the one failed hue and differ in ink alone
+#: (:data:`_FAILURE_INK`): tone, edge weight and hatching. A glyph is the page's ink, its margin band the sunken
+#: tint. The chart scales to its figure's width down to a floor that keeps its 13px text at 11px or more on a phone;
+#: past the floor it scrolls inside its own frame, as a table does, rather than shrinking the words.
 SVG_STYLE = """
-:root { --viz-passed: #2a78d6; --viz-failed: #eb6834; --viz-lost: #b9b8b3; --viz-lost-edge: #6f6e69;
-  --viz-ink: #0b0b0b; --viz-muted: #52514e; --viz-rule: #c9c8c2; --viz-band: #e9e8e3; --viz-on-fill: #ffffff; }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) { --viz-passed: #3987e5; --viz-failed: #d95926; --viz-lost: #4a4a46;
-    --viz-lost-edge: #a8a7a0; --viz-ink: #f0efec; --viz-muted: #c3c2b7; --viz-rule: #4a4a46; --viz-band: #2c2c29;
-    --viz-on-fill: #ffffff; }
-}
-:root[data-theme="dark"] { --viz-passed: #3987e5; --viz-failed: #d95926; --viz-lost: #4a4a46;
-  --viz-lost-edge: #a8a7a0; --viz-ink: #f0efec; --viz-muted: #c3c2b7; --viz-rule: #4a4a46; --viz-band: #2c2c29;
-  --viz-on-fill: #ffffff; }
-svg.viz { width: 100%; min-width: 610px; height: auto; display: block;
-  font: 13px/1.3 var(--font-sans, system-ui, sans-serif); }
-svg.viz text { fill: var(--viz-ink); }
-svg.viz text.viz-muted { fill: var(--viz-muted); }
-svg.viz .viz-passed { fill: var(--viz-passed); }
-svg.viz .viz-failed { fill: var(--viz-failed); }
-svg.viz .viz-failed.viz-alt { fill-opacity: 0.45; stroke: var(--viz-failed); stroke-width: 1.5; }
-svg.viz .viz-failed.viz-alt2 { fill-opacity: 0.15; stroke: var(--viz-failed); stroke-width: 2.5; }
-svg.viz .viz-failed.viz-alt3 { fill-opacity: 0.15; stroke: var(--viz-failed); stroke-width: 1; }
-svg.viz .viz-failed.viz-alt4 { fill-opacity: 0.15; stroke: var(--viz-failed); stroke-width: 2; }
-svg.viz .viz-hatch { stroke: var(--viz-failed); stroke-width: 1; fill: none; pointer-events: none; }
-svg.viz .viz-lost { fill: var(--viz-lost); stroke: var(--viz-lost-edge); stroke-width: 1; stroke-dasharray: 3 2; }
+svg.viz { width: 100%; min-width: 610px; height: auto; display: block; font: 13px/1.3 var(--f-body); }
+svg.viz text { fill: var(--ink); }
+svg.viz text.viz-muted { fill: var(--ink-2); }
+svg.viz .viz-passed { fill: var(--s1); }
+svg.viz .viz-failed { fill: var(--s2); }
+svg.viz .viz-failed.viz-alt { fill-opacity: 0.45; stroke: var(--s2); stroke-width: 1.5; }
+svg.viz .viz-failed.viz-alt2 { fill-opacity: 0.15; stroke: var(--s2); stroke-width: 2.5; }
+svg.viz .viz-failed.viz-alt3 { fill-opacity: 0.15; stroke: var(--s2); stroke-width: 1; }
+svg.viz .viz-failed.viz-alt4 { fill-opacity: 0.15; stroke: var(--s2); stroke-width: 2; }
+svg.viz .viz-hatch { stroke: var(--s2); stroke-width: 1; fill: none; pointer-events: none; }
+svg.viz .viz-lost { fill: var(--base); stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 2; }
 svg.viz .viz-lost.viz-alt { stroke-dasharray: 1 2; }
-svg.viz text.viz-on-fill { fill: var(--viz-on-fill); font-variant-numeric: tabular-nums; }
-svg.viz .viz-rule { stroke: var(--viz-rule); stroke-width: 1; }
-svg.viz .viz-zero { stroke: var(--viz-muted); stroke-width: 1; }
-svg.viz .viz-band { fill: var(--viz-band); }
-svg.viz .viz-whisker { stroke: var(--viz-ink); stroke-width: 2; stroke-linecap: round; }
-svg.viz .viz-dot { fill: var(--viz-passed); stroke: var(--viz-ink); stroke-width: 1; }
+svg.viz text.viz-on-fill { fill: var(--on-fill); font-variant-numeric: tabular-nums; }
+svg.viz .viz-rule { stroke: var(--base); stroke-width: 1; }
+svg.viz .viz-zero { stroke: var(--ink-2); stroke-width: 1; }
+svg.viz .viz-band { fill: var(--sunk); }
+svg.viz .viz-whisker { stroke: var(--ink); stroke-width: 2; stroke-linecap: round; }
+svg.viz .viz-dot { fill: var(--s1); stroke: var(--ink); stroke-width: 1; }
 svg.viz-glyph { width: 7.5em; height: 0.875em; vertical-align: -0.0625em; margin-right: 6px; overflow: visible; }
-svg.viz-glyph .viz-track { stroke: var(--viz-rule); stroke-width: 1; }
-svg.viz-glyph .viz-zero { stroke: var(--viz-muted); stroke-width: 1; }
-svg.viz-glyph .viz-band { fill: var(--viz-band); }
-svg.viz-glyph .viz-whisker { stroke: var(--viz-ink); stroke-width: 1.5; stroke-linecap: round; }
-svg.viz-glyph .viz-point { fill: var(--viz-ink); }
+svg.viz-glyph .viz-track { stroke: var(--base); stroke-width: 1; }
+svg.viz-glyph .viz-zero { stroke: var(--ink-2); stroke-width: 1; }
+svg.viz-glyph .viz-band { fill: var(--sunk); }
+svg.viz-glyph .viz-whisker { stroke: var(--ink); stroke-width: 1.5; stroke-linecap: round; }
+svg.viz-glyph .viz-point { fill: var(--ink); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
   clip-path: inset(50%); white-space: nowrap; border: 0; }
+table.visually-hidden { table-layout: fixed; }
+.visually-hidden th, .visually-hidden td { padding: 0; }
 """
 
 

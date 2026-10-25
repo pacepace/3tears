@@ -32,6 +32,7 @@ from threetears.evals.ops import report_read
 from threetears.evals import Eval, Result
 from threetears.evals.quick import run_cli
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.page_contract_support import FONT_LINKS, font_links, without_font_links
 
 #: The instant every door's report is assembled at, so their pages can be compared byte for byte.
 NOW = "2026-10-14T09:00:00+00:00"
@@ -100,17 +101,26 @@ async def test_write_puts_one_self_contained_page_its_markdown_and_its_bundle_in
         f"bundle:{aspect.aspect}": f"bundle-{fold_id}.json",
     }
     page = files["html"].read_text(encoding="utf-8")
-    # A host serves the page in a sandboxed frame under a strict content policy: it reaches nothing outside itself.
-    assert not re.search(r"<(script|link|img|iframe|object|embed|video|audio|source)\b", page, re.I)
-    assert not re.search(r"<[^>]*\s(on[a-z]+|src|srcset|action|formaction)\s*=", page, re.I), "no handler, no fetch"
-    hrefs = re.findall(r"<[^>]*\shref\s*=\s*\"([^\"]*)\"", page, re.I)
-    assert hrefs and all(ref.startswith("#") for ref in hrefs), "the only links are anchors within the page"
-    assert not re.search(r"https?://|//[a-z0-9.-]+\.[a-z]{2,}/", page, re.I), "no absolute or protocol-relative URL"
-    assert not re.search(r"url\(|@import|@font-face", page, re.I), "no stylesheet fetch and no web font"
+    # The page reaches nothing outside itself but the kit's fonts: the package's three font links in its head, to the
+    # Google Fonts hosts. With those taken out, the rest of the page loads nothing and links only within itself.
+    assert font_links(page) == list(FONT_LINKS)
+    rest = without_font_links(page)
+    assert rest != page, "the font links are in the head, verbatim"
+    assert not re.search(r"<(script|link|img|iframe|object|embed|video|audio|source)\b", rest, re.I)
+    assert not re.search(r"<[^>]*\s(on[a-z]+|src|srcset|action|formaction)\s*=", rest, re.I), "no handler, no fetch"
+    hrefs = re.findall(r"<[^>]*\shref\s*=\s*\"([^\"]*)\"", rest, re.I)
+    assert hrefs and all(ref.startswith("#") for ref in hrefs), "the only other links are anchors within the page"
+    assert not re.search(r"https?://|//[a-z0-9.-]+\.[a-z]{2,}/", rest, re.I), (
+        "no other absolute or protocol-relative URL"
+    )
+    assert not re.search(r"url\(|@import|@font-face", page, re.I), "the stylesheet fetches nothing itself"
     (style,) = re.findall(r"<style>(.*?)</style>", page, re.S)
-    assert "--font-sans: system-ui," in style, "the system's own fonts, named once as a variable"
+    # Each face is named once, as a kit token, with the system's own faces after the Plex one where it is blocked.
+    for token in ("--f-display", "--f-body", "--f-mono"):
+        (declared,) = re.findall(rf"{token}:([^;]+);", style)
+        assert "IBM Plex" in declared and re.search(r"system-ui|ui-monospace", declared), (token, declared)
     fonts = re.findall(r"\bfont(?:-family)?:\s*([^;}]+)", style)
-    assert fonts and all("var(--font-" in declared for declared in fonts), fonts
+    assert fonts and all("var(--f-" in declared or declared.strip() == "inherit" for declared in fonts), fonts
     bundle = AnalysisContextBundle.from_json(files[f"bundle:{aspect.aspect}"].read_text(encoding="utf-8"))
     assert bundle.fingerprint() in page
     assert files["markdown"].read_text(encoding="utf-8") == campaign_report_markdown(comparison.page)

@@ -325,7 +325,7 @@ async def test_every_link_on_both_pages_lands_in_sight() -> None:
     nav = campaign_html[campaign_html.index("<nav>") : campaign_html.index("</nav>")]
     assert f'href="#aspect-{fold_id}"' in nav and "-body" not in nav
     # A case's trial ids, inside the aspect's fold, land on that fold's Trials section, which the reader then opens.
-    assert f'href="#a-{fold_id}-trials"' in campaign_html
+    assert f'href="#a-{fold_id}--trials"' in campaign_html
     _trace_links_land_in_sight(campaign_html)
 
 
@@ -352,9 +352,9 @@ async def test_a_link_keeps_its_exact_target_where_the_reader_sees_it() -> None:
     campaign = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
     campaign_html = campaign_report_html(campaign)
     (fold_id,) = campaign.fold_ids
-    folded = campaign_html[campaign_html.index(f'id="a-{fold_id}-trials"') :]
+    folded = campaign_html[campaign_html.index(f'id="a-{fold_id}--trials"') :]
     table = folded[folded.index('data-table="trials"') :].split("</table>", 1)[0]
-    assert f'<a href="#a-{fold_id}-{first}">{first}</a>' in table and f'id="a-{fold_id}-{first}"' in campaign_html
+    assert f'<a href="#a-{fold_id}--{first}">{first}</a>' in table and f'id="a-{fold_id}--{first}"' in campaign_html
 
 
 async def test_a_figure_never_lands_on_another_number() -> None:

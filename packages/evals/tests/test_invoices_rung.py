@@ -145,7 +145,10 @@ async def test_its_campaign_page_opens_on_the_guardrail_v2_is_not_shown_safe_on(
     warning = "v2 is not yet shown safe on the no invented total guardrail on classify."
     assert f"**{warning}**" in lines[: lines.index(next(line for line in lines if line.startswith("## ")))]
     html = campaign_report_html(result.page)
-    assert f'<p class="warning"><strong>{warning}' in html and 'role="alert"' not in html[: html.index("</header>")]
+    assert (
+        f'<p class="flag warning"><b aria-hidden="true">!</b><strong>{warning}' in html
+        and 'role="alert"' not in html[: html.index("</header>")]
+    )
     assert "not adopted" not in "\n".join(lines)
     # No margin was declared, so the page says so once and keeps no row of dashes to settle against one.
     assert "No margin was declared on classify, so no arm is ever shown worse there." in lines
