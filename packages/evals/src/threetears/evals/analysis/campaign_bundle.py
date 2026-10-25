@@ -55,7 +55,7 @@ from threetears.evals.analysis.bundle.schema import (
     refuse_a_bundle_of_another_shape,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
-from threetears.evals.analysis.campaign_readings import CampaignReadings
+from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_aggregate
 from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.depth import REPEATS_FLOOR, Depth, Precision
@@ -73,10 +73,22 @@ from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 
-#: The campaign bundle's own shape: what :meth:`CampaignBundle.from_dict` and :meth:`CampaignBundle.from_frame`
-#: accept, and the only one. A frozen copy of another shape is refused with a remedy, never read. 2: each reading and
-#: pair states both arms' depth, the paired cases that differ in it, and what limits its interval (`precision`).
-CAMPAIGN_BUNDLE_SHAPE = 2
+#: The campaign bundle's own shape: what it is built at, and what :meth:`CampaignBundle.from_dict` and
+#: :meth:`CampaignBundle.from_frame` read a frozen copy back as. 2: each reading and pair states both arms' depth, the
+#: paired cases that differ in it, and what limits its interval (`precision`). 3: the readings carry each arm's figures
+#: across every aspect (`readings.aggregate`).
+CAMPAIGN_BUNDLE_SHAPE = 3
+
+#: The frozen shapes read back as this one: shape 2 differs only by `readings.aggregate`, which is read off its own
+#: readings and aspects' bundles (:func:`~threetears.evals.analysis.campaign_readings.campaign_aggregate`), so a case
+#: or an analysis frozen at 2 reads, and is fingerprinted, as the same evidence. Any other shape is refused.
+_EARLIER_SHAPES = frozenset({2})
+
+#: The shape a fingerprint reads a frame at, and what it leaves out of the readings: shape 3 adds only figures derived
+#: from what shape 2 holds, so one campaign's evidence fingerprints alike at either, and a frozen case's labels, an
+#: analysis's staleness and a re-freeze's match never move with the shape.
+_EVIDENCE_SHAPE = 2
+_DERIVED_READINGS = frozenset({"aggregate"})
 
 #: The most characters one aspect's part of the writer's user message may take, as compact JSON. A campaign's message
 #: grows with its aspects, at most this much each, and the system prompt is budgeted apart
@@ -237,11 +249,12 @@ class CampaignBundle(EvalDocumentModel):
         :ptype what: str
         :param remedy: What to do instead.
         :ptype remedy: str
-        :raises RefusedInput: Its ``schema_version`` is not :data:`CAMPAIGN_BUNDLE_SHAPE`, or it is not a campaign
-            bundle at all (one aspect's bundle, frozen before one memo covered a campaign).
+        :raises RefusedInput: Its ``schema_version`` is neither :data:`CAMPAIGN_BUNDLE_SHAPE` nor an earlier shape this
+            build reads it as, or it is not a campaign bundle at all (one aspect's bundle, frozen before one memo
+            covered a campaign).
         """
         shape = data.get("schema_version")
-        if "readings" not in data or shape != CAMPAIGN_BUNDLE_SHAPE:
+        if "readings" not in data or (shape != CAMPAIGN_BUNDLE_SHAPE and shape not in _EARLIER_SHAPES):
             when = (
                 "before one memo covered a campaign's every aspect"
                 if "readings" not in data
@@ -249,7 +262,8 @@ class CampaignBundle(EvalDocumentModel):
             )
             raise RefusedInput(
                 f"{what} holds evidence of shape {shape} that is not a campaign bundle of this build's shape "
-                f"({CAMPAIGN_BUNDLE_SHAPE}): it was frozen {when}, so this build cannot read it",
+                f"({CAMPAIGN_BUNDLE_SHAPE}) or one it reads as that ({', '.join(map(str, sorted(_EARLIER_SHAPES)))}): "
+                f"it was frozen {when}, so this build cannot read it",
                 remedy=remedy,
             )
 
@@ -257,7 +271,8 @@ class CampaignBundle(EvalDocumentModel):
     def from_dict(
         cls, data: Mapping[str, Any], *, what: str = "this campaign bundle", remedy: str = ""
     ) -> CampaignBundle:
-        """Read a whole campaign bundle back, refusing one of another shape with a remedy.
+        """Read a whole campaign bundle back, an earlier shape it reads as this one included, refusing any other shape
+        with a remedy.
 
         :param data: A campaign bundle, as ``to_dict`` wrote it (each aspect's bundle whole in its place).
         :ptype data: Mapping[str, Any]
@@ -276,9 +291,7 @@ class CampaignBundle(EvalDocumentModel):
         for aspect in data.get("aspects") or []:
             refuse_a_bundle_of_another_shape(aspect, what=what, remedy=fix)
             bundles.append(AnalysisContextBundle.from_dict(dict(aspect)))
-        return cls.model_validate(
-            {**{key: value for key, value in data.items() if key != "aspects"}, "aspects": bundles}
-        )
+        return cls.model_validate({**_as_this_shape(data, bundles), "aspects": bundles})
 
     @classmethod
     def from_json(cls, json_str: str) -> CampaignBundle:
@@ -296,7 +309,8 @@ class CampaignBundle(EvalDocumentModel):
     def from_frame(
         cls, frame: Mapping[str, Any], bundles: Sequence[AnalysisContextBundle], *, what: str = "this analysis"
     ) -> CampaignBundle:
-        """Put a stored frame and its aspects' bundles back together, refusing a pair that do not belong together.
+        """Put a stored frame and its aspects' bundles back together, an earlier shape it reads as this one included,
+        refusing a pair that do not belong together.
 
         :param frame: The frame, as :meth:`frame` wrote it.
         :ptype frame: Mapping[str, Any]
@@ -320,9 +334,7 @@ class CampaignBundle(EvalDocumentModel):
         ]
         if named != held:
             raise ValueError(f"{what}'s campaign bundle names aspects {named}, and its aspects hold {held}")
-        return cls.model_validate(
-            {**{key: value for key, value in frame.items() if key != "aspects"}, "aspects": bundles}
-        )
+        return cls.model_validate({**_as_this_shape(frame, bundles), "aspects": bundles})
 
     # ------------------------------------------------------------------ reading it
 
@@ -481,16 +493,36 @@ def campaign_evidence_digest(document: Mapping[str, Any], *, like: str | None = 
     return fingerprint_digest(_evidence_of(frame), like=like)
 
 
+def _as_this_shape(document: Mapping[str, Any], bundles: Sequence[AnalysisContextBundle]) -> dict[str, Any]:
+    """A frozen campaign bundle's or frame's fields but its aspects, at :data:`CAMPAIGN_BUNDLE_SHAPE`: one of an earlier
+    shape it reads as this one gains what that shape lacked, read off its own readings and its aspects' bundles."""
+    held = {key: value for key, value in document.items() if key != "aspects"}
+    if held.get("schema_version") not in _EARLIER_SHAPES:
+        return held
+    readings = CampaignReadings.model_validate(held["readings"])
+    aggregate = campaign_aggregate(readings, {bundle.aspect: bundle for bundle in bundles})
+    readings = readings.model_copy(update={"aggregate": aggregate})
+    return {**held, "schema_version": CAMPAIGN_BUNDLE_SHAPE, "readings": readings}
+
+
 def _evidence_of(frame: Mapping[str, Any]) -> dict[str, Any]:
-    """A campaign bundle's frame as its fingerprint reads it: without how a page prints each aspect
+    """A campaign bundle's frame as its fingerprint reads it: at :data:`_EVIDENCE_SHAPE`, without the figures derived
+    from its readings (:data:`_DERIVED_READINGS`), and without how a page prints each aspect
     (:data:`~threetears.evals.kernel.declaration.ASPECT_PRESENTATION_FIELDS`).
 
-    A short name is presentation, as an aspect bundle's own is (left out of its fingerprint), so naming an aspect
-    leaves every analysis and reporter case of the campaign reproducing. An aspect naming none carries no key to drop.
+    The figures across aspects are read off the readings and the aspects' bundles the fingerprint already reads, so a
+    bundle of this shape and one frozen at the shape before it fingerprint alike over the same evidence. A short name
+    is presentation, as an aspect bundle's own is (left out of its fingerprint), so naming an aspect leaves every
+    analysis and reporter case of the campaign reproducing. An aspect naming none carries no key to drop.
     """
+    frame = dict(frame)
+    if frame.get("schema_version") == CAMPAIGN_BUNDLE_SHAPE:
+        frame["schema_version"] = _EVIDENCE_SHAPE
+        if isinstance(readings := frame.get("readings"), Mapping):
+            frame["readings"] = {key: value for key, value in readings.items() if key not in _DERIVED_READINGS}
     declaration = frame.get("declaration")
     if not isinstance(declaration, Mapping) or not isinstance(declaration.get("aspects"), list):
-        return dict(frame)
+        return frame
     aspects = [
         {key: value for key, value in aspect.items() if key not in ASPECT_PRESENTATION_FIELDS}
         if isinstance(aspect, Mapping)

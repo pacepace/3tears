@@ -2,7 +2,7 @@
 the page calls an aspect.
 
 These hold the shapes the page's parts are built into, over the shared campaign shapes: every campaign section is
-headed and laid out in the page's order, a cell's flag prints after its value, and no cost/quality chart is drawn yet.
+headed and laid out in the page's order, a cell's flag prints after its value, and a cost/quality chart draws its points.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis import campaign_report_html, campaign_report_markdown, serialize_report
-from threetears.evals.analysis.report.campaign.aggregate import aggregate_blocks, equal_weight_cells
 from threetears.evals.analysis.report.campaign.depth_blocks import depth_provenance_blocks
 from threetears.evals.analysis.report.campaign.names import AspectNames, aspect_name
 from threetears.evals.analysis.report.model import (
@@ -169,15 +168,18 @@ def test_a_cost_quality_chart_of_one_point_or_another_kind_s_marks_is_refused() 
             ChartBlock(section="scorecard", chart="cost_quality", title="t", points=two, **marks)
 
 
-def test_a_cost_quality_chart_is_refused_by_the_drawing_until_one_exists() -> None:
+def test_a_cost_quality_chart_is_drawn_one_dot_per_arm_with_its_figures_in_words() -> None:
     chart = ChartBlock(
         section="scorecard",
         chart="cost_quality",
         title="Cost and pass rate",
+        unit="usd",
         points=[_point("alpha", 0.004, 85.0), _point("beta", 0.0008, 60.0)],
     )
-    with pytest.raises(ValueError, match="has no drawing yet"):
-        chart_svg(chart, chart_id="c1")
+    svg = chart_svg(chart, chart_id="c1")
+    assert svg.count('<circle class="viz-dot"') == 2
+    assert ">alpha</text>" in svg and ">beta</text>" in svg
+    assert "alpha: $0.004 [$0.0036, $0.0044] per reply, pass rate 85% [80%, 90%]" in svg
 
 
 def test_an_aspect_is_called_by_its_full_label_as_declared() -> None:
@@ -193,8 +195,6 @@ def test_an_aspect_is_called_by_its_full_label_as_declared() -> None:
 @pytest.mark.parametrize("build", [s1_change, s4_change], ids=["s1", "s4"])
 def test_the_seams_later_parts_fill_are_empty_today(build: Callable[[], Shape]) -> None:
     shape = build()
-    assert equal_weight_cells(shape.campaign, shape.readings, shape.reports) == {}
-    assert aggregate_blocks(shape.campaign, shape.readings, shape.reports) == []
     assert depth_provenance_blocks(shape.readings) == []
 
 

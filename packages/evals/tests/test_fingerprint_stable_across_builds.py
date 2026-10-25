@@ -79,8 +79,12 @@ def _v1_aspect(document: dict[str, Any]) -> str:
 
 
 def _v1_campaign(document: dict[str, Any]) -> str:
-    """A campaign bundle's fingerprint as version 1 took it, from its stored document."""
+    """A campaign bundle's fingerprint as version 1 took it, from its stored document: as a build of that version
+    wrote it, at shape 2 at the latest, so with no figures across aspects in its readings."""
     frame = {key: value for key, value in document.items() if key != "aspects"}
+    if frame.get("schema_version") == 3:
+        readings = {key: value for key, value in frame["readings"].items() if key != "aggregate"}
+        frame = {**frame, "schema_version": 2, "readings": readings}
     frame["aspects"] = [
         {"aspect": aspect["aspect"], "fingerprint": _v1_aspect(aspect)} for aspect in document["aspects"]
     ]
