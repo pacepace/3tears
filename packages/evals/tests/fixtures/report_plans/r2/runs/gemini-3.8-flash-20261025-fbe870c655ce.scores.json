@@ -1,0 +1,98 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261025-fbe870c655ce",
+  "input": "r2",
+  "input_digest": "3b825233f6120f9deb81f63c4a9c2849c6ba2d388a1db0be780cbe5395add19d",
+  "plan_digest": "b54d34f6f985fa5dd1e9531146cb05dce66d846a42de60e4db2592f50b846683",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "b5a594e0f83555d7de1d01b7fab709c4d62a312fa99922b71c80cda5b3b4b446",
+    "contract_digest": "d633628a4bf781225146719e712eb941c001887b44ee7208a08a282fc8c5ff0d"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v1",
+    "digest": "d4e0c71fd8b2a765a0504241859715db32000301de642e9b25f30a0a673368c8"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision with instruction and reason for the recommended row, Brisk-S low reasoning with 1 retry, the only configuration that clears both gates; the first chart does not contradict it.",
+      "quote": "Adopt Brisk-S · reasoning low · 1 retry (J): it meets both accuracy and latency criteria at the lowest operating cost.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: the supporting figures, then the latency tightening that would leave no configuration passing.",
+      "quote": "Tightening the latency gate below 513 ms ms would eliminate all configurations meeting the accuracy threshold.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "The input has no caveats, the plan carries no flag, and no caveat repeats.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The first section claims lowest cost while clearing both gates, but its chart draws only pass rate, so it shows neither cost nor the latency gate.",
+      "quote": "Brisk-S · reasoning low · 1 retry (J) is the lowest-cost configuration satisfying both gates",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "fail",
+      "reason": "A Next slot above Full results uses the stratum id 'datemath' instead of the reader name 'Date and unit math'.",
+      "quote": "audit off-by-one errors on datemath tasks",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "fail",
+      "reason": "The weakest margin under the call is the overall pass rate (97.1% against the 97% gate); Watch names the multi-hop task, which no gate covers.",
+      "quote": "Monitor multi-hop tasks where Brisk-S · reasoning low · 1 retry (J) achieves 95.6%, leaving the narrowest margin against accuracy expectations.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "The one pass-rate measure goes by two names, 'accuracy' in the lede and 'pass rate' in the decision slots.",
+      "quote": "Brisk-S · reasoning low · 1 retry (J) achieves 97.1% accuracy and 513 ms latency at $0.30 per 1,000 replies.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The headline, the lede and the decision slots on the first screen say what to adopt, why, and a stated risk, without needing a section.",
+      "quote": "Deploy Brisk-S · reasoning low · 1 retry (J). It satisfies the 97% pass gate and the 600 ms ms p95 latency budget while costing $0.30 per 1,000 replies.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "Next is a to-do list (enable retry, audit errors) rather than an experiment whose result could change the call.",
+      "quote": "Enable one retry in production for Brisk-S · reasoning low · 1 retry (J) and audit off-by-one errors on datemath tasks.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "Confidence is plain high with no clauses, so the item passes.",
+      "quote": "",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-25T22:35:42Z"
+}

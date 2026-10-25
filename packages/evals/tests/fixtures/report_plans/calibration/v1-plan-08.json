@@ -1,0 +1,75 @@
+{
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision with instruction and reason that matches the recommended September row and the drops the first forest chart shows.",
+      "quote": "Keep September. Both candidates cost 27–28% more per reply and stay in character less often.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "fail",
+      "reason": "The lede runs three sentences, spends its last on caveats, and says nothing about what would change the answer.",
+      "quote": "The judge is uncalibrated, and the aspect and control were chosen after the results.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "fail",
+      "reason": "The judge, late-aspect and late-control caveats are said in the lede and again in the confidence clauses.",
+      "quote": "The judge is uncalibrated, and the aspect and control were chosen after the results.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The examples headline claims off-lane failures answer instead of brushing off, but a shown off-lane failure brushes the question off and fails for a different reason.",
+      "quote": "Off-lane failures answer the question instead of brushing it off",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "fail",
+      "reason": "The first section's takeaway carries the internal aspect key above Full results.",
+      "quote": "keep Kairo in character on dj_character_v2 at least as well as September",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the thinnest margin under the call (1017's unseparated drop, with its cost still higher), then the scoped reasoning and lever confounds and the short runs.",
+      "quote": "The thinnest margin is 1017 (B): its drop of 3 points is not separated from zero, so on quality it may be a tie, though it still costs 27% more per reply.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "Statistician's grammar and hedges sit above the fold in the lede and Watch.",
+      "quote": "its drop of 3 points is not separated from zero, so on quality it may be a tie",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The headline, the decision slots and the options table say what to do, why, and the main risk without needing a section.",
+      "quote": "Keep September. Both candidates cost 27–28% more per reply and stay in character less often.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "Next names an experiment but never says which result would change the call or to what, and it adds a to-do (calibrate the judge).",
+      "quote": "The experiment that could change the answer: a candidate priced at or below September, run on the same cases with off-lane asks oversampled, since that stratum carries about 50% of each candidate's loss.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "Each clause names the condition under which its caveat would matter, and the judge clause says the deciding cost finding does not rest on it.",
+      "quote": "Material only if it misreads in-character replies; cost, the deciding finding, is measured and doesn't depend on it.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-25T22:35:13Z"
+}

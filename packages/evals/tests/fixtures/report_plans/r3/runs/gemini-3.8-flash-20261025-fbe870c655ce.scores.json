@@ -1,0 +1,98 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261025-fbe870c655ce",
+  "input": "r3",
+  "input_digest": "8ed49915119167ef21cff1f2fafe46ccf65af216b00f381724c01ea19af772a0",
+  "plan_digest": "4d4a73d8b3efe08ec4762e9c1c072fb75a8f7bb1c47204e82993fae1845e8467",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "b5a594e0f83555d7de1d01b7fab709c4d62a312fa99922b71c80cda5b3b4b446",
+    "contract_digest": "d633628a4bf781225146719e712eb941c001887b44ee7208a08a282fc8c5ff0d"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v1",
+    "digest": "d4e0c71fd8b2a765a0504241859715db32000301de642e9b25f30a0a673368c8"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision with instruction and reason for the recommended Brisk-S few-shot row, the only arm clearing every gate in the gate matrix.",
+      "quote": "Select Brisk-S · Few-shot (12 ex.) (E). It is the only configuration that satisfies both cell accuracy floors and the latency budget.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "fail",
+      "reason": "The second sentence adds another supporting fact and says nothing about what would change the answer.",
+      "quote": "Every cheaper or faster configuration fails the accuracy floor on complex news turns.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "The input has no caveats, the plan carries no flag, and no caveat repeats.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "pass",
+      "reason": "Each section headline is a finding with subject and direction that its chart shows: the gate matrix, the cell heatmap, and the confusion matrix with medium complexity's lowest recall.",
+      "quote": "Brisk-S · Few-shot (12 ex.) (E) errors concentrate in medium complexity classification",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "fail",
+      "reason": "The rendered lede shows the internal unit key 'usd_per_1m' above Full results.",
+      "quote": "40 usd_per_1m dollars per million turns",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "fail",
+      "reason": "The weakest margin is overall balanced accuracy (90.7 against the 90 gate), not the complex news cell (82.9 against the 80 floor), which Watch names.",
+      "quote": "The binding constraint is the complex news cell, where Brisk-S · Few-shot (12 ex.) (E) clears the 80%% floor by only a small margin.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "Balanced accuracy is also called plain 'accuracy', which is the name of the separate cell measure, so one measure has two names.",
+      "quote": "Atlas-M · Rubric + reasoning (C) reaches 93.2%% accuracy but breaches the latency budget at 1302 ms ms.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The headline, the lede and the decision slots on the first screen say what to select, why, and the stated main risk.",
+      "quote": "Deploy Brisk-S · Few-shot (12 ex.) (E).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "Next is a ship step plus a conditional to-do; it names no experiment result that would change the call or which way.",
+      "quote": "Ship Brisk-S · Few-shot (12 ex.) (E) to production routing. If cost must be lowered further, collect more complex news exemplars to fine-tune Nano-XS · Few-shot (12 ex.) (H).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "Confidence is plain high with no clauses, so the item passes.",
+      "quote": "",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-25T22:35:42Z"
+}
