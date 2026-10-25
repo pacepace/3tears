@@ -99,6 +99,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "analysis/prose_refs.py": {},
     "analysis/reads.py": {},
     "analysis/references.py": {},
+    "analysis/report_input.py": {},
     "analysis/reporter_bank.py": {},
     "analysis/remainder.py": {},
     "analysis/reporter_contract.py": {},
