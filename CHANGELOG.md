@@ -8,6 +8,26 @@ packages (bumped in lock-step).
 
 ## v0.78.0 -- 2026-10-24
 
+### core: a partial update keeps the columns it does not name
+
+**Behaviour change.** An update through `SchemaBackedCollection`'s generated SQL now rewrites only the columns
+the row names. A column the row leaves out keeps its stored value; before, the `DO UPDATE SET` of the upsert and
+the fenced `UPDATE` wrote `NULL` to every nullable column without a server default that the row left out, so a
+partial save wiped values it never meant to touch (the hub hit it on `platform.datasources` and carried the
+stored values itself in `HubCapabilitySourceCollection.save_entity`, which can now go). A column named as `None`
+is still written `NULL`, and an insert still takes `NULL`, or the server default, for a column it leaves out.
+The ordered upsert and the NULL-safe CAS upsert follow the same rule; the latter now refuses a row that leaves
+out its `cas_column`, since an update would not advance the fence. A row naming no mutable column updates the
+row to itself, so the save still counts one row.
+
+The caches stay exact: a synchronous save is no longer completed with guessed `NULL`s, so a row leaving out a
+declared column is read back from L3 (`columns_decided_by_store`, as `DeclaredTableCollection` does) and L1, L2
+and the saving handle hold the stored value. That costs one read per save of such a row. Unchanged: a write
+that reaches L1 and L2 before L3 (write-behind, `l2_cas_mutate`) has no row to read back, so it still sends
+each nullable column it leaves out as `None` (`complete_written_row`), and writes `NULL`, exactly the row it
+caches; `l2_cas_mutate`'s fallback with no L2 now completes its row the same way, rather than keeping the stored
+value. A bulk `save_rows` still replaces every mutable column its rows share.
+
 ### core: exact NUMERIC operands, immutable read-back, NaN-safe reads and answers, Decimal from L2 numbers
 
 **Fixed:** a `DeclaredTableCollection` write that named an `immutable` column cached the value it sent, while

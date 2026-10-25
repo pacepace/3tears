@@ -1010,14 +1010,17 @@ class BaseCollection(ABC, Generic[EntityT]):
         return False
 
     def complete_written_row(self, data: dict[str, Any]) -> dict[str, Any]:
-        """``data`` with every column the write stores as a value known before it runs, filled in.
+        """``data`` with every column a write that reaches L1 and L2 before L3 can name for itself, filled in.
 
-        Public extension point, paired with :meth:`columns_decided_by_store`: a column a write
-        leaves out is not always one the database decides. When the write is certain to store a
-        known value for it -- ``NULL``, for a nullable column with no default that the statement
-        writes either way -- the row cached is completed with that value instead of being read
-        back. The framework completes the row before asking which columns the database decides,
-        and caches the completed row.
+        Public extension point, paired with :meth:`columns_decided_by_store`, and consulted only
+        by such a write (write-behind, :meth:`l2_cas_mutate` on a collection with an L3 pool,
+        through :meth:`_write_ahead_row`). It has no committed row to read back, so a column its
+        row leaves out would be one the database decides, and the write refused. Where the
+        collection can give such a column a value of its own -- ``NULL``, for a nullable column
+        with no default -- the completed row is what every tier caches AND what L3 is sent, so the
+        write stores exactly the row cached. A synchronous write is never completed: it sends the
+        row as given, and an update keeps the stored value of a column the row leaves out, which
+        the read back (:meth:`columns_decided_by_store`) puts in the caches.
 
         The default completes nothing. :class:`~threetears.core.collections.schema_backed
         .SchemaBackedCollection` completes from its declared columns when it writes through its
@@ -1088,9 +1091,8 @@ class BaseCollection(ABC, Generic[EntityT]):
     async def _stored_row(self, entity_id: Any, data: dict[str, Any]) -> dict[str, Any] | None:
         """the whole row L3 holds after a committed write of ``data``: ``data`` itself, or a read of it.
 
-        The row is first completed by :meth:`complete_written_row`, and read from L3 only when
-        :meth:`columns_decided_by_store` names a column of it; never on a collection with no L3
-        pool. The read runs after the commit, so it sees this write or a later one; either is what
+        The row is read from L3 only when :meth:`columns_decided_by_store` names a column of it;
+        never on a collection with no L3 pool. The read runs after the commit, so it sees this write or a later one; either is what
         L3 holds, and the caller's fences decide whether it is cached.
 
         A read that fails answers ``None``, which caches nothing: the write has committed, so the
@@ -1105,9 +1107,10 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: the row L3 holds, or ``None`` when it could not be read
         :rtype: dict[str, Any] | None
         """
-        completed = data if self.l3_pool is None else self.complete_written_row(data)
-        decided = () if self.l3_pool is None else self.columns_decided_by_store(completed)
-        stored: dict[str, Any] | None = completed
+        # never completed (complete_written_row): the write sent ``data`` as given, and an update
+        # keeps the stored value of a column it leaves out, so only a read knows that value.
+        decided = () if self.l3_pool is None else self.columns_decided_by_store(data)
+        stored: dict[str, Any] | None = data
         if decided:
             stored = None
             try:
@@ -4573,6 +4576,10 @@ class BaseCollection(ABC, Generic[EntityT]):
             outcome = CasMutation(action="deleted", row=None)
         else:
             assert new_row is not None, "'upsert' action must carry a non-None new_row"
+            if self.l3_pool is not None:
+                # as l2_cas_mutate writes its row (_write_ahead_row): a column the callback leaves
+                # out is written NULL, not kept, whichever path the collection takes
+                new_row = self.complete_written_row(new_row)
             if entity is None:
                 await self.save_entity(self.create(new_row))
             else:
