@@ -3,28 +3,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap">
 <style>/*KIT_CSS*/
-.lattice{display:grid;grid-template-columns:auto repeat(3,minmax(0,1fr));gap:2px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
-.lattice>div{background:var(--surface);padding:.7rem .8rem;min-width:0}
-.lattice .hd{background:var(--sunk);font-size:var(--t-xs);font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:flex;align-items:end}
-.lattice .rh{background:var(--sunk);font-family:var(--f-display);font-weight:600;display:flex;align-items:center}
-.lattice .cell{display:grid;gap:.3rem;align-content:start}
-.lattice .acc{font-size:var(--t-xl);font-weight:600;line-height:1}
-.lattice .meta{font-size:var(--t-xs);color:var(--ink-2);font-variant-numeric:tabular-nums}
-.lattice .cell.rec{box-shadow:inset 0 0 0 2px var(--accent)}
-.lattice .bar{height:4px;border-radius:2px;background:var(--sunk);position:relative}
-.lattice .bar i{position:absolute;inset:0 auto 0 0;border-radius:2px;background:var(--s1)}
-.mx{display:grid;grid-template-columns:auto repeat(3,minmax(0,1fr));gap:2px;font-size:var(--t-sm)}
-.mx .h{font-size:var(--t-xs);color:var(--muted);font-weight:600;padding:.25rem .35rem;display:flex;align-items:end;justify-content:center;text-align:center}
-.mx .rl{font-size:var(--t-xs);color:var(--muted);font-weight:600;padding:.25rem .5rem .25rem 0;display:flex;align-items:center;justify-content:flex-end}
-.mx .c{border-radius:3px;padding:.5rem .35rem;text-align:center;font-variant-numeric:tabular-nums;display:grid;gap:.05rem;min-width:0}
-.mx .c b{font-size:var(--t-md);font-weight:600}
-.mx .c span{font-size:var(--t-xs);opacity:.85}
-.mx .c.low{outline:2px solid var(--bad);outline-offset:-2px}
 .mxwrap{display:grid;gap:.5rem}
 .mxwrap h4{margin:0;font-family:var(--f-display);font-size:var(--t-base)}
 .mxwrap .sub{font-size:var(--t-xs);color:var(--muted)}
 .axis-note{font-size:var(--t-xs);color:var(--muted)}
-@media (max-width:560px){.lattice .acc{font-size:var(--t-lg)}.lattice>div{padding:.5rem}}
 </style>
 <div class="page">
 <div class="mast"><span class="kind">Classifier</span><span><b>Turn router: complexity × domain</b></span><span>9 configurations · 48,210 annotated turns · 9 target cells</span><span>Run 2026-10-24</span><span>Synthetic example data</span></div>
@@ -38,33 +20,34 @@
     <div><span class="k">Kind of error</span><span class="v">Mostly medium turns labeled complex, and the reverse. Domain errors are rare and split between science and news.</span></div>
     <div><span class="k">Surprise</span><span class="v">The best prompt depends on the model. The rubric prompt helps Atlas-M and Brisk-S but costs Nano-XS 6 points.</span></div>
   </div>
-  <div class="grid2"><div class="fig mini"><h3>Overall error rate</h3><p class="cap" style="margin:0 0 .4rem">Cells weighted equally; the limit is 10%. Sorted by cost, cheapest first.</p><div class="chart" id="sum-err"></div></div>
-  <div class="fig mini"><h3>Error rate in the worst cell</h3><p class="cap" style="margin:0 0 .4rem">The limit is 20%. Faded bars fail at least one gate.</p><div class="chart" id="sum-cell"></div></div></div>
+  <div class="grid2"><div class="fig mini"><h3>Overall error rate</h3><p class="cap" style="margin:0 0 .4rem">Cells weighted equally; the limit is 10%. Sorted by cost, cheapest first.</p><div class="chart" id="sum-err" data-kind="bars"></div></div>
+  <div class="fig mini"><h3>Error rate in the worst cell</h3><p class="cap" style="margin:0 0 .4rem">The limit is 20%. Faded bars fail at least one gate.</p><div class="chart" id="sum-cell" data-kind="bars"></div></div></div>
   <div class="tbl"><table id="opt"></table></div>
 </div>
 
 <section>
   <header><span class="eyebrow">Model × prompt</span><h2>Few-shot examples lift the small models most. Rubric reasoning only pays off on the larger ones.</h2>
   <p class="takeaway">Balanced accuracy averages the nine target cells equally, so the large conversational-simple segment can't hide weak cells. Each tile shows cost per million turns and p95 latency.</p></header>
-  <div class="lattice" id="lat"></div>
+  <div class="chart" id="lat" data-kind="lattice"></div>
 </section>
 
 <section>
   <header><span class="eyebrow">Accuracy against cost</span><h2>Cost spans 470×. Accuracy spans 15 points.</h2>
   <p class="takeaway">Hollow markers fail at least one gate (overall 90%, every cell 80%, p95 250 ms). The dashed line is the 90% overall floor; the gray line traces the cheapest option at each accuracy level. Hover for the reason.</p></header>
-  <div class="fig"><div class="legend" id="lg"></div><div class="chart" id="front"></div></div>
+  <div class="fig"><div class="chart" id="front" data-kind="scatter_frontier"></div></div>
 </section>
 
 <section>
   <header><span class="eyebrow">The target matrix</span><h2>Complex news is the hardest cell for every configuration, and the one that rules out Nano-XS.</h2>
   <p class="takeaway">Accuracy per cell with turn counts. Red outlines mark cells below the 80% floor.</p></header>
-  <div class="grid2" id="mats" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,20rem),1fr))"></div>
+  <div class="chart" id="mats" data-kind="heatmap"></div>
+  <p class="axis-note">Rows are complexity, columns are domain. Small number: turns in the cell. Shading steps every 5 points from 70%.</p>
 </section>
 
 <section>
   <header><span class="eyebrow">Where the errors go, recommended configuration</span><h2>Almost every complexity error is off by one step.</h2>
   <p class="takeaway">Rows are the true label; each row sums to 100%. Simple turns are almost never called complex.</p></header>
-  <div class="grid2" id="conf"></div>
+  <div class="chart" id="conf" data-kind="confusion"></div>
 </section>
 
 <div class="part"><h2>Explore the sweep</h2><span>Compare any two configurations, or change the gates</span></div>
@@ -78,7 +61,7 @@
   <div class="result">
     <div class="callout" id="e-pick"></div>
     <div class="grid2" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,20rem),1fr))">
-      <div class="fig mxwrap"><h4>Difference by cell</h4><div class="sub" id="e-sub"></div><div id="e-diff"></div><div class="axis-note">Blue: the compared configuration is better. Red: worse. Gray: within ±0.5 points.</div></div>
+      <div class="fig mxwrap"><h4>Difference by cell</h4><div class="sub" id="e-sub"></div><div class="chart" id="e-diff" data-kind="diff_heatmap"></div><div class="axis-note">Blue: the compared configuration is better. Red: worse. Gray: within ±0.5 points.</div></div>
       <div class="fig"><div class="stats" id="e-stats" style="flex-direction:column;gap:.9rem"></div></div>
     </div>
   </div>
@@ -109,7 +92,8 @@ function check(c,cr){const f=[];const ov=c[cr.weight];if(ov<cr.overall)f.push(`o
 const CR0={overall:D.criteria.overall,floor:D.criteria.cell_floor,p95:D.criteria.p95,weight:"balanced"};
 const pick=cr=>D.configs.filter(c=>!check(c,cr).length).sort((a,b)=>a.cost-b.cost)[0];
 const REC=pick(CR0);
-function gp(c,cr=CR0){const f=check(c,cr);return f.length?pill("bad",f.length>1?`${f.length} gates`:f[0].split(" ")[0]==="p95"?"Latency":f[0].startsWith("overall")?"Overall":"Cell floor"):pill("good","All gates");}
+function gs(c,cr=CR0){const f=check(c,cr);return f.length?{status:"bad",label:f.length>1?`${f.length} gates`:f[0].split(" ")[0]==="p95"?"Latency":f[0].startsWith("overall")?"Overall":"Cell floor"}:{status:"good",label:"All gates"};}
+function gp(c,cr=CR0){const g=gs(c,cr);return pill(g.status,g.label);}
 
 // BLUF
 (function(){const nano=C["nano-xs.few"],best=[...D.configs].sort((a,b)=>b.balanced-a.balanced)[0];const wc=minCell(REC);
@@ -122,55 +106,36 @@ function gp(c,cr=CR0){const f=check(c,cr);return f.length?pill("bad",f.length>1?
 
 // summary bars
 (function(){const rows=[...D.configs].sort((a,b)=>a.cost-b.cost);const lab=c=>`${MN[c.model]} · ${PN[c.prompt].split(" ")[0].toLowerCase()}`;
-  chart(document.getElementById("sum-err"),(el,w)=>barsH(el,w,rows.map(c=>({label:lab(c)+"  "+fmt.usd(monthly(c))+"/mo",sl:lab(c),value:100-c.balanced,color:COL[c.model],muted:check(c,CR0).length>0,strong:c===REC,note:(100-c.balanced).toFixed(1)+"%"})),{domain:[0,25],fmt:v=>v.toFixed(0)+"%",ref:{value:100-D.criteria.overall,label:"limit 10%"},rowH:24}));
-  chart(document.getElementById("sum-cell"),(el,w)=>barsH(el,w,rows.map(c=>{const mc=minCell(c);return {label:lab(c),value:100-mc.v,color:COL[c.model],muted:check(c,CR0).length>0,strong:c===REC,note:(100-mc.v).toFixed(1)+"% · "+cellName(mc.k)};}),{domain:[0,40],fmt:v=>v.toFixed(0)+"%",ref:{value:100-D.criteria.cell_floor,label:"limit 20%"},rowH:24}));})();
+  setChart(document.getElementById("sum-err"),{domain:[0,25],fmt:"pct:0",reference:{value:100-D.criteria.overall,label:`limit ${100-D.criteria.overall}%`,kind:"budget"},row_height:24,
+    rows:rows.map(c=>({id:c.id,label:lab(c)+"  "+fmt.usd(monthly(c))+"/mo",short_label:lab(c),value:100-c.balanced,color:COL[c.model],muted:check(c,CR0).length>0,strong:c===REC,note:(100-c.balanced).toFixed(1)+"%"}))});
+  setChart(document.getElementById("sum-cell"),{domain:[0,40],fmt:"pct:0",reference:{value:100-D.criteria.cell_floor,label:`limit ${100-D.criteria.cell_floor}%`,kind:"budget"},row_height:24,
+    rows:rows.map(c=>{const mc=minCell(c);return {id:c.id,label:lab(c),value:100-mc.v,color:COL[c.model],muted:check(c,CR0).length>0,strong:c===REC,note:(100-mc.v).toFixed(1)+"% · "+cellName(mc.k)};})});})();
 
 // lattice
-(function(){let h=`<div class="hd"></div>`+D.prompts.map(p=>`<div class="hd">${p.name}</div>`).join("");
-  for(const m of D.models){h+=`<div class="rh"><span class="sw" style="background:var(${COL[m.id]})"></span>${m.name}</div>`;
-    for(const p of D.prompts){const c=C[`${m.id}.${p.id}`];const pct=(c.balanced-75)/20*100;
-      h+=`<div class="cell ${c===REC?"rec":""}" tabindex="0" data-tip="<b>${name(c)}</b><br>Balanced ${c.balanced}% · traffic-weighted ${c.traffic}%<br>Worst cell ${cellName(minCell(c).k)} ${minCell(c).v}%<br>${check(c,CR0).join('<br>')||'Passes all gates'}"><span class="acc">${c.balanced.toFixed(1)}%</span><div class="bar"><i style="width:${pct}%"></i></div><span class="meta">${fmt.usd(c.cost)} / 1M · ${c.p95} ms</span>${gp(c)}</div>`;}}
-  document.getElementById("lat").innerHTML=h;})();
+setChart(document.getElementById("lat"),{columns:D.prompts.map(p=>({label:p.name})),fmt:"pct:1",bar_domain:[75,95],cost_fmt:"usd",cost_unit:"/ 1M",latency_fmt:"ms",emphasis:REC.id,
+  rows:D.models.map(m=>({label:m.name,color:COL[m.id],cells:D.prompts.map(p=>{const c=C[`${m.id}.${p.id}`];const g=gs(c);const mc=minCell(c);
+    return {id:c.id,value:c.balanced,cost:c.cost,latency:c.p95,status:g.status,status_label:g.label,
+      tip:[name(c),`Balanced ${c.balanced}% · traffic-weighted ${c.traffic}%`,`Worst cell ${cellName(mc.k)} ${mc.v}%`].concat(check(c,CR0).length?check(c,CR0):["Passes all gates"])};})}))});
 
 // frontier
-document.getElementById("lg").innerHTML=D.models.map(m=>`<span><i style="background:var(${COL[m.id]})"></i>${m.name}</span>`).join("")+D.prompts.map(p=>`<span><svg width="12" height="12" style="vertical-align:-1px;margin-right:.35rem" data-sh="${p.id}"></svg>${p.name}</span>`).join("");
-function mk(g,shape,x,y,r,color,hollow){const st=hollow?`fill:var(--surface);stroke:var(${color});stroke-width:2`:`fill:var(${color});stroke:var(--surface);stroke-width:2`;
-  if(shape==="circle")return S("circle",{cx:x,cy:y,r,style:st},g);if(shape==="square")return S("rect",{x:x-r*.88,y:y-r*.88,width:r*1.76,height:r*1.76,rx:1.5,style:st},g);
-  return S("path",{d:`M${x},${y-r*1.2}L${x+r*1.15},${y}L${x},${y+r*1.2}L${x-r*1.15},${y}Z`,style:st},g);}
-document.querySelectorAll("#lg svg[data-sh]").forEach(s=>mk(s,SH[s.dataset.sh],6,6,4.5,"--ink-2",false));
-chart(document.getElementById("front"),(el,w)=>{const narrow=w<560;const h=narrow?380:Math.min(380,Math.max(300,w*.42)),m={l:44,r:20,t:14,b:40};const s=svgIn(el,w,h);const x=logs(1,1000,m.l,w-m.r),y=lin(76,96,h-m.b,m.t);
-  for(const v of [80,85,90,95]){S("line",{x1:m.l,x2:w-m.r,y1:y(v),y2:y(v),class:"grid"},s);S("text",{x:m.l-8,y:y(v)+4,"text-anchor":"end",class:"tick",text:v+"%"},s);}
-  for(const v of [1,3,10,30,100,300,1000]){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-m.b+16,"text-anchor":"middle",class:"tick",text:"$"+v},s);}
-  S("text",{x:(m.l+w-m.r)/2,y:h-6,"text-anchor":"middle",class:"tick",text:"cost per million turns (log)"},s);
-  S("line",{x1:m.l,x2:w-m.r,y1:y(90),y2:y(90),class:"floor"},s);if(!narrow)S("text",{x:x(4),y:y(90)+15,class:"tick",text:"overall floor 90%"},s);
-  // pareto frontier (cost asc, accuracy must increase)
-  const sorted=[...D.configs].sort((a,b)=>a.cost-b.cost);let best=-1;const fr=[];for(const c of sorted)if(c.balanced>best){fr.push(c);best=c.balanced;}
-  S("path",{d:"M"+fr.map(c=>`${x(c.cost)},${y(c.balanced)}`).join("L"),style:"fill:none;stroke:var(--base);stroke-width:1.5"},s);
-  const obs=[[x(4),y(90)+3,x(4)+100,y(90)+18]];
-  for(const c of D.configs){const px=x(c.cost),py=y(Math.max(76.5,c.balanced));const f=check(c,CR0);const g=S("g",{},s);mk(g,SH[c.prompt],px,py,6,COL[c.model],f.length>0);
-    if(c===REC)S("circle",{cx:px,cy:py,r:11,style:"fill:none;stroke:var(--ink);stroke-width:1.5"},g);obs.push([px-8,py-8,px+8,py+8]);
-    hit(g,px-12,py-12,24,24,`<b>${name(c)}</b><br>Balanced ${c.balanced}% · ${fmt.usd(c.cost)} / 1M · p95 ${c.p95} ms<br>${f.length?"Fails: "+f.join("; "):"Passes all gates"}`);}
-  const cheapest=[...D.configs].sort((a,b)=>a.cost-b.cost)[0],topAcc=[...D.configs].sort((a,b)=>b.balanced-a.balanced)[0];
-  placeLabels(D.configs.filter(c=>!narrow||c===REC||c===cheapest||c===topAcc).map(c=>({px:x(c.cost),py:y(Math.max(76.5,c.balanced)),text:(c===REC&&!narrow?"Recommended: ":"")+(narrow?`${MN[c.model].split("-")[0]} ${c.prompt}`:`${MN[c.model]} ${c.prompt==="few"?"few-shot":c.prompt==="zero"?"zero-shot":"rubric"}`),c})),[m.l,m.t,w-m.r,h-m.b],obs)
-    .forEach(l=>S("text",{x:l.x,y:l.y,"text-anchor":l.anchor,class:l.c===REC?"lbl-strong":"lbl",text:l.text},s));});
+(function(){const cheapest=[...D.configs].sort((a,b)=>a.cost-b.cost)[0],topAcc=[...D.configs].sort((a,b)=>b.balanced-a.balanced)[0];
+  const pn={few:"few-shot",zero:"zero-shot",rubric:"rubric"};
+  setChart(document.getElementById("front"),{legend:D.models.map(m=>({label:m.name,color:COL[m.id]})).concat(D.prompts.map(p=>({label:p.name,mark:SH[p.id]}))),
+    x_domain:[1,1000],x_log:true,x_ticks:[1,3,10,30,100,300,1000],x_fmt:"usd:0",x_title:"cost per million turns (log)",y_domain:[76,96],y_ticks:[80,85,90,95],y_fmt:"pct:0",
+    reference:{value:D.criteria.overall,label:`overall floor ${D.criteria.overall}%`,kind:"floor"},frontier:true,emphasis:REC.id,
+    points:D.configs.map(c=>{const f=check(c,CR0);return {id:c.id,x:c.cost,y:c.balanced,color:COL[c.model],shape:SH[c.prompt],size:6,hollow:f.length>0,
+      label:(c===REC?"Recommended: ":"")+`${MN[c.model]} ${pn[c.prompt]}`,narrow_label:c===REC||c===cheapest||c===topAcc?`${MN[c.model].split("-")[0]} ${c.prompt}`:null,
+      tip:[name(c),`Balanced ${c.balanced}% · ${fmt.usd(c.cost)} / 1M · p95 ${c.p95} ms`,f.length?"Fails: "+f.join("; "):"Passes all gates"]};})});})();
 
 // matrices
-function seqColor(v){const steps=["--seq-0","--seq-1","--seq-2","--seq-3","--seq-4","--seq-5"];const i=Math.max(0,Math.min(5,Math.floor((v-70)/5)));return [steps[i],`--seq-t${i}`];}
-function matrix(c,floor=80){let h=`<div class="mx"><div></div>${DM.map(d=>`<div class="h">${d.name}</div>`).join("")}`;
-  for(const x of CX){h+=`<div class="rl">${x.name}</div>`;for(const d of DM){const k=`${x.id}|${d.id}`,v=c.cells[k];const [col,dark]=seqColor(v.acc);
-    h+=`<div class="c ${v.acc<floor?"low":""}" tabindex="0" style="background:var(${col});color:var(${dark})" data-tip="<b>${x.name} ${d.name.toLowerCase()}</b><br>${v.acc}% ±${v.ci} · n = ${D.counts[k].toLocaleString()}${v.acc<floor?"<br>Below the "+floor+"% floor":""}"><b>${v.acc.toFixed(1)}</b><span>${(D.counts[k]/1000).toFixed(1)}k</span></div>`;}}
-  return h+"</div>";}
-(function(){const host=document.getElementById("mats");for(const [id,t] of [[REC.id,"Recommended"],["nano-xs.few","Cheaper alternative"],["atlas-m.rubric","Most accurate"]]){const c=C[id];
-  host.insertAdjacentHTML("beforeend",`<div class="fig mxwrap"><h4>${name(c)}</h4><div class="sub">${t} · worst cell ${minCell(c).v}%</div>${matrix(c)}</div>`);}
-  host.insertAdjacentHTML("afterend",`<p class="axis-note">Rows are complexity, columns are domain. Small number: turns in the cell. Shading steps every 5 points from 70%.</p>`);})();
+const cellRows=(c,floor)=>CX.map(x=>({label:x.name,cells:DM.map(d=>{const k=`${x.id}|${d.id}`,v=c.cells[k];
+  return {value:v.acc,n:D.counts[k],tip:[`${x.name} ${d.name.toLowerCase()}`,`${v.acc}% ±${v.ci} · n = ${D.counts[k].toLocaleString()}`].concat(v.acc<floor?[`Below the ${floor}% floor`]:[])};})}));
+setChart(document.getElementById("mats"),{columns:DM.map(d=>({label:d.name})),domain:[70,100],fmt:"num:1",n_fmt:"k:1",reference:{value:D.criteria.cell_floor,kind:"floor"},panel_min_rem:20,
+  panels:[[REC.id,"Recommended"],["nano-xs.few","Cheaper alternative"],["atlas-m.rubric","Most accurate"]].map(([id,t])=>{const c=C[id];return {title:name(c),subtitle:`${t} · worst cell ${minCell(c).v}%`,rows:cellRows(c,D.criteria.cell_floor)};})});
 
 // confusion
-(function(){const host=document.getElementById("conf");
-  for(const [key,axis,title] of [["conf_complexity",CX,"Complexity"],["conf_domain",DM,"Domain"]]){const M=REC[key];
-    let h=`<div class="fig mxwrap"><h4>${title}</h4><div class="sub">True label (rows) against predicted label (columns)</div><div class="mx"><div></div>${axis.map(a=>`<div class="h">${a.name}</div>`).join("")}`;
-    M.forEach((row,i)=>{h+=`<div class="rl">${axis[i].name}</div>`;row.forEach((v,j)=>{const diag=i===j;const shade=diag?"var(--seq-1)":v>=3?"var(--bad-wash)":v>=1?"var(--warn-wash)":"var(--sunk)";
-      h+=`<div class="c" tabindex="0" style="background:${shade};color:var(--ink)" data-tip="True ${axis[i].name.toLowerCase()}, predicted ${axis[j].name.toLowerCase()}: ${v.toFixed(1)}% of the row"><b>${v.toFixed(1)}%</b></div>`;});});
-    host.insertAdjacentHTML("beforeend",h+`</div></div>`);}})();
+setChart(document.getElementById("conf"),{fmt:"pct:1",panel_min_rem:30,
+  panels:[["conf_complexity",CX,"Complexity"],["conf_domain",DM,"Domain"]].map(([key,axis,title])=>({title,subtitle:"True label (rows) against predicted label (columns)",labels:axis.map(a=>a.name),matrix:REC[key]}))});
 
 // explorer
 const ea=document.getElementById("e-a"),eb=document.getElementById("e-b"),ef=document.getElementById("e-f");let weight="balanced";
@@ -181,11 +146,8 @@ function explore(){document.querySelectorAll("#e-w button").forEach(b=>b.setAttr
   const a=C[ea.value],b=C[eb.value];const p=pick(cr);
   document.getElementById("e-pick").innerHTML=p?`With a ${cr.floor}% cell floor and ${weight==="balanced"?"cells weighted equally":"traffic weighting"}, the cheapest passing configuration is <strong>${name(p)}</strong> at ${fmt.usd(monthly(p))} a month${p!==REC?` (${p.cost<REC.cost?"saves":"adds"} ${fmt.usd(Math.abs(monthly(p)-monthly(REC)))} a month against the recommendation)`:", the same as the recommendation"}.`:`No configuration passes with a ${cr.floor}% cell floor.`;
   document.getElementById("e-sub").textContent=`${name(b)} minus ${name(a)}, in points`;
-  let h=`<div class="mx"><div></div>${DM.map(d=>`<div class="h">${d.name}</div>`).join("")}`;
-  for(const x of CX){h+=`<div class="rl">${x.name}</div>`;for(const d of DM){const k=`${x.id}|${d.id}`;const dv=b.cells[k].acc-a.cells[k].acc;
-    const mag=Math.min(1,Math.abs(dv)/8);const bg=Math.abs(dv)<0.5?"var(--div-mid)":`color-mix(in oklab, var(${dv>0?"--div-pos":"--div-neg"}) ${Math.round(18+mag*72)}%, var(--surface))`;
-    h+=`<div class="c" tabindex="0" style="background:${bg};color:${mag>.55&&Math.abs(dv)>=.5?"#fff":"var(--ink)"}" data-tip="<b>${x.name} ${d.name.toLowerCase()}</b><br>${name(a)} ${a.cells[k].acc}%<br>${name(b)} ${b.cells[k].acc}%"><b>${dv>0?"+":""}${dv.toFixed(1)}</b><span>${b.cells[k].acc.toFixed(1)}%</span></div>`;}}
-  document.getElementById("e-diff").innerHTML=h+"</div>";
+  setChart(document.getElementById("e-diff"),{columns:DM.map(d=>({label:d.name})),fmt:"+num:1",detail_fmt:"pct:1",neutral:.5,saturate:8,
+    rows:CX.map(x=>({label:x.name,cells:DM.map(d=>{const k=`${x.id}|${d.id}`;return {value:b.cells[k].acc-a.cells[k].acc,detail:b.cells[k].acc,tip:[`${x.name} ${d.name.toLowerCase()}`,`${name(a)} ${a.cells[k].acc}%`,`${name(b)} ${b.cells[k].acc}%`]};})}))});
   const ov=c=>c[weight];const st=(l,va,vb,f,better)=>{const d=vb-va;const good=better==="higher"?d>0:d<0;return `<div class="stat"><span class="lab">${l}</span><span class="big" style="font-size:var(--t-lg)">${f(va)} → ${f(vb)}</span><span class="lab" style="color:${Math.abs(d)<1e-9?"var(--muted)":good?"var(--good)":"var(--bad)"}">${Math.abs(d)<1e-9?"No change":(good?"Better":"Worse")}</span></div>`;};
   document.getElementById("e-stats").innerHTML=st(`Overall accuracy (${weight==="balanced"?"cells equally":"traffic"})`,ov(a),ov(b),v=>v.toFixed(1)+"%","higher")+st("Worst cell",minCell(a).v,minCell(b).v,v=>v.toFixed(1)+"%","higher")+st("Cost per month",monthly(a),monthly(b),fmt.usd,"lower")+st("p95 latency",a.p95,b.p95,v=>v+" ms","lower")+
     `<div class="stat"><span class="lab">Gates under current settings</span><span>${name(a).split(" · ")[0]} ${PN[a.prompt].split(" ")[0].toLowerCase()}: ${gp(a,cr)} &nbsp; ${name(b).split(" · ")[0]} ${PN[b.prompt].split(" ")[0].toLowerCase()}: ${gp(b,cr)}</span></div>`;}

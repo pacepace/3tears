@@ -29,8 +29,8 @@
   </div>
   <div class="result">
     <div class="tbl"><table id="opt"></table></div>
-    <div class="grid2"><div class="fig mini"><h3>Monthly cost</h3><p class="cap">At 12 million replies a month</p><div class="chart" id="sum-cost"></div></div>
-      <div class="fig mini"><h3>In-character rate vs. Production</h3><p class="cap">Points, with 95% interval</p><div class="chart" id="sum-pers"></div></div></div>
+    <div class="grid2"><div class="fig mini"><h3>Monthly cost</h3><p class="cap">At 12 million replies a month</p><div class="chart" id="sum-cost" data-kind="bars"></div></div>
+      <div class="fig mini"><h3>In-character rate vs. Production</h3><p class="cap">Points, with 95% interval</p><div class="chart" id="sum-pers" data-kind="diverging_bars"></div></div></div>
   </div>
 </div>
 
@@ -43,28 +43,28 @@
 <section>
   <header><span class="eyebrow">Every aspect, relative to Production</span><h2>Personality is the only loss for A. B and Corvid each break a standing guardrail.</h2>
   <p class="takeaway">Change in points against Production on the same conversations. Bars show the estimate; whiskers show the 95% interval.</p></header>
-  <div class="mult" id="aspects" style="grid-template-columns:repeat(auto-fill,minmax(min(100%,24rem),1fr))"></div>
+  <div class="chart" id="aspects" data-kind="diverging_bars"></div>
 </section>
 
 <section>
   <header><span class="eyebrow">Where the personality goes</span><h2>The flash models hold character for a few turns, then drift.</h2>
   <p class="takeaway">In-character rate by how deep into the conversation the reply is. Short conversations are close; past ten turns, flash at 64k is 18 points behind.</p></header>
   <div class="grid2">
-    <div class="fig"><div class="chart" id="depth"></div><p class="cap">Shaded bands are 95% intervals for Production and A. Share of replies by depth: 38%, 32%, 20%, 10%.</p></div>
-    <div class="fig"><h3 style="margin-bottom:.25rem">Change by scenario, A vs. Production</h3><p class="cap" style="margin:0 0 .5rem">Banter and taking a correction lose the most; song intros barely change.</p><div class="chart" id="cats"></div></div>
+    <div class="fig"><div class="chart" id="depth" data-kind="lines"></div><p class="cap">Shaded bands are 95% intervals for Production and A. Share of replies by depth: 38%, 32%, 20%, 10%.</p></div>
+    <div class="fig"><h3 style="margin-bottom:.25rem">Change by scenario, A vs. Production</h3><p class="cap" style="margin:0 0 .5rem">Banter and taking a correction lose the most; song intros barely change.</p><div class="chart" id="cats" data-kind="diverging_bars"></div></div>
   </div>
 </section>
 
 <section>
   <header><span class="eyebrow">What a point means to users</span><h2>Raters only prefer Production clearly in longer conversations.</h2>
   <p class="takeaway">Blind side-by-side ratings of Production against A on 240 conversations. Bars start at 50%, no preference; right means raters preferred Production.</p></header>
-  <div class="fig"><div class="chart" id="pref"></div><p class="cap">This is the only anchor between the judge's points and what people notice. It's small, so treat it as direction, not size.</p></div>
+  <div class="fig"><div class="chart" id="pref" data-kind="diverging_bars"></div><p class="cap">This is the only anchor between the judge's points and what people notice. It's small, so treat it as direction, not size.</p></div>
 </section>
 
 <section>
   <header><span class="eyebrow">Pricing the trade</span><h2>A hybrid keeps most of the savings for a fraction of the loss.</h2>
   <p class="takeaway">Each point is an option: monthly savings against personality lost. The line shows the price of a point you set below; options above it are worth it at that price. The curve traces the hybrid as the handoff moves later.</p></header>
-  <div class="fig"><div class="legend" id="lg-map"></div><div class="chart" id="map"></div><p class="cap">Hybrid options are modeled from the depth breakdown, assuming Production's voice returns after the handoff. That assumption is untested.</p></div>
+  <div class="fig"><div class="chart" id="map" data-kind="scatter_frontier"></div><p class="cap">Hybrid options are modeled from the depth breakdown, assuming Production's voice returns after the handoff. That assumption is untested.</p></div>
 </section>
 
 <div class="part"><h2>Set the price</h2><span>The decision the eval can't make</span></div>
@@ -139,56 +139,50 @@ const mainPool=[O.prod,O.f64,O.hyb1,O.hyb0,O.hyb2];
   document.getElementById("opt").innerHTML=`<thead><tr><th>Option</th><th class="r">Per month</th><th class="r">Saves</th><th class="r">In-character</th><th class="r">$ per point lost</th><th>Guardrails</th></tr></thead><tbody>`+
   rows.map(o=>`<tr class="${o.id==="hyb1"?"hl":""}"><td>${o.id==="hyb1"?"<strong>":""}${o.arm?(o.id==="prod"?"Keep "+chip(o.arm):"Switch to "+chip(o.arm)):o.short}${o.id==="hyb1"?"</strong> · lean":""}</td><td class="r">${usd0(o.monthly)}</td><td class="r">${o.save>0?usdK(o.save):"–"}</td><td class="r">${o.pers.toFixed(1)}%${o.id!=="prod"?` <span style="color:var(--muted)">(${pts(o.dP)})</span>`:""}</td><td class="r">${o.ppp?usd0(o.ppp):"–"}</td><td>${o.guard?pill("good","Pass"):pill("bad",D.aspects.filter(x=>x.guard&&o.arm.results[x.id]<x.guard).map(x=>x.id==="facts"?"Facts":"Speculation").join(", "))}</td></tr>`).join("")+"</tbody>";
   const lab=o=>o.arm?(o.id==="prod"?"Production":`${o.arm.tag} · ${o.arm.short}`):"Hybrid, turn 5";
-  chart(document.getElementById("sum-cost"),(el,w)=>barsH(el,w,rows.map(o=>({label:lab(o),value:o.monthly,color:o.arm?COL[o.id]:HYB,muted:!o.guard,strong:o.id==="hyb1",note:usdK(o.monthly)+(o.save>0?`  −${Math.round(o.save/O.prod.monthly*100)}%`:""),tip:`<b>${o.short}</b><br>${usd0(o.monthly)} a month`})),{domain:[0,28000],fmt:usdK,rowH:24}));
-  chart(document.getElementById("sum-pers"),(el,w)=>barsH(el,w,rows.filter(o=>o.id!=="prod").map(o=>{const d=o.arm?o.arm.delta.persona:null;return {label:lab(o),value:o.dP,lo:d?d.lo:null,hi:d?d.hi:null,color:o.arm?COL[o.id]:HYB,muted:!o.guard,strong:o.id==="hyb1",note:pts(o.dP)+(o.hybrid?" (modeled)":""),tip:`<b>${o.short}</b><br>${pts(o.dP)} points${d?` (${d.lo} to ${d.hi})`:" (modeled, no interval)"}`};}),{domain:[-10,1],fmt:v=>v.toFixed(0),rowH:24}));})();
+  setChart(document.getElementById("sum-cost"),{domain:[0,28000],fmt:"usdk",row_height:24,
+    rows:rows.map(o=>({id:o.id,label:lab(o),value:o.monthly,color:o.arm?COL[o.id]:HYB,muted:!o.guard,strong:o.id==="hyb1",note:usdK(o.monthly)+(o.save>0?`  −${Math.round(o.save/O.prod.monthly*100)}%`:""),tip:[o.short,`${usd0(o.monthly)} a month`]}))});
+  setChart(document.getElementById("sum-pers"),{domain:[-10,1],fmt:"int",level:"95%",row_height:24,
+    rows:rows.filter(o=>o.id!=="prod").map(o=>{const d=o.arm?o.arm.delta.persona:null;return {id:o.id,label:lab(o),value:o.dP,lo:d?d.lo:null,hi:d?d.hi:null,color:o.arm?COL[o.id]:HYB,muted:!o.guard,strong:o.id==="hyb1",
+      note:pts(o.dP)+(o.hybrid?" (modeled)":""),tip:[o.short,`${pts(o.dP)} points${d?` (${d.lo} to ${d.hi})`:" (modeled, no interval)"}`]};})});})();
 
 // ---- arms key
 document.getElementById("key").innerHTML=`<thead><tr><th>Short name</th><th>Role</th><th>Full configuration</th><th class="r">Per 1k replies</th><th class="r">p95</th></tr></thead><tbody>`+
   D.arms.map(a=>`<tr><td>${chip(a)}</td><td>${a.role==="control"?"Control (current production)":"Challenger"}</td><td class="spec">${a.long}</td><td class="r">${fmt.usd(a.cost)}</td><td class="r">${a.p95.toFixed(1)} s</td></tr>`).join("")+"</tbody>";
 
 // ---- aspects small multiples (diverging bars with intervals)
-(function(){const host=document.getElementById("aspects");const ch=D.arms.filter(a=>a.role!=="control");
-  for(const asp of D.aspects){const f=H("div",{class:"fig"});const ext=Math.max(2,...ch.map(a=>Math.max(Math.abs(a.delta[asp.id].lo),Math.abs(a.delta[asp.id].hi))));
-    f.innerHTML=`<h4>${asp.name}</h4><div class="sub">Production ${P.results[asp.id].toFixed(1)}% · ${asp.guard?`guardrail ${asp.guard}%`:asp.kind==="judged"?"judged":"checked"}</div>`;const el=H("div",{class:"chart"});f.appendChild(el);host.appendChild(f);
-    chart(el,(el,w)=>barsH(el,w,ch.map(a=>{const d=a.delta[asp.id],v=a.results[asp.id],broke=asp.guard&&v<asp.guard;return {label:`${a.tag} · ${a.short}`,value:d.v,lo:d.lo,hi:d.hi,color:COL[a.id],note:pts(d.v)+(broke?` → ${v}%, below ${asp.guard}%`:""),strong:broke,
-      tip:`<b>${a.tag} · ${a.short}</b> · ${asp.name}<br>${v}% vs Production ${P.results[asp.id]}%<br>Change ${pts(d.v)} (${d.lo} to ${d.hi})${broke?"<br>Below the guardrail":""}`};}),
-      {domain:[-Math.ceil(ext+1),Math.max(2,Math.ceil(Math.max(...ch.map(a=>a.delta[asp.id].hi))+1))],fmt:v=>(v>0?"+":"")+v.toFixed(0),rowH:30,labelW:w<480?120:190}));}})();
+(function(){const ch=D.arms.filter(a=>a.role!=="control");
+  setChart(document.getElementById("aspects"),{fmt:"+num:0",level:"95%",row_height:30,label_width:190,label_width_narrow:120,panel_min_rem:24,
+    panels:D.aspects.map(asp=>{const ext=Math.max(2,...ch.map(a=>Math.max(Math.abs(a.delta[asp.id].lo),Math.abs(a.delta[asp.id].hi))));
+      return {title:asp.name,subtitle:`Production ${P.results[asp.id].toFixed(1)}% · ${asp.guard?`guardrail ${asp.guard}%`:asp.kind==="judged"?"judged":"checked"}`,
+        domain:[-Math.ceil(ext+1),Math.max(2,Math.ceil(Math.max(...ch.map(a=>a.delta[asp.id].hi))+1))],
+        rows:ch.map(a=>{const d=a.delta[asp.id],v=a.results[asp.id],broke=asp.guard&&v<asp.guard;
+          return {id:a.id,label:`${a.tag} · ${a.short}`,value:d.v,lo:d.lo,hi:d.hi,color:COL[a.id],note:pts(d.v)+(broke?` → ${v}%, below ${asp.guard}%`:""),strong:!!broke,
+            tip:[`${a.tag} · ${a.short} · ${asp.name}`,`${v}% vs Production ${P.results[asp.id]}%`,`Change ${pts(d.v)} (${d.lo} to ${d.hi})`].concat(broke?["Below the guardrail"]:[])};})};})});})();
 
 // ---- persona by depth (line)
-chart(document.getElementById("depth"),(el,w)=>lineChart(el,w,D.depth.map(d=>d.name),D.arms.map(a=>({name:a.id==="prod"?"Production":`${a.tag} · ${a.short}`,color:COL[a.id],values:a.persona_by_depth.map(x=>x.v),strong:a.id==="prod"||a.id==="f64",
-  lo:(a.id==="prod"||a.id==="f64")?a.persona_by_depth.map(x=>x.v-x.ci):null,hi:(a.id==="prod"||a.id==="f64")?a.persona_by_depth.map(x=>x.v+x.ci):null})),
-  {domain:[60,100],fmt:v=>v.toFixed(0)+"%",xTitle:"turn number in the conversation",endLabel:se=>se.name.startsWith("Production")?"Production":se.name.split(" · ")[0]+" "+se.name.split(" · ").slice(1).join(" · ")}));
+setChart(document.getElementById("depth"),{categories:D.depth.map(d=>d.name),domain:[60,100],fmt:"pct:0",x_title:"turn number in the conversation",level:"95%",
+  series:D.arms.map(a=>{const band=a.id==="prod"||a.id==="f64";return {name:a.id==="prod"?"Production":`${a.tag} · ${a.short}`,end_label:a.id==="prod"?"Production":`${a.tag} ${a.short}`,
+    color:COL[a.id],values:a.persona_by_depth.map(x=>x.v),strong:band,lo:band?a.persona_by_depth.map(x=>x.v-x.ci):null,hi:band?a.persona_by_depth.map(x=>x.v+x.ci):null};})});
 
 // ---- categories (A vs Production)
-chart(document.getElementById("cats"),(el,w)=>barsH(el,w,D.categories.map((c,i)=>({label:c.name,value:A.f64.cat_delta[i],color:COL.f64,strong:A.f64.cat_delta[i]<=-9,note:pts(A.f64.cat_delta[i])})),{domain:[-14,1],fmt:v=>v.toFixed(0),rowH:32}));
+setChart(document.getElementById("cats"),{domain:[-14,1],fmt:"int",row_height:32,
+  rows:D.categories.map((c,i)=>({label:c.name,value:A.f64.cat_delta[i],color:COL.f64,strong:A.f64.cat_delta[i]<=-9,note:pts(A.f64.cat_delta[i])}))});
 
-// ---- human preference
-chart(document.getElementById("pref"),(el,w)=>barsH(el,w,D.human_pref.rows.map(r=>({label:r.name,value:r.prod_pref-50,lo:r.prod_pref-50-r.ci,hi:r.prod_pref-50+r.ci,color:"--ink-2",note:`${r.prod_pref}% prefer Production`,strong:r.id==="long",tip:`<b>${r.name}</b><br>${r.prod_pref}% preferred Production (±${r.ci})`})),{domain:[-20,25],fmt:v=>(50+v)+"%",tickFmt:v=>(50+v)+"%",rowH:40,labelW:w<480?130:220}));
+// ---- human preference: bars diverge from 50%, no preference
+setChart(document.getElementById("pref"),{domain:[30,75],fmt:"pct",level:"95%",row_height:40,label_width:220,label_width_narrow:130,reference:{value:50,kind:"no_preference"},
+  rows:D.human_pref.rows.map(r=>({id:r.id,label:r.name,value:r.prod_pref,lo:r.prod_pref-r.ci,hi:r.prod_pref+r.ci,color:"--ink-2",note:`${r.prod_pref}% prefer Production`,strong:r.id==="long",tip:[r.name,`${r.prod_pref}% preferred Production (±${r.ci})`]}))});
 
-// ---- tradeoff map
-document.getElementById("lg-map").innerHTML=D.arms.map(a=>`<span><i style="background:var(${COL[a.id]})"></i>${a.id==="prod"?"Production":a.tag+" · "+a.short}</span>`).join("")+`<span><i style="background:var(--surface);box-shadow:inset 0 0 0 2px var(${HYB})"></i>Hybrid (modeled)</span>`;
-let price=1500,hk=1;let redrawMap;
-redrawMap=chart(document.getElementById("map"),(el,w)=>{const narrow=w<560;const h=narrow?320:380,m={l:48,r:20,t:16,b:42};const s=svgIn(el,w,h);
-  const x=lin(0,12000,m.l,w-m.r),y=lin(0,-9,m.t,h-m.b);
-  // worth-it region: above the line loss = save/price
-  const lx=Math.min(12000,price*9);const yAt=v=>-(v/Math.max(1,price));
-  S("path",{d:`M${x(0)},${y(0)}L${x(12000)},${y(0)}L${x(12000)},${y(Math.max(-9,yAt(12000)))}L${x(lx)},${y(Math.max(-9,yAt(lx)))}Z`,style:"fill:var(--good-wash)"},s);
-  for(const v of [0,-2,-4,-6,-8]){S("line",{x1:m.l,x2:w-m.r,y1:y(v),y2:y(v),class:"grid"},s);S("text",{x:m.l-8,y:y(v)+4,"text-anchor":"end",class:"tick",text:v===0?"0":v},s);}
-  for(const v of [0,3000,6000,9000,12000]){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-m.b+16,"text-anchor":"middle",class:"tick",text:usdK(v)},s);}
-  S("text",{x:(m.l+w-m.r)/2,y:h-6,"text-anchor":"middle",class:"tick",text:"monthly savings against Production"},s);
-  S("text",{x:m.l+6,y:h-m.b-8,class:"tick",text:"points of in-character rate lost ↓"},s);
-  S("line",{x1:x(0),y1:y(0),x2:x(lx),y2:y(Math.max(-9,yAt(lx))),style:"stroke:var(--good);stroke-width:1.5;stroke-dasharray:5 4"},s);
-  const mx=Math.min(12000,lx)*0.55;const pl=`${usd0(price)} per point`,plx=x(mx)+8,ply=y(Math.max(-9,yAt(mx)))+16;S("text",{x:plx,y:ply,class:"tick",style:"fill:var(--good)",text:pl},s);
-  S("text",{x:w-m.r-8,y:m.t+16,"text-anchor":"end",class:"lbl",style:"fill:var(--good);font-weight:600",text:"Worth it at this price"},s);
-  // hybrid curve
-  const curve=[O.prod,O.hyb0,O.hyb1,O.hyb2,O.f64];S("path",{d:"M"+curve.map(o=>`${x(o.save)},${y(o.dP)}`).join("L"),style:`fill:none;stroke:var(${HYB});stroke-width:1.5;opacity:.5`},s);
-  const obs=[[plx,ply-10,plx+pl.length*6.4,ply+3]];const pick=best(price,[O.prod,O.f64,O["hyb"+hk]].concat(document.getElementById("e-g").checked?[O.f16,O.cor]:[]));
-  for(const o of opts){const px=x(Math.max(0,o.save)),py=y(o.dP);const g=S("g",{},s);const c=o.arm?COL[o.id]:HYB;
-    S("circle",{cx:px,cy:py,r:o.hybrid?5:6.5,style:o.hybrid?`fill:var(--surface);stroke:var(${c});stroke-width:2`:`fill:var(${c});stroke:var(--surface);stroke-width:2;opacity:${o.guard?1:.45}`},g);
-    if(o===pick)S("circle",{cx:px,cy:py,r:11,style:"fill:none;stroke:var(--ink);stroke-width:1.5"},g);obs.push([px-8,py-8,px+8,py+8]);
-    hit(g,px-12,py-12,24,24,`<b>${o.short}</b><br>Saves ${usd0(o.save)}/month · ${pts(o.dP)} points${o.ppp?`<br>${usd0(o.ppp)} saved per point lost`:""}${o.guard?"":"<br>Breaks the speculation guardrail"}${o.hybrid?"<br>Modeled, not run":""}`);}
-  const labs=opts.filter(o=>!narrow||!o.hybrid||o.id==="hyb1").map(o=>({px:x(Math.max(0,o.save)),py:y(o.dP),o,text:o.arm?(o.id==="prod"?"Production":narrow?o.arm.tag:`${o.arm.tag} · ${o.arm.short}`+(o.guard?"":" (breaks guardrail)")):(narrow?"Hybrid":`Hybrid, turn ${D.depth[o.k].name.split("–").at(-1)}`)}));
-  placeLabels(labs,[m.l,m.t,w-m.r,h-m.b],obs).forEach(l=>S("text",{x:l.x,y:l.y,"text-anchor":l.anchor,class:l.o===pick?"lbl-strong":"lbl",text:l.text},s));});
+// ---- tradeoff map: savings against points lost, the price line set by the explorer
+let price=1500,hk=1;
+function drawMap(){const pick=best(price,[O.prod,O.f64,O["hyb"+hk]].concat(document.getElementById("e-g").checked?[O.f16,O.cor]:[]));
+  setChart(document.getElementById("map"),{legend:D.arms.map(a=>({label:a.id==="prod"?"Production":a.tag+" · "+a.short,color:COL[a.id]})).concat([{label:"Hybrid (modeled)",color:HYB,hollow:true}]),
+    x_domain:[0,12000],x_ticks:[0,3000,6000,9000,12000],x_fmt:"usdk",x_title:"monthly savings against Production",y_domain:[-9,0],y_ticks:[-8,-6,-4,-2,0],y_fmt:"num",y_title:"points of in-character rate lost ↓",
+    price_line:{value:price,label:`${usd0(price)} per point`,region_label:"Worth it at this price"},emphasis:pick.id,
+    paths:[{ids:["prod","hyb0","hyb1","hyb2","f64"],color:HYB,width:1.5,opacity:.5}],
+    points:opts.map(o=>({id:o.id,x:o.save,y:o.dP,color:o.arm?COL[o.id]:HYB,size:o.hybrid?5:6.5,hollow:!!o.hybrid,muted:!o.guard,
+      label:o.arm?(o.id==="prod"?"Production":`${o.arm.tag} · ${o.arm.short}`+(o.guard?"":" (breaks guardrail)")):`Hybrid, turn ${D.depth[o.k].name.split("–").at(-1)}`,
+      narrow_label:o.arm?(o.id==="prod"?"Production":o.arm.tag):o.id==="hyb1"?"Hybrid":null,
+      tip:[o.short,`Saves ${usd0(o.save)}/month · ${pts(o.dP)} points`].concat(o.ppp?[`${usd0(o.ppp)} saved per point lost`]:[],o.guard?[]:["Breaks the speculation guardrail"],o.hybrid?["Modeled, not run"]:[])}))});}
 
 // ---- explorer
 const ep=document.getElementById("e-p"),eg=document.getElementById("e-g");
@@ -202,7 +196,7 @@ function explore(){price=+ep.value;document.getElementById("o-p").textContent=us
   document.getElementById("e-flips").innerHTML=f.map(s=>`<span class="${s.o===win?"on":""}">${s.to==null?`${usd0(s.from)}+`:`${usd0(s.from)}–${usd0(s.to)}`}: ${s.o.short}</span>`).join("");
   document.getElementById("e-rank").innerHTML=`<thead><tr><th>Option</th><th class="r">Saves / month</th><th class="r">Points lost</th><th class="r">Cost of those points</th><th class="r">Net value / month</th></tr></thead><tbody>`+
     ranked.map((r,i)=>`<tr class="${i===0?"hl":""}"><td>${i===0?"<strong>":""}${r.o.short}${i===0?"</strong>":""}${r.o.guard?"":" "+pill("bad","Guardrail")}</td><td class="r">${usd0(r.o.save)}</td><td class="r">${r.o.loss.toFixed(1)}</td><td class="r">${usd0(price*r.o.loss)}</td><td class="r" style="color:${r.net<0?"var(--bad)":"var(--ink)"}">${usd0(r.net)}</td></tr>`).join("")+"</tbody>";
-  redrawMap&&redrawMap();}
+  drawMap();}
 [ep,eg].forEach(e=>e.addEventListener("input",explore));explore();
 
 // ---- full table
