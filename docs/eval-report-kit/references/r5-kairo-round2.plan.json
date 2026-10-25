@@ -1,0 +1,47 @@
+{
+  "schema": "report-plan/1",
+  "signals": {"candidate_structure": "control_plus_candidates", "baseline": "control", "score_type": "mixed", "strata": "many_strata", "criteria": "margin", "cross_cutting": [], "log_cost_axis": false},
+  "shape": "D",
+  "mode": "decide",
+  "masthead": {"kind": "Change · control vs candidates", "system": "Kairo persona model, round 2", "counts": "{control.name} vs {n_candidates} candidates · {aspect.name} · {cases} cases × {repeats} repeats", "run_date": "{meta.run_date}", "synthetic": false},
+  "headline": "Keep {control.name}. Both candidates cost {cost.uplift_range|pct} more per reply and stay in character less often.",
+  "lede": "{arm:qwen3.8-flash} is clearly worse on the asked pass rate: down {reading.qwen3.8-flash.change|abs|pts} points (95% interval {reading.qwen3.8-flash.interval|pts}), inside the {aspect.margin}-point margin but not a tie. {arm:1017}'s drop of {reading.1017.change|abs|pts} points could be noise. Neither candidate improves anything this campaign measured.",
+  "flag": {"title": "The criteria came after the results, and the judge is uncalibrated.", "text": "The aspect, control, margin and floor were all set on {late_criteria.set_at}, after the readings were visible, and the judge has no human calibration yet (0 of 20 ratings). The cost finding is measured spend, not judged, so it supports keeping {control.name} on its own.", "confidence": "high", "weakens": ["judged:persona.holds_character", "passed"], "survives": ["production_replicating_cost"]},
+  "decision": {"slots": [
+    {"key": "recommendation", "text": "**Keep {control.name}** ({control.served_model}). It has the highest pass rate ({pass_rate.September|pct}), the highest in-character rate ({judged.persona.holds_character.September|pct}) and the lowest cost ({cost_per_1k.September|usd} per 1,000 replies)."},
+    {"key": "why_not", "text": "**{arm:qwen3.8-flash}:** {cost.uplift.qwen3.8-flash|pct} more per reply, in-character {contrast.qwen3.8-flash.persona.holds_character|pts} points, pass rate {reading.qwen3.8-flash.change|pts}.\n**{arm:1017}:** {cost.uplift.1017|pct} more per reply, in-character {contrast.1017.persona.holds_character|pts} points."},
+    {"key": "watch", "text": "{arm:1017} spent {reasoning_ratio.1017|pct} of its output reasoning against {control.name}'s {reasoning_ratio.September|pct}, so part of its result may be the effort budget, not the model. Latency was not compared: every run shared the machine."},
+    {"key": "next", "text": "Fix off-lane handling first: it is {control.name}'s weakest stratum and where both candidates lose most. Then calibrate the judge with 20 human ratings, and find out why {arm:qwen3.8-flash} cost more than the earlier campaign found."}]},
+  "arms": [{"id": "September", "color_slot": -1}, {"id": "qwen3.8-flash", "color_slot": 0}, {"id": "1017", "color_slot": 1}],
+  "options": {"rows": [{"option": "September", "role": "recommended"}, {"option": "qwen3.8-flash", "role": "alternative"}, {"option": "1017", "role": "alternative"}],
+              "columns": ["pass_rate", "reading.change", "reading.verdict", "judged:persona.holds_character", "cost_per_1k"]},
+  "summary": [
+    {"kind": "forest", "title": "Change against September, in points", "data": "contrasts[measure in (passed, persona.holds_character, persona.booth_stays_offstage)] grouped by measure", "level": "99.69%", "unit": "points", "domain": [-14, 4]},
+    {"kind": "bars", "title": "Cost per 1,000 replies", "data": "measures.production_replicating_cost.per_arm ×1000 with ci", "unit": "usd", "domain": [0, 3]}],
+  "show_arms_key": true,
+  "sections": [
+    {"id": "question", "eyebrow": "The asked question", "headline": "Both candidates stay inside the {aspect.margin}-point margin, but {arm:qwen3.8-flash} is separated as worse",
+     "takeaway": "The question: {meta.question} The shaded region is the margin; a candidate passes when its whole interval sits inside it.",
+     "chart": {"kind": "forest", "data": "aspects[0].readings", "level": "95%", "unit": "points", "domain": [-16, 4], "reference": {"value": -15, "label": "margin −15", "kind": "margin"}, "emphasis": "qwen3.8-flash"},
+     "caption": "Pass rate on {aspect.name}: a trial passes when every check and judged dimension passes. Confirmatory 95% intervals on {cases} paired cases. The margin was set after the readings were visible."},
+    {"id": "strata", "eyebrow": "Where character is lost", "headline": "Off-lane asks, the largest stratum, carry about {strata.off_lane.loss_share|pct10} of each candidate's loss",
+     "takeaway": "Change in in-character rate against {control.name}, by kind of listener message. The twelve largest strata, by cases. Bold rows are separated from zero at 95%, before any correction; read them as leads.",
+     "chart": {"kind": "diverging_bars", "data": "strata[:12] × judged:persona.holds_character, arm − control", "level": "95% uncorrected", "unit": "points", "domain": [-26, 8], "small_multiples_by": "arm"}},
+    {"id": "examples", "eyebrow": "What the failures look like", "headline": "Off-lane failures answer the question instead of brushing it off",
+     "takeaway": "Failed trials on in-character, with the judge's reason and the end of the reply.",
+     "chart": {"kind": "examples", "data": "examples where stratum in (off_lane, multi, about), candidates first, 4"}}],
+  "explore": {"title": "Test the margin", "controls": [
+      {"id": "margin", "kind": "slider", "label": "Margin (points)", "binds": "margin", "min": 0, "max": 15, "step": 0.5, "default": 15},
+      {"id": "measure", "kind": "segmented", "label": "Measure", "options": ["Pass rate (95%)", "In-character (corrected)"], "default": "Pass rate (95%)"}],
+    "outcome": "per candidate: holds or fails at this margin, and the margin above which it holds (−lo); restate that the control stays recommended at any margin because no candidate improves on it"},
+  "full_results": ["arms_by_measure", "contrasts", "strata"],
+  "method": [
+    {"term": "Cases", "text": "{cases} cases, each run {repeats} times per arm; arms answered the same cases, so differences are paired."},
+    {"term": "Pass", "text": "A trial passes when every check and every judged dimension passes. The asked reading uses confirmatory 95% intervals."},
+    {"term": "Corrected comparisons", "text": "{contrast_families[0].disclosure}"},
+    {"term": "Judge", "text": "{judge_model}; evidence tier {judge_tier} for all dimensions: no human calibration and no test-retest yet."},
+    {"term": "Cost", "text": "Production roles only, per reply, as each run's provider routing set it."},
+    {"term": "Latency", "text": "{caveats.latency}"},
+    {"term": "Strata", "text": "Per-stratum rates are descriptive. Their intervals are not corrected, and small strata move a lot on one case."},
+    {"term": "Source", "text": "{meta.provenance}"}]
+}

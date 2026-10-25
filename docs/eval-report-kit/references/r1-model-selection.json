@@ -1,0 +1,454 @@
+{
+ "candidates": [
+  {
+   "id": "atlas-l",
+   "name": "Atlas-L",
+   "kind": "Frontier, large"
+  },
+  {
+   "id": "atlas-m",
+   "name": "Atlas-M",
+   "kind": "Frontier, mid"
+  },
+  {
+   "id": "brisk-s",
+   "name": "Brisk-S",
+   "kind": "Small, fast"
+  },
+  {
+   "id": "open-70b",
+   "name": "Open-70B",
+   "kind": "Open weights, self-hosted"
+  }
+ ],
+ "criteria": {
+  "overall": 85,
+  "p95": 3.0
+ },
+ "tasks": [
+  {
+   "id": "billing",
+   "name": "Billing & account Q&A",
+   "n": 400,
+   "share": 0.42,
+   "routable": true,
+   "desc": "Plan changes, invoices, refunds. Graded against the policy KB.",
+   "dims": [],
+   "results": {
+    "atlas-l": {
+     "overall": 94,
+     "overall_ci": 1.1,
+     "cost": 58,
+     "p50": 1.81,
+     "p95": 3.6,
+     "dims": {}
+    },
+    "atlas-m": {
+     "overall": 92,
+     "overall_ci": 1.1,
+     "cost": 24,
+     "p50": 1.03,
+     "p95": 2.1,
+     "dims": {}
+    },
+    "brisk-s": {
+     "overall": 89,
+     "overall_ci": 1.1,
+     "cost": 4.6,
+     "p50": 0.47,
+     "p95": 0.9,
+     "dims": {}
+    },
+    "open-70b": {
+     "overall": 86,
+     "overall_ci": 1.1,
+     "cost": 8.9,
+     "p50": 0.78,
+     "p95": 1.6,
+     "dims": {}
+    }
+   }
+  },
+  {
+   "id": "trouble",
+   "name": "Troubleshooting (multi-turn)",
+   "n": 180,
+   "share": 0.19,
+   "routable": true,
+   "desc": "Device and connectivity issues over 3 to 9 turns.",
+   "dims": [
+    {
+     "id": "resolves",
+     "name": "Resolves the issue",
+     "floor": 90
+    },
+    {
+     "id": "steps",
+     "name": "Gives clear steps",
+     "floor": 90
+    },
+    {
+     "id": "confirms",
+     "name": "Confirms before account changes",
+     "floor": 95
+    },
+    {
+     "id": "escalates",
+     "name": "Escalates when stuck",
+     "floor": 90
+    }
+   ],
+   "results": {
+    "atlas-l": {
+     "overall": 93,
+     "overall_ci": 1.6,
+     "cost": 140,
+     "p50": 2.42,
+     "p95": 4.68,
+     "dims": {
+      "resolves": {
+       "v": 91,
+       "ci": 4.2
+      },
+      "steps": {
+       "v": 96,
+       "ci": 2.9
+      },
+      "confirms": {
+       "v": 98,
+       "ci": 2.0
+      },
+      "escalates": {
+       "v": 94,
+       "ci": 3.5
+      }
+     }
+    },
+    "atlas-m": {
+     "overall": 88,
+     "overall_ci": 1.6,
+     "cost": 59,
+     "p50": 1.38,
+     "p95": 2.73,
+     "dims": {
+      "resolves": {
+       "v": 90,
+       "ci": 4.4
+      },
+      "steps": {
+       "v": 95,
+       "ci": 3.2
+      },
+      "confirms": {
+       "v": 98,
+       "ci": 2.0
+      },
+      "escalates": {
+       "v": 95,
+       "ci": 3.2
+      }
+     }
+    },
+    "brisk-s": {
+     "overall": 79,
+     "overall_ci": 1.6,
+     "cost": 11,
+     "p50": 0.57,
+     "p95": 1.17,
+     "dims": {
+      "resolves": {
+       "v": 74,
+       "ci": 6.4
+      },
+      "steps": {
+       "v": 90,
+       "ci": 4.4
+      },
+      "confirms": {
+       "v": 88,
+       "ci": 4.7
+      },
+      "escalates": {
+       "v": 85,
+       "ci": 5.2
+      }
+     }
+    },
+    "open-70b": {
+     "overall": 83,
+     "overall_ci": 1.6,
+     "cost": 21,
+     "p50": 1.07,
+     "p95": 2.08,
+     "dims": {
+      "resolves": {
+       "v": 82,
+       "ci": 5.6
+      },
+      "steps": {
+       "v": 93,
+       "ci": 3.7
+      },
+      "confirms": {
+       "v": 81,
+       "ci": 5.7
+      },
+      "escalates": {
+       "v": 90,
+       "ci": 4.4
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "persona",
+   "name": "Persona small talk",
+   "n": 220,
+   "share": 0.24,
+   "routable": true,
+   "desc": "Off-task chat where the assistant must hold the brand voice.",
+   "dims": [
+    {
+     "id": "character",
+     "name": "Stays in character",
+     "floor": 90
+    }
+   ],
+   "results": {
+    "atlas-l": {
+     "overall": 91,
+     "overall_ci": 1.5,
+     "cost": 41,
+     "p50": 1.39,
+     "p95": 2.88,
+     "dims": {
+      "character": {
+       "v": 95,
+       "ci": 2.9
+      }
+     }
+    },
+    "atlas-m": {
+     "overall": 88,
+     "overall_ci": 1.5,
+     "cost": 17,
+     "p50": 0.86,
+     "p95": 1.68,
+     "dims": {
+      "character": {
+       "v": 95,
+       "ci": 2.9
+      }
+     }
+    },
+    "brisk-s": {
+     "overall": 84,
+     "overall_ci": 1.5,
+     "cost": 3.3,
+     "p50": 0.35,
+     "p95": 0.72,
+     "dims": {
+      "character": {
+       "v": 86,
+       "ci": 4.6
+      }
+     }
+    },
+    "open-70b": {
+     "overall": 90,
+     "overall_ci": 1.5,
+     "cost": 6.4,
+     "p50": 0.62,
+     "p95": 1.28,
+     "dims": {
+      "character": {
+       "v": 97,
+       "ci": 2.3
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "research",
+   "name": "Research-needed questions",
+   "n": 240,
+   "share": 0.15,
+   "routable": true,
+   "desc": "Questions that need the research tool, mixed with ones that don't.",
+   "dims": [
+    {
+     "id": "toolcall",
+     "name": "Calls research tool only when required",
+     "floor": 90
+    },
+    {
+     "id": "cites",
+     "name": "Cites the retrieved source",
+     "floor": 90
+    },
+    {
+     "id": "unsupported",
+     "name": "No unsupported claims",
+     "floor": 90
+    }
+   ],
+   "results": {
+    "atlas-l": {
+     "overall": 92,
+     "overall_ci": 1.4,
+     "cost": 95,
+     "p50": 2.48,
+     "p95": 4.86,
+     "dims": {
+      "toolcall": {
+       "v": 97,
+       "ci": 2.2
+      },
+      "cites": {
+       "v": 96,
+       "ci": 2.5
+      },
+      "unsupported": {
+       "v": 95,
+       "ci": 2.8
+      }
+     }
+    },
+    "atlas-m": {
+     "overall": 89,
+     "overall_ci": 1.4,
+     "cost": 40,
+     "p50": 1.53,
+     "p95": 2.84,
+     "dims": {
+      "toolcall": {
+       "v": 95,
+       "ci": 2.8
+      },
+      "cites": {
+       "v": 94,
+       "ci": 3.0
+      },
+      "unsupported": {
+       "v": 94,
+       "ci": 3.0
+      }
+     }
+    },
+    "brisk-s": {
+     "overall": 81,
+     "overall_ci": 1.4,
+     "cost": 8,
+     "p50": 0.6,
+     "p95": 1.22,
+     "dims": {
+      "toolcall": {
+       "v": 83,
+       "ci": 4.8
+      },
+      "cites": {
+       "v": 89,
+       "ci": 4.0
+      },
+      "unsupported": {
+       "v": 84,
+       "ci": 4.6
+      }
+     }
+    },
+    "open-70b": {
+     "overall": 80,
+     "overall_ci": 1.4,
+     "cost": 15,
+     "p50": 1.07,
+     "p95": 2.16,
+     "dims": {
+      "toolcall": {
+       "v": 88,
+       "ci": 4.1
+      },
+      "cites": {
+       "v": 85,
+       "ci": 4.5
+      },
+      "unsupported": {
+       "v": 86,
+       "ci": 4.4
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "specul",
+   "name": "Speculation bait",
+   "n": 150,
+   "share": 0,
+   "routable": false,
+   "desc": "Prompts that invite guessing about outages, pricing, or roadmap. Occurs inside every other task.",
+   "dims": [
+    {
+     "id": "declines",
+     "name": "Declines to speculate",
+     "floor": 95
+    }
+   ],
+   "results": {
+    "atlas-l": {
+     "overall": 90,
+     "overall_ci": 1.8,
+     "cost": 45,
+     "p50": 1.7,
+     "p95": 3.24,
+     "dims": {
+      "declines": {
+       "v": 99,
+       "ci": 1.6
+      }
+     }
+    },
+    "atlas-m": {
+     "overall": 89,
+     "overall_ci": 1.8,
+     "cost": 19,
+     "p50": 1.03,
+     "p95": 1.89,
+     "dims": {
+      "declines": {
+       "v": 98,
+       "ci": 2.2
+      }
+     }
+    },
+    "brisk-s": {
+     "overall": 83,
+     "overall_ci": 1.8,
+     "cost": 3.6,
+     "p50": 0.42,
+     "p95": 0.81,
+     "dims": {
+      "declines": {
+       "v": 81,
+       "ci": 6.3
+      }
+     }
+    },
+    "open-70b": {
+     "overall": 86,
+     "overall_ci": 1.8,
+     "cost": 7.0,
+     "p50": 0.73,
+     "p95": 1.44,
+     "dims": {
+      "declines": {
+       "v": 89,
+       "ci": 5.0
+      }
+     }
+    }
+   }
+  }
+ ]
+}
