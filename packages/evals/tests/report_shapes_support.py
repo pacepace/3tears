@@ -32,6 +32,7 @@ from threetears.evals.analysis.report.model import CampaignReport, Report
 from threetears.evals.analysis.report.words import campaign_arm_tags
 from threetears.evals.kernel.authored import AuthoredCampaignAnalysis
 from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.declaration import BarOverride, CampaignArm, DecisionClause, RateDrop
 from threetears.evals.schema import EvalResult, RubricScore
 from threetears.evals.schema.models import EvalRun, GoalStateOutcome, LatencyMetrics, RoleUsage, RubricScale
@@ -44,6 +45,7 @@ from packages.evals.tests.factories import (
     minimal_aspect_design,
 )
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
+from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
 __all__ = [
@@ -128,6 +130,19 @@ class Shape:
     reports: dict[str, Report]
     readings: CampaignReadings
     arms: list[CampaignArm]
+    runs: list[EvalRun] = field(default_factory=list)
+    results: dict[str, list[EvalResult]] = field(default_factory=dict)
+
+    def host(self) -> EvalHost:
+        """The toy host holding this campaign, its runs and its results, and no analysis: what the service's own entry
+        point (:func:`~threetears.evals.analysis.campaign_report`) reads the page from."""
+        host = toyhost_host()
+        for run in self.runs:
+            host.storage.save_eval_run(run)
+            for result in self.results[run.id]:
+                host.storage.save_eval_result(result)
+        host.storage.save_campaign(self.campaign)
+        return host
 
     def key(self, label: str) -> str:
         """The variant key of the arm the campaign labels ``label``."""
@@ -211,7 +226,9 @@ def _results(run: EvalRun, aspect: AspectTrials, arm: ArmTrials) -> list[EvalRes
 
 def _assembled(
     name: str, aspects: Sequence[AspectTrials], *, control: bool, question: str
-) -> tuple[EvalCampaign, dict[str, AnalysisContextBundle], list[CampaignArm]]:
+) -> tuple[
+    EvalCampaign, dict[str, AnalysisContextBundle], list[CampaignArm], list[EvalRun], dict[str, list[EvalResult]]
+]:
     """Each aspect as a one-aspect campaign over its runs, assembled; then one campaign holding every aspect, every
     floor and every arm, the first aspect's arm the control where ``control``."""
     labels = list(dict.fromkeys(arm.label for aspect in aspects for arm in aspect.arms))
@@ -226,6 +243,8 @@ def _assembled(
     ]
     held = []
     bundles: dict[str, AnalysisContextBundle] = {}
+    every_run: list[EvalRun] = []
+    every_result: dict[str, list[EvalResult]] = {}
     for aspect in aspects:
         runs = [_run(aspect.label, arm) for arm in aspect.arms]
         results = {run.id: _results(run, aspect, arm) for run, arm in zip(runs, aspect.arms, strict=True)}
@@ -247,6 +266,8 @@ def _assembled(
             created_at=ASKED_AT,
         )
         held.append(one)
+        every_run.extend(runs)
+        every_result.update(results)
         bundles[aspect.label] = assemble_context_bundle(
             one, storage=ToyhostStorage(runs, results), profile=toyhost_profile()
         )
@@ -257,13 +278,13 @@ def _assembled(
             "floors": [floor for one in held for floor in one.floors],
         }
     )
-    return campaign, bundles, arms
+    return campaign, bundles, arms, every_run, every_result
 
 
 def shape_of(name: str, aspects: Sequence[AspectTrials], *, control: bool, question: str = QUESTION) -> Shape:
     """One shape assembled, its readings read and each aspect's own page built with the campaign's labels: the four
     shapes below, or a test's own of the same parts."""
-    campaign, bundles, arms = _assembled(name, aspects, control=control, question=question)
+    campaign, bundles, arms, runs, results = _assembled(name, aspects, control=control, question=question)
     readings = campaign_readings(campaign, bundles, arms=arms)
     tags = campaign_arm_tags(bundles.values(), readings.control)
     reports = {
@@ -272,7 +293,16 @@ def shape_of(name: str, aspects: Sequence[AspectTrials], *, control: bool, quest
         )
         for label, bundle in bundles.items()
     }
-    return Shape(name=name, campaign=campaign, bundles=bundles, reports=reports, readings=readings, arms=arms)
+    return Shape(
+        name=name,
+        campaign=campaign,
+        bundles=bundles,
+        reports=reports,
+        readings=readings,
+        arms=arms,
+        runs=runs,
+        results=results,
+    )
 
 
 def s1_change() -> Shape:
