@@ -177,7 +177,32 @@ Use it when §1.1 says so. The page prices the trade; it doesn't pretend to deci
 
 The planner writes prose with figure keys, and the renderer formats the values.
 
-Grammar: `{path|filter|filter}`. The path is a dotted path into the report input, with arm ids as keys (`reading.<arm>.change`, `contrast.<arm>.<measure>.delta`, `judged.<dim>.<arm>`, `cost_per_1k.<arm>`, `pass_rate.<arm>`, `meta.question`), or a derived value the renderer defines (`cost.uplift.<arm>`, `cost.uplift_range`, `strata.<id>.loss_share`, `flip_margin.<arm>`). `{arm:<id>}` prints the arm's short name with its tag. Filters: `pct` (0.853 → 85.3%), `pts` (signed, one decimal), `abs`, `usd` (two decimals), `int`, `pct10` (rounds to the nearest 10%), `interval` (`[lo, hi]` → "−10.8 to −3.4"). An unknown path is a validation error, never a blank.
+Grammar: `{path|filter|filter}`, in single braces. (The memo's `{{cell|…}}` references are a different grammar; plan prose never holds a double brace.) `{arm:<id>}` prints the arm's short name with its tag and takes no filter. `figure_keys.py` (`threetears.evals.analysis.report`) parses and renders keys, and writes the planner prompt's section from the same definitions.
+
+**Paths are matched, never split at dots.** Ids carry dots and spaces (`qwen3.8-flash`, `persona.holds_character`, `character adherence (v2)`), so a path is matched against a closed vocabulary built from the input: a family keyword, then the ids that family takes, then a statistic or field from a fixed set. Exactly one complete reading is the figure. Two readings are refused, naming both. No reading is refused, naming what could come next where the path stopped matching. An unknown path is a validation error, never a blank.
+
+| Path | Reads |
+|---|---|
+| `meta.<field>` | campaign, question, behavior, kind, kind_means, design_shape, run_date, provenance, volume_per_month |
+| `control.<field>` | the control's id, name, served_model, description |
+| `n_candidates`, `cases`, `repeats` | candidates; the asked aspect's cases and repeats per case |
+| `aspect.<field>`, `aspects.<aspect>.<field>` | the one asked aspect, or any aspect: id, name, margin, description |
+| `reading.<arm>.<statistic>`, `aspects.<aspect>.reading.<arm>.<statistic>` | change, interval, low, high, margin, level, verdict, control_passed, arm_passed, why |
+| `contrast.<arm>.<measure>.<statistic>` | delta, interval, low, high, verdict, p_adjusted |
+| `judged.<dim>.<arm>` | the arm's mean on a judged dimension |
+| `judged.<dim>.<field>`, `judge.<field>` | label (dimension only), model, tier, calibration, calibration_ratings, agreement; `judge.*` only where every dimension agrees |
+| `pass_rate.<arm>` | passed over usable (scoreboard), else the `pass_rate` measure |
+| `cost_per_1k.<arm>` | a `usd_per_1k` measure, else the one `usd` measure on the cost merit axis, else the scoreboard's cost per reply, per 1,000 |
+| `measure.<key>.<arm>.<statistic>` | mean, ci, half_width, sem, n, n_cases, p50, p95, change |
+| `scoreboard.<arm>.<statistic>` | ran, usable, passed, cases, lost, failed, reply_cost_usd, test_cost_usd |
+| `reasoning_ratio.<arm>` | the share of output spent reasoning |
+| `late_criteria.set_at`, `family.<field>`, `caveats.latency`, `strata.<id>.<field>` | when late criteria were set; the one contrast family (disclosure, correction, alpha, family_size, level); the latency caveat; a stratum's name, n_cases, share |
+
+**Derived values** are computed by the renderer from the input's point figures. They are descriptive: no interval, no test. `cost.uplift.<arm>` is the candidate's cost per 1,000 over the control's, minus one. `cost.uplift_range` spans the candidates' uplifts. `strata.<id>.loss_share.<arm>` is the stratum's part of the candidate's loss against the control on the primary judged dimension, weighted by cases (or by traffic share), within its stratification; `strata.<id>.loss_share` is the least of those across candidates ("about X of each candidate's loss"). `flip_margin.<arm>` is the asked reading's worst drop, the margin above which it holds.
+
+**Filters**, one spelling at most plus `abs` and `interval`, in any order: `pct` (a rate as a percent: 0.853 → 85.3%; a descriptive ratio in whole percents), `pts` (a change in points, signed, one decimal at most), `abs` (the magnitude: `abs|pts` → 7.6), `usd` (dollars and cents), `int` (nearest whole number), `pct10` (nearest 10%), `interval` (`[lo, hi]` → "-10.8 to -3.4"), `usd_per_1k` ("$1.89 per 1,000 replies"). Without a filter a rate reads as a percent, a change in points, money in dollars. An unsigned interval reads with its unit once ("27–28%"); one with a sign reads "lo to hi". Numbers follow the package's number rule (`numbers.py`), so a whole value drops its decimal (-6.0 reads -6) and minus is the hyphen-minus. A filter that does not suit the figure (a percent of money, points of a count, a percent of a change) is refused.
+
+**D3: no digit outside a key.** Keys are set aside; then every name the input holds is set aside where a non-word character or the text's edge bounds it on both sides: arm ids and names, served models, settings as displayed (`64k`), aspect, measure, dimension, stratum, task and factor ids and names, the campaign's name, trial and case ids. Any Unicode decimal digit left (`95%`, `٣`) is an error. An id made only of digits is never set aside: write `{arm:1017}`, never `1017`.
 
 Until the renderer exists (CONVERGENCE.md P3–P4), a page is hand-built with the kit. Write the plan first and keep it beside the page, then compute every prose number in the page script from the same data the keys name. That keeps the two honest. For example: `"{arm:qwen3.8-flash} is clearly worse: down {reading.qwen3.8-flash.change|abs|pts} points ({reading.qwen3.8-flash.interval|pts})"`. That makes three things true by construction: no number is invented, rounding matches the tables, and a re-run updates the prose. A sentence whose figure is missing from the input is dropped.
 
