@@ -22,6 +22,7 @@ from typing import Any, ClassVar
 
 from sqlalchemy import MetaData
 
+from threetears.core.cache.base import UnsupportedL1ColumnError
 from threetears.core.collections.base import BaseCollection, EntityT
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.schema_backed import DATETIMETZ_TYPE, TableSchema
@@ -84,13 +85,18 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
         :ptype kwargs: Any
         :return: nothing
         :rtype: None
+        :raises UnsupportedL1ColumnError: when the L1 cannot hold a declared column exactly, naming
+            the collection and the column
         """
         super().__init__(*args, **kwargs)
         #: the keys a write sent that landed on a row stored under another key, until its read back
         self._sent_to_another_key: set[Any] = set()
         l1 = self.l1_backend
         if l1 is not None:
-            l1.initialize(self.schema.to_sqlalchemy_table(MetaData()).metadata)
+            try:
+                l1.initialize(self.schema.to_sqlalchemy_table(MetaData()).metadata)
+            except UnsupportedL1ColumnError as exc:
+                raise UnsupportedL1ColumnError(f"{type(self).__name__}: {exc}") from exc
 
     @property
     def table_name(self) -> str:

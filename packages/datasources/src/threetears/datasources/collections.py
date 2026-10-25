@@ -593,7 +593,7 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
             # existing rows are 'datasource'; 'api_import' / 'mcp_import'
             # widen the registry. distinct from datasource_type (the
             # driver axis, applies only to kind='datasource').
-            Column("kind", STRING_TYPE),
+            Column("kind", STRING_TYPE, server_default="'datasource'"),
             # datasource_type is the DRIVER axis (redshift / snowflake /
             # ...); applies only to kind='datasource'. nullable so an
             # api_import / mcp_import row carries no driver. immutable:
@@ -609,8 +609,8 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
             Column("connection_config", STRING_TYPE, nullable=True),
             # allowed_schemas scopes the source for every kind (schemas
             # for a datasource; operations / paths for an api_import).
-            Column("allowed_schemas", JSONB_TYPE, nullable=True),
-            Column("access_mode", STRING_TYPE),
+            Column("allowed_schemas", JSONB_TYPE, server_default="'[]'::jsonb"),
+            Column("access_mode", STRING_TYPE, server_default="'read'"),
             Column("status", STRING_TYPE),
             # gu-task-08 GU-08-05: the per-source ingress-agent principal
             # id — the agent identity RBAC grants on this source's tool
@@ -633,7 +633,7 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
             # to its canonical platform-shared form via
             # origin_datasource_id (the table-LEVEL origin link the merge
             # retrieval gathers across: datasource_id IN (D, P)).
-            Column("visibility", STRING_TYPE),
+            Column("visibility", STRING_TYPE, server_default="'private'"),
             Column("origin_datasource_id", UUID_TYPE, nullable=True),
             # knowledge-quarantine foundation: a datasource "requires
             # knowledge" purely because someone authored knowledge anchored

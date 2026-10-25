@@ -1,0 +1,446 @@
+"""a gate holding every tier of a collection's table to one schema, top to bottom.
+
+A collection that declares a :class:`~threetears.core.collections.schema_backed.TableSchema` keeps
+its rows in up to four places: the migrated Postgres table (L3), the SQLite or DuckDB L1 generated
+from the schema, and the L2 codec. A tier that changes a value's type or loses its precision serves
+that changed value on every read it answers -- a ``NUMERIC`` read back as a ``float``, an instant
+without its zone -- and nothing else notices. This gate writes one row of exacting values (a
+``Decimal`` at its column's full precision, a negative one, an aware instant to the microsecond, a
+UUID, nested JSON, a bool, raw bytes, an integer beyond a float's precision) through every tier and
+reads it back, and names the collection, column and tier of every difference.
+
+Two halves, both for any host to run over its own collections:
+
+- :func:`tier_parity_findings` needs nothing live: the schema against the SQLite L1, the DuckDB L1
+  (when DuckDB is installed) and the collection's own L2 codec.
+- :func:`live_tier_parity_findings` needs a Postgres connection holding the collections' tables,
+  set up as the host's pool sets one up (:func:`~threetears.core.collections.init_connection`): the
+  migrated table's columns, types, precision and scale, nullability, defaults and primary key
+  against the schema, and the row written to a scratch copy of the table and read back.
+
+Each returns its findings, one line each; an empty list is a pass.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+import uuid
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any
+
+from sqlalchemy import MetaData
+
+from threetears.core.cache.base import UnsupportedL1ColumnError
+from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.collections.base import NO_L2, BaseCollection
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.collections.schema_backed import (
+    BIGINT_TYPE,
+    BOOL_TYPE,
+    BYTES_TYPE,
+    DATETIMETZ_TYPE,
+    ENUM_TYPE,
+    INT_TYPE,
+    JSONB_TYPE,
+    NUMERIC_TYPE,
+    STRING_TYPE,
+    TSVECTOR_TYPE,
+    UUID_TYPE,
+    VECTOR_TYPE,
+    Column,
+    TableSchema,
+)
+from threetears.core.config import DefaultCoreConfig
+from threetears.core.sql_fragments import quote_identifier
+from threetears.observe import get_logger
+
+__all__ = ["live_tier_parity_findings", "tier_parity_findings"]
+
+log = get_logger(__name__)
+
+try:
+    import duckdb
+
+    from threetears.core.cache.duckdb import DuckDBBackend
+
+    _DUCKDB: type[DuckDBBackend] | None = DuckDBBackend
+    #: what a write or read the backends refuse raises
+    _L1_ERRORS: tuple[type[Exception], ...] = (TypeError, ValueError, OverflowError, sqlite3.Error, duckdb.Error)
+except ImportError:  # NOSILENT: DuckDB is an optional extra; without it there is no DuckDB L1 to hold
+    _DUCKDB = None
+    _L1_ERRORS = (TypeError, ValueError, OverflowError, sqlite3.Error)
+
+#: builds a collection of a class for its L2 codec
+CollectionBuilder = Callable[[type[BaseCollection[Any]]], BaseCollection[Any]]
+
+#: the Postgres type each column type is migrated as (``information_schema.columns.data_type``)
+_L3_DATA_TYPES: Mapping[str, frozenset[str]] = {
+    UUID_TYPE: frozenset({"uuid"}),
+    STRING_TYPE: frozenset({"text", "character varying"}),
+    DATETIMETZ_TYPE: frozenset({"timestamp with time zone"}),
+    JSONB_TYPE: frozenset({"jsonb"}),
+    BYTES_TYPE: frozenset({"bytea"}),
+    INT_TYPE: frozenset({"integer"}),
+    BIGINT_TYPE: frozenset({"bigint"}),
+    BOOL_TYPE: frozenset({"boolean"}),
+    NUMERIC_TYPE: frozenset({"numeric"}),
+    TSVECTOR_TYPE: frozenset({"tsvector"}),
+    VECTOR_TYPE: frozenset({"USER-DEFINED"}),
+    ENUM_TYPE: frozenset({"USER-DEFINED", "text", "character varying"}),
+}
+
+
+def _sample(column: Column) -> Any:
+    """the exacting value the gate writes to ``column``, or ``None`` for a column no write sets.
+
+    :param column: the column
+    :ptype column: Column
+    :return: the value
+    :rtype: Any
+    """
+    kind = column.column_type
+    value: Any = None
+    if kind == NUMERIC_TYPE and column.precision is not None and column.scale is not None:
+        # every digit the column holds, negative: a float or a narrower integer loses some of it
+        value = Decimal(-(10**column.precision - 1)).scaleb(-column.scale)
+    elif kind == VECTOR_TYPE and column.vector_dim is not None:
+        value = [0.5 if index % 2 else -0.25 for index in range(column.vector_dim)]
+    elif kind == ENUM_TYPE and column.enum_type:
+        value = column.enum_type[0]
+    else:
+        value = {
+            UUID_TYPE: uuid.UUID("0190c0de-7a11-7e57-9b1a-5ca1ab1e0001"),
+            STRING_TYPE: "tier parity ✓",
+            DATETIMETZ_TYPE: datetime(2026, 10, 24, 12, 34, 56, 789012, tzinfo=UTC),
+            JSONB_TYPE: {"nested": {"n": 1, "f": 1.5, "s": "x", "l": [1, "two", None], "b": True}},
+            BYTES_TYPE: b"\x00\xfftier",
+            INT_TYPE: -2147483647,
+            BIGINT_TYPE: 9007199254740993,
+            BOOL_TYPE: True,
+        }.get(kind)
+    return value
+
+
+def _sample_row(schema: TableSchema) -> dict[str, Any]:
+    """one row of every column a write sets (a trigger-maintained ``tsvector`` is not one).
+
+    :param schema: the table
+    :ptype schema: TableSchema
+    :return: the row
+    :rtype: dict[str, Any]
+    """
+    return {column.name: _sample(column) for column in schema.columns if column.column_type != TSVECTOR_TYPE}
+
+
+def _difference(sent: Any, got: Any) -> str | None:
+    """how ``got`` differs from ``sent`` in type or value, or ``None`` when it is the same.
+
+    :param sent: the value written
+    :ptype sent: Any
+    :param got: the value read back
+    :ptype got: Any
+    :return: the difference, or ``None``
+    :rtype: str | None
+    """
+    result: str | None = None
+    if sent is None:
+        result = None if got is None else f"read back {got!r} for NULL"
+    elif not isinstance(got, type(sent)) or (isinstance(got, bool) and not isinstance(sent, bool)):
+        result = f"read back {got!r} ({type(got).__name__}) for {sent!r} ({type(sent).__name__})"
+    elif isinstance(sent, Decimal) and (got != sent or got.as_tuple().exponent != sent.as_tuple().exponent):
+        result = f"read back {got!r} for {sent!r}"
+    elif isinstance(sent, datetime) and got.tzinfo is None:
+        result = f"read back {got!r}, an instant without its zone, for {sent!r}"
+    elif got != sent:
+        result = f"read back {got!r} for {sent!r}"
+    return result
+
+
+def _row_findings(name: str, tier: str, sent: Mapping[str, Any], got: Mapping[str, Any] | None) -> list[str]:
+    """the findings of one tier's read back of the sample row.
+
+    :param name: the collection's name
+    :ptype name: str
+    :param tier: the tier
+    :ptype tier: str
+    :param sent: the row written
+    :ptype sent: Mapping[str, Any]
+    :param got: the row read back, or ``None`` when none was
+    :ptype got: Mapping[str, Any] | None
+    :return: one line per column that came back different
+    :rtype: list[str]
+    """
+    if got is None:
+        return [f"{name}: {tier}: the row written was not read back"]
+    findings = []
+    for column, value in sent.items():
+        difference = _difference(value, got.get(column)) if column in got else "the column is missing"
+        if difference is not None:
+            findings.append(f"{name}.{column}: {tier}: {difference}")
+    return findings
+
+
+def _l1_findings(name: str, tier: str, backend: Any, schema: TableSchema) -> list[str]:
+    """create the schema's table on a fresh L1, write the sample row, and compare what it reads back.
+
+    :param name: the collection's name
+    :ptype name: str
+    :param tier: the tier
+    :ptype tier: str
+    :param backend: a fresh, empty L1 backend
+    :ptype backend: Any
+    :param schema: the table
+    :ptype schema: TableSchema
+    :return: the findings
+    :rtype: list[str]
+    """
+    findings: list[str] = []
+    try:
+        backend.initialize(schema.to_sqlalchemy_table(MetaData()).metadata)
+    except UnsupportedL1ColumnError as exc:
+        findings.append(f"{name}: {tier}: {exc}")
+    else:
+        row = _sample_row(schema)
+        key = tuple(row[column] for column in schema.pk_columns)
+        try:
+            backend.upsert(schema.name, row, schema.pk_columns)
+            got = backend.select_by_id(schema.name, key if len(key) > 1 else key[0], schema.pk_columns)
+        except _L1_ERRORS as exc:
+            findings.append(f"{name}: {tier}: the row could not be written and read: {type(exc).__name__}: {exc}")
+        else:
+            findings.extend(_row_findings(name, tier, row, got))
+    finally:
+        backend.reset()
+    return findings
+
+
+def _default_build(cls: type[BaseCollection[Any]]) -> BaseCollection[Any]:
+    """a collection of ``cls`` on an empty registry with no L2, for its codec alone.
+
+    :param cls: the collection class
+    :ptype cls: type[BaseCollection[Any]]
+    :return: the collection
+    :rtype: BaseCollection[Any]
+    """
+    config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+    return cls(registry=CollectionRegistry(), config=config, nats_client=NO_L2)
+
+
+def _schema_of(cls: type[BaseCollection[Any]]) -> TableSchema | None:
+    """the ``TableSchema`` a collection class declares, or ``None``.
+
+    :param cls: the collection class
+    :ptype cls: type[BaseCollection[Any]]
+    :return: the schema
+    :rtype: TableSchema | None
+    """
+    schema = getattr(cls, "schema", None)
+    return schema if isinstance(schema, TableSchema) else None
+
+
+def tier_parity_findings(
+    collections: Iterable[type[BaseCollection[Any]]], *, build: CollectionBuilder | None = None
+) -> list[str]:
+    """every difference between a collection's schema and what its SQLite L1, DuckDB L1 and L2 hand back.
+
+    For each class that declares a ``TableSchema``: the schema's table is created on a fresh SQLite
+    L1 and, when DuckDB is installed, a fresh DuckDB L1, each of which refuses a column it cannot
+    hold exactly; the sample row is written to each and read back; and it is passed through the
+    collection's own L2 codec (``serialize``, then ``decode_row``). A class with no schema is skipped.
+
+    :param collections: the collection classes
+    :ptype collections: Iterable[type[BaseCollection[Any]]]
+    :param build: builds a collection of a class, for its L2 codec; the default builds one on an
+        empty registry with no L2, which a class whose constructor takes more cannot use
+    :ptype build: CollectionBuilder | None
+    :return: one line per difference, naming the collection, the column and the tier; empty when
+        every tier hands back what was written
+    :rtype: list[str]
+    """
+    findings: list[str] = []
+    builder = build or _default_build
+    for cls in collections:
+        schema = _schema_of(cls)
+        if schema is None:
+            continue
+        name = cls.__qualname__
+        findings.extend(_l1_findings(name, "SQLite L1", SQLiteBackend(f"tier_parity_{uuid.uuid7().hex}"), schema))
+        if _DUCKDB is not None:
+            findings.extend(_l1_findings(name, "DuckDB L1", _DUCKDB(), schema))
+        row = _sample_row(schema)
+        try:
+            collection = builder(cls)
+        except TypeError as exc:
+            findings.append(f"{name}: L2: could not build the collection for its codec ({exc}); pass build=")
+            continue
+        try:
+            decoded = collection.decode_row(collection.serialize(row))
+        except (TypeError, ValueError) as exc:
+            findings.append(f"{name}: L2: the row did not survive its codec: {type(exc).__name__}: {exc}")
+        else:
+            findings.extend(_row_findings(name, "L2", row, decoded))
+    return findings
+
+
+def _l3_column_findings(
+    name: str, schema: TableSchema, live: Sequence[Mapping[str, Any]], pk: tuple[str, ...], not_owned: frozenset[str]
+) -> list[str]:
+    """every difference between the schema and the migrated table's columns and key.
+
+    :param name: the collection's name
+    :ptype name: str
+    :param schema: the table as declared
+    :ptype schema: TableSchema
+    :param live: ``information_schema.columns`` rows of the migrated table
+    :ptype live: Sequence[Mapping[str, Any]]
+    :param pk: the migrated table's primary key, in order
+    :ptype pk: tuple[str, ...]
+    :param not_owned: the migrated columns the collection deliberately neither reads nor writes
+    :ptype not_owned: frozenset[str]
+    :return: the findings
+    :rtype: list[str]
+    """
+    findings: list[str] = []
+    by_name = {str(row["column_name"]): row for row in live}
+    declared = {column.name: column for column in schema.columns}
+    findings.extend(
+        f"{name}.{missing}: L3: the migrated table has the column, the TableSchema does not"
+        for missing in sorted(set(by_name) - set(declared) - not_owned)
+    )
+    findings.extend(
+        f"{name}.{column}: L3: listed as not owned, but the migrated table has no such column"
+        if column not in by_name
+        else f"{name}.{column}: L3: listed as not owned, but the TableSchema declares it"
+        for column in sorted(not_owned)
+        if column not in by_name or column in declared
+    )
+    for column in schema.columns:
+        row = by_name.get(column.name)
+        if row is None:
+            findings.append(
+                f"{name}.{column.name}: L3: the TableSchema declares the column, the migrated table does not"
+            )
+            continue
+        data_type = str(row["data_type"])
+        if data_type not in _L3_DATA_TYPES.get(column.column_type, frozenset()):
+            findings.append(f"{name}.{column.name}: L3: migrated as {data_type}, declared {column.column_type}")
+        if column.column_type == NUMERIC_TYPE and (row["numeric_precision"], row["numeric_scale"]) != (
+            column.precision,
+            column.scale,
+        ):
+            findings.append(
+                f"{name}.{column.name}: L3: migrated as NUMERIC({row['numeric_precision']}, {row['numeric_scale']}), "
+                f"declared NUMERIC({column.precision}, {column.scale})"
+            )
+        nullable = column.nullable and column.name not in schema.pk_columns
+        if (row["is_nullable"] == "YES") != nullable:
+            findings.append(
+                f"{name}.{column.name}: L3: migrated {'NULL' if row['is_nullable'] == 'YES' else 'NOT NULL'}, "
+                f"declared {'NULL' if nullable else 'NOT NULL'}"
+            )
+        if (row["column_default"] is not None) != (column.server_default is not None):
+            findings.append(
+                f"{name}.{column.name}: L3: migrated default {row['column_default']!r}, "
+                f"declared server_default {column.server_default!r}"
+            )
+    if pk != schema.pk_columns:
+        findings.append(f"{name}: L3: migrated primary key {pk!r}, declared {schema.pk_columns!r}")
+    return findings
+
+
+async def _l3_row_findings(name: str, conn: Any, schema: TableSchema) -> list[str]:
+    """write the sample row to a scratch copy of the migrated table and compare what it reads back.
+
+    The copy (``LIKE ... INCLUDING DEFAULTS``) has the table's columns, types and defaults and none
+    of its foreign keys or checks, so the row needs no parent rows; it is a temporary table, dropped
+    after.
+
+    :param name: the collection's name
+    :ptype name: str
+    :param conn: the Postgres connection
+    :ptype conn: Any
+    :param schema: the table
+    :ptype schema: TableSchema
+    :return: the findings
+    :rtype: list[str]
+    """
+    scratch = quote_identifier(f"tier_parity_{uuid.uuid7().hex}")
+    row = {
+        column.name: _sample(column)
+        for column in schema.columns
+        if column.column_type not in (TSVECTOR_TYPE, VECTOR_TYPE, ENUM_TYPE)
+    }
+    names = list(row)
+    await conn.execute(f"CREATE TEMP TABLE {scratch} (LIKE {quote_identifier(schema.name)} INCLUDING DEFAULTS)")
+    try:
+        columns = ", ".join(quote_identifier(column) for column in names)
+        placeholders = ", ".join(f"${index}" for index in range(1, len(names) + 1))
+        await conn.execute(f"INSERT INTO {scratch} ({columns}) VALUES ({placeholders})", *row.values())  # noqa: S608
+        got = await conn.fetchrow(f"SELECT {columns} FROM {scratch}")  # noqa: S608
+    finally:
+        await conn.execute(f"DROP TABLE IF EXISTS {scratch}")
+    return _row_findings(name, "L3", row, None if got is None else dict(got))
+
+
+async def live_tier_parity_findings(
+    conn: Any,
+    collections: Iterable[type[BaseCollection[Any]]],
+    *,
+    not_owned: Mapping[type[BaseCollection[Any]], Iterable[str]] | None = None,
+) -> list[str]:
+    """every difference between a collection's schema and its migrated Postgres table, and what L3 hands back.
+
+    For each class that declares a ``TableSchema``: the table of that name on ``conn``'s search
+    path is read from ``information_schema`` and held to the schema -- every column, its type, its
+    ``NUMERIC`` precision and scale, its nullability, whether it has a default -- and to its primary
+    key; then the sample row is written to a scratch copy of the table and read back, so asyncpg's
+    answer for each column is held to the value written. ``conn`` is set up as the host's pool sets
+    a connection up (:func:`~threetears.core.collections.init_connection`), so JSON is bound and
+    read as the collections do. A class with no schema is skipped. Run :func:`tier_parity_findings`
+    too: this holds L3, that holds the L1s and L2.
+
+    :param conn: an asyncpg connection (not a pool: the scratch table is the connection's own)
+        holding the collections' tables
+    :ptype conn: Any
+    :param collections: the collection classes
+    :ptype collections: Iterable[type[BaseCollection[Any]]]
+    :param not_owned: per class, the migrated columns it deliberately neither reads nor writes --
+        columns another writer owns, which the collection's generated reads never select, so no
+        tier of it holds them. Each must exist in the table and be absent from the schema.
+    :ptype not_owned: Mapping[type[BaseCollection[Any]], Iterable[str]] | None
+    :return: one line per difference, naming the collection, the column and the tier; empty when
+        the migrated tables are the schemas and L3 hands back what was written
+    :rtype: list[str]
+    """
+    findings: list[str] = []
+    for cls in collections:
+        schema = _schema_of(cls)
+        if schema is None:
+            continue
+        name = cls.__qualname__
+        live = [
+            dict(row)
+            for row in await conn.fetch(
+                "SELECT column_name, data_type, numeric_precision, numeric_scale, is_nullable, column_default "
+                "FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1",
+                schema.name,
+            )
+        ]
+        if not live:
+            findings.append(f"{name}: L3: no table {schema.name!r} on the connection's schema")
+            continue
+        pk_rows = await conn.fetch(
+            "SELECT k.column_name FROM information_schema.table_constraints c "
+            "JOIN information_schema.key_column_usage k ON k.constraint_name = c.constraint_name "
+            "AND k.table_schema = c.table_schema AND k.table_name = c.table_name "
+            "WHERE c.constraint_type = 'PRIMARY KEY' AND c.table_schema = current_schema() AND c.table_name = $1 "
+            "ORDER BY k.ordinal_position",
+            schema.name,
+        )
+        pk = tuple(str(r["column_name"]) for r in pk_rows)
+        others = frozenset((not_owned or {}).get(cls, ()))
+        findings.extend(_l3_column_findings(name, schema, live, pk, others))
+        findings.extend(await _l3_row_findings(name, conn, schema))
+    return findings

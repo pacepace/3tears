@@ -47,6 +47,7 @@ from threetears.core.collections import DeclaredTableCollection, init_connection
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.testing.tier_parity import live_tier_parity_findings
 
 from threetears.datasources.collections import (
     CapabilitySourceCollection,
@@ -672,6 +673,18 @@ async def test_every_table_column_is_owned_by_the_collection_or_listed_as_hub_ow
     assert table_columns, f"no columns found for {case.table}, so this check would pass vacuously"
     accounted = set(case.row()) | set(case.hub_owned) | _STAMPED
     assert accounted == table_columns
+
+
+async def test_every_tier_of_every_collection_is_its_migrated_table(store: _Store) -> None:
+    """the tier-parity gate, live: each table as migrated, its schema, and asyncpg's read of a row of it."""
+    async with store.pool.acquire() as conn:
+        findings = await live_tier_parity_findings(
+            conn,
+            [case.collection for case in _CASES],
+            # the hub writes these itself, and the collection's generated reads never select them
+            not_owned={CapabilitySourceCollection: _CAPABILITY_SOURCE_HUB_OWNED},
+        )
+    assert not findings, "\n".join(findings)
 
 
 @pytest.mark.parametrize(

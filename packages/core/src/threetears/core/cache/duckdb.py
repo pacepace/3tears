@@ -5,9 +5,8 @@ with type-aware serialization/deserialization. DuckDB is an optional dependency.
 
 An exact ``NUMERIC(p, s)`` column (``p`` at most 38, DuckDB's widest) is a DuckDB ``DECIMAL(p, s)``,
 which answers the ``Decimal`` L3 answers and still sums and compares as a number. One wider, or with
-no declared precision, has no exact DuckDB type: it is kept as a ``DOUBLE`` (code
-``DOUBLE_DECIMAL``, with ``_<scale>`` when declared), so analytics over it still run, and read back
-as a ``Decimal`` at its scale, exact for any value of at most 15 significant digits.
+no declared precision and scale, has no exact DuckDB type, and is refused when its table is created
+(:class:`~threetears.core.cache.base.UnsupportedL1ColumnError`): never kept as a binary float.
 """
 
 from __future__ import annotations
@@ -32,7 +31,7 @@ from sqlalchemy.sql.sqltypes import ARRAY
 from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
 
 from threetears.core.backends.schema_sql import PGVECTOR_TYPES, json_default
-from threetears.core.cache.base import build_select_clause, bulk_columns, decimal_scale_of, stored_decimal
+from threetears.core.cache.base import build_select_clause, bulk_columns, exact_decimal_type, stored_decimal
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import contain, get_logger
 
@@ -137,26 +136,18 @@ def fetch_arrow(result: Any, rows: int) -> Any:
 
 #: DuckDB's widest exact ``DECIMAL``
 _DUCKDB_MAX_DECIMAL_PRECISION = 38
-#: the type code of an exact ``NUMERIC`` too wide for a DuckDB ``DECIMAL``, before its ``_<scale>``
-_DOUBLE_DECIMAL_CODE = "DOUBLE_DECIMAL"
 
 
-def _decimal_code_scale(code: str) -> tuple[bool, int | None]:
-    """whether ``code`` is an exact ``NUMERIC`` column's code, and the scale it declares.
+def _decimal_code_scale(code: str) -> int | None:
+    """the scale an exact ``NUMERIC`` column's ``DECIMAL(p,s)`` code declares, or ``None`` for any other code.
 
     :param code: the type code (:meth:`DuckDBBackend.column_types`)
     :ptype code: str
-    :return: ``(True, scale)`` for a ``DECIMAL(p,s)`` or ``DOUBLE_DECIMAL`` code (``scale``
-        ``None`` when undeclared), ``(False, None)`` otherwise
-    :rtype: tuple[bool, int | None]
+    :return: the column's scale, or ``None``
+    :rtype: int | None
     """
-    result: tuple[bool, int | None] = (False, None)
-    if code.startswith("DECIMAL(") and code.endswith(")"):
-        result = (True, int(code[len("DECIMAL(") : -1].split(",")[1]))
-    elif code == _DOUBLE_DECIMAL_CODE or code.startswith(f"{_DOUBLE_DECIMAL_CODE}_"):
-        suffix = code[len(_DOUBLE_DECIMAL_CODE) + 1 :]
-        result = (True, int(suffix) if suffix else None)
-    return result
+    is_decimal = code.startswith("DECIMAL(") and code.endswith(")")
+    return int(code[len("DECIMAL(") : -1].split(",")[1]) if is_decimal else None
 
 
 def _ddl_type(code: str) -> str:
@@ -271,7 +262,13 @@ class DuckDBBackend:
         call opens the database, and every call creates the tables in ``sa_metadata`` this backend has
         not seen yet and leaves the others untouched, so a collection that declares its own table on a
         shared backend gets it whenever it is built.
+
+        :raises UnsupportedL1ColumnError: when a column is one this L1 cannot hold exactly
         """
+        # a column this L1 cannot hold exactly refuses the whole call before anything is created
+        for table in sa_metadata.tables.values():
+            for column in table.columns:
+                self._column_code(table.name, column)
         new_tables = 0
         with self._db_lock:
             if not self._initialized:
@@ -281,7 +278,7 @@ class DuckDBBackend:
                     log.debug(f"DuckDB table already registered, skipping: {table.name}")
                     continue
                 self._db.execute(self._generate_create_table(table))
-                self._schema_info[table.name] = {col.name: self._map_sqlalchemy_type(col.type) for col in table.columns}
+                self._schema_info[table.name] = {col.name: self._column_code(table.name, col) for col in table.columns}
                 new_tables += 1
                 log.debug(f"Created DuckDB table: {table.name}")
             if not self._initialized:
@@ -904,11 +901,10 @@ class DuckDBBackend:
             return None
 
         result: Any = value
-        is_decimal, scale = _decimal_code_scale(col_type)
+        scale = _decimal_code_scale(col_type)
 
-        if is_decimal and not isinstance(value, bool):
-            stored = stored_decimal(value, scale)
-            result = stored if col_type.startswith("DECIMAL(") else float(stored)
+        if scale is not None and not isinstance(value, bool):
+            result = stored_decimal(value, scale)
         elif isinstance(value, enum.Enum):
             result = value.value
         elif isinstance(value, dict):
@@ -934,8 +930,8 @@ class DuckDBBackend:
             return None
 
         result: Any = value
-        is_decimal, scale = _decimal_code_scale(col_type)
-        if is_decimal:
+        scale = _decimal_code_scale(col_type)
+        if scale is not None:
             result = stored_decimal(value, scale)
         elif col_type == "VARCHAR_UUID":
             result = uuid.UUID(value) if value else None
@@ -1011,7 +1007,7 @@ class DuckDBBackend:
 
         columns = []
         for column in table.columns:
-            col_type = self._map_sqlalchemy_type(column.type)
+            col_type = self._column_code(table.name, column)
             # Strip serialization hint suffix for DDL (VARCHAR_UUID -> VARCHAR, etc.)
             ddl_type = _ddl_type(col_type)
             nullable = ""
@@ -1029,6 +1025,27 @@ class DuckDBBackend:
         columns_sql = ", ".join(columns)
         return f"CREATE TABLE IF NOT EXISTS {quote_identifier(table.name)} ({columns_sql})"
 
+    def _column_code(self, table: str, column: Any) -> str:
+        """the type code a column of ``table`` is kept by, refusing one this L1 cannot hold exactly.
+
+        :param table: the table
+        :ptype table: str
+        :param column: the SQLAlchemy column
+        :ptype column: Any
+        :return: the type code
+        :rtype: str
+        :raises UnsupportedL1ColumnError: for an exact ``NUMERIC`` with no declared precision and
+            scale, or wider than 38 digits
+        """
+        exact = exact_decimal_type(
+            column.type,
+            table=table,
+            column=column.name,
+            max_precision=_DUCKDB_MAX_DECIMAL_PRECISION,
+            backend="DuckDB",
+        )
+        return self._map_sqlalchemy_type(column.type) if exact is None else f"DECIMAL({exact[0]},{exact[1]})"
+
     @staticmethod
     def _map_sqlalchemy_type(sa_type: Any) -> str:
         """Map SQLAlchemy type to DuckDB equivalent with serialization hints."""
@@ -1041,17 +1058,6 @@ class DuckDBBackend:
             return "VARCHAR_JSON"
         if isinstance(sa_type, Boolean):
             return "BOOLEAN"
-        is_decimal, scale = decimal_scale_of(sa_type)
-        precision = sa_type.precision if is_decimal else None
-        if (
-            is_decimal
-            and precision is not None
-            and scale is not None
-            and 0 <= scale <= precision <= _DUCKDB_MAX_DECIMAL_PRECISION
-        ):
-            return f"DECIMAL({precision},{scale})"
-        if is_decimal:
-            return _DOUBLE_DECIMAL_CODE if scale is None else f"{_DOUBLE_DECIMAL_CODE}_{scale}"
         if isinstance(sa_type, Float):
             return "DOUBLE"
         if isinstance(sa_type, Integer):

@@ -14,13 +14,19 @@ A host that hands its registry an L1 gives it to every collection the registry b
 to work around five gaps; each is closed here.
 
 **Fixed:** a `NUMERIC` column read back from the SQLite L1 as a `float`. The L1 kept it as `REAL`, so money
-read through L1 was a float and `Decimal * float` raised. An exact `NUMERIC` column is now kept as the text of
-its `Decimal` and read back as the `Decimal` L3 answers, rounded to the column's scale as Postgres rounds it
-(`1.5` in `NUMERIC(12, 4)` reads back as `Decimal("1.5000")`); one with no scale keeps every digit. A `Float`
-column stays a float, as Postgres and asyncpg keep it. The DuckDB L1 keeps a `NUMERIC(p, s)` of `p` at most 38
-as a native `DECIMAL(p, s)`, which answers the same `Decimal` and still sums as a number; a wider or
-unconstrained one stays a `DOUBLE` and reads back as a `Decimal`. In the SQLite L1 such a column compares as
-text in SQL run against L1 directly; every read through the backend is typed.
+read through L1 was a float and `Decimal * float` raised. An exact `NUMERIC(p, s)` column is now an `INTEGER`
+holding the value times `10**s` (`9.50` in `NUMERIC(12, 2)` is `950`), read back as the `Decimal` at scale `s`
+L3 answers, rounded as Postgres rounds. It is exact, and SQL run against L1 directly compares, sorts, takes
+`MIN`/`MAX` and sums it by value (a `SUM` is the scaled total; `deserialize_field` turns it back into the
+`Decimal`); an operand compared with it is scaled through `serialize_value` first. A `Float` column stays a
+float. The DuckDB L1 keeps `NUMERIC(p, s)` as a native `DECIMAL(p, s)`.
+
+**Changed:** an L1 refuses, when its table is created, a `NUMERIC` it cannot hold exactly: one with no declared
+precision and scale, or wider than 18 digits in SQLite (a 64-bit integer) or 38 in DuckDB. It raises
+`UnsupportedL1ColumnError` naming the table and column, and the collection when a `DeclaredTableCollection`
+creates the table. Nothing is kept as a binary float any more. A dynamic collection
+(`create_dynamic_collection`) with a `decimal` column, which declares no scale, is refused on a registry with an
+L1. A DuckDB L1 whose `NUMERIC(p, s)` columns were `DOUBLE` now answers `Decimal` for them.
 
 **Fixed:** `ScheduledJobCollection` and `JobFireCollection` wrote past `save_entity` and evicted nothing:
 `set_status`, `update_schedule`, `request_immediate_fire`, `claim_and_reschedule`, `create_dispatching`,
@@ -48,8 +54,22 @@ and its `table_name`; it creates its L1 table on the registry's L1 at constructi
 `columns_decided_by_store` (a declared column the write leaves out, or a `NOT NULL` default sent as `None`, is
 read back from L3 after the write); and `settle_stored_key(sent, stored, *, conn=None)`, called from a
 natural-key upsert's `save_to_store` with the key its `RETURNING` gave, evicts a row stored under another key
-and caches nothing under the key sent. `threetears.core.cache.base` adds `decimal_scale_of` and
-`stored_decimal`, which both L1 backends type `NUMERIC` columns by.
+and caches nothing under the key sent. `threetears.core.cache.base` adds `exact_decimal_type`,
+`stored_decimal` and `UnsupportedL1ColumnError`, which both L1 backends type and refuse `NUMERIC` columns by.
+
+**Added:** `threetears.core.testing.tier_parity`, a gate holding every tier of a collection's table to its
+`TableSchema`, for any host to run over its own collections. `tier_parity_findings(collections, *, build=None)`
+needs nothing live: it creates each schema's table on a fresh SQLite L1 and DuckDB L1, writes one row of
+exacting values (a `Decimal` at its column's full precision, negative; an aware instant to the microsecond; a
+UUID; nested JSON; a bool; bytes; an integer beyond a float's precision) and reads it back, and passes it
+through the collection's L2 codec. `live_tier_parity_findings(conn, collections, *, not_owned=None)` holds the
+migrated Postgres table to the schema (columns, type, precision and scale, nullability, default, primary key)
+and writes the row to a scratch copy of the table to hold asyncpg's read of it. Each names the collection,
+column and tier of every difference. `tests/enforcement/test_tier_parity.py` runs the first over all 33 3tears
+collections with a schema; the datasources live parity test runs the second. It caught
+`CapabilitySourceCollection`'s schema drifting from the hub's `datasources` table: `kind`, `access_mode` and
+`visibility` have server defaults and `allowed_schemas` is `NOT NULL DEFAULT '[]'`, none of which the schema
+declared; it now does, so a save that leaves one out reads the stored value back.
 
 ### agent-acl: a delegated agent call's namespaces are asked with the call's own credential
 
