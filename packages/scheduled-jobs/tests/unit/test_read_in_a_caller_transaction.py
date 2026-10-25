@@ -26,7 +26,8 @@ class _Reads:
 async def test_the_read_in_a_transaction_is_the_store_read_on_the_caller_s_connection(cls: type[Any]) -> None:
     pool, conn = _Reads(), _Reads()
     registry = CollectionRegistry()
-    registry.configure(l3_pool=pool)
+    l3_pool: Any = pool  # a recording stand-in for the pool's one read
+    registry.configure(l3_pool=l3_pool)
     collection = cls(
         registry=registry,
         config=DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""),
