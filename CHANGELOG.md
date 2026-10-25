@@ -42,9 +42,15 @@ A read back that raises is raised from the save, and the handle keeps its unsave
 **Added:** `BaseCollection.fetch_from_store_in_transaction(entity_id, *, conn)`, the extension point for that
 read. The default reads nothing and the handle keeps the row as sent, so a collection overriding
 `fetch_from_store` is unaffected. `SchemaBackedCollection` reads through its durable store's `fetch_one(conn=)`,
-unless a subclass overrides `fetch_from_store`, which must then override this too. `DeclaredTableCollection`
-subclasses, which each write their own `fetch_from_store`, keep the row as sent until they do.
-`CallerTransaction.restate` replaces the row an enrolled write carries.
+unless a subclass overrides `fetch_from_store`, which must then override this too. The datasources and
+scheduled-jobs `DeclaredTableCollection`s implement it with their own `fetch_from_store` SELECT, run on the
+caller's `conn`. `CallerTransaction.restate` replaces the row an enrolled write carries.
+
+**Added (enforcement):** the collection census records `transaction_read_gap`, and
+`find_transaction_read_gaps(census)` lists every class that overrides `fetch_from_store`, may leave columns
+to the database (inherits a `columns_decided_by_store` other than `BaseCollection`'s, which answers none),
+and has no `fetch_from_store_in_transaction` at or below it. 3tears gates its own packages on it; a product
+runs it over its census as it does `find_census_problems`.
 
 ### core: exact NUMERIC operands, immutable read-back, NaN-safe reads and answers, Decimal from L2 numbers
 
