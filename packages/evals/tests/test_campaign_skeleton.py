@@ -32,7 +32,6 @@ from threetears.evals.analysis.report.model import (
     TableBlock,
     TableCell,
 )
-from threetears.evals.analysis.report.svg import chart_svg
 
 from packages.evals.tests.report_shapes_support import SHAPES, Shape, s1_change, s3_measurement, s4_change
 
@@ -167,7 +166,7 @@ def test_a_cost_quality_chart_of_one_point_or_another_kind_s_marks_is_refused() 
             ChartBlock(section="scorecard", chart="cost_quality", title="t", points=two, **marks)
 
 
-def test_a_cost_quality_chart_is_drawn_one_dot_per_arm_with_its_figures_in_words() -> None:
+def test_a_cost_quality_chart_is_drawn_one_point_per_arm_with_its_figures_in_words() -> None:
     chart = ChartBlock(
         section="scorecard",
         chart="cost_quality",
@@ -175,10 +174,14 @@ def test_a_cost_quality_chart_is_drawn_one_dot_per_arm_with_its_figures_in_words
         unit="usd",
         points=[_point("alpha", 0.004, 85.0), _point("beta", 0.0008, 60.0)],
     )
-    svg = chart_svg(chart, chart_id="c1")
-    assert svg.count('<circle class="viz-dot"') == 2
-    assert ">alpha</text>" in svg and ">beta</text>" in svg
-    assert "alpha: $0.004 [$0.0036, $0.0044] per reply, pass rate 85% [80%, 90%]" in svg
+    drawn = chart.kit_chart()
+    assert drawn is not None
+    kind, data = drawn
+    assert kind == "scatter_frontier" and "frontier" not in data, "no frontier is tested, so none is drawn"
+    points = data["points"]
+    assert isinstance(points, list) and [point["label"] for point in points] == ["alpha", "beta"]  # type: ignore[index]
+    assert points[0]["tip"] == ["alpha", "$0.004 [$0.0036, $0.0044] per reply", "pass rate 85% [80%, 90%]"]  # type: ignore[index]
+    assert data["y_domain"] == [0, 100] and data["x_domain"][0] == 0, "no axis is cut to flatter a gap"  # type: ignore[index]
 
 
 def test_an_aspect_is_called_by_its_full_label_as_declared() -> None:

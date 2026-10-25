@@ -50,6 +50,7 @@ from packages.evals.tests.g2_support import CANDIDATE, PRODUCTION, answering
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.report_support import toy_report
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient
+from packages.evals.tests.page_contract_support import without_kit_script
 
 #: Production passes 30 of its 36 trials, the candidate 6: a contrast on accuracy the page tests and states.
 _CASES = [{"text": f"queue request {index}", "label": "queued"} for index in range(12)]
@@ -246,7 +247,7 @@ def _trace_links_land_in_sight(page: str) -> list[str]:
         assert parsed.held[href[1:]] <= shut, f"{href} lands inside a closed fold"
         if table in _TRACE_TABLES:
             targets.append(href[1:])
-    assert "<base" not in page
+    assert "<base" not in without_kit_script(page)
     return targets
 
 

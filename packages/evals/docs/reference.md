@@ -646,7 +646,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`read_judge_temperatures(answers: JudgeTemperatureAnswers) -> JudgeTemperatureComparison`
 - **`refuse_undeliverable_reporter_template`** · function · Refuse a reporter template that asks for apparatus a memo writer cannot honour, or gives its judge nothing to score.
   <br>`refuse_undeliverable_reporter_template(template: EvalTemplate) -> None`
-- **`report_html`** · *host contract* · function · Render a report as one standalone HTML page that needs no script.
+- **`report_html`** · *host contract* · function · Render a report as one standalone HTML page whose one script is the kit's.
   <br>`report_html(report: Report) -> str`
 - **`report_markdown`** · *host contract* · function · Render a report as Markdown.
   <br>`report_markdown(report: Report) -> str`
@@ -1179,7 +1179,7 @@ One of the charts a report draws, with every value it draws, so it prints as a t
 | `anchor` | `str \| None` | `None` | The id a link to this block names (`F1`, `case-3`, `T7`); None when none does. |
 | `fold` | `str \| None` | `None` | The closed fold the block sits in (`Evidence`, `Disclosures`); consecutive blocks naming one fold share it. None for a block shown open. |
 | `kind` | `Literal['chart']` | `'chart'` | Which kind of block this is. |
-| `chart` | `ChartKind` | required | `outcome_bar`, `interval_rows` or `cost_quality`. |
+| `chart` | `ChartKind` | required | Which chart: one of the report's own three, or one of the kit's kinds. |
 | `title` | `str` | required | What the chart shows. |
 | `bars` | `list[OutcomeBar]` | `[]` | An outcome bar's arms, one bar each. |
 | `rows` | `list[IntervalRow]` | `[]` | An interval chart's rows, in drawn order. |
@@ -1187,6 +1187,7 @@ One of the charts a report draws, with every value it draws, so it prints as a t
 | `unit` | `str` | `''` | The unit an interval chart's values, or a cost/quality chart's costs, are stated in; empty for none. |
 | `zero_line` | `bool` | `False` | Whether the chart draws a line at zero (a difference's). |
 | `margin` | `float \| None` | `None` | A margin band either side of zero, on the chart's ruler; None when none declared. |
+| `data` | `KitChart \| None` | `None` | A kit kind's chart data, as the kit's `data-chart` contract names it (kit/API.md); None for the report's own three kinds. |
 
 #### `DisclosureBlock`
 
@@ -1846,8 +1847,8 @@ options:
                         the host to work in
   --scope SCOPE         the scope to read and write in
   --format {markdown,json,html}
-                        markdown (default), html (one page, needs no script) or json (the bundle
-                        the report was computed from)
+                        markdown (default), html (one page, charts drawn by its inlined kit
+                        script) or json (the bundle the report was computed from)
   --trials {table,all}  table (default): each failed or lost trial's row and stored result; all:
                         each one's full record too
   --out DIR             write report.html, report.md and bundle.json into DIR instead of printing

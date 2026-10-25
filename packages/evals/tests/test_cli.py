@@ -60,6 +60,7 @@ from packages.evals.tests.fixtures.courierhost import (
 )
 from packages.evals.tests.test_package_matrix import REPO_ROOT
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.page_contract_support import what_runs
 
 COURIER_FACTORY = "packages.evals.tests.fixtures.courierhost:courier_launch_host"
 
@@ -172,7 +173,7 @@ def test_report_writes_the_page_its_markdown_and_its_bundle_to_out(
     assert run_cli(args, host_factory=lambda: host) == 0
 
     page = (out / "report.html").read_text(encoding="utf-8")
-    assert page.startswith("<!doctype html>") and 'data-basis="code_only"' in page and "<script" not in page.lower()
+    assert page.startswith("<!doctype html>") and 'data-basis="code_only"' in page and what_runs(page) == []
     assert (out / "report.md").read_text(encoding="utf-8").startswith(f"# {campaign.name}")
     (bundle,) = out.glob("bundle-*.json")
     assert AnalysisContextBundle.from_json(bundle.read_text(encoding="utf-8")).campaign_id == campaign.id

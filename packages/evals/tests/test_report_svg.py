@@ -1,15 +1,17 @@
-"""The report's marks: inline SVG with every value written as text, nothing that runs, and nothing drawn thin.
+"""The report's marks: the charts the kit draws from their data, and the interval glyph a table cell draws.
 
-- **Every mark's value is text.** An outcome bar writes each arm's count of every state, an interval row its value,
-  interval and cases, and an interval glyph sits in a row whose cells print its figures, so nothing is read off a
+- **Every value is text.** An outcome bar is the kit's stacked bars, each arm's census in its tooltip as words and
+  in the chart's table; an interval glyph sits in a row whose cells print its figures, so nothing is read off a
   length or a colour alone.
-- **Nothing runs and nothing is fetched.** No ``<script>``, no ``on*=`` attribute, no URL — not even a
-  ``url(#...)`` fill.
+- **Nothing runs and nothing is fetched.** A glyph has no ``<script>``, no ``on*=`` attribute, no URL — not even a
+  ``url(#...)`` fill; a chart is JSON the kit draws (``test_report_html_no_script``).
 - **A row needs its cases.** An arm with fewer than ``MIN_CASES`` usable cases has no interval drawn, and a contrast
   under the floor is no row at all; the methods say once what was not drawn.
 - **Light and dark.** The marks take their colours from the kit's tokens, which the kit defines for both; a glyph
-  is ink alone, its verdict the word beside it.
-- **A label is never cut.** An arm's label is the line above its bar, wrapped where it is long.
+  is ink alone, its verdict the word beside it; each outcome of an outcome bar is a colour of its own, the same on
+  every bar, named in the legend.
+- **A label is whole somewhere.** The kit cuts a label to its column; the whole label is the tooltip's first line
+  and the table's row.
 """
 
 from __future__ import annotations
@@ -19,7 +21,6 @@ from collections.abc import Mapping
 from importlib.resources import files
 from typing import Any, get_args
 
-import pytest
 
 from threetears.evals.analysis import (
     ChartBlock,
@@ -31,8 +32,7 @@ from threetears.evals.analysis import (
     report_html,
 )
 from threetears.evals.analysis.bundle.schema import FailCause
-from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg, interval_glyph_svg
-from threetears.evals.analysis.style import GLOSSARY
+from threetears.evals.analysis.report.svg import GLYPH_STYLE, interval_glyph_svg
 from threetears.evals import Eval
 
 
@@ -68,40 +68,50 @@ def _interval_chart() -> ChartBlock:
     )
 
 
-@pytest.mark.parametrize("block", [_bar_chart(), _interval_chart()], ids=["outcome_bar", "interval_rows"])
-def test_nothing_in_a_chart_runs_or_is_fetched(block: ChartBlock) -> None:
-    svg = chart_svg(block, chart_id="c1")
-    assert "<script" not in svg
-    assert not re.search(r"\son[a-z]+\s*=", svg)
-    assert "url(" not in svg and "http" not in svg and "href" not in svg
+def _drawn(block: ChartBlock) -> tuple[str, dict[str, Any]]:
+    drawn = block.kit_chart()
+    assert drawn is not None
+    return drawn
 
 
-def test_every_outcome_count_is_written_as_text() -> None:
-    svg = chart_svg(_bar_chart(), chart_id="c1")
-    texts = re.findall(r"<text[^>]*>(?:<title>.*?</title>)?([^<]*)</text>", svg)
-    written = " ".join(texts)
-    for count in ("passed 6", "failed: check 2", "lost: judge truncated 3", "lost: setup fault 1", "passed 12"):
-        assert count in written, count
-    assert "12 trials" in written
-    # Each mark says what it is, in its title too.
-    assert "<title>model=a (control): lost: judge truncated, 3 of the 12 trials it ran</title>" in svg
+def test_an_outcome_bar_is_the_kit_s_stacked_bars_with_every_count_in_it() -> None:
+    kind, data = _drawn(_bar_chart())
+    assert kind == "bars" and data["fmt"] == "int" and data["domain"] == [0, 12]
+    first, second = data["rows"]
+    assert [segment["value"] for segment in first["segments"]] == [6, 2, 3, 1]
+    assert first["label"] == "model=a (control)" and first["note"] == "12 trials"
+    # The census is in each row's tooltip as words, so no count is read off a length or a colour alone.
+    assert first["tip"] == [
+        "model=a (control)",
+        "12 trials",
+        "passed 6",
+        "failed: check 2",
+        "lost: judge truncated 3",
+        "lost: setup fault 1",
+    ]
+    assert second["segments"] == [{"value": 12, "color": "--s1"}]
 
 
-def test_an_interval_row_writes_its_value_interval_and_cases() -> None:
-    svg = chart_svg(_interval_chart(), chart_id="c1")
-    assert "0.25 [0.05, 0.45], n=8 cases, improved" in svg
-    assert 'class="viz-zero"' in svg and 'class="viz-band"' in svg
+def test_every_outcome_count_is_in_the_chart_s_table() -> None:
+    headers, rows = _bar_chart().values_table()
+    assert headers == ["Arm", "ran", "passed", "failed: check", "lost: judge truncated", "lost: setup fault"]
+    assert rows == [["model=a (control)", "12", "6", "2", "3", "1"], ["model=b", "12", "12", "0", "0", "0"]]
 
 
-def test_two_lost_causes_side_by_side_are_two_marks() -> None:
-    svg = chart_svg(_bar_chart(), chart_id="c1")
-    assert svg.count('class="viz-lost"') + svg.count('class="viz-lost viz-alt"') == 3  # two segments and the key
-    assert 'class="viz-lost viz-alt"' in svg
+def test_interval_rows_carry_no_level_so_they_read_as_their_table_alone() -> None:
+    """The kit never draws an interval without its level (GENERATOR.md §5.2), and interval rows name none."""
+    assert _interval_chart().kit_chart() is None
 
 
-def test_two_failure_causes_are_two_inks_of_one_hue_and_the_key_names_each() -> None:
-    """A failed check and the judge's fail are two segments in the one failed hue, told apart in ink alone, each the
-    same on every bar, and the key names each cause, so no third category reads as a state of its own."""
+def test_two_lost_causes_side_by_side_are_two_colours_and_neither_is_a_series() -> None:
+    _, data = _drawn(_bar_chart())
+    lost = [segment["color"] for segment in data["rows"][0]["segments"][2:]]
+    assert lost == ["--base", "--muted"]
+
+
+def test_each_failure_cause_has_a_colour_of_its_own_the_same_on_every_bar_and_the_legend_names_each() -> None:
+    """A failed check and the judge's fail are two segments in two colours, each the same on every bar whatever order
+    the bar lists them in, and the legend names each cause, in the order they first occur."""
     bars = [
         OutcomeBar(
             arm="v1",
@@ -120,50 +130,26 @@ def test_two_failure_causes_are_two_inks_of_one_hue_and_the_key_names_each() -> 
             ],
         ),
     ]
-    svg = chart_svg(ChartBlock(section="scoreboard", chart="outcome_bar", title="Outcomes", bars=bars), chart_id="c1")
-    inks = re.findall(r'<rect class="(viz-failed[^"]*)"[^>]*><title>(v\d): (failed: \w+),', svg)
-    assert sorted(set(inks)) == [
-        ("viz-failed", "v1", "failed: check"),
-        ("viz-failed", "v2", "failed: check"),
-        ("viz-failed viz-alt", "v1", "failed: judge"),
-        ("viz-failed viz-alt", "v2", "failed: judge"),
-    ]
-    key = svg[: svg.index("v1</text>")]
-    assert re.findall(r">(passed|failed: \w+|failed|lost)</text>", key) == ["passed", "failed: check", "failed: judge"]
-    assert _failure_hues() == {"--s2"}, "one hue, ink only"
+    _, data = _drawn(ChartBlock(section="scoreboard", chart="outcome_bar", title="Outcomes", bars=bars))
+    legend = {item["label"]: item["color"] for item in data["legend"]}
+    assert list(legend) == ["passed", "failed: check", "failed: judge"]
+    assert len(set(legend.values())) == 3
+    for bar, row in zip(bars, data["rows"], strict=True):
+        assert [segment["color"] for segment in row["segments"]] == [legend[s.label] for s in bar.segments]
 
 
-def test_each_failure_cause_has_a_style_of_its_own_in_ink_alone() -> None:
-    """Five failure causes exist (``FailCause``), so the bar has five styles: tone, edge weight and hatching, in the
-    one failed hue, and no cause's swatch in the key is another's."""
+def test_five_failure_causes_are_five_colours() -> None:
+    """Five failure causes exist (``FailCause``), so the bar has a colour for each, none of them passed's."""
     causes = ("check", "judge", "model failed", "turn budget", "output cap")
     assert len(causes) == len(get_args(FailCause))
     segments = [OutcomeSegment(state="failed", label=f"failed: {cause}", count=3) for cause in causes]
     block = ChartBlock(
         section="scoreboard", chart="outcome_bar", title="Outcomes", bars=[OutcomeBar(arm="v1", segments=segments)]
     )
-    svg = chart_svg(block, chart_id="c1")
-    swatch = re.compile(
-        r'<rect class="(viz-failed[^"]*)" x="(\d+)" y="(\d+)" width="12" height="12" rx="2"></rect>'
-        r'(?:<path class="viz-hatch" d="([^"]*)"></path>)?<text[^>]*>(failed: [^<]*)</text>'
-    )
-    styles = {}
-    for classes, x, y, hatch, label in swatch.findall(svg):
-        # The hatching as drawn inside the swatch's own box, so two swatches compare by their ink alone.
-        numbers = [float(n) for n in re.findall(r"[\d.]+", hatch)]
-        styles[label] = (classes, tuple(n - (int(x) if i % 2 == 0 else int(y)) for i, n in enumerate(numbers)))
-    assert list(styles) == [f"failed: {cause}" for cause in causes]
-    assert len(set(styles.values())) == len(causes), styles
-    for classes, _ in styles.values():
-        selector = "svg.viz ." + ".".join(classes.split())
-        assert classes == "viz-failed" or selector + " {" in SVG_STYLE, classes
-    assert _failure_hues() == {"--s2"} and "url(" not in svg, "one hue, ink only, nothing fetched"
-
-
-def _failure_hues() -> set[str]:
-    """Every colour token a failed segment's rules name, its tone, edge and hatching alike."""
-    rules = re.findall(r"svg\.viz \.viz-(?:failed|hatch)[^{]*\{([^}]*)\}", SVG_STYLE)
-    return set(re.findall(r"var\((--[\w-]+)\)", " ".join(rules)))
+    _, data = _drawn(block)
+    colours = [segment["color"] for segment in data["rows"][0]["segments"]]
+    assert "--s1" not in colours
+    assert len(set(colours[:4])) == 4, "the first four causes each a colour of their own"
 
 
 def _kit_roots() -> list[str]:
@@ -173,18 +159,16 @@ def _kit_roots() -> list[str]:
 
 
 def test_the_marks_are_coloured_by_kit_tokens_set_for_light_and_dark() -> None:
-    """The chart stylesheet defines no colour of its own: every token it names is one the kit sets in its light
-    block and in both dark ones, so a chart follows the page's theme, a host's ``data-theme`` included."""
-    assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", SVG_STYLE), "a colour of the chart's own"
+    """Neither the glyph's stylesheet nor an outcome bar names a colour of its own: every token is one the kit sets in
+    its light block and in both dark ones, so a chart follows the page's theme, a host's ``data-theme`` included."""
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", GLYPH_STYLE), "a colour of the glyph's own"
     roots = _kit_roots()
     assert len(roots) == 3
-    used = set(re.findall(r"var\((--[\w-]+)\)", SVG_STYLE)) - {"--f-body"}
+    _, data = _drawn(_bar_chart())
+    used = set(re.findall(r"var\((--[\w-]+)\)", GLYPH_STYLE)) | {item["color"] for item in data["legend"]}
     assert {"--s1", "--s2", "--base", "--ink"} <= used
     for variable in used:
         assert all(f"{variable}:" in root for root in roots), variable
-    assert "svg.viz .viz-passed { fill: var(--s1); }" in SVG_STYLE
-    svg = chart_svg(_bar_chart(), chart_id="c1")
-    assert "#" not in re.sub(r'id="[^"]*"|aria-labelledby="[^"]*"', "", svg).replace("&#x27;", ""), "no colour inline"
 
 
 def test_a_row_under_the_case_floor_cannot_be_built_into_a_page_but_a_chart_names_its_values() -> None:
@@ -213,7 +197,7 @@ async def test_a_campaign_with_enough_cases_draws_its_contrast_s_interval_in_the
     (table,) = [b for b in comparison.report.blocks if isinstance(b, TableBlock) and b.name == "comparisons"]
     assert table.rows and all(row["change"].low is not None and row["change"].zero_line for row in table.rows)
     page = report_html(comparison.report)
-    assert page.count('<svg class="viz"') == 1 and 'class="visually-hidden"' in page
+    assert page.count('data-kind="bars"') == 1 and page.count('class="tbl chart-values"') == 1
     assert page.count('<svg class="viz-glyph"') == len(table.rows)
     # The scale's ends are written once under the table, not in every row.
     assert page.count('<p class="axis">Change drawn from ') == 1
@@ -227,8 +211,8 @@ def test_a_glyph_is_ink_on_one_scale_with_its_numbers_in_its_title() -> None:
         assert f'class="{mark}"' in svg, mark
     assert "<script" not in svg and "url(" not in svg and "#" not in svg and "href" not in svg
     # Ink alone: the point and the whisker take the page's ink, never a series colour.
-    assert "svg.viz-glyph .viz-point { fill: var(--ink); }" in SVG_STYLE
-    assert "svg.viz-glyph .viz-whisker { stroke: var(--ink)" in SVG_STYLE
+    assert "svg.viz-glyph .viz-point { fill: var(--ink); }" in GLYPH_STYLE
+    assert "svg.viz-glyph .viz-whisker { stroke: var(--ink)" in GLYPH_STYLE
 
 
 def test_a_glyph_off_zero_draws_no_zero_line_and_no_band() -> None:
@@ -237,21 +221,20 @@ def test_a_glyph_off_zero_draws_no_zero_line_and_no_band() -> None:
     assert "<title>0.92 s, interval [0.85, 0.99] s</title>" in svg
 
 
-def test_the_key_names_only_the_states_that_occur_and_defines_lost_on_hover() -> None:
-    svg = chart_svg(_bar_chart(), chart_id="c1")
-    assert f"<title>{GLOSSARY['lost']}</title>" in svg and ">lost</text>" in svg
-    assert "lost to the test setup" not in svg
+def test_the_legend_names_only_the_states_that_occur() -> None:
     clean = ChartBlock(
         section="scoreboard",
         chart="outcome_bar",
         title="t",
         bars=[OutcomeBar(arm="a", segments=[OutcomeSegment(state="passed", label="passed", count=3)])],
     )
-    svg = chart_svg(clean, chart_id="c2")
-    assert ">passed</text>" in svg and ">failed</text>" not in svg and ">lost</text>" not in svg
+    _, data = _drawn(clean)
+    assert [item["label"] for item in data["legend"]] == ["passed"]
 
 
-def test_a_long_arm_label_is_wrapped_above_its_bar_never_cut() -> None:
+def test_a_long_arm_label_is_whole_in_its_tooltip_and_its_table() -> None:
+    """The kit fits a label to its column and cuts it there with an ellipsis; the whole label is the tooltip's first
+    line and the table's row."""
     label = "the cheaper candidate with a label long enough that a column of its own would have cut it short"
     block = ChartBlock(
         section="scoreboard",
@@ -259,13 +242,9 @@ def test_a_long_arm_label_is_wrapped_above_its_bar_never_cut() -> None:
         title="t",
         bars=[OutcomeBar(arm=label, segments=[OutcomeSegment(state="passed", label="passed", count=3)])],
     )
-    svg = chart_svg(block, chart_id="c1")
-    texts = re.findall(r"<text[^>]*>(?:<title>.*?</title>)?([^<]*)</text>", svg)
-    assert "…" not in svg and " ".join(texts).count(label) == 1
-    # The bar itself, not the key's swatch: it starts at the chart's left edge, under the label's line.
-    (bar_y,) = re.findall(r'<rect class="viz-passed" x="8\.0" y="(\d+)" width="[\d.]+" height="16"', svg)
-    (label_y,) = re.findall(r'<text x="8.0" y="([\d.]+)">the cheaper', svg)
-    assert float(label_y) < float(bar_y), "the label is the line above the bar"
+    _, data = _drawn(block)
+    assert data["rows"][0]["label"] == label and data["rows"][0]["tip"][0] == label
+    assert block.values_table()[1][0][0] == label
 
 
 async def test_an_arm_under_the_case_floor_is_not_charted_and_the_caveat_says_so_once() -> None:
@@ -274,7 +253,7 @@ async def test_an_arm_under_the_case_floor_is_not_charted_and_the_caveat_says_so
     charts = [block for block in comparison.report.blocks if isinstance(block, ChartBlock)]
     assert [block.chart for block in charts] == ["outcome_bar"]
     page = report_html(comparison.report)
-    assert page.count("<svg") == 1
+    assert page.count('data-kind="') == 1 and "<svg" not in page
     # Under the floor on every arm, the one caveat under the scoreboard says so, and no "not charted" line repeats it.
     assert page.count(f"Under {MIN_CASES} independent cases a rate is shown as a count") == 1
     assert "Not charted" not in page

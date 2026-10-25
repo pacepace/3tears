@@ -1,15 +1,22 @@
-"""The report as one self-contained HTML page that needs no script.
+"""The report as one self-contained HTML page whose one script is the eval report kit's own.
 
 **Nothing an author or a model wrote can make the page run or load anything.** Every text node is escaped, so no
-field can open a ``<script>``, a ``<link>``, an event-handler attribute or a ``javascript:`` URL; the page has no
-``<script>`` of its own either. The one thing it loads is the package's own: the kit's fonts (IBM Plex Sans, Sans
-Condensed and Mono), two preconnects and one stylesheet link to the Google Fonts hosts, written by this module and
-never from a field, the same three links the kit's reference memos carry. Where a host's policy blocks those hosts
-the page reads the same in the system faces the kit names after each Plex face. Every other link is a ``#`` link to a
-place on the page itself. Drill-down is ``<details>``; moving between the screens is ``#`` anchors. The outcome bar
-is inline SVG (:mod:`~threetears.evals.analysis.report.svg`) beside a visually hidden table of the values it draws,
-and a table cell carrying an interval draws it as a small glyph beside its number, on one scale for the column, so a
-screen reader and a page with styles off lose nothing: every figure a glyph draws is in the row's text.
+field can open a ``<script>``, a ``<link>``, an event-handler attribute or a ``javascript:`` URL. The page carries
+exactly one script, written by this module and never from a field: the kit's ``kit.js``, shipped beside this module
+as package data, inlined verbatim as the last element of the body. It draws each chart from its data, and a chart's
+data reaches the page only as JSON escaped into its ``data-chart`` attribute, every string in it text the kit sets as
+text. The one thing the page loads is the package's own too: the kit's fonts (IBM Plex Sans, Sans Condensed and
+Mono), two preconnects and one stylesheet link to the Google Fonts hosts, the same three links the kit's reference
+memos carry. Where a host's policy blocks those hosts the page reads the same in the system faces the kit names after
+each Plex face. Every other link is a ``#`` link to a place on the page itself. Drill-down is ``<details>``; moving
+between the screens is ``#`` anchors; neither needs the script.
+
+**A chart reads without its picture.** Each chart is the kit's ``.fig``: its title, a ``div.chart`` the kit draws at
+its real width, and a table of every value it draws. While the chart is drawn the table is visually hidden, for a
+screen reader; where no script ran, the kit refused the data, or the kit has no kind for the chart (interval rows,
+which name no interval level), the table is what the figure shows. A table cell carrying an interval draws it as a
+small inline SVG glyph beside its number, on one scale for the column, so a page with styles off loses nothing: every
+figure a glyph draws is in the row's text.
 
 **The first screen is the page's ``<header>``**: the title (the campaign's name) first, nothing above it; the
 declared question quoted whole on its own line where there is one, then the arms line; the arms line alone (line 2)
@@ -41,6 +48,7 @@ and ``code`` — over text escaped first, so nothing an author wrote can become 
 from __future__ import annotations
 
 import html
+import json
 import re
 from dataclasses import dataclass
 from importlib.resources import files
@@ -63,7 +71,7 @@ from threetears.evals.analysis.report.blocks import (
     fold_anchor,
 )
 from threetears.evals.analysis.report.serialize_md import RESOLUTION_WORDS, SUMMARY_LEADS, trial_summary
-from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg, interval_glyph_svg
+from threetears.evals.analysis.report.svg import GLYPH_STYLE, interval_glyph_svg
 from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.schema.logs import contain, get_logger
@@ -77,6 +85,11 @@ log = get_logger(__name__)
 #: The kit's stylesheet, read once from the package: tokens for light and dark, type, the page and prose columns,
 #: tables, pills and the flag (``kit/kit.css``, the kit's documentation copy byte for byte).
 _KIT_CSS = files("threetears.evals.analysis.report").joinpath("kit", "kit.css").read_text(encoding="utf-8")
+
+#: The kit's script, read once from the package (``kit/kit.js``, the kit's documentation copy byte for byte): it draws
+#: every ``div.chart`` from the JSON in its ``data-chart`` at the chart's real width. The page carries it verbatim as its
+#: one script, at the end of the body, and nothing else that runs.
+_KIT_JS = files("threetears.evals.analysis.report").joinpath("kit", "kit.js").read_text(encoding="utf-8")
 
 #: The kit's fonts, as the reference memos load them: a preconnect to each Google Fonts host, then the one stylesheet
 #: naming the three Plex faces. Written here and only here: no field of a report reaches the page's head.
@@ -151,6 +164,9 @@ td:target, tr:target > td { background: var(--accent-wash); }
 figure { margin: 0; }
 .fig figcaption { font-family: var(--f-display); font-size: var(--t-base); font-weight: 600; margin-bottom: .5rem; }
 .fig .tbl { border: 0; border-radius: 0; background: none; }
+.chart-values caption { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.chart:not(:empty) + .chart-values { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .finding { font-family: var(--f-display); font-size: var(--t-md); margin-top: .75rem; }
 .finding strong { font-weight: 600; }
 [data-role] > p + p, [data-role] > p + ul, [data-role] > ul + p { margin-top: .6rem; }
@@ -174,7 +190,6 @@ details.trial dd { margin: .15rem 0 0; }
   nav { display: none; }
   .tbl { overflow: visible; }
   th { position: static; }
-  svg.viz { min-width: 0; }
   details.trial, .tbl, figure { break-inside: avoid; }
 }
 """
@@ -205,7 +220,7 @@ _PROSE_CELL = 40
 
 
 def report_html(report: Report) -> str:
-    """Render a report as one standalone HTML page that needs no script.
+    """Render a report as one standalone HTML page whose one script is the kit's.
 
     :param report: The report.
     :ptype report: Report
@@ -232,12 +247,12 @@ def report_html(report: Report) -> str:
     )
     parts += _sections(report, present)
     parts += _glossary(report.terms)
-    parts += ["</article>", "</div>", "</body>", "</html>"]
+    parts += ["</article>", "</div>", f"<script>{_KIT_JS}</script>", "</body>", "</html>"]
     return _links_in_sight("\n".join(parts) + "\n")
 
 
 def campaign_report_html(report: CampaignReport) -> str:
-    """Render a campaign's page as one standalone HTML page that needs no script.
+    """Render a campaign's page as one standalone HTML page whose one script is the kit's.
 
     The first screen is the page's ``<header>``: the title first, then the rest of the first screen in order (the
     question, the answer, what warns, set apart but never announced over the title). The sections the page reads
@@ -281,7 +296,7 @@ def campaign_report_html(report: CampaignReport) -> str:
     for section in after:
         parts += _campaign_section(report, section)
     parts += _glossary(report.terms)
-    parts += ["</article>", "</div>", "</body>", "</html>"]
+    parts += ["</article>", "</div>", f"<script>{_KIT_JS}</script>", "</body>", "</html>"]
     return _links_in_sight("\n".join(parts) + "\n")
 
 
@@ -296,7 +311,7 @@ def _head(title: str) -> list[str]:
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         f"<title>{_escape(_one_line(title))}</title>",
         _FONT_LINKS,
-        f"<style>{_KIT_CSS}{_PAGE_STYLE}{SVG_STYLE}</style>",
+        f"<style>{_KIT_CSS}{_PAGE_STYLE}{GLYPH_STYLE}</style>",
         "</head>",
     ]
 
@@ -696,19 +711,28 @@ def _column_class(block: TableBlock, key: str) -> str:
 
 
 def _chart(block: ChartBlock, chart_id: str) -> str:
-    """A chart as the kit's ``.fig``: its title, the SVG, and a visually hidden table of every value it draws.
+    """A chart as the kit's ``.fig``: its title, the chart the kit draws, and a table of every value it draws.
 
-    The SVG keeps a floor width so its words stay legible on a phone; below it the chart scrolls inside its own frame,
-    as a wide table does, and the page never scrolls sideways."""
+    The chart is a ``div.chart`` whose ``data-chart`` is its JSON, escaped into the attribute: the kit's script draws
+    it at the chart's real width, every string in it as text. The table follows it. While the kit has drawn the chart
+    the table is visually hidden, read by a screen reader; where the chart is empty (no script ran, or the kit refused
+    the data) or there is no chart to draw, the table is the figure, in its own scrolling frame."""
     headers, rows = block.values_table()
     head = "".join(f'<th scope="col">{_escape(header)}</th>' for header in headers)
     body = "".join("<tr>" + "".join(f"<td>{_escape(cell)}</td>" for cell in row) + "</tr>" for row in rows)
+    drawn = block.kit_chart()
+    chart = ""
+    if drawn is not None:
+        kind, data = drawn
+        chart = (
+            f'<div class="chart" id="{_escape(chart_id)}" data-kind="{_escape(kind)}" '
+            f'data-chart="{_escape(json.dumps(data, separators=(",", ":"), allow_nan=False))}"></div>'
+        )
     return (
-        f'<figure class="fig" data-chart="{_escape(block.chart)}">'
-        f"<figcaption>{_escape(block.title)}</figcaption>"
-        f'<div class="chart tbl">{chart_svg(block, chart_id=chart_id)}</div>'
-        f'<table class="visually-hidden"><caption>{_escape(block.title)}</caption><thead><tr>{head}</tr></thead>'
-        f"<tbody>{body}</tbody></table></figure>"
+        f'<figure class="fig" data-figure="{_escape(block.chart)}">'
+        f"<figcaption>{_escape(block.title)}</figcaption>{chart}"
+        f'<div class="tbl chart-values"><table><caption>{_escape(block.title)}</caption><thead><tr>{head}</tr></thead>'
+        f"<tbody>{body}</tbody></table></div></figure>"
     )
 
 
@@ -914,7 +938,7 @@ def _links_in_sight(page: str) -> str:
     reader has not opened holds it, else the nearest place around it outside every such fold — a closed section's own
     ``<section>``, a closed table's own ``<details>``, an aspect's fold's ``<section>`` — whose heading every browser
     shows. No link may land inside a closed ``<details>``: a browser that does not open it on its own would leave the
-    reader where they were, and the page runs no script to open it. A trial id naming a trial the page does not hold
+    reader where they were, and nothing on the page opens it. A trial id naming a trial the page does not hold
     is not linked.
 
     The links are the parser's own, rewritten where it found them, so nothing else has to agree with it on what a link

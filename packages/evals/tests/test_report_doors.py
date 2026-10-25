@@ -32,7 +32,7 @@ from threetears.evals.ops import report_read
 from threetears.evals import Eval, Result
 from threetears.evals.quick import run_cli
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.page_contract_support import FONT_LINKS, font_links, without_font_links
+from packages.evals.tests.page_contract_support import FONT_LINKS, font_links, without_font_links, without_kit_script
 
 #: The instant every door's report is assembled at, so their pages can be compared byte for byte.
 NOW = "2026-10-14T09:00:00+00:00"
@@ -101,11 +101,13 @@ async def test_write_puts_one_self_contained_page_its_markdown_and_its_bundle_in
         f"bundle:{aspect.aspect}": f"bundle-{fold_id}.json",
     }
     page = files["html"].read_text(encoding="utf-8")
-    # The page reaches nothing outside itself but the kit's fonts: the package's three font links in its head, to the
-    # Google Fonts hosts. With those taken out, the rest of the page loads nothing and links only within itself.
+    # The page reaches nothing outside itself but the kit's fonts, the package's three font links in its head, to the
+    # Google Fonts hosts, and runs nothing but the kit's script. With those taken out, the rest of the page loads
+    # nothing, runs nothing and links only within itself.
     assert font_links(page) == list(FONT_LINKS)
-    rest = without_font_links(page)
-    assert rest != page, "the font links are in the head, verbatim"
+    rest = without_kit_script(without_font_links(page))
+    assert without_font_links(page) != page, "the font links are in the head, verbatim"
+    assert without_kit_script(page) != page, "the kit's script is on the page, verbatim"
     assert not re.search(r"<(script|link|img|iframe|object|embed|video|audio|source)\b", rest, re.I)
     assert not re.search(r"<[^>]*\s(on[a-z]+|src|srcset|action|formaction)\s*=", rest, re.I), "no handler, no fetch"
     hrefs = re.findall(r"<[^>]*\shref\s*=\s*\"([^\"]*)\"", rest, re.I)

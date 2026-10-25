@@ -1111,7 +1111,7 @@ def report_read(
     :ptype campaign_id: str
     :param scope_id: The scope it lives in.
     :ptype scope_id: str
-    :param format: ``markdown``, ``html`` (one page that needs no script) or ``json`` (the page's machine form: code's
+    :param format: ``markdown``, ``html`` (one page, its charts drawn by the kit's inlined script) or ``json`` (the page's machine form: code's
         readings across the campaign's aspects, the recommendation, the call, and each aspect's bundle by its
         fingerprint, as ``campaign.json`` beside a written page holds it).
     :ptype format: ReportFormat

@@ -66,6 +66,7 @@ from packages.evals.tests.ops_support import (
     settled,
 )
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.page_contract_support import what_runs
 
 
 def _launch(*models: str) -> LaunchArguments:
@@ -231,7 +232,7 @@ async def test_a_generation_is_a_job_polled_to_the_analysis_it_stored() -> None:
     assert markdown.body.startswith(f'# {fixture.campaign.name}\n"{asked}"\n')
     assert "**Recommended:**" in markdown.body and line.findings >= 1
     html = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="html")
-    assert "<script" not in html.body.lower()
+    assert what_runs(html.body) == [], "the page runs the kit's script and nothing else"
     canonical = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="json")
     document = json.loads(canonical.body)
     assert (document["kind"], document["campaign_id"], document["analysis_id"]) == (

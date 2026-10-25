@@ -256,7 +256,8 @@ class Report(EvalDocumentModel):
     def write(self, out_dir: Path | str) -> dict[ReportFile, Path]:
         """Write the report as one self-contained page, its Markdown, and the bundle it was computed from.
 
-        ``report.html`` needs nothing beside it — no script, no stylesheet file, no image; it loads the kit's fonts
+        ``report.html`` needs nothing beside it — no script file, no stylesheet file, no image; its one script, the kit's
+        chart drawing, is inlined in it; it loads the kit's fonts
         from Google Fonts where it can reach them and reads the same in the system's faces where it cannot — and
         ``bundle.json`` is the bundle with its ``schema_version``, so the fingerprint the page names is the one a reader
         computes from the file (``AnalysisContextBundle.from_json(...).fingerprint(like=named)``, in the named one's version: an

@@ -61,7 +61,7 @@ def test_every_prose_block_carries_a_readable_line_length_cap(page: str) -> None
 def test_tables_and_figures_keep_the_pages_width(page: str) -> None:
     rules = _rules(page)
 
-    for selector in ("table", ".tbl", "figure", ".fig", "th, td", "th", "td", "svg.viz"):
+    for selector in ("table", ".tbl", "figure", ".fig", "th, td", "th", "td", ".chart"):
         assert "max-width" not in rules.get(selector, {}), f"{selector} is narrowed like prose"
     assert rules[".page"]["max-width"] == "var(--wide)", "the page itself is bounded"
     (root,) = [declared for selector, declared in rules.items() if selector.endswith(":root")]
