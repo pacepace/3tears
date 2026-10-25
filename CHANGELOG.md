@@ -19,8 +19,7 @@ and the page says it), keeps "Never discount a reading for when its runs ran", s
 `to_settle` with its kind, `never` calling for a change to the candidate, not more cases. Rule 9 raises a flagged
 `control_floor` first, as a validity finding, and names an aspect by its `short_name`. The prompt stays within its
 budget (24,299 of 24,300 characters, 13 rules); the rule ledger (`analysis/GEN_PROMPT_RULES.md`) names the words
-each added clause replaces. The recorded writer fixture is stale until it is re-recorded. See
-`packages/evals/MIGRATIONS.toml`.
+each added clause replaces. See `packages/evals/MIGRATIONS.toml`.
 
 ### evals: the writer's view hands each fact once, at the altitude the memo claims it, spelled as the page spells it
 
@@ -47,8 +46,7 @@ never `production_replicating_cost`). A change, every interval in points, a floo
 a comparison's half-widths read to the one decimal the page prints (a change of `53.33` is `53.3`); a projected cost
 to two figures. What a comparison's between-case share means is defined once, in a top-level `precision_means`,
 and each `precision` no longer carries `means`. No reading, identity, digest or fingerprint moves, and a campaign bundle frozen at shape 2 renders the
-same view as the one it was frozen from. The recorded writer fixture (`tests/fixtures/generate_analysis/recordings/`)
-is stale until it is re-recorded over the new view. See `packages/evals/MIGRATIONS.toml`.
+same view as the one it was frozen from. See `packages/evals/MIGRATIONS.toml`.
 
 ### evals: an aspect and a goal check may declare the name a page prints for them
 
