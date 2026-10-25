@@ -55,7 +55,7 @@ a choice with no clear winner open on what they found too. A page with no memo h
 recommendation goes that none was written (a measurement, which recommends nothing, says nothing there).
 
 What warns is one bold line per arm and kind, under the answer and never above the title (in HTML each a
-`<p class="warning">`, never announced with `role="alert"`), saying what it means for the arm (`Adopting v2
+`<p class="flag warning">`, never announced with `role="alert"`), saying what it means for the arm (`Adopting v2
 overrides the 10-point floor it breaks on billing.`) and naming the aspects, never a rate, an expression or an
 interval: the tables print those. Where the memo recommends an arm over a bar it misses or a floor it breaks, the
 writer's why follows that line at once. A warning only warns: nothing on the page picks an arm, and the bars and
@@ -240,7 +240,7 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   never "no difference". A guardrail an arm is not shown safe on is the second sentence: `Not yet shown safe: v2 on
   no invented total.` No floor writes this line.
 - **A broken floor**, where one is: one bold line per candidate under the verdict, never above the title (in HTML a
-  `<p class="warning">`, never `role="alert"`): `Adopting v2 overrides the 5-point floor it breaks on routing.` The
+  `<p class="flag warning">`, never `role="alert"`): `Adopting v2 overrides the 5-point floor it breaks on routing.` The
   rate that broke it and its interval are the Floors section's. A floor warns and never decides: the verdict above
   it still says what the contrasts came to.
 - **A report-wide caveat**, where one holds, once: criteria set after their readings were visible, results with no
@@ -389,8 +389,11 @@ dark alike.
 ### Embedding the page in a host
 
 Serve the directory `write` produces as static files; or keep a route that returns `report_read(format="html")`
-with a strict content security policy (`default-src 'none'; style-src 'unsafe-inline'` holds: the page has no
-script and inline SVG needs no `img-src`); or show that route in an `<iframe sandbox>` with no `allow-scripts`,
+with a strict content security policy: `default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com;
+font-src https://fonts.gstatic.com` holds, since the page has no script, inline SVG needs no `img-src`, and the only
+things it loads are the kit's fonts from the Google Fonts hosts. The stricter `default-src 'none'; style-src
+'unsafe-inline'` also works: the browser blocks the fonts (and logs each block), and the page reads the same in the
+system faces the stylesheet falls back to. Or show that route in an `<iframe sandbox>` with no `allow-scripts`,
 changing the host's own `frame-ancestors` to `'self'`. Linking to the route needs no change at all.
 
 `Report.basis` says whether an analysis wrote the memo (`analysis`) or none did (`code_only`); `report.verdicts`

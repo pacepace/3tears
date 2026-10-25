@@ -87,11 +87,12 @@ _FONT_LINKS = (
     '&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap">'
 )
 
-#: The page's own structures the kit has no class for, from the kit's tokens alone (no colour, face or measure of its
-#: own): the first screen, the sticky section links, the folds and their summaries, a table's title and its numeric,
-#: prose and glyph columns, a chart's frame, the verdict line's tone, a trial's record and the code-written lines. A
-#: column header keeps the case it was declared in, since a header can be an arm's name or a check's expression. Prose
-#: is held to a measure in characters near the kit's 44rem column, so a smaller line keeps a readable length too.
+#: The page's own structures the kit has no class for, from the kit's tokens (no colour or face of its own): the first
+#: screen, the sticky section links, the folds and their summaries, a table's title and its numeric, prose and glyph
+#: columns, a chart's frame, the verdict line's tone, a trial's record and the code-written lines. A column header
+#: keeps the case it was declared in, since a header can be an arm's name or a check's expression. The one measure of
+#: its own is prose's 78ch cap: the page's measure test caps a line in characters, and 78ch at the body size is about
+#: the kit's 44rem column, so prose set smaller still keeps a readable length.
 _PAGE_STYLE = """
 html { scroll-padding-top: 3.5rem; }
 p, li, .disclosure, .caveat { max-width: 78ch; }

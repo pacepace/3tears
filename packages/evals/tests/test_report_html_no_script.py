@@ -11,16 +11,29 @@ Read by parsing the page, not by searching its text: an element is a ``<script>`
 and a string that merely contains the word does not count either way. Checked on the toy host's real report and on
 a report whose author wrote markup into every field a model fills — a script, a handler, a ``javascript:`` link, an
 iframe, a stylesheet link to another host and a copy of the package's own font link — the case the property exists
-for, since a page that loads only its own fonts while its prose is polite does not keep it. The charts are inline
-SVG the package draws, and are held to the same rules.
+for, since a page that loads only its own fonts while its prose is polite does not keep it. A campaign's page is held
+to the same case: its campaign name, arm labels, aspect labels, fold lines, memo and folded pages all carry the
+markup, since it lays out each aspect's page again and rewrites the ids and links in it. The charts are inline SVG
+the package draws, and are held to the same rules.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from threetears.evals.analysis import report_html
+from threetears.evals.analysis import (
+    CampaignReport,
+    build_campaign_report,
+    build_code_only_report,
+    campaign_readings,
+    campaign_report_html,
+    report_html,
+)
 from threetears.evals.analysis.report import Report
+from threetears.evals.kernel.authored import AspectSummary, AuthoredCampaignAnalysis, NextStep
+from threetears.evals.kernel.declaration import CampaignArm
+from packages.evals.tests.campaign_page_support import campaign_fixture, two_aspect_memo
+from packages.evals.tests.campaign_support import ASSEMBLED_AT
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.page_contract_support import FONT_LINK_MARKUP, FONT_LINKS, font_links, parsed, what_runs
 from packages.evals.tests.report_support import toy_report
@@ -126,6 +139,86 @@ def _hostile_report() -> Report:
     return Report.model_validate(fields)
 
 
+#: What an author might write where a page prints a label or a line: the hostile markup above, an ``onerror`` and a
+#: ``javascript:`` URL in an attribute that tries to break out of its quotes, and an element claiming one of the
+#: page's own ids.
+_HOSTILE_LINE = (
+    _HOSTILE + '"><img src=x onerror="alert(4)"><a id="glossary" href="javascript:alert(5)">x</a>'
+    '<section id="aspect-billing">'
+)
+
+
+#: An aspect label carrying markup. A label never holds a ``/``, so this one has no closing tag: a handler, an
+#: element that loads, a ``javascript:`` link and an id the page already holds, all in opening tags.
+_HOSTILE_ASPECT = '<img src=x onerror="alert(6)"><svg onload="alert(7)"><a id="glossary" href="javascript:alert(8)">'
+
+
+def _hostile_memo(control: str) -> AuthoredCampaignAnalysis:
+    """The two-aspect memo with markup in every field its writer fills, recommending ``control``."""
+    memo = two_aspect_memo()
+    finding = memo.findings[0].model_copy(update={"title": _HOSTILE_LINE, "body": f"- {_HOSTILE_LINE}\n- **bold**"})
+    recommended = memo.recommended()
+    assert recommended is not None
+    return memo.model_copy(
+        update={
+            "findings": [finding],
+            "recommendation": [recommended.model_copy(update={"arm": control, "reasons": [_HOSTILE_LINE]})],
+            "aspect_summaries": [
+                AspectSummary(aspect=aspect, what_changed=_HOSTILE_LINE, how_sure=_HOSTILE_LINE, means=_HOSTILE_LINE)
+                for aspect in ("billing", _HOSTILE_ASPECT)
+            ],
+            "summary": _HOSTILE_LINE,
+            "next": [NextStep(title=_HOSTILE_LINE, why=_HOSTILE_LINE, leverage="high", lever="")],
+        }
+    )
+
+
+async def _hostile_campaign_page() -> CampaignReport:
+    """A campaign page of two real aspects, one of them labelled with markup, whose campaign name, arm labels, memo,
+    fold lines and second folded page carry markup too: everything on it a host or a model supplies."""
+    control_label, candidate_label = f"{_HOSTILE_LINE} A", f"{_HOSTILE_LINE} B"
+    campaign, measured = await campaign_fixture("billing", _HOSTILE_ASPECT, name=_HOSTILE_LINE)
+    control = campaign.control
+    assert control is not None
+    arms = [
+        control.model_copy(update={"label": control_label}),
+        CampaignArm(label=candidate_label, role="candidate", variant_key=measured[0].candidate),
+    ]
+    bundles = {one.bundle.aspect: one.bundle for one in measured}
+    read = campaign_readings(campaign, bundles, arms=arms)
+    reports = {
+        label: build_code_only_report(
+            evidence, assembled_at=ASSEMBLED_AT, campaign_name=_HOSTILE_LINE, arm_labels=read.arm_labels()
+        )
+        for label, evidence in bundles.items()
+    }
+    memo = _hostile_memo(control_label)
+    page = build_campaign_report(campaign, read, reports, memo, recommended_variant_key=control.variant_key)
+    first, second = page.aspects
+    folds = [
+        first.model_copy(update={"shows": _HOSTILE_LINE}),
+        second.model_copy(update={"shows": _HOSTILE_LINE, "report": _hostile_report()}),
+    ]
+    return page.model_copy(update={"aspects": folds})
+
+
+async def test_markup_a_host_or_a_model_put_on_a_campaign_page_is_text_not_markup() -> None:
+    page = campaign_report_html(await _hostile_campaign_page())
+    read = parsed(page)
+
+    assert what_runs(page) == []
+    assert font_links(page) == list(FONT_LINKS), "an author's link, even a copy of the package's, is text"
+    assert any("<script>alert(1)</script>" in text for text in read.text), "the words survive as text"
+    assert any('onerror="alert(4)"' in text for text in read.text)
+    assert any(_HOSTILE_ASPECT in text for text in read.text), "the aspect's label is words too"
+    assert any(FONT_LINK_MARKUP.split(">", 1)[0] in text for text in read.text), "so is the copied font link"
+    assert page.count("&lt;script&gt;alert(1)&lt;/script&gt;") > 10, "every field's markup is escaped"
+    ids = [value for _, attrs in read.tags for name, value in attrs if name == "id"]
+    assert len(ids) == len(set(ids)), "an author's label claimed an id the page already holds"
+    hrefs = [value or "" for tag, attrs in read.tags for name, value in attrs if name == "href" and tag != "link"]
+    assert {href[1:] for href in hrefs} <= set(ids), "a link lands nowhere"
+
+
 async def test_the_toy_reports_html_contains_no_script_element() -> None:
     """Done when: the HTML contains no script element."""
     _, _, report = await toy_report()
@@ -186,20 +279,81 @@ def test_the_check_sees_a_script_where_one_is() -> None:
     """A detector that found nothing anywhere would pass every page above for nothing."""
     assert what_runs("<p>x</p><script>1</script>") == ["<script>"]
     assert what_runs('<p onclick="x">y</p>') == ["p[onclick]"]
-    assert what_runs('<a href=" JavaScript:x">y</a>') == ["a[href=javascript:]"]
-    assert what_runs("<img src=x>") == ["<img>"]
+    assert what_runs('<a href=" JavaScript:x">y</a>') == ["a[href]", "a[href=javascript:]"]
+    assert what_runs('<a href="java\tscript:x">y</a>') == ["a[href]", "a[href=javascript:]"]
+    assert what_runs("<img src=x>") == ["<img>", "img[src]"]
     assert what_runs('<svg><use href="#x"></use></svg>') == ["<use>"]
+
+
+#: One small page per thing that loads, embeds, submits or navigates, and what the check names on it.
+_LOADERS: list[tuple[str, list[str]]] = [
+    ('<video src="v.mp4"></video>', ["<video>", "video[src]"]),
+    ('<video poster="p.png"></video>', ["<video>", "video[poster]"]),
+    ('<audio src="a.mp3"></audio>', ["<audio>", "audio[src]"]),
+    ('<audio><source src="a.mp3"></audio>', ["<audio>", "<source>", "source[src]"]),
+    ('<video><track src="t.vtt"></video>', ["<video>", "<track>", "track[src]"]),
+    ('<picture><source srcset="a.png"></picture>', ["<picture>", "<source>", "source[srcset]"]),
+    ('<form action="https://evil.example"></form>', ["<form>", "form[action]"]),
+    ('<button formaction="https://evil.example">x</button>', ["button[formaction]"]),
+    ('<input type="image" src="x.png">', ["<input type=image>", "input[src]"]),
+    ('<input type=" Image ">', ["<input type=image>"]),
+    ('<object data="x.swf"></object>', ["<object>", "object[data]"]),
+    ('<p data="x">y</p>', ["p[data]"]),
+    ('<portal src="https://evil.example"></portal>', ["<portal>", "portal[src]"]),
+    ('<div src="x">y</div>', ["div[src]"]),
+    ('<div srcset="x 1x">y</div>', ["div[srcset]"]),
+    ('<table background="x.png"><tr><td>y</td></tr></table>', ["table[background]"]),
+    ('<a href="#x" ping="https://evil.example">y</a>', ["a[ping]"]),
+    ('<a href="https://evil.example">y</a>', ["a[href]"]),
+    ('<a href="//evil.example">y</a>', ["a[href]"]),
+    ('<area href="x.html">', ["area[href]"]),
+    ('<svg><a xlink:href="https://evil.example">y</a></svg>', ["a[xlink:href]"]),
+    ('<svg><a href="https://evil.example"><text>y</text></a></svg>', ["a[href]"]),
+    ("<p style=\"background: URL ('x.png')\">y</p>", ["p[style=url()]"]),
+    ("<style>p { background: url(x.png) }</style>", ["<style> url()/@import"]),
+    ('<style>@import "https://evil.example/x.css";</style>', ["<style> url()/@import"]),
+    ('<meta http-equiv="refresh" content="0;url=https://evil.example">', ["<meta http-equiv>"]),
+    ('<iframe srcdoc="x"></iframe>', ["<iframe>"]),
+    ("<p>y</p>" + FONT_LINK_MARKUP, ["<link>", "link[href]", "<link>", "link[href]", "<link>", "link[href]"]),
+    ("<html><head></head><body>" + FONT_LINK_MARKUP + "</body></html>", ["<link>", "link[href]"] * 3),
+]
+
+
+def test_the_check_refuses_every_element_and_attribute_that_loads_embeds_or_navigates() -> None:
+    """Each page holds one offender, and the check names it; the font links pass only in the head."""
+    for page, refused in _LOADERS:
+        assert what_runs(page) == refused, page
+
+
+def test_the_check_passes_a_page_that_loads_only_the_font_links() -> None:
+    """A page as the package writes one: the font links in the head, links to places on the page, inline SVG with a
+    title, a ``data-*`` attribute, a style attribute naming no URL and the word ``url(`` in prose."""
+    page = (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>t</title>'
+        + FONT_LINK_MARKUP
+        + "<style>body { color: var(--ink); }</style></head><body>"
+        '<nav><a href="#memo">Memo</a></nav><article data-basis="analysis"><section id="memo">'
+        '<p style="--w: 3">Read url(x) and javascript: in prose.</p><a href="#g-interval" title="t">interval</a>'
+        '<svg viewBox="0 0 10 10" role="img"><title>bar</title><rect width="5" height="5"></rect></svg>'
+        "</section></article></body></html>"
+    )
+    assert what_runs(page) == []
+    assert font_links(page) == list(FONT_LINKS)
 
 
 def test_the_check_passes_the_package_s_font_links_and_no_other_link() -> None:
     """Only the three font links pass, attribute for attribute: another host, another rel, an extra attribute or a
     handler on one of them is a link that loads something the package did not write."""
     assert what_runs(FONT_LINK_MARKUP) == []
-    assert what_runs('<link rel="stylesheet" href="https://evil.example/x.css">') == ["<link>"]
-    assert what_runs('<link rel="preconnect" href="https://fonts.googleapis.com.evil.example">') == ["<link>"]
-    assert what_runs('<link rel="prefetch" href="https://fonts.googleapis.com">') == ["<link>"]
-    assert what_runs('<link rel="preconnect" href="https://fonts.googleapis.com" id="x">') == ["<link>"]
+    assert what_runs('<link rel="stylesheet" href="https://evil.example/x.css">') == ["<link>", "link[href]"]
+    assert what_runs('<link rel="preconnect" href="https://fonts.googleapis.com.evil.example">') == [
+        "<link>",
+        "link[href]",
+    ]
+    assert what_runs('<link rel="prefetch" href="https://fonts.googleapis.com">') == ["<link>", "link[href]"]
+    assert what_runs('<link rel="preconnect" href="https://fonts.googleapis.com" id="x">') == ["<link>", "link[href]"]
     assert what_runs('<link rel="preconnect" href="https://fonts.googleapis.com" onload="x">') == [
         "<link>",
+        "link[href]",
         "link[onload]",
     ]
