@@ -88,6 +88,7 @@ from threetears.evals.analysis.report.decision import (
     floor_readings,
     projected_usd_value,
     read_floor,
+    reading_words,
 )
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import CampaignDeclaration, EvalCampaign
@@ -998,8 +999,8 @@ def _floors(bundle: CampaignBundle, floors: Sequence[FloorStatus]) -> list[dict[
     """Every floor's status, arm by arm (an arm with a broken floor first): the floors it breaks, leaves unclear and
     holds, each with the aspect and the rate it read, and for an unclear one what would settle it.
 
-    :raises RuntimeError: A floor is read with no control, or names a floor or a rate the campaign's declaration and
-        its aspect's evidence do not hold — the bundle was built inconsistently.
+    :raises RuntimeError: A floor is read with no control — the bundle was built inconsistently.
+    :raises KeyError: A floor's status names a floor the campaign's declaration does not hold.
     """
     if not floors:
         return []
@@ -1044,14 +1045,12 @@ def _floors(bundle: CampaignBundle, floors: Sequence[FloorStatus]) -> list[dict[
 def _read_name(aspect: AnalysisContextBundle, figures: FloorReadings, reading: str) -> str:
     """The rate a floor read, by the name the page gives the rate its floor table reads (``figures``, built as the
     page builds them): a measure by its reader name, a judged dimension in words; a check by its declared name, else
-    its whole expression, as the view's ``measures`` names it.
-
-    :raises RuntimeError: No rate in ``figures`` is the one the floor's status names — the bundle was built
-        inconsistently, and the writer could not name that rate at all.
+    its whole expression, as the view's ``measures`` names it. A reading the arms carry no rate for is said as the
+    page's floor statement says it (:func:`~threetears.evals.analysis.report.decision.reading_words`).
     """
     rate = next((rate for rate in figures.rates if rate.answers(reading)), None)
     if rate is None or rate.measure is None:
-        raise RuntimeError(f"aspect {aspect.aspect!r} holds no rate a floor reading {reading!r} names")
+        return reading_words(reading, figures, aspect.goal_check_names)
     if (check := goal_check_of(rate.measure)) is not None:
         return aspect.check_name(rate.measure) or check
     return rate.name

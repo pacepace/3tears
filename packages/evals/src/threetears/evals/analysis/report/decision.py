@@ -238,7 +238,7 @@ class FloorVerdict:
         return 100 * low, 100 * high
 
 
-def _reading_words(reading: str, readings: FloorReadings | None, check_names: Mapping[str, str] | None = None) -> str:
+def reading_words(reading: str, readings: FloorReadings | None, check_names: Mapping[str, str] | None = None) -> str:
     """A reading a floor names, as the page names it: the rate's own name where the arms carry it, else a check by its
     declared display name (``check_names``, else the readings'), else a key in words, else a check's text as code."""
     rates = readings.rates if readings is not None else ()
@@ -276,7 +276,7 @@ def floor_statement(
     """
     if isinstance(clause, CostLower):
         return f"{candidate} costs less per reply"
-    which = "pass" if clause.reading is None else _reading_words(clause.reading, readings, check_names)
+    which = "pass" if clause.reading is None else reading_words(clause.reading, readings, check_names)
     return f"no {which} rate drops by more than {format_number(clause.max_points)} points"
 
 
@@ -448,7 +448,7 @@ def _rate_floor(
     if not rates:
         if clause.reading is None:
             return "unclear", "no pass rate was measured on both arms", None, ()
-        return "unclear", f"{_reading_words(clause.reading, readings)} was not measured on both arms", None, ()
+        return "unclear", f"{reading_words(clause.reading, readings)} was not measured on both arms", None, ()
     if (fewest := readings.fewest_cases()) is None:
         reason = "the usable cases were not counted on both arms"
         return "unclear", reason, None, tuple(RateVerdict(rate, "unclear", reason) for rate in rates)
@@ -1176,4 +1176,5 @@ __all__ = [
     "projection_note",
     "rate_projections",
     "read_floor",
+    "reading_words",
 ]
