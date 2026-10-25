@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261025-bb0dfb481054",
+  "input": "r1",
+  "input_digest": "671ed1ea10d5bb21b6b16d65fae9e43fe0f1f8508eee021e54fad733cbe000f9",
+  "plan_digest": "2b19b3487a90f1d71f2e269e07ee2f6ab0072d7bcb2f82208ff3503ea8a317d3",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "46b2691a55b6edc02a8d0b6fca8bf2ea60aeb6be0c4733bfe5575cf3bab4565f",
+    "contract_digest": "d633628a4bf781225146719e712eb941c001887b44ee7208a08a282fc8c5ff0d"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision with instruction and reason that names the options table's recommended arm, and the gate matrix shows Atlas-M as the only arm passing every gate.",
+      "quote": "Select Atlas-M (B). It satisfies all quality gates and latency budgets at lower cost than Atlas-L (A).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "fail",
+      "reason": "The first sentence restates the headline's reason, and the change condition is wrong: a tighter p95 budget admits no smaller candidate, and those candidates also fail quality floors on research and speculation tasks, not only multi-turn ones.",
+      "quote": "Lowering the p95 latency budget or accepting quality breaches on multi-turn tasks would be required to consider smaller candidates.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "The input carries no caveats and the plan has no flag or confidence clauses, so no caveat is stated twice.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "pass",
+      "reason": "Both section headlines name a subject and a direction that their charts show: Atlas-M passing every gate in the matrix, and Atlas-L over the p95 budget in troubleshooting.",
+      "quote": "Atlas-L (A) exceeds tail latency budgets in multi-turn tasks",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results the plan uses arm, task and criterion reader names, with no run ids, hashes or measure keys.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the code-identified weakest margin, Atlas-M's zero-point margin on issue resolution in troubleshooting, and then a scoped risk.",
+      "quote": "Weakest margin: Atlas-M (B) achieves 90% against Resolves the issue in Troubleshooting (multi-turn) at 90%, leaving a margin of 0.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One measure goes by several names, 'p95 latency', 'tail latency', 'latency budget' and 'latency ceiling', and the quality gates appear as 'gates', 'floors', 'minimums' and 'thresholds'.",
+      "quote": "Atlas-L (A) exceeds tail latency budgets in multi-turn tasks",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The headline and decision slots on the first screen say what to do (Atlas-M), why (it alone passes every gate, at lower cost than Atlas-L) and the main risk (a zero margin on resolution).",
+      "quote": "Weakest margin: Atlas-M (B) achieves 90% against Resolves the issue in Troubleshooting (multi-turn) at 90%, leaving a margin of 0.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "A live troubleshooting trial on resolution rate targets the zero-margin gate, so a rate below 90% would break the call, and that decisive direction is clear from context.",
+      "quote": "Run a targeted trial of Atlas-M (B) on live troubleshooting traffic to verify resolution rates under variable user turns.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The confidence form is high and the plan has no confidence clauses.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Every figure in the prose (the 3 s budget, 90% against 90%, 1190 cases, 86% agreement over 200 ratings, the 4.68 s p95) measures what its sentence says.",
+      "quote": "Atlas-M (B) meets issue resolution at 90%%, while Atlas-L (A) reaches 4.68 ss p95 latency.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-25T23:29:36Z"
+}

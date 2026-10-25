@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261025-bb0dfb481054",
+  "input": "r5",
+  "input_digest": "e369ab25f05eaf9a7f83d11329dc7ce4a5ffba9d557633b18ee33b82a2f59a96",
+  "plan_digest": "1ddb49204f79701f8bf05db2e2dfa31add2a2921c96b700e02c99990d261a873",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "46b2691a55b6edc02a8d0b6fca8bf2ea60aeb6be0c4733bfe5575cf3bab4565f",
+    "contract_digest": "d633628a4bf781225146719e712eb941c001887b44ee7208a08a282fc8c5ff0d"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "fail",
+      "reason": "The headline says both challengers degrade character adherence, but the first chart, the character adherence (v2) forest, shows 1017's change interval (-5.8 to +1.1) spanning zero.",
+      "quote": "Keep September (P). Both challengers cost more per reply and degrade character adherence.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "fail",
+      "reason": "The first sentence restates the headline (lowest cost, no adherence gain) instead of a further fact, and $1.89 appears with no unit.",
+      "quote": "September (P) achieves the lowest production cost at $1.89 while neither candidate demonstrates improvement on character adherence.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "The plan has no flag, each report-wide caveat appears once in the confidence clauses, the scoped confounds appear once in Watch, and the judge-tier mention in Method is a required entry.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The strata section says regressions concentrate in off lane and machinery, but machinery's drop (about -4.5 points) is smaller than multi's (-13.9 and -8.3), which the same chart draws.",
+      "quote": "Challenger regressions concentrate in off lane and machinery conversations",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results the plan uses the arms' and strata's reader names and no run ids; the execution-mode and launch-flag text sits in Method.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the code-identified weakest margin, qwen3.8-flash's 4.2-point gap to the -15 limit, then the scoped confounds: reasoning ratio and dropped trials.",
+      "quote": "Weakest margin belongs to qwen3.8-flash (A) at -10.8 against the -15 limit, leaving a gap of +4.2.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One cost measure goes by several names ('production cost', 'serving cost', 'spend', 'cost per reply'), and the hedge 'Note' opens a sentence in Watch.",
+      "quote": "A switch would require a candidate demonstrating clear gains on character adherence or lower serving cost.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The headline and slots give the choice (keep September), the reason (the challengers cost more and do no better on adherence) and the Watch risk.",
+      "quote": "Retain September (P) in production. It delivers the lowest production cost at $1.89 and superior character adherence.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "Next offers two interventions on 1017 with no decisive result, and even a fixed 1017 would still cost $2.41 against $1.89, so it could not change the keep call.",
+      "quote": "Evaluate prompt interventions or constrained decoding on 1017 (B) to prevent character drop in off lane queries before re-testing.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "Each clause names when its caveat would matter (goals shifted after observation, a judge bias favouring September) or says the call does not rest on it (an established production control).",
+      "quote": "The control designation for September (P) was confirmed late; immaterial because September (P) is the established production deployment.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Every figure is the arm's own per-1,000-reply cost, the margin bound, or the holds-character contrast and its interval, as each sentence states.",
+      "quote": "Persona holds character regresses by -4.7 (-8.2 to -1.3) for 1017 (B) and -6 (-10.1 to -1.8) for qwen3.8-flash (A).",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-25T23:29:36Z"
+}
