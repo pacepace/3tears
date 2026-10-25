@@ -12,7 +12,7 @@ from __future__ import annotations
 from uuid import uuid7
 
 
-from threetears.agent.tools.context_envelope import CallContext
+from threetears.core.tool_wire import CallContext
 from threetears.registry.proxy import ProxyCallRequest
 
 

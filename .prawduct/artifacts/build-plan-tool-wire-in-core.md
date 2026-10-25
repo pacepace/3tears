@@ -43,6 +43,15 @@ Out of scope: removing registry's mirror models (`ProbeResponse`, `DiscoverReque
   inventory carries both `CallRequest` keys and `test_public_api_has_a_caller` is red for the five core
   names only agent-tools' own definitions referenced; chunk 02's re-export imports are their caller, and
   chunk 02 drops the old inventory key | a chunk boundary inside one move; the branch is judged at its tip]
+- [DECISION: registry's import probe REFUSES agent-tools, langchain*, langgraph* and pgvector* at import
+  (a meta-path finder, as core's extras test does) rather than only asserting they are absent | core
+  loads pgvector whenever the environment has it, and the workspace does, so an absence check fails on
+  core's own probe; refusing proves registry never needs any of them]
+- [DECISION: `uv.lock` edited by hand to drop registry's two agent-tools lines; `uv lock --check` passes
+  | the local uv (0.11.32) rewrites the lock at revision 3 and reorders its header, churn unrelated to
+  this change]
+- [DECISION: no `threetears.enforcement.import_floor` on this branch, so `test_import_cost` runs a local
+  subprocess probe, as the plan allows]
 
 ## What moves (line numbers on develop c65ecdf8c)
 

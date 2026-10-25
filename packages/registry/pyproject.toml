@@ -14,7 +14,6 @@ license-files = ["LICENSE"]
 dependencies = [
     "3tears[security]>=0.78.0,<0.79.0",
     "3tears-agent-acl>=0.78.0,<0.79.0",
-    "3tears-agent-tools>=0.78.0,<0.79.0",
     # following the access tables' write generations from the epoch bucket
     "3tears-epoch>=0.78.0,<0.79.0",
     # [client]: this package uses the NATS client at runtime, and nats-py is an
@@ -36,7 +35,6 @@ packages = ["src/threetears"]
 [tool.uv.sources]
 3tears = { workspace = true }
 3tears-agent-acl = { workspace = true }
-3tears-agent-tools = { workspace = true }
 3tears-epoch = { workspace = true }
 3tears-nats = { workspace = true }
 3tears-observe = { workspace = true }

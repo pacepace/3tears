@@ -38,7 +38,7 @@ import pytest
 
 from threetears.agent.tools.aliases import WORKSPACE_TOOLS
 from threetears.agent.tools.builtin import STANDARD_BUILTIN_FACTORIES
-from threetears.agent.tools.server import RegistrationManifest, ToolManifestEntry
+from threetears.core.tool_wire import RegistrationManifest, ToolManifestEntry
 from threetears.core.namespaces import build_tool_provider_node_name
 from threetears.nats import IncomingMessage, Subjects, set_default_namespace
 from threetears.registry.auth import ToolPodAuth

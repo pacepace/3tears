@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from threetears.agent.tools.server import RegistrationManifest, ToolManifestEntry
+from threetears.core.tool_wire import RegistrationManifest, ToolManifestEntry
 from threetears.nats import IncomingMessage, RequestError, set_default_namespace
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.registration import (

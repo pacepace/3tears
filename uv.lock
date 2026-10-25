@@ -1107,7 +1107,6 @@ source = { editable = "packages/registry" }
 dependencies = [
     { name = "3tears", extra = ["security"] },
     { name = "3tears-agent-acl" },
-    { name = "3tears-agent-tools" },
     { name = "3tears-epoch" },
     { name = "3tears-nats", extra = ["client"] },
     { name = "3tears-observe" },
@@ -1121,7 +1120,6 @@ dependencies = [
 requires-dist = [
     { name = "3tears", extras = ["security"], editable = "packages/core" },
     { name = "3tears-agent-acl", editable = "packages/agent/acl" },
-    { name = "3tears-agent-tools", editable = "packages/agent/tools" },
     { name = "3tears-epoch", editable = "packages/epoch" },
     { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },

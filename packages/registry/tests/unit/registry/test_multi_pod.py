@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
-from threetears.agent.tools.context_envelope import CallContext
+from threetears.core.tool_wire import CallContext
 
-from threetears.agent.tools.server import HeartbeatMessage, RegistrationManifest, ToolManifestEntry
+from threetears.core.tool_wire import HeartbeatMessage, RegistrationManifest, ToolManifestEntry
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.nats import IncomingMessage, RequestError, set_default_namespace

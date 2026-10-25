@@ -25,8 +25,7 @@ from pydantic import (
     model_validator,
 )
 
-from threetears.agent.tools.context_envelope import CallContext, bind_log_context
-from threetears.agent.tools.server import CallAccepted, CallRequest
+from threetears.core.tool_wire import CallAccepted, CallContext, CallRequest, bind_log_context
 from threetears.core.security.freshness import DEFAULT_PROOF_MAX_AGE, ISSUE_TIME_FUTURE_TOLERANCE
 from threetears.core.security.identity_token import (
     IDENTITY_REFUSED,
@@ -283,7 +282,7 @@ class ProxyCallResponse(BaseModel):
 class ProxyCallAccepted(BaseModel):
     """the immediate answer to a call the proxy will DELIVER rather than reply to.
 
-    Mirrors the pod-side :class:`threetears.agent.tools.server.CallAccepted` one hop up. Published on
+    Mirrors the pod-side :class:`threetears.core.tool_wire.messages.CallAccepted` one hop up. Published on
     the agent's reply inbox before routing begins, while that publish is still guaranteed to work,
     so the agent can distinguish "the registry has your long call" from "no registry answered" -- a
     distinction its own retry and error handling depends on and that a silent long wait destroys.

@@ -24,11 +24,11 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ValidationError
 
-from threetears.agent.tools.http_operation import RestAffordanceError
-from threetears.agent.tools.server import (
+from threetears.core.tool_wire import (
     RefusedTool,
     RegistrationManifest,
     RegistrationResponse,
+    RestAffordanceError,
     ToolManifestEntry,
 )
 from threetears.core.namespaces import (
@@ -59,9 +59,9 @@ __all__ = [
     "RefusedTool",
     "RegistrationHandler",
     # RE-EXPORTED, not defined here. It lives beside ``RegistrationManifest`` in
-    # ``threetears.agent.tools.server`` because the POD is what parses it, and this
-    # package depends on that one rather than the other way round. Kept in ``__all__``
-    # so ``from threetears.registry import RegistrationResponse`` still resolves.
+    # ``threetears.core.tool_wire`` because the POD is what parses it, and core is the
+    # package both the pod and this one depend on. Kept in ``__all__`` so
+    # ``from threetears.registry import RegistrationResponse`` still resolves.
     "RegistrationResponse",
 ]
 

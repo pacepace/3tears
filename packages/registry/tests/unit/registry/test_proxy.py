@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
-from threetears.agent.tools.context_envelope import CallContext
+from threetears.core.tool_wire import CallContext
 
-from threetears.agent.tools.server import CallAccepted
+from threetears.core.tool_wire import CallAccepted
 from threetears.nats import RESULT_ACK_TIMEOUT_SECONDS, IncomingMessage, Subject, set_default_namespace
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import ProxyCallRequest, ProxyCallResponse
