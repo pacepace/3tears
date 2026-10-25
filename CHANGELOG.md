@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core, agent-tools, registry: the tool-call wire protocol lives in core, and registry no longer depends on agent-tools
+
+The registry read the tool server's wire messages from agent-tools, so `3tears-registry` installed agent-tools'
+whole closure (langchain, langgraph, pgvector, httpx among it) to parse a manifest, and moved whenever
+agent-tools did.
+
+**Added:** `threetears.core.tool_wire`, the protocol a tool pod and the registry both parse:
+`tool_wire.context` (`CallContext`, `bind_log_context`), `tool_wire.rest` (`RestAffordance`,
+`RestAffordanceError`, `PathTemplateBinding`, `ParameterBinding`, `HttpMethod`, `QUERY_METHODS`,
+`CACHEABLE_METHODS`, `MAX_POINTER_AGE_SECONDS`) and `tool_wire.messages` (`ToolManifestEntry`,
+`RegistrationManifest`, `RefusedTool`, `RegistrationResponse`, `CallRequest`, `CallAccepted`, `CallResponse`,
+`HeartbeatMessage`). The package re-exports all of them.
+
+**Changed:** those names moved there unchanged from `threetears.agent.tools.context_envelope`,
+`threetears.agent.tools.http_operation` and `threetears.agent.tools.server`. Each old path still imports them
+and names the same object, so `isinstance` and nested validation hold across both paths; their `__module__`
+is now the core module. The pod's own policy and machinery (`ToolRegistrationRefused`, `FINAL_REFUSAL_CODES`,
+`refusal_is_final`, `refusals_in_reply`, `ProbeAck`, the `DiscoveryProbe*` models, `ToolServer`) stay in
+`threetears.agent.tools.server`. The text of `CallRequest`'s legacy-field refusal is unchanged.
+
+**Removed:** `3tears-registry` no longer depends on `3tears-agent-tools`. An app that reached agent-tools
+through registry now declares it itself.
+
 ## v0.78.0 -- 2026-10-24
 
 ### models: the bare registry entry is readable without lifting the layers above it
