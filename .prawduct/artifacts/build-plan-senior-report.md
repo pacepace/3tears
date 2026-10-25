@@ -833,5 +833,5 @@ The main session:
 - [x] Chunk 04: scorecard and reconciliation
 - [x] Chunk 05: degenerate collapse
 - [x] Chunk 06: aggregates and chart
-- [ ] Chunk 07: writer view
+- [x] Chunk 07: writer view
 - [ ] Chunk 08: writer prompt (then the main session re-records)
