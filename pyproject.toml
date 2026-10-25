@@ -98,8 +98,9 @@ dev-dependencies = [
     "httpx2",
     # testcontainers used by the migration runner integration tests to
     # exercise real Postgres (rollback semantics cannot be verified
-    # against the in-memory FakeDataStore).
-    "testcontainers[postgres]>=4.0",
+    # against the in-memory FakeDataStore). 4.15.0 is the first release with
+    # testcontainers.community, where the containers now live.
+    "testcontainers[postgres]>=4.15.0",
     # prometheus-client installed in dev so packages/models tracking +
     # callbacks tests exercise the real prometheus integration rather
     # than getting skipped. declared in models as an optional extra
@@ -378,6 +379,10 @@ filterwarnings = [
     # waits the supported way. An error, so a test that reaches for the deprecated path again
     # fails instead of adding a warning nobody reads.
     'error::DeprecationWarning:testcontainers\..*',
+    # 4.15.0 moved every container to ``testcontainers.community.*`` and left a shim at the old
+    # path whose warning is attributed to the IMPORTING module (stacklevel=2), so the filter above
+    # never sees it. An error too, so an import of the old path fails rather than warns.
+    'error:testcontainers\.[a-z_]+ is deprecated:DeprecationWarning',
     # discord.py 2.7.1, the newest release, calls ``asyncio.iscoroutinefunction`` inside its own
     # ``Client.event``; nothing on our side can change the call. Remove when discord.py does.
     "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning:discord.client",

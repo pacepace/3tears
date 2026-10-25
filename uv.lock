@@ -126,7 +126,7 @@ dev = [
     { name = "slack-bolt", specifier = ">=1.28" },
     { name = "slack-sdk", specifier = ">=3.41" },
     { name = "snowflake-connector-python", specifier = ">=3.0" },
-    { name = "testcontainers", extras = ["postgres"], specifier = ">=4.0" },
+    { name = "testcontainers", extras = ["postgres"], specifier = ">=4.15.0" },
     { name = "trafilatura", specifier = ">=2.0.0" },
     { name = "types-jsonschema", specifier = ">=4.26" },
     { name = "types-pyyaml", specifier = ">=6.0" },
@@ -205,7 +205,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'testing'", specifier = ">=8.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "sqlalchemy" },
-    { name = "testcontainers", extras = ["nats", "postgres"], marker = "extra == 'testing'", specifier = ">=4.0" },
+    { name = "testcontainers", extras = ["nats", "postgres"], marker = "extra == 'testing'", specifier = ">=4.15.0" },
     { name = "uuid-utils", marker = "extra == 'uuid-utils'" },
 ]
 provides-extras = ["security", "http", "nats", "tracing", "socks", "duckdb", "snapshot", "testing", "pgvector", "uuid-utils"]

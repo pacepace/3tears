@@ -33,6 +33,16 @@ optional protocol `threetears.langgraph.CheckpointL2RevisionCache` (`get_latest(
 methods of the same names). **A cache without it is no longer refilled from a read at all**: only
 `aput` writes L2, and the next write refills it.
 
+### core: the testing fixtures import testcontainers from `testcontainers.community`
+
+**Changed:** `threetears.core.testing.fixtures` (and the backup integration tests and
+`scripts/measure-coordination-latency.py`) import `PostgresContainer` / `NatsContainer` from
+`testcontainers.community.*`. The old paths are 4.15.0's deprecation shims, which warned on every run
+that started Postgres. The `3tears[testing]` extra and the workspace dev group now require
+`testcontainers>=4.15.0`, the first release with `testcontainers.community`; a consumer on an older
+testcontainers must move up with it. The workspace pytest config makes a shim's warning an error, so
+an import of an old path fails rather than warns.
+
 ### nats: an oversized KV value is not retried through a bucket re-open
 
 **Fixed:** `NatsKvBucket` re-raises nats-py's `MaxPayloadError` instead of treating it as a transport

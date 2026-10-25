@@ -72,7 +72,7 @@ snapshot = ["duckdb>=1.0", "pyarrow>=17"]
 # declaration just gives consumers a one-line dep request:
 # ``3tears[testing]`` in their dev / test extras.
 testing = [
-    "testcontainers[nats,postgres]>=4.0",
+    "testcontainers[nats,postgres]>=4.15.0",  # 4.15.0 is the first with testcontainers.community
     "docker>=7.0",
     "pytest>=8.0",
     "boto3",  # the MinIO bucket fixture (core.testing.fixtures)
