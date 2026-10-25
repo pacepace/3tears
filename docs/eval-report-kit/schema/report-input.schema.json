@@ -1,44 +1,935 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "report-input/1",
-  "title": "Report input",
-  "description": "Normalized campaign results. Produced by an adapter from the pipeline's campaign bundle (adapters/bundle_to_report.py). Statistics are copied through, never recomputed. The shape A-C references (r1-r3) use simpler synthetic data built for their pages, not this schema.",
-  "type": "object",
-  "required": ["schema", "meta", "arms", "aspects", "scoreboard", "measures", "judged", "contrasts", "caveats"],
-  "properties": {
-    "schema": {"const": "report-input/1"},
-    "meta": {"type": "object", "required": ["campaign", "kind"], "properties": {
-      "campaign": {"type": "string"}, "question": {"type": "string"}, "behavior": {"type": ["string", "null"]},
-      "kind": {"type": "string", "description": "pipeline kind, e.g. change (control + candidates)"}, "kind_means": {"type": "string"},
-      "design_shape": {"type": ["string", "null"], "description": "e.g. one_factor_at_a_time, factorial"},
-      "run_date": {"type": ["string", "null"]}, "provenance": {"type": ["string", "null"]}, "synthetic": {"type": "boolean"},
-      "volume_per_month": {"type": ["number", "null"], "description": "replies or calls per month, when the host declares it; enables monthly cost"}}},
-    "arms": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["id", "role", "settings"], "properties": {
-      "id": {"type": "string"}, "name": {"type": "string", "description": "campaign alias"}, "role": {"enum": ["control", "challenger"]},
-      "served_model": {"type": "string"}, "variant_key": {"type": ["string", "null"]},
-      "settings": {"type": "object", "description": "model plus every lever that differs from the control", "additionalProperties": {"type": ["string", "number", "null"]}},
-      "reasoning_ratio": {"type": "number"}}}},
-    "aspects": {"type": "array", "items": {"type": "object", "required": ["id", "readings"], "properties": {
-      "id": {"type": "string"}, "name": {"type": "string"}, "margin": {"type": ["number", "null"]}, "asked": {"type": "boolean"},
-      "readings": {"type": "array", "items": {"type": "object", "required": ["arm", "reading", "change", "within_interval"], "properties": {
-        "arm": {"type": "string"}, "reading": {"type": "string"}, "change": {"type": "number", "description": "points"},
-        "within_interval": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}, "gain_confidence": {"type": "number"},
-        "control_passed": {"type": "string"}, "arm_passed": {"type": "string"}, "cases": {"type": "array"}, "confirmatory": {"type": "boolean"}, "precision": {"type": "object"}}}},
-      "depth": {"type": ["object", "null"]}, "pass_k": {"type": ["array", "null"]}}}},
-    "floors": {"type": "array"}, "bars": {"type": "array"}, "guardrails": {"type": "array"},
-    "scoreboard": {"type": "object", "description": "by arm id: ran, lost, usable, passed, failed, cases, reply_cost_usd"},
-    "measures": {"type": "object", "description": "by measure key: unit, higher_is_better, merit_axis, means (definition), per_arm{mean, ci, n, n_cases, p95}"},
-    "judged": {"type": "object", "description": "by judged dimension: scale, tier, judge_model, calibration, per_arm{mean, n, n_cases}"},
-    "primary_judged": {"type": ["string", "null"]},
-    "contrasts": {"type": "array", "items": {"type": "object", "required": ["arm", "measure", "verdict", "delta", "interval"], "properties": {
-      "arm": {"type": "string"}, "control": {"type": "string"}, "kind": {"type": "string"}, "measure": {"type": "string"}, "verdict": {"type": "string"},
-      "delta": {"type": "number"}, "interval": {"type": "array"}, "p_adjusted": {"type": ["number", "null"]}, "materiality": {"type": ["string", "null"]}, "confounds": {"type": "array"}}}},
-    "contrast_families": {"type": "array", "description": "correction method, alpha, family size, disclosure"},
-    "strata": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "n_cases": {"type": "integer"}, "per_arm": {"type": "object"}}}},
-    "examples": {"type": "array", "items": {"type": "object", "properties": {"trial": {"type": "string"}, "case": {"type": "string"}, "stratum": {"type": "string"}, "arm": {"type": "string"}, "repeat": {"type": "integer"}, "reason": {"type": ["string", "null"]}, "excerpt": {"type": "string"}}}},
-    "caveats": {"type": "object", "properties": {
-      "late_criteria": {"type": "array"}, "judge_tiers": {"type": "object"}, "confounds": {"type": "object"}, "apparatus_confounds": {"type": "array"},
-      "latency": {"type": ["string", "null"]}, "short_runs": {"type": "array", "items": {"type": "object", "properties": {"run": {"type": "string"}, "arm": {"type": ["string", "null"]}, "note": {"type": "string"}}}}, "unreported": {"type": "array"}}},
-    "prior_insights": {"type": "array"}
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "report-input/1",
+ "title": "Report input",
+ "description": "Normalized campaign results. Produced by an adapter from the pipeline's campaign bundle (adapters/bundle_to_report.py). Statistics are copied through, never recomputed. A control-and-candidates campaign fills the core fields; the optional tasks, factors and configs, target_matrix and cells, confusion, human_pref, criteria and named strata carry what other comparison structures need (GENERATOR.md section 1). The model threetears.evals.analysis.report_input.ReportInput states the same fields, required sets and enums, and a test holds the two together. The r1-r4 references' own JSON is page-shaped synthetic data, not this schema; their report inputs are packages/evals/tests/fixtures/report_plans/r1-r4/input.json.",
+ "type": "object",
+ "required": [
+  "schema",
+  "meta",
+  "arms",
+  "aspects",
+  "scoreboard",
+  "measures",
+  "judged",
+  "contrasts",
+  "caveats"
+ ],
+ "properties": {
+  "schema": {"type": "string", "const": "report-input/1", "description": "The document's schema."},
+  "meta": {"$ref": "#/$defs/Meta"},
+  "arms": {"type": "array", "items": {"$ref": "#/$defs/Arm"}, "minItems": 1},
+  "aspects": {"type": "array", "items": {"$ref": "#/$defs/Aspect"}},
+  "floors": {
+   "type": "array",
+   "items": {"$ref": "#/$defs/FloorRead"},
+   "description": "Each floor's status on each candidate."
+  },
+  "bars": {
+   "type": "array",
+   "items": {"$ref": "#/$defs/BarRead"},
+   "description": "Each arm against each absolute bar."
+  },
+  "guardrails": {
+   "type": "array",
+   "items": {"type": "object", "additionalProperties": true},
+   "description": "Each guardrail check, as the pipeline read it."
+  },
+  "criteria": {
+   "type": "array",
+   "items": {"$ref": "#/$defs/Criterion"},
+   "description": "The declared thresholds."
+  },
+  "scoreboard": {
+   "type": "object",
+   "additionalProperties": {"$ref": "#/$defs/ScoreboardRow"},
+   "description": "How each arm's trials came out, by arm."
+  },
+  "measures": {
+   "type": "object",
+   "additionalProperties": {"$ref": "#/$defs/Measure"},
+   "description": "Each measure, by key."
+  },
+  "judged": {
+   "type": "object",
+   "additionalProperties": {"$ref": "#/$defs/Judged"},
+   "description": "Each judged dimension, by key."
+  },
+  "primary_judged": {"type": ["string", "null"]},
+  "contrasts": {"type": "array", "items": {"$ref": "#/$defs/Contrast"}},
+  "contrast_families": {"type": "array", "items": {"$ref": "#/$defs/ContrastFamily"}},
+  "strata": {"type": "array", "items": {"$ref": "#/$defs/Stratum"}},
+  "examples": {"type": "array", "items": {"$ref": "#/$defs/Example"}},
+  "caveats": {"$ref": "#/$defs/Caveats"},
+  "prior_insights": {"type": "array", "items": {"$ref": "#/$defs/PriorInsight"}},
+  "tasks": {
+   "type": "array",
+   "items": {"$ref": "#/$defs/Task"},
+   "description": "The named tasks, in order."
+  },
+  "factors": {
+   "type": "array",
+   "items": {"$ref": "#/$defs/Factor"},
+   "description": "A factorial grid's factors, in order."
+  },
+  "configs": {
+   "type": "array",
+   "items": {"$ref": "#/$defs/Config"},
+   "description": "Each arm's level of each factor."
+  },
+  "target_matrix": {
+   "anyOf": [{"$ref": "#/$defs/TargetMatrix"}, {"type": "null"}],
+   "description": "A classifier's target matrix."
+  },
+  "cells": {
+   "type": "object",
+   "additionalProperties": {"$ref": "#/$defs/Cell"},
+   "description": "Each target-matrix cell, by id."
+  },
+  "confusion": {
+   "type": "object",
+   "additionalProperties": {"$ref": "#/$defs/ConfusionTable"},
+   "description": "Each label axis's confusion, by axis id."
+  },
+  "human_pref": {
+   "anyOf": [{"$ref": "#/$defs/HumanPreference"}, {"type": "null"}],
+   "description": "Blind human ratings."
   }
+ },
+ "additionalProperties": false,
+ "$defs": {
+  "ApparatusConfound": {
+   "type": "object",
+   "required": ["dimension"],
+   "properties": {
+    "dimension": {"type": "string", "description": "The setting."},
+    "kind": {"type": ["string", "null"], "description": "The confound's kind."},
+    "status": {"type": ["string", "null"], "description": "Whether it varied."},
+    "level_values": {
+     "type": "object",
+     "additionalProperties": {"type": ["string", "number", "null"]},
+     "description": "Its value per level."
+    },
+    "threshold": {
+     "type": ["number", "null"],
+     "description": "The threshold it was read against."
+    }
+   },
+   "additionalProperties": false,
+   "description": "An apparatus setting that may have varied between arms."
+  },
+  "Arm": {
+   "type": "object",
+   "required": ["id", "role", "settings"],
+   "properties": {
+    "id": {"type": "string", "description": "The arm's id, as every by-arm map keys it."},
+    "name": {"type": ["string", "null"], "description": "The campaign's alias for the arm."},
+    "role": {
+     "type": "string",
+     "enum": ["control", "challenger"],
+     "description": "The control, or a candidate measured against it."
+    },
+    "served_model": {
+     "type": ["string", "null"],
+     "description": "The model that served the arm's replies."
+    },
+    "variant_key": {"type": ["string", "null"], "description": "The pipeline's variant key."},
+    "settings": {
+     "type": "object",
+     "additionalProperties": {"type": ["string", "number", "null"]},
+     "description": "Model plus every lever that differs from the control (the control lists every lever); a lever an arm leaves out has the control's value."
+    },
+    "reasoning_ratio": {
+     "type": ["number", "null"],
+     "description": "The share of output spent reasoning."
+    },
+    "description": {
+     "type": ["string", "null"],
+     "description": "What kind of candidate the arm is, in a few words."
+    }
+   },
+   "additionalProperties": false,
+   "description": "One arm: what it ran and the part it plays."
+  },
+  "Aspect": {
+   "type": "object",
+   "required": ["id", "readings"],
+   "properties": {
+    "id": {"type": "string", "description": "The aspect's id."},
+    "name": {"type": ["string", "null"], "description": "What a reader calls the aspect."},
+    "margin": {
+     "type": ["number", "null"],
+     "description": "The non-inferiority margin, in points; none declared."
+    },
+    "asked": {
+     "type": ["boolean", "null"],
+     "description": "Whether the campaign's question asks about it."
+    },
+    "exploratory_measures": {
+     "type": "array",
+     "items": {"type": "string"},
+     "description": "Measures read on the aspect but not asked about."
+    },
+    "readings": {
+     "type": "array",
+     "items": {"$ref": "#/$defs/Reading"},
+     "description": "Each candidate's reading against the control."
+    },
+    "depth": {
+     "type": ["object", "null"],
+     "additionalProperties": {"$ref": "#/$defs/Depth"},
+     "description": "How deeply each arm ran it, by arm."
+    },
+    "pass_k": {
+     "type": ["array", "null"],
+     "items": {"$ref": "#/$defs/PassK"},
+     "description": "Where pass^k is compared."
+    },
+    "description": {
+     "type": ["string", "null"],
+     "description": "How the aspect is graded, in a sentence or two."
+    },
+    "graded_by": {
+     "type": ["string", "null"],
+     "enum": ["judged", "checked", null],
+     "description": "Whether a judge grades the aspect or a check in code does."
+    }
+   },
+   "additionalProperties": false,
+   "description": "One aspect the campaign read: its question and each candidate's reading against the control."
+  },
+  "BarRead": {
+   "type": "object",
+   "required": ["aspect", "arm", "measure", "bar", "direction", "status"],
+   "properties": {
+    "aspect": {"type": "string", "description": "The aspect it is read on."},
+    "arm": {"type": "string", "description": "The arm's id."},
+    "measure": {"type": "string", "description": "What the bar is read on."},
+    "bar": {
+     "type": "number",
+     "description": "The threshold, in the measure's units."
+    },
+    "direction": {
+     "type": "string",
+     "enum": ["higher_is_better", "lower_is_better"],
+     "description": "Which way clearing it runs."
+    },
+    "status": {"type": "string", "description": "met, missed or unclear."},
+    "value": {
+     "type": ["number", "null"],
+     "description": "The arm's value on the measure."
+    },
+    "interval": {
+     "type": ["array", "null"],
+     "items": {"type": "number"},
+     "minItems": 2,
+     "maxItems": 2,
+     "description": "The interval the status was read on."
+    },
+    "why": {"type": ["string", "null"], "description": "Why, in one plain sentence."}
+   },
+   "additionalProperties": false,
+   "description": "One arm against one absolute bar: met, missed or unclear, as the pipeline read it."
+  },
+  "Caveats": {
+   "type": "object",
+   "properties": {
+    "late_criteria": {
+     "type": "array",
+     "items": {"$ref": "#/$defs/LateCriterion"},
+     "description": "Criteria set after the results."
+    },
+    "judge_tiers": {
+     "type": "object",
+     "additionalProperties": {"type": "string"},
+     "description": "Each judged dimension's evidence tier."
+    },
+    "confounds": {
+     "type": "object",
+     "additionalProperties": {"type": "string"},
+     "description": "Each confound and what it means."
+    },
+    "apparatus_confounds": {
+     "type": "array",
+     "items": {"$ref": "#/$defs/ApparatusConfound"},
+     "description": "Apparatus confounds."
+    },
+    "latency": {
+     "type": ["string", "null"],
+     "description": "Why latency is not compared, when it is not."
+    },
+    "short_runs": {
+     "type": "array",
+     "items": {"$ref": "#/$defs/ShortRun"},
+     "description": "Runs short of usable measurements."
+    },
+    "unreported": {
+     "type": "array",
+     "items": {"type": "string"},
+     "description": "Observations recorded but not reported."
+    }
+   },
+   "additionalProperties": false,
+   "description": "Every disclosure the flag and the method section may need."
+  },
+  "Cell": {
+   "type": "object",
+   "required": ["row", "column"],
+   "properties": {
+    "row": {"type": "string", "description": "The row axis's level id."},
+    "column": {"type": "string", "description": "The column axis's level id."},
+    "n_cases": {"type": ["integer", "null"], "description": "Cases in the cell."},
+    "per_arm": {
+     "type": "object",
+     "additionalProperties": {"type": "object", "additionalProperties": {"$ref": "#/$defs/Stat"}},
+     "description": "Each arm's figures in the cell: arm, then measure."
+    }
+   },
+   "additionalProperties": false,
+   "description": "One cell of the target matrix and each arm's figures in it."
+  },
+  "Config": {
+   "type": "object",
+   "required": ["arm", "levels"],
+   "properties": {
+    "arm": {"type": "string", "description": "The arm's id."},
+    "levels": {
+     "type": "object",
+     "additionalProperties": {"type": "string"},
+     "description": "Each factor's level id, by factor id."
+    }
+   },
+   "additionalProperties": false,
+   "description": "The level of each factor one arm ran."
+  },
+  "ConfusionTable": {
+   "type": "object",
+   "required": ["labels", "unit", "per_arm"],
+   "properties": {
+    "labels": {
+     "type": "array",
+     "items": {"type": "string"},
+     "description": "The labels, in row and column order.",
+     "minItems": 2
+    },
+    "unit": {
+     "type": "string",
+     "enum": ["row_percent", "count"],
+     "description": "row_percent: each row sums to 100; count: observations."
+    },
+    "per_arm": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "array",
+      "items": {"type": "array", "items": {"type": "number"}}
+     },
+     "description": "Each arm's matrix, by arm."
+    }
+   },
+   "additionalProperties": false,
+   "description": "Where one label axis's predictions went: rows are the expected label, columns the predicted one."
+  },
+  "Contrast": {
+   "type": "object",
+   "required": ["arm", "measure", "verdict", "delta", "interval"],
+   "properties": {
+    "arm": {"type": "string", "description": "The arm's id."},
+    "control": {"type": ["string", "null"], "description": "The control's id."},
+    "kind": {"type": ["string", "null"], "description": "measure or judged."},
+    "measure": {"type": "string", "description": "The measure or judged dimension, by key."},
+    "verdict": {
+     "type": "string",
+     "description": "improved, regressed, equivalent, not_separated or untested."
+    },
+    "delta": {
+     "type": "number",
+     "description": "The arm minus the control, in the measure's units."
+    },
+    "interval": {
+     "type": "array",
+     "items": {"type": "number"},
+     "minItems": 2,
+     "maxItems": 2,
+     "description": "The corrected interval on the delta."
+    },
+    "p_adjusted": {"type": ["number", "null"], "description": "The adjusted p."},
+    "materiality": {"type": ["string", "null"], "description": "Whether the delta is material."},
+    "confounds": {
+     "type": "array",
+     "items": {"type": "string"},
+     "description": "Confounds on the contrast, by dimension."
+    }
+   },
+   "additionalProperties": false,
+   "description": "One multiple-comparison-corrected contrast of an arm against the control on one measure."
+  },
+  "ContrastFamily": {
+   "type": "object",
+   "properties": {
+    "merit_axes": {
+     "type": "array",
+     "items": {"type": "string"},
+     "description": "The declared merit priority; empty when no rule ranks the axes."
+    },
+    "correction": {"type": ["string", "null"], "description": "The correction method, e.g. holm, none."},
+    "alpha": {"type": ["number", "null"], "description": "The family's alpha."},
+    "family_size": {"type": ["integer", "null"], "description": "Contrasts in the family."},
+    "disclosure": {
+     "type": ["string", "null"],
+     "description": "What the correction means, in plain words."
+    },
+    "level": {"type": ["string", "null"], "description": "Each interval's level."}
+   },
+   "additionalProperties": false,
+   "description": "One family of contrasts corrected together."
+  },
+  "Criterion": {
+   "type": "object",
+   "required": ["id", "kind", "measure", "direction", "threshold"],
+   "properties": {
+    "id": {"type": "string", "description": "The criterion's id."},
+    "kind": {
+     "type": "string",
+     "enum": ["gate", "floor", "bar", "guardrail"],
+     "description": "gate: an option failing it is out; floor and bar: they warn; guardrail: a standing must-not-worsen."
+    },
+    "measure": {
+     "type": "string",
+     "description": "The measure, judged dimension or aspect it reads, by key."
+    },
+    "statistic": {
+     "type": "string",
+     "enum": ["mean", "p50", "p95"],
+     "description": "Which statistic it reads."
+    },
+    "direction": {
+     "type": "string",
+     "enum": ["higher_is_better", "lower_is_better"],
+     "description": "higher_is_better: the value must be at least the threshold; lower_is_better: at most."
+    },
+    "threshold": {
+     "type": "number",
+     "description": "The threshold, in the measure's units."
+    },
+    "scope": {
+     "type": "string",
+     "enum": ["overall", "each_task", "each_cell"],
+     "description": "overall: the arm's overall value; each_task: every task's value; each_cell: every cell's."
+    },
+    "task": {
+     "type": ["string", "null"],
+     "description": "The one task the criterion applies within."
+    },
+    "standing": {
+     "type": "boolean",
+     "description": "Whether it is standing policy rather than this campaign's."
+    },
+    "label": {"type": ["string", "null"], "description": "What a reader calls it."}
+   },
+   "additionalProperties": false,
+   "description": "A declared threshold: a gate, floor, bar or guardrail on one measure.\n\nA criterion states the rule; one gate function applies it, so the page, the options and any explore control\ncannot disagree. ``floors`` and ``bars`` carry the pipeline's own statuses where it read them."
+  },
+  "Depth": {
+   "type": "object",
+   "required": ["cases", "trials", "repeats_per_case"],
+   "properties": {
+    "cases": {"type": "integer", "description": "Distinct cases."},
+    "trials": {"type": "integer", "description": "Trials over those cases."},
+    "repeats_per_case": {
+     "type": "array",
+     "items": {"type": "number"},
+     "description": "Fewest, mean and most repeats a case got."
+    }
+   },
+   "additionalProperties": false,
+   "description": "How deeply one arm ran an aspect."
+  },
+  "Example": {
+   "type": "object",
+   "properties": {
+    "trial": {"type": ["string", "null"], "description": "The trial's id."},
+    "case": {"type": ["string", "null"], "description": "The case's id."},
+    "stratum": {"type": ["string", "null"], "description": "The stratum or task it falls in."},
+    "arm": {"type": ["string", "null"], "description": "The arm that ran it."},
+    "repeat": {"type": ["integer", "null"], "description": "Which repeat of the case."},
+    "reason": {
+     "type": ["string", "null"],
+     "description": "Why it failed: the judge's reason or a note."
+    },
+    "excerpt": {
+     "type": ["string", "null"],
+     "description": "The end of the reply, or what the arm produced."
+    },
+    "outcome": {"type": ["string", "null"], "description": "The failure class."},
+    "input": {"type": ["string", "null"], "description": "The input the case gave."},
+    "expected": {"type": ["string", "null"], "description": "What the case expected."}
+   },
+   "additionalProperties": false,
+   "description": "One trial shown as an example, usually a failure."
+  },
+  "Factor": {
+   "type": "object",
+   "required": ["id", "levels"],
+   "properties": {
+    "id": {"type": "string", "description": "The factor's id, as configs and settings key it."},
+    "name": {"type": ["string", "null"], "description": "What a reader calls it."},
+    "levels": {
+     "type": "array",
+     "items": {"$ref": "#/$defs/Level"},
+     "description": "Its levels, in order.",
+     "minItems": 1
+    }
+   },
+   "additionalProperties": false,
+   "description": "One factor of a factorial grid, or one axis of a target matrix, with its levels in order."
+  },
+  "FloorRead": {
+   "type": "object",
+   "required": ["floor", "aspect", "arm", "status"],
+   "properties": {
+    "floor": {"type": "string", "description": "The floor's key."},
+    "aspect": {"type": "string", "description": "The aspect it is read on."},
+    "arm": {"type": "string", "description": "The candidate's id."},
+    "status": {"type": "string", "description": "broken, held or unclear."},
+    "reading": {"type": ["string", "null"], "description": "The rate that decided the status."},
+    "speaks_for": {"type": ["string", "null"], "description": "The rate the floor speaks for."},
+    "interval": {
+     "type": ["array", "null"],
+     "items": {"type": "number"},
+     "minItems": 2,
+     "maxItems": 2,
+     "description": "The interval the status was read on."
+    },
+    "worst_drop": {
+     "type": ["number", "null"],
+     "description": "The largest drop the interval allows, in points."
+    },
+    "margin": {
+     "type": ["number", "null"],
+     "description": "The floor's margin, in points."
+    },
+    "short_by": {
+     "type": ["number", "null"],
+     "description": "How far an unclear floor is from held, in points."
+    },
+    "reason": {"type": ["string", "null"], "description": "Why, in one plain sentence."}
+   },
+   "additionalProperties": false,
+   "description": "One floor on one candidate: held, broken or unclear, as the pipeline read it."
+  },
+  "HumanPreference": {
+   "type": "object",
+   "required": ["control", "arm", "n", "rows"],
+   "properties": {
+    "control": {"type": "string", "description": "The control's id."},
+    "arm": {"type": "string", "description": "The arm rated against it."},
+    "n": {"type": "integer", "description": "Rated items."},
+    "rows": {
+     "type": "array",
+     "items": {"$ref": "#/$defs/PreferenceRow"},
+     "description": "The preference in each slice.",
+     "minItems": 1
+    }
+   },
+   "additionalProperties": false,
+   "description": "Blind side-by-side ratings of the control against one arm."
+  },
+  "Judged": {
+   "type": "object",
+   "properties": {
+    "label": {"type": ["string", "null"], "description": "What a reader calls it."},
+    "scale": {
+     "type": ["string", "null"],
+     "enum": ["ordinal", "pass_fail", null],
+     "description": "The rubric's scale."
+    },
+    "tier": {"type": ["string", "null"], "description": "The judge's evidence tier."},
+    "judge_model": {"type": ["string", "null"], "description": "The judge's model."},
+    "calibration": {"type": ["string", "null"], "description": "The judge's calibration state."},
+    "calibration_ratings": {
+     "type": ["integer", "null"],
+     "description": "Human ratings the judge was calibrated on."
+    },
+    "agreement": {
+     "type": ["number", "null"],
+     "description": "The judge's agreement with those ratings."
+    },
+    "level": {
+     "type": ["string", "null"],
+     "description": "The confidence level of the intervals per_arm carries."
+    },
+    "per_arm": {
+     "type": "object",
+     "additionalProperties": {"$ref": "#/$defs/Stat"},
+     "description": "Each arm's mean, by arm."
+    }
+   },
+   "additionalProperties": false,
+   "description": "One judged dimension: its judge and each arm's mean."
+  },
+  "LateCriterion": {
+   "type": "object",
+   "required": ["criterion", "set_at"],
+   "properties": {
+    "criterion": {
+     "type": "string",
+     "description": "What was set: aspect, control, margin, floor, gate."
+    },
+    "name": {"type": ["string", "null"], "description": "Which one, where several could be."},
+    "set_at": {"type": "string", "description": "When it was set."}
+   },
+   "additionalProperties": false,
+   "description": "A criterion set after the results were visible."
+  },
+  "Level": {
+   "type": "object",
+   "required": ["id"],
+   "properties": {
+    "id": {"type": "string", "description": "The level's id."},
+    "name": {"type": ["string", "null"], "description": "What a reader calls it."}
+   },
+   "additionalProperties": false,
+   "description": "One level of a factor, axis or bin."
+  },
+  "Measure": {
+   "type": "object",
+   "properties": {
+    "label": {"type": ["string", "null"], "description": "What a reader calls it."},
+    "unit": {
+     "type": ["string", "null"],
+     "description": "Its unit, e.g. usd, pct, ms, usd_per_1k."
+    },
+    "higher_is_better": {"type": ["boolean", "null"], "description": "Which way is better."},
+    "merit_axis": {"type": ["string", "null"], "description": "The merit axis it counts toward."},
+    "means": {"type": ["string", "null"], "description": "Its definition."},
+    "per_arm": {
+     "type": "object",
+     "additionalProperties": {"$ref": "#/$defs/Stat"},
+     "description": "Each arm's figure, by arm."
+    },
+    "grade": {
+     "type": ["string", "null"],
+     "enum": ["pass_fail", "ordinal", "class_label", null],
+     "description": "For a rate or score over graded cases, what one case's grade is: a pass or fail, a point on a scale, or a class label right or wrong."
+    },
+    "level": {
+     "type": ["string", "null"],
+     "description": "The confidence level of the intervals per_arm carries."
+    },
+    "bins": {
+     "type": ["array", "null"],
+     "items": {"$ref": "#/$defs/Level"},
+     "description": "The bins a distribution's shares fall in, in order."
+    },
+    "minimum": {
+     "type": ["number", "null"],
+     "description": "The least the measure can be, where the test set fixes it (a gold call count)."
+    }
+   },
+   "additionalProperties": false,
+   "description": "One measure: what it means and each arm's figure on it."
+  },
+  "Meta": {
+   "type": "object",
+   "required": ["campaign", "kind"],
+   "properties": {
+    "campaign": {"type": "string", "description": "The campaign's name."},
+    "question": {
+     "type": ["string", "null"],
+     "description": "The question the campaign asked, in its own words."
+    },
+    "behavior": {"type": ["string", "null"], "description": "The system or behavior under test."},
+    "kind": {
+     "type": "string",
+     "description": "The pipeline kind, e.g. change (control + candidates)."
+    },
+    "kind_means": {
+     "type": ["string", "null"],
+     "description": "What the kind recommends, in one sentence."
+    },
+    "design_shape": {"type": ["string", "null"], "description": "e.g. one_factor_at_a_time, factorial."},
+    "run_date": {"type": ["string", "null"], "description": "The run date, ISO 8601."},
+    "provenance": {"type": ["string", "null"], "description": "Where these figures came from."},
+    "synthetic": {
+     "type": ["boolean", "null"],
+     "description": "Whether the data is made up for an example."
+    },
+    "volume_per_month": {
+     "type": ["number", "null"],
+     "description": "Replies or calls per month, when the host declares it; enables monthly cost."
+    }
+   },
+   "additionalProperties": false,
+   "description": "What the campaign was, as the masthead and the method section name it."
+  },
+  "PassK": {
+   "type": "object",
+   "required": ["where", "k", "common_depth", "shares_no_case"],
+   "properties": {
+    "where": {"type": "string", "description": "The aspect read."},
+    "k": {"type": "integer", "description": "The k compared."},
+    "common_depth": {"type": "integer", "description": "The fewest runs any arm gave a shared case."},
+    "shares_no_case": {"type": "boolean", "description": "Whether the arms share no case at that depth."},
+    "unmeasured_for": {
+     "type": "array",
+     "items": {"type": "string"},
+     "description": "Arms pass^k is not measured for."
+    },
+    "said": {
+     "type": "array",
+     "items": {"type": "string"},
+     "description": "What the pipeline says about it."
+    }
+   },
+   "additionalProperties": false,
+   "description": "Where pass^k is compared, and at what depth."
+  },
+  "Precision": {
+   "type": "object",
+   "properties": {
+    "half_width": {
+     "type": ["number", "null"],
+     "description": "The interval's half-width, in points."
+    },
+    "own_half_width": {
+     "type": "object",
+     "additionalProperties": {"type": "number"},
+     "description": "Each arm's own half-width, by arm."
+    },
+    "limited_by": {
+     "type": ["string", "null"],
+     "description": "The arm whose noise limits the interval."
+    },
+    "between_case_share": {
+     "type": ["number", "null"],
+     "description": "The share of the variance that lies between cases."
+    },
+    "means": {
+     "type": ["string", "null"],
+     "description": "What the decomposition means, in one sentence."
+    }
+   },
+   "additionalProperties": false,
+   "description": "What limits a reading's interval at its nominal level."
+  },
+  "PreferenceRow": {
+   "type": "object",
+   "required": ["id", "prefers_control"],
+   "properties": {
+    "id": {"type": "string", "description": "The slice's id."},
+    "name": {"type": ["string", "null"], "description": "What a reader calls it."},
+    "prefers_control": {
+     "type": "number",
+     "description": "The share of ratings preferring the control, percent."
+    },
+    "half_width": {
+     "type": ["number", "null"],
+     "description": "The interval's half-width, in points."
+    }
+   },
+   "additionalProperties": false,
+   "description": "Blind human preference in one slice."
+  },
+  "PriorInsight": {
+   "type": "object",
+   "required": ["statement"],
+   "properties": {
+    "statement": {"type": "string", "description": "The insight."},
+    "confidence": {"type": ["string", "null"], "description": "How sure the earlier campaign was."}
+   },
+   "additionalProperties": false,
+   "description": "An insight an earlier campaign recorded."
+  },
+  "Reading": {
+   "type": "object",
+   "required": ["arm", "reading", "change", "within_interval"],
+   "properties": {
+    "arm": {"type": "string", "description": "The arm's id."},
+    "reading": {
+     "type": "string",
+     "description": "The pipeline's verdict, e.g. within_margin, regressed, not_separated."
+    },
+    "change": {
+     "type": "number",
+     "description": "The arm minus the control, in points."
+    },
+    "within_interval": {
+     "type": "array",
+     "items": {"type": "number"},
+     "minItems": 2,
+     "maxItems": 2,
+     "description": "The interval on the change, low then high, in points."
+    },
+    "gain_confidence": {
+     "type": ["number", "null"],
+     "description": "The interval's confidence level."
+    },
+    "margin": {
+     "type": ["number", "null"],
+     "description": "The margin the reading was read against, in points."
+    },
+    "control_passed": {"type": ["string", "null"], "description": "The control's passes, as 'k of n'."},
+    "arm_passed": {"type": ["string", "null"], "description": "The arm's passes, as 'k of n'."},
+    "cases": {
+     "type": "array",
+     "items": {"type": "integer"},
+     "description": "The paired cases the interval rests on."
+    },
+    "confirmatory": {
+     "type": ["boolean", "null"],
+     "description": "Whether the reading answers the asked question."
+    },
+    "why": {"type": ["string", "null"], "description": "Why, in one plain sentence."},
+    "precision": {
+     "anyOf": [{"$ref": "#/$defs/Precision"}, {"type": "null"}],
+     "description": "What limits the interval."
+    }
+   },
+   "additionalProperties": false,
+   "description": "One arm's reading on an aspect: its change from the control, with the interval it was read on."
+  },
+  "ScoreboardRow": {
+   "type": "object",
+   "properties": {
+    "ran": {"type": ["integer", "null"], "description": "Trials run."},
+    "lost": {
+     "type": "object",
+     "additionalProperties": {"type": "integer"},
+     "description": "Trials lost, by cause."
+    },
+    "usable": {
+     "type": ["integer", "null"],
+     "description": "Trials that produced a usable measurement."
+    },
+    "passed": {"type": ["integer", "null"], "description": "Trials that passed."},
+    "failed": {
+     "type": "object",
+     "additionalProperties": {"type": "integer"},
+     "description": "Trials that failed, by cause."
+    },
+    "cases": {"type": ["integer", "null"], "description": "Distinct cases."},
+    "reply_cost_usd": {"type": ["number", "null"], "description": "Cost per reply, dollars."},
+    "test_cost_usd": {
+     "type": ["number", "null"],
+     "description": "What the arm's trials cost, dollars."
+    }
+   },
+   "additionalProperties": false,
+   "description": "How one arm's trials came out."
+  },
+  "ShortRun": {
+   "type": "object",
+   "required": ["run", "note"],
+   "properties": {
+    "run": {"type": "string", "description": "The run's id."},
+    "arm": {"type": ["string", "null"], "description": "The arm it ran."},
+    "note": {"type": "string", "description": "What it lost, and what that does to its rates."}
+   },
+   "additionalProperties": false,
+   "description": "A run that produced fewer usable measurements than it was asked for."
+  },
+  "Stat": {
+   "type": "object",
+   "properties": {
+    "mean": {
+     "type": ["number", "null"],
+     "description": "The mean, in the measure's units."
+    },
+    "ci": {
+     "type": ["array", "null"],
+     "items": {"type": "number"},
+     "minItems": 2,
+     "maxItems": 2,
+     "description": "The interval on the mean, low then high."
+    },
+    "half_width": {
+     "type": ["number", "null"],
+     "description": "The interval's half-width, where only that is given."
+    },
+    "sem": {
+     "type": ["number", "null"],
+     "description": "The standard error of the mean."
+    },
+    "n": {"type": ["integer", "null"], "description": "Observations."},
+    "n_cases": {"type": ["integer", "null"], "description": "Distinct cases behind them."},
+    "p50": {"type": ["number", "null"], "description": "The median."},
+    "p95": {"type": ["number", "null"], "description": "The 95th percentile."},
+    "change": {
+     "type": ["number", "null"],
+     "description": "The arm minus the control, where only that is given."
+    },
+    "shares": {
+     "type": ["array", "null"],
+     "items": {"type": "number"},
+     "description": "The share in each of the measure's bins, percent."
+    }
+   },
+   "additionalProperties": false,
+   "description": "One arm's figure on one measure: a mean with its spread, a latency's percentiles, or a distribution."
+  },
+  "Stratum": {
+   "type": "object",
+   "required": ["id"],
+   "properties": {
+    "id": {"type": "string", "description": "The stratum's id."},
+    "name": {"type": ["string", "null"], "description": "What a reader calls it."},
+    "dimension": {
+     "type": ["string", "null"],
+     "description": "The stratification it belongs to, when the input holds more than one."
+    },
+    "n_cases": {"type": ["integer", "null"], "description": "Cases in the stratum."},
+    "share": {
+     "type": ["number", "null"],
+     "description": "Its share of traffic, 0 to 1."
+    },
+    "cost_multiplier": {
+     "type": ["number", "null"],
+     "description": "Its cost per reply relative to the average."
+    },
+    "per_arm": {
+     "type": "object",
+     "additionalProperties": {"type": "object", "additionalProperties": {"$ref": "#/$defs/Stat"}},
+     "description": "Each arm's figures in the stratum: arm, then measure or dimension."
+    }
+   },
+   "additionalProperties": false,
+   "description": "One stratum: a slice of the cases and each arm's figures in it."
+  },
+  "TargetMatrix": {
+   "type": "object",
+   "required": ["rows", "columns"],
+   "properties": {
+    "rows": {"$ref": "#/$defs/Factor", "description": "The row axis."},
+    "columns": {"$ref": "#/$defs/Factor", "description": "The column axis."}
+   },
+   "additionalProperties": false,
+   "description": "Two label axes whose product is the cells a classifier is graded in."
+  },
+  "Task": {
+   "type": "object",
+   "required": ["id"],
+   "properties": {
+    "id": {"type": "string", "description": "The task's id."},
+    "name": {"type": ["string", "null"], "description": "What a reader calls it."},
+    "description": {"type": ["string", "null"], "description": "What it covers, in a sentence."},
+    "n_cases": {"type": ["integer", "null"], "description": "Cases in it."},
+    "share": {
+     "type": ["number", "null"],
+     "description": "Its share of traffic, 0 to 1; 0 for a test category."
+    },
+    "routable": {
+     "type": ["boolean", "null"],
+     "description": "Whether its traffic can be routed to its own arm."
+    },
+    "cross_cutting": {"type": "boolean", "description": "Whether it occurs inside every other task."},
+    "per_arm": {
+     "type": "object",
+     "additionalProperties": {"type": "object", "additionalProperties": {"$ref": "#/$defs/Stat"}},
+     "description": "Each arm's figures in the task: arm, then measure or dimension."
+    }
+   },
+   "additionalProperties": false,
+   "description": "A named slice of the work, with each arm's figures in it.\n\nA routable task's traffic can go to its own arm; a cross-cutting one occurs inside every other task, so an arm\nserving any traffic must pass it."
+  }
+ }
 }

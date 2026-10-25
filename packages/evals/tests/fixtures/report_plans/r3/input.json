@@ -1,0 +1,1373 @@
+{
+ "schema": "report-input/1",
+ "meta": {
+  "campaign": "Turn router classifier sweep",
+  "behavior": "Turn router: complexity × domain",
+  "kind": "choice",
+  "design_shape": "factorial",
+  "run_date": "2026-10-24",
+  "provenance": "Synthetic example data from docs/eval-report-kit/references/r3-classifier.json",
+  "synthetic": true,
+  "volume_per_month": 30000000
+ },
+ "arms": [
+  {
+   "id": "atlas-m.zero",
+   "name": "Atlas-M · Zero-shot",
+   "role": "challenger",
+   "served_model": "Atlas-M",
+   "settings": {
+    "model": "Atlas-M",
+    "prompt": "Zero-shot"
+   }
+  },
+  {
+   "id": "atlas-m.few",
+   "name": "Atlas-M · Few-shot (12 ex.)",
+   "role": "challenger",
+   "served_model": "Atlas-M",
+   "settings": {
+    "model": "Atlas-M",
+    "prompt": "Few-shot (12 ex.)"
+   }
+  },
+  {
+   "id": "atlas-m.rubric",
+   "name": "Atlas-M · Rubric + reasoning",
+   "role": "challenger",
+   "served_model": "Atlas-M",
+   "settings": {
+    "model": "Atlas-M",
+    "prompt": "Rubric + reasoning"
+   }
+  },
+  {
+   "id": "brisk-s.zero",
+   "name": "Brisk-S · Zero-shot",
+   "role": "challenger",
+   "served_model": "Brisk-S",
+   "settings": {
+    "model": "Brisk-S",
+    "prompt": "Zero-shot"
+   }
+  },
+  {
+   "id": "brisk-s.few",
+   "name": "Brisk-S · Few-shot (12 ex.)",
+   "role": "challenger",
+   "served_model": "Brisk-S",
+   "settings": {
+    "model": "Brisk-S",
+    "prompt": "Few-shot (12 ex.)"
+   }
+  },
+  {
+   "id": "brisk-s.rubric",
+   "name": "Brisk-S · Rubric + reasoning",
+   "role": "challenger",
+   "served_model": "Brisk-S",
+   "settings": {
+    "model": "Brisk-S",
+    "prompt": "Rubric + reasoning"
+   }
+  },
+  {
+   "id": "nano-xs.zero",
+   "name": "Nano-XS · Zero-shot",
+   "role": "challenger",
+   "served_model": "Nano-XS",
+   "settings": {
+    "model": "Nano-XS",
+    "prompt": "Zero-shot"
+   }
+  },
+  {
+   "id": "nano-xs.few",
+   "name": "Nano-XS · Few-shot (12 ex.)",
+   "role": "challenger",
+   "served_model": "Nano-XS",
+   "settings": {
+    "model": "Nano-XS",
+    "prompt": "Few-shot (12 ex.)"
+   }
+  },
+  {
+   "id": "nano-xs.rubric",
+   "name": "Nano-XS · Rubric + reasoning",
+   "role": "challenger",
+   "served_model": "Nano-XS",
+   "settings": {
+    "model": "Nano-XS",
+    "prompt": "Rubric + reasoning"
+   }
+  }
+ ],
+ "aspects": [],
+ "criteria": [
+  {
+   "id": "overall",
+   "kind": "gate",
+   "measure": "balanced_accuracy",
+   "direction": "higher_is_better",
+   "threshold": 90.0,
+   "label": "Overall accuracy"
+  },
+  {
+   "id": "cell_floor",
+   "kind": "gate",
+   "measure": "accuracy",
+   "direction": "higher_is_better",
+   "threshold": 80.0,
+   "scope": "each_cell",
+   "label": "Cell floor"
+  },
+  {
+   "id": "p95",
+   "kind": "gate",
+   "measure": "latency_ms",
+   "statistic": "p95",
+   "direction": "lower_is_better",
+   "threshold": 250,
+   "label": "Latency budget (p95)"
+  }
+ ],
+ "scoreboard": {
+  "atlas-m.zero": {
+   "cases": 48210
+  },
+  "atlas-m.few": {
+   "cases": 48210
+  },
+  "atlas-m.rubric": {
+   "cases": 48210
+  },
+  "brisk-s.zero": {
+   "cases": 48210
+  },
+  "brisk-s.few": {
+   "cases": 48210
+  },
+  "brisk-s.rubric": {
+   "cases": 48210
+  },
+  "nano-xs.zero": {
+   "cases": 48210
+  },
+  "nano-xs.few": {
+   "cases": 48210
+  },
+  "nano-xs.rubric": {
+   "cases": 48210
+  }
+ },
+ "measures": {
+  "accuracy": {
+   "label": "Accuracy",
+   "unit": "pct",
+   "higher_is_better": true,
+   "means": "A turn is correct only if both complexity and domain match. Read per cell.",
+   "grade": "class_label",
+   "level": "95%"
+  },
+  "balanced_accuracy": {
+   "label": "Balanced accuracy",
+   "unit": "pct",
+   "higher_is_better": true,
+   "means": "Accuracy with the nine target cells weighted equally.",
+   "per_arm": {
+    "atlas-m.zero": {
+     "mean": 89.8
+    },
+    "atlas-m.few": {
+     "mean": 92.1
+    },
+    "atlas-m.rubric": {
+     "mean": 93.2
+    },
+    "brisk-s.zero": {
+     "mean": 86.0
+    },
+    "brisk-s.few": {
+     "mean": 90.7
+    },
+    "brisk-s.rubric": {
+     "mean": 91.5
+    },
+    "nano-xs.zero": {
+     "mean": 78.2
+    },
+    "nano-xs.few": {
+     "mean": 90.1
+    },
+    "nano-xs.rubric": {
+     "mean": 83.9
+    }
+   },
+   "grade": "class_label"
+  },
+  "traffic_accuracy": {
+   "label": "Traffic-weighted accuracy",
+   "unit": "pct",
+   "higher_is_better": true,
+   "means": "Accuracy weighted by corpus counts, which follow production traffic.",
+   "per_arm": {
+    "atlas-m.zero": {
+     "mean": 91.2
+    },
+    "atlas-m.few": {
+     "mean": 93.5
+    },
+    "atlas-m.rubric": {
+     "mean": 94.6
+    },
+    "brisk-s.zero": {
+     "mean": 87.5
+    },
+    "brisk-s.few": {
+     "mean": 92.2
+    },
+    "brisk-s.rubric": {
+     "mean": 93.1
+    },
+    "nano-xs.zero": {
+     "mean": 80.2
+    },
+    "nano-xs.few": {
+     "mean": 92.0
+    },
+    "nano-xs.rubric": {
+     "mean": 86.0
+    }
+   },
+   "grade": "class_label"
+  },
+  "macro_f1": {
+   "label": "Macro F1",
+   "unit": "pct",
+   "higher_is_better": true,
+   "per_arm": {
+    "atlas-m.zero": {
+     "mean": 88.7
+    },
+    "atlas-m.few": {
+     "mean": 91.0
+    },
+    "atlas-m.rubric": {
+     "mean": 92.1
+    },
+    "brisk-s.zero": {
+     "mean": 84.9
+    },
+    "brisk-s.few": {
+     "mean": 89.6
+    },
+    "brisk-s.rubric": {
+     "mean": 90.4
+    },
+    "nano-xs.zero": {
+     "mean": 77.1
+    },
+    "nano-xs.few": {
+     "mean": 89.0
+    },
+    "nano-xs.rubric": {
+     "mean": 82.8
+    }
+   }
+  },
+  "cost_per_1m": {
+   "label": "Cost per million turns",
+   "unit": "usd_per_1m",
+   "higher_is_better": false,
+   "means": "Measured tokens times list price per million turns.",
+   "per_arm": {
+    "atlas-m.zero": {
+     "mean": 180
+    },
+    "atlas-m.few": {
+     "mean": 260
+    },
+    "atlas-m.rubric": {
+     "mean": 610
+    },
+    "brisk-s.zero": {
+     "mean": 28
+    },
+    "brisk-s.few": {
+     "mean": 40
+    },
+    "brisk-s.rubric": {
+     "mean": 95
+    },
+    "nano-xs.zero": {
+     "mean": 1.3
+    },
+    "nano-xs.few": {
+     "mean": 1.9
+    },
+    "nano-xs.rubric": {
+     "mean": 4.6
+    }
+   }
+  },
+  "latency_ms": {
+   "label": "Latency",
+   "unit": "ms",
+   "higher_is_better": false,
+   "per_arm": {
+    "atlas-m.zero": {
+     "p95": 420
+    },
+    "atlas-m.few": {
+     "p95": 483
+    },
+    "atlas-m.rubric": {
+     "p95": 1302
+    },
+    "brisk-s.zero": {
+     "p95": 160
+    },
+    "brisk-s.few": {
+     "p95": 184
+    },
+    "brisk-s.rubric": {
+     "p95": 496
+    },
+    "nano-xs.zero": {
+     "p95": 70
+    },
+    "nano-xs.few": {
+     "p95": 80
+    },
+    "nano-xs.rubric": {
+     "p95": 217
+    }
+   }
+  }
+ },
+ "judged": {},
+ "contrasts": [],
+ "caveats": {
+  "late_criteria": []
+ },
+ "factors": [
+  {
+   "id": "model",
+   "name": "Model",
+   "levels": [
+    {
+     "id": "atlas-m",
+     "name": "Atlas-M"
+    },
+    {
+     "id": "brisk-s",
+     "name": "Brisk-S"
+    },
+    {
+     "id": "nano-xs",
+     "name": "Nano-XS"
+    }
+   ]
+  },
+  {
+   "id": "prompt",
+   "name": "Prompt",
+   "levels": [
+    {
+     "id": "zero",
+     "name": "Zero-shot"
+    },
+    {
+     "id": "few",
+     "name": "Few-shot (12 ex.)"
+    },
+    {
+     "id": "rubric",
+     "name": "Rubric + reasoning"
+    }
+   ]
+  }
+ ],
+ "configs": [
+  {
+   "arm": "atlas-m.zero",
+   "levels": {
+    "model": "atlas-m",
+    "prompt": "zero"
+   }
+  },
+  {
+   "arm": "atlas-m.few",
+   "levels": {
+    "model": "atlas-m",
+    "prompt": "few"
+   }
+  },
+  {
+   "arm": "atlas-m.rubric",
+   "levels": {
+    "model": "atlas-m",
+    "prompt": "rubric"
+   }
+  },
+  {
+   "arm": "brisk-s.zero",
+   "levels": {
+    "model": "brisk-s",
+    "prompt": "zero"
+   }
+  },
+  {
+   "arm": "brisk-s.few",
+   "levels": {
+    "model": "brisk-s",
+    "prompt": "few"
+   }
+  },
+  {
+   "arm": "brisk-s.rubric",
+   "levels": {
+    "model": "brisk-s",
+    "prompt": "rubric"
+   }
+  },
+  {
+   "arm": "nano-xs.zero",
+   "levels": {
+    "model": "nano-xs",
+    "prompt": "zero"
+   }
+  },
+  {
+   "arm": "nano-xs.few",
+   "levels": {
+    "model": "nano-xs",
+    "prompt": "few"
+   }
+  },
+  {
+   "arm": "nano-xs.rubric",
+   "levels": {
+    "model": "nano-xs",
+    "prompt": "rubric"
+   }
+  }
+ ],
+ "target_matrix": {
+  "rows": {
+   "id": "complexity",
+   "name": "Complexity",
+   "levels": [
+    {
+     "id": "simple",
+     "name": "Simple"
+    },
+    {
+     "id": "medium",
+     "name": "Medium"
+    },
+    {
+     "id": "complex",
+     "name": "Complex"
+    }
+   ]
+  },
+  "columns": {
+   "id": "domain",
+   "name": "Domain",
+   "levels": [
+    {
+     "id": "science",
+     "name": "Science"
+    },
+    {
+     "id": "conv",
+     "name": "Conversational"
+    },
+    {
+     "id": "news",
+     "name": "News"
+    }
+   ]
+  }
+ },
+ "cells": {
+  "simple|science": {
+   "row": "simple",
+   "column": "science",
+   "n_cases": 3120,
+   "per_arm": {
+    "atlas-m.zero": {
+     "accuracy": {
+      "mean": 93.8,
+      "half_width": 0.8
+     }
+    },
+    "atlas-m.few": {
+     "accuracy": {
+      "mean": 96.3,
+      "half_width": 0.7
+     }
+    },
+    "atlas-m.rubric": {
+     "accuracy": {
+      "mean": 97.5,
+      "half_width": 0.5
+     }
+    },
+    "brisk-s.zero": {
+     "accuracy": {
+      "mean": 90.1,
+      "half_width": 1.0
+     }
+    },
+    "brisk-s.few": {
+     "accuracy": {
+      "mean": 95.1,
+      "half_width": 0.8
+     }
+    },
+    "brisk-s.rubric": {
+     "accuracy": {
+      "mean": 95.5,
+      "half_width": 0.7
+     }
+    },
+    "nano-xs.zero": {
+     "accuracy": {
+      "mean": 84.4,
+      "half_width": 1.3
+     }
+    },
+    "nano-xs.few": {
+     "accuracy": {
+      "mean": 96.2,
+      "half_width": 0.7
+     }
+    },
+    "nano-xs.rubric": {
+     "accuracy": {
+      "mean": 89.5,
+      "half_width": 1.1
+     }
+    }
+   }
+  },
+  "simple|conv": {
+   "row": "simple",
+   "column": "conv",
+   "n_cases": 14880,
+   "per_arm": {
+    "atlas-m.zero": {
+     "accuracy": {
+      "mean": 95.8,
+      "half_width": 0.3
+     }
+    },
+    "atlas-m.few": {
+     "accuracy": {
+      "mean": 97.8,
+      "half_width": 0.2
+     }
+    },
+    "atlas-m.rubric": {
+     "accuracy": {
+      "mean": 99.2,
+      "half_width": 0.1
+     }
+    },
+    "brisk-s.zero": {
+     "accuracy": {
+      "mean": 92.1,
+      "half_width": 0.4
+     }
+    },
+    "brisk-s.few": {
+     "accuracy": {
+      "mean": 97.1,
+      "half_width": 0.3
+     }
+    },
+    "brisk-s.rubric": {
+     "accuracy": {
+      "mean": 97.9,
+      "half_width": 0.2
+     }
+    },
+    "nano-xs.zero": {
+     "accuracy": {
+      "mean": 86.4,
+      "half_width": 0.6
+     }
+    },
+    "nano-xs.few": {
+     "accuracy": {
+      "mean": 98.2,
+      "half_width": 0.2
+     }
+    },
+    "nano-xs.rubric": {
+     "accuracy": {
+      "mean": 92.5,
+      "half_width": 0.4
+     }
+    }
+   }
+  },
+  "simple|news": {
+   "row": "simple",
+   "column": "news",
+   "n_cases": 4410,
+   "per_arm": {
+    "atlas-m.zero": {
+     "accuracy": {
+      "mean": 93.1,
+      "half_width": 0.7
+     }
+    },
+    "atlas-m.few": {
+     "accuracy": {
+      "mean": 94.9,
+      "half_width": 0.6
+     }
+    },
+    "atlas-m.rubric": {
+     "accuracy": {
+      "mean": 96.1,
+      "half_width": 0.6
+     }
+    },
+    "brisk-s.zero": {
+     "accuracy": {
+      "mean": 89.4,
+      "half_width": 0.9
+     }
+    },
+    "brisk-s.few": {
+     "accuracy": {
+      "mean": 94.0,
+      "half_width": 0.7
+     }
+    },
+    "brisk-s.rubric": {
+     "accuracy": {
+      "mean": 94.5,
+      "half_width": 0.7
+     }
+    },
+    "nano-xs.zero": {
+     "accuracy": {
+      "mean": 82.4,
+      "half_width": 1.1
+     }
+    },
+    "nano-xs.few": {
+     "accuracy": {
+      "mean": 94.5,
+      "half_width": 0.7
+     }
+    },
+    "nano-xs.rubric": {
+     "accuracy": {
+      "mean": 88.2,
+      "half_width": 1.0
+     }
+    }
+   }
+  },
+  "medium|science": {
+   "row": "medium",
+   "column": "science",
+   "n_cases": 4260,
+   "per_arm": {
+    "atlas-m.zero": {
+     "accuracy": {
+      "mean": 88.8,
+      "half_width": 0.9
+     }
+    },
+    "atlas-m.few": {
+     "accuracy": {
+      "mean": 90.8,
+      "half_width": 0.9
+     }
+    },
+    "atlas-m.rubric": {
+     "accuracy": {
+      "mean": 92.0,
+      "half_width": 0.8
+     }
+    },
+    "brisk-s.zero": {
+     "accuracy": {
+      "mean": 85.1,
+      "half_width": 1.1
+     }
+    },
+    "brisk-s.few": {
+     "accuracy": {
+      "mean": 89.9,
+      "half_width": 0.9
+     }
+    },
+    "brisk-s.rubric": {
+     "accuracy": {
+      "mean": 91.0,
+      "half_width": 0.9
+     }
+    },
+    "nano-xs.zero": {
+     "accuracy": {
+      "mean": 77.8,
+      "half_width": 1.2
+     }
+    },
+    "nano-xs.few": {
+     "accuracy": {
+      "mean": 89.4,
+      "half_width": 0.9
+     }
+    },
+    "nano-xs.rubric": {
+     "accuracy": {
+      "mean": 83.6,
+      "half_width": 1.1
+     }
+    }
+   }
+  },
+  "medium|conv": {
+   "row": "medium",
+   "column": "conv",
+   "n_cases": 7350,
+   "per_arm": {
+    "atlas-m.zero": {
+     "accuracy": {
+      "mean": 90.8,
+      "half_width": 0.7
+     }
+    },
+    "atlas-m.few": {
+     "accuracy": {
+      "mean": 93.3,
+      "half_width": 0.6
+     }
+    },
+    "atlas-m.rubric": {
+     "accuracy": {
+      "mean": 94.4,
+      "half_width": 0.5
+     }
+    },
+    "brisk-s.zero": {
+     "accuracy": {
+      "mean": 87.2,
+      "half_width": 0.8
+     }
+    },
+    "brisk-s.few": {
+     "accuracy": {
+      "mean": 91.6,
+      "half_width": 0.6
+     }
+    },
+    "brisk-s.rubric": {
+     "accuracy": {
+      "mean": 92.9,
+      "half_width": 0.6
+     }
+    },
+    "nano-xs.zero": {
+     "accuracy": {
+      "mean": 80.5,
+      "half_width": 0.9
+     }
+    },
+    "nano-xs.few": {
+     "accuracy": {
+      "mean": 91.9,
+      "half_width": 0.6
+     }
+    },
+    "nano-xs.rubric": {
+     "accuracy": {
+      "mean": 85.7,
+      "half_width": 0.8
+     }
+    }
+   }
+  },
+  "medium|news": {
+   "row": "medium",
+   "column": "news",
+   "n_cases": 5190,
+   "per_arm": {
+    "atlas-m.zero": {
+     "accuracy": {
+      "mean": 86.9,
+      "half_width": 0.9
+     }
+    },
+    "atlas-m.few": {
+     "accuracy": {
+      "mean": 89.3,
+      "half_width": 0.8
+     }
+    },
+    "atlas-m.rubric": {
+     "accuracy": {
+      "mean": 90.0,
+      "half_width": 0.8
+     }
+    },
+    "brisk-s.zero": {
+     "accuracy": {
+      "mean": 83.1,
+      "half_width": 1.0
+     }
+    },
+    "brisk-s.few": {
+     "accuracy": {
+      "mean": 87.5,
+      "half_width": 0.9
+     }
+    },
+    "brisk-s.rubric": {
+     "accuracy": {
+      "mean": 88.2,
+      "half_width": 0.9
+     }
+    },
+    "nano-xs.zero": {
+     "accuracy": {
+      "mean": 73.5,
+      "half_width": 1.2
+     }
+    },
+    "nano-xs.few": {
+     "accuracy": {
+      "mean": 86.0,
+      "half_width": 0.9
+     }
+    },
+    "nano-xs.rubric": {
+     "accuracy": {
+      "mean": 79.5,
+      "half_width": 1.1
+     }
+    }
+   }
+  },
+  "complex|science": {
+   "row": "complex",
+   "column": "science",
+   "n_cases": 3440,
+   "per_arm": {
+    "atlas-m.zero": {
+     "accuracy": {
+      "mean": 87.5,
+      "half_width": 1.1
+     }
+    },
+    "atlas-m.few": {
+     "accuracy": {
+      "mean": 89.7,
+      "half_width": 1.0
+     }
+    },
+    "atlas-m.rubric": {
+     "accuracy": {
+      "mean": 91.2,
+      "half_width": 0.9
+     }
+    },
+    "brisk-s.zero": {
+     "accuracy": {
+      "mean": 84.2,
+      "half_width": 1.2
+     }
+    },
+    "brisk-s.few": {
+     "accuracy": {
+      "mean": 88.5,
+      "half_width": 1.1
+     }
+    },
+    "brisk-s.rubric": {
+     "accuracy": {
+      "mean": 89.4,
+      "half_width": 1.0
+     }
+    },
+    "nano-xs.zero": {
+     "accuracy": {
+      "mean": 76.1,
+      "half_width": 1.4
+     }
+    },
+    "nano-xs.few": {
+     "accuracy": {
+      "mean": 88.2,
+      "half_width": 1.1
+     }
+    },
+    "nano-xs.rubric": {
+     "accuracy": {
+      "mean": 82.0,
+      "half_width": 1.3
+     }
+    }
+   }
+  },
+  "complex|conv": {
+   "row": "complex",
+   "column": "conv",
+   "n_cases": 1960,
+   "per_arm": {
+    "atlas-m.zero": {
+     "accuracy": {
+      "mean": 88.8,
+      "half_width": 1.4
+     }
+    },
+    "atlas-m.few": {
+     "accuracy": {
+      "mean": 91.5,
+      "half_width": 1.2
+     }
+    },
+    "atlas-m.rubric": {
+     "accuracy": {
+      "mean": 92.2,
+      "half_width": 1.2
+     }
+    },
+    "brisk-s.zero": {
+     "accuracy": {
+      "mean": 85.1,
+      "half_width": 1.6
+     }
+    },
+    "brisk-s.few": {
+     "accuracy": {
+      "mean": 89.4,
+      "half_width": 1.4
+     }
+    },
+    "brisk-s.rubric": {
+     "accuracy": {
+      "mean": 90.9,
+      "half_width": 1.3
+     }
+    },
+    "nano-xs.zero": {
+     "accuracy": {
+      "mean": 77.6,
+      "half_width": 1.8
+     }
+    },
+    "nano-xs.few": {
+     "accuracy": {
+      "mean": 89.8,
+      "half_width": 1.3
+     }
+    },
+    "nano-xs.rubric": {
+     "accuracy": {
+      "mean": 83.3,
+      "half_width": 1.6
+     }
+    }
+   }
+  },
+  "complex|news": {
+   "row": "complex",
+   "column": "news",
+   "n_cases": 3600,
+   "per_arm": {
+    "atlas-m.zero": {
+     "accuracy": {
+      "mean": 82.9,
+      "half_width": 1.2
+     }
+    },
+    "atlas-m.few": {
+     "accuracy": {
+      "mean": 85.5,
+      "half_width": 1.2
+     }
+    },
+    "atlas-m.rubric": {
+     "accuracy": {
+      "mean": 86.0,
+      "half_width": 1.1
+     }
+    },
+    "brisk-s.zero": {
+     "accuracy": {
+      "mean": 77.9,
+      "half_width": 1.4
+     }
+    },
+    "brisk-s.few": {
+     "accuracy": {
+      "mean": 82.9,
+      "half_width": 1.2
+     }
+    },
+    "brisk-s.rubric": {
+     "accuracy": {
+      "mean": 83.6,
+      "half_width": 1.2
+     }
+    },
+    "nano-xs.zero": {
+     "accuracy": {
+      "mean": 65.1,
+      "half_width": 1.6
+     }
+    },
+    "nano-xs.few": {
+     "accuracy": {
+      "mean": 76.7,
+      "half_width": 1.4
+     }
+    },
+    "nano-xs.rubric": {
+     "accuracy": {
+      "mean": 70.9,
+      "half_width": 1.5
+     }
+    }
+   }
+  }
+ },
+ "confusion": {
+  "complexity": {
+   "labels": [
+    "simple",
+    "medium",
+    "complex"
+   ],
+   "unit": "row_percent",
+   "per_arm": {
+    "atlas-m.zero": [
+     [
+      96.4,
+      3.3,
+      0.3
+     ],
+     [
+      6.2,
+      87.7,
+      6.2
+     ],
+     [
+      0.6,
+      7.4,
+      92.1
+     ]
+    ],
+    "atlas-m.few": [
+     [
+      97.2,
+      2.6,
+      0.2
+     ],
+     [
+      4.8,
+      90.5,
+      4.8
+     ],
+     [
+      0.4,
+      5.7,
+      93.9
+     ]
+    ],
+    "atlas-m.rubric": [
+     [
+      97.6,
+      2.2,
+      0.2
+     ],
+     [
+      4.1,
+      91.8,
+      4.1
+     ],
+     [
+      0.4,
+      4.9,
+      94.7
+     ]
+    ],
+    "brisk-s.zero": [
+     [
+      95.1,
+      4.6,
+      0.3
+     ],
+     [
+      8.4,
+      83.1,
+      8.4
+     ],
+     [
+      0.8,
+      10.1,
+      89.1
+     ]
+    ],
+    "brisk-s.few": [
+     [
+      96.7,
+      3.0,
+      0.2
+     ],
+     [
+      5.6,
+      88.7,
+      5.6
+     ],
+     [
+      0.5,
+      6.8,
+      92.7
+     ]
+    ],
+    "brisk-s.rubric": [
+     [
+      97.0,
+      2.8,
+      0.2
+     ],
+     [
+      5.1,
+      89.8,
+      5.1
+     ],
+     [
+      0.5,
+      6.1,
+      93.4
+     ]
+    ],
+    "nano-xs.zero": [
+     [
+      92.3,
+      7.1,
+      0.5
+     ],
+     [
+      13.2,
+      73.6,
+      13.2
+     ],
+     [
+      1.2,
+      15.8,
+      83.0
+     ]
+    ],
+    "nano-xs.few": [
+     [
+      96.5,
+      3.2,
+      0.2
+     ],
+     [
+      6.0,
+      88.0,
+      6.0
+     ],
+     [
+      0.5,
+      7.2,
+      92.3
+     ]
+    ],
+    "nano-xs.rubric": [
+     [
+      94.4,
+      5.3,
+      0.4
+     ],
+     [
+      9.7,
+      80.5,
+      9.7
+     ],
+     [
+      0.9,
+      11.7,
+      87.5
+     ]
+    ]
+   }
+  },
+  "domain": {
+   "labels": [
+    "science",
+    "conv",
+    "news"
+   ],
+   "unit": "row_percent",
+   "per_arm": {
+    "atlas-m.zero": [
+     [
+      97.3,
+      0.7,
+      2.0
+     ],
+     [
+      0.9,
+      98.2,
+      0.9
+     ],
+     [
+      3.2,
+      1.4,
+      95.4
+     ]
+    ],
+    "atlas-m.few": [
+     [
+      97.9,
+      0.6,
+      1.5
+     ],
+     [
+      0.7,
+      98.6,
+      0.7
+     ],
+     [
+      2.4,
+      1.1,
+      96.5
+     ]
+    ],
+    "atlas-m.rubric": [
+     [
+      98.2,
+      0.5,
+      1.3
+     ],
+     [
+      0.6,
+      98.8,
+      0.6
+     ],
+     [
+      2.2,
+      0.9,
+      96.9
+     ]
+    ],
+    "brisk-s.zero": [
+     [
+      96.2,
+      0.9,
+      2.8
+     ],
+     [
+      1.3,
+      97.5,
+      1.3
+     ],
+     [
+      4.4,
+      1.9,
+      93.7
+     ]
+    ],
+    "brisk-s.few": [
+     [
+      97.5,
+      0.7,
+      1.9
+     ],
+     [
+      0.8,
+      98.3,
+      0.8
+     ],
+     [
+      2.9,
+      1.3,
+      95.8
+     ]
+    ],
+    "brisk-s.rubric": [
+     [
+      97.7,
+      0.6,
+      1.7
+     ],
+     [
+      0.8,
+      98.5,
+      0.8
+     ],
+     [
+      2.7,
+      1.1,
+      96.2
+     ]
+    ],
+    "nano-xs.zero": [
+     [
+      94.1,
+      1.4,
+      4.5
+     ],
+     [
+      2.0,
+      96.1,
+      2.0
+     ],
+     [
+      6.9,
+      2.9,
+      90.2
+     ]
+    ],
+    "nano-xs.few": [
+     [
+      97.3,
+      0.7,
+      2.1
+     ],
+     [
+      0.9,
+      98.2,
+      0.9
+     ],
+     [
+      3.2,
+      1.3,
+      95.5
+     ]
+    ],
+    "nano-xs.rubric": [
+     [
+      95.7,
+      1.1,
+      3.2
+     ],
+     [
+      1.4,
+      97.1,
+      1.4
+     ],
+     [
+      5.0,
+      2.2,
+      92.8
+     ]
+    ]
+   }
+  }
+ }
+}
