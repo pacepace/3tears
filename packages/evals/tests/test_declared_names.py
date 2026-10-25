@@ -1,10 +1,11 @@
-"""Names are declared, never derived: an aspect's short name and a goal check's display name.
+"""Names are declared, never derived: an aspect's and an arm's short name, and a goal check's display name.
 
-An aspect declares a ``short_name`` (``Aspect.short_name``) and a template a display name per goal check
-(``EvalTemplate.goal_check_names``). A page prints the declared name, and where none is declared it prints the full
-label or the full expression, unchanged and never shortened. Neither name is part of anything a run, a cell, a pool
-or a pairing keys on, nor of any fingerprint an analysis or a reporter case is checked against: naming an aspect or a
-check changes no reading and stales nothing.
+An aspect declares a ``short_name`` (``Aspect.short_name``), so may an arm (``CampaignArm.short_name``), and a
+template a display name per goal check (``EvalTemplate.goal_check_names``). A page prints the declared name. Where
+none is declared it prints an aspect's full label or a check's full expression, unchanged and never shortened, and
+computes an arm's short name from what differs from the control. No name is part of anything a run, a cell, a pool
+or a pairing keys on, nor of any fingerprint an analysis or a reporter case is checked against: naming an aspect, an
+arm or a check changes no reading and stales nothing.
 
 **Runs from before names existed stay poolable.** :data:`PINNED` holds every identity and digest of one fixed
 template and campaign as the tree at ``00107a5b7`` computed them (the commit names could first be declared on), byte
@@ -80,6 +81,8 @@ LABELS = ("Queue discipline under a full queue", "Queue discipline under an empt
 SHORT_NAMES = {LABELS[0]: "Full queue", LABELS[1]: "Empty queue"}
 CHECK_NAMES = {CHECKS[0]: "Cart filled", CHECKS[1]: "Replied twice"}
 ARMS = ("production", "candidate")
+#: The short names the fixture's arms declare when it declares any names.
+ARM_SHORT_NAMES = {ARMS[0]: "Prod", ARMS[1]: "Cand"}
 CASES = 6
 STAMP = "2026-10-01T00:00:00+00:00"
 
@@ -104,6 +107,7 @@ def _fixture(*, named: bool) -> dict[str, Any]:
             role="control" if index == 0 else "candidate",
             variant_key=fixture_variant_key(label),
             **({"named_at": ASKED_AT} if index == 0 else {}),
+            **({"short_name": ARM_SHORT_NAMES[label]} if named else {}),
         )
         for index, label in enumerate(ARMS)
     ]
@@ -299,9 +303,9 @@ PINNED: dict[str, str] = {
     "campaign fingerprint": "v2:1896767143a9454239aebb4a33710a0d4167bd4fced79c5fd236c217a8f1834b",
     "campaign_evidence_digest": "v2:1896767143a9454239aebb4a33710a0d4167bd4fced79c5fd236c217a8f1834b",
     "case content hash": "2427afda4a091bccfdeffbdc0ef058b06862b1c310f68df406edf30604604ae2",
-    # The one entry that moves with the durable minor: ``00107a5b7`` was at 16.2, and the names are 16.3. It is no part
-    # of what a run, cell, pool, pairing, analysis or reporter case keys on.
-    "durable version": "16.3",
+    # The one entry that moves with the durable minor: ``00107a5b7`` was at 16.2, aspect and check names are 16.3 and
+    # arm names 16.4. It is no part of what a run, cell, pool, pairing, analysis or reporter case keys on.
+    "durable version": "16.4",
     "measured_template_digest": "16e80e0cbd36ae4d39ca180c5f08bcb9d165afaab0e7e014ff42464f11e4f3df",
     "readings": "29f0e8ce68005f27cfc8ff7c76ef3623a174125af4a46b8e587bb7af7d88ebc9",
     "run-0-candidate case_set_fingerprint": "89df90840e5dc430494c9d36ab9ae0dff05c199d54ddf7027f3f339c44bcfe56",
@@ -368,6 +372,10 @@ class TestEveryIdentityIsAsBeforeNamesExisted:
         for label, bundle in built["bundles"].items():
             assert bundle.to_dict()["short_name"] == SHORT_NAMES[label]
             assert bundle.goal_check_names == CHECK_NAMES
+            assert bundle.to_dict()["declared"]["control"]["short_name"] == ARM_SHORT_NAMES[ARMS[0]]
+        frame = built["campaign_bundle"].to_dict()
+        assert [arm["short_name"] for arm in frame["arms"]] == [ARM_SHORT_NAMES[arm] for arm in ARMS]
+        assert [arm["short_name"] for arm in frame["declaration"]["arms"]] == [ARM_SHORT_NAMES[arm] for arm in ARMS]
 
 
 # --- an aspect's short name ---------------------------------------------------------------------------------------

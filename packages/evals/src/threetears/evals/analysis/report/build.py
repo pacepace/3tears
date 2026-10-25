@@ -147,6 +147,7 @@ from threetears.evals.analysis.report.words import (
     UNTRACED,
     arm_tags,
     comparison_words,
+    declared_arm_names,
     evidence_rows,
     guardrail_words,
     reading_heading,
@@ -269,6 +270,8 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None, tr
         # This aspect's bundle, as it is frozen and served beside the page; the generation's is the campaign bundle's.
         bundle_fingerprint=_only_aspect(analysis).bundle_fingerprint,
     )
+    listed = analysis.campaign_bundle.get("arms")
+    arms = [CampaignArm.model_validate(arm) for arm in listed] if isinstance(listed, list) else []
     return _page(
         bundle,
         basis="analysis",
@@ -276,6 +279,7 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None, tr
         memo=lambda charts, names: _memo_blocks(analysis, bundle, charts, names),
         finding_count=len(analysis.document.findings),
         writer=analysis_writer(analysis),
+        arm_short_names=declared_arm_names(arms),
         trials=trials,
     )
 
@@ -335,6 +339,7 @@ def build_code_only_report(
     campaign_name: str | None = None,
     arm_labels: Mapping[str, str] | None = None,
     arm_tags: Mapping[str, str] | None = None,
+    arm_short_names: Mapping[str, str] | None = None,
     writer: str | None = None,
     bundle_fingerprint: str | None = None,
     trials: TrialDetail = "all",
@@ -361,6 +366,10 @@ def build_code_only_report(
         is tagged and coloured as on every other chart of that page; None tags this page's arms by themselves, as
         does a map that leaves out an arm of this page.
     :ptype arm_tags: Mapping[str, str] | None
+    :param arm_short_names: The short names the campaign's arms declare, by variant key
+        (:func:`~threetears.evals.analysis.report.words.declared_arm_names`), which a chart prints for those arms in
+        its tight places ahead of any it would compute; None computes every arm's.
+    :ptype arm_short_names: Mapping[str, str] | None
     :param writer: Who wrote the memo of the campaign page this page is a fold of, as the methods name a writer; None
         says no analysis was written. The memo is the campaign page's: this page lays out none of its words.
     :ptype writer: str | None
@@ -393,6 +402,7 @@ def build_code_only_report(
         writer=writer,
         arm_labels=arm_labels,
         tags=arm_tags,
+        arm_short_names=arm_short_names,
         trials=trials,
     )
 
@@ -495,13 +505,14 @@ def _page(
     writer: str | None,
     arm_labels: Mapping[str, str] | None = None,
     tags: Mapping[str, str] | None = None,
+    arm_short_names: Mapping[str, str] | None = None,
     trials: TrialDetail = "all",
 ) -> Report:
     """The page every door renders: the same screens, from one bundle, whatever wrote the memo.
 
     ``arm_labels`` are a campaign's own labels for its arms, by variant key, which name those arms everywhere on the
     page in place of their variants' names; ``tags`` the campaign's letter tags for them, which tag and colour them on
-    its charts. ``trials`` says whether each failed or lost trial's record is laid out.
+    its charts; ``arm_short_names`` the short names its arms declare, which its charts print in tight places. ``trials`` says whether each failed or lost trial's record is laid out.
 
     The memo and the contrasts are laid out before the scoreboard, though they print after it: each chart they leave
     out is counted on the way, for the scoreboard's one line about what was not charted.
@@ -549,7 +560,7 @@ def _page(
         ),
         *_floor_warning_blocks(bundle, arm),
         *caveat_blocks([bundle], section="header"),
-        *_scoreboard_blocks(bundle, arm, _short_names(bundle, names, arm_labels or {}), tags),
+        *_scoreboard_blocks(bundle, arm, _short_names(bundle, names, arm_labels or {}, arm_short_names or {}), tags),
         *_decision_blocks(bundle, arm),
         *written,
         *contrasts,
@@ -838,19 +849,27 @@ def _per_reply(bundle: AnalysisContextBundle | None) -> str:
 
 
 def _short_names(
-    bundle: AnalysisContextBundle, names: Mapping[str, ArmName], given: Mapping[str, str]
+    bundle: AnalysisContextBundle,
+    names: Mapping[str, ArmName],
+    given: Mapping[str, str],
+    declared: Mapping[str, str],
 ) -> dict[str, str]:
-    """Each arm's short name, for a chart's tight places (GENERATOR.md §6.1): the label the campaign gives it; the
-    control's ``control``; else only the levels where it differs from the control, the model first and trimmed of the
-    prefix it shares with the control's. With no control, or nothing that differs, an arm's short name is its name,
-    and so is it where that name is no longer than the short one (a quick run's ``v4-flash``, never ``candidate
-    v4-flash``); two arms whose short names agree are each named in full, so no two read alike."""
+    """Each arm's short name, for a chart's tight places (GENERATOR.md §6.1): the short name the campaign declares for
+    it, as declared; else the label the campaign gives it; the control's ``control``; else only the levels where it
+    differs from the control, the model first and trimmed of the prefix it shares with the control's. With no control,
+    or nothing that differs, an arm's short name is its name, and so is it where that name is no longer than the short
+    one (a quick run's ``v4-flash``, never ``candidate v4-flash``). Declared names are unique, which the campaign
+    refuses otherwise, so only a computed one can collide: one that agrees with any other arm's short name is named in
+    full, so no two read alike."""
     control = _control_key(bundle)
     entries = {entry.variant_key: entry for entry in bundle.variant_index}
     distinguishing = distinguishing_axes(bundle.variant_index)
     base = {level.axis_id: level for level in arm_levels(entries.get(control) if control else None, distinguishing)}
     shorts: dict[str, str] = {}
     for key, name in names.items():
+        if key in declared:
+            shorts[key] = declared[key]
+            continue
         if key in given:
             shorts[key] = given[key]
         elif key == control:
@@ -873,7 +892,9 @@ def _short_names(
         if len(name.label) <= len(shorts[key]):
             shorts[key] = name.label
     taken = list(shorts.values())
-    return {key: short if taken.count(short) == 1 else names[key].label for key, short in shorts.items()}
+    return {
+        key: short if key in declared or taken.count(short) == 1 else names[key].label for key, short in shorts.items()
+    }
 
 
 #: What separates the parts of a model's name, where a shared prefix may be cut.

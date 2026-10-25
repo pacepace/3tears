@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: an arm may declare the short name a page prints for it
+
+**Added:** `CampaignArm.short_name` (at most 32 characters, no other arm's label or short name; durable v16.4) is
+what a campaign's page prints for an arm where space is tight: each outcome bar's short label, the cost/quality
+chart's point, and `{arm:<id>}` in a report plan's prose, through the report input's new `Arm.short_name`. A declared
+name wins over the arm's label and over the short name a page computes from what differs from the control, so only an
+arm declaring none takes the computed one. `campaign_create` takes `short_name` on each arm, adoption carries it, and
+`campaign_update` takes `arm_short_names`, which stays editable once runs have joined. No identity, digest or
+fingerprint moves. See `packages/evals/MIGRATIONS.toml`.
+
 ### evals: a page and the writer's view say once that a cost is its runs' provider routing's
 
 **Changed:** an eval's cost belongs to its provider routing, not its model (owner, 2026-10-25): one model routed

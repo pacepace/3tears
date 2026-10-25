@@ -167,8 +167,8 @@ Use it when §1.1 says so. The page prices the trade; it doesn't pretend to deci
 
 - **Store arms as structured settings**, never only as strings: `model` plus every setting that varied, and an optional owner `alias`.
 - **Full configuration once,** in the arms key, in mono type, with the role.
-- **Short name** = alias if set; else only what differs from the control, with the model trimmed of the prefix it shares with the control's model. "Meridian-4.1-flash · 64k max output · reasoning medium" against "Meridian-4.1 · 32k max output · reasoning medium" becomes "flash · 64k out". The control is named by its alias, or by its role ("Production").
-- **Collisions** append the next attribute that separates them.
+- **Short name** = the short name the campaign declares for the arm (`arms[].short_name`, at most 32 characters, unique among the campaign's arms) if set; else the alias if set; else only what differs from the control, with the model trimmed of the prefix it shares with the control's model. "Meridian-4.1-flash · 64k max output · reasoning medium" against "Meridian-4.1 · 32k max output · reasoning medium" becomes "flash · 64k out". The control is named by its alias, or by its role ("Production").
+- **Collisions** append the next attribute that separates them. A declared short name never collides, since the campaign refuses two arms named alike; only a computed one can.
 - **Letter tags** (A, B, C; the control is P) in colored squares go in tight places; on phones, the tag alone.
 - **Factorial configs** are named by their factor levels: "Brisk-S · reasoning low · 1 retry".
 - `armLabels()` in `kit/kit.js` implements this.

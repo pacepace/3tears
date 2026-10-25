@@ -69,6 +69,10 @@ class Arm(_Part):
 
     id: str = Field(description="The arm's id, as every by-arm map keys it.")
     name: str | None = Field(default=None, description="The campaign's alias for the arm.")
+    short_name: str | None = Field(
+        default=None,
+        description="The short name the campaign declares for the arm, printed in tight places; none computes one.",
+    )
     role: Literal["control", "challenger"] = Field(description="The control, or a candidate measured against it.")
     served_model: str | None = Field(default=None, description="The model that served the arm's replies.")
     variant_key: str | None = Field(default=None, description="The pipeline's variant key.")

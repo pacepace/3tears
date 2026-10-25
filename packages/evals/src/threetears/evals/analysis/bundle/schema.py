@@ -55,7 +55,7 @@ from threetears.evals.analysis.stats import (
 )
 from threetears.evals.kernel.analysis_measures import BarAdjudication, MeasureCollection
 from threetears.evals.kernel.campaign import CampaignWindow, EvalInsight, VariantIndexEntry
-from threetears.evals.kernel.declaration import ASPECT_PRESENTATION_FIELDS
+from threetears.evals.kernel.declaration import ARM_PRESENTATION_FIELDS, ASPECT_PRESENTATION_FIELDS
 from threetears.evals.kernel.covariates import REASONING_RATIO_KEY
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.result_condition import ExclusionCause
@@ -3425,7 +3425,9 @@ def fingerprint_digest(payload: Any, *, like: str | None = None) -> str:
 
 
 def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> str:
-    """A bundle document's fingerprint: the digest of every field but what built it (``package_version``).
+    """A bundle document's fingerprint: the digest of every field but what built it (``package_version``) and how a page
+    prints it (:data:`_NOT_EVIDENCE`, and the declared control's
+    :data:`~threetears.evals.kernel.declaration.ARM_PRESENTATION_FIELDS`).
 
     The one derivation :meth:`AnalysisContextBundle.fingerprint` uses, for a reader that holds the stored document
     rather than the model — a frozen reporter case checks the bundle it holds against the fingerprint it recorded.
@@ -3438,7 +3440,14 @@ def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> 
     :return: The fingerprint.
     :rtype: str
     """
-    return fingerprint_digest({key: value for key, value in document.items() if key not in _NOT_EVIDENCE}, like=like)
+    evidence = {key: value for key, value in document.items() if key not in _NOT_EVIDENCE}
+    declared = evidence.get("declared")
+    if isinstance(declared, Mapping) and isinstance(control := declared.get("control"), Mapping):
+        # How a page prints the control (ARM_PRESENTATION_FIELDS) is no part of what the bundle read; a control naming
+        # none carries no key to drop.
+        unnamed = {key: value for key, value in control.items() if key not in ARM_PRESENTATION_FIELDS}
+        evidence["declared"] = {**declared, "control": unnamed}
+    return fingerprint_digest(evidence, like=like)
 
 
 class BundleInspection(EvalDocumentModel):

@@ -155,10 +155,19 @@ CAMPAIGN_SERVER_FIELDS: tuple[str, ...] = (
 
 #: What an operator may change on a campaign after it exists. Membership and the control have their own write paths
 #: carrying rules this one does not enforce; ``created_by`` is absent because a later editor is not the author.
-_CAMPAIGN_UPDATABLE_FIELDS: tuple[str, ...] = ("name", "description", "question", "aspects", "floors", "short_names")
+_CAMPAIGN_UPDATABLE_FIELDS: tuple[str, ...] = (
+    "name",
+    "description",
+    "question",
+    "aspects",
+    "floors",
+    "short_names",
+    "arm_short_names",
+)
 
-#: The part of an update that rewrites the declaration: frozen once any aspect holds a run. ``short_names`` is not in
-#: it: what a page prints for an aspect asks nothing of its runs, so it stays editable, as ``name`` does.
+#: The part of an update that rewrites the declaration: frozen once any aspect holds a run. ``short_names`` and
+#: ``arm_short_names`` are not in it: what a page prints for an aspect or an arm asks nothing of its runs, so each
+#: stays editable, as ``name`` does.
 _DECLARATION_FIELDS = frozenset({"question", "aspects", "floors"})
 
 
@@ -184,6 +193,22 @@ class ArmDefinition(EvalBaseModel):
             "says more. Its variant key and lever map are read from the first; every other must carry the same key."
         ),
     )
+    short_name: str | None = Field(
+        default=None,
+        description=(
+            f"What a page prints for the arm where space is tight, at most {DECLARED_NAME_CHARS} characters, and no "
+            "other arm's label or short name. Omitted, the page computes one from what differs from the control."
+        ),
+    )
+
+    @field_validator("short_name")
+    @classmethod
+    def _a_short_name_is_short(cls, name: str | None) -> str | None:
+        """Refuse a blank or over-long short name where it is declared, before anything is read.
+
+        :raises ValueError: The name is blank or longer than :data:`DECLARED_NAME_CHARS`.
+        """
+        return None if name is None else declared_name(name, what="an arm")
 
 
 class AspectDefinition(EvalBaseModel):
@@ -807,7 +832,8 @@ def _resolve_arms(
     """The arms a create names, each addressed from its runs, held to the arms its adopted aspects already name.
 
     An arm named here that is a source's arm keeps the source's ``named_at``: naming it again changes nothing that
-    was read against it. Every other arm named here is named ``at``.
+    was read against it. It keeps the source's ``short_name`` too, unless it declares its own. Every other arm named
+    here is named ``at``.
 
     :raises ValidationFailedError: An arm's run is in no aspect, its runs carry two keys, or an adopted aspect names
         an arm of the same label or role under another key; or two adopted aspects disagree about one.
@@ -837,8 +863,16 @@ def _resolve_arms(
                         "agree about it"
                     ),
                 )
-            elif same.named_at == at:
-                named[index] = same.model_copy(update={"named_at": other.named_at})
+            else:
+                # Naming an adopted arm again re-dates nothing, and keeps the name a page prints for it unless this
+                # create declares another.
+                kept: dict[str, Any] = {}
+                if same.named_at == at:
+                    kept["named_at"] = other.named_at
+                if same.short_name is None and other.short_name is not None:
+                    kept["short_name"] = other.short_name
+                if kept:
+                    named[index] = same.model_copy(update=kept)
     return sorted(named, key=lambda arm: arm.role != "control")
 
 
@@ -890,6 +924,7 @@ def _arm_from_runs(
         levers=first.levers,
         identity_version=first.identity_version,
         named_at=at,
+        short_name=defined.short_name,
     )
 
 
@@ -1057,14 +1092,15 @@ def update_campaign(
     """Amend a campaign's name, description, declaration or control.
 
     Only ``name``, ``description``, ``question``, ``aspects`` (:class:`AspectDefinition`, replacing the aspects whole),
-    ``floors`` and ``short_names`` (an aspect's label to what a page prints for it, or null to print the label) may be
-    named, and an unrecognised key is refused rather than ignored. A write of the declaration —
+    ``floors``, ``short_names`` (an aspect's label to what a page prints for it, or null to print the label) and
+    ``arm_short_names`` (a named arm's label to what a page prints for it, or null to compute one) may be named, and an unrecognised key is refused rather than ignored. A write of the declaration —
     ``question``, ``aspects`` or ``floors`` — is stamped with ``updated_by`` and dated now, and every aspect it
     declares is dated now too; the declaration gate runs here exactly as it does at creation.
 
     **The declaration is frozen once any aspect holds a run.** It is what those runs were gathered to answer, so once
     the campaign holds a run, ``question``, ``aspects`` and ``floors`` are refused in any form, and so is re-pointing
-    or clearing a control already named. ``name``, ``description`` and ``short_names`` stay editable, since none asks
+    or clearing a control already named. ``name``, ``description``, ``short_names`` and ``arm_short_names`` stay
+    editable, since none asks
     anything of the runs, and a control may be named once,
     from a member run, while none is (which is how a comparison names its control after launching its arms). The
     amended declaration is a new campaign (``campaign_create``, which adopts the aspects it keeps with
@@ -1174,6 +1210,7 @@ def update_campaign(
             )
         aspects = _named(aspects, updates["short_names"])
         changes["aspects"] = aspects
+    arm_names = updates.get("arm_short_names")
     declared = any(aspect.design is not None for aspect in aspects)
     if exploratory and declared:
         raise ValidationFailedError(
@@ -1194,6 +1231,9 @@ def update_campaign(
         question, floors, arms = "", [], []
         if writes:
             writes = writes | {"question"}
+    if "arm_short_names" in updates:
+        arms = _named_arms(arms, arm_names)
+        changes["arms"] = arms
     _refuse_floors_on_undeclared_aspects(floors, aspects)
     if writes:
         declared_here = {aspect.label for aspect in aspects} if "aspects" in updates else set()
@@ -1256,6 +1296,43 @@ def update_campaign(
         updated_by,
     )
     return updated
+
+
+def _named_arms(arms: Sequence[CampaignArm], short_names: object) -> list[CampaignArm]:
+    """``arms`` with the short names an update gives, by label: a name sets one, null clears it, an arm not named keeps
+    its own.
+
+    :raises ValidationFailedError: ``short_names`` is not a map of labels to names or nulls, names a label the campaign
+        names no arm by, or gives a blank or over-long name.
+    """
+    if not isinstance(short_names, dict) or not all(
+        isinstance(label, str) and (name is None or isinstance(name, str)) for label, name in short_names.items()
+    ):
+        raise ValidationFailedError(
+            "invalid campaign update: arm_short_names maps an arm's label to its short name, or to null to clear it",
+            remedy=SCHEMA_REMEDY,
+        )
+    labels = [arm.label for arm in arms]
+    if stray := sorted(set(short_names) - set(labels)):
+        raise ValidationFailedError(
+            f"arm_short_names names {', '.join(map(repr, stray))}, which the campaign names no arm by",
+            remedy=(
+                f"key each short name by one of its arms' labels: {', '.join(map(repr, labels))}"
+                if labels
+                else "name the campaign's arms first (campaign_create's arms, or control_from_run_id): an arm the "
+                "page derives from its runs has no declaration to name"
+            ),
+        )
+    try:
+        for label, name in short_names.items():
+            if name is not None:
+                declared_name(name, what=f"arm {label!r}")
+    except ValueError as e:
+        raise ValidationFailedError(f"invalid campaign update: {e}", remedy=SCHEMA_REMEDY) from e
+    return [
+        arm.model_copy(update={"short_name": short_names[arm.label]}) if arm.label in short_names else arm
+        for arm in arms
+    ]
 
 
 def _named(aspects: Sequence[Aspect], short_names: object) -> list[Aspect]:
@@ -1738,6 +1815,7 @@ def _with_control(
         )
     addressed = _address_arm(storage, campaign.scope_id, run_id, profile=profile)
     label = campaign.control.label if campaign.control is not None else UPGRADED_CONTROL_LABEL
+    named = next((arm.short_name for arm in arms if arm.role == "control"), None)
     control = CampaignArm(
         label=label,
         role="control",
@@ -1745,6 +1823,7 @@ def _with_control(
         levers=addressed.levers,
         identity_version=addressed.identity_version,
         named_at=utc_now_iso(),
+        short_name=named,
     )
     return [control, *candidates]
 

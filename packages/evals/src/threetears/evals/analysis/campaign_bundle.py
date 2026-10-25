@@ -94,7 +94,13 @@ from threetears.evals.analysis.report.decision import (
 )
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import CampaignDeclaration, EvalCampaign
-from threetears.evals.kernel.declaration import ASPECT_PRESENTATION_FIELDS, CampaignArm, Floor, resolve_control_arm
+from threetears.evals.kernel.declaration import (
+    ARM_PRESENTATION_FIELDS,
+    ASPECT_PRESENTATION_FIELDS,
+    CampaignArm,
+    Floor,
+    resolve_control_arm,
+)
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.kernel.surface import DecisionSurface
@@ -551,29 +557,39 @@ def _as_this_shape(document: Mapping[str, Any], bundles: Sequence[AnalysisContex
 
 def _evidence_of(frame: Mapping[str, Any]) -> dict[str, Any]:
     """A campaign bundle's frame as its fingerprint reads it: at :data:`_EVIDENCE_SHAPE`, without the figures derived
-    from its readings (:data:`_DERIVED_READINGS`), and without how a page prints each aspect
-    (:data:`~threetears.evals.kernel.declaration.ASPECT_PRESENTATION_FIELDS`).
+    from its readings (:data:`_DERIVED_READINGS`), and without how a page prints each aspect and arm
+    (:data:`~threetears.evals.kernel.declaration.ASPECT_PRESENTATION_FIELDS`,
+    :data:`~threetears.evals.kernel.declaration.ARM_PRESENTATION_FIELDS`).
 
     The figures across aspects are read off the readings and the aspects' bundles the fingerprint already reads, so a
     bundle of this shape and one frozen at the shape before it fingerprint alike over the same evidence. A short name
-    is presentation, as an aspect bundle's own is (left out of its fingerprint), so naming an aspect leaves every
-    analysis and reporter case of the campaign reproducing. An aspect naming none carries no key to drop.
+    is presentation, as an aspect bundle's own is (left out of its fingerprint), so naming an aspect or an arm leaves
+    every analysis and reporter case of the campaign reproducing. One naming none carries no key to drop.
     """
     frame = dict(frame)
     if frame.get("schema_version") == CAMPAIGN_BUNDLE_SHAPE:
         frame["schema_version"] = _EVIDENCE_SHAPE
         if isinstance(readings := frame.get("readings"), Mapping):
             frame["readings"] = {key: value for key, value in readings.items() if key not in _DERIVED_READINGS}
+    if isinstance(arms := frame.get("arms"), list):
+        frame["arms"] = _unpresented(arms, ARM_PRESENTATION_FIELDS)
     declaration = frame.get("declaration")
-    if not isinstance(declaration, Mapping) or not isinstance(declaration.get("aspects"), list):
+    if not isinstance(declaration, Mapping):
         return frame
-    aspects = [
-        {key: value for key, value in aspect.items() if key not in ASPECT_PRESENTATION_FIELDS}
-        if isinstance(aspect, Mapping)
-        else aspect
-        for aspect in declaration["aspects"]
+    declaration = dict(declaration)
+    if isinstance(declaration.get("aspects"), list):
+        declaration["aspects"] = _unpresented(declaration["aspects"], ASPECT_PRESENTATION_FIELDS)
+    if isinstance(declaration.get("arms"), list):
+        declaration["arms"] = _unpresented(declaration["arms"], ARM_PRESENTATION_FIELDS)
+    return {**frame, "declaration": declaration}
+
+
+def _unpresented(items: Sequence[Any], fields: frozenset[str]) -> list[Any]:
+    """``items`` with each mapping's presentation ``fields`` left out; anything else as it is."""
+    return [
+        {key: value for key, value in item.items() if key not in fields} if isinstance(item, Mapping) else item
+        for item in items
     ]
-    return {**frame, "declaration": {**declaration, "aspects": aspects}}
 
 
 def build_campaign_bundle(

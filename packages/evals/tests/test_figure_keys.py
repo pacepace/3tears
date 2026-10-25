@@ -241,6 +241,12 @@ class TestAPathIsMatchedNotSplit:
             with pytest.raises(UnresolvableReference):
                 resolve(path, _input("r5"))
 
+    @pytest.mark.parametrize("statistic", ["low", "high"])
+    def test_an_end_of_an_interval_the_input_does_not_state_is_refused_by_name(self, statistic: str):
+        report_input = _small(contrasts=[{**_contrast("a", "q", -0.05), "interval": None}])
+        with pytest.raises(UnresolvableReference, match="names the interval, which the input does not state"):
+            resolve(f"contrast.a.q.{statistic}", report_input)
+
     def test_an_arm_key_names_an_arm(self):
         assert resolve("arm:1017", _input("r5")).value == "1017"
         with pytest.raises(UnresolvableReference, match="names no arm"):

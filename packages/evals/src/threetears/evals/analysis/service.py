@@ -63,7 +63,7 @@ from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleIn
 from threetears.evals.analysis.report import CampaignReport, Verdict, build_campaign_report, build_code_only_report
 from threetears.evals.analysis.report.model import TrialDetail
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
-from threetears.evals.analysis.report.words import campaign_arm_tags
+from threetears.evals.analysis.report.words import campaign_arm_tags, declared_arm_names
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalCampaign
 from threetears.evals.kernel.campaign_writes import serialized_campaign_write
@@ -1528,6 +1528,7 @@ def _campaign_page(
     """
     labels = bundle.readings.arm_labels()
     tags = campaign_arm_tags(bundle.aspects, bundle.readings.control)
+    declared = declared_arm_names(bundle.arms)
     writer = analysis_writer(analysis) if analysis is not None else None
     checked = fingerprints or {}
     reports = {
@@ -1537,6 +1538,7 @@ def _campaign_page(
             campaign_name=campaign.name,
             arm_labels=labels,
             arm_tags=tags,
+            arm_short_names=declared,
             writer=writer,
             bundle_fingerprint=checked.get(aspect.aspect),
             trials=trials,

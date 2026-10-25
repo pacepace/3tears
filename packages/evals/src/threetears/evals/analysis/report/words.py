@@ -35,6 +35,7 @@ from threetears.evals.kernel.campaign import (
     EvidenceTier,
     VariantIndexEntry,
 )
+from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
 from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.kernel.surface import DecisionSurface, GuardrailDecision
 
@@ -469,6 +470,25 @@ def campaign_arm_tags(
     return arm_tags(list(listed), control)
 
 
+def declared_arm_names(arms: Iterable[CampaignArm]) -> dict[str, str]:
+    """The short name each arm declares (``CampaignArm.short_name``), by every variant key that names its cells: its
+    own, and those it resolves to under this build's identity predicate. A declared name is what a page prints for
+    the arm in its tight places, ahead of any short name a page would compute (GENERATOR.md §6.1); an arm declaring
+    none is absent.
+
+    :param arms: A campaign's arms.
+    :ptype arms: Iterable[CampaignArm]
+    :return: Variant key -> declared short name.
+    :rtype: dict[str, str]
+    """
+    return {
+        key: arm.short_name
+        for arm in arms
+        if arm.short_name is not None
+        for key in (arm.variant_key, *resolve_control_arm(arm).variant_keys)
+    }
+
+
 def counted(n: int, of: int, what: str) -> str:
     """``n of m <what>``: a count, never a rate."""
     return f"{n} of {of} {what}"
@@ -492,6 +512,7 @@ __all__ = [
     "arm_tags",
     "campaign_arm_tags",
     "cell_arm_labels",
+    "declared_arm_names",
     "comparison_words",
     "counted",
     "evidence_rows",

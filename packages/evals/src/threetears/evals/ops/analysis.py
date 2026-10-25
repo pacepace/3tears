@@ -117,10 +117,12 @@ QUESTION_DESCRIPTION = (
 
 #: What a campaign's arms are, said once.
 ARMS_DESCRIPTION = (
-    "The arms, each {label, role: control|candidate (default candidate), from_run_ids: [run id, ...]}: a contestant "
-    "stack, read from the first of its runs, each a run one of the campaign's aspects holds, all carrying one variant "
-    "key. One control at most, read first. Omitted, an adopted campaign's arms are carried and every other variant "
-    "among the runs is read as a candidate."
+    "The arms, each {label, role: control|candidate (default candidate), from_run_ids: [run id, ...], short_name?}: a "
+    "contestant stack, read from the first of its runs, each a run one of the campaign's aspects holds, all carrying "
+    "one variant key. short_name is what a page prints for the arm where space is tight (chart labels, table cells), "
+    f"at most {DECLARED_NAME_CHARS} characters and no other arm's label or short name; omitted, the page computes one "
+    "from what differs from the control. One control at most, read first. Omitted, an adopted campaign's arms are "
+    "carried and every other variant among the runs is read as a candidate."
 )
 
 #: What a campaign's aspects are, said once.
@@ -160,7 +162,8 @@ ASPECTS_FROM_DESCRIPTION = (
     "was declared and its question asked — with their floors and arms: each a campaign id, or {campaign_id, label} to "
     "adopt a campaign's one aspect under another label. An adopted aspect keeps its readings' standing; what this "
     "campaign adds to it (a question, a floor, a margin, an arm) carries the time it was added. An adopted aspect keeps "
-    "its short_name. Two aspects under one label or printed alike, or one run in two of them, are refused."
+    "its short_name, and an adopted arm its own. Two aspects under one label or printed alike, or one run in two of "
+    "them, are refused."
 )
 
 #: What naming a campaign's aspects is, said once.
@@ -169,6 +172,13 @@ SHORT_NAMES_DESCRIPTION = (
     f"{DECLARED_NAME_CHARS} characters, no other aspect's label or short name), or to null to print its label whole. An aspect "
     "not named keeps its own. Editable once runs have joined, since it changes nothing any run measures; refused "
     "beside aspects, whose own short_name says it."
+)
+
+#: What naming a campaign's arms is, said once.
+ARM_SHORT_NAMES_DESCRIPTION = (
+    "A named arm's label to its short name, what a page prints for it where space is tight (at most "
+    f"{DECLARED_NAME_CHARS} characters, no other arm's label or short name), or to null to let the page compute one. "
+    "An arm not named keeps its own. Editable once runs have joined, since it changes nothing any run measures."
 )
 
 #: What saying a campaign is exploratory means, said once for the operations and the actions that take it.
@@ -232,6 +242,7 @@ class CampaignChanges(EvalBaseModel):
     aspects: list[dict[str, Any]] | None = Field(default=None, description=ASPECTS_DESCRIPTION)
     floors: list[dict[str, Any]] | None = Field(default=None, description=FLOORS_DESCRIPTION)
     short_names: dict[str, str | None] | None = Field(default=None, description=SHORT_NAMES_DESCRIPTION)
+    arm_short_names: dict[str, str | None] | None = Field(default=None, description=ARM_SHORT_NAMES_DESCRIPTION)
     exploratory: bool = Field(default=False, description=EXPLORATORY_DESCRIPTION)
     control_from_run_id: str | None = Field(default=None, min_length=1, description=CONTROL_RUN_DESCRIPTION)
 

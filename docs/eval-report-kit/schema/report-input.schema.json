@@ -124,6 +124,10 @@
    "properties": {
     "id": {"type": "string", "description": "The arm's id, as every by-arm map keys it."},
     "name": {"type": ["string", "null"], "description": "The campaign's alias for the arm."},
+    "short_name": {
+     "type": ["string", "null"],
+     "description": "The short name the campaign declares for the arm, printed in tight places; none computes one."
+    },
     "role": {
      "type": "string",
      "enum": ["control", "challenger"],

@@ -11,7 +11,7 @@ shown as examples, and in what order (where the candidates lose most first), and
 first).
 
 **Every arm, reading, contrast and caveat the bundle holds reaches the input.** An arm is named by its campaign label
-everywhere. A choice's pair readings sit on their aspect, a measurement's readings on its measures, and a contrast
+everywhere, and carries the short name it declares (``Arm.short_name``), which ``{arm:<id>}`` prints. A choice's pair readings sit on their aspect, a measurement's readings on its measures, and a contrast
 the pipeline could not test is carried with its reason rather than dropped. On more than one aspect the by-arm maps
 read the lead aspect (the first asked, else the first) and every other aspect's figures sit beside them.
 
@@ -68,6 +68,7 @@ from threetears.evals.analysis.report_input import (
     Stat,
     Stratum,
 )
+from threetears.evals.analysis.report.words import declared_arm_names
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.errors import RefusedInput
@@ -217,6 +218,7 @@ class _Builder:
         arms: list[Arm] = []
         seen: set[str] = set()
         roles = {key: arm.role for arm in bundle.arms for key in bundle.arm_keys(arm)}
+        declared = declared_arm_names(bundle.arms)
         for key in [*(arm.variant_key for arm in bundle.arms), *entries]:
             label = self.arm(key)
             if label in seen:
@@ -243,6 +245,8 @@ class _Builder:
                     variant_key=key,
                     settings={"model": model, **settings},
                     reasoning_ratio=ratios.get(label),
+                    # Only where declared, so a view dumping what was set carries no key for an arm naming none.
+                    **({"short_name": declared[key]} if key in declared else {}),
                 )
             )
         return arms

@@ -319,11 +319,12 @@ class EvalCampaign(DurableDocumentModel):
 
     @model_validator(mode="after")
     def _one_control_first(self) -> Self:
-        """At most one arm is the control and it comes first; labels and variant keys name one arm each.
+        """At most one arm is the control and it comes first; labels, short names and variant keys name one arm each.
 
         :return: The validated campaign.
         :rtype: EvalCampaign
-        :raises ValueError: Two control arms, a control after a candidate, or a label or key on two arms.
+        :raises ValueError: Two control arms, a control after a candidate, a label or key on two arms, or a short name
+            that is another arm's label or short name.
         """
         controls = [index for index, arm in enumerate(self.arms) if arm.role == "control"]
         if len(controls) > 1:
@@ -336,6 +337,20 @@ class EvalCampaign(DurableDocumentModel):
         ):
             if repeated := sorted({value for value in values if values.count(value) > 1}):
                 raise ValueError(f"arm {what}(s) {', '.join(map(repr, repeated))} name more than one arm")
+        # A short name is printed in place of its label where space is tight, and the label stays every identifier (a
+        # recorded call, a recommendation). So no name of one arm, its label or its short name, may be a name of
+        # another: a reader copying a name from a chart must reach the arm the chart meant.
+        owners: dict[str, set[str]] = {}
+        for arm in self.arms:
+            owners.setdefault(arm.label, set()).add(arm.label)
+            if arm.short_name is not None:
+                owners.setdefault(arm.short_name, set()).add(arm.label)
+        if alike := sorted(name for name, held in owners.items() if len(held) > 1):
+            raise ValueError(
+                f"arm name(s) {', '.join(map(repr, alike))} would name more than one arm (a short name is printed in "
+                "place of its label, and may be no other arm's label or short name); give each arm a short name no "
+                "other arm is labelled or named"
+            )
         return self
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property

@@ -466,6 +466,7 @@ class CampaignUpdateParams(EvalBaseModel):
     aspects: Annotated[list[dict[str, Any]] | None, CampaignChanges.model_fields["aspects"]] = None
     floors: Annotated[list[dict[str, Any]] | None, CampaignChanges.model_fields["floors"]] = None
     short_names: Annotated[dict[str, str | None] | None, CampaignChanges.model_fields["short_names"]] = None
+    arm_short_names: Annotated[dict[str, str | None] | None, CampaignChanges.model_fields["arm_short_names"]] = None
     exploratory: Annotated[bool, CampaignChanges.model_fields["exploratory"]] = False
     control_from_run_id: Annotated[str | None, CampaignChanges.model_fields["control_from_run_id"]] = None
 
@@ -1982,13 +1983,13 @@ def engine_actions() -> tuple[Action, ...]:
             example={"campaign_id": campaign_id, "question": "Is model-b as accurate as model-a, and cheaper?"},
             detail=(
                 "Changes only what it is sent: name, description, question, aspects (replacing them whole, holding "
-                "no runs), floors and short_names (what a page prints for each aspect). A declaration it writes is validated and gated as campaign_create's is, and "
+                "no runs), floors, short_names (what a page prints for each aspect) and arm_short_names (for each named arm). A declaration it writes is validated and gated as campaign_create's is, and "
                 "dated now. Aspects none of which declares a design withdraw the declaration, only beside "
                 "exploratory: true, which clears the question, floors and arms too; exploratory: true beside a "
                 "design is refused. control_from_run_id names one of the campaign's runs whose variant becomes the "
                 "control arm, resolved for you; null clears it. Once any aspect holds a run the declaration is "
                 "frozen: question, aspects and floors are refused in any form, and so is re-pointing or clearing a "
-                "control, which may be named once while none is; name, description and short_names stay editable, and an "
+                "control, which may be named once while none is; name, description, short_names and arm_short_names stay editable, and an "
                 "amended declaration is a new campaign (campaign_create, adopting the aspects it keeps). Runs join "
                 "and leave through campaign_runs_add and campaign_runs_remove."
             ),

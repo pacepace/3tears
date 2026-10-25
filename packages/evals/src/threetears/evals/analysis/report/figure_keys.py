@@ -264,6 +264,13 @@ def _number(
     return Figure(path=path, kind="number", value=float(value), scale=scale, unit=unit, change=change, whole=whole)
 
 
+def _end(path: str, interval: tuple[float, float] | None, statistic: str, what: str) -> float:
+    """One end of ``interval`` (``low`` or ``high``), refused by name where the input states no interval."""
+    if interval is None:
+        raise _refuse(path, f"names {what}, which the input does not state")
+    return interval[0] if statistic == "low" else interval[1]
+
+
 def _interval(
     path: str,
     value: tuple[float, float] | None,
@@ -365,7 +372,7 @@ def _reading_figure(reading: Reading, statistic: str, path: str) -> Figure:
     if statistic == "interval":
         return _interval(path, reading.within_interval, "the interval", "points", change=True)
     if statistic in ("low", "high"):
-        end = reading.within_interval[0 if statistic == "low" else 1]
+        end = _end(path, reading.within_interval, statistic, "the interval")
         return _number(path, end, f"the interval's {statistic} end", "points", change=True)
     if statistic == "margin":
         return _number(path, reading.margin, "the reading's margin", "points")
@@ -406,7 +413,7 @@ def _contrast(report_input: ReportInput, values: tuple[str, ...], path: str) -> 
     if statistic == "interval":
         return _interval(path, contrast.interval, "the interval", scale, unit=unit, change=True)
     if statistic in ("low", "high"):
-        end = contrast.interval[0 if statistic == "low" else 1]
+        end = _end(path, contrast.interval, statistic, "the interval")
         return _number(path, end, f"the interval's {statistic} end", scale, unit=unit, change=True)
     if statistic == "verdict":
         return _text(path, contrast.verdict, "the verdict")
@@ -694,7 +701,8 @@ def _loss_share(report_input: ReportInput, values: tuple[str, ...], path: str) -
 
 def _flip_margin(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     reading = _reading(_asked_or_refuse(report_input, path), values[0])
-    return Figure(path=path, kind="number", value=max(0.0, -float(reading.within_interval[0])), scale="points")
+    low = _end(path, reading.within_interval, "low", "the interval a flip is read on")
+    return Figure(path=path, kind="number", value=max(0.0, -float(low)), scale="points")
 
 
 # --- the families --------------------------------------------------------------------------------------------------
@@ -1172,8 +1180,8 @@ def render(text: str, report_input: ReportInput, arm_names: Mapping[str, str]) -
     :ptype text: str
     :param report_input: The report input the plan was written against.
     :ptype report_input: ReportInput
-    :param arm_names: Each arm's short name, by id (GENERATOR §6.1); an arm missing from it is named by its alias,
-        else its id.
+    :param arm_names: Each arm's computed short name, by id (GENERATOR §6.1). An arm declaring a short name
+        (``Arm.short_name``) prints that instead; one missing from both is named by its alias, else its id.
     :ptype arm_names: Mapping[str, str]
     :return: The prose with every key written out.
     :rtype: str
@@ -1189,7 +1197,9 @@ def render(text: str, report_input: ReportInput, arm_names: Mapping[str, str]) -
         figure = resolve(key.path, report_input)
         if figure.kind == "arm":
             arm = _arm(report_input, str(figure.value))
-            written = ARM_TEMPLATE.format(name=arm_names.get(arm.id) or arm.name or arm.id, tag=tags[arm.id])
+            written = ARM_TEMPLATE.format(
+                name=arm.short_name or arm_names.get(arm.id) or arm.name or arm.id, tag=tags[arm.id]
+            )
         else:
             written = format_figure(figure, key.filters)
         pieces.extend((text[at:start], written))
@@ -1202,7 +1212,7 @@ def _allowed_names(report_input: ReportInput) -> set[str]:
     """Every name the input holds that prose may write with its digits: never one made only of digits."""
     names: set[str] = {report_input.meta.campaign}
     for arm in report_input.arms:
-        names.update((arm.id, arm.name or "", arm.served_model or ""))
+        names.update((arm.id, arm.name or "", arm.short_name or "", arm.served_model or ""))
         names.update(value for value in arm.settings.values() if isinstance(value, str))
     for aspect in report_input.aspects:
         names.update((aspect.id, aspect.name or ""))
