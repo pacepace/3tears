@@ -94,7 +94,7 @@ async def test_a_measurement_s_missed_bar_warns_under_its_title_and_no_arm_is_re
     first = first_screen_markdown(page)
     assert first.startswith("# ") and "**alpha falls short of the bar on solo.**" in first
     header = header_html(page)
-    assert header.index("<h1>") < header.index('<p class="warning">') and 'role="alert"' not in header
+    assert header.index("<h1>") < header.index('<p class="flag warning">') and 'role="alert"' not in header
     assert "Recommended" not in first and page.recommendation is None
     assert json.loads(serialize_report(page, "json"))["recommendation"] is None
     measures = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "measures")
@@ -121,7 +121,7 @@ async def test_the_writer_s_why_for_an_overridden_floor_sits_beside_its_warning(
     why = first.index("**The memo recommends v2 over it:** Billing refunds are rare this quarter.")
     assert first.index("# support queue") < warning < why
     header = header_html(page)
-    assert header.index("<h1>") < header.index('<p class="warning">') < header.index('data-role="override"')
+    assert header.index("<h1>") < header.index('<p class="flag warning">') < header.index('data-role="override"')
 
 
 async def test_a_why_for_a_missed_bar_sits_beside_its_warning() -> None:

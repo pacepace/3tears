@@ -32,6 +32,7 @@ from threetears.evals.analysis.report.model import (
     TableBlock,
 )
 from threetears.evals.analysis.report.words import FIRST_SCREEN_BANNED
+from packages.evals.tests.page_contract_support import FONT_LINKS, font_links, what_runs
 from packages.evals.tests.style_support import lint_page
 from threetears.evals.kernel.errors import RefusedInput
 
@@ -84,11 +85,14 @@ async def test_the_page_keeps_the_embed_s_invariants() -> None:
     parser = _Tags()
     parser.feed(html)
     tags = parser.tags
-    assert not [tag for tag, _ in tags if tag in {"script", "iframe", "object", "embed", "link", "base", "img"}]
+    # Nothing runs or loads but the kit's fonts, through the package's own three links in the head.
+    assert what_runs(html) == []
+    assert font_links(html) == list(FONT_LINKS)
     assert not [name for _, attrs in tags for name in attrs if name.startswith("on")]
     ids = [attrs["id"] for _, attrs in tags if attrs.get("id")]
     assert len(ids) == len(set(ids)), "an id is repeated"
-    hrefs = [attrs["href"] for _, attrs in tags if "href" in attrs]
+    # Every other link is to a place on the page itself.
+    hrefs = [attrs["href"] for tag, attrs in tags if "href" in attrs and tag != "link"]
     assert all(href is not None and href.startswith("#") for href in hrefs)
     assert {href[1:] for href in hrefs if href} <= set(ids), "a link lands nowhere"
     assert "<header>" in html and '<section id="aspect-billing">' in html and '<section id="glossary">' in html

@@ -8,6 +8,7 @@
 |---|---|
 | `--host-accent` | **The only token a host overrides** (give light and dark values). Drives `--accent`, `--accent-wash`, focus rings and the recommended-row highlight. |
 | `--bg --surface --sunk --ink --ink-2 --muted --line --base` | Neutrals, with a slight cool bias. |
+| `--on-fill` | Text set on a filled mark (a pressed segment, an arm's tag square, a count inside a bar). |
 | `--s1 … --s5` | Series colors in fixed order: blue, orange, aqua, gold, violet. The control uses `--ink-2`. |
 | `--good --warn --bad` and `*-wash` | Status. Always shown with ✓ ! ✕ and a word (`pill()`). |
 | `--seq-0 … --seq-5`, `--seq-t0 … --seq-t5` | Sequential ramp and the matching text color for each step. The dark ramp runs light-on-dark. |

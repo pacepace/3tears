@@ -254,7 +254,7 @@ def test_s2_draws_its_arms_on_one_aspect_with_that_aspect_s_own_figures_and_no_r
     assert svg.startswith('<svg class="viz"') and all(f">{arm}</text>" in svg for arm in ("alpha", "beta", "gamma"))
     assert "<script" not in svg and "url(" not in svg
     html = campaign_report_html(page)
-    assert '<figure class="chart" data-chart="cost_quality">' in html
+    assert '<figure class="fig" data-chart="cost_quality">' in html
     assert '<table class="visually-hidden"><caption>Cost and pass rate</caption>' in html
     markdown = campaign_report_markdown(page)
     assert "| alpha | 0.004 | [0.004, 0.004] | 88.3 |" in markdown
@@ -280,7 +280,7 @@ def test_a_measurement_and_one_candidate_on_one_aspect_draw_no_chart(build: Any)
     page = shape.page()
     assert _charts(page) == []
     assert WEIGHTING_LINE not in _lines(page)
-    assert '<figure class="chart" data-chart="cost_quality">' not in campaign_report_html(page)
+    assert '<figure class="fig" data-chart="cost_quality">' not in campaign_report_html(page)
     if shape.readings.kind == "measurement":
         assert shape.readings.aggregate is None
 

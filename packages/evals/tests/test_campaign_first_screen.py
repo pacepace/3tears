@@ -71,7 +71,7 @@ _CHANGE_HTML: list[tuple[str, str]] = [
     ("03", '<p class="question">'),
     ("memo", 'data-role="summary"'),
     ("memo", 'data-role="recommendation"'),
-    ("03", '<p class="warning">'),
+    ("03", '<p class="flag warning">'),
 ]
 
 
@@ -91,11 +91,11 @@ async def test_both_aspects_readings_are_in_the_scorecard_after_the_broken_floor
     assert markdown.index(f"**{_FLOOR_WARNING}**") < markdown.index(_SCORECARD["change"][1])
     assert "shown worse" in markdown and "shown better" in markdown
     header = header_html(page)
-    assert header.index("<h1>") < header.index('<p class="warning">')
-    assert html.index('<p class="warning">') < html.index(mark)
+    assert header.index("<h1>") < header.index('<p class="flag warning">')
+    assert html.index('<p class="flag warning">') < html.index(mark)
     # The broken floor is code's: the readings carry it, and the page warns once, never announced over the title.
     assert [status.floor for status in page.readings.broken_floors()] == ["billing/rate_drop/*"]
-    assert header.count('<p class="warning">') == 1 and 'role="alert"' not in header
+    assert header.count('<p class="flag warning">') == 1 and 'role="alert"' not in header
 
 
 @pytest.mark.parametrize(("screen", "markers"), [("markdown", _CHANGE_MARKDOWN), ("html", _CHANGE_HTML)])
@@ -111,7 +111,7 @@ async def test_the_first_screen_runs_title_question_summary_recommendation_warni
     if screen == "markdown":
         whole, warning, table = campaign_report_markdown(page), f"**{_FLOOR_WARNING}**", _SCORECARD["change"][1]
     else:
-        whole, warning, table = campaign_report_html(page), '<p class="warning">', _SCORECARD["change"][2]
+        whole, warning, table = campaign_report_html(page), '<p class="flag warning">', _SCORECARD["change"][2]
     assert whole.index(warning) < whole.index(table)
     assert page.basis == "analysis" and page.finding_count == 1
     # The arms are priced, so the report-wide cost caveat closes what warns, once.
@@ -148,8 +148,8 @@ async def test_a_measurement_opens_on_its_summary_then_its_warning_then_its_meas
     markdown, html = campaign_report_markdown(page), campaign_report_html(page)
     assert markdown.index("**alpha falls short of the bar on solo.**") < markdown.index(caption)
     header = header_html(page)
-    assert header.index("<h1>") < header.index('data-role="summary"') < header.index('<p class="warning">')
-    assert html.index('<p class="warning">') < html.index(mark)
+    assert header.index("<h1>") < header.index('data-role="summary"') < header.index('<p class="flag warning">')
+    assert html.index('<p class="flag warning">') < html.index(mark)
 
 
 @pytest.mark.parametrize("name", ["s1", "s2", "s4"])
@@ -186,7 +186,7 @@ def test_a_page_with_nothing_that_warns_holds_only_its_report_caveat_where_warni
     page = s4_change().page()
     # Its one report-wide caveat, that its costs are as routed, is all the section holds: nothing warns.
     assert [block.anchor for block in page.blocks if block.section == "warnings"] == ["caveat-cost"]
-    assert '<p class="warning">' not in campaign_report_html(page)
+    assert '<p class="flag warning">' not in campaign_report_html(page)
 
 
 def test_a_matrix_draws_every_column_s_glyphs_on_one_scale_so_they_compare_across_columns() -> None:

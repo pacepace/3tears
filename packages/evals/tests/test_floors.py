@@ -274,7 +274,9 @@ async def test_a_broken_floor_s_warning_is_one_line_under_the_verdict_never_abov
     assert lines.index(f"**{warning}**") == lines.index(f"**{verdict}**") + 2
     page = report_html(report)
     header_html = page[page.index("<header>") : page.index("</header>")]
-    assert header_html.index("<h1>") < header_html.index(f'<p class="warning"><strong>{warning}</strong></p>')
+    assert header_html.index("<h1>") < header_html.index(
+        f'<p class="flag warning"><b aria-hidden="true">!</b><strong>{warning}</strong></p>'
+    )
     assert 'role="alert"' not in page
     assert lint_page(markdown, question=QUESTION) == []
 

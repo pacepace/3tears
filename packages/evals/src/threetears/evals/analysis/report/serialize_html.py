@@ -1,11 +1,15 @@
 """The report as one self-contained HTML page that needs no script.
 
-**No script, ever, and nothing that runs.** The page is a document: every text node escaped, no ``<script>``, no
-event-handler attribute, no external resource and no URL but a ``#`` link to a place on the page itself. Drill-down
-is ``<details>``; moving between the screens is ``#`` anchors. The outcome bar is inline SVG
-(:mod:`~threetears.evals.analysis.report.svg`) beside a visually hidden table of the values it draws, and a table
-cell carrying an interval draws it as a small glyph beside its number, on one scale for the column, so a screen
-reader and a page with styles off lose nothing: every figure a glyph draws is in the row's text.
+**Nothing an author or a model wrote can make the page run or load anything.** Every text node is escaped, so no
+field can open a ``<script>``, a ``<link>``, an event-handler attribute or a ``javascript:`` URL; the page has no
+``<script>`` of its own either. The one thing it loads is the package's own: the kit's fonts (IBM Plex Sans, Sans
+Condensed and Mono), two preconnects and one stylesheet link to the Google Fonts hosts, written by this module and
+never from a field, the same three links the kit's reference memos carry. Where a host's policy blocks those hosts
+the page reads the same in the system faces the kit names after each Plex face. Every other link is a ``#`` link to a
+place on the page itself. Drill-down is ``<details>``; moving between the screens is ``#`` anchors. The outcome bar
+is inline SVG (:mod:`~threetears.evals.analysis.report.svg`) beside a visually hidden table of the values it draws,
+and a table cell carrying an interval draws it as a small glyph beside its number, on one scale for the column, so a
+screen reader and a page with styles off lose nothing: every figure a glyph draws is in the row's text.
 
 **The first screen is the page's ``<header>``**: the title (the campaign's name) first, nothing above it; the
 declared question quoted whole on its own line where there is one, then the arms line; the arms line alone (line 2)
@@ -16,9 +20,19 @@ is there, written by code. Every term of art links to the glossary at the foot o
 
 **Depth on demand, with the least ink.** The result, the floors, what it means and the contrasts are open;
 the cases, the trials, what was not tested, the methods and the glossary each sit in a closed ``<details>`` whose
-summary is the section heading, so a reader opens what they came for. The stylesheet draws hairlines, not boxes:
-hierarchy is type size, weight and spacing, a thin rule in a hue is the only tint (the verdict line's kind, a failed
-or lost trial), and every meaning a colour carries is also in words.
+summary is the section heading, so a reader opens what they came for.
+
+**The kit's visual system.** The stylesheet is the eval report kit's ``kit.css`` (shipped beside this module as
+package data, byte for byte the kit's documentation copy), then a short stylesheet of this page's own for the
+structures the kit has no class for, drawn from the kit's tokens alone. The page sits in the kit's ``.page`` (prose
+held to a readable measure, tables and figures breaking out to the full width), each table scrolls inside its own
+``.tbl`` frame so the page never scrolls sideways, what warns and each report-wide caveat is a ``.flag``, a trial's
+state is a ``.pill`` (an icon and the word, never a colour alone), headings are in the kit's display face, and the
+glossary is a ``.method`` list. Light and dark follow the reader's setting, and a ``data-theme`` a host's page sets.
+
+**A host restyles one thing: ``--host-accent``.** It is a CSS token, not a parameter: a host framing the page
+overrides it (light and dark values) in its own stylesheet, and the series, status and sequential colours stay
+fixed, so a brand colour can never make a fail look like a pass.
 
 The author's words are Markdown; this renders the part of it a memo uses — paragraphs, bullet lists, ``**bold**``
 and ``code`` — over text escaped first, so nothing an author wrote can become markup.
@@ -29,10 +43,12 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass
+from importlib.resources import files
 from html.parser import HTMLParser
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from threetears.evals.analysis.bundle.schema import TrialState
 from threetears.evals.analysis.report.blocks import (
     FIRST_SCREEN,
     FOLDED_SECTIONS,
@@ -58,119 +74,107 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
-#: The page's stylesheet: the system's own fonts (named once, as variables — the page loads no font), a readable
-#: measure, light and dark from the reader's setting (and a ``data-theme`` a host's page may set), with the charts'
-#: own classes after it. Every colour is a variable both schemes define; spacing is on one scale (4, 8, 16, 24, 40).
-#: The tone hues set the verdict line's kind and a failed or lost trial apart by a thin rule only, never a wash.
-_STYLE = """
-:root { color-scheme: light dark; --fg: #1d1d1f; --muted: #5f6368; --bg: #ffffff; --rule: #e3e3e8;
-  --rule-strong: #c4c4cc; --tone-decided: #2a78d6; --tone-open: #b8791a; --tone-failed: #d2501f;
-  --tone-summary: #8a8a92; --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace; }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) { --fg: #ececf1; --muted: #a1a1aa; --bg: #16161a; --rule: #2c2c33;
-    --rule-strong: #4a4a54; --tone-decided: #4a90e2; --tone-open: #d9a44a; --tone-failed: #e0623a;
-    --tone-summary: #8a8a92; }
-}
-:root[data-theme="dark"] { --fg: #ececf1; --muted: #a1a1aa; --bg: #16161a; --rule: #2c2c33; --rule-strong: #4a4a54;
-  --tone-decided: #4a90e2; --tone-open: #d9a44a; --tone-failed: #e0623a; --tone-summary: #8a8a92; }
-html { scroll-padding-top: 48px; }
-body { font: 16px/1.5 var(--font-sans); color: var(--fg); background: var(--bg); margin: 0 auto;
-  padding: 24px 16px 64px; max-width: 1040px; }
-h1 { font-size: 1.6rem; line-height: 1.25; letter-spacing: -0.01em; margin: 0 0 8px; max-width: 60ch; }
-h2 { font-size: 1.25rem; line-height: 1.3; font-weight: 600; margin: 40px 0 12px; padding-bottom: 6px;
-  border-bottom: 1px solid var(--rule); }
-h3, figcaption { font-size: 0.9375rem; font-weight: 600; margin: 24px 0 4px; }
-a { color: inherit; text-decoration: underline; text-decoration-color: var(--rule-strong); text-underline-offset: 2px; }
-a:hover { text-decoration-color: var(--fg); }
-a.term { font-size: 0.8125rem; color: var(--muted); text-decoration: underline dotted; }
-th a { text-decoration: underline dotted; }
-p, li, .disclosure, .caveat { max-width: 75ch; }
-code { font-family: var(--font-mono); font-size: 0.9em; }
-pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; padding: 0 0 0 12px;
-  border-left: 1px solid var(--rule); font: 0.8125rem/1.45 var(--font-mono); max-height: 24rem; overflow-y: auto; }
-header { padding: 0 0 16px; }
-.question { font-size: 1.125rem; line-height: 1.4; margin: 0 0 8px; max-width: 75ch; }
-.arms { margin: 0 0 4px; color: var(--muted); }
-.floor, .warning { font-size: 1.125rem; line-height: 1.4; margin: 0 0 12px; padding: 2px 0 2px 14px;
-  max-width: 75ch; border-left: 3px solid var(--tone-failed); }
-.warning { font-size: 1rem; margin: 8px 0; }
-.verdict { font-size: 1.125rem; line-height: 1.4; margin: 16px 0 24px; padding: 2px 0 2px 14px;
-  border-left: 3px solid var(--rule-strong); }
-.verdict[data-tone="decided"] { border-left-color: var(--tone-decided); }
-.verdict[data-tone="open"] { border-left-color: var(--tone-open); }
-.verdict[data-tone="failed"] { border-left-color: var(--tone-failed); }
-.verdict[data-tone="summary"] { border-left-color: var(--tone-summary); }
-.facts, .order, .line { color: var(--muted); font-size: 0.875rem; }
-.line { margin: 4px 0; }
-.line[data-source="caveat"], .line.caveat { color: var(--fg); font-size: 0.9375rem; }
-details.expr { display: inline-block; margin: 0; }
-details.expr > summary::before { content: none; }
-details.expr[open] > summary { display: none; }
-nav { position: sticky; top: 0; z-index: 1; display: flex; gap: 20px; overflow-x: auto; white-space: nowrap;
-  font-size: 0.875rem; padding: 10px 0; margin: 0 0 8px; background: var(--bg); border-bottom: 1px solid var(--rule); }
-nav a { color: var(--muted); text-decoration: none; }
-nav a:hover { color: var(--fg); }
-.table-wrap { overflow: auto; max-height: 80vh; margin: 4px 0 8px; }
-table { border-collapse: separate; border-spacing: 0; font-size: 0.9375rem; font-variant-numeric: tabular-nums; }
-th, td { padding: 6px 20px 6px 0; text-align: left; vertical-align: top; border-bottom: 1px solid var(--rule); }
-th:last-child, td:last-child { padding-right: 0; }
-thead th { font-weight: 600; border-bottom: 1px solid var(--rule-strong); position: sticky; top: 0;
-  background: var(--bg); }
-th.num, td.num { text-align: right; }
-td.key { font-weight: 600; }
-td.prose { max-width: 36ch; }
-td.glyph { white-space: nowrap; }
-td.glyph .figure { display: inline-block; min-width: 6ch; text-align: right; }
-td.glyph .no-glyph { display: inline-block; width: 7.5em; margin-right: 6px; }
-td:target, tr:target > td { background: var(--rule); }
-.axis { color: var(--muted); font-size: 0.8125rem; margin: 0 0 8px; }
-[data-table="scoreboard"] table { font-size: 1rem; }
-figure { margin: 16px 0; overflow-x: auto; }
-figcaption { margin: 0 0 4px; }
-details { margin: 8px 0; }
+#: The kit's stylesheet, read once from the package: tokens for light and dark, type, the page and prose columns,
+#: tables, pills and the flag (``kit/kit.css``, the kit's documentation copy byte for byte).
+_KIT_CSS = files("threetears.evals.analysis.report").joinpath("kit", "kit.css").read_text(encoding="utf-8")
+
+#: The kit's fonts, as the reference memos load them: a preconnect to each Google Fonts host, then the one stylesheet
+#: naming the three Plex faces. Written here and only here: no field of a report reaches the page's head.
+_FONT_LINKS = (
+    '<link rel="preconnect" href="https://fonts.googleapis.com">'
+    '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n'
+    '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500'
+    '&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap">'
+)
+
+#: The page's own structures the kit has no class for, from the kit's tokens alone (no colour, face or measure of its
+#: own): the first screen, the sticky section links, the folds and their summaries, a table's title and its numeric,
+#: prose and glyph columns, a chart's frame, the verdict line's tone, a trial's record and the code-written lines. A
+#: column header keeps the case it was declared in, since a header can be an arm's name or a check's expression. Prose
+#: is held to a measure in characters near the kit's 44rem column, so a smaller line keeps a readable length too.
+_PAGE_STYLE = """
+html { scroll-padding-top: 3.5rem; }
+p, li, .disclosure, .caveat { max-width: 78ch; }
+ul { margin: 0; padding-left: 1.25rem; }
+h4, h5 { font-family: var(--f-display); font-weight: 600; margin: 0; }
+h4 { font-size: var(--t-base); }
+h5 { font-size: var(--t-sm); }
+article > header { display: grid; gap: .75rem; padding-block: 1.75rem 1.5rem; }
+article > header > h1 { max-width: var(--col); }
+.question { font-size: var(--t-md); line-height: 1.45; color: var(--ink-2); }
+.arms { font-size: var(--t-sm); color: var(--muted); }
+.verdict { font-size: var(--t-md); line-height: 1.45; padding: .15rem 0 .15rem .9rem; border-left: 3px solid var(--base); }
+.verdict[data-tone="decided"] { border-left-color: var(--accent); }
+.verdict[data-tone="open"] { border-left-color: var(--warn); }
+.verdict[data-tone="failed"] { border-left-color: var(--bad); }
+.verdict strong { font-weight: 600; }
+.line { font-size: var(--t-sm); color: var(--ink-2); }
+.line[data-source="caveat"] { font-size: var(--t-base); color: var(--ink); }
+.flag.report-caveat { color: var(--ink-2); }
+.flag strong { font-weight: 600; color: var(--ink); }
+.facts, .order, .count, .trial-links { font-size: var(--t-sm); color: var(--muted); }
+.axis { font-size: var(--t-xs); color: var(--muted); }
+a.term { font-size: var(--t-xs); color: var(--muted); text-decoration: underline dotted; }
+nav { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; gap: .25rem 1.25rem; padding: .6rem 0;
+  font-size: var(--t-sm); background: var(--bg); border-bottom: 1px solid var(--line); }
+nav a { color: var(--ink-2); text-decoration: none; }
+nav a:hover { color: var(--accent); }
+section > *, .section-body > * { min-width: 0; }
+.section-body { display: grid; gap: 1rem; padding-top: 1rem; }
+.section-body section { padding-top: 1rem; }
 summary { cursor: pointer; list-style: none; }
 summary::-webkit-details-marker { display: none; }
-summary::before { content: "\\203A"; display: inline-block; width: 1em; color: var(--muted); transition: transform 0.1s; }
+summary::before { content: "\\203A"; display: inline-block; width: 1em; color: var(--muted); transition: transform .1s; }
 details[open] > summary::before { transform: rotate(90deg); }
-details.section { margin: 40px 0 0; }
-details.section > summary { padding-bottom: 6px; border-bottom: 1px solid var(--rule); }
-details.section > summary > h2 { display: inline; margin: 0; padding: 0; border: 0; }
-.section-body { scroll-margin-top: 48px; }
-.count { color: var(--muted); font-size: 0.9375rem; }
-details.fold, details[data-table] { margin: 8px 0 16px; }
-details.fold > summary, details[data-table] > summary { font-size: 0.875rem; color: var(--muted); }
-.finding { font-size: 1.0625rem; margin: 28px 0 8px; }
-p[data-role] > strong:first-child, .caveat > strong:first-child { font-size: 0.8125rem; color: var(--muted);
-  letter-spacing: 0.02em; }
-.disclosure, .caveat { font-size: 0.875rem; color: var(--muted); margin: 8px 0; padding: 0 0 0 12px;
-  border-left: 1px solid var(--rule-strong); }
-details.trial { margin: 0; padding: 8px 0 8px 12px; border-top: 1px solid var(--rule);
-  border-left: 2px solid transparent; }
-details.trial:last-of-type { border-bottom: 1px solid var(--rule); }
-details.trial[data-state="failed"] { border-left-color: var(--tone-failed); }
-details.trial[data-state="lost"] { border-left-color: var(--tone-summary); }
-details.trial > summary { font-size: 0.9375rem; }
-details.trial dl { margin: 8px 0 0; font-size: 0.9375rem; }
-details.trial dt { font-weight: 600; margin-top: 8px; }
-details.trial dd { margin: 2px 0 0 0; }
-.trial-links { color: var(--muted); font-size: 0.875rem; }
-dl.glossary { margin: 12px 0 0; }
-dl.glossary dt { font-weight: 600; margin-top: 10px; }
-dl.glossary dd { margin: 2px 0 0 16px; max-width: 72ch; }
-@media (max-width: 480px) {
-  h1 { font-size: 1.35rem; }
-  .verdict { font-size: 1rem; }
-  nav { gap: 16px; }
-}
+details.section > summary { padding-bottom: .4rem; border-bottom: 1px solid var(--line); }
+details.section > summary > h2, details.section > summary > h3, details.section > summary > h4 { display: inline; }
+details.fold > summary, details[data-table] > summary { font-size: var(--t-sm); color: var(--ink-2); }
+details.fold > summary + *, details[data-table] > summary + * { margin-top: .5rem; }
+details.fold > * + *:not(summary) { margin-top: 1rem; }
+details.expr { display: inline-block; }
+details.expr > summary::before { content: none; }
+details.expr[open] > summary { display: none; }
+.table-block { display: grid; gap: .5rem; }
+th { text-transform: none; letter-spacing: normal; }
+th a { color: inherit; text-decoration: underline dotted; }
+th code { font-size: 1em; }
+td { vertical-align: top; }
+th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.key { font-weight: 600; }
+[data-table="scoreboard"] table { font-size: var(--t-base); }
+td.wrap { max-width: 32rem; }
+td.glyph { white-space: nowrap; font-variant-numeric: tabular-nums; }
+td.glyph .figure { display: inline-block; min-width: 6ch; text-align: right; }
+td.glyph .no-glyph { display: inline-block; width: 7.5em; margin-right: 6px; }
+td:target, tr:target > td { background: var(--accent-wash); }
+figure { margin: 0; }
+.fig figcaption { font-family: var(--f-display); font-size: var(--t-base); font-weight: 600; margin-bottom: .5rem; }
+.fig .tbl { border: 0; border-radius: 0; background: none; }
+.finding { font-family: var(--f-display); font-size: var(--t-md); margin-top: .75rem; }
+.finding strong { font-weight: 600; }
+[data-role] > p + p, [data-role] > p + ul, [data-role] > ul + p { margin-top: .6rem; }
+p[data-role] > strong:first-child, .caveat > strong:first-child { font-size: var(--t-sm); color: var(--muted);
+  letter-spacing: .02em; }
+.disclosure, .caveat { font-size: var(--t-sm); color: var(--ink-2); padding-left: .75rem;
+  border-left: 1px solid var(--line); }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: .25rem 0; padding: .5rem .6rem; border-radius: 4px;
+  font: var(--t-xs)/1.45 var(--f-mono); color: var(--ink-2); background: var(--sunk); max-height: 24rem;
+  overflow-y: auto; }
+details.trial { padding: .5rem 0 .5rem .75rem; border-top: 1px solid var(--line); border-left: 2px solid transparent; }
+details.trial:last-of-type { border-bottom: 1px solid var(--line); }
+details.trial[data-state="failed"] { border-left-color: var(--bad); }
+details.trial[data-state="lost"] { border-left-color: var(--base); }
+details.trial > summary { font-size: var(--t-sm); }
+details.trial dl { margin: .5rem 0 0; font-size: var(--t-sm); }
+details.trial dt { font-weight: 600; margin-top: .5rem; }
+details.trial dd { margin: .15rem 0 0; }
+@media (max-width: 640px) { nav { position: static; } .verdict { font-size: var(--t-base); } }
 @media print {
   nav { display: none; }
-  body { padding: 0; max-width: none; }
-  .table-wrap { overflow: visible; max-height: none; }
-  thead th { position: static; }
-  figure { overflow: visible; }
+  .tbl { overflow: visible; }
+  th { position: static; }
   svg.viz { min-width: 0; }
-  details.trial, .table-wrap, figure { break-inside: avoid; }
+  details.trial, .tbl, figure { break-inside: avoid; }
 }
 """
 
@@ -209,15 +213,9 @@ def report_html(report: Report) -> str:
     """
     head = [block for block in report.blocks if block.section in FIRST_SCREEN]
     parts = [
-        "<!doctype html>",
-        '<html lang="en">',
-        "<head>",
-        '<meta charset="utf-8">',
-        '<meta name="viewport" content="width=device-width, initial-scale=1">',
-        f"<title>{_escape(_one_line(report.title))}</title>",
-        f"<style>{_STYLE}{SVG_STYLE}</style>",
-        "</head>",
+        *_head(report.title),
         "<body>",
+        '<div class="page">',
         f'<article data-basis="{_escape(report.basis)}">',
         "<header>",
         # The title first, then the first screen in order: what warns is under the verdict, never above the title.
@@ -233,7 +231,7 @@ def report_html(report: Report) -> str:
     )
     parts += _sections(report, present)
     parts += _glossary(report.terms)
-    parts += ["</article>", "</body>", "</html>"]
+    parts += ["</article>", "</div>", "</body>", "</html>"]
     return _links_in_sight("\n".join(parts) + "\n")
 
 
@@ -256,15 +254,9 @@ def campaign_report_html(report: CampaignReport) -> str:
     head = [block for block in report.blocks if block.section in FIRST_SCREEN]
     slugs = report.fold_ids
     parts = [
-        "<!doctype html>",
-        '<html lang="en">',
-        "<head>",
-        '<meta charset="utf-8">',
-        '<meta name="viewport" content="width=device-width, initial-scale=1">',
-        f"<title>{_escape(_one_line(report.title))}</title>",
-        f"<style>{_STYLE}{SVG_STYLE}</style>",
-        "</head>",
+        *_head(report.title),
         "<body>",
+        '<div class="page">',
         f'<article data-basis="{_escape(report.basis)}" data-page="campaign">',
         "<header>",
         # The title first, then the decision: the question, the answer, then what warns, as consequences.
@@ -288,8 +280,24 @@ def campaign_report_html(report: CampaignReport) -> str:
     for section in after:
         parts += _campaign_section(report, section)
     parts += _glossary(report.terms)
-    parts += ["</article>", "</body>", "</html>"]
+    parts += ["</article>", "</div>", "</body>", "</html>"]
     return _links_in_sight("\n".join(parts) + "\n")
+
+
+def _head(title: str) -> list[str]:
+    """The page's ``<head>``: its title, the kit's font links and the stylesheet — the kit's, then the page's own and
+    the charts'. Nothing in it comes from a field but the title, escaped."""
+    return [
+        "<!doctype html>",
+        '<html lang="en">',
+        "<head>",
+        '<meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        f"<title>{_escape(_one_line(title))}</title>",
+        _FONT_LINKS,
+        f"<style>{_KIT_CSS}{_PAGE_STYLE}{SVG_STYLE}</style>",
+        "</head>",
+    ]
 
 
 def _campaign_section(report: CampaignReport, section: str) -> list[str]:
@@ -379,7 +387,7 @@ def _glossary(terms: Sequence[str]) -> list[str]:
     )
     return [
         '<section id="glossary">',
-        *_section("glossary", SECTION_TITLES["glossary"], [f'<dl class="glossary">{entries}</dl>'], count=None),
+        *_section("glossary", SECTION_TITLES["glossary"], [f'<dl class="method glossary">{entries}</dl>'], count=None),
         "</section>",
     ]
 
@@ -539,10 +547,10 @@ def _cell_code(text: str) -> str:
 
 
 def _grid(block: TableBlock) -> str:
-    """A table of served cells' text, scrolling inside its own box rather than widening the page.
+    """A table of served cells' text, scrolling inside its own ``.tbl`` frame rather than widening the page.
 
     A column of numbers is classed ``num`` on every cell, header included, so the stylesheet right-aligns it; a cell
-    of prose is classed ``prose`` so it wraps at a measure instead of widening its column. A column whose cells carry
+    of prose is classed ``wrap`` (the kit's) so it wraps at a measure instead of widening its column. A column whose cells carry
     an interval is classed ``glyph``: each such cell draws its interval beside its number
     (:func:`~threetears.evals.analysis.report.svg.interval_glyph_svg`), every cell of the column in one unit on one
     scale, and the scale's ends are written once under the table (:func:`_scale_line`).
@@ -580,7 +588,7 @@ def _grid(block: TableBlock) -> str:
                 css = classes[column.key]
                 text = _glyph(cell, column.key, scales) + f'<span class="figure">{text}</span>'
             else:
-                css = classes[column.key] or (' class="prose"' if len(cell.text) >= _PROSE_CELL else "")
+                css = classes[column.key] or (' class="wrap"' if len(cell.text) >= _PROSE_CELL else "")
             anchor = f' id="{cell.anchor}"' if cell.anchor is not None else ""
             cells.append(f"<td{anchor}{css}>{text}</td>")
         anchor = ""
@@ -593,7 +601,7 @@ def _grid(block: TableBlock) -> str:
         elif block.name == "passed_trials" and "trial" in row and _TRIAL_ID.fullmatch(row["trial"].text):
             anchor = f' id="{row["trial"].text}"'
         body.append(f"<tr{anchor}>" + "".join(cells) + "</tr>")
-    grid = f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+    grid = f'<div class="tbl"><table><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
     return grid + _scale_line(block, scales)
 
 
@@ -683,14 +691,17 @@ def _column_class(block: TableBlock, key: str) -> str:
 
 
 def _chart(block: ChartBlock, chart_id: str) -> str:
-    """A chart as a figure: its title, the SVG, and a visually hidden table of every value it draws."""
+    """A chart as the kit's ``.fig``: its title, the SVG, and a visually hidden table of every value it draws.
+
+    The SVG keeps a floor width so its words stay legible on a phone; below it the chart scrolls inside its own frame,
+    as a wide table does, and the page never scrolls sideways."""
     headers, rows = block.values_table()
     head = "".join(f'<th scope="col">{_escape(header)}</th>' for header in headers)
     body = "".join("<tr>" + "".join(f"<td>{_escape(cell)}</td>" for cell in row) + "</tr>" for row in rows)
     return (
-        f'<figure class="chart" data-chart="{_escape(block.chart)}">'
+        f'<figure class="fig" data-chart="{_escape(block.chart)}">'
         f"<figcaption>{_escape(block.title)}</figcaption>"
-        f"{chart_svg(block, chart_id=chart_id)}"
+        f'<div class="chart tbl">{chart_svg(block, chart_id=chart_id)}</div>'
         f'<table class="visually-hidden"><caption>{_escape(block.title)}</caption><thead><tr>{head}</tr></thead>'
         f"<tbody>{body}</tbody></table></figure>"
     )
@@ -730,13 +741,35 @@ def _trial(block: TrialBlock) -> str:
     opened = " open" if block.open else ""
     return (
         f'<details class="trial" id="{_escape(block.trial_id)}" data-state="{_escape(block.state)}"{opened}>'
-        f"<summary>{_escape(trial_summary(block))}</summary><dl>{''.join(parts)}</dl></details>"
+        f"<summary>{_trial_summary(block)}</summary><dl>{''.join(parts)}</dl></details>"
+    )
+
+
+#: Each trial state as the kit's pill shows it: its kind (the pill's colour) and the icon beside the word, so a state
+#: never rests on a colour alone.
+_STATE_PILLS: dict[TrialState, tuple[str, str]] = {
+    "passed": ("good", "✓"),
+    "failed": ("bad", "✕"),
+    "lost": ("neutral", "–"),
+}
+
+
+def _trial_summary(block: TrialBlock) -> str:
+    """A trial's one-line summary, its state the kit's pill: the same words as every serializer's, the icon hidden
+    from a screen reader, which reads the word."""
+    kind, icon = _STATE_PILLS[block.state]
+    lead = trial_summary(block).removesuffix(block.state)
+    return (
+        f'{_escape(lead)}<span class="pill {kind}"><span aria-hidden="true">{icon}</span>{_escape(block.state)}</span>'
     )
 
 
 #: The sources of what warns, set apart under the title: a missed bar, a broken floor, a guardrail an arm is not
 #: shown safe on.
 _WARNING_SOURCES = frozenset({"bar", "floor", "guardrails"})
+
+#: The kit's flag icon, beside the words that carry the meaning; hidden from a screen reader, which reads the words.
+_FLAG_ICON = '<b aria-hidden="true">!</b>'
 
 
 def _disclosure(block: DisclosureBlock) -> str:
@@ -750,11 +783,11 @@ def _disclosure(block: DisclosureBlock) -> str:
         return f'<p class="question">{text}</p>'
     anchor = f' id="{_escape(block.anchor)}"' if block.anchor is not None else ""
     if block.section in ("header", "warnings") and block.source in _WARNING_SOURCES:
-        # What warns, under the title: set apart, never announced over it.
-        return f'<p class="warning"{anchor}><strong>{text}</strong></p>'
+        # What warns, under the title: the kit's flag, set apart, never announced over it.
+        return f'<p class="flag warning"{anchor}>{_FLAG_ICON}<strong>{text}</strong></p>'
     if block.section == "warnings" or (block.section == "header" and block.anchor is not None):
-        # A report-wide caveat, once, beside what warns.
-        return f'<p class="line caveat"{anchor} data-source="{_escape(block.source)}">{text}</p>'
+        # A report-wide caveat, once, beside what warns: a flag too, in normal weight.
+        return f'<p class="flag report-caveat"{anchor} data-source="{_escape(block.source)}">{_FLAG_ICON}<span>{text}</span></p>'
     if block.source == "verdict":
         tone = f' data-tone="{_escape(block.tone)}"' if block.tone is not None else ""
         return f'<p class="verdict"{tone}><strong>{text}</strong></p>'

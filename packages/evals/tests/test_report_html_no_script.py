@@ -1,79 +1,37 @@
-"""The report's HTML reads without a script, and nothing an author wrote can make it run one.
+"""The report's HTML runs no script, and nothing an author wrote can make it run or load anything.
 
-Read by parsing the page, not by searching its text: an element is a ``<script>`` because the parser
-opened one, and a string that merely contains the word does not count either way. Checked on the toy
-host's real report and on a report whose author wrote markup into every field a model fills — the case
-the property exists for, since a page that is script-free only while its prose is polite is not.
+The principle: nothing an author or a model wrote can make the page run or load anything; the package itself may
+load the kit's fonts from the Google Fonts hosts, so the page is set in the faces the kit's reference memos use.
+That is the whole of what the page loads: three links the package writes into its head, a preconnect to each host
+and one stylesheet, matched attribute for attribute (:mod:`~packages.evals.tests.page_contract_support`). Any other
+``<link>``, any ``<script>`` (the page has none of its own), any element that embeds or loads, any ``on*``
+attribute and any ``javascript:`` URL is refused.
 
-What "runs" means here: a ``script`` element; any element that embeds or loads another document or
-resource (``iframe``, ``object``, ``embed``, ``link``, ``base``, ``img``, ``meta`` with ``http-equiv``, and inside
-the inline SVG ``image``, ``use`` and ``foreignObject``); an event-handler attribute (``on*``); and any attribute
-value that is a ``javascript:`` URL. The page links only to places on itself (``#F1``, ``#T3``), so the last is
-checked on every attribute rather than on a list of URL attributes — except ``data-*``, which a browser never
-navigates to or runs. The charts are inline SVG the package draws, and are held to the same rules.
+Read by parsing the page, not by searching its text: an element is a ``<script>`` because the parser opened one,
+and a string that merely contains the word does not count either way. Checked on the toy host's real report and on
+a report whose author wrote markup into every field a model fills — a script, a handler, a ``javascript:`` link, an
+iframe, a stylesheet link to another host and a copy of the package's own font link — the case the property exists
+for, since a page that loads only its own fonts while its prose is polite does not keep it. The charts are inline
+SVG the package draws, and are held to the same rules.
 """
 
 from __future__ import annotations
 
-from html.parser import HTMLParser
 from typing import Any
 
 from threetears.evals.analysis import report_html
 from threetears.evals.analysis.report import Report
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
+from packages.evals.tests.page_contract_support import FONT_LINK_MARKUP, FONT_LINKS, font_links, parsed, what_runs
 from packages.evals.tests.report_support import toy_report
 
-#: Elements that execute, embed or load something — none belongs on a document that reads without a script.
-_ACTIVE_ELEMENTS = frozenset(
-    {"script", "iframe", "object", "embed", "link", "base", "img", "frame", "frameset", "image", "use", "foreignobject"}
-)
-
-#: What an author might write into a field a model fills, to try to make the page run something.
+#: What an author might write into a field a model fills, to try to make the page run or load something: a script,
+#: a handler, a ``javascript:`` link, a frame, a stylesheet from another host, and the package's own font links,
+#: which from a field are an author's, not the package's.
 _HOSTILE = (
     '<script>alert(1)</script><img src=x onerror="alert(2)"><a href="javascript:alert(3)">x</a>'
-    "<iframe src=//evil></iframe>"
+    '<iframe src=//evil></iframe><link rel="stylesheet" href="https://evil.example/x.css">' + FONT_LINK_MARKUP
 )
-
-
-class _Page(HTMLParser):
-    """Every start tag and its attributes, as the parser read them."""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.tags: list[tuple[str, list[tuple[str, str | None]]]] = []
-        self.text: list[str] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self.tags.append((tag, attrs))
-
-    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self.tags.append((tag, attrs))
-
-    def handle_data(self, data: str) -> None:
-        self.text.append(data)
-
-
-def _parsed(page: str) -> _Page:
-    parser = _Page()
-    parser.feed(page)
-    parser.close()
-    return parser
-
-
-def _what_runs(page: str) -> list[str]:
-    """Everything on the page that would execute or load — empty for a page that reads without a script."""
-    found: list[str] = []
-    for tag, attrs in _parsed(page).tags:
-        if tag in _ACTIVE_ELEMENTS:
-            found.append(f"<{tag}>")
-        if tag == "meta" and any(name == "http-equiv" for name, _ in attrs):
-            found.append("<meta http-equiv>")
-        for name, value in attrs:
-            if name.startswith("on"):
-                found.append(f"{tag}[{name}]")
-            if not name.startswith("data-") and value is not None and "javascript:" in value.replace(" ", "").lower():
-                found.append(f"{tag}[{name}=javascript:]")
-    return found
 
 
 def _hostile_report() -> Report:
@@ -173,15 +131,19 @@ async def test_the_toy_reports_html_contains_no_script_element() -> None:
     _, _, report = await toy_report()
     page = report_html(report)
 
-    assert not [tag for tag, _ in _parsed(page).tags if tag == "script"]
-    assert _what_runs(page) == []
+    assert not [tag for tag, _ in parsed(page).tags if tag == "script"]
+    assert what_runs(page) == []
+    assert font_links(page) == list(FONT_LINKS), "the page loads the kit's fonts and nothing else"
+    assert page.index(FONT_LINK_MARKUP) < page.index("</head>"), "the font links are in the head, verbatim"
 
 
 def test_markup_an_author_wrote_is_text_not_markup() -> None:
     page = report_html(_hostile_report())
 
-    assert _what_runs(page) == []
-    assert any("<script>alert(1)</script>" in text for text in _parsed(page).text), "the words survive as text"
+    assert what_runs(page) == []
+    assert font_links(page) == list(FONT_LINKS), "an author's link, even a copy of the package's, is text"
+    assert any("<script>alert(1)</script>" in text for text in parsed(page).text), "the words survive as text"
+    assert any(FONT_LINK_MARKUP.split(">", 1)[0] in text for text in parsed(page).text), "so is the copied font link"
 
 
 def test_a_closed_value_that_bypassed_validation_is_escaped_too() -> None:
@@ -202,27 +164,42 @@ def test_a_closed_value_that_bypassed_validation_is_escaped_too() -> None:
     ]
     page = report_html(report.model_copy(update={"basis": breakout, "blocks": blocks}))
 
-    assert _what_runs(page) == []
-    assert any(dict(attrs).get("data-basis") == breakout for tag, attrs in _parsed(page).tags if tag == "article")
+    assert what_runs(page) == []
+    assert font_links(page) == list(FONT_LINKS)
+    assert any(dict(attrs).get("data-basis") == breakout for tag, attrs in parsed(page).tags if tag == "article")
 
 
 def test_the_markdown_a_memo_uses_still_renders() -> None:
     """Escaping first is not escaping everything: a list, bold and code still become structure."""
-    tags = [tag for tag, _ in _parsed(report_html(_hostile_report())).tags]
+    tags = [tag for tag, _ in parsed(report_html(_hostile_report())).tags]
     assert {"ul", "li", "strong", "code"} <= set(tags)
 
 
 def test_a_chart_draws_the_labels_it_is_given_as_text() -> None:
     page = report_html(_hostile_report())
     assert page.count("<svg") == 2
-    svg_text = [text for text in _parsed(page).text if "<script>alert(1)</script>" in text]
+    svg_text = [text for text in parsed(page).text if "<script>alert(1)</script>" in text]
     assert len(svg_text) > 4, "every label, title and description survives as words"
 
 
 def test_the_check_sees_a_script_where_one_is() -> None:
     """A detector that found nothing anywhere would pass every page above for nothing."""
-    assert _what_runs("<p>x</p><script>1</script>") == ["<script>"]
-    assert _what_runs('<p onclick="x">y</p>') == ["p[onclick]"]
-    assert _what_runs('<a href=" JavaScript:x">y</a>') == ["a[href=javascript:]"]
-    assert _what_runs("<img src=x>") == ["<img>"]
-    assert _what_runs('<svg><use href="#x"></use></svg>') == ["<use>"]
+    assert what_runs("<p>x</p><script>1</script>") == ["<script>"]
+    assert what_runs('<p onclick="x">y</p>') == ["p[onclick]"]
+    assert what_runs('<a href=" JavaScript:x">y</a>') == ["a[href=javascript:]"]
+    assert what_runs("<img src=x>") == ["<img>"]
+    assert what_runs('<svg><use href="#x"></use></svg>') == ["<use>"]
+
+
+def test_the_check_passes_the_package_s_font_links_and_no_other_link() -> None:
+    """Only the three font links pass, attribute for attribute: another host, another rel, an extra attribute or a
+    handler on one of them is a link that loads something the package did not write."""
+    assert what_runs(FONT_LINK_MARKUP) == []
+    assert what_runs('<link rel="stylesheet" href="https://evil.example/x.css">') == ["<link>"]
+    assert what_runs('<link rel="preconnect" href="https://fonts.googleapis.com.evil.example">') == ["<link>"]
+    assert what_runs('<link rel="prefetch" href="https://fonts.googleapis.com">') == ["<link>"]
+    assert what_runs('<link rel="preconnect" href="https://fonts.googleapis.com" id="x">') == ["<link>"]
+    assert what_runs('<link rel="preconnect" href="https://fonts.googleapis.com" onload="x">') == [
+        "<link>",
+        "link[onload]",
+    ]
