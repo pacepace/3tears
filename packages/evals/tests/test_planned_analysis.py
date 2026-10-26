@@ -11,6 +11,8 @@ Contracts held here (``threetears.evals.analysis.planned_analysis``, ``threetear
 - an analysis the memo writer wrote, as every analysis stored before the planner was, still lists, reads and renders
   as it did, and says it is a memo; a reporter case freezes it as a memo case, and a planned analysis as a plan case
   (``test_reporter_plan_cases.py`` holds the plan case);
+- a model or storage bug building the analysis from an accepted plan is recorded as a failure and raised as one,
+  never as the planner's refusal;
 - the plan is regenerable: ``drop_derived`` sweeps it, and deleting its analysis deletes it (its insights stay);
 - the campaign's page for a planned analysis carries the plan's first screen, and the actions round-trip: a generation
   started through ``analysis_generate`` is listed by ``analyses_list`` as a plan and read by ``report_read`` with its
@@ -30,7 +32,10 @@ import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis import build_report
-from threetears.evals.analysis.errors import UnresolvableReference
+from pydantic import ValidationError
+
+from threetears.evals.analysis import planned_analysis as planned_analysis_module
+from threetears.evals.analysis.errors import SoundnessRefusal, UnresolvableReference
 from threetears.evals.analysis.planned_analysis import plan_recommended_arm, report_input_digest, report_plan_of
 from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
 from threetears.evals.analysis.report.figure_keys import key_subjects
@@ -42,7 +47,7 @@ from threetears.evals.analysis.service import (
     prepare_analysis_generation,
     run_analysis_generation,
 )
-from threetears.evals.kernel.campaign import report_plan_id
+from threetears.evals.kernel.campaign import EvalAnalysis, report_plan_id
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.prompts.catalogue import REPORT_PLAN_PROMPT
 from threetears.evals.ops import analyses_list, analysis_delete, analysis_generate, report_read
@@ -197,6 +202,51 @@ async def test_a_generation_makes_at_most_max_generation_calls() -> None:
     assert plan is not None and (plan.generation.calls, plan.generation.repair_attempts) == (4, 2)
     assert plan.generation.structure_refusal and plan.generation.prose_refusal
     assert analysis.generation.repair_attempts == 2 and analysis.generation.repaired_refusal
+
+
+async def _generation_raising(monkeypatch: pytest.MonkeyPatch, raised: Exception) -> tuple[Any, Any, BaseException]:
+    """A generation whose accepted plan is built into an analysis that raises ``raised``: the host, the campaign and
+    what the generation raised."""
+
+    def building(**_: Any) -> Any:
+        raise raised
+
+    monkeypatch.setattr(planned_analysis_module, "EvalAnalysis", building)
+    built: list[PlanWriter] = []
+
+    def clients(role: str, model: str | None, *, temperature: float | None = None) -> PlanWriter:
+        client = PlanWriter()
+        built.append(client)
+        return client
+
+    host, campaign = off_loop(toy_campaign_host, clients)
+    prepared = await prepare_analysis_generation(
+        host, campaign.id, campaign.scope_id, model=None, resolve_prompt=_prompt, out_of_run_cap_usd=None
+    )
+    built[0].report_input = prepared.report_input
+    with pytest.raises(Exception) as caught:
+        await run_analysis_generation(host, prepared, prompt_id=REPORT_PLAN_PROMPT, max_output_tokens=4000)
+    return host, campaign, caught.value
+
+
+def _validation_error() -> ValidationError:
+    try:
+        EvalAnalysis.model_validate({})
+    except ValidationError as invalid:
+        return invalid
+    raise AssertionError("an empty analysis validated")
+
+
+class TestBuildingTheAnalysis:
+    async def test_a_model_validation_error_is_raised_as_itself_and_not_recorded_as_a_refusal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        host, campaign, raised = await _generation_raising(monkeypatch, _validation_error())
+
+        assert not isinstance(raised, SoundnessRefusal) and "ValidationError" in str(raised)
+        assert "edit the prompt" not in str(raised), "the caller is not told to mend the planner's prompt"
+        (attempt,) = off_loop(host.storage.list_analysis_attempts_by_campaign, campaign.id, campaign.scope_id)
+        assert attempt.outcome == "failed", "a bug building the analysis is never the planner's refusal"
 
 
 class TestStoredMemos:

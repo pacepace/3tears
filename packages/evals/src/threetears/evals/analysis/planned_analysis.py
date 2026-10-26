@@ -116,17 +116,26 @@ def plan_recommended_arm(plan: ReportPlan) -> str | None:
     return next((row.option for row in plan.options.rows if row.role == "recommended"), None)
 
 
+class _UnstorableRecommendation(ValueError):
+    """The accepted plan recommends an option the input holds no variant key for: the planner's to answer for.
+
+    Its own type, so the one refusal of the plan is told apart from a model or storage bug while the analysis is built
+    (a pydantic ``ValidationError`` is a ``ValueError`` too), which is never the planner's and never a refusal."""
+
+
 def _recommended_variant_key(plan: ReportPlan, report_input: ReportInput) -> str | None:
     """The variant key of the arm the plan recommends; None when it recommends nothing.
 
-    :raises ValueError: The recommended option names no arm of the input, or an arm with no variant key.
+    :raises _UnstorableRecommendation: The recommended option names no arm of the input, or an arm with no variant key.
     """
     arm_id = plan_recommended_arm(plan)
     if arm_id is None:
         return None
     arm = next((arm for arm in report_input.arms if arm.id == arm_id), None)
     if arm is None or arm.variant_key is None:
-        raise ValueError(f"the plan recommends {arm_id!r}, which names no arm of the report input with a variant key")
+        raise _UnstorableRecommendation(
+            f"the plan recommends {arm_id!r}, which names no arm of the report input with a variant key"
+        )
     return arm.variant_key
 
 
@@ -229,7 +238,8 @@ def planned_analysis(
     :ptype bundle_assembled_at: str
     :return: The analysis, its plan and its insights.
     :rtype: PlannedAnalysis
-    :raises ValueError: The plan recommends an arm the input holds no variant key for.
+    :raises ValueError: The plan recommends an arm the input holds no variant key for; or (a ``ValidationError``) an
+        analysis, plan or insight built from it does not validate, which is a bug, not the planner's.
     """
     surfaces = bundle.surfaces()
     model_versions: dict[str, str] = {}
@@ -321,6 +331,8 @@ async def generate_planned_analysis(
     :raises GenerationError: The model is not one the host allows, or the provider cut a call short.
     :raises SoundnessRefusal: A call's reply was refused twice; or the accepted plan recommends an arm the input holds
         no variant key for (never repaired: the plan checks refuse an unknown arm first).
+    :raises ValidationError: The analysis, its plan or an insight built from the accepted plan does not validate: a
+        model or storage bug, raised as itself and never recorded as the planner's refusal.
     """
     tally = tally if tally is not None else GenerationTally()
     generation = await generate_report_plan(
@@ -335,7 +347,7 @@ async def generate_planned_analysis(
             calls=tally.calls,
             bundle_assembled_at=bundle_assembled_at,
         )
-    except ValueError as refused:
+    except _UnstorableRecommendation as refused:
         raise SoundnessRefusal(f"the accepted plan could not be stored as an analysis: {refused}") from refused
 
 
