@@ -436,8 +436,9 @@ def _level(chart: PlannedChart, report_input: ReportInput, path: str, faults: li
         # slices as a stratum's is; a config's figure is an arm's, at the level a measure's is. Printed only where a
         # figure the chart reads carries one.
         held = _interval_keys(chart, report_input)
-        table = {**report_input.measures, **report_input.judged}
-        level = _one(path, "interval level", (table[key].level or "" for key in held if key in table), faults)
+        declared = {key: m.level or "" for key, m in report_input.measures.items()}
+        declared |= {key: j.level or "" for key, j in report_input.judged.items()}
+        level = _one(path, "interval level", (declared.get(key, "") for key in held), faults)
         if not level or source == "configs":
             return level
         return f"{level} {_UNCORRECTED}"

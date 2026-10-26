@@ -103,6 +103,7 @@ from threetears.evals.analysis.report.plan_page.look import (
     Quantity,
     band_domain,
     figure_text,
+    log_spread,
     quantity,
     series_token,
 )
@@ -150,9 +151,6 @@ _READING_STATUS: dict[str, ChartStatus] = {"worse": "bad", "better": "good", "":
 
 #: A floor's status to its pill.
 _FLOOR_STATUS: dict[str, ChartStatus] = {"held": "good", "unclear": "warn", "broken": "bad"}
-
-#: The spread past which an axis is drawn on a log scale (GENERATOR §5.2).
-_LOG_SPREAD = 10.0
 
 #: The room a log axis leaves past its least and its largest value, as factors.
 _LOG_PAD = (0.8, 1.25)
@@ -596,11 +594,6 @@ def _panel_points(
     return points
 
 
-def _log_axis(values: Sequence[float]) -> bool:
-    positive = [value for value in values if value > 0]
-    return len(positive) == len(values) and bool(values) and max(values) / min(values) > _LOG_SPREAD
-
-
 def _axis_domain(values: Sequence[float], drawn: Quantity, *, log: bool) -> tuple[float, float]:
     if log:
         return min(values) * _LOG_PAD[0], max(values) * _LOG_PAD[1]
@@ -693,7 +686,7 @@ def _gate_scatter(context: ChartContext) -> Drawn:
         raise context.refuse(f"no arm holds a figure on both {x_key!r} and {y_key!r}")
     x_axis = _Axis(x_drawn, _axis_title(context, x_key, statistics[0]))
     y_axis = _Axis(y_drawn, _axis_title(context, y_key, statistics[1]))
-    x_log = _log_axis(x_values)
+    x_log = log_spread(x_values)
     x_domain = _axis_domain(x_values, x_drawn, log=x_log)
     y_domain = context.spec.domain or _axis_domain(y_values, y_drawn, log=False)
     drawn_points = [

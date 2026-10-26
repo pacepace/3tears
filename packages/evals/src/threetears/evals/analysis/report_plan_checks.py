@@ -183,6 +183,7 @@ from threetears.evals.analysis.report.block_spec import (
     small_multiple_faults,
 )
 from threetears.evals.analysis.report.plan_page.charting import contrast_unit
+from threetears.evals.analysis.report.plan_page.look import log_spread
 from threetears.evals.analysis.report.cost_unit import per_count
 from threetears.evals.analysis.report.figure_keys import (
     INTERVAL_TEMPLATE,
@@ -237,8 +238,6 @@ _ORDERED_VERSIONS = "ordered_versions"
 _FACTORIAL = "factorial"
 #: The most named tasks or strata read as tasks; more read as many strata.
 _FEW_STRATA = 6
-#: The spread of cost across arms past which the cost axis is logarithmic.
-_LOG_SPREAD = 10.0
 #: The caveat kinds Method may carry: method-level ones (R1 of the 2026-10-25 review).
 _METHOD_KINDS = frozenset({"apparatus", "latency", "unreported"})
 
@@ -370,7 +369,7 @@ def _log_cost_axis(report_input: ReportInput) -> bool:
             continue  # NOSILENT: an arm that states no cost spans nothing; the cost axis is read over the others
         if isinstance(figure.value, float) and figure.value > 0:
             costs.append(figure.value)
-    return len(costs) > 1 and max(costs) / min(costs) > _LOG_SPREAD
+    return log_spread(costs)
 
 
 def _shape(signals: Signals) -> str:

@@ -309,6 +309,7 @@ class _BarsFields(_Kind):
     fmt: Fmt | None = Field(default=None, description="The values' format.")
     tick_fmt: Fmt | None = Field(default=None, description="The axis labels' format, where it differs.")
     ticks: list[float] | None = Field(default=None, description="Explicit tick positions.")
+    log: bool | None = Field(default=None, description="A log value axis, the bars drawn from its low end.")
     reference: ChartReference | None = Field(default=None, description="A floor, budget or no-preference point.")
     level: str | None = Field(default=None, description='The intervals\' level ("95%"); required with intervals.')
     emphasis: str | None = Field(default=None, description="The id of the one row to bold.")

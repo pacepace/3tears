@@ -82,6 +82,7 @@ __all__ = [
     "TABLE_PER_THOUSAND",
     "COST_HEADER",
     "INTERVAL_HEADER",
+    "LOG_BARS_NOTE",
     "CELL_TEMPLATE",
     "TABLE_ORDER",
 ]
@@ -405,6 +406,9 @@ FLOOR_STRIP_NOTE = "Each dot is the largest drop its interval allows; a floor ho
 
 #: A dot's tooltip line where it misses its line.
 MISSES_TEMPLATE = "Misses the {line}"
+
+#: The caption under bars drawn on a log axis.
+LOG_BARS_NOTE = "The bars are drawn on a log scale: their values span more than ten times, so each step is a multiple."
 
 #: The caption under a scatter whose x axis is logarithmic.
 LOG_X_NOTE = "The horizontal axis is logarithmic: each step is a multiple."

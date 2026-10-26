@@ -39,7 +39,6 @@ only the stressed and the recommended one
 from __future__ import annotations
 
 import dataclasses
-import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
@@ -89,6 +88,8 @@ from threetears.evals.analysis.report.plan_page.look import (
     band_domain,
     centred_domain,
     figure_text,
+    log_domain,
+    log_spread,
     magnitude_domain,
     quantity,
 )
@@ -107,9 +108,6 @@ from threetears.evals.analysis.style import humanize
 
 __all__ = ["RESOLVERS"]
 
-
-#: The spread of an x axis past which it is drawn logarithmic.
-_LOG_SPREAD = 10.0
 
 #: The scoreboard's figures that count by cause.
 _BY_CAUSE = frozenset({"lost", "failed"})
@@ -676,10 +674,6 @@ def _scatter_points(context: ChartContext) -> tuple[list[_Point], str, str, str,
     return points, x, y, figure_unit(report_input, x), figure_unit(report_input, y)
 
 
-def _log_domain(values: Sequence[float]) -> tuple[float, float]:
-    return 10.0 ** math.floor(math.log10(min(values))), 10.0 ** math.ceil(math.log10(max(values)))
-
-
 def _scatter(context: ChartContext) -> Drawn:
     if context.query.source not in ("measures", "judged", "scoreboard", "configs", "tasks"):
         raise context.refuse("a scatter draws measures, judged, scoreboard, configs or tasks")
@@ -744,10 +738,9 @@ def _scatter(context: ChartContext) -> Drawn:
 
     x_ends = xs + [line.value for task in tasks if (line := lines(task)[1]) is not None]
     y_ends = ys + [line.value for task in tasks if (line := lines(task)[0]) is not None]
-    positive = [value for value in x_ends if value > 0]
-    x_log = len(positive) == len(x_ends) and max(positive) / min(positive) > _LOG_SPREAD
+    x_log = log_spread(x_ends)
     stored = context.spec.domain
-    x_domain = _log_domain(positive) if x_log else band_domain(x_ends, x_drawn)
+    x_domain = log_domain(x_ends) if x_log else band_domain(x_ends, x_drawn)
     y_domain = (stored[0], stored[1]) if stored else band_domain(y_ends, y_drawn)
 
     def chart(**part: object) -> ScatterChart:

@@ -1,6 +1,7 @@
 """The charts of magnitude: bars from zero, and lines over an ordered x.
 
-**bars** draw each figure from zero:
+**bars** draw each figure from zero (from the axis's low end on a log axis, where a magnitude's figures span more
+than ten times, by the page's one log rule, which a caption says):
 
 - *measures*, *judged*: an arm per row (on the query's aspect where it names one), grouped under the measure's reader
   name where the chart reads several; money per reply drawn per 1,000 replies;
@@ -57,10 +58,13 @@ from threetears.evals.analysis.report.plan_page.look import (
     Quantity,
     band_domain,
     figure_text,
+    log_domain,
+    log_spread,
+    log_ticks,
     magnitude_domain,
     quantity,
 )
-from threetears.evals.analysis.report.plan_page.words import STATISTIC_NOTE
+from threetears.evals.analysis.report.plan_page.words import LOG_BARS_NOTE, STATISTIC_NOTE
 from threetears.evals.analysis.report_input import (
     Measure,
     PreferenceRow,
@@ -288,7 +292,11 @@ def _ends(bars: Sequence[_Bar], level: str) -> Iterator[float]:
 
 
 def _panels(
-    context: ChartContext, bars: Sequence[_Bar], drawn: Quantity, spans: dict[Quantity, tuple[float, float]] | None
+    context: ChartContext,
+    bars: Sequence[_Bar],
+    drawn: Quantity,
+    spans: dict[Quantity, tuple[float, float]] | None,
+    logged: set[Quantity],
 ) -> list[BarsPanel] | None:
     """Small multiples where the plan asks for them and the chart has more than one: by arm (a panel per arm, a row
     per group), else by the bars' group (a panel per slice or task, a row per arm); where the chart draws several
@@ -327,6 +335,8 @@ def _panels(
                 domain=spans[own] if spans is not None else None,
                 fmt=own.fmt if spans is not None else None,
                 tick_fmt=own.tick_fmt if spans is not None else None,
+                ticks=log_ticks(spans[own]) if spans is not None and own in logged else None,
+                log=(own in logged) if spans is not None and own in logged else None,
             )
         )
     return panels
@@ -334,16 +344,23 @@ def _panels(
 
 def _bar_spans(
     context: ChartContext, bars: Sequence[_Bar], drawn: Quantity, reference: ChartReference | None
-) -> dict[Quantity, tuple[float, float]]:
-    """Each quantity's span: the stored one, else from zero past every bar (and interval, and the line) drawn in it."""
+) -> tuple[dict[Quantity, tuple[float, float]], set[Quantity]]:
+    """Each quantity's span: the stored one, else from zero past every bar (and interval, and the line) drawn in it,
+    or, for a magnitude whose drawn ends span more than ten times, a log axis's decades (the one log rule,
+    :func:`~threetears.evals.analysis.report.plan_page.look.log_spread`); and the quantities drawn on a log axis."""
     spans: dict[Quantity, tuple[float, float]] = {}
+    logged: set[Quantity] = set()
     for own in dict.fromkeys(bar.drawn or drawn for bar in bars):
         ends = list(_ends([bar for bar in bars if (bar.drawn or drawn) == own], context.level))
         if reference is not None and own == drawn:
             ends.append(reference.value)
+        if not context.spec.domain and not own.rate and log_spread(ends):
+            spans[own] = log_domain(ends)
+            logged.add(own)
+            continue
         domain = context.spec.domain or magnitude_domain(ends, rate=own.rate)
         spans[own] = (domain[0], domain[1])
-    return spans
+    return spans, logged
 
 
 def _bars(context: ChartContext) -> Drawn:
@@ -366,11 +383,11 @@ def _bars(context: ChartContext) -> Drawn:
     if len({bar.group for bar in bars}) == 1:
         bars = [dataclasses.replace(bar, group=None) for bar in bars]
     reference = reference_line(context, drawn)
-    spans = _bar_spans(context, bars, drawn, reference)
+    spans, logged = _bar_spans(context, bars, drawn, reference)
     several = len(spans) > 1
     if several and context.spec.domain:
         raise context.refuse(STORED_SPAN_REFUSAL)
-    panels = _panels(context, bars, drawn, spans if several else None)
+    panels = _panels(context, bars, drawn, spans if several else None, logged)
     if several and panels is None:
         raise context.refuse("its measures are in more than one unit, and it draws them on one axis")
     domain = spans[drawn]
@@ -380,11 +397,14 @@ def _bars(context: ChartContext) -> Drawn:
         domain=domain,
         fmt=drawn.fmt,
         tick_fmt=drawn.tick_fmt,
+        ticks=log_ticks(domain) if drawn in logged else None,
+        log=True if drawn in logged else None,
         level=context.level or None,
         reference=reference,
         emphasis=context.emphasis,
     )
-    return Drawn(chart_block(context, data), _statistic_note(statistics))
+    notes = (*_statistic_note(statistics), *((LOG_BARS_NOTE,) if logged else ()))
+    return Drawn(chart_block(context, data), notes)
 
 
 # --- lines ------------------------------------------------------------------------------------------------------

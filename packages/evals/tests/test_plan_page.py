@@ -248,7 +248,7 @@ def test_a_forest_of_contrasts_draws_each_delta_on_its_scale_and_names_what_is_n
 
 
 @pytest.mark.parametrize(("name", "plan", "spec", "block", "notes", "summary"), _charts_of("bars"))
-def test_bars_draw_each_figure_from_zero_and_a_summary_follows_the_options_table(
+def test_bars_draw_each_figure_from_zero_or_a_log_axis_and_a_summary_follows_the_options_table(
     name: str, plan: ReportPlan, spec: ChartSpec, block: ChartBlock, notes: list[str], summary: bool
 ) -> None:
     report_input = _input(name)
@@ -256,7 +256,13 @@ def test_bars_draw_each_figure_from_zero_and_a_summary_follows_the_options_table
     assert isinstance(data, BarsChart) and data.domain is not None
     rows = [row for panel in data.panels or [] for row in panel.rows or []] + list(data.rows or [])
     assert rows
-    assert data.domain[0] <= 0 <= data.domain[1] or spec.domain, "bars start at zero"
+    values = [row.value for row in rows if row.value is not None]
+    if data.log:
+        # A magnitude spanning more than ten times is drawn on a log axis, from its low end: the decade under the least.
+        assert 0 < data.domain[0] <= min(values) and max(values) / min(values) > 10, "a log axis only where it spans"
+        assert any("log scale" in note for note in notes), "a caption says the axis is logarithmic"
+    else:
+        assert data.domain[0] <= 0 <= data.domain[1] or spec.domain, "bars start at zero"
     if spec.query.source in ("measures", "configs"):
         for row in rows:
             key = spec.query.measures[0]

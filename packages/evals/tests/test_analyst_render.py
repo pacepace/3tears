@@ -539,6 +539,43 @@ def test_no_scatter_names_a_point_by_an_id_the_input_names_otherwise() -> None:
     assert seen, "the control: some fixture draws a scatter"
 
 
+def _spread(values: list[float]) -> bool:
+    return len(values) > 1 and min(values) > 0 and max(values) / min(values) > 10
+
+
+def test_bars_over_a_magnitude_spanning_more_than_ten_times_draw_on_a_log_axis_and_say_so() -> None:
+    """One rule, read off the figures: a magnitude whose bars span more than ten times is drawn on a log axis, a
+    caption says so, and bars that do not stay linear."""
+    seen: set[bool] = set()
+    for held in _inputs().values():
+        for key, measure in held.measures.items():
+            if measure.unit in (None, "pct") or measure.grade is not None:
+                continue
+            stats = [stat for stat in measure.per_arm.values() if stat.mean is not None]
+            if not stats or any(stat.ci is not None or stat.half_width is not None for stat in stats):
+                continue
+            try:
+                drawn = block_render(held, block_kind="bars", query=_query("measures", measures=[key]))
+            except RefusedInput:
+                continue
+            logged = any("log scale" in note for note in drawn.notes)
+            assert logged == _spread([float(stat.mean) for stat in stats if stat.mean is not None]), key
+            seen.add(logged)
+    held = _inputs()["r1"]
+    costs = [
+        float(stat.mean)
+        for task in held.tasks
+        for figures in task.per_arm.values()
+        if (stat := figures.get("cost_per_1k")) is not None and stat.mean is not None
+    ]
+    if costs:
+        drawn = block_render(held, block_kind="bars", query=_query("tasks", measures=["cost_per_1k"]))
+        logged = any("log scale" in note for note in drawn.notes)
+        assert logged == _spread(costs)
+        seen.add(logged)
+    assert seen == {True, False}, "the control: some fixture's bars span more than ten times and some do not"
+
+
 # =============================================================================
 # Through the analyst's tool
 # =============================================================================
