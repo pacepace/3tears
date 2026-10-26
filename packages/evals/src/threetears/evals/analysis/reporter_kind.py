@@ -61,7 +61,7 @@ from threetears.evals.analysis.generator import (
 )
 from threetears.evals.analysis.planned_analysis import report_input_document_digest
 from threetears.evals.analysis.report.figure_keys import render
-from threetears.evals.analysis.report.serialize_md import markdown_table
+from threetears.evals.analysis.report.md_parts import markdown_table
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report.words import (
     CONFIDENCE_WORDS,
