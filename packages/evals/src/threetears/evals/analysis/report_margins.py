@@ -190,14 +190,16 @@ def criterion_figures(report_input: ReportInput, criterion: Criterion, arm: str)
     :param arm: The arm's id.
     :ptype arm: str
     :return: One figure per place the criterion reads it (overall, its task, every task or every cell), each where the
-        input states it, with the interval the input states on it.
+        input states it as a number, with the interval the input states on it. A figure that is not a finite number
+        (NaN, an infinity) is no figure: it neither meets nor misses a line, so it is left out like a missing one, and
+        an arm lacking it is not shown to pass.
     :rtype: list[CriterionFigure]
     """
     found: list[CriterionFigure] = []
     for task, cell in criterion_places(report_input, criterion):
         stat = _stat_at(report_input, criterion, arm, task, cell)
         value = getattr(stat, criterion.statistic) if stat is not None else None
-        if stat is None or value is None:
+        if stat is None or value is None or not math.isfinite(value):
             continue
         mean = criterion.statistic == "mean"
         ci = (float(stat.ci[0]), float(stat.ci[1])) if mean and stat.ci is not None else None
@@ -257,6 +259,8 @@ def _interval_margins(report_input: ReportInput, surviving: set[str]) -> Iterato
             if reading.arm not in surviving or reading.within_interval is None or margin is None:
                 continue
             low = float(reading.within_interval[0])
+            if not math.isfinite(low):
+                continue
             yield Margin(
                 arm=reading.arm,
                 kind="margin",
@@ -273,6 +277,8 @@ def _interval_margins(report_input: ReportInput, surviving: set[str]) -> Iterato
         if floor.arm not in surviving or floor.interval is None or floor.margin is None:
             continue
         low = float(floor.interval[0])
+        if not math.isfinite(low):
+            continue
         yield Margin(
             arm=floor.arm,
             kind="floor",
