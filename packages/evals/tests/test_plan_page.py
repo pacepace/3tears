@@ -10,8 +10,8 @@ words, and the reference page's source, whose landmarks are parsed, never typed 
   drawing what its query selects: a reading's change, interval and margin; a contrast's delta on its scale and a
   caption naming each asked comparison the input holds none of; a figure from zero, a summary chart in the options
   table's order with what fails the gates faded and the recommendation bold; each arm less the control per stratum,
-  bold by the descriptive 95% rule; a line per arm over the slices; a card per selected example. No note prints a
-  signed zero. A kind no resolver draws yet (P4-21, P4-22) is refused, naming its kind and source; a whole page here
+  bold by the descriptive 95% rule; a line per arm over the slices; a card per selected example; small multiples a
+  panel per arm or per slice, as the plan asks. No note prints a signed zero. A kind no resolver draws yet (P4-21, P4-22) is refused, naming its kind and source; a whole page here
   leaves those charts out by kind.
 - **Tables.** The options table is the plan's rows and code's column families, each cell what its figure key reads,
   the recommended (or leaned) row set apart; a column outside the families is refused. The arms key shows each arm
@@ -827,3 +827,42 @@ def test_the_reference_plans_page_has_the_reference_pages_outline() -> None:
     ours = _outline(planned_page_html(plan_page(plan, _input("r5"))), excluded)
     assert reference == ours
     assert ("section", "The arms", (), True) in reference, "the outline must reach the arms key to test it"
+
+
+def _section_with(plan: ReportPlan, section_id: str, by: str) -> ReportPlan:
+    """The plan with one section's chart in small multiples by ``by``, and no other chart."""
+    section = next(section for section in plan.sections if section.id == section_id)
+    query = section.chart.query.model_copy(update={"small_multiples_by": by})
+    chart = section.chart.model_copy(update={"query": query})
+    return plan.model_copy(update={"summary": [], "sections": [section.model_copy(update={"chart": chart})]})
+
+
+@pytest.mark.parametrize(
+    ("name", "path", "section_id", "by"),
+    [
+        ("r5", REFERENCE_PLAN, "strata", "task"),
+        ("r5", REFERENCE_PLAN, "strata", "arm"),
+        ("r2", dataset.HERE / "r2" / "anchor.plan.json", "tasks", "arm"),
+        ("r2", dataset.HERE / "r2" / "anchor.plan.json", "tasks", "task"),
+    ],
+    ids=["diverging-by-slice", "diverging-by-arm", "bars-by-arm", "bars-by-task"],
+)
+def test_small_multiples_are_a_panel_per_arm_or_per_slice_as_the_plan_asks(
+    name: str, path: Path, section_id: str, by: str
+) -> None:
+    report_input = _input(name)
+    plan = _section_with(_plan(path), section_id, by)
+    (section,) = plan_page(plan, report_input).sections
+    data = section.chart.chart.data if isinstance(section.chart.chart, ChartBlock) else None
+    assert isinstance(data, BarsChart) and data.panels is not None and data.rows is None
+    spec = plan.sections[0].chart
+    slices = [row.item for row in query_rows(spec.query, report_input) if isinstance(row.item, Stratum | Task)]
+    names = {fact.id: fact.name for fact in plan_facts(report_input).arms}
+    drawn = {row.id for panel in data.panels for row in panel.rows or []}
+    if by == "arm":
+        order = spec.query.arms or list(names)
+        assert [panel.title for panel in data.panels] == [names[arm] for arm in order if arm in drawn]
+        assert all(len(panel.rows or []) == len(slices) for panel in data.panels)
+    else:
+        assert [panel.title for panel in data.panels] == [item.name or item.id.replace("_", " ") for item in slices]
+        assert all({row.id for row in panel.rows or []} <= set(names) for panel in data.panels)

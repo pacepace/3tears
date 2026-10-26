@@ -50,6 +50,7 @@ from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_facts import FactCaveat, PlanFacts, plan_facts
 from threetears.evals.analysis.style import humanize
 from threetears.evals.kernel.report_plan import (
+    CaveatClause,
     Decision,
     DecisionConfidence,
     DecisionSlot,
@@ -94,11 +95,15 @@ def _checked(caveats: tuple[FactCaveat, ...]) -> list[str]:
     return [caveat.checked for caveat in caveats if caveat.checked]
 
 
+def _clause(clause: CaveatClause, written: _Written) -> PageClause:
+    return PageClause(caveat=clause.id, text=written(clause.material_if))
+
+
 def _confidence(confidence: DecisionConfidence, facts: PlanFacts, written: _Written) -> PageConfidence:
     return PageConfidence(
         form=confidence.form,
         words=CONFIDENCE_WORDS[confidence.form],
-        clauses=[PageClause(caveat=clause.id, text=written(clause.material_if)) for clause in confidence.caveats],
+        clauses=[_clause(clause, written) for clause in confidence.caveats],
         checked=_checked(facts.caveats),
     )
 

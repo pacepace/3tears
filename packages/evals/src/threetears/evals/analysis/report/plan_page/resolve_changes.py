@@ -14,8 +14,9 @@ about a centre).
 - *readings* and *contrasts*: as the forest's rows, a bar each, bold where separated and muted where not;
 - *measures*, *judged*, *strata* and *tasks*: each arm less the control (a diverging chart has a centre, so a plan
   storing no transform is drawn so too), per slice for strata and tasks (the query's ``limit`` keeps the largest
-  strata), in panels by arm where the plan asks for them, else grouped by arm; bold or muted by the descriptive 95%
-  rule, uncorrected, which a caption says;
+  strata), in panels by arm, or by slice, where the plan asks for them, else grouped by arm; bold or muted by the
+  descriptive 95% rule, uncorrected, which a caption says; a slice whose figure states only its change from the
+  control is drawn at that change, with no bold;
 - *human_pref*: the share of blind ratings preferring the control, per slice, about the no-preference point (50%),
   bold where its interval excludes it;
 - *configs*: lever effects, each level of a factor against the factor's first level on the query's measure,
@@ -78,6 +79,21 @@ class _Change:
     note: str
     tip: list[str]
     group: str | None = None
+
+
+@dataclass(frozen=True)
+class _Panel:
+    """One small multiple: its title (an arm's, with its chip, or a slice's) and its changes."""
+
+    title: str
+    tag: str | None
+    color: str | None
+    rows: list[_Change]
+
+
+def _arm_panel(context: ChartContext, arm: str, rows: list[_Change]) -> _Panel:
+    look = context.look.arm(arm)
+    return _Panel(title=look.name, tag=look.tag, color=look.token, rows=rows)
 
 
 # --- readings and contrasts: the pipeline's own tests -----------------------------------------------------------
@@ -457,7 +473,7 @@ def _diverging(context: ChartContext) -> Drawn:
     source = context.query.source
     notes: tuple[str, ...] = ()
     centre = 0.0
-    panels: dict[str, list[_Change]] | None = None
+    panels: list[_Panel] | None = None
     if source == "readings":
         changes, drawn = _reading_changes(context)
         changes = [_with_group(change, None) for change in changes]
@@ -467,8 +483,16 @@ def _diverging(context: ChartContext) -> Drawn:
         changes, drawn, notes = _figure_changes(context)
     elif source in ("strata", "tasks"):
         by_arm, drawn, notes = _slice_changes(context)
-        if context.query.small_multiples_by == "arm" and len(by_arm) > 1:
-            panels, changes = by_arm, [change for rows in by_arm.values() for change in rows]
+        changes = [change for rows in by_arm.values() for change in rows]
+        by = context.query.small_multiples_by
+        if by == "arm" and len(by_arm) > 1:
+            panels = [_arm_panel(context, arm, rows) for arm, rows in by_arm.items()]
+        elif by in ("task", "aspect") and len({change.label for change in changes}) > 1:
+            by_slice: dict[str, list[_Change]] = {}
+            for change in changes:
+                arm_label = context.look.arm(change.id).label
+                by_slice.setdefault(change.label, []).append(_with_group(change, None, label=arm_label))
+            panels = [_Panel(title=name, tag=None, color=None, rows=rows) for name, rows in by_slice.items()]
         else:
             grouped = len(by_arm) > 1
             changes = [
@@ -503,12 +527,12 @@ def _diverging(context: ChartContext) -> Drawn:
             emphasis=context.emphasis,
             panels=[
                 BarsPanel(
-                    title=context.look.arm(arm).name,
-                    tag=context.look.arm(arm).tag,
-                    color=context.look.arm(arm).token,
-                    rows=[_bar_row(change, level) for change in rows],
+                    title=panel.title,
+                    tag=panel.tag,
+                    color=panel.color,
+                    rows=[_bar_row(change, level) for change in panel.rows],
                 )
-                for arm, rows in panels.items()
+                for panel in panels
             ],
         )
     else:
