@@ -47,7 +47,9 @@ at that task's gates. An x axis whose values span more than ten times is drawn o
 **lattice** tiles a factorial grid: rows the first factor's levels, columns the second's (every combination of the
 rest, where there are more), each tile the config's figure on the query's first measure, its cost per 1,000 replies,
 its latency's p95 and its gate status; where no gate or guardrail is declared, no gate reads a config, and its tile
-has no status ("Not gated here"), as the gate matrix's ungated rows have none.
+carries no status and no pill, since a pill on every tile saying nothing is gated is noise. A gate matrix's ungated
+cell says "Not gated here" only where some gate is declared elsewhere, which is news; where none is, its cell carries
+no word, only its figures.
 
 Dot strips, range bars and the frontier scatter, which draw rates against the same lines, are
 :mod:`~threetears.evals.analysis.report.plan_page.resolve_rates`'.
@@ -157,6 +159,12 @@ _LOG_PAD = (0.8, 1.25)
 
 
 # --- what every kind here reads -------------------------------------------------------------------------------------
+
+
+def _ungated(gating: Sequence[Criterion]) -> str:
+    """An ungated cell's word: "Not gated here" where some gate is declared elsewhere, else none (no pill), since a
+    word on every cell saying nothing is gated is noise."""
+    return NOT_GATED if gating else ""
 
 
 def _gating(report_input: ReportInput) -> list[Criterion]:
@@ -276,7 +284,7 @@ def _task_matrix(context: ChartContext) -> Drawn:
             figures = task.per_arm.get(arm, {})
             said = [_figure_words(context, key, figures[key]) for key in context.query.measures if key in figures]
             reasons = [line for line in said if line]
-            cells.append(GateCell(status="neutral", label=NOT_GATED, reasons=reasons or None, cost=cost))
+            cells.append(GateCell(status="neutral", label=_ungated(gating), reasons=reasons or None, cost=cost))
         rows.append(
             GateRow(
                 label=slice_name(context, task),
@@ -464,7 +472,9 @@ def _criterion_matrix(context: ChartContext) -> Drawn:
         for arm in arms:
             stat = figures.get((key, arm))
             said = _figure_words(context, key, stat) if stat is not None else None
-            cells.append(GateCell(status="neutral", label=NOT_GATED, reasons=[said] if said else None))
+            cells.append(
+                GateCell(status="neutral", label=_ungated(_gating(report_input)), reasons=[said] if said else None)
+            )
         rows.append(GateRow(label=measure_words(report_input, key), cells=cells))
     data = GateMatrixChart(
         columns=[ChartColumn(label=name) for name in names],
@@ -782,8 +792,7 @@ def _lattice(context: ChartContext) -> Drawn:
     drawn = quantity(unit, [value * quantity(unit).factor for value in values])  # the format follows the drawn sizes
     priced = quantity("usd_per_1k", costs)
     timed = quantity(latency_unit) if latency_key is not None else None
-    # A config no gate reads has no status (as a gate matrix's ungated row has none): its tile is neutral, never a
-    # pass where nothing was gated.
+    # A config no gate reads has no status: its tile carries no pill, never a pass where nothing was gated.
     gated = bool(_gating(report_input))
     lattice_rows = []
     for place, (level, row) in enumerate(zip(rows_factor.levels, tiles, strict=True)):
@@ -802,8 +811,8 @@ def _lattice(context: ChartContext) -> Drawn:
                     value=shown,
                     cost=cost,
                     latency=latency * timed.factor if latency is not None and timed is not None else None,
-                    status=GATE_STATUS[check.status] if check is not None else "neutral",
-                    status_label=GATE_WORDS[check.status] if check is not None else NOT_GATED,
+                    status=GATE_STATUS[check.status] if check is not None else None,
+                    status_label=GATE_WORDS[check.status] if check is not None else None,
                     tip=[*tip, *_check_lines(check)] if check is not None else tip,
                 )
             )

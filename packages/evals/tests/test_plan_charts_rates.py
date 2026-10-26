@@ -587,7 +587,17 @@ def test_a_table_lays_out_the_rows_its_query_selects_for_any_source(source: str)
     assert isinstance(block, TableBlock) and block.rows
     assert block.total_rows == len(block.rows)
     selected = query_rows(_query(source), _input(name))
-    assert len(block.rows) >= len(selected), "every selected row is laid out"
+    # A wide table lays a figure out as a cell: its arm's (its place's) row, its measure's column; any other, a row.
+    measured = {
+        column.key.removeprefix("measure:")
+        for column in block.columns
+        if column.key.startswith("measure:") and not column.key.endswith(":interval")
+    }
+    if measured:
+        assert measured >= {row.key for row in selected if row.key}, "every selected measure has its column"
+        assert len(block.rows) >= len({row.arm for row in selected}), "every selected arm has its row"
+    else:
+        assert len(block.rows) >= len(selected), "every selected row is laid out"
 
 
 # --- checks and renderer agree on a chart less the control ---------------------------------------------------------

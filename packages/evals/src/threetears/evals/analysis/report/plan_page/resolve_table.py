@@ -7,17 +7,25 @@ source          columns
 ==============  ===================================================================================================
 readings        the arm, its change in points with its interval, the pipeline's reading
 contrasts       the arm, the measure, the change (a rate's in points) with its interval, the verdict
-measures,       the arm, the measure, its figure (its mean, else the statistic a criterion on it reads) with its
-judged,         interval; money per reply stated per 1,000 replies
+measures,       wide: a row per arm, a column per measure holding its figure (its mean, else the statistic a
+judged,         criterion on it reads) with its interval; money per reply stated per 1,000 replies
 configs
 scoreboard      the arm, the figure, its value (a count by cause as its total)
 floors          the floor, the arm, its status, the largest drop its interval allows, its margin
-strata, tasks   the slice, the arm, the measure, its figure with its interval
+strata, tasks   wide: a row per slice and arm, a column per measure holding its figure with its interval
 examples        the trial, the case, the stratum or task, the arm, the outcome, the reason
-cells           the cell (its row level and column level), the arm, the measure, its figure, its cases
+cells           wide: a row per cell (its row level and column level) and arm, a column per measure holding its
+                figure, then its cases
 confusion       the axis, the arm, the true label, the predicted label, the share of the row (or the count)
 human_pref      the slice, the share of ratings preferring the control with its interval
 ==============  ===================================================================================================
+
+**Wide, so paired figures sit side by side.** An arm's pass rate, cost and latency are one row, each in its
+measure's column headed by its reader name, rather than three rows a reader pairs by eye.
+
+**An interval is a column of its own.** Every column whose figures carry an interval is followed by one spelling
+each interval's ends, headed by the chart's interval level (``95% interval``), so a reader without the glyph (the
+Markdown page, a values table) reads the interval and its level too.
 
 An arm is the kit's chip (its tag and name); every number is spelled by the package's number rule, an absent one a
 dash. A query's arms keep the rows of those arms, on sources whose rows are of no one arm too.
@@ -27,7 +35,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 
-from threetears.evals.analysis.quantities import MONEY
+from threetears.evals.analysis.quantities import MONEY, with_unit
 from threetears.evals.analysis.report.blocks import CellValue, TableBlock, TableCell, TableColumn
 from threetears.evals.analysis.report.cost_unit import per_count, per_noun
 from threetears.evals.analysis.report.plan_page.charting import (
@@ -57,6 +65,7 @@ from threetears.evals.analysis.report_input import (
 )
 from threetears.evals.analysis.report.plan_page.words import (
     CELL_TEMPLATE,
+    INTERVAL_HEADER,
     TABLE_HEADERS,
     TABLE_ORDER,
     TABLE_PER_THOUSAND,
@@ -68,6 +77,15 @@ __all__ = ["RESOLVERS"]
 
 #: One table row's cells, by column key.
 _Row = dict[str, TableCell]
+
+#: A column a reader lays out beyond its source's fixed ones: its key and its header.
+_Laid = list[tuple[str, str]]
+
+#: The prefix a wide table's measure column is keyed by, before the measure's key.
+_MEASURE_COLUMN = "measure:"
+
+#: The suffix an interval column is keyed by, after the key of the column whose figures it spells.
+_INTERVAL_COLUMN = ":interval"
 
 
 def _arm(context: ChartContext, arm: str) -> TableCell:
@@ -109,7 +127,7 @@ def _figure_cell(context: ChartContext, key: str, stat: Stat | None) -> tuple[Ta
     return _number(read[0] * drawn.factor, drawn.unit, shown), name
 
 
-def _readings(context: ChartContext) -> Iterator[_Row]:
+def _readings(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
     points = quantity("points", change=True)
     by_arm = {row.arm: row.item for row in context.rows() if isinstance(row.item, Reading)}
     for arm in context.arm_order(by_arm):
@@ -126,7 +144,7 @@ def _readings(context: ChartContext) -> Iterator[_Row]:
         }
 
 
-def _contrasts(context: ChartContext) -> Iterator[_Row]:
+def _contrasts(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
     report_input = context.report_input
     contrasts = [row.item for row in context.rows() if isinstance(row.item, Contrast)]
     for key in dict.fromkeys(contrast.measure for contrast in contrasts):
@@ -149,16 +167,34 @@ def _contrasts(context: ChartContext) -> Iterator[_Row]:
             }
 
 
-def _figures(context: ChartContext) -> Iterator[_Row]:
+def _wide(context: ChartContext, places: list[tuple[_Row, dict[str, Stat]]], laid: _Laid) -> Iterator[_Row]:
+    """Each place's row (its own cells, then a cell per measure it holds a figure on, a dash where it holds none),
+    each measure's column added to ``laid`` once, in the order the places first hold it."""
+    keys = list(dict.fromkeys(key for _, figures in places for key in figures))
+    named: dict[str, str] = {}
+    built: list[_Row] = []
+    for own, figures in places:
+        row = dict(own)
+        for key in keys:
+            cell, name = _figure_cell(context, key, figures.get(key))
+            named.setdefault(key, name)
+            row[f"{_MEASURE_COLUMN}{key}"] = cell
+        built.append(row)
+    laid += [(f"{_MEASURE_COLUMN}{key}", named[key]) for key in keys]
+    yield from built
+
+
+def _figures(context: ChartContext, laid: _Laid) -> Iterator[_Row]:
     rows = context.rows()
     figures = {(row.key, row.arm): row.item for row in rows if isinstance(row.item, Stat)}
-    for key in dict.fromkeys(row.key for row in rows):
-        for arm in context.arm_order(arm for (on, arm) in figures if on == key):
-            cell, name = _figure_cell(context, key, figures[key, arm])
-            yield {"arm": _arm(context, arm), "measure": _words(name), "value": cell}
+    arms = context.arm_order(arm for (_, arm) in figures)
+    places = [
+        ({"arm": _arm(context, arm)}, {key: stat for (key, on), stat in figures.items() if on == arm}) for arm in arms
+    ]
+    yield from _wide(context, places, laid)
 
 
-def _scoreboard(context: ChartContext) -> Iterator[_Row]:
+def _scoreboard(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
     boards = {row.arm: row.item for row in context.rows() if isinstance(row.item, ScoreboardRow)}
     keys = list(context.query.measures) or list(ScoreboardRow.model_fields)
     for arm in context.arm_order(boards):
@@ -176,7 +212,7 @@ def _scoreboard(context: ChartContext) -> Iterator[_Row]:
             }
 
 
-def _floors(context: ChartContext) -> Iterator[_Row]:
+def _floors(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
     points = quantity("points", change=True)
     for row in context.rows():
         floor = row.item
@@ -190,24 +226,21 @@ def _floors(context: ChartContext) -> Iterator[_Row]:
         }
 
 
-def _slices(context: ChartContext) -> Iterator[_Row]:
+def _slices(context: ChartContext, laid: _Laid) -> Iterator[_Row]:
     slices = [row.item for row in context.rows() if isinstance(row.item, Stratum | Task)]
     named = set(context.query.measures)
-    for item in slices:
-        for arm in _kept_arms(context, iter(item.per_arm)):
-            for key, stat in item.per_arm[arm].items():
-                if named and key not in named:
-                    continue
-                cell, name = _figure_cell(context, key, stat)
-                yield {
-                    "slice": _words(slice_name(context, item)),
-                    "arm": _arm(context, arm),
-                    "measure": _words(name),
-                    "value": cell,
-                }
+    places = [
+        (
+            {"slice": _words(slice_name(context, item)), "arm": _arm(context, arm)},
+            {key: stat for key, stat in item.per_arm[arm].items() if not named or key in named},
+        )
+        for item in slices
+        for arm in _kept_arms(context, iter(item.per_arm))
+    ]
+    yield from _wide(context, [place for place in places if place[1]], laid)
 
 
-def _examples(context: ChartContext) -> Iterator[_Row]:
+def _examples(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
     for row in context.rows():
         example = row.item
         assert isinstance(example, Example)
@@ -227,28 +260,25 @@ def _level_names(context: ChartContext) -> dict[str, str]:
     return {level.id: level.name for factor in factors for level in factor.levels if level.name}
 
 
-def _cells(context: ChartContext) -> Iterator[_Row]:
+def _cells(context: ChartContext, laid: _Laid) -> Iterator[_Row]:
     names = _level_names(context)
     named = set(context.query.measures)
+    places: list[tuple[_Row, dict[str, Stat]]] = []
     for row in context.rows():
         cell = row.item
         assert isinstance(cell, Cell)
         place = CELL_TEMPLATE.format(row=names.get(cell.row, cell.row), column=names.get(cell.column, cell.column))
-        for arm in _kept_arms(context, iter(cell.per_arm)):
-            for key, stat in cell.per_arm[arm].items():
-                if named and key not in named:
-                    continue
-                figure, name = _figure_cell(context, key, stat)
-                yield {
-                    "cell": _words(place),
-                    "arm": _arm(context, arm),
-                    "measure": _words(name),
-                    "value": figure,
-                    "cases": TableCell(value=cell.n_cases),
-                }
+        places += [
+            (
+                {"cell": _words(place), "arm": _arm(context, arm), "cases": TableCell(value=cell.n_cases)},
+                {key: stat for key, stat in cell.per_arm[arm].items() if not named or key in named},
+            )
+            for arm in _kept_arms(context, iter(cell.per_arm))
+        ]
+    yield from _wide(context, [place for place in places if place[1]], laid)
 
 
-def _confusion(context: ChartContext) -> Iterator[_Row]:
+def _confusion(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
     names = _level_names(context)
     for row in context.rows():
         table = row.item
@@ -266,7 +296,7 @@ def _confusion(context: ChartContext) -> Iterator[_Row]:
                     }
 
 
-def _human_pref(context: ChartContext) -> Iterator[_Row]:
+def _human_pref(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
     for row in context.rows():
         preference = row.item
         assert isinstance(preference, PreferenceRow)
@@ -276,34 +306,73 @@ def _human_pref(context: ChartContext) -> Iterator[_Row]:
         }
 
 
-#: Each source's rows, and its columns in order.
-_SOURCES: dict[str, tuple[Callable[[ChartContext], Iterator[_Row]], tuple[str, ...]]] = {
+#: Each source's rows, and its columns in order: its fixed ones, with the measure columns its reader lays out (a wide
+#: table's) where :data:`_MEASURE_COLUMN` stands.
+_SOURCES: dict[str, tuple[Callable[[ChartContext, _Laid], Iterator[_Row]], tuple[str, ...]]] = {
     "readings": (_readings, ("arm", "change", "reading")),
     "contrasts": (_contrasts, ("arm", "measure", "change", "verdict")),
-    "measures": (_figures, ("arm", "measure", "value")),
-    "judged": (_figures, ("arm", "measure", "value")),
-    "configs": (_figures, ("arm", "measure", "value")),
+    "measures": (_figures, ("arm", _MEASURE_COLUMN)),
+    "judged": (_figures, ("arm", _MEASURE_COLUMN)),
+    "configs": (_figures, ("arm", _MEASURE_COLUMN)),
     "scoreboard": (_scoreboard, ("arm", "figure", "value")),
     "floors": (_floors, ("floor", "arm", "status", "worst_drop", "margin")),
-    "strata": (_slices, ("slice", "arm", "measure", "value")),
-    "tasks": (_slices, ("slice", "arm", "measure", "value")),
+    "strata": (_slices, ("slice", "arm", _MEASURE_COLUMN)),
+    "tasks": (_slices, ("slice", "arm", _MEASURE_COLUMN)),
     "examples": (_examples, ("trial", "case", "stratum", "arm", "outcome", "reason")),
-    "cells": (_cells, ("cell", "arm", "measure", "value", "cases")),
+    "cells": (_cells, ("cell", "arm", _MEASURE_COLUMN, "cases")),
     "confusion": (_confusion, ("axis", "arm", "expected", "predicted", "value")),
     "human_pref": (_human_pref, ("slice", "prefers_control")),
 }
 
 
+def _interval_text(cell: TableCell) -> TableCell:
+    """A figure's interval as its own cell, its two ends in the figure's unit; a dash where it carries none."""
+    if cell.low is None or cell.high is None:
+        return TableCell(value=None)
+    return TableCell(value=f"{with_unit(cell.low, cell.unit)} to {with_unit(cell.high, cell.unit)}")
+
+
+def _with_intervals(columns: list[TableColumn], rows: list[_Row], level: str) -> tuple[list[TableColumn], list[_Row]]:
+    """The columns, each one whose figures carry an interval followed by its interval column, and the rows with it."""
+    laid: list[TableColumn] = []
+    spelled: list[str] = []
+    for column in columns:
+        laid.append(column)
+        if any(row[column.key].low is not None for row in rows if column.key in row):
+            key = f"{column.key}{_INTERVAL_COLUMN}"
+            laid.append(TableColumn(key=key, header=INTERVAL_HEADER.format(level=level).strip().capitalize()))
+            spelled.append(column.key)
+    filled = [
+        {
+            **row,
+            **{
+                f"{key}{_INTERVAL_COLUMN}": _interval_text(row[key]) if key in row else TableCell(value=None)
+                for key in spelled
+            },
+        }
+        for row in rows
+    ]
+    return laid, [{column.key: row[column.key] for column in laid if column.key in row} for row in filled]
+
+
 def _table(context: ChartContext) -> Drawn:
     reader, keys = _SOURCES[context.query.source]
-    rows = list(reader(context))
+    measured: _Laid = []
+    rows = list(reader(context, measured))
     if not rows:
         raise context.refuse("it selects no row to lay out")
+    columns: list[TableColumn] = []
+    for key in keys:
+        if key == _MEASURE_COLUMN:
+            columns += [TableColumn(key=on, header=header) for on, header in measured]
+        else:
+            columns.append(TableColumn(key=key, header=TABLE_HEADERS[key]))
+    columns, rows = _with_intervals(columns, rows, context.spec.level)
     table = TableBlock(
         section=PLANNED_SECTION,
         name=context.query.source,
         title=context.title,
-        columns=[TableColumn(key=key, header=TABLE_HEADERS[key]) for key in keys],
+        columns=columns,
         rows=rows,
         order=TABLE_ORDER,
         total_rows=len(rows),

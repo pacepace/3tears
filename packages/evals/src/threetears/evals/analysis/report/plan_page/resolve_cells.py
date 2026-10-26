@@ -62,10 +62,12 @@ from threetears.evals.analysis.report.plan_page.charting import (
     missing_note,
     reference_line,
     slice_name,
+    stat_interval,
     stat_value,
     unit_quantities,
     unit_refusal,
 )
+from threetears.evals.analysis.report.figure_keys import INTERVAL_TEMPLATE
 from threetears.evals.analysis.report.plan_page.look import Quantity, band_domain, figure_text, quantity
 from threetears.evals.analysis.report.plan_page.words import (
     BELOW_TEMPLATE,
@@ -89,6 +91,18 @@ _NEUTRAL_SHARE = 1 / 16
 
 
 @dataclass(frozen=True)
+class _Spot:
+    """One place of a matrix as drawn: its value, its cases, its tip, and its interval's ends where its figure carries
+    one (all in display units)."""
+
+    value: float
+    n: float | None
+    tip: list[str]
+    low: float | None = None
+    high: float | None = None
+
+
+@dataclass(frozen=True)
 class _Matrix:
     """One matrix as drawn: its title (an arm's or a measure's), its arm (for a chip), its rows, columns and cells, its
     line, and the quantity its measure is drawn as."""
@@ -97,7 +111,7 @@ class _Matrix:
     arm: str
     subtitle: str | None
     columns: list[str]
-    rows: list[tuple[str, list[tuple[float, float | None, list[str]]]]]
+    rows: list[tuple[str, list[_Spot]]]
     reference: ChartReference | None
     drawn: Quantity
 
@@ -168,24 +182,24 @@ def _cell_matrices(context: ChartContext) -> tuple[list[_Matrix], list[str], lis
         drawn = quantities[key]
         line = _line(context, key, drawn, "cells")
         for arm in arms:
-            rows: list[tuple[str, list[tuple[float, float | None, list[str]]]]] = []
+            rows: list[tuple[str, list[_Spot]]] = []
             whole = True
             for row_id, row_name in row_levels:
-                drawn_row: list[tuple[float, float | None, list[str]]] = []
+                drawn_row: list[_Spot] = []
                 for column_id, column_name in column_levels:
                     cell = by_place.get((row_id, column_id))
-                    value = _value(context, key, cell.per_arm.get(arm, {}).get(key)) if cell is not None else None
-                    if cell is None or value is None:
+                    stat = cell.per_arm.get(arm, {}).get(key) if cell is not None else None
+                    value = _value(context, key, stat)
+                    if cell is None or stat is None or value is None:
                         whole = False
                         continue
-                    shown = value * drawn.factor
                     n = float(cell.n_cases) if cell.n_cases is not None else None
-                    drawn_row.append((shown, n, _cell_tip(f"{row_name} · {column_name}", shown, n, drawn, line)))
+                    drawn_row.append(_spot(context, key, stat, value, n, f"{row_name} · {column_name}", drawn, line))
                 rows.append((row_name, drawn_row))
             if not whole:
                 missing.append(f"{_arm_name(context, arm)}, {measure_words(context.report_input, key)}")
                 continue
-            counts += [n for _, cells_drawn in rows for _, n, _ in cells_drawn if n is not None]
+            counts += [spot.n for _, spots in rows for spot in spots if spot.n is not None]
             matrices.append(
                 _Matrix(
                     title=_arm_name(context, arm),
@@ -239,17 +253,17 @@ def _slice_matrices(context: ChartContext) -> tuple[list[_Matrix], list[str], li
         missing += [f"{slice_name(context, item)}, {name}" for item in slices if whole and item not in kept]
         if not whole:
             continue
-        rows: list[tuple[str, list[tuple[float, float | None, list[str]]]]] = []
+        rows: list[tuple[str, list[_Spot]]] = []
         for item in kept:
             name = slice_name(context, item)
             n = float(item.n_cases) if item.n_cases is not None else None
             counts += [n] if n is not None else []
             row = []
             for arm in whole:
-                value = _value(context, key, item.per_arm[arm][key])
+                stat = item.per_arm[arm][key]
+                value = _value(context, key, stat)
                 assert value is not None
-                shown = value * drawn.factor
-                row.append((shown, n, _cell_tip(f"{name} · {_arm_name(context, arm)}", shown, n, drawn, line)))
+                row.append(_spot(context, key, stat, value, n, f"{name} · {_arm_name(context, arm)}", drawn, line))
             rows.append((name, row))
         matrices.append(
             _Matrix(
@@ -265,10 +279,39 @@ def _slice_matrices(context: ChartContext) -> tuple[list[_Matrix], list[str], li
     return matrices, missing, counts
 
 
+def _spot(
+    context: ChartContext,
+    key: str,
+    stat: Stat,
+    value: float,
+    n: float | None,
+    place: str,
+    drawn: Quantity,
+    line: ChartReference | None,
+) -> _Spot:
+    """One place as drawn: its value, its cases and its tip, and its interval where the figure drawn is its mean and
+    carries one (a criterion's statistic, a p95, carries none), on its tip too."""
+    shown = value * drawn.factor
+    tip = _cell_tip(place, shown, n, drawn, line)
+    read = stat_value(context.report_input, key, stat)
+    interval = stat_interval(stat) if read is not None and read[1] == "mean" else None
+    if interval is None:
+        return _Spot(shown, n, tip)
+    low, high = interval[0] * drawn.factor, interval[1] * drawn.factor
+    level = context.spec.level
+    said = INTERVAL_TEMPLATE.format(low=figure_text(low, drawn), high=figure_text(high, drawn))
+    return _Spot(shown, n, [*tip, f"{level} interval {said}".strip().capitalize()], low, high)
+
+
 def _heat_rows(matrix: _Matrix) -> list[HeatmapRow]:
     return [
-        HeatmapRow(label=label, cells=[HeatmapCell(value=value, n=n, tip=tip) for value, n, tip in cells])
-        for label, cells in matrix.rows
+        HeatmapRow(
+            label=label,
+            cells=[
+                HeatmapCell(value=spot.value, n=spot.n, tip=spot.tip, low=spot.low, high=spot.high) for spot in spots
+            ],
+        )
+        for label, spots in matrix.rows
     ]
 
 
@@ -277,7 +320,7 @@ def _spans(context: ChartContext, matrices: Sequence[_Matrix]) -> dict[Quantity,
     spans: dict[Quantity, tuple[float, float]] = {}
     for drawn in dict.fromkeys(matrix.drawn for matrix in matrices):
         mine = [matrix for matrix in matrices if matrix.drawn == drawn]
-        ends = [value for matrix in mine for _, cells in matrix.rows for value, _, _ in cells]
+        ends = [spot.value for matrix in mine for _, spots in matrix.rows for spot in spots]
         ends += [matrix.reference.value for matrix in mine if matrix.reference is not None]
         domain = context.spec.domain or band_domain(ends, drawn)
         spans[drawn] = (domain[0], domain[1])

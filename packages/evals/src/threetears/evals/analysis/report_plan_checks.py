@@ -1258,7 +1258,7 @@ def _unit_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault
                     path,
                     (
                         f"keys {written}, money per reply under one cent ({spelled}), and the page states its costs "
-                        f"{basis}: key it per 1,000, {{{wanted}}}, so the page reads one cost basis"
+                        f"{basis}: key it {basis}, {{{wanted}}}, so the page reads one cost basis"
                     ),
                 )
 

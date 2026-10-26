@@ -505,7 +505,7 @@ def test_a_lattice_tile_no_gate_reads_has_no_status_never_a_pass() -> None:
     assert isinstance(lattice, LatticeChart)
     tiles = [cell for row in lattice.rows for cell in row.cells]
     assert len(tiles) == len(report_input.configs)
-    assert all((cell.status, cell.status_label) == ("neutral", NOT_GATED) for cell in tiles)
+    assert all((cell.status, cell.status_label) == (None, None) for cell in tiles), "no pill where nothing is gated"
     assert not any(label in (cell.tip or []) for cell in tiles for label in GATE_WORDS.values())
 
 
@@ -571,3 +571,19 @@ def test_a_measure_no_gate_reads_is_a_row_without_a_status_showing_each_arms_fig
         assert any(cell.reasons for cell in row.cells), "the row shows the arms' figures"
     for criterion, row in zip(criteria, data.rows, strict=False):
         assert row.label == (criterion.label or criterion.id)
+
+
+@pytest.mark.parametrize(("name", "measures"), [("r5", []), ("r2", ["pass_rate", "calls_per_task"])])
+def test_an_ungated_cell_says_not_gated_only_where_some_gate_is_declared(name: str, measures: list[str]) -> None:
+    """A word on every cell saying nothing is gated is noise: an ungated cell carries none (and the kit draws no pill)
+    where the input declares no gate or guardrail, and says it is not gated here where one is declared elsewhere."""
+    report_input = _input(name)
+    block, _ = _draw(name, _spec("gate_matrix", "measures", measures=measures))
+    data = block.data
+    assert isinstance(data, GateMatrixChart)
+    ungated = [cell for row in data.rows for cell in row.cells if cell.status == "neutral"]
+    assert ungated, "the case reaches a cell no gate reads"
+    said = NOT_GATED if _gating(report_input) else ""
+    assert all(cell.label == said for cell in ungated)
+    _headers, rows = data.values_table()
+    assert all(not text.startswith((":", ",")) for row in rows for text in row[1:])

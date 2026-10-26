@@ -81,6 +81,7 @@ __all__ = [
     "TABLE_HEADERS",
     "TABLE_PER_THOUSAND",
     "COST_HEADER",
+    "INTERVAL_HEADER",
     "CELL_TEMPLATE",
     "TABLE_ORDER",
 ]
@@ -461,6 +462,9 @@ TABLE_HEADERS = {
     "predicted": "Predicted label",
     "prefers_control": "Prefers the control",
 }
+
+#: An interval column's head in a plain table: the chart's interval level, where it states one (``95% interval``).
+INTERVAL_HEADER = "{level} interval"
 
 #: What a plain table states a money figure per reply per, beside its measure's name: its count, as the input states
 #: it (``per 1,000 replies``).

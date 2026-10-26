@@ -5,8 +5,13 @@ Contracts held here (``analysis.report.block_spec``, ``analysis.analyst.blocks``
 
 - **every kind and source the catalog accepts**, on r1 to r5, the misfit inputs and Kairo round 2, renders or is
   refused, and never raises anything else; a line drawn on any block that renders does the same;
-- **each anchor plan's charts** read the same values table, level, unit, axis and reference line through
+- **each anchor plan's charts**, completed by today's code (a stored plan keeps the level code filled when it was
+  stored; only that may move), read the same values table, level, unit, axis and reference line through
   ``block_render`` as through the planned page built from the plan;
+- **a values table says what the input holds**: a plain table over several measures is a row per arm with a column
+  per measure; every figure's interval the input holds is printed beside it, at the block's level; a scatter names
+  every point by its reader name, never by an id the input names otherwise;
+- **block_render echoes** the reference line and emphasis it drew;
 - **one rule**: a chart the planner's completion refuses, by its checks or by the page, is refused by
   ``block_render`` with the same reasons, each named by the parameter it sits at, every fault together;
 - **the catalog** lists every kind and source a page's chart takes, each kind's sources as the plan checks hold them,
@@ -35,17 +40,17 @@ from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, 
 from threetears.evals.analysis.analyst.blocks import RenderedBlock, block_catalog, block_render
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import PlanRefusal
-from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES
+from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES, complete_chart
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import KIT_CHARTS
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, resolve
 from threetears.evals.analysis.report.plan_page.build import plan_page
-from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_input import Cell, ReportInput, Stratum, Task
 from threetears.evals.analysis.report_plan_checks import raised_warnings
 from threetears.evals.analysis.report_plan_facts import complete_plan
-from threetears.evals.analysis.report_rows import query_rows
+from threetears.evals.analysis.report_rows import SourceRow, query_rows
 from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.kernel.report_plan import ChartQuery, ChartReference, PlannedChart, PlannedReport
+from threetears.evals.kernel.report_plan import ChartQuery, ChartReference, ChartSpec, PlannedChart, PlannedReport
 
 ANCHORS = ("r1", "r2", "r3", "r4", "r5")
 
@@ -136,10 +141,37 @@ def _values(block: ChartBlock | TableBlock) -> tuple[list[str], list[list[str]]]
     ]
 
 
+def _completed_now(spec: ChartSpec, held: ReportInput) -> ChartSpec:
+    """A stored chart completed again by the code that completes charts now: a stored plan keeps the fields code
+    filled when it was stored (a rule added later changes no stored plan), and block_render completes by today's."""
+    chosen = PlannedChart.model_validate(
+        {
+            "kind": spec.kind,
+            "title": spec.title,
+            "query": spec.query,
+            "reference": [{"kind": line.kind} for line in spec.reference],
+            "emphasis": spec.emphasis,
+        }
+    )
+    completed, faults = complete_chart(chosen, held, "chart")
+    assert not faults, faults
+    # Only a code-filled field may move: what the plan chose, its line's key, its unit and its axis stay as stored.
+    assert completed.model_dump(exclude={"level"}) == spec.model_dump(exclude={"level"})
+    return completed
+
+
 @pytest.mark.parametrize("name", ANCHORS)
 def test_each_anchor_plans_charts_read_the_same_through_block_render_as_on_the_planned_page(name: str) -> None:
-    plan = dataset.load_plan(dataset.HERE / name / "anchor.plan.json")
+    stored = dataset.load_plan(dataset.HERE / name / "anchor.plan.json")
     held = dataset.report_input_of(name)
+    plan = stored.model_copy(
+        update={
+            "summary": [_completed_now(spec, held) for spec in stored.summary],
+            "sections": [
+                section.model_copy(update={"chart": _completed_now(section.chart, held)}) for section in stored.sections
+            ],
+        }
+    )
     page = plan_page(plan, held)
     charts = [*zip(plan.summary, page.summary, strict=True)]
     charts += [(section.chart, shown.chart) for section, shown in zip(plan.sections, page.sections, strict=True)]
@@ -378,12 +410,22 @@ def test_each_sources_filters_are_the_query_fields_that_change_its_rows_and_no_o
     assert unshown == _UNEXERCISED_FILTERS
 
 
+def _carries(row: SourceRow) -> bool:
+    """Whether a row carries an interval: its own, or one on an arm's figure in it (a slice's, a cell's)."""
+    if row.interval is not None:
+        return True
+    per_arm = getattr(row.item, "per_arm", None)
+    if not isinstance(row.item, Stratum | Task | Cell) or per_arm is None:
+        return False
+    return any(stat.ci is not None or stat.half_width is not None for on in per_arm.values() for stat in on.values())
+
+
 def test_a_source_said_to_carry_no_interval_never_does_and_one_said_to_carries_one_somewhere() -> None:
     carried: dict[str, bool] = {}
     for held in _inputs().values():
         for source in block_catalog(held, "s").sources:
             rows = query_rows(_query(source.source), held)
-            some = any(row.interval is not None for row in rows)
+            some = any(_carries(row) for row in rows)
             if not source.interval:
                 assert not some, source.source
             carried[source.source] = carried.get(source.source, False) or some
@@ -432,6 +474,69 @@ def test_a_page_of_long_cells_stops_before_its_limit_and_names_where_the_next_st
     assert 0 < len(page.rows) < 40 and page.next_offset == len(page.rows) and page.truncated
     following = block_render(held, block_kind="examples", query=_query("examples"), limit=40, offset=page.next_offset)
     assert following.rows[0] != page.rows[-1]
+
+
+# =============================================================================
+# What a values table says
+# =============================================================================
+
+
+def test_a_table_over_several_measures_is_a_row_per_arm_with_a_column_per_measure() -> None:
+    """Paired figures sit side by side: an arm's figures are one row, each under its measure's column."""
+    name, held, keys = next(
+        (name, held, keys)
+        for name, held in _inputs().items()
+        if len(keys := [key for key, measure in held.measures.items() if measure.per_arm]) >= 2
+    )
+    drawn = block_render(held, block_kind="table", query=_query("measures", measures=keys))
+    arms = {arm for key in keys for arm in held.measures[key].per_arm}
+    assert drawn.total == len(arms), name
+    measured = [column for column in drawn.columns if not column.endswith("interval")]
+    assert len(measured) == 1 + len(keys), (name, drawn.columns)
+
+
+def _holds_intervals(held: ReportInput, query: ChartQuery) -> bool:
+    return any(_carries(row) for row in query_rows(query, held))
+
+
+#: The kinds over figures whose values table prints each figure's interval where the input holds one, and the sources.
+_INTERVAL_TABLES = (("table", "tasks"), ("table", "cells"), ("table", "measures"), ("heatmap", "cells"))
+
+
+@pytest.mark.parametrize(("kind", "source"), _INTERVAL_TABLES, ids=[f"{k} {s}" for k, s in _INTERVAL_TABLES])
+def test_a_values_table_prints_every_interval_the_input_holds_and_its_level(kind: str, source: str) -> None:
+    seen = 0
+    for name, held in _inputs().items():
+        query = _query(source)
+        if not _holds_intervals(held, query):
+            continue
+        try:
+            drawn = block_render(held, block_kind=kind, query=query, limit=200)
+        except RefusedInput:
+            continue
+        cells = [cell for row in drawn.rows for cell in row.cells]
+        assert drawn.level, f"{name}: a {kind} over {source} prints intervals at no level"
+        assert any(" to " in cell for cell in cells), f"{name}: a {kind} over {source} prints no interval"
+        seen += 1
+    assert seen, f"the control: some fixture holds an interval a {kind} over {source} reads"
+
+
+def test_no_scatter_names_a_point_by_an_id_the_input_names_otherwise() -> None:
+    seen = 0
+    for name, held in _inputs().items():
+        named = {arm.id for arm in held.arms if (arm.name or arm.short_name or arm.id) != arm.id} | {
+            config.arm for config in held.configs
+        }
+        for kind in ("gate_scatter", "scatter_frontier"):
+            for source in BLOCK_SOURCES[kind]:
+                drawn = _drawn_or_refused(held, kind, source)
+                if drawn is None:
+                    continue
+                at = drawn.columns.index("Point")
+                points = {row.cells[at] for row in drawn.rows}
+                assert not points & named, f"{name}: {kind} over {source} names points by id: {points & named}"
+                seen += 1
+    assert seen, "the control: some fixture draws a scatter"
 
 
 # =============================================================================

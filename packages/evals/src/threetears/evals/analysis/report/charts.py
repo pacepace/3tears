@@ -550,7 +550,7 @@ class _ScatterFields(_Kind):
         headers = ["Point", self.x_title or "x", self.y_title or "y"]
         body = [
             [
-                point.label or point.narrow_label or point.id or "",
+                _point_name(point),
                 _formatted(x_fmt, point.x),
                 _formatted(y_fmt, point.y),
             ]
@@ -562,6 +562,13 @@ class _ScatterFields(_Kind):
                 line[column] = _formatted(spec, reference.value)
                 body.append(line)
         return headers, body
+
+
+def _point_name(point: ScatterPoint) -> str:
+    """A scatter point as its table row names it: its drawn label, else its tooltip's first line (the bold one, which
+    names the point), else its id; a crowded chart draws no label, and its table still names each point for a
+    reader, never by an internal id while a name is held."""
+    return point.label or point.narrow_label or (point.tip[0] if point.tip else None) or point.id or ""
 
 
 class ScatterPanel(_ScatterFields, _PanelText):
@@ -719,7 +726,7 @@ class GateCell(_KitModel):
     """One candidate on one task: a status pill, the binding reasons, the cost."""
 
     status: ChartStatus = Field(description="good, warn, bad or neutral.")
-    label: str = Field(description="The pill's word.")
+    label: str = Field(description="The pill's word; empty for no pill (a cell no gate reads, where none is declared).")
     reasons: list[str] | None = Field(default=None, description="The binding reasons.")
     cost: float | None = Field(default=None, description="The cost, under `cost_fmt`.")
     pick: bool | None = Field(default=None, description="The pick on this row: washed and marked.")
@@ -759,11 +766,11 @@ class GateMatrixChart(_Drawable):
             label = row.label + "".join(f" ({extra})" for extra in (row.detail, row.flag) if extra)
             cells = [label]
             for cell in row.cells:
-                text = cell.label + (f": {'; '.join(cell.reasons)}" if cell.reasons else "")
+                said = "; ".join(cell.reasons or [])
+                text = f"{cell.label}: {said}" if cell.label and said else cell.label or said
                 if cell.cost is not None and self.cost_fmt is not None:
-                    text += f", {_formatted(self.cost_fmt, cell.cost)}" + (
-                        f" {self.cost_unit}" if self.cost_unit else ""
-                    )
+                    cost = _formatted(self.cost_fmt, cell.cost) + (f" {self.cost_unit}" if self.cost_unit else "")
+                    text = f"{text}, {cost}" if text else cost
                 if cell.pick and self.pick_label:
                     text += f" ({self.pick_label})"
                 cells.append(text)
@@ -848,6 +855,8 @@ class HeatmapCell(_KitModel):
 
     value: float = Field(description="The value, shaded over `domain`.")
     n: float | None = Field(default=None, description="The cases under it.")
+    low: float | None = Field(default=None, description="Its interval's low end, where it carries one.")
+    high: float | None = Field(default=None, description="Its interval's high end; set with `low`.")
     tip: list[str] | None = Field(default=None, description="Tooltip lines, the first bold.")
 
 
@@ -880,14 +889,20 @@ class _HeatmapFields(_Kind):
             [
                 row.label,
                 *(
-                    _formatted(self._format, cell.value)
-                    + (f" (n = {format_number(cell.n)})" if cell.n is not None else "")
+                    _formatted(self._format, cell.value) + _heat_detail(self._format, cell.low, cell.high, cell.n)
                     for cell in row.cells
                 ),
             ]
             for row in self.rows or []
         ]
         return headers, body
+
+
+def _heat_detail(spec: str, low: float | None, high: float | None, n: float | None) -> str:
+    """What a heatmap cell's table text adds after its value: its interval and its cases, in parentheses."""
+    said = [_interval(spec, low, high)] if low is not None and high is not None else []
+    said += [f"n = {format_number(n)}"] if n is not None else []
+    return f" ({'; '.join(said)})" if said else ""
 
 
 class HeatmapPanel(_HeatmapFields, _PanelText):

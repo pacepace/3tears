@@ -610,7 +610,7 @@ function kGateMatrix(el,d){const cols=kList(d,"columns"),rows=kList(d,"rows");co
   const th=H("thead");th.appendChild(hr);const tb=H("tbody");
   for(const r of rows){const tr=H("tr"),td=H("td",{class:"task"});td.append(kTxt("b","",r.label));if(r.detail)td.append(kTxt("span","",r.detail));if(r.flag)td.append(kTxt("span","xc",r.flag));tr.appendChild(td);
     const cells=kList(r,"cells");if(cells.length!==cols.length)throw new Error(`row "${r.label}" has ${cells.length} cells for ${cols.length} columns`);
-    for(const c of cells){const cd=H("td",{class:c.pick?"cell pick":"cell"});cd.appendChild(kPill(c.status,c.label));
+    for(const c of cells){const cd=H("td",{class:c.pick?"cell pick":"cell"});if(c.label)cd.appendChild(kPill(c.status,c.label));
       if(c.reasons&&c.reasons.length)cd.appendChild(kTxt("span","why",c.reasons.join("; ")));
       if(c.cost!=null){if(!cf)throw new Error(`cells carry "cost", so "cost_fmt" is required`);cd.appendChild(kTxt("span","cost",cf(c.cost)+(d.cost_unit?" "+d.cost_unit:"")));}
       if(c.pick&&d.pick_label)cd.appendChild(kTxt("span","pickmark",d.pick_label));tr.appendChild(cd);}
