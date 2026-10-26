@@ -87,6 +87,8 @@ def cite_if(key: str, report_input: ReportInput) -> CitedFigure | None:
     try:
         return cite(key, report_input)
     except UnstatedFigure:
+        # NOSILENT: an unstated figure is an expected condition, the input's shape and not a fault: a listing shows the
+        # figure as absent, which is what None says to its caller. Every other refusal is raised.
         return None
 
 
