@@ -53,7 +53,7 @@ from threetears.evals.analysis.summary import dollars_text
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.numbers import WHOLE_FROM, format_number
-from threetears.evals.analysis.report.cost_unit import per_count
+from threetears.evals.analysis.report.cost_unit import REPLIES, per_count, per_noun
 from threetears.evals.analysis.report.figure_keys import (
     cost_basis,
     figure_key_grammar,
@@ -1114,3 +1114,33 @@ def test_a_step_whose_gain_interval_reaches_zero_is_drawn_open_above_never_as_a_
             seen_bounded_beside += bool(opened) and any(high is not None for _, high in drawn)
     assert seen_open, "the control: some fixture's frontier takes a step whose gain's interval reaches zero"
     assert seen_bounded_beside, "the control: some axis draws an open step beside a bounded one"
+
+
+def test_a_price_within_a_slice_is_per_what_the_slices_own_cost_measure_counts() -> None:
+    """The Critic's N2: a price within a task reads the task's own cost measure, so its money is per what that measure
+    counts, even where the page's cost is the scoreboard's per reply. r1 prices its tasks on a per-1k-conversations
+    measure; given scoreboard reply costs, the page's cost basis turns to replies and the task's prices must not."""
+    data = fixture_inputs()["r1 reading only bars"].model_dump(by_alias=True, exclude_none=True)
+    for row in data["scoreboard"].values():
+        row["reply_cost_usd"] = 0.001
+    held = ReportInput.model_validate(data)
+    assert cost_basis(held).noun == REPLIES, "the control: the page's cost is the scoreboard's, per reply"
+    task = next(task for task in held.tasks if _task_costs(held, task.id))
+    noun = per_noun(held.measures["cost_per_1k"])
+    assert noun and noun != REPLIES, "the control: the task's cost measure counts something else"
+    priced = 0
+    for key in _axes(held):
+        try:
+            trade = price_tradeoff(held, key, slice_filter=task.id, limit=len(held.arms))
+        except RefusedInput:
+            continue
+        for step in trade.steps:
+            assert "own cost in this slice" in str(_value(step.cost_gap.key.replace(".cost_gap", ".cost_basis"), held))
+            for figure in (step.cost_gap, step.per_point, step.per_point_low, step.per_point_high):
+                if figure is None:
+                    continue
+                assert resolve(figure.key, held).per == noun, (key, figure.key)
+                spelled = format_figure(resolve(figure.key, held), ("usd_per_1k",))
+                assert per_count(noun) in spelled and REPLIES not in spelled, spelled
+                priced += 1
+    assert priced, "the control: some move within the task is priced"
