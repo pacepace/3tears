@@ -8,7 +8,7 @@ These come from the owner's review of earlier reports. Each has a reason.
 
 - **Numbers live in tables, not prose.** A sentence carries at most the one figure its claim turns on. A reader compares figures across rows, which prose makes hard.
 - **One sentence of commentary per table or chart.** It says what the block shows. The block shows the rest.
-- **Section headers are three words or fewer.** They are signposts for scanning. The finding goes in the claim's sentence, not the header.
+- **A section header names; it never explains.** Read it as a table-of-contents entry: the place in the report, or the question the section answers ("Cost", "Where the loss lives"). No clause after a colon, no parenthetical, no account of how the section is built, no finding: the claim's sentence carries the finding. It fits on one line at phone width. About five words is a sanity check, not the rule: a header that needs more is usually carrying the finding or explaining itself.
 - **No meta-commentary about the document.** Not "this report shows", not "the following section", not "it is worth noting". Say the thing.
 - **No `key=value` labels in human text.** Ids and field names are for machines. Write "cost per 1,000 replies", never `cost_per_1k=1.89`.
 - **Arms by their names, with the control marked.** Use the short names the tools return, the same name everywhere, and mark which arm is the control. A reader should never have to decode a configuration string.
