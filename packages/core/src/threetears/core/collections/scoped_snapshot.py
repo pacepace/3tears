@@ -1464,6 +1464,12 @@ class ScopedSnapshot:
         # it owns its lock and its epochs; this snapshot's commits run through it, off the loop
         self._versioned = _VersionedL1(self._backend)
         self._local = asyncio.Lock()
+        # scope -> the epoch a rebuild from L3 (a full one or a catch-up) published it at, from this L1, under
+        # this replica's columns. Kept across the rebuild's waits: a rebuild a write in progress stopped goes
+        # on from what it published, and does not read every scope again from the first, which a loader
+        # writing with short gaps between its writes kept from ever finishing. Emptied when NATS lost the
+        # snapshot, whose chunks and pointers went with it. Only the event loop reads or writes it.
+        self._rebuilt: dict[str, int] = {}
         self._changed = asyncio.Event()
         self._ready = asyncio.Event()
         self._progress = _Progress()
@@ -1975,6 +1981,8 @@ class ScopedSnapshot:
                 loaded = True
             except _Lost as exc:
                 log.warning("scoped snapshot %s: the snapshot in L2 is not loadable: %s", self._name, exc)
+                # chunks a pointer names are gone: what a rebuild here published is no longer known to stand
+                self._rebuilt.clear()
         if loaded:
             pass
         elif not self._ready.is_set() or not complete:
@@ -2869,8 +2877,8 @@ class ScopedSnapshot:
         await self._commit(local, [scope], epochs={scope: epoch})
 
         def written(pointer: _Pointer) -> None:
-            # the change recorded is this replica's own: a racing writer's later pointer, or a fresh
-            # one of other columns it yields to, is not what this L1 holds
+            # the change recorded is this replica's own: a racing writer's later pointer is not what
+            # this L1 holds
             self._applied = _updated(self._applied, {scope: pointer})
 
         try:
@@ -3491,6 +3499,14 @@ class ScopedSnapshot:
     async def _move_pointer(self, pointer: _Pointer) -> _Pointer:
         """move a scope's pointer to ``pointer`` by compare-and-set, never to a lower epoch.
 
+        A same-epoch pointer of other columns is moved too: a rebuild repoints a scope another code
+        version published at the epoch L3 still records, to this replica's columns. Leaving it in place
+        until a write moved the scope kept every scope no write touched after a column change on the old
+        columns, so every replica rebuilt the whole snapshot from L3 at every start. While two versions
+        run together, a replica that starts repoints the other's same-epoch scopes; a ready replica of the
+        other version never takes a same-epoch pointer of other columns, so it keeps serving its own L1
+        and is not made to rebuild, and the repointing ends with the deploy.
+
         :param pointer: the new pointer
         :ptype pointer: _Pointer
         :return: the pointer the scope holds after the move: ``pointer``, or a later one a racing writer set
@@ -3504,7 +3520,7 @@ class ScopedSnapshot:
             attempts += 1
             entry = await self._pointers_bucket.get_entry(key=key)
             current = None if entry is None else _Pointer.decode(entry[0])
-            if current is not None and (not pointer.supersedes(current) or self._yields_to(current, pointer)):
+            if current is not None and not pointer.supersedes(current):
                 held = current
             elif entry is None:
                 held = pointer if await self._pointers_bucket.create(key=key, value=pointer.encode()) else None
@@ -3515,21 +3531,6 @@ class ScopedSnapshot:
             raise RuntimeError(f"the pointer of scope {pointer.scope!r} kept moving under {_CAS_ATTEMPTS} attempts")
         self._note_seen(held)
         return held
-
-    def _yields_to(self, current: _Pointer, pointer: _Pointer) -> bool:
-        """whether a move to ``pointer`` leaves ``current`` in place: the mixed-version rule.
-
-        While two code versions run together (a rolling deploy of a column change), a rebuild must
-        not repoint a scope another version published at the same epoch, or each version would
-        repoint the other's scopes on every rebuild. So a same-epoch pointer of other columns stays
-        until a write moves the scope to a later epoch, which always moves the pointer, to the
-        writer's columns; this replica serves its own L1, rebuilt from L3, meanwhile. Judged by the
-        epochs alone, never by how old the pointer is.
-
-        :return: True when ``current`` stays
-        :rtype: bool
-        """
-        return current.epoch == pointer.epoch and dict(current.schema) != dict(pointer.schema)
 
     def _note_seen(self, pointer: _Pointer) -> None:
         """record a pointer this replica wrote or read, ahead of the watch's delivery.
@@ -3662,6 +3663,9 @@ class ScopedSnapshot:
         # the pointers were lost with their bucket, and every write claim with them: until the
         # writers take theirs again a sweep could not tell a live write's stage from a dead one's
         lost = self._index is None and self._ever_indexed
+        if lost:
+            # what a rebuild published went with the bucket: none of it stands in for a scope now
+            self._rebuilt.clear()
         if self._ensure_buckets is not None and lost:
             await self._ensure_buckets()
         claim = self._claim()
@@ -3678,12 +3682,39 @@ class ScopedSnapshot:
         else:
             self._wait("sync", f"{reason}; another replica is rebuilding or publishing it")
 
+    def _rebuilt_at(self, scope: str, epoch: int, done: Mapping[str, int]) -> bool:
+        """whether a rebuild here already published ``scope`` at ``epoch``, and this L1 still holds it there.
+
+        :param scope: the scope
+        :ptype scope: str
+        :param epoch: the epoch L3 records for it now
+        :ptype epoch: int
+        :param done: scope -> the epoch a rebuild published it at
+        :ptype done: Mapping[str, int]
+        :return: True when it need not be read again: L3, this L1 and the pointer all name that epoch
+        :rtype: bool
+        """
+        applied = self._applied.get(scope)
+        seen = self._seen.get(scope)
+        # its pointer must still name it there, under these columns: a pointer NATS lost, or one another
+        # version repointed since, is published again
+        return (
+            done.get(scope) == epoch
+            and applied is not None
+            and applied.epoch == epoch
+            and seen is not None
+            and seen.epoch == epoch
+            and self._loadable(seen)
+        )
+
     async def _rebuild_scopes(self, only: set[str] | None, *, reason: str, flow: str) -> list[str] | None:
         """read scopes from L3 while no write moves them, publish them, then update the index.
 
         An attempt that a committed write stopped is tried again, up to :data:`_REBUILD_ATTEMPTS`
         times; a scope an earlier attempt already published at the epoch L3 still records is not
-        read again.
+        read again. That holds across calls too: what any earlier rebuild here published
+        (:attr:`_rebuilt`) is kept while this replica waits on a write in progress, so each gap between
+        a loader's writes adds scopes rather than beginning again from the first.
 
         :param only: the scopes to rebuild; every scope L3 holds when ``None``
         :ptype only: set[str] | None
@@ -3695,7 +3726,7 @@ class ScopedSnapshot:
         :rtype: list[str] | None
         """
         result: list[str] | None = None
-        done: dict[str, int] = {}
+        done = self._rebuilt
         attempts = 0
         while result is None and attempts < _REBUILD_ATTEMPTS:
             attempts += 1
@@ -3765,7 +3796,7 @@ class ScopedSnapshot:
         :rtype: list[str] | None
         """
         spent = {"read_l3": 0.0, "publish": 0.0}
-        pending = [scope for scope in scopes if done.get(scope) != int(epochs.get(scope, 0))]
+        pending = [scope for scope in scopes if not self._rebuilt_at(scope, int(epochs.get(scope, 0)), done)]
         self._progress = replace(self._progress, scopes_done=len(scopes) - len(pending))
 
         async def read(scope: str) -> list[PartitionReplacement]:
@@ -3946,6 +3977,7 @@ class ScopedSnapshot:
         gone = {scope: pointer for scope, pointer in removed.items() if scope not in standing}
         for scope in gone:
             self._seen.pop(scope, None)
+            self._rebuilt.pop(scope, None)
         await self._drop_locally(sorted(gone))
         for scope, pointer in gone.items():
             # every chunk up to the deleted pointer's epoch, by the one rule: with the pointer gone

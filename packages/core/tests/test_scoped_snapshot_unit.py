@@ -850,6 +850,35 @@ async def test_a_stuck_scope_whose_later_pointer_carries_other_columns_stays_beh
     await snapshot.stop()
 
 
+async def test_a_rebuild_repoints_a_same_epoch_scope_of_other_columns_so_the_next_start_loads_from_l2() -> None:
+    """after a column change, a scope no write has touched since keeps the old version's pointer at its
+    epoch; left in place, it made every replica rebuild the whole snapshot from L3 at every start."""
+    first, pointers, store, l3 = _snapshot()
+    await first.start()
+    await first.wait_ready(timeout=5)
+    await first.stop()
+    tx = json.loads(pointers.entries["enr.s.TX"][0])
+    store.objects["enr/TX/1/results.other"] = encode_chunk(_tx_arrow(1).drop_columns(["votes"]))
+    old = {**tx, "tables": {"results": {"object": "enr/TX/1/results.other", "rows": 1}}, "schema": {"results": "old"}}
+    pointers.put_now("enr.s.TX", json.dumps(old).encode())  # the old version's, at the epoch L3 still records
+
+    rebuilder, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    await rebuilder.start()
+    await rebuilder.wait_ready(timeout=5)
+    await rebuilder.stop()
+
+    held = json.loads(pointers.entries["enr.s.TX"][0])
+    assert held["epoch"] == 1
+    assert held["schema"] == tx["schema"], "the rebuild left the scope on the other version's columns"
+    statements = l3.statements
+    later, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    await later.start()
+    await later.wait_ready(timeout=5)
+    assert later.status().source is SnapshotSource.L2, "a start after the rebuild rebuilt from L3 again"
+    assert l3.statements == statements
+    await later.stop()
+
+
 async def test_a_scope_removed_before_it_was_ever_applied_leaves_nothing_behind() -> None:
     snapshot, pointers, _, l3 = _snapshot()
     await snapshot.start()
@@ -2812,6 +2841,50 @@ async def test_a_write_committed_during_a_rebuild_rereads_only_the_scopes_not_ye
     assert l3.reads == {"DE": 1, "NV": 2, "TX": 1}, "a scope published at its epoch was read again, or one was not"
     assert json.loads(pointers.entries["enr.s.TX"][0])["epoch"] == 2
     assert _indexed(pointers) == set(_SIZES)
+    await snapshot.stop()
+
+
+async def test_a_rebuild_that_waits_on_a_write_keeps_what_it_published_and_reads_only_the_rest_after() -> None:
+    # a loader whose writes leave only short gaps: a rebuild that began again from the first scope after each
+    # wait never got past the scopes one gap holds, and the copy was never ready
+    snapshot, pointers, _, l3, _ = _paged(_SIZES, l3_concurrency=1)
+    began = asyncio.Event()
+
+    def a_write_begins(state: str) -> None:
+        if state == "NV" and l3.reads["NV"] == 1:
+            l3.writing = True
+            began.set()
+
+    l3.on_read = a_write_begins
+
+    await snapshot.start()
+    await asyncio.wait_for(began.wait(), timeout=5)
+    await _until(lambda: snapshot.status().phase is SnapshotPhase.WAITING, what="the rebuild waiting on the write")
+    await asyncio.sleep(0.2)  # several rechecks, each finding the write still in progress
+    l3.epochs["TX"] = 2
+    l3.writing = False  # the write commits, having moved TX alone
+    await snapshot.wait_ready(timeout=10)
+
+    assert l3.reads == {"DE": 1, "NV": 2, "TX": 1}, "the rebuild read again a scope it had published at its epoch"
+    assert json.loads(pointers.entries["enr.s.TX"][0])["epoch"] == 2
+    assert _indexed(pointers) == set(_SIZES)
+    await snapshot.stop()
+
+
+async def test_a_rebuild_after_the_snapshot_was_lost_reads_every_scope_again() -> None:
+    # what an earlier rebuild published is kept only while its chunks and pointers are: NATS losing them loses it
+    snapshot, pointers, _, l3, _ = _paged(_SIZES, l3_concurrency=1)
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=10)
+    assert l3.reads == dict.fromkeys(_SIZES, 1)
+
+    for key in list(pointers.entries):
+        await pointers.delete(key=key)
+
+    await _until(lambda: l3.reads == dict.fromkeys(_SIZES, 2), what="every scope read again")
+    await _until(
+        lambda: "enr.index" in pointers.entries and _indexed(pointers) == set(_SIZES), what="the snapshot written again"
+    )
     await snapshot.stop()
 
 
