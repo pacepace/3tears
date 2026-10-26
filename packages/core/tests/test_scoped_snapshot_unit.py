@@ -843,10 +843,10 @@ async def test_a_stuck_scope_whose_later_pointer_carries_other_columns_stays_beh
             look()
         return taken
 
-    async def releasing(*, key: str, revision: int | None = None) -> bool:
+    async def releasing(*, key: str, revision: int | None = None, marker_ttl: timedelta | None = None) -> bool:
         if looking and key == "enr.rebuild":
             look()
-        released = await real_delete(key=key, revision=revision)
+        released = await real_delete(key=key, revision=revision, marker_ttl=marker_ttl)
         if looking and key == "enr.rebuild":
             look()
         return released
