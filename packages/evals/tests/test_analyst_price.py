@@ -52,6 +52,7 @@ from threetears.evals.analysis.report_gates import gate_findings
 from threetears.evals.analysis.summary import dollars_text
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
+from threetears.evals.analysis.numbers import WHOLE_FROM, format_number
 from threetears.evals.analysis.report.cost_unit import per_count
 from threetears.evals.analysis.report.figure_keys import (
     cost_basis,
@@ -952,8 +953,10 @@ def _monthly_steps(held: ReportInput) -> Iterator[tuple[str, list[Price]]]:
 
 def test_a_prices_tables_money_reads_with_its_thousands_grouped_and_a_months_to_the_whole_dollar() -> None:
     """A step's price a month reads as its key reads under ``usd_whole`` (``$1,239``, never ``$1239``) where every step
-    on the axis is $10 or more, which whole dollars do not round away; under that, every price keeps its cents. Either
-    way no dollar amount prints four digits ungrouped, in the table or in the bars' values."""
+    on the axis is $10 or more, which whole dollars do not round away; under that, no price is rounded to the whole
+    dollar: each keeps every digit the number rule spells its value with, so its cents wherever it holds any (a price
+    of $1,000 or more the rule writes whole, and padding states no cent it was never rounded to). Either way no dollar
+    amount prints four digits ungrouped, in the table or in the bars' values."""
     whole_seen = cents_seen = False
     for name, held in fixture_inputs().items():
         for key, steps in _monthly_steps(held):
@@ -971,7 +974,11 @@ def test_a_prices_tables_money_reads_with_its_thousands_grouped_and_a_months_to_
                 assert cells == whole, (name, key)
                 whole_seen |= any(abs(value) >= 1000 for value in values)
             else:
-                assert all("." in cell for cell in cells), (name, key, cells)
+                for cell, value in zip(cells, values, strict=True):
+                    spelled = format_number(abs(value))
+                    assert cell.lstrip("-").removeprefix("$").replace(",", "").startswith(spelled), (name, key, cell)
+                    if abs(value) < WHOLE_FROM and value != int(value):
+                        assert "." in cell, (name, key, cells)
                 cents_seen = True
     assert whole_seen, "the control: some fixture prices a step a month at $1,000 or more"
     assert cents_seen, "the control: some fixture prices a step a month under $10"
