@@ -130,7 +130,11 @@ def test_every_column_family_the_plan_checks_accept_has_a_renderer(family: str) 
     column = _column_of(family, report_input)
     asked = plan.model_copy(update={"options": plan.options.model_copy(update={"columns": [column]})})
     table = plan_page(asked, report_input).options.table
-    assert [one.key for one in table.columns] == ["option", "role", column]
+    arms = {arm.id: arm for arm in report_input.arms}
+    described = any(
+        (arm := arms.get(row.option)) is not None and (arm.settings or arm.served_model) for row in asked.options.rows
+    )
+    assert [one.key for one in table.columns] == ["option", "role", *(["runs"] if described else []), column]
     assert any(row[column].value is not None for row in table.rows), f"{family} filled no cell over r5"
 
 

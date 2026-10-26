@@ -248,7 +248,7 @@ def test_a_forest_of_contrasts_draws_each_delta_on_its_scale_and_names_what_is_n
 
 
 @pytest.mark.parametrize(("name", "plan", "spec", "block", "notes", "summary"), _charts_of("bars"))
-def test_bars_draw_each_figure_from_zero_and_a_summary_follows_the_options_table(
+def test_bars_draw_each_figure_from_zero_or_a_log_axis_and_a_summary_follows_the_options_table(
     name: str, plan: ReportPlan, spec: ChartSpec, block: ChartBlock, notes: list[str], summary: bool
 ) -> None:
     report_input = _input(name)
@@ -256,7 +256,13 @@ def test_bars_draw_each_figure_from_zero_and_a_summary_follows_the_options_table
     assert isinstance(data, BarsChart) and data.domain is not None
     rows = [row for panel in data.panels or [] for row in panel.rows or []] + list(data.rows or [])
     assert rows
-    assert data.domain[0] <= 0 <= data.domain[1] or spec.domain, "bars start at zero"
+    values = [row.value for row in rows if row.value is not None]
+    if data.log:
+        # A magnitude spanning more than ten times is drawn on a log axis, from its low end: the decade under the least.
+        assert 0 < data.domain[0] <= min(values) and max(values) / min(values) > 10, "a log axis only where it spans"
+        assert any("log scale" in note for note in notes), "a caption says the axis is logarithmic"
+    else:
+        assert data.domain[0] <= 0 <= data.domain[1] or spec.domain, "bars start at zero"
     if spec.query.source in ("measures", "configs"):
         for row in rows:
             key = spec.query.measures[0]
@@ -398,7 +404,19 @@ def test_the_options_table_is_the_plans_rows_under_codes_column_families_its_cho
 ) -> None:
     plan, page = _plan(path), _page(name, path)
     table = page.options.table
-    assert [column.key for column in table.columns] == ["option", "role", *plan.options.columns]
+    held = _input(name)
+    arms = {arm.id: arm for arm in held.arms}
+    # What each option runs is on the page wherever some option declares its settings or served model.
+    described = any(
+        (arm := arms.get(row.option)) is not None and (arm.settings or arm.served_model) for row in plan.options.rows
+    )
+    runs = ["runs"] if described else []
+    assert [column.key for column in table.columns] == ["option", "role", *runs, *plan.options.columns]
+    for row, cells in zip(plan.options.rows, table.rows, strict=True):
+        arm = arms.get(row.option)
+        if described and arm is not None and arm.served_model:
+            said = cells["runs"].value
+            assert isinstance(said, str) and arm.served_model in said, "an option's served model is named"
     names = {fact.id: fact.name for fact in plan_facts(_input(name)).arms}
     assert [row["option"].value for row in table.rows] == [
         names.get(row.option, row.option) for row in plan.options.rows

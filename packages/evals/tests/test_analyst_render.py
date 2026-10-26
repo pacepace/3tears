@@ -5,8 +5,13 @@ Contracts held here (``analysis.report.block_spec``, ``analysis.analyst.blocks``
 
 - **every kind and source the catalog accepts**, on r1 to r5, the misfit inputs and Kairo round 2, renders or is
   refused, and never raises anything else; a line drawn on any block that renders does the same;
-- **each anchor plan's charts** read the same values table, level, unit, axis and reference line through
+- **each anchor plan's charts**, completed by today's code (a stored plan keeps the level code filled when it was
+  stored; only that may move), read the same values table, level, unit, axis and reference line through
   ``block_render`` as through the planned page built from the plan;
+- **a values table says what the input holds**: a plain table over several measures is a row per arm with a column
+  per measure; every figure's interval the input holds is printed beside it, at the block's level; a scatter names
+  every point by its reader name, never by an id the input names otherwise;
+- **block_render echoes** the reference line and emphasis it drew;
 - **one rule**: a chart the planner's completion refuses, by its checks or by the page, is refused by
   ``block_render`` with the same reasons, each named by the parameter it sits at, every fault together;
 - **the catalog** lists every kind and source a page's chart takes, each kind's sources as the plan checks hold them,
@@ -35,17 +40,17 @@ from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, 
 from threetears.evals.analysis.analyst.blocks import RenderedBlock, block_catalog, block_render
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import PlanRefusal
-from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES
+from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES, complete_chart
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
-from threetears.evals.analysis.report.charts import KIT_CHARTS
+from threetears.evals.analysis.report.charts import KIT_CHARTS, even_precision
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, resolve
 from threetears.evals.analysis.report.plan_page.build import plan_page
-from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_input import Cell, ReportInput, Stratum, Task
 from threetears.evals.analysis.report_plan_checks import raised_warnings
 from threetears.evals.analysis.report_plan_facts import complete_plan
-from threetears.evals.analysis.report_rows import query_rows
+from threetears.evals.analysis.report_rows import SourceRow, query_rows
 from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.kernel.report_plan import ChartQuery, ChartReference, PlannedChart, PlannedReport
+from threetears.evals.kernel.report_plan import ChartQuery, ChartReference, ChartSpec, PlannedChart, PlannedReport
 
 ANCHORS = ("r1", "r2", "r3", "r4", "r5")
 
@@ -127,19 +132,48 @@ def test_the_sweep_meets_refusals_as_well_as_blocks() -> None:
 
 
 def _values(block: ChartBlock | TableBlock) -> tuple[list[str], list[list[str]]]:
-    """A page's block as its values table: a chart's own, a table's cells as its Markdown prints them."""
+    """A page's block as its values table: a chart's own, a table's cells as its Markdown prints them, each number at
+    one precision among the cells that read alike, as block_render reads them."""
     if isinstance(block, ChartBlock):
-        return block.values_table()
+        headers, body = block.values_table()
+        return headers, even_precision(body)
     cells = [[row[c.key] for c in block.columns] for row in block.rows]
-    return [c.header for c in block.columns], [
-        [cell.text if cell.tag is None else f"{cell.tag} · {cell.text}" for cell in row] for row in cells
-    ]
+    return [c.header for c in block.columns], even_precision(
+        [[cell.text if cell.tag is None else f"{cell.tag} · {cell.text}" for cell in row] for row in cells]
+    )
+
+
+def _completed_now(spec: ChartSpec, held: ReportInput) -> ChartSpec:
+    """A stored chart completed again by the code that completes charts now: a stored plan keeps the fields code
+    filled when it was stored (a rule added later changes no stored plan), and block_render completes by today's."""
+    chosen = PlannedChart.model_validate(
+        {
+            "kind": spec.kind,
+            "title": spec.title,
+            "query": spec.query,
+            "reference": [{"kind": line.kind} for line in spec.reference],
+            "emphasis": spec.emphasis,
+        }
+    )
+    completed, faults = complete_chart(chosen, held, "chart")
+    assert not faults, faults
+    # Only a code-filled field may move: what the plan chose, its line's key, its unit and its axis stay as stored.
+    assert completed.model_dump(exclude={"level"}) == spec.model_dump(exclude={"level"})
+    return completed
 
 
 @pytest.mark.parametrize("name", ANCHORS)
 def test_each_anchor_plans_charts_read_the_same_through_block_render_as_on_the_planned_page(name: str) -> None:
-    plan = dataset.load_plan(dataset.HERE / name / "anchor.plan.json")
+    stored = dataset.load_plan(dataset.HERE / name / "anchor.plan.json")
     held = dataset.report_input_of(name)
+    plan = stored.model_copy(
+        update={
+            "summary": [_completed_now(spec, held) for spec in stored.summary],
+            "sections": [
+                section.model_copy(update={"chart": _completed_now(section.chart, held)}) for section in stored.sections
+            ],
+        }
+    )
     page = plan_page(plan, held)
     charts = [*zip(plan.summary, page.summary, strict=True)]
     charts += [(section.chart, shown.chart) for section, shown in zip(plan.sections, page.sections, strict=True)]
@@ -378,12 +412,22 @@ def test_each_sources_filters_are_the_query_fields_that_change_its_rows_and_no_o
     assert unshown == _UNEXERCISED_FILTERS
 
 
+def _carries(row: SourceRow) -> bool:
+    """Whether a row carries an interval: its own, or one on an arm's figure in it (a slice's, a cell's)."""
+    if row.interval is not None:
+        return True
+    per_arm = getattr(row.item, "per_arm", None)
+    if not isinstance(row.item, Stratum | Task | Cell) or per_arm is None:
+        return False
+    return any(stat.ci is not None or stat.half_width is not None for on in per_arm.values() for stat in on.values())
+
+
 def test_a_source_said_to_carry_no_interval_never_does_and_one_said_to_carries_one_somewhere() -> None:
     carried: dict[str, bool] = {}
     for held in _inputs().values():
         for source in block_catalog(held, "s").sources:
             rows = query_rows(_query(source.source), held)
-            some = any(row.interval is not None for row in rows)
+            some = any(_carries(row) for row in rows)
             if not source.interval:
                 assert not some, source.source
             carried[source.source] = carried.get(source.source, False) or some
@@ -435,6 +479,130 @@ def test_a_page_of_long_cells_stops_before_its_limit_and_names_where_the_next_st
 
 
 # =============================================================================
+# What a values table says
+# =============================================================================
+
+
+def test_a_table_over_several_measures_is_a_row_per_arm_with_a_column_per_measure() -> None:
+    """Paired figures sit side by side: an arm's figures are one row, each under its measure's column."""
+    name, held, keys = next(
+        (name, held, keys)
+        for name, held in _inputs().items()
+        if len(keys := [key for key, measure in held.measures.items() if measure.per_arm]) >= 2
+    )
+    drawn = block_render(held, block_kind="table", query=_query("measures", measures=keys))
+    arms = {arm for key in keys for arm in held.measures[key].per_arm}
+    assert drawn.total == len(arms), name
+    measured = [column for column in drawn.columns if not column.endswith("interval")]
+    assert len(measured) == 1 + len(keys), (name, drawn.columns)
+
+
+def _holds_intervals(held: ReportInput, query: ChartQuery) -> bool:
+    return any(_carries(row) for row in query_rows(query, held))
+
+
+#: The kinds over figures whose values table prints each figure's interval where the input holds one, and the sources.
+_INTERVAL_TABLES = (("table", "tasks"), ("table", "cells"), ("table", "measures"), ("heatmap", "cells"))
+
+
+@pytest.mark.parametrize(("kind", "source"), _INTERVAL_TABLES, ids=[f"{k} {s}" for k, s in _INTERVAL_TABLES])
+def test_a_values_table_prints_every_interval_the_input_holds_and_its_level(kind: str, source: str) -> None:
+    seen = 0
+    for name, held in _inputs().items():
+        query = _query(source)
+        if not _holds_intervals(held, query):
+            continue
+        try:
+            drawn = block_render(held, block_kind=kind, query=query, limit=200)
+        except RefusedInput:
+            continue
+        cells = [cell for row in drawn.rows for cell in row.cells]
+        assert drawn.level, f"{name}: a {kind} over {source} prints intervals at no level"
+        assert any(" to " in cell for cell in cells), f"{name}: a {kind} over {source} prints no interval"
+        seen += 1
+    assert seen, f"the control: some fixture holds an interval a {kind} over {source} reads"
+
+
+def test_no_scatter_names_a_point_by_an_id_the_input_names_otherwise() -> None:
+    seen = 0
+    for name, held in _inputs().items():
+        named = {arm.id for arm in held.arms if (arm.name or arm.short_name or arm.id) != arm.id} | {
+            config.arm for config in held.configs
+        }
+        for kind in ("gate_scatter", "scatter_frontier"):
+            for source in BLOCK_SOURCES[kind]:
+                drawn = _drawn_or_refused(held, kind, source)
+                if drawn is None:
+                    continue
+                at = drawn.columns.index("Point")
+                points = {row.cells[at] for row in drawn.rows}
+                assert not points & named, f"{name}: {kind} over {source} names points by id: {points & named}"
+                seen += 1
+    assert seen, "the control: some fixture draws a scatter"
+
+
+def test_cells_that_read_alike_print_their_numbers_at_one_precision_and_lose_no_digit() -> None:
+    rows = [["A", "94% · $1 per 1,000 calls", "-7.6 to +1.1"], ["B", "96.4% · $1.655 per 1,000 calls", "-3 to +0.25"]]
+    assert even_precision(rows) == [
+        ["A", "94.0% · $1.000 per 1,000 calls", "-7.6 to +1.10"],
+        ["B", "96.4% · $1.655 per 1,000 calls", "-3.0 to +0.25"],
+    ]
+    assert even_precision([["p95 latency", "Few-shot (12 ex.)"]]) == [["p95 latency", "Few-shot (12 ex.)"]]
+    assert even_precision([["$0.000616"], ["$1"]]) == [["$0.000616"], ["$1"]], "past three decimals, nothing is padded"
+
+
+def test_a_tables_paired_figures_read_at_one_precision() -> None:
+    """The prototype's complaint: 98% beside 98.6% in one table reads as a different precision, not a rounder figure."""
+    name, held, keys = next(
+        (name, held, keys)
+        for name, held in _inputs().items()
+        if len(keys := [key for key, measure in held.measures.items() if measure.per_arm]) >= 2
+    )
+    drawn = block_render(held, block_kind="table", query=_query("measures", measures=keys), limit=200)
+    for column in range(1, len(drawn.columns)):
+        cells = [row.cells[column] for row in drawn.rows if row.cells[column] not in ("", "—")]
+        decimals = {len(cell.split(" ")[0].split(".")[1]) if "." in cell.split(" ")[0] else 0 for cell in cells}
+        assert len(decimals) <= 1 or max(decimals) > 3, (name, drawn.columns[column], cells)
+
+
+def _spread(values: list[float]) -> bool:
+    return len(values) > 1 and min(values) > 0 and max(values) / min(values) > 10
+
+
+def test_bars_over_a_magnitude_spanning_more_than_ten_times_draw_on_a_log_axis_and_say_so() -> None:
+    """One rule, read off the figures: a magnitude whose bars span more than ten times is drawn on a log axis, a
+    caption says so, and bars that do not stay linear."""
+    seen: set[bool] = set()
+    for held in _inputs().values():
+        for key, measure in held.measures.items():
+            if measure.unit in (None, "pct") or measure.grade is not None:
+                continue
+            stats = [stat for stat in measure.per_arm.values() if stat.mean is not None]
+            if not stats or any(stat.ci is not None or stat.half_width is not None for stat in stats):
+                continue
+            try:
+                drawn = block_render(held, block_kind="bars", query=_query("measures", measures=[key]))
+            except RefusedInput:
+                continue
+            logged = any("log scale" in note for note in drawn.notes)
+            assert logged == _spread([float(stat.mean) for stat in stats if stat.mean is not None]), key
+            seen.add(logged)
+    held = _inputs()["r1"]
+    costs = [
+        float(stat.mean)
+        for task in held.tasks
+        for figures in task.per_arm.values()
+        if (stat := figures.get("cost_per_1k")) is not None and stat.mean is not None
+    ]
+    if costs:
+        drawn = block_render(held, block_kind="bars", query=_query("tasks", measures=["cost_per_1k"]))
+        logged = any("log scale" in note for note in drawn.notes)
+        assert logged == _spread(costs)
+        seen.add(logged)
+    assert seen == {True, False}, "the control: some fixture's bars span more than ten times and some do not"
+
+
+# =============================================================================
 # Through the analyst's tool
 # =============================================================================
 
@@ -459,6 +627,27 @@ async def test_block_render_reads_back_a_values_table_and_its_line_by_its_key() 
     assert outcome.structured["query"] == {**_EMPTY, "source": "measures", "measures": ["latency_ms"]}
     assert outcome.structured["columns"] and outcome.structured["rows"]
     assert outcome.text.startswith("rendered block\nblock_kind: bars\n")
+
+
+async def test_block_render_echoes_the_line_and_the_emphasis_it_drew_beside_its_query() -> None:
+    """A report document's evidence carries a block's line and emphasis beside its query, so the block says both."""
+    emphasis = next(arm.id for arm in fixture_inputs()["r2"].arms if arm.role != "control")
+    query = {"source": "measures", "measures": ["latency_ms"]}
+    outcome = await _call(
+        {
+            "action": "block_render",
+            "block_kind": "range_bars",
+            "query": query,
+            "reference": "budget",
+            "emphasis": emphasis,
+        }
+    )
+    assert outcome.structured is not None, outcome.text
+    assert outcome.structured["reference_line"] == "budget" and outcome.structured["emphasis"] == emphasis
+    assert "\nreference_line: budget\n" in outcome.text and f"\nemphasis: {emphasis}\n" in outcome.text
+    plain = await _call({"action": "block_render", "block_kind": "range_bars", "query": query})
+    assert plain.structured is not None, plain.text
+    assert plain.structured["reference_line"] is None and plain.structured["emphasis"] == ""
 
 
 async def test_block_render_refused_on_the_snapshot_names_its_faults_and_the_catalog() -> None:

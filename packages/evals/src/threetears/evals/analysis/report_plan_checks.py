@@ -127,11 +127,13 @@ added later refuses no plan already stored:
 
 - *Units a key prints*: no prose writes a unit right after a figure key whose spelling already carries it. The unit
   is read off what code spells (:func:`~threetears.evals.analysis.report.figure_keys.format_figure`: ``513 ms``,
-  ``45%``, ``$1.89 per 1,000 replies``), and refused where the next word repeats it or is one of that unit's names in
-  the package's own vocabulary (:data:`~threetears.evals.analysis.quantities.UNIT_NAMES`: ``3 s seconds``,
-  ``45%%``); a key spelled bare (``{…|int} ms``, ``{…|pts} points``) prints none. And money per reply under one
-  cent, on a page that states its costs per 1,000 replies (a cost per 1,000 replies resolves), is keyed
-  ``usd_per_1k``, so the page reads one cost basis.
+  ``45%``, ``$1.89 per 1,000 replies``), and refused where the next word repeats it, or repeats its count (``per
+  1,000``) with any other noun, or is one of that unit's names in the package's own vocabulary
+  (:data:`~threetears.evals.analysis.quantities.UNIT_NAMES`: ``3 s seconds``, ``45%%``); a key spelled bare
+  (``{…|int} ms``, ``{…|pts} points``) prints none. And money per reply under one cent, on a page that states its
+  costs per 1,000 (a ``cost_per_1k`` figure resolves), is keyed ``usd_per_1k``, so the page reads one cost basis,
+  per 1,000 of what the input's cost counts
+  (:func:`~threetears.evals.analysis.report.figure_keys.cost_basis`: ``per 1,000 conversations``).
 - *Watch names the weakest margin*: a decide plan's Watch slot cites the weakest margin
   (:func:`~threetears.evals.analysis.report_margins.weakest_margin`) by at least one ``weakest.*`` figure key, where the
   input reads any figure against a criterion, margin or floor. Which margin is weakest is code's fact; what Watch says
@@ -181,6 +183,8 @@ from threetears.evals.analysis.report.block_spec import (
     small_multiple_faults,
 )
 from threetears.evals.analysis.report.plan_page.charting import contrast_unit
+from threetears.evals.analysis.report.plan_page.look import log_spread
+from threetears.evals.analysis.report.cost_unit import per_count
 from threetears.evals.analysis.report.figure_keys import (
     INTERVAL_TEMPLATE,
     PERCENTILE_NAMES,
@@ -188,6 +192,7 @@ from threetears.evals.analysis.report.figure_keys import (
     FigureKey,
     format_figure,
     Figure,
+    cost_basis,
     keys_in,
     literal_numbers,
     reader_names,
@@ -233,8 +238,6 @@ _ORDERED_VERSIONS = "ordered_versions"
 _FACTORIAL = "factorial"
 #: The most named tasks or strata read as tasks; more read as many strata.
 _FEW_STRATA = 6
-#: The spread of cost across arms past which the cost axis is logarithmic.
-_LOG_SPREAD = 10.0
 #: The caveat kinds Method may carry: method-level ones (R1 of the 2026-10-25 review).
 _METHOD_KINDS = frozenset({"apparatus", "latency", "unreported"})
 
@@ -275,6 +278,9 @@ _CENT = 0.01
 #: replaces any other).
 _PER_THOUSAND_FILTER = "usd_per_1k"
 _KEPT_BESIDE_A_SPELLING = frozenset({"abs", "interval"})
+#: The count a cost's unit opens with (``per 1,000``, ``per 1,000,000``), whatever it counts: prose that repeats it
+#: after a key that prints it doubles the unit, even where it names another noun.
+_PER_COUNT = re.compile(r"^per [\d,]+")
 #: What joins an interval's two ends where code spells each with its unit (``1.2 s to 3.4 s``).
 _INTERVAL_JOIN = INTERVAL_TEMPLATE.format(low="", high="")
 #: A figure's number as code spells it, at the start of its spelling: a bound, a sign, money's sign, the digits, and a
@@ -363,7 +369,7 @@ def _log_cost_axis(report_input: ReportInput) -> bool:
             continue  # NOSILENT: an arm that states no cost spans nothing; the cost axis is read over the others
         if isinstance(figure.value, float) and figure.value > 0:
             costs.append(figure.value)
-    return len(costs) > 1 and max(costs) / min(costs) > _LOG_SPREAD
+    return log_spread(costs)
 
 
 def _shape(signals: Signals) -> str:
@@ -1171,12 +1177,12 @@ def _literal_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fa
 
 
 def _states_cost_per_thousand(report_input: ReportInput) -> bool:
-    """Whether the page states the arms' costs per 1,000 replies: the cost per 1,000 replies resolves for some arm."""
+    """Whether the page states the arms' costs per 1,000: the ``cost_per_1k`` figure resolves for some arm."""
     for arm in report_input.arms:
         try:
             resolve(f"cost_per_1k.{arm.id}", report_input)
         except UnresolvableReference:
-            continue  # NOSILENT: an arm that states no cost states none per 1,000 replies; the others are read
+            continue  # NOSILENT: an arm that states no cost states none per 1,000; the others are read
         return True
     return False
 
@@ -1189,6 +1195,8 @@ def _unit_words(spelled: str) -> list[str]:
     number = _SPELLED_NUMBER.match(last)
     suffix = last[number.end() :].strip() if number is not None else ""
     words = {suffix} if suffix else set()
+    if (count := _PER_COUNT.match(suffix)) is not None:
+        words.add(count.group(0))
     for unit, names in UNIT_NAMES.items():
         if suffix.casefold() in {name.casefold() for name in names} or (unit == MONEY and "$" in spelled):
             words.update(names)
@@ -1215,8 +1223,9 @@ def _sub_cent(figure: Figure, key: FigureKey) -> bool:
 
 def _unit_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
     """No prose writes a unit right after a key that prints it, and money per reply under one cent is keyed per
-    1,000 replies where the page states its costs so."""
+    1,000 where the page states its costs so."""
     per_thousand = _states_cost_per_thousand(report_input)
+    basis = per_count(cost_basis(report_input).noun)
     for path, text in _prose(plan):
         try:
             keys = keys_in(text)
@@ -1248,7 +1257,7 @@ def _unit_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault
                     path,
                     (
                         f"keys {written}, money per reply under one cent ({spelled}), and the page states its costs "
-                        f"per 1,000 replies: key it per 1,000 replies, {{{wanted}}}, so the page reads one cost basis"
+                        f"{basis}: key it {basis}, {{{wanted}}}, so the page reads one cost basis"
                     ),
                 )
 

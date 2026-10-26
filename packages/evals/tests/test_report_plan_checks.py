@@ -1408,10 +1408,19 @@ class TestUnits:
         assert "writes 'calls'" in why
 
     def test_the_per_million_words_after_a_key_that_prints_them_are_refused(self):
+        label = _input("r3").measures["cost_per_1m"].label
+        assert label is not None
+        counted = label.split()[-1]
+        plan = _anchor("r3")
+        plan["lede"] += f" Zero-shot costs {{measure.cost_per_1m.atlas-m.zero.mean}} per 1,000,000 {counted}."
+        why = " ".join(why for path, why in _anchor_faults(plan, "r3") if path == "lede")
+        assert f"writes 'per 1,000,000 {counted}'" in why
+
+    def test_a_count_after_a_key_that_prints_it_is_refused_whatever_it_counts(self):
         plan = _anchor("r3")
         plan["lede"] += " Zero-shot costs {measure.cost_per_1m.atlas-m.zero.mean} per 1,000,000 replies."
         why = " ".join(why for path, why in _anchor_faults(plan, "r3") if path == "lede")
-        assert "writes 'per 1,000,000 replies'" in why
+        assert "writes 'per 1,000,000'" in why
 
     def test_the_per_million_words_after_a_whole_number_pass(self):
         plan = _anchor("r3")

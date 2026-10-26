@@ -74,6 +74,13 @@ def _rendered(text: str) -> str:
     return render(text, _input("r5"), _r5_names())
 
 
+def _counted(name: str, key: str) -> str:
+    """What a money measure's label says it counts: the label's last word (``Cost per million turns``: ``turns``)."""
+    label = _input(name).measures[key].label
+    assert label is not None
+    return label.split()[-1]
+
+
 def _figure(path: str, filters: str = "", name: str = "r5") -> str:
     return format_figure(resolve(path, _input(name)), tuple(part for part in filters.split("|") if part))
 
@@ -309,13 +316,28 @@ class TestFilters:
         assert _figure("cost_per_1k.September", "usd_per_1k") == "$1.89 per 1,000 replies"
         assert _figure("contrast.1017.production_replicating_cost.delta", "usd_per_1k") == "+$0.49 per 1,000 replies"
 
-    def test_a_price_per_million_replies_states_its_ruler(self):
-        assert _figure("measure.cost_per_1m.brisk-s.few.mean", name="r3") == "$40 per 1,000,000 replies"
-        assert _figure("measure.cost_per_1m.atlas-m.rubric.mean", name="r3") == "$610 per 1,000,000 replies"
+    def test_a_price_per_million_states_its_ruler_in_what_its_label_counts(self):
+        counted = _counted("r3", "cost_per_1m")
+        assert _figure("measure.cost_per_1m.brisk-s.few.mean", name="r3") == f"$40 per 1,000,000 {counted}"
+        assert _figure("measure.cost_per_1m.atlas-m.rubric.mean", name="r3") == f"$610 per 1,000,000 {counted}"
 
-    def test_a_price_per_million_replies_keeps_reading_whole_and_reads_per_thousand(self):
+    def test_a_price_per_million_keeps_reading_whole_and_reads_per_thousand(self):
+        counted = _counted("r3", "cost_per_1m")
         assert _figure("measure.cost_per_1m.atlas-m.zero.mean", "int", name="r3") == "180"
-        assert _figure("measure.cost_per_1m.atlas-m.zero.mean", "usd_per_1k", name="r3") == "$0.18 per 1,000 replies"
+        assert _figure("measure.cost_per_1m.atlas-m.zero.mean", "usd_per_1k", name="r3") == f"$0.18 per 1,000 {counted}"
+
+    def test_usd_whole_drops_a_large_amounts_cents_and_groups_its_thousands(self):
+        held = _input("r4")
+        month = resolve(f"cost_per_month.{held.arms[0].id}", held)
+        assert isinstance(month.value, float) and month.value >= 1000, "the control: a monthly amount in thousands"
+        assert format_figure(month, ("usd_whole",)) == f"${round(month.value):,}"
+
+    def test_usd_whole_refuses_an_amount_it_would_round_away_and_a_figure_that_is_no_money(self):
+        held = _input("r4")
+        with pytest.raises(UnresolvableReference, match="whole dollars would round away"):
+            format_figure(resolve(f"cost_per_1k.{held.arms[0].id}", held), ("usd_whole",))
+        with pytest.raises(UnresolvableReference, match="cannot read as dollars"):
+            format_figure(resolve("meta.volume_per_month", held), ("usd_whole",))
 
     def test_int_rounds_to_a_whole_number(self):
         assert _figure("flip_margin.qwen3.8-flash", "int") == "11"
@@ -551,7 +573,7 @@ class TestLiteralNumbers:
 class TestTheGrammar:
     def test_it_teaches_every_filter_with_a_rendered_example(self):
         grammar = figure_key_grammar()
-        for name in ("pct", "pts", "abs", "usd", "int", "pct10", "interval", "usd_per_1k"):
+        for name in ("pct", "pts", "abs", "usd", "int", "pct10", "interval", "usd_per_1k", "usd_whole"):
             assert f"- `{name}`:" in grammar, name
         assert '`{pass_rate.base|pct}` reads "85.3%"' in grammar
 

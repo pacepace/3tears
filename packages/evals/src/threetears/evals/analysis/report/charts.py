@@ -229,6 +229,58 @@ class _Drawable(_Kind):
         return headers, body
 
 
+#: A number in a table cell: its sign, its digits with any thousands separators, and its decimals; never inside a
+#: word (``p95``) or a longer number.
+_CELL_NUMBER = re.compile(r"(?<![\w.,])([+\-−]?)(\d[\d,]*)(?:\.(\d+))?(?![\w])")
+
+#: The most decimals a column is padded to: past it the figures are small amounts whose precision is their own.
+_MOST_PADDED = 3
+
+
+def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
+    """A values table's cells, every number at one precision among the cells that read alike: cells that read the
+    same but for their numbers (``94% · $1 per 1,000 calls``, ``96.4% · $1.06 per 1,000 calls``), wherever they sit in
+    the table, have each number in the same place padded with zeros to the most decimals that place holds among them
+    (``94.0%``, ``$1.00``), up to three.
+
+    Padding never rounds: a cell keeps every digit it had, so a table still never rounds away what a value holds,
+    and two figures a reader compares read at one precision. A cell no other reads like (a label, words) is left as it
+    is.
+
+    :param rows: The table's rows of cells.
+    :ptype rows: Sequence[Sequence[str]]
+    :return: The rows, each number padded among the cells that read like its own.
+    :rtype: list[list[str]]
+    """
+    table = [list(row) for row in rows]
+    shaped: dict[str, list[tuple[int, int]]] = {}
+    for at, row in enumerate(table):
+        for column, cell in enumerate(row):
+            shape = _CELL_NUMBER.sub("#", cell)
+            if "#" in shape:
+                shaped.setdefault(shape, []).append((at, column))
+    for places in shaped.values():
+        found = [list(_CELL_NUMBER.finditer(table[at][column])) for at, column in places]
+        most = [max(len(numbers[place].group(3) or "") for numbers in found) for place in range(len(found[0]))]
+        for at, column in places:
+            table[at][column] = _padded_cell(table[at][column], most)
+    return table
+
+
+def _padded_cell(cell: str, most: Sequence[int]) -> str:
+    """One cell, its n-th number padded to ``most[n]`` decimals where that is three or fewer."""
+    place = iter(range(len(most)))
+
+    def pad(found: re.Match[str]) -> str:
+        wanted = most[next(place)]
+        decimals = found.group(3) or ""
+        if wanted > _MOST_PADDED or len(decimals) >= wanted:
+            return found.group(0)
+        return f"{found.group(1)}{found.group(2)}.{decimals.ljust(wanted, '0')}"
+
+    return _CELL_NUMBER.sub(pad, cell)
+
+
 def _interval(spec: str, low: float | None, high: float | None) -> str:
     """An interval as a table cell: its two ends under the chart's format, empty without one."""
     if low is None or high is None:
@@ -309,6 +361,7 @@ class _BarsFields(_Kind):
     fmt: Fmt | None = Field(default=None, description="The values' format.")
     tick_fmt: Fmt | None = Field(default=None, description="The axis labels' format, where it differs.")
     ticks: list[float] | None = Field(default=None, description="Explicit tick positions.")
+    log: bool | None = Field(default=None, description="A log value axis, the bars drawn from its low end.")
     reference: ChartReference | None = Field(default=None, description="A floor, budget or no-preference point.")
     level: str | None = Field(default=None, description='The intervals\' level ("95%"); required with intervals.')
     emphasis: str | None = Field(default=None, description="The id of the one row to bold.")
@@ -550,7 +603,7 @@ class _ScatterFields(_Kind):
         headers = ["Point", self.x_title or "x", self.y_title or "y"]
         body = [
             [
-                point.label or point.narrow_label or point.id or "",
+                _point_name(point),
                 _formatted(x_fmt, point.x),
                 _formatted(y_fmt, point.y),
             ]
@@ -562,6 +615,13 @@ class _ScatterFields(_Kind):
                 line[column] = _formatted(spec, reference.value)
                 body.append(line)
         return headers, body
+
+
+def _point_name(point: ScatterPoint) -> str:
+    """A scatter point as its table row names it: its drawn label, else its tooltip's first line (the bold one, which
+    names the point), else its id; a crowded chart draws no label, and its table still names each point for a
+    reader, never by an internal id while a name is held."""
+    return point.label or point.narrow_label or (point.tip[0] if point.tip else None) or point.id or ""
 
 
 class ScatterPanel(_ScatterFields, _PanelText):
@@ -719,7 +779,7 @@ class GateCell(_KitModel):
     """One candidate on one task: a status pill, the binding reasons, the cost."""
 
     status: ChartStatus = Field(description="good, warn, bad or neutral.")
-    label: str = Field(description="The pill's word.")
+    label: str = Field(description="The pill's word; empty for no pill (a cell no gate reads, where none is declared).")
     reasons: list[str] | None = Field(default=None, description="The binding reasons.")
     cost: float | None = Field(default=None, description="The cost, under `cost_fmt`.")
     pick: bool | None = Field(default=None, description="The pick on this row: washed and marked.")
@@ -759,11 +819,11 @@ class GateMatrixChart(_Drawable):
             label = row.label + "".join(f" ({extra})" for extra in (row.detail, row.flag) if extra)
             cells = [label]
             for cell in row.cells:
-                text = cell.label + (f": {'; '.join(cell.reasons)}" if cell.reasons else "")
+                said = "; ".join(cell.reasons or [])
+                text = f"{cell.label}: {said}" if cell.label and said else cell.label or said
                 if cell.cost is not None and self.cost_fmt is not None:
-                    text += f", {_formatted(self.cost_fmt, cell.cost)}" + (
-                        f" {self.cost_unit}" if self.cost_unit else ""
-                    )
+                    cost = _formatted(self.cost_fmt, cell.cost) + (f" {self.cost_unit}" if self.cost_unit else "")
+                    text = f"{text}, {cost}" if text else cost
                 if cell.pick and self.pick_label:
                     text += f" ({self.pick_label})"
                 cells.append(text)
@@ -848,6 +908,8 @@ class HeatmapCell(_KitModel):
 
     value: float = Field(description="The value, shaded over `domain`.")
     n: float | None = Field(default=None, description="The cases under it.")
+    low: float | None = Field(default=None, description="Its interval's low end, where it carries one.")
+    high: float | None = Field(default=None, description="Its interval's high end; set with `low`.")
     tip: list[str] | None = Field(default=None, description="Tooltip lines, the first bold.")
 
 
@@ -880,14 +942,20 @@ class _HeatmapFields(_Kind):
             [
                 row.label,
                 *(
-                    _formatted(self._format, cell.value)
-                    + (f" (n = {format_number(cell.n)})" if cell.n is not None else "")
+                    _formatted(self._format, cell.value) + _heat_detail(self._format, cell.low, cell.high, cell.n)
                     for cell in row.cells
                 ),
             ]
             for row in self.rows or []
         ]
         return headers, body
+
+
+def _heat_detail(spec: str, low: float | None, high: float | None, n: float | None) -> str:
+    """What a heatmap cell's table text adds after its value: its interval and its cases, in parentheses."""
+    said = [_interval(spec, low, high)] if low is not None and high is not None else []
+    said += [f"n = {format_number(n)}"] if n is not None else []
+    return f" ({'; '.join(said)})" if said else ""
 
 
 class HeatmapPanel(_HeatmapFields, _PanelText):
@@ -1136,16 +1204,15 @@ def _drawn(chart: _Kind) -> list[tuple[_PanelText | None, _Kind | None]]:
 
 
 __all__ = [
-    "KIT_CHARTS",
     "BarRow",
     "BarSegment",
     "BarsChart",
     "BarsPanel",
     "ChartColumn",
     "ChartPattern",
+    "ChartReference",
     "ChartShape",
     "ChartStatus",
-    "ChartReference",
     "ConfusionChart",
     "ConfusionPanel",
     "DiffHeatmapCell",
@@ -1171,6 +1238,7 @@ __all__ = [
     "HeatmapChart",
     "HeatmapPanel",
     "HeatmapRow",
+    "KIT_CHARTS",
     "KitChart",
     "LatticeCell",
     "LatticeChart",
@@ -1186,4 +1254,5 @@ __all__ = [
     "ScatterPanel",
     "ScatterPath",
     "ScatterPoint",
+    "even_precision",
 ]

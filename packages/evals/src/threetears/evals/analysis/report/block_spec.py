@@ -73,7 +73,7 @@ from threetears.evals.analysis.report.figure_keys import (
     reader_names,
     resolve,
 )
-from threetears.evals.analysis.report.plan_page.charting import contrast_unit, unit_refusal
+from threetears.evals.analysis.report.plan_page.charting import contrast_unit, drawn_keys, unit_refusal
 from threetears.evals.analysis.report.plan_page.look import PageLook, page_look
 from threetears.evals.analysis.report_decision import control_arm, surviving_options
 from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, Reading, ReportInput, Stat, Stratum, Task
@@ -168,6 +168,8 @@ _UNDRAWABLE = "cannot be drawn as it asks:"
 #: The sources a diverging chart may draw at the descriptive level, and the word that labels it.
 _DESCRIPTIVE_SOURCES = frozenset({"judged", "strata"})
 _UNCORRECTED = "uncorrected"
+#: The plain table's kind, which lays out every figure its rows hold.
+_TABLE = "table"
 
 
 def line_statistics(kind: str) -> frozenset[str]:
@@ -435,6 +437,17 @@ def _level(chart: PlannedChart, report_input: ReportInput, path: str, faults: li
     if source == "strata":
         level = _one(path, "interval level", _figure_levels(chart, report_input), faults)
         return f"{level} {_UNCORRECTED}" if level else _descriptive_level(chart, report_input)
+    if source in ("tasks", "cells", "configs"):
+        # A task's or cell's figure carries its own interval, at its measure's declared level, uncorrected over the
+        # slices as a stratum's is; a config's figure is an arm's, at the level a measure's is. Printed only where a
+        # figure the chart reads carries one.
+        held = _interval_keys(chart, report_input)
+        declared = {key: m.level or "" for key, m in report_input.measures.items()}
+        declared |= {key: j.level or "" for key, j in report_input.judged.items()}
+        level = _one(path, "interval level", (declared.get(key, "") for key in held), faults)
+        if not level or source == "configs":
+            return level
+        return f"{level} {_UNCORRECTED}"
     if source == "prices":
         return _price_level(chart, report_input, path, faults)
     return ""
@@ -457,6 +470,30 @@ def _price_level(chart: PlannedChart, report_input: ReportInput, path: str, faul
     table = report_input.judged.get(key) or report_input.measures.get(key)
     own = table.level if table is not None and table.level else ""
     return f"{own} {_UNPAIRED_LEVEL}".strip()
+
+
+def _interval_keys(chart: PlannedChart, report_input: ReportInput) -> list[str]:
+    """The measures and judged dimensions a chart of tasks, cells or configs shows whose figures there carry an
+    interval (a ``ci`` or a half-width), each once, in order: a plain table shows every figure its rows hold (those
+    its query names, where it names any), any other kind the keys it draws (:func:`drawn_keys`)."""
+    shown: set[str] | None = None if chart.kind == _TABLE else set(drawn_keys(chart.kind, chart.query, report_input))
+    if chart.kind == _TABLE and chart.query.measures:
+        shown = set(chart.query.measures)
+    arms = set(chart.query.arms) or {arm.id for arm in report_input.arms}
+    held: list[str] = []
+    for row in query_rows(chart.query, report_input):
+        if isinstance(row.item, Task | Cell):
+            figures = [(key, stat) for arm, on in row.item.per_arm.items() if arm in arms for key, stat in on.items()]
+        elif isinstance(row.item, Stat):
+            figures = [(row.key, row.item)]
+        else:
+            continue
+        held += [
+            key
+            for key, stat in figures
+            if (shown is None or key in shown) and (stat.ci is not None or stat.half_width is not None)
+        ]
+    return list(dict.fromkeys(held))
 
 
 def _descriptive_level(chart: PlannedChart, report_input: ReportInput) -> str:

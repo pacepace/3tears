@@ -87,6 +87,27 @@ read. `prices` is a `ChartQuery.source`: `bars` and `table` draw the frontier's 
 states the whole frontier's size on every page (`frontier_options`, `frontier_steps`), so a wide frontier keeps a page
 within one result.
 
+### evals: a report says what a cost counts, and a block's values say what the input holds
+
+**Changed:** a cost reads per what its measure counts, never per reply by default. A `usd_per_1k` or `usd_per_1m`
+measure is per what its label names after the count (`Cost per 1k conversations`: `per 1,000 conversations`); money per
+one thing and the scoreboard's reply cost stay per reply. Where a label names no count, the phrase says the unit is not
+stated. `figure_keys.cost_basis(report_input)` names what the page's cost counts and whether the input says. The dollar
+filters, the gate matrix and lattice, the options and Full results cost columns, a plain table's money column, the one
+cost basis check and the digit rule read it, and prose may write the input's own count phrase whole.
+
+**Added:** the `usd_whole` figure-key filter: a monthly or other large amount to the whole dollar, thousands grouped;
+refused under $10.
+
+**Changed:** `block_render` echoes the `reference_line` and `emphasis` it drew, which sit outside the query. A plain
+table over measures, slices or cells is wide: a row per arm (or place), a column per measure, each interval in a column
+of its own at the chart's level. A heatmap's values carry each cell's interval, and a chart over tasks, cells or configs
+states the level of the intervals its figures carry. A block's values read at one precision among the cells that read
+alike (`charts.even_precision`). A scatter's table names each point by its reader name. Where nothing is gated, a
+lattice tile carries no pill and a gate matrix cell no word. Bars over a magnitude spanning more than ten times draw on a
+log axis (one rule, `look.log_spread`, for every chart; the kit's bars take `log`). The options table says what each
+option runs: its settings and served model.
+
 ### evals: the report analyst's tool, evals_analyst, over a frozen report snapshot
 
 **Added:** `analyst_actions()` and `analyst_tools(prefix="evals", *, writes=True, role="analyst")`: one tool,

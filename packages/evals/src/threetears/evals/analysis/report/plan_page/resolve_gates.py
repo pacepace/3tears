@@ -47,7 +47,9 @@ at that task's gates. An x axis whose values span more than ten times is drawn o
 **lattice** tiles a factorial grid: rows the first factor's levels, columns the second's (every combination of the
 rest, where there are more), each tile the config's figure on the query's first measure, its cost per 1,000 replies,
 its latency's p95 and its gate status; where no gate or guardrail is declared, no gate reads a config, and its tile
-has no status ("Not gated here"), as the gate matrix's ungated rows have none.
+carries no status and no pill, since a pill on every tile saying nothing is gated is noise. A gate matrix's ungated
+cell says "Not gated here" only where some gate is declared elsewhere, which is news; where none is, its cell carries
+no word, only its figures.
 
 Dot strips, range bars and the frontier scatter, which draw rates against the same lines, are
 :mod:`~threetears.evals.analysis.report.plan_page.resolve_rates`'.
@@ -78,8 +80,8 @@ from threetears.evals.analysis.report.charts import (
     ScatterPath,
     ScatterPoint,
 )
-from threetears.evals.analysis.report.figure_keys import format_figure, resolve
-from threetears.evals.analysis.report.figures import PER_THOUSAND_REPLIES
+from threetears.evals.analysis.report.cost_unit import per_count
+from threetears.evals.analysis.report.figure_keys import cost_basis, format_figure, resolve
 from threetears.evals.analysis.report.plan_page.charting import (
     ChartContext,
     Drawn,
@@ -101,6 +103,7 @@ from threetears.evals.analysis.report.plan_page.look import (
     Quantity,
     band_domain,
     figure_text,
+    log_spread,
     quantity,
     series_token,
 )
@@ -149,14 +152,17 @@ _READING_STATUS: dict[str, ChartStatus] = {"worse": "bad", "better": "good", "":
 #: A floor's status to its pill.
 _FLOOR_STATUS: dict[str, ChartStatus] = {"held": "good", "unclear": "warn", "broken": "bad"}
 
-#: The spread past which an axis is drawn on a log scale (GENERATOR §5.2).
-_LOG_SPREAD = 10.0
-
 #: The room a log axis leaves past its least and its largest value, as factors.
 _LOG_PAD = (0.8, 1.25)
 
 
 # --- what every kind here reads -------------------------------------------------------------------------------------
+
+
+def _ungated(gating: Sequence[Criterion]) -> str:
+    """An ungated cell's word: "Not gated here" where some gate is declared elsewhere, else none (no pill), since a
+    word on every cell saying nothing is gated is noise."""
+    return NOT_GATED if gating else ""
 
 
 def _gating(report_input: ReportInput) -> list[Criterion]:
@@ -276,7 +282,7 @@ def _task_matrix(context: ChartContext) -> Drawn:
             figures = task.per_arm.get(arm, {})
             said = [_figure_words(context, key, figures[key]) for key in context.query.measures if key in figures]
             reasons = [line for line in said if line]
-            cells.append(GateCell(status="neutral", label=NOT_GATED, reasons=reasons or None, cost=cost))
+            cells.append(GateCell(status="neutral", label=_ungated(gating), reasons=reasons or None, cost=cost))
         rows.append(
             GateRow(
                 label=slice_name(context, task),
@@ -291,7 +297,7 @@ def _task_matrix(context: ChartContext) -> Drawn:
         rows=rows,
         row_header=GATE_HEADERS["tasks"],
         cost_fmt=priced.fmt if costs_drawn else None,
-        cost_unit=PER_THOUSAND_REPLIES if costs_drawn else None,
+        cost_unit=per_count(cost_basis(report_input).noun) if costs_drawn else None,
         pick_label=PICK_LABEL if picks else None,
     )
     return Drawn(chart_block(context, data))
@@ -464,7 +470,9 @@ def _criterion_matrix(context: ChartContext) -> Drawn:
         for arm in arms:
             stat = figures.get((key, arm))
             said = _figure_words(context, key, stat) if stat is not None else None
-            cells.append(GateCell(status="neutral", label=NOT_GATED, reasons=[said] if said else None))
+            cells.append(
+                GateCell(status="neutral", label=_ungated(_gating(report_input)), reasons=[said] if said else None)
+            )
         rows.append(GateRow(label=measure_words(report_input, key), cells=cells))
     data = GateMatrixChart(
         columns=[ChartColumn(label=name) for name in names],
@@ -586,11 +594,6 @@ def _panel_points(
     return points
 
 
-def _log_axis(values: Sequence[float]) -> bool:
-    positive = [value for value in values if value > 0]
-    return len(positive) == len(values) and bool(values) and max(values) / min(values) > _LOG_SPREAD
-
-
 def _axis_domain(values: Sequence[float], drawn: Quantity, *, log: bool) -> tuple[float, float]:
     if log:
         return min(values) * _LOG_PAD[0], max(values) * _LOG_PAD[1]
@@ -683,7 +686,7 @@ def _gate_scatter(context: ChartContext) -> Drawn:
         raise context.refuse(f"no arm holds a figure on both {x_key!r} and {y_key!r}")
     x_axis = _Axis(x_drawn, _axis_title(context, x_key, statistics[0]))
     y_axis = _Axis(y_drawn, _axis_title(context, y_key, statistics[1]))
-    x_log = _log_axis(x_values)
+    x_log = log_spread(x_values)
     x_domain = _axis_domain(x_values, x_drawn, log=x_log)
     y_domain = context.spec.domain or _axis_domain(y_values, y_drawn, log=False)
     drawn_points = [
@@ -782,8 +785,7 @@ def _lattice(context: ChartContext) -> Drawn:
     drawn = quantity(unit, [value * quantity(unit).factor for value in values])  # the format follows the drawn sizes
     priced = quantity("usd_per_1k", costs)
     timed = quantity(latency_unit) if latency_key is not None else None
-    # A config no gate reads has no status (as a gate matrix's ungated row has none): its tile is neutral, never a
-    # pass where nothing was gated.
+    # A config no gate reads has no status: its tile carries no pill, never a pass where nothing was gated.
     gated = bool(_gating(report_input))
     lattice_rows = []
     for place, (level, row) in enumerate(zip(rows_factor.levels, tiles, strict=True)):
@@ -793,7 +795,7 @@ def _lattice(context: ChartContext) -> Drawn:
             shown = value * drawn.factor
             tip = [_config_name(report_input, arm), f"{measure_words(report_input, key)} {figure_text(shown, drawn)}"]
             if cost is not None:
-                tip.append(f"{figure_text(cost, priced)} {PER_THOUSAND_REPLIES}")
+                tip.append(f"{figure_text(cost, priced)} {per_count(cost_basis(report_input).noun)}")
             if latency is not None and timed is not None:
                 tip.append(f"p95 {figure_text(latency * timed.factor, timed)}")
             cells.append(
@@ -802,8 +804,8 @@ def _lattice(context: ChartContext) -> Drawn:
                     value=shown,
                     cost=cost,
                     latency=latency * timed.factor if latency is not None and timed is not None else None,
-                    status=GATE_STATUS[check.status] if check is not None else "neutral",
-                    status_label=GATE_WORDS[check.status] if check is not None else NOT_GATED,
+                    status=GATE_STATUS[check.status] if check is not None else None,
+                    status_label=GATE_WORDS[check.status] if check is not None else None,
                     tip=[*tip, *_check_lines(check)] if check is not None else tip,
                 )
             )
@@ -816,7 +818,7 @@ def _lattice(context: ChartContext) -> Drawn:
         fmt=drawn.fmt,
         bar_domain=(bar[0], bar[1]),
         cost_fmt=priced.fmt if costs else None,
-        cost_unit=PER_THOUSAND_REPLIES if costs else None,
+        cost_unit=per_count(cost_basis(report_input).noun) if costs else None,
         latency_fmt=timed.fmt if timed is not None else None,
         emphasis=context.emphasis,
     )

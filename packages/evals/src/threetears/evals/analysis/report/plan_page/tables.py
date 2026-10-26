@@ -1,8 +1,10 @@
 """The planned page's two tables of code's own: the options table and the arms key.
 
 **The options table** (GENERATOR §2.6): a row per option in the plan's order, the recommended (or leaned) one set
-apart; its first columns name the option, as its arm's chip, and why it is shown; then one column per family code
-filled (``Options.columns``), each cell from the input, by the package's number rule. The families are the plan
+apart; its first columns name the option, as its arm's chip, and why it is shown, then what it runs (its settings as
+the campaign declared them, and its served model where the settings do not name it), so the page says what each
+option is wherever some option declares either; then one column per family code filled (``Options.columns``), each
+cell from the input, by the package's number rule. The families are the plan
 checks' vocabulary (:data:`~threetears.evals.analysis.report_plan_checks.OPTION_COLUMN_FAMILIES`), each with its one
 cell renderer, and a family the vocabulary holds that no renderer fills stops this module loading:
 
@@ -17,7 +19,7 @@ judged:<dim>     the arm's figure on the judged dimension
 gate             the arm's gate status (:func:`~threetears.evals.analysis.report_gates.gate_check`) as a pill, and
                  its first binding reason
 measure:<key>    the arm's figure on the measure: its mean, else the statistic a criterion on it reads
-cost_per_1k      dollars per 1,000 replies, and the uplift against the control's
+cost_per_1k      dollars per 1,000 of what the cost counts, and the uplift against the control's
 ===============  ===================================================================================================
 
 A cell the input holds no figure for is a dash. A column outside these families is refused: it is no column the
@@ -36,7 +38,8 @@ from collections.abc import Callable
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
 from threetears.evals.analysis.report.charts import ChartStatus
-from threetears.evals.analysis.report.figure_keys import Figure, format_figure, resolve
+from threetears.evals.analysis.report.cost_unit import per_count
+from threetears.evals.analysis.report.figure_keys import Figure, cost_basis, format_figure, resolve
 from threetears.evals.analysis.report.plan_page.charting import figure_stat, measure_words, stat_value
 from threetears.evals.analysis.report.plan_page.look import GATE_STATUS, ArmLook, PageLook
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION, PageArmsKey, PageOptions
@@ -45,6 +48,7 @@ from threetears.evals.analysis.report.plan_page.words import (
     ARM_ROLE_WORDS,
     ARMS_EYEBROW,
     ARMS_TAKEAWAY,
+    COST_HEADER,
     GATE_WORDS,
     OPTION_HEADERS,
     OPTIONS_TITLE,
@@ -188,6 +192,8 @@ def _header(column: str, report_input: ReportInput) -> str:
         return measure_words(report_input, column.removeprefix("judged:"), kind="judged")
     if family == "measure:<key>":
         return measure_words(report_input, column.removeprefix("measure:"))
+    if family == "cost_per_1k":
+        return COST_HEADER.format(per=per_count(cost_basis(report_input).noun))
     return OPTION_HEADERS[family]
 
 
@@ -219,14 +225,18 @@ def options_table(plan: ReportPlan, report_input: ReportInput, look: PageLook) -
             f"the options table's columns {stray} are no column family the page fills; it fills "
             f"{list(OPTION_COLUMN_FAMILIES)}"
         )
+    described = any(_runs(report_input, row.option) for row in plan.options.rows)
     columns = [
         TableColumn(key="option", header=OPTION_HEADERS["option"]),
         TableColumn(key="role", header=OPTION_HEADERS["role"]),
+        *([TableColumn(key=_RUNS, header=ARM_HEADERS["settings"])] if described else []),
         *(TableColumn(key=column, header=_header(column, report_input)) for column in plan.options.columns),
     ]
     rows = []
     for row in plan.options.rows:
         cells = {"option": _option_cell(row.option, look), "role": TableCell(value=ROLE_WORDS[row.role])}
+        if described:
+            cells[_RUNS] = TableCell(value=_runs(report_input, row.option) or None)
         for column in plan.options.columns:
             cells[column] = (
                 _RENDERERS[_family(column)](column, row.option, report_input, look)
@@ -245,6 +255,23 @@ def options_table(plan: ReportPlan, report_input: ReportInput, look: PageLook) -
         total_rows=len(rows),
     )
     return PageOptions(table=table, highlighted=highlighted)
+
+
+#: The options table's column saying what an option runs.
+_RUNS = "runs"
+
+
+def _runs(report_input: ReportInput, option: str) -> str:
+    """What an option runs, in a few words: its settings as the campaign declared them, then its served model where
+    they do not name it; empty for an option that is no arm, or declares neither."""
+    arm = next((arm for arm in report_input.arms if arm.id == option), None)
+    if arm is None:
+        return ""
+    settings = _settings(report_input, arm.id)
+    served = arm.served_model
+    if served and served not in settings:
+        return f"{settings} · {served}" if settings else served
+    return settings
 
 
 def _settings(report_input: ReportInput, arm_id: str) -> str:

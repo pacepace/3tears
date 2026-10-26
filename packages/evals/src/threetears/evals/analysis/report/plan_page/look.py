@@ -38,6 +38,11 @@ a figure: the kit's would read a change of 0.04 points as "+0", and the rule rea
 **Axes** (:func:`magnitude_domain`, :func:`centred_domain`, :func:`band_domain`): bars from zero to a round value past
 the largest; a change about its centre, spanning every end, the centre and any reference line, a point past each
 end; a rate's band clipped to 0 to 100.
+
+**A log axis, by one rule** (:func:`log_spread`, :func:`log_domain`, :func:`log_ticks`): a magnitude whose drawn values
+are all above zero and span more than :data:`LOG_SPREAD` times (the largest over the least) is drawn on a log axis
+from the decade under the least to the decade over the largest, whatever the chart: on a linear one the small values
+pile up at zero. A rate is never: its axis is 0 to 100.
 """
 
 from __future__ import annotations
@@ -67,6 +72,10 @@ __all__ = [
     "centred_domain",
     "cost_axis_format",
     "figure_text",
+    "LOG_SPREAD",
+    "log_domain",
+    "log_spread",
+    "log_ticks",
     "magnitude_domain",
     "page_look",
     "quantity",
@@ -416,6 +425,56 @@ def magnitude_domain(values: Iterable[float], *, rate: bool = False) -> tuple[fl
     high = _round_up(top * 1.05) if top > 0 else 1.0
     low = -_round_up(-bottom * 1.05) if bottom < 0 else 0.0
     return low, min(high, 100.0) if rate and top <= 100 else high
+
+
+#: The spread past which a magnitude's axis is drawn logarithmic: its largest value over its least.
+LOG_SPREAD = 10.0
+
+#: Within a decade, the steps a log axis ticks at where it spans too few decades for a tick a decade to read.
+_LOG_STEPS = (1.0, 2.0, 5.0)
+
+#: The fewest decades a log axis spans for a tick a decade to read.
+_DECADES_FOR_DECADE_TICKS = 3
+
+
+def log_spread(values: Sequence[float]) -> bool:
+    """Whether a magnitude is drawn on a log axis: its values (two at least) are all above zero and span more than
+    :data:`LOG_SPREAD` times.
+
+    :param values: Every value and interval end the axis draws, in display units.
+    :ptype values: Sequence[float]
+    :return: Whether the axis is logarithmic.
+    :rtype: bool
+    """
+    drawn = [value for value in values if math.isfinite(value)]
+    if len(drawn) < 2 or min(drawn) <= 0:
+        return False
+    return max(drawn) / min(drawn) > LOG_SPREAD
+
+
+def log_domain(values: Sequence[float]) -> tuple[float, float]:
+    """A log axis's range: the decade at or under the least value to the decade at or over the largest.
+
+    :param values: The values, every one above zero.
+    :ptype values: Sequence[float]
+    :return: ``(low, high)``.
+    :rtype: tuple[float, float]
+    """
+    return 10.0 ** math.floor(math.log10(min(values))), 10.0 ** math.ceil(math.log10(max(values)))
+
+
+def log_ticks(domain: tuple[float, float]) -> list[float]:
+    """A log axis's ticks: each decade in its range, and its 2 and 5 where it spans fewer than three decades.
+
+    :param domain: The axis's range, its ends decades (:func:`log_domain`).
+    :ptype domain: tuple[float, float]
+    :return: The ticks, low to high.
+    :rtype: list[float]
+    """
+    low, high = round(math.log10(domain[0])), round(math.log10(domain[1]))
+    steps = _LOG_STEPS if high - low < _DECADES_FOR_DECADE_TICKS else _LOG_STEPS[:1]
+    ticks = [step * 10.0**decade for decade in range(low, high + 1) for step in steps]
+    return [tick for tick in ticks if domain[0] <= tick <= domain[1]]
 
 
 def _padded(low: float, high: float, drawn: Quantity) -> tuple[float, float]:

@@ -43,7 +43,7 @@ from threetears.evals.analysis.report.block_spec import (
     small_multiple_faults,
 )
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
-from threetears.evals.analysis.report.charts import KIT_CHARTS
+from threetears.evals.analysis.report.charts import KIT_CHARTS, even_precision
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, render
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report_input import ReportInput
@@ -100,6 +100,14 @@ class RenderedBlock(BaseModel):
 
     block_kind: str = Field(description="The block's kind.")
     query: ChartQuery = Field(description="What it reads, every field filled.")
+    reference_line: str | None = Field(
+        description="The reference line it draws, as the call named it; None for none. It sits outside the query, so "
+        "a report document's evidence carries it beside the query."
+    )
+    emphasis: str = Field(
+        description="The one arm, stratum or task it stresses, by id, as the call named it; empty for none. It sits "
+        "outside the query, so a report document's evidence carries it beside the query."
+    )
     title: str = Field(description="Its title, its figure keys written out; empty for none.")
     level: str = Field(description="The interval level it prints; empty where it draws no interval.")
     unit: str = Field(description="The unit its values are in; empty for several (a panel each) or none.")
@@ -136,7 +144,10 @@ class BlockSource(BaseModel):
     source: str = Field(description="The source, as query.source names it.")
     row_is: str = Field(description="What one row is.")
     label: str = Field(description="How a row is labelled.")
-    interval: bool = Field(description="Whether a row carries an interval where the snapshot holds one.")
+    interval: bool = Field(
+        description="Whether a row, or each arm's figure in it, carries an interval where the snapshot holds one; "
+        "a values table prints it beside the figure, at the block's level."
+    )
     filters: list[str] = Field(description="The query fields that narrow its rows; the others leave them whole.")
     holds_rows: bool = Field(description="Whether this snapshot holds any row of it.")
 
@@ -171,11 +182,11 @@ _SOURCE_ROWS: dict[str, tuple[str, str, bool, tuple[str, ...]]] = {
     "scoreboard": ("an arm's scoreboard row: trials ran, usable, passed, lost, and cost", "the arm", False,
                    ("arms", "aspect")),
     "floors": ("a floor read on an arm", "floor/arm", True, ("arms", "measures", "aspect")),
-    "strata": ("a stratum, with each arm's figures in it", "its id", False, ("arms", "strata", "limit")),
-    "tasks": ("a task, with each arm's figures in it", "its id", False, ("arms", "strata")),
+    "strata": ("a stratum, with each arm's figures in it", "its id", True, ("arms", "strata", "limit")),
+    "tasks": ("a task, with each arm's figures in it", "its id", True, ("arms", "strata")),
     "examples": ("a failed trial the snapshot shows", "its trial, else its case", False,
                  ("arms", "strata", "aspect", "limit")),
-    "cells": ("a target-matrix cell", "its id", False, ("strata",)),
+    "cells": ("a target-matrix cell, with each arm's figures in it", "its id", True, ("strata",)),
     "confusion": ("a confusion table, one per axis", "the axis's key", False, ("measures",)),
     "human_pref": ("a slice of human preference for the arm rated against the control", "its id", True, ("arms",)),
     "prices": ("a step along the price frontier on a gain axis (a block names one in query.measures): its price per "
@@ -263,6 +274,8 @@ def block_render(
     return RenderedBlock(
         block_kind=spec.kind,
         query=spec.query,
+        reference_line=spec.reference[0].kind if spec.reference else None,
+        emphasis=spec.emphasis,
         title=written,
         level=spec.level,
         unit=spec.unit,
@@ -305,15 +318,18 @@ def _parameter(path: str) -> str:
 
 def _values_table(block: ChartBlock | TableBlock) -> tuple[list[str], list[list[str]]]:
     """A drawn block's values: a chart's table of every value it draws, or a table's own columns and cells, each cell
-    after its arm's tag where it names an arm, as the page's Markdown prints it."""
+    after its arm's tag where it names an arm, as the page's Markdown prints it; and in either, every number at one
+    precision among the cells that read alike (:func:`~threetears.evals.analysis.report.charts.even_precision`), so
+    two figures compared read at one precision."""
     if isinstance(block, ChartBlock):
-        return block.values_table()
+        headers, body = block.values_table()
+        return headers, even_precision(body)
     columns = [column.header for column in block.columns]
     rows = [
         [cell.text if cell.tag is None else f"{cell.tag} · {cell.text}" for cell in (row[c.key] for c in block.columns)]
         for row in block.rows
     ]
-    return columns, rows
+    return columns, even_precision(rows)
 
 
 def block_catalog(report_input: ReportInput, snapshot_id: str) -> BlockCatalog:
