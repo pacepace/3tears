@@ -40,7 +40,7 @@ the largest; a change about its centre, spanning every end, the centre and any r
 end; a rate's band clipped to 0 to 100.
 
 **A log axis, by one rule** (:func:`log_spread`, :func:`log_domain`, :func:`log_ticks`): a magnitude whose drawn values
-are all above zero and span more than :data:`LOG_SPREAD` times (the largest over the least) is drawn on a log axis
+are all above zero and span more than ten times (the largest over the least) is drawn on a log axis
 from the decade under the least to the decade over the largest, whatever the chart: on a linear one the small values
 pile up at zero. A rate is never: its axis is 0 to 100.
 """
@@ -72,7 +72,6 @@ __all__ = [
     "centred_domain",
     "cost_axis_format",
     "figure_text",
-    "LOG_SPREAD",
     "log_domain",
     "log_spread",
     "log_ticks",
@@ -428,7 +427,7 @@ def magnitude_domain(values: Iterable[float], *, rate: bool = False) -> tuple[fl
 
 
 #: The spread past which a magnitude's axis is drawn logarithmic: its largest value over its least.
-LOG_SPREAD = 10.0
+_LOG_SPREAD = 10.0
 
 #: Within a decade, the steps a log axis ticks at where it spans too few decades for a tick a decade to read.
 _LOG_STEPS = (1.0, 2.0, 5.0)
@@ -439,7 +438,7 @@ _DECADES_FOR_DECADE_TICKS = 3
 
 def log_spread(values: Sequence[float]) -> bool:
     """Whether a magnitude is drawn on a log axis: its values (two at least) are all above zero and span more than
-    :data:`LOG_SPREAD` times.
+    ten times.
 
     :param values: Every value and interval end the axis draws, in display units.
     :ptype values: Sequence[float]
@@ -449,7 +448,7 @@ def log_spread(values: Sequence[float]) -> bool:
     drawn = [value for value in values if math.isfinite(value)]
     if len(drawn) < 2 or min(drawn) <= 0:
         return False
-    return max(drawn) / min(drawn) > LOG_SPREAD
+    return max(drawn) / min(drawn) > _LOG_SPREAD
 
 
 def log_domain(values: Sequence[float]) -> tuple[float, float]:

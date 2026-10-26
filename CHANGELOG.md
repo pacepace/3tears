@@ -46,8 +46,8 @@ holds implies, each with a stable id and `matters_if`: `judge_unstated`, `judge_
 stated ones (`source`: stated or implied). They are not plan caveat ids: `report_caveats`, the planner and stored plans
 are unchanged.
 
-**Changed:** a snapshot's report input is built by `analyst_input(bundle)`: up to `ANALYST_PER_SLICE` (three) failed
-trials per aspect, arm and stratum and `ANALYST_EXAMPLES` (now 96) in all, each excerpt centred on the passage the
+**Changed:** a snapshot's report input is built by `analyst_input(bundle)`: up to three failed
+trials per aspect, arm and stratum and 96 in all, each excerpt centred on the passage the
 judge's reason quotes, else the reply's end. `report_input` gains `per_slice` and `excerpt`; its defaults keep the
 planner's input as it was. `examples_list` returns the judge's reason whole. A freeze of unchanged evidence now builds
 a different input, so it writes a new snapshot beside any stored one.
@@ -71,7 +71,7 @@ it reads by and the filters its figure takes; or why it reads nothing (unstated 
 **Added:** count keys: `count.<what>` (arms, aspects, tasks, strata, cells, configs, gates, criteria, surviving),
 `count.passing.<criterion>`, `count.places.<criterion>`, `count.failing.<criterion>.<arm>`, `count.failed.<arm>`,
 `count.levels.<factor>`, `count.frontier.<gain>` and `count.steps.<gain>`; and the `words` filter, which spells a
-count from zero to twenty as its word (`COUNT_WORDS`). `report_margins` gains `criterion_misses`, `criterion_passes`
+count from zero to twenty as its word. `report_margins` gains `criterion_misses`, `criterion_passes`
 and `surviving_arms`.
 
 **Added:** `price_tradeoff` prices within one task, stratum or cell (`slice_filter`; keys

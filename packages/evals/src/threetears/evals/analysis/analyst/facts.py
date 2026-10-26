@@ -177,7 +177,8 @@ _SLICE_WORDS: dict[MeasureBy, str] = {"arm": "arms", "stratum": "strata", "task"
 #: The statistic that reads an arm against the control within a slice, which an arm's overall figure has no key for.
 _VS_CONTROL = "vs_control"
 
-#: What the examples a snapshot holds are: the frozen pool an analyst pages (three per slice: ``snapshot.ANALYST_PER_SLICE``).
+#: What the examples a snapshot holds are: the frozen pool an analyst pages (up to three per slice, as
+#: :func:`~threetears.evals.analysis.analyst.snapshot.analyst_input` holds them).
 _POOL = (
     "the failed trials frozen with the snapshot: up to three per aspect, arm and stratum, every slice's first before "
     "any slice's second and its other cases before a repeat; each excerpt cut around the failure (centred on the "

@@ -156,7 +156,7 @@ INTERVAL_TEMPLATE = "{low} to {high}"
 RANGE_TEMPLATE = "{low}–{high}"
 ARM_TEMPLATE = "{name} ({tag})"
 #: How a count from zero to twenty reads as a word (the ``words`` filter), in order; a translation replaces them here.
-COUNT_WORDS: tuple[str, ...] = (
+_COUNT_WORDS: tuple[str, ...] = (
     "zero",
     "one",
     "two",
@@ -4449,8 +4449,8 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
         if figure.scale != "count" or whole != value or whole < 0:
             why = "it is not a whole count" if figure.scale == "count" else f"it is on the {figure.scale} scale"
             raise _refuse(figure.path, f"cannot read as a word: {why}")
-        if whole < len(COUNT_WORDS):
-            return _Spelled(COUNT_WORDS[whole])
+        if whole < len(_COUNT_WORDS):
+            return _Spelled(_COUNT_WORDS[whole])
         return _Spelled(group_thousands(format_number(float(whole))))
     if spelling == "int":
         # A price per 1,000,000 (of what it counts) also reads as a whole number, as stored plans spell it.
@@ -5042,16 +5042,12 @@ def figure_key_pages() -> dict[str, str]:
 
 
 __all__ = [
-    "COUNT_WORDS",
     "FILTER_SPELLINGS",
     "PERCENTILE_NAMES",
     "WEAKEST_PREFIX",
     "Figure",
     "FigureKey",
-    "GainAxis",
-    "PooledFigure",
     "PriceFrontier",
-    "KeyForm",
     "KeySubjects",
     "NamedKind",
     "arm_settings",

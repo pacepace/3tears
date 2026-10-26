@@ -22,7 +22,7 @@ from packages.evals.tests.analyst_support import KAIRO, fixture_inputs, fixture_
 from threetears.evals.analysis.analyst.blocks import block_render
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.cost_unit import REPLIES, UNSTATED, per_count
+from threetears.evals.analysis.report.cost_unit import REPLIES, per_count
 from threetears.evals.analysis.report.figure_keys import cost_basis, literal_numbers, render, resolve
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import RefusedInput
@@ -145,7 +145,7 @@ def test_an_unstated_count_reads_neutral_and_the_basis_says_so() -> None:
     assert basis.source == cost_basis(held).source and not basis.stated and basis.noun == ""
     arm = next(arm.id for arm in bare.arms if _resolves(f"cost_per_1k.{arm.id}", bare))
     said = render(f"{{cost_per_1k.{arm}|usd_per_1k}}", bare, {})
-    assert said.endswith(f"per 1,000 {UNSTATED}") and "replies" not in said
+    assert said.endswith("per 1,000 (unit not stated)") and "replies" not in said
 
 
 def test_the_digit_rule_lets_prose_write_the_inputs_own_count_and_no_other() -> None:
