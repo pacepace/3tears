@@ -110,7 +110,7 @@ async def cluster(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[tup
     """
     if not check_docker_available():
         pytest.skip("Docker not available")
-    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
+    from testcontainers.community.postgres import PostgresContainer  # noqa: PLC0415
 
     with PostgresContainer(_server_image()) as container:
         admin_dsn = container.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")

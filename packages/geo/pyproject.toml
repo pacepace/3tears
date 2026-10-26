@@ -32,8 +32,9 @@ dependencies = [
     "3tears-media-contracts>=0.79.0,<0.80.0",
     # Geometry math in application code, not in SQL: YugabyteDB ships no
     # postgis extension, so there is no ST_Intersects / ST_Simplify /
-    # ST_AsMVT to call. shapely does what those would have done.
-    "shapely>=2.0",
+    # ST_AsMVT to call. shapely does what those would have done. 2.1 is the
+    # first with shapely.transform(..., interleaved=False), which mvt projects with.
+    "shapely>=2.1",
     # MVT encoding, replacing ST_AsMVT for the same reason.
     "mapbox-vector-tile>=2.1",
 ]

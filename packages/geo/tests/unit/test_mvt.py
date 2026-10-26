@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import mapbox_vector_tile
 import pytest
+from shapely import wkt
 from shapely.geometry import MultiPolygon, Point, Polygon
 
 from threetears.geo.bands import UNDECODABLE_PROPERTY, TileFeature
@@ -290,3 +291,51 @@ class TestClippedToTheTileAndItsBuffer:
         aleutians = TileFeature(geometry=_aleutians(), attributes={}, feature_id=2016)
         decoded = _decode(encode_tile({"counties": [aleutians]}, TileId(z=3, x=3, y=2)))
         assert decoded.get("counties", {"features": []})["features"] == []
+
+
+#: ``project_to_tile`` output as WKB, captured from the ``shapely.ops.transform`` implementation
+#: before it moved to ``shapely.transform``, so the move is pinned to the exact bytes it produced:
+#: every geometry type, a third dimension (dropped), an empty geometry, and a latitude past the
+#: Mercator clamp.
+_PINNED_PROJECTIONS: list[tuple[str, str]] = [
+    (
+        "POINT (-100.5 40.25)",
+        "0101000000111111111111C140A0AF6B07A687AAC0",
+    ),
+    (
+        "POINT Z (-100.5 40.25 7)",
+        "0101000000111111111111C140A0AF6B07A687AAC0",
+    ),
+    (
+        "LINESTRING (-101 41, -99.5 39.75, -100 40)",
+        "010200000003000000B0055BB0055BC04040532A6D6413B0C0D2277DD2277DC240A09EFC9C12D1A6C0721CC7711CC7C140E04B70947DABA8C0",
+    ),
+    (
+        "POLYGON ((-101 39, -99 39, -99 41, -101 41, -101 39), (-100.5 39.5, -99.5 39.5, -99.5 40.5, -100.5 39.5))",
+        "01030000000200000005000000B0055BB0055BC04080B3B5970B4CA1C0333333333333C34080B3B5970B4CA1C0333333333333C34040532A6D6413B0C0B0055BB0055BC04040532A6D6413B0C0B0055BB0055BC04080B3B5970B4CA1C004000000111111111111C140C045E2965FF8A4C0D2277DD2277DC240C045E2965FF8A4C0D2277DD2277DC24080D724949165ACC0111111111111C140C045E2965FF8A4C0",
+    ),
+    (
+        "MULTIPOLYGON (((-101 39, -100 39, -100 40, -101 39)), ((-99.9 40.1, -99.1 40.1, -99.1 40.9, -99.9 40.1)))",
+        "01060000000200000001030000000100000004000000B0055BB0055BC04080B3B5970B4CA1C0721CC7711CC7C14080B3B5970B4CA1C0721CC7711CC7C140E04B70947DABA8C0B0055BB0055BC04080B3B5970B4CA1C001030000000100000004000000E951B81E85EBC14040698563BE69A9C0BCFD4186CA0EC34040698563BE69A9C0BCFD4186CA0EC340601C2433F665AFC0E951B81E85EBC14040698563BE69A9C0",
+    ),
+    (
+        "GEOMETRYCOLLECTION (POINT (-100 40), LINESTRING (-101 39, -99 41))",
+        "0107000000020000000101000000721CC7711CC7C140E04B70947DABA8C0010200000002000000B0055BB0055BC04080B3B5970B4CA1C0333333333333C34040532A6D6413B0C0",
+    ),
+    (
+        "POLYGON EMPTY",
+        "010300000000000000",
+    ),
+    (
+        "POINT (-100 89.9)",
+        "0101000000721CC7711CC7C140020000000000F9C0",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_wkb"), _PINNED_PROJECTIONS, ids=[s.split(" (")[0] for s, _ in _PINNED_PROJECTIONS]
+)
+def test_projection_output_is_pinned_to_the_bytes(source: str, expected_wkb: str) -> None:
+    projected = project_to_tile(wkt.loads(source), TileId(z=6, x=12, y=25))
+    assert projected.wkb_hex == expected_wkb

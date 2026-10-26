@@ -266,6 +266,21 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/langgraph/src/threetears/langgraph/checkpoint.py",
+        class_name="ThreeTierCheckpointSaver",
+        attr_name="_l2_write_bypassed",
+        rationale=(
+            "this process's record of the L2 keys whose own write and then delete both failed, "
+            "so the key may still hold an older checkpoint. It is per process on purpose: it "
+            "describes this worker's failed writes, and the worker reads those keys from L3 until "
+            "one of its writes or deletes of the key lands. Other workers are protected by the "
+            "delete, not by this record, so sharing it would add nothing. Bounded by "
+            "l2_write_bypass_limit (oldest dropped, with a WARNING); a restart forgets it and costs "
+            "at most one read of a stale L2 entry per key, the state before the bypass existed. "
+            "Kept apart from the purge bypass (a set), which only a successful purge lifts"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/agent/tools/src/threetears/agent/tools/relevance.py",
         class_name="ToolRelevanceIndex",
         attr_name="_cache",
