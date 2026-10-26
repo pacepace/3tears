@@ -300,8 +300,9 @@ class AnalysisLine(EvalBaseModel):
         default=None,
         description=(
             "Why this build cannot read the evidence the analysis was frozen over, and what to do: set when it was "
-            "written over a bundle of another shape, so its verdict, report and page are refused until it is generated "
-            "again (analysis_generate). None when it reads."
+            "written over a bundle of another shape, or as a report plan this build no longer reads (or whose plan "
+            "was deleted apart from it), so its report and page are refused until it is generated again "
+            "(analysis_generate), and a plan it cannot read counts no findings. None when it reads."
         ),
     )
 
@@ -678,6 +679,10 @@ def _analysis_line(host: EvalHost, analysis: EvalAnalysis) -> AnalysisLine:
         plan = get_report_plan(host.storage, analysis)
     except NotFoundError as missing:
         needs_regeneration = needs_regeneration or f"{missing.message}; {missing.remedy}"
+    except RefusedInput as unreadable:
+        # NOSILENT: the stored plan no longer validates; the line names why and the regeneration, and the report and
+        # page of this analysis refuse the same way (get_report_plan), so nothing reads it as if it were whole.
+        needs_regeneration = needs_regeneration or f"{unreadable.fault}; {unreadable.remedy}"
     if analysis.document is not None:
         findings = len(analysis.document.findings)
     else:
@@ -1190,6 +1195,8 @@ def report_read(
     :return: The report in that form.
     :rtype: ReportDocument
     :raises NotFoundError: No campaign with that id in the scope.
+    :raises RefusedInput: The campaign's reported analysis was written over a bundle of another shape, or as a report
+        plan this build no longer reads: refused with the regeneration that mends it (``analysis_generate``).
     """
     report = campaign_report(host, campaign_id, scope_id, trials=trials)
     analysis = get_analysis(host.storage, report.analysis_id, scope_id) if report.analysis_id is not None else None

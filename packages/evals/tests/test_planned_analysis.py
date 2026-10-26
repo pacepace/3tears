@@ -279,6 +279,49 @@ async def _generate_through_the_action(fixture: Any) -> Any:
     return await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
 
 
+class TestAStoredPlanThisBuildCannotRead:
+    """A plan stored under a shape the plan model no longer accepts (it moves inside regenerable v13) is listed as
+    needing regeneration, its reason on the line, beside every analysis that reads; its report and page refuse,
+    naming the regeneration."""
+
+    async def _unreadable(self) -> tuple[Any, str]:
+        fixture = off_loop(ops_fixture)
+        (job,) = (await _generate_through_the_action(fixture)).jobs
+        analysis_id = (await settled(fixture.host, job.job_id)).analysis_id
+        assert analysis_id is not None
+        storage = fixture.host.eval_host.storage
+        analysis = off_loop(storage.load_analysis, analysis_id, TOYHOST_SCOPE)
+        stored = off_loop(get_report_plan, storage, analysis)
+        assert stored is not None
+        moved = {key: value for key, value in stored.plan.items() if key != "headline"}
+        off_loop(storage.save_report_plan, stored.model_copy(update={"plan": moved}))
+        return fixture, analysis_id
+
+    async def test_it_is_listed_as_needing_regeneration_with_the_reason(self) -> None:
+        fixture, analysis_id = await self._unreadable()
+        memo, _ = await stored_memo_analysis(fixture.host.eval_host, fixture.campaign)
+
+        lines = {
+            line.id: line
+            for line in off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+        }
+
+        unreadable = lines[analysis_id].needs_regeneration
+        assert unreadable is not None and "report plan this build cannot read" in unreadable
+        assert "headline" in unreadable and "analysis_generate" in unreadable
+        assert (lines[analysis_id].basis, lines[analysis_id].findings) == ("plan", 0)
+        assert lines[memo.id].needs_regeneration is None, "one unreadable plan refuses no other analysis's line"
+
+    async def test_its_report_and_page_refuse_naming_the_regeneration(self) -> None:
+        fixture, analysis_id = await self._unreadable()
+        host = fixture.host.eval_host
+
+        with pytest.raises(RefusedInput, match=r"generate the analysis again \(analysis_generate\)"):
+            off_loop(report_read, host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown")
+        with pytest.raises(RefusedInput, match="report plan this build cannot read"):
+            off_loop(campaign_report, host, fixture.campaign.id, TOYHOST_SCOPE)
+
+
 class TestThePlanIsDerived:
     async def test_drop_derived_sweeps_it(self) -> None:
         host, _, analysis, _, _ = await _generated()

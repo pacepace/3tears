@@ -1740,10 +1740,21 @@ def get_report_plan(storage: AnalysisStore, analysis: EvalAnalysis) -> EvalRepor
     :rtype: EvalReportPlan | None
     :raises NotFoundError: The analysis is planned and its plan does not resolve (deleted outside the analysis's
         delete).
+    :raises RefusedInput: The stored plan no longer validates as the plan this build reads (its shape moved inside
+        the regenerable version): the analysis needs generating again, which the remedy says.
     """
     if analysis.report_plan_id is None:
         return None
-    plan = storage.load_report_plan(analysis.report_plan_id, analysis.scope_id)
+    try:
+        plan = storage.load_report_plan(analysis.report_plan_id, analysis.scope_id)
+    except ValidationError as unreadable:
+        first = unreadable.errors()[0]
+        where = ".".join(str(step) for step in first["loc"]) or "the document"
+        raise RefusedInput(
+            f"analysis {analysis.id!r} was written as a report plan this build cannot read "
+            f"({unreadable.error_count()} field error(s); first at {where}: {first['msg']})",
+            remedy="generate the analysis again (analysis_generate); a report plan is regenerated, never migrated",
+        ) from unreadable
     if plan is None:
         raise NotFoundError(
             "report plan",
@@ -1776,7 +1787,8 @@ def analysis_report(
         in a directory, and :func:`~threetears.evals.analysis.report.serialize_report` serializes it.
     :rtype: CampaignReport
     :raises NotFoundError: No analysis with that id in the scope.
-    :raises RefusedInput: The analysis was written over a bundle of another shape.
+    :raises RefusedInput: The analysis was written over a bundle of another shape, or as a report plan this build no
+        longer reads (:func:`get_report_plan`); either way the remedy is to generate it again.
     """
     analysis = get_analysis(storage, analysis_id, scope_id)
     return _analysis_page(
@@ -1819,6 +1831,8 @@ def campaign_report(
     :return: The page; its ``basis`` says which it is.
     :rtype: CampaignReport
     :raises NotFoundError: No campaign with that id in the scope.
+    :raises RefusedInput: Its reported analysis was written over a bundle of another shape, or as a report plan this
+        build no longer reads: the page refuses, naming the regeneration (``analysis_generate``).
     """
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
     reported = host.storage.load_reported_analysis(campaign_id, scope_id)
