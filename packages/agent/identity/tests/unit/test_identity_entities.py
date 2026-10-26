@@ -19,7 +19,7 @@ def _entity(**overrides: object) -> IdentityVersionEntity:
         "customer_id": _USER,
         "user_id": _USER,
         "block_key": "personality",
-        "content": "You are Saoirse.",
+        "content": "You are the agent.",
         "rationale": "sharpen the voice",
         "content_hash": "abc123",
         "parent_version_id": None,
@@ -41,7 +41,7 @@ def test_properties_expose_columns() -> None:
     assert entity.version_id == _VERSION
     assert entity.agent_id == _AGENT
     assert entity.block_key == "personality"
-    assert entity.content == "You are Saoirse."
+    assert entity.content == "You are the agent."
     assert entity.rationale == "sharpen the voice"
     assert entity.content_hash == "abc123"
     assert entity.status == "proposed"
@@ -80,3 +80,10 @@ def test_mutable_lifecycle_setters() -> None:
     entity.consenter_user_id = _USER
     assert entity.status == "active"
     assert entity.consenter_user_id == _USER
+
+
+def test_variant_reads_its_value_and_the_block_itself_when_unset() -> None:
+    """A row written before the variant column existed, or one a cache tier holds without it, is the block itself."""
+    assert _entity(variant="alt").variant == "alt"
+    assert _entity().variant == ""
+    assert _entity(variant=None).variant == ""

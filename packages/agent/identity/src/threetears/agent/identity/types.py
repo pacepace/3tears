@@ -21,6 +21,7 @@ test failure rather than at runtime.
 
 from __future__ import annotations
 
+import re
 from enum import Enum, IntEnum
 
 __all__ = [
@@ -30,6 +31,7 @@ __all__ = [
     "IdentityBlockKey",
     "IdentityTier",
     "IdentityVersionStatus",
+    "check_variant",
 ]
 
 
@@ -106,3 +108,33 @@ IDENTITY_BLOCK_TIERS: dict[IdentityBlockKey, IdentityTier] = {
     IdentityBlockKey.WANTS: IdentityTier.TIER_2,
     IdentityBlockKey.NEEDS: IdentityTier.TIER_2,
 }
+
+
+#: the longest variant name a block takes.
+_VARIANT_MAX_LEN = 32
+
+_VARIANT_PATTERN = re.compile(rf"[a-z0-9_]{{0,{_VARIANT_MAX_LEN}}}")
+
+
+def check_variant(variant: str) -> str:
+    """Return ``variant`` when it is a name a block takes, else raise.
+
+    A variant is a second copy of a block with its own version chain and its
+    own active version, named by the consumer: the platform gives a name no
+    meaning, so a consumer can keep several texts of one block and choose
+    which applies where. The empty string is the block itself. A name is up
+    to 32 lowercase letters, digits or
+    underscores, so it reads the same in a log, a URL and a tool argument.
+
+    :param variant: the variant name
+    :ptype variant: str
+    :return: the same name
+    :rtype: str
+    :raises ValueError: when the name is not one a block takes
+    """
+    if not isinstance(variant, str) or _VARIANT_PATTERN.fullmatch(variant) is None:
+        raise ValueError(
+            f"identity variant {variant!r} is not a name a block takes: up to "
+            f"{_VARIANT_MAX_LEN} lowercase letters, digits or underscores"
+        )
+    return variant

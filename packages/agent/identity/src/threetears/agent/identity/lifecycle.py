@@ -9,7 +9,7 @@ call. Each op authorizes via the owner short-circuit
 maps to a 404 / error).
 
 **The one-active invariant.** The partial UNIQUE index forbids two
-``active`` rows per block, so an apply supersedes the prior active FIRST,
+``active`` rows per block variant, so an apply supersedes the prior active FIRST,
 then activates the new one. When the caller passes no ``conn``, the
 *ordering* is the guarantee: the brief window between the two writes has
 ZERO active rows (allowed), never two, and a crash between them leaves no
@@ -24,6 +24,12 @@ transaction, commits or rolls back as one unit.
 ``proposed`` and await :func:`consent`; tier-2 blocks :func:`propose`
 auto-applies immediately (with an async veto via :func:`reject` of a later
 proposal / :func:`rollback`). :data:`IDENTITY_BLOCK_TIERS` is the map.
+
+**Variants.** A block may have consumer-named variants (``variant``; ``""``
+is the block itself), each its own chain with its own active version and the
+block's tier. A version keeps its variant for life, so consent and rollback
+read the variant off the version; only :func:`propose` and
+:func:`seed_active` take one.
 
 **Cycle-freedom (not strict linearity).** Every new version parents to a
 version that already exists at creation time (the current active head, or
@@ -70,6 +76,7 @@ from threetears.agent.identity.types import (
     IdentityBlockKey,
     IdentityTier,
     IdentityVersionStatus,
+    check_variant,
 )
 
 log = get_logger(__name__)
@@ -103,7 +110,7 @@ class IdentityProposalOutOfDate(ValueError):
     def __init__(self, version: IdentityVersionEntity) -> None:
         self.version = version
         super().__init__(
-            f"the {version.block_key} block has changed since version {version.version_id} was proposed; "
+            f"the {_block_name(version)} block has changed since version {version.version_id} was proposed; "
             "consenting would undo those changes, so it can only be rejected"
         )
 
@@ -122,6 +129,11 @@ def is_out_of_date(version: IdentityVersionEntity, active: IdentityVersionEntity
     :rtype: bool
     """
     return active is not None and version.parent_version_id != active.version_id
+
+
+def _block_name(version: IdentityVersionEntity) -> str:
+    """The block a version belongs to, with its variant when it has one."""
+    return f"{version.block_key}/{version.variant}" if version.variant else version.block_key
 
 
 def content_hash(content: str) -> str:
@@ -195,21 +207,26 @@ async def propose(
     rationale: str | None,
     proposer_agent_id: UUID,
     caller_agent_id: UUID,
+    variant: str = "",
     now: datetime | None = None,
     conn: Any = None,
 ) -> IdentityVersionEntity | None:
-    """Propose a new version of an identity block.
+    """Propose a new version of an identity block, or of one of its variants.
 
     Tier-1 (identity-shaping) blocks are born ``proposed`` and await
     :func:`consent`. Tier-2 (routine) blocks auto-apply immediately. Identical
     content to the current active is a no-op (returns the active).
 
+    :param variant: which variant of the block; ``""`` is the block itself.
+        Which variants a proposer may write is the caller's rule
+    :ptype variant: str
     :param conn: optional connection whose transaction the caller opened with
         ``CallerTransaction(conn)``; when passed, every version write binds to it
         so a tier-2 auto-apply is atomic with the caller's coupled writes (see
         :func:`_apply`)
     :ptype conn: Any
     :return: the new version (or the active on a dedup no-op)
+    :raises ValueError: on an unknown block key or a variant name a block does not take
     :rtype: IdentityVersionEntity | None
     """
     await authorize_identity_access(
@@ -220,9 +237,10 @@ async def propose(
         deps=authorizer,
     )
     tier = _tier_for(block_key)
+    check_variant(variant)
     digest = content_hash(content)
     active = await collection.resolve_active(
-        agent_id=agent_id, customer_id=customer_id, user_id=user_id, block_key=block_key
+        agent_id=agent_id, customer_id=customer_id, user_id=user_id, block_key=block_key, variant=variant
     )
     if active is not None and active.content_hash == digest:
         return active  # dedup: proposing identical content is a no-op
@@ -236,6 +254,7 @@ async def propose(
             "customer_id": customer_id,
             "user_id": user_id,
             "block_key": block_key,
+            "variant": variant,
             "content": content,
             "rationale": rationale,
             "content_hash": digest,
@@ -265,6 +284,7 @@ async def seed_active(
     user_id: UUID | None,
     block_key: str,
     content: str,
+    variant: str = "",
     now: datetime | None = None,
 ) -> IdentityVersionEntity:
     """Import existing content as the ``active`` root version for a block.
@@ -296,6 +316,8 @@ async def seed_active(
     :ptype block_key: str
     :param content: the existing content to import as the active root
     :ptype content: str
+    :param variant: which variant of the block; ``""`` is the block itself
+    :ptype variant: str
     :param now: clock injection point; defaults to ``datetime.now(UTC)``
     :ptype now: datetime | None
     :return: the seeded root (or the pre-existing active on a no-op)
@@ -309,8 +331,9 @@ async def seed_active(
         deps=authorizer,
     )
     _tier_for(block_key)  # validate the key
+    check_variant(variant)
     existing = await collection.resolve_active(
-        agent_id=agent_id, customer_id=customer_id, user_id=user_id, block_key=block_key
+        agent_id=agent_id, customer_id=customer_id, user_id=user_id, block_key=block_key, variant=variant
     )
     if existing is not None:
         return existing  # already seeded; idempotent no-op
@@ -323,6 +346,7 @@ async def seed_active(
             "customer_id": customer_id,
             "user_id": user_id,
             "block_key": block_key,
+            "variant": variant,
             "content": content,
             "rationale": None,
             "content_hash": content_hash(content),
@@ -338,7 +362,7 @@ async def seed_active(
         await collection.save_entity(root)
     except Exception:  # prawduct:allow prawduct/broad-except -- concurrent first-access seed races on the active partial-unique index; re-resolve returns the winner
         winner = await collection.resolve_active(
-            agent_id=agent_id, customer_id=customer_id, user_id=user_id, block_key=block_key
+            agent_id=agent_id, customer_id=customer_id, user_id=user_id, block_key=block_key, variant=variant
         )
         if winner is not None:
             return winner
@@ -381,7 +405,11 @@ async def consent(
     if version is None or version.user_id != user_id or version.status != IdentityVersionStatus.PROPOSED.value:
         return None
     prior_active = await collection.resolve_active(
-        agent_id=agent_id, customer_id=customer_id, user_id=user_id, block_key=version.block_key
+        agent_id=agent_id,
+        customer_id=customer_id,
+        user_id=user_id,
+        block_key=version.block_key,
+        variant=version.variant,
     )
     if is_out_of_date(version, prior_active):
         raise IdentityProposalOutOfDate(version)
@@ -466,7 +494,11 @@ async def rollback(
     if target is None or target.user_id != user_id:
         return None
     prior_active = await collection.resolve_active(
-        agent_id=agent_id, customer_id=customer_id, user_id=user_id, block_key=target.block_key
+        agent_id=agent_id,
+        customer_id=customer_id,
+        user_id=user_id,
+        block_key=target.block_key,
+        variant=target.variant,
     )
     stamp = now if now is not None else datetime.now(UTC)
     clone: IdentityVersionEntity = collection.create(
@@ -476,6 +508,7 @@ async def rollback(
             "customer_id": customer_id,
             "user_id": user_id,
             "block_key": target.block_key,
+            "variant": target.variant,
             "content": target.content,
             "rationale": f"rollback to {target_version_id}",
             "content_hash": target.content_hash,
@@ -511,6 +544,7 @@ def _proposed_event(version: IdentityVersionEntity, rationale: str | None) -> Id
         version_id=str(version.version_id),  # convert at border: event payload wire uuid
         block_key=version.block_key,
         user_id=_uid(version),
+        variant=version.variant,
         rationale_preview=(rationale or "")[:_RATIONALE_PREVIEW_LEN],
     )
 
@@ -521,6 +555,7 @@ def _consented_event(version: IdentityVersionEntity) -> IdentityConsentedEvent:
         version_id=str(version.version_id),  # convert at border: event payload wire uuid
         block_key=version.block_key,
         user_id=_uid(version),
+        variant=version.variant,
     )
 
 
@@ -530,6 +565,7 @@ def _applied_event(version: IdentityVersionEntity, *, auto_applied: bool) -> Ide
         version_id=str(version.version_id),  # convert at border: event payload wire uuid
         block_key=version.block_key,
         user_id=_uid(version),
+        variant=version.variant,
         auto_applied=auto_applied,
     )
 
@@ -540,6 +576,7 @@ def _rolled_back_event(version: IdentityVersionEntity, target_version_id: UUID) 
         version_id=str(version.version_id),  # convert at border: event payload wire uuid
         block_key=version.block_key,
         user_id=_uid(version),
+        variant=version.variant,
         target_version_id=str(target_version_id),  # convert at border: event payload wire uuid
     )
 

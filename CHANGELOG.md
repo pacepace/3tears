@@ -4,6 +4,28 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### agent-identity: a block can keep variants, each with its own version chain
+
+**Added:** a consumer can keep several texts of one identity block and choose which applies where.
+- `identity_versions.variant` names the copy (`""` is the block itself). Each variant has its own chain and its
+  own active version: the one-active rule is now per `(agent, customer, user, block_key, variant)`. A variant takes
+  its block's consent tier.
+- `propose`, `seed_active`, `resolve_active` and `find_versions_for_block` take `variant: str = ""`. `consent`,
+  `reject` and `rollback` read it off the version, so a rollback stays in its variant. The four identity events
+  carry `variant`.
+- `check_variant`: a name is up to 32 lowercase letters, digits or underscores. The package gives a name no
+  meaning.
+- `load_identity_propose_tool(..., variants=("",))` binds which variants the tool may write. Any other name is
+  refused without a proposal, and the description names the variants only when the host opened one.
+
+Migration **v003** adds the column (`NOT NULL DEFAULT ''`, so every existing row is the block itself) and moves
+the indexes onto it: `uq_identity_active_per_variant` and `idx_identity_variant_history` are created before
+`uq_identity_active_per_block` and `idx_identity_block_history` are dropped. Replay is a no-op. A caller that names
+no variant reads and writes exactly what it did before; one that builds its L1 table from
+`identity_versions_table` gets the column with it.
+
 ## v0.79.0 -- 2026-10-26
 
 ### search: a placeholder frame is not named as the article
