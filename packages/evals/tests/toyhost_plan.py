@@ -6,7 +6,7 @@ campaign it generates over, so :func:`structure_reply` chooses the structure cod
 option recommended, each open caveat landed once, one section drawing the spine code gives, one durable claim), and
 :func:`prose_reply`
 writes every prose key that structure creates, with no digit outside a figure key and, in Watch, the weakest margin
-by its keys. :class:`PlanReplies` answers each
+by its keys (money per 1,000 replies, the basis a page states its costs in). :class:`PlanReplies` answers each
 call of a generation by the contract it was sent.
 """
 
@@ -17,6 +17,7 @@ from collections.abc import Callable
 from typing import Any
 
 from threetears.evals.analysis.plan_assembly import check_structure, prose_slots
+from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report_decision import dominant_options, surviving_options
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_facts import plan_facts
@@ -154,9 +155,9 @@ def prose_reply(report_input: ReportInput, structure: dict[str, Any] | None = No
     }
     facts = plan_facts(report_input)
     if facts.weakest is not None:
-        texts["decision.watch"] = (
-            "The weakest margin is {weakest.arm} on {weakest.criterion}, a gap of {weakest.margin}."
-        )
+        money = resolve("weakest.margin", report_input).scale == "usd"
+        margin = "{weakest.margin|usd_per_1k}" if money else "{weakest.margin}"
+        texts["decision.watch"] = f"The weakest margin is {{weakest.arm}} on {{weakest.criterion}}, a gap of {margin}."
     return {
         "prose": [
             {"key": slot.key, "text": texts.get(slot.key, "The evidence reads this way, as the chart shows.")}
