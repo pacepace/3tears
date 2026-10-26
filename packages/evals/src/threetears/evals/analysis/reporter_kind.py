@@ -61,8 +61,11 @@ from threetears.evals.analysis.generator import (
 )
 from threetears.evals.analysis.planned_analysis import report_input_document_digest
 from threetears.evals.analysis.report.figure_keys import render
-from threetears.evals.analysis.report.serialize_md import markdown_table
+from threetears.evals.analysis.report.md_parts import markdown_table, table_lines
+from threetears.evals.analysis.report.plan_page.drawable import plan_look
+from threetears.evals.analysis.report.plan_page.tables import arms_key
 from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_plan_facts import plan_facts
 from threetears.evals.analysis.report.words import (
     CONFIDENCE_WORDS,
     evidence_columns,
@@ -1375,6 +1378,13 @@ def render_plan_for_judge(
     campaign's page writes the plan's prose with, against the same report input, so each sentence reads as a
     reader sees it. Deterministic: one plan and input render to one string.
 
+    **The arms key leads, where the page shows one.** An arm is written ``{name} ({tag})``, and the tag means
+    something only through the key the page prints once (``plan.show_arms_key``). The key is built by the page's own
+    :func:`~threetears.evals.analysis.report.plan_page.tables.arms_key` over the page's own look, so judge and reader
+    see one table, and it comes BEFORE the JSON so the judge has read what each tag stands for when it meets the
+    first sentence that cites one. With it the text is the key block, a blank line, then the JSON; a plan whose page
+    shows no key renders as the bare JSON.
+
     :param plan: The stored plan.
     :ptype plan: ReportPlan
     :param report_input: The report input it was written against.
@@ -1388,7 +1398,11 @@ def render_plan_for_judge(
     """
     names = dict(arm_names or {})
     projected = _as_planned(plan, PlannedReport, lambda text: render(text, report_input, names))
-    return json.dumps(projected, indent=2, ensure_ascii=False) + "\n"
+    body = json.dumps(projected, indent=2, ensure_ascii=False) + "\n"
+    if not plan.show_arms_key:
+        return body
+    key = arms_key(report_input, plan_look(plan, report_input, plan_facts(report_input)))
+    return "\n".join([f"## {key.eyebrow}", "", key.takeaway, "", *table_lines(key.table), "", body])
 
 
 def replay_case_material(case: ReporterCase, material: str) -> str:

@@ -35,9 +35,8 @@ recommendation the campaign's kind and readings allow, an answer to every warnin
 chart names, every figure key and no typed digit. Whether the words are right is a model judge's to measure, on a
 rubric people calibrate, in whatever language the plan is written (owner, 2026-10-24).
 
-**It is budgeted:** at most :data:`PLAN_PROMPT_CHAR_BUDGET` characters and :data:`PLAN_PROMPT_RULE_BUDGET` rules,
-and the budget only falls (unless the owner rules a fix needs the room); ``tests/test_plan_prompt_budget.py`` fails
-the build past either. A new rule names the one it replaces, in the rule ledger ``PLAN_PROMPT_RULES.md`` beside this
+**It is budgeted:** at most 15,500 characters and 13 rules, a contract ``tests/test_plan_prompt_budget.py`` declares
+and holds, failing the build past either; the budget only falls (unless the owner rules a fix needs the room). A new rule names the one it replaces, in the rule ledger ``PLAN_PROMPT_RULES.md`` beside this
 module, which records what each rule prevents and where it came from; the same test holds the ledger to the prompt.
 
 **Worked examples are synthetic and few.** A model reproduces a prompt's canonical answer with its nouns swapped, so
@@ -54,13 +53,6 @@ from __future__ import annotations
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.prompts.catalogue import ANALYSIS_GEN_PROMPT, REPORT_PLAN_PROMPT
-
-#: The prompt's character ceiling, set just above the prompt as written. It only falls; making the prompt shorter is a
-#: measured change (an eval of the planner), not a cut by eye.
-PLAN_PROMPT_CHAR_BUDGET = 15_500
-
-#: The most rules the prompt carries, not its numbered headings. It only falls.
-PLAN_PROMPT_RULE_BUDGET = 13
 
 #: The report planner's default system prompt.
 #:
@@ -98,7 +90,7 @@ RULES — what separates a sound report from a plausible one.
 
 9. ONE EVIDENCE SECTION PER QUESTION THE DECISION RAISES; CODE GIVES THE SPINE. The first section draws `spine`, the shape's spine chart: copy its kind, every query field it gives and its reference line exactly; its arms, strata and emphasis are yours. After it, add a section only for a question the spine and the summary charts leave open, and drop one that would show nothing new: never chart again, as a section, what a summary chart shows (cost, the gating metric). Where the input holds strata, a section shows where the change concentrates (`diverging_bars`); where it holds examples, the last section shows what the failures look like (`examples`). Each section: an eyebrow (the question, in a few words), a headline stating the finding with subject and direction, a takeaway of one line on how to read the chart, the chart, and a caption only where a line is owed (a trimmed comparison, a log axis, an uncorrected level). Method statistics never sit between the decision and the evidence.
 
-10. PICK EACH CHART BY ITS DATA JOB. Change from a control with interval and margin: `forest`, never a sentence. One rate per candidate against a floor: `dot_interval`, never bars hiding a small gap. Two measures that trade off: `scatter_frontier` or `gate_scatter`, never two y axes. Magnitudes per option (cost, an error rate): `bars` from zero. Deltas per stratum or lever: `diverging_bars`. An ordered axis (turn, version, date): `lines`, never unordered categories. Latency: `range_bars` of p50 to p95, never a mean alone. Two crossed factors: `lattice`. A target matrix: `heatmap`; the difference of two configs: `diff_heatmap`; errors between classes: `confusion`; failures: `examples`. Pass/fail against several criteria per candidate and task: `gate_matrix`. One unit and one interval system per chart: never mix confirmatory readings with family-corrected contrasts. A query names only ids the input holds, exactly as spelled, and selects rows its source holds: `range_bars` reads `measures` only, so a figure held only per task is read from `tasks`, or left to the gate matrix; empty lists mean all. The only reference line code draws is a declared margin: no budget, floor or task line. One emphasis per chart, or none.
+10. PICK EACH CHART BY ITS DATA JOB. Change from a control with interval and margin: `forest`, never a sentence. One rate per candidate against a floor: `dot_interval`, never bars hiding a small gap. Two measures that trade off: `scatter_frontier` or `gate_scatter`, never two y axes. Magnitudes per option (cost, an error rate): `bars` from zero. Deltas per stratum or lever: `diverging_bars`. An ordered axis (turn, version, date): `lines`, never unordered categories. Latency: `range_bars` of p50 to p95, never a mean alone. Two crossed factors: `lattice`. A target matrix: `heatmap`; the difference of two configs: `diff_heatmap`; errors between classes: `confusion`; failures: `examples`. Pass/fail against several criteria per candidate and task: `gate_matrix`. One unit and one interval system per chart: never mix confirmatory readings with family-corrected contrasts. A query names only ids the input holds, exactly as spelled, and selects rows its source holds (a figure held only per task is read from `tasks`); empty lists mean all. A reference line sits at a declared line: a margin on a forest, a floor or budget on the criterion that reads the chart's one measure. One emphasis per chart, or none.
 
 11. TRADEOFF MODE PRICES THE TRADE; IT DOES NOT PRETEND TO DECIDE IT. The flag says no rule was set in advance and names who makes the call. Price one axis in the other: savings per point lost, at real volume where the input gives one. Say where the best option flips as the price per point moves, over the two to four options someone would choose between. If the loss concentrates in one stratum, a hybrid that avoids it may be modeled, labelled modeled, not measured, with the assumption it rests on. Show any evidence of what users notice; if none, say so in Watch. Its explore part is a price-per-point control and what it re-ranks.
 
@@ -131,7 +123,5 @@ def refuse_a_memo_prompt(prompt: str) -> None:
 
 __all__ = [
     "EVAL_REPORT_PLAN_DEFAULT",
-    "PLAN_PROMPT_CHAR_BUDGET",
-    "PLAN_PROMPT_RULE_BUDGET",
     "refuse_a_memo_prompt",
 ]

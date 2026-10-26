@@ -63,7 +63,7 @@
     "cross_cutting": [
       "specul"
     ],
-    "log_cost_axis": false
+    "log_cost_axis": true
   },
   "shape": "A",
   "masthead": {
@@ -113,7 +113,8 @@
       }
     ],
     "columns": [
-      "gate"
+      "gate",
+      "cost_per_1k"
     ]
   },
   "summary": [

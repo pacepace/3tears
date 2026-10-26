@@ -15,6 +15,8 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from threetears.evals.analysis.report.charts import KIT_CHARTS
+from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_plan_facts import complete_plan, plan_facts
 from threetears.evals.analysis.report.charts import ChartReference as KitReference
 from threetears.evals.kernel import authored, report_plan
 from threetears.evals.kernel.report_plan import (
@@ -50,16 +52,42 @@ from packages.evals.tests.report_plan_support import (
     CODE_FILLED_PARTS,
     R5_PLAN,
     planned_reply,
+    r5_input,
 )
 
 DOCS_SCHEMA = KIT / "schema" / "report-plan.schema.json"
 
-#: Each unit code has a part of: the stored model, and the planner's model it completes.
-_COMPLETED: dict[type[BaseModel], type[BaseModel]] = {
-    Flag: report_plan.PlannedFlag,
-    Options: report_plan.PlannedOptions,
-    ChartReference: report_plan.PlannedChartReference,
+
+def _part(schema: dict[str, Any], path: tuple[str, ...]) -> dict[str, Any]:
+    """The object at ``path`` in a model's JSON schema: property names, ``[]`` for a list's items, references followed.
+    How a test reads the planner's parts: through the schema the planner is sent or the reply model holds, which is
+    the wire contract, never through the private models that produce it."""
+    node = schema
+    for step in path:
+        node = node["items"] if step == "[]" else node["properties"][step]
+        if "$ref" in node:
+            node = schema["$defs"][node["$ref"].rsplit("/", 1)[1]]
+    return node
+
+
+def _reply_schema() -> dict[str, Any]:
+    """The planner's reply as one schema: what :class:`PlannedReport` validates."""
+    return PlannedReport.model_json_schema()
+
+
+#: Each unit code has a part of: the stored model, and where the planner's part sits in its reply.
+_COMPLETED: dict[type[BaseModel], tuple[str, ...]] = {
+    Flag: ("flag", "[]"),
+    Options: ("options",),
+    ChartReference: ("summary", "[]", "reference", "[]"),
 }
+
+#: Where the structure call sends each unit code has a part of; the flag is written by the prose call alone.
+_SENT: dict[type[BaseModel], tuple[tuple[str, ...], ...]] = {
+    Options: (("options",),),
+    ChartReference: (("summary", "[]", "reference", "[]"), ("sections", "[]", "chart", "reference", "[]")),
+}
+
 
 #: Each object in the documentation schema, by where it sits, and the model it documents.
 DOCUMENTED: dict[tuple[str, ...], type[BaseModel]] = {
@@ -162,8 +190,8 @@ class TestThePlannersContracts:
     @pytest.mark.parametrize(
         ("directive", "name"),
         [
-            (report_plan.structure_response_format, report_plan.STRUCTURE_SCHEMA_NAME),
-            (report_plan.prose_response_format, report_plan.PROSE_SCHEMA_NAME),
+            (report_plan.structure_response_format, "report_plan_structure"),
+            (report_plan.prose_response_format, "report_plan_prose"),
         ],
     )
     def test_each_strict_projection_succeeds_and_is_sent_strictly(self, directive: Any, name: str):
@@ -196,10 +224,12 @@ class TestThePlannersContracts:
         contract = _contract()
         assert not set(contract["properties"]) & CODE_FILLED
         assert not set(contract["$defs"]["StructureChart"]["properties"]) & CODE_FILLED_ON_A_CHART
-        for stored, planned in _COMPLETED.items():
-            if planned.__name__ in contract["$defs"]:
-                sent = set(contract["$defs"][planned.__name__]["properties"])
-                assert not sent & CODE_FILLED_PARTS[stored.__name__], planned.__name__
+        assert "flag" not in contract["properties"], "the flag's words are prose; code fills the rest"
+        assert set(_SENT) | {Flag} == set(_COMPLETED)
+        for stored, paths in _SENT.items():
+            for path in paths:
+                sent = set(_part(contract, path)["properties"])
+                assert not sent & CODE_FILLED_PARTS[stored.__name__], path
 
     def test_the_structure_holds_no_prose(self):
         """Every sentence goes through the prose call, so the structure's size never grows with the page's words."""
@@ -239,16 +269,15 @@ class TestThePlannersContracts:
         stored = {field.alias or name for name, field in ReportPlan.model_fields.items()}
         assert stored == planned | CODE_FILLED
         assert set(ChartSpec.model_fields) == set(report_plan.PlannedChart.model_fields) | CODE_FILLED_ON_A_CHART
-        for stored_unit, planned_unit in _COMPLETED.items():
-            assert (
-                set(stored_unit.model_fields)
-                == set(planned_unit.model_fields) | CODE_FILLED_PARTS[stored_unit.__name__]
-            ), stored_unit.__name__
+        for stored_unit, path in _COMPLETED.items():
+            planned_unit = set(_part(_reply_schema(), path)["properties"])
+            assert set(stored_unit.model_fields) == planned_unit | CODE_FILLED_PARTS[stored_unit.__name__], path
 
     def test_an_answer_names_its_warning_by_position_and_is_stored_by_the_warning(self):
-        assert report_plan.PlannedAnswer.model_fields["warning"].annotation is int
+        planned = _part(_reply_schema(), ("answers", "[]"))
+        assert planned["properties"]["warning"]["type"] == "integer"
         assert WarningAnswer.model_fields["warning"].annotation is WarningRef
-        assert set(report_plan.PlannedAnswer.model_fields) == set(WarningAnswer.model_fields)
+        assert set(planned["properties"]) == set(WarningAnswer.model_fields)
 
     def test_the_planners_part_of_the_kairo_plan_is_a_valid_reply(self):
         PlannedReport.model_validate(_planned(_r5()))
@@ -260,28 +289,20 @@ class TestThePlannersContracts:
 
     def test_the_prose_is_typed_as_prose(self):
         prose = {
-            (model.__name__, name)
-            for model in (
-                PlannedReport,
-                Flag,
-                DecisionSlot,
-                CaveatClause,
-                report_plan.PlannedSection,
-                MethodItem,
-                WarningAnswer,
-            )
+            (model, name)
+            for model in (PlannedReport, Flag, DecisionSlot, CaveatClause, Section, MethodItem, WarningAnswer)
             for name, field in model.model_fields.items()
             if field_is_prose(field)
         }
         assert {
-            ("PlannedReport", "headline"),
-            ("PlannedReport", "lede"),
-            ("Flag", "text"),
-            ("DecisionSlot", "text"),
-            ("CaveatClause", "material_if"),
-            ("PlannedSection", "headline"),
-            ("MethodItem", "text"),
-            ("WarningAnswer", "text"),
+            (PlannedReport, "headline"),
+            (PlannedReport, "lede"),
+            (Flag, "text"),
+            (DecisionSlot, "text"),
+            (CaveatClause, "material_if"),
+            (Section, "headline"),
+            (MethodItem, "text"),
+            (WarningAnswer, "text"),
         } <= prose
 
 
@@ -300,6 +321,39 @@ class TestTheStoredPlan:
         assert [clause.id for clause in confidence.caveats] == ["judge_uncalibrated", "late:aspect", "late:control"]
         assert all(clause.material_if for clause in confidence.caveats)
         assert plan.flag == []
+
+    def test_the_kairo_plans_code_filled_fields_are_what_code_completes_from_its_planned_part(self):
+        """The reference carries code's facts, not a copy of them: completing the planner's part of it against its
+        input gives back every field code fills (the masthead, the signals, each chart's level, unit and domain, the
+        options columns), so the reference cannot drift from code."""
+        stored = _r5()
+        report_input = ReportInput.model_validate(r5_input())
+        facts = plan_facts(report_input)
+        recommended = next(row["option"] for row in stored["options"]["rows"] if row["role"] == "recommended")
+        warnings = [warning.model_dump(mode="json") for warning in facts.warnings.get(recommended, ())]
+        planned = PlannedReport.model_validate(planned_reply(stored, warnings))
+        completed = complete_plan(planned, report_input, facts).model_dump(mode="json", by_alias=True)
+        assert _code_filled(stored) == _code_filled(completed)
+
+
+def _code_filled(plan: dict[str, Any]) -> dict[str, Any]:
+    """Every field code fills on a stored plan, by where it sits."""
+    charts = [*plan["summary"], *(section["chart"] for section in plan["sections"])]
+    return {
+        "top": {key: plan[key] for key in sorted(CODE_FILLED)},
+        "charts": [
+            {
+                **{key: chart[key] for key in sorted(CODE_FILLED_ON_A_CHART)},
+                "reference": [
+                    {key: reference[key] for key in sorted(CODE_FILLED_PARTS["ChartReference"])}
+                    for reference in chart["reference"]
+                ],
+            }
+            for chart in charts
+        ],
+        "options": {key: plan["options"][key] for key in sorted(CODE_FILLED_PARTS["Options"])},
+        "flag": [{key: flag[key] for key in sorted(CODE_FILLED_PARTS["Flag"])} for flag in plan["flag"]],
+    }
 
 
 #: A flag as a low-confidence tradeoff plan writes it: no rule set, and one report-wide caveat.

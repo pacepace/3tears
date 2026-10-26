@@ -162,6 +162,12 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
 @media (max-width:820px){.vsum{grid-template-columns:1fr}}
 .flag{display:flex;gap:.6rem;align-items:flex-start;font-size:var(--t-sm);color:var(--ink-2);background:var(--warn-wash);border-radius:var(--r);padding:.6rem .8rem;max-width:var(--col)}
 .flag b{color:var(--warn)}
+.flag ul{margin:.3rem 0 0;padding-left:1.1rem}
+.flag li{margin:.15rem 0}
+.flag li.checked{color:var(--muted);list-style:"✓  "}
+.keytbl td.spec{font-family:var(--f-mono);font-size:var(--t-xs);color:var(--ink-2);white-space:normal}
+.mini h3{font-size:var(--t-base);margin-bottom:.15rem}
+.mini .cap{margin:0 0 .4rem}
 .ex{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,28rem),1fr));gap:1rem}
 .excard{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:.9rem 1rem;display:grid;gap:.5rem;min-width:0}
 .excard .top{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;font-size:var(--t-xs);color:var(--muted)}
@@ -564,7 +570,7 @@ function kScatter(el,w,d,gate){kNeed(d,["x_domain","y_domain","x_fmt","y_fmt"]);
   return s;}
 
 // one rate per candidate against a floor: dot, interval, floor dashed
-function kDotInterval(el,w,d){kNeed(d,["domain","fmt","level"]);const rows=kList(d,"rows");const f=namedFmt(d.fmt);const [d0,d1]=d.domain;
+function kDotInterval(el,w,d){kNeed(d,["domain","fmt"]);const rows=kList(d,"rows");kNeedLevel(d,rows);const f=namedFmt(d.fmt);const [d0,d1]=d.domain;
   const rowH=d.row_height||28,need_=Math.max(...rows.map(r=>r.label.length))*6.6+18,m={l:kLabelW(d,w)||Math.min(need_,w*.42),r:14,t:22,b:22},maxC=Math.floor((m.l-12)/6.6);
   const h=m.t+m.b+rowH*rows.length;const s=svgIn(el,w,h);const x=lin(d0,d1,m.l,w-m.r);
   const tw=Math.max(f(d0).length,f(d1).length)*6.4+16;
@@ -575,7 +581,7 @@ function kDotInterval(el,w,d){kNeed(d,["domain","fmt","level"]);const rows=kList
     mark(g,kShape(r.shape),x(kClamp(r.value,d0,d1)),cy,5,c,r.hollow);
     hit(g,m.l,cy-rowH/2,w-m.l-m.r,rowH,tipHTML(r.tip||[r.label,f(r.value)+(r.lo!=null&&r.hi!=null?` (${f(r.lo)} to ${f(r.hi)})`:"")]));});
   if(d.reference){const rx=x(d.reference.value);S("line",{x1:rx,x2:rx,y1:m.t-4,y2:h-m.b,class:"floor"},s);if(d.reference.label)S("text",{x:rx+4,y:m.t-8,class:"tick",text:d.reference.label},s);}
-  S("text",{x:w-m.r,y:m.t-8,"text-anchor":"end",class:"tick",text:`${d.level} intervals`},s);
+  if(d.level)S("text",{x:w-m.r,y:m.t-8,"text-anchor":"end",class:"tick",text:`${d.level} intervals`},s);
   return s;}
 
 // latency distributions: one bar per row from "from" to "to" (p50 to p95), grouped, with a budget line

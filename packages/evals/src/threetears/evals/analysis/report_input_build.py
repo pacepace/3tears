@@ -69,6 +69,7 @@ from threetears.evals.analysis.report_input import (
     Stratum,
 )
 from threetears.evals.analysis.report.words import declared_arm_names
+from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.errors import RefusedInput
@@ -475,6 +476,12 @@ class _Builder:
 
         A categorical or free-text measure is described where the catalog describes it, with no figure. A
         measurement's readings carry figures no cell does (the trials' own pass rate): each joins its measure.
+
+        A measure whose figures carry an interval states its level: every per-arm interval the bundle holds is read
+        at :data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL`, a cell summary's
+        (:func:`~threetears.evals.analysis.stats.proportion_interval` for a rate,
+        :func:`~threetears.evals.analysis.stats.observed_mean_interval` for a mean) and a measurement's pass rate's
+        (:func:`~threetears.evals.analysis.stats.pooled_rate_interval`) alike.
         """
         facts: dict[str, dict[str, Any]] = {}
         figures: dict[str, dict[str, dict[str, Stat]]] = {}
@@ -509,11 +516,15 @@ class _Builder:
                     measured.measure,
                     {"label": measured.name, "higher_is_better": measured.higher_is_better},
                 )
+        level = _level(INTERVAL_LEVEL)
         return {
             name: Measure(
                 **held,
                 per_arm=figures.get(name, {}).get(self.lead.aspect, {}),
                 by_aspect={label: arms for label, arms in figures.get(name, {}).items() if label != self.lead.aspect},
+                level=level
+                if any(stat.ci is not None for arms in figures.get(name, {}).values() for stat in arms.values())
+                else None,
             )
             for name, held in sorted(facts.items())
         }

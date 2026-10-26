@@ -6,7 +6,9 @@ Contracts held here (``threetears.evals.analysis.report_margins``, ``report.figu
   margin a reviewer names (the pick at its troubleshooting floor; the pick a fraction over the pass-rate gate; the pick's
   balanced accuracy over the overall gate, not a rejected arm's narrower pass of a gate it does not need; a rejected
   arm one guardrail short; the candidate whose worst drop sits nearest the margin). An option that does not survive
-  counts only by the one gate figure keeping it out; a reading wins a tie with the floor that copies it.
+  counts only by the one gate figure keeping it out; a reading wins a tie with the floor that copies it. A figure or
+  interval end that is not a finite number is no figure: it gives no margin, and an option lacking a gate's figure
+  does not survive, as the gate check reads it.
 - ``weakest.*`` figure keys render it, in its line's units, and refuse by name where the input reads no figure against
   a line. A decide plan's Watch cites one; a tradeoff plan's slots are not asked to.
 - **Reader names**: each id's one name (declared, else the package's reader name for it), which the ``.name`` and
@@ -18,6 +20,7 @@ Contracts held here (``threetears.evals.analysis.report_margins``, ``report.figu
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +31,8 @@ from threetears.evals.analysis.errors import PlanRefusal, UnresolvableReference
 from threetears.evals.analysis.planner import first_plan_request
 from threetears.evals.analysis.report.figure_keys import reader_name, reader_names, render, resolve
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_margins import margins, weakest_margin
+from threetears.evals.analysis.report_decision import surviving_options
+from threetears.evals.analysis.report_margins import criterion_figures, margins, weakest_margin
 from threetears.evals.analysis.report_plan_checks import validate_plan
 from threetears.evals.analysis.report_plan_facts import plan_facts
 from threetears.evals.kernel.host.measures import MeasureRegistry
@@ -85,6 +89,42 @@ def test_a_rejected_option_counts_only_by_the_one_gate_figure_keeping_it_out() -
     held = margins(_input("r3"))
     nano = [margin for margin in held if margin.arm == "nano-xs.few"]
     assert [(margin.source, margin.cell, margin.gap < 0) for margin in nano] == [("cell_floor", "complex|news", True)]
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf])
+def test_a_gate_figure_that_is_not_finite_is_no_figure_and_gives_no_margin(value: float) -> None:
+    """r2's pick at a pass rate that is not a number: no figure for the gate, so it neither survives nor holds a
+    margin, as the gate check and the survivors read it."""
+    report_input = _input("r2")
+    weakest = weakest_margin(report_input)
+    assert weakest is not None
+    data = report_input.model_dump(by_alias=True, exclude_none=True)
+    key = next(c["measure"] for c in data["criteria"] if c["id"] == weakest.source)
+    data["measures"][key]["per_arm"][weakest.arm]["mean"] = value
+    broken = ReportInput.model_validate(data)
+    criterion = next(c for c in broken.criteria if c.id == weakest.source)
+    assert criterion_figures(broken, criterion, weakest.arm) == []
+    assert weakest.arm not in surviving_options(broken)
+    held = margins(broken)
+    assert weakest.arm not in {margin.arm for margin in held}
+    assert all(math.isfinite(margin.gap) for margin in held)
+
+
+def test_a_reading_interval_end_that_is_not_finite_gives_no_margin() -> None:
+    """r5's weakest margin is a reading's worst end; read as NaN, it gives no margin, and the weakest is finite."""
+    report_input = _input("r5")
+    weakest = weakest_margin(report_input)
+    assert weakest is not None and weakest.kind == "margin"
+    data = report_input.model_dump(by_alias=True, exclude_none=True)
+    aspect = next(a for a in data["aspects"] if a["id"] == weakest.source)
+    reading = next(r for r in aspect["readings"] if r["arm"] == weakest.arm)
+    reading["within_interval"] = [math.nan, reading["within_interval"][1]]
+    for floor in data["floors"]:
+        if floor["arm"] == weakest.arm:
+            floor["interval"] = [math.nan, floor["interval"][1]]
+    held = margins(ReportInput.model_validate(data))
+    assert not [m for m in held if m.arm == weakest.arm and m.kind in ("margin", "floor")]
+    assert all(math.isfinite(margin.gap) for margin in held)
 
 
 def test_a_reading_wins_the_tie_with_the_floor_that_copies_it() -> None:

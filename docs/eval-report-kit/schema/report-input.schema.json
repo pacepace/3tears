@@ -624,7 +624,7 @@
     "label": {"type": ["string", "null"], "description": "What a reader calls it."},
     "unit": {
      "type": ["string", "null"],
-     "description": "Its unit, e.g. usd, pct, ms, usd_per_1k."
+     "description": "Its unit, e.g. usd (dollars per reply), pct, ms, s, usd_per_1k (dollars per 1,000 replies), usd_per_1m (dollars per 1,000,000 replies)."
     },
     "higher_is_better": {"type": ["boolean", "null"], "description": "Which way is better."},
     "merit_axis": {"type": ["string", "null"], "description": "The merit axis it counts toward."},

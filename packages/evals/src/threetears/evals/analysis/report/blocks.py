@@ -11,7 +11,6 @@ from there.
 from __future__ import annotations
 
 import hashlib
-import math
 import re
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal, Self, get_args
@@ -26,12 +25,14 @@ from threetears.evals.analysis.report.charts import (
     BarSegment,
     BarsChart,
     ChartPattern,
-    ChartShape,
+    ChartStatus,
     KitChart,
     LegendItem,
     ScatterChart,
     ScatterPoint,
+    Token,
 )
+from threetears.evals.analysis.report.plan_page.look import arm_shape, arm_token, cost_axis_format
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.prose import ModelProse
@@ -499,6 +500,39 @@ class TableCell(EvalDocumentModel):
             "serializer prints it after the value, in parentheses. None for none."
         ),
     )
+    status: ChartStatus | None = Field(
+        default=None,
+        description=(
+            "A status the cell reads as, drawn in HTML as the kit's pill: its colour and icon beside the cell's text, "
+            "which says the status in words, so it never rests on a colour alone. Markdown prints the words. None for "
+            "none."
+        ),
+    )
+    tag: str | None = Field(
+        default=None,
+        pattern=r"^[A-Z]+$",
+        description=(
+            "An arm's letter tag, where the cell names an arm: HTML draws the cell as the kit's arm chip, the tag on "
+            "the arm's identity colour (`color`) before the cell's text, its name; Markdown prints `<tag> · <name>`. "
+            "None for none."
+        ),
+    )
+    color: Token | None = Field(
+        default=None,
+        description="The arm chip's colour token, set with `tag`; the kit's ink-gray where the chip names none.",
+    )
+
+    @model_validator(mode="after")
+    def _a_chip_or_a_pill_is_drawn_whole(self) -> Self:
+        """Refuse a chip's colour with no chip, and a pill and a chip on one cell.
+
+        :raises ValueError: ``color`` is set without ``tag``, or ``status`` and ``tag`` are both set.
+        """
+        if self.color is not None and self.tag is None:
+            raise ValueError("a cell's colour colours its arm chip's tag, and this cell has no tag")
+        if self.status is not None and self.tag is not None:
+            raise ValueError("a cell is drawn as a status pill or as an arm chip, and this cell sets both")
+        return self
 
     @model_validator(mode="after")
     def _a_unit_qualifies_a_number(self) -> Self:
@@ -651,42 +685,6 @@ _OUTCOME_STYLES: dict[TrialState, tuple[tuple[str, ChartPattern | None], ...]] =
         *((token, pattern) for pattern in _PATTERNS for token in ("--base", "--muted")),
     ),
 }
-
-#: Each candidate's identity colour, by its tag's place after the control (A the first): the kit's series in fixed
-#: order (GENERATOR.md §5.2), repeating past the fifth.
-_SERIES = ("--s1", "--s2", "--s3", "--s4", "--s5")
-
-#: The control's identity colour: the kit's ink-gray.
-_CONTROL_TOKEN = "--ink-2"
-
-#: The control's tag (GENERATOR.md §6.1).
-_CONTROL_TAG = "P"
-
-#: Each candidate's mark on a scatter, by its tag's place, so an arm reads apart without its colour; the control's is
-#: a square.
-_SHAPES: tuple[ChartShape, ...] = ("circle", "triangle", "diamond")
-
-
-def _tag_place(tag: str) -> int:
-    """A candidate's place after the control by its tag: A is 0, Z 25, AA 26."""
-    place = 0
-    for letter in tag:
-        place = place * 26 + (ord(letter) - ord("A") + 1)
-    return place - 1
-
-
-def _arm_token(tag: str | None) -> str | None:
-    """An arm's identity colour by its tag: the control's ink-gray, a candidate's series colour; None untagged."""
-    if tag is None:
-        return None
-    return _CONTROL_TOKEN if tag == _CONTROL_TAG else _SERIES[_tag_place(tag) % len(_SERIES)]
-
-
-def _arm_shape(tag: str | None) -> ChartShape | None:
-    """An arm's scatter mark by its tag: the control's square, a candidate's shape in order; None untagged."""
-    if tag is None:
-        return None
-    return "square" if tag == _CONTROL_TAG else _SHAPES[_tag_place(tag) % len(_SHAPES)]
 
 
 class OutcomeSegment(EvalDocumentModel):
@@ -888,7 +886,7 @@ class ChartBlock(_Block):
                 label=bar.arm,
                 short_label=bar.short_name if bar.short_name != bar.arm else None,
                 tag=bar.tag,
-                color=_arm_token(bar.tag),
+                color=arm_token(bar.tag),
                 segments=[
                     BarSegment(value=segment.count, color=looks[segment.label][0], pattern=looks[segment.label][1])
                     for segment in bar.segments
@@ -909,7 +907,7 @@ class ChartBlock(_Block):
         replies and its pass rate, labelled by its short name (by its tag on a phone), the legend naming each tag's
         arm; the cost axis from zero to past the dearest arm, the pass rate's from zero to 100%, so no axis is cut to
         flatter a gap. Cost is drawn per 1,000 replies, since a reply's own cost is a fraction of a cent an axis
-        cannot print, and the axis carries the digits its ticks need (:func:`_cost_axis_format`). No frontier is
+        cannot print, and the axis carries the digits its ticks need (:func:`~threetears.evals.analysis.report.plan_page.look.cost_axis_format`). No frontier is
         drawn, since none is tested."""
         top = max(point.cost for point in self.points) * _REPLIES_PER_COST_UNIT * 1.15 or 1
         unit = f" ({unit_label(self.unit)})" if self.unit else ""
@@ -920,8 +918,8 @@ class ChartBlock(_Block):
                 y=point.pass_rate,
                 label=point.short_name or point.arm,
                 narrow_label=point.tag or point.short_name or point.arm,
-                color=_arm_token(point.tag),
-                shape=_arm_shape(point.tag),
+                color=arm_token(point.tag),
+                shape=arm_shape(point.tag),
                 tip=[
                     point.arm,
                     f"{with_unit(point.cost * _REPLIES_PER_COST_UNIT, self.unit)} per 1,000 replies",
@@ -935,7 +933,7 @@ class ChartBlock(_Block):
         ]
         legend = (
             [
-                LegendItem(label=f"{point.tag} · {point.arm}", color=_arm_token(point.tag), mark=_arm_shape(point.tag))
+                LegendItem(label=f"{point.tag} · {point.arm}", color=arm_token(point.tag), mark=arm_shape(point.tag))
                 for point in self.points
             ]
             if tagged
@@ -945,7 +943,7 @@ class ChartBlock(_Block):
             points=points,
             x_domain=(0, top),
             y_domain=(0, 100),
-            x_fmt=_cost_axis_format(top, money=is_money(self.unit)),
+            x_fmt=cost_axis_format(top, money=is_money(self.unit)),
             y_fmt="pct",
             x_title=f"Cost per 1,000 replies{unit}",
             y_title="Pass rate",
@@ -1010,24 +1008,6 @@ class ChartBlock(_Block):
 #: The replies a cost/quality chart states each cost over: a reply's cost per 1,000 replies, as the scoreboard's
 #: cost ruler states a cost under a cent.
 _REPLIES_PER_COST_UNIT = 1000
-
-
-def _cost_axis_format(top: float, *, money: bool) -> str:
-    """The kit format of a cost axis running from zero to ``top``: as many decimals as a tick a fifth of the way up
-    needs to print a digit of its own, so no two ticks read alike and none reads as zero; money keeps at least the
-    cents and drops them from $100.
-
-    :param top: The axis's top, in the cost's unit, above zero.
-    :ptype top: float
-    :param money: Whether the cost is money (``usd``) rather than a plain number (``num``).
-    :ptype money: bool
-    :return: The format, e.g. ``usd:2`` for an axis to $0.48, ``usd:4`` for one to $0.0048.
-    :rtype: str
-    """
-    digits = max(0, math.ceil(-math.log10(top / 5)))
-    if money:
-        digits = 0 if top >= 100 else max(2, digits)
-    return f"{'usd' if money else 'num'}:{min(digits, 9)}"
 
 
 def interval_value_text(value: float, unit: str = "") -> str:

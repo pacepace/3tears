@@ -21,7 +21,7 @@ gap's size. Ties go to the first in the order above: criteria in the input's ord
 arm in the input's order.
 
 **Only a margin that could change the call alone counts.** An option survives when it clears every gate and guardrail
-figure, has a figure for each, and breaches no guardrail the pipeline read (GENERATOR §3, as
+figure, has a figure for each at every place its scope reads (:func:`criterion_places`), and breaches no guardrail the pipeline read (GENERATOR §3, as
 :func:`~threetears.evals.analysis.report_decision.surviving_options` reads it). Every margin of a surviving option
 counts: missing a gate would drop it, and a floor, bar, reading or margin moves how it is read. An option that does
 not survive counts only by the one gate or guardrail figure it misses, when that is all that keeps it out, so
@@ -36,14 +36,14 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from threetears.evals.analysis.report_input import Criterion, Reading, ReportInput, Stat
+from threetears.evals.analysis.report_input import Criterion, Judged, Measure, Reading, ReportInput, Stat
 
 __all__ = [
     "CriterionFigure",
     "CriterionPlace",
     "Margin",
-    "MarginKind",
     "criterion_figures",
+    "criterion_places",
     "criterion_place",
     "flip_margin",
     "margins",
@@ -51,7 +51,7 @@ __all__ = [
 ]
 
 #: What a margin is read against: a declared criterion, an aspect's margin, or a floor the pipeline read.
-MarginKind = Literal["criterion", "margin", "floor"]
+_MarginKind = Literal["criterion", "margin", "floor"]
 
 #: Where a criterion reads its figures: the arm's overall value, each task's (or its one task's), or each cell's.
 CriterionPlace = Literal["overall", "task", "cell"]
@@ -67,11 +67,16 @@ class CriterionFigure:
     :ivar value: The arm's figure, at the criterion's statistic.
     :ivar task: The task it was read in; None when not read in a task.
     :ivar cell: The target-matrix cell it was read in, by id; None when not read in a cell.
+    :ivar ci: The interval on the figure, low then high, where the input states one. Only a mean carries one: the
+        input's interval is on the mean, so a p50 or p95 figure has none.
+    :ivar half_width: The interval's half-width, where the input states only that; for a mean alone, like ``ci``.
     """
 
     value: float
     task: str | None = None
     cell: str | None = None
+    ci: tuple[float, float] | None = None
+    half_width: float | None = None
 
 
 @dataclass(frozen=True)
@@ -91,7 +96,7 @@ class Margin:
     """
 
     arm: str
-    kind: MarginKind
+    kind: _MarginKind
     source: str
     measure: str | None
     aspect: str | None
@@ -137,8 +142,45 @@ def criterion_place(criterion: Criterion) -> CriterionPlace:
     return "overall"
 
 
+def criterion_places(report_input: ReportInput, criterion: Criterion) -> list[tuple[str | None, str | None]]:
+    """Every place a criterion reads a figure at, by its scope: the arm's overall value, its one task or every task,
+    or every cell. An arm that lacks the figure at any of them is not shown to pass it.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param criterion: The declared criterion.
+    :ptype criterion: Criterion
+    :return: Each place as ``(task, cell)``: ``(None, None)`` overall, a task's id, or a cell's id, in the input's
+        order; empty where the scope covers no place the input holds.
+    :rtype: list[tuple[str | None, str | None]]
+    """
+    place = criterion_place(criterion)
+    if place == "cell":
+        return [(None, key) for key in report_input.cells]
+    if place == "task":
+        return [(task.id, None) for task in report_input.tasks if criterion.task in (None, task.id)]
+    return [(None, None)]
+
+
+def _stat_at(
+    report_input: ReportInput, criterion: Criterion, arm: str, task: str | None, cell: str | None
+) -> Stat | None:
+    """The arm's stat on the criterion's measure at one of its places; None where the input states none."""
+    if cell is not None:
+        return report_input.cells[cell].per_arm.get(arm, {}).get(criterion.measure)
+    if task is not None:
+        held = next(candidate for candidate in report_input.tasks if candidate.id == task)
+        return held.per_arm.get(arm, {}).get(criterion.measure)
+    holders: tuple[Mapping[str, Measure | Judged], ...] = (report_input.measures, report_input.judged)
+    for table in holders:
+        figures = table.get(criterion.measure)
+        if figures is not None and arm in figures.per_arm:
+            return figures.per_arm[arm]
+    return None
+
+
 def criterion_figures(report_input: ReportInput, criterion: Criterion, arm: str) -> list[CriterionFigure]:
-    """The arm's figures a criterion reads, at its statistic, where its scope reads them.
+    """The arm's figures a criterion reads, at its statistic, at each of its places (:func:`criterion_places`).
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -147,31 +189,21 @@ def criterion_figures(report_input: ReportInput, criterion: Criterion, arm: str)
     :param arm: The arm's id.
     :ptype arm: str
     :return: One figure per place the criterion reads it (overall, its task, every task or every cell), each where the
-        input states it.
+        input states it as a number, with the interval the input states on it. A figure that is not a finite number
+        (NaN, an infinity) is no figure: it neither meets nor misses a line, so it is left out like a missing one, and
+        an arm lacking it is not shown to pass.
     :rtype: list[CriterionFigure]
     """
-    holders: list[tuple[Mapping[str, Stat], str | None, str | None]] = []
-    place = criterion_place(criterion)
-    if place == "cell":
-        holders = [(cell.per_arm.get(arm, {}), None, key) for key, cell in report_input.cells.items()]
-    elif place == "task":
-        holders = [
-            (task.per_arm.get(arm, {}), task.id, None)
-            for task in report_input.tasks
-            if criterion.task in (None, task.id)
-        ]
-    else:
-        for table in (report_input.measures, report_input.judged):
-            figures = table.get(criterion.measure)
-            if figures is not None and arm in figures.per_arm:
-                holders = [({criterion.measure: figures.per_arm[arm]}, None, None)]
-                break
     found: list[CriterionFigure] = []
-    for holder, task, cell in holders:
-        stat = holder.get(criterion.measure)
+    for task, cell in criterion_places(report_input, criterion):
+        stat = _stat_at(report_input, criterion, arm, task, cell)
         value = getattr(stat, criterion.statistic) if stat is not None else None
-        if value is not None:
-            found.append(CriterionFigure(float(value), task, cell))
+        if stat is None or value is None or not math.isfinite(value):
+            continue
+        mean = criterion.statistic == "mean"
+        ci = (float(stat.ci[0]), float(stat.ci[1])) if mean and stat.ci is not None else None
+        half_width = float(stat.half_width) if mean and stat.half_width is not None else None
+        found.append(CriterionFigure(float(value), task, cell, ci, half_width))
     return found
 
 
@@ -182,7 +214,7 @@ def _gap(criterion: Criterion, value: float) -> float:
 
 def _missed_gates(report_input: ReportInput, arm: str) -> int | None:
     """How many gate and guardrail figures an arm misses; None when it is out for another reason: a gate with no figure
-    for it, or a guardrail the pipeline read ``breached`` on it."""
+    for it at one of its places, or a guardrail the pipeline read ``breached`` on it."""
     if any(str(read.get("arm")) == arm and read.get("decision") == "breached" for read in report_input.guardrails):
         return None
     missed = 0
@@ -190,7 +222,7 @@ def _missed_gates(report_input: ReportInput, arm: str) -> int | None:
         if criterion.kind not in _GATING:
             continue
         figures = criterion_figures(report_input, criterion, arm)
-        if not figures:
+        if not figures or len(figures) < len(criterion_places(report_input, criterion)):
             return None
         missed += sum(_gap(criterion, figure.value) < 0 for figure in figures)
     return missed
@@ -226,6 +258,8 @@ def _interval_margins(report_input: ReportInput, surviving: set[str]) -> Iterato
             if reading.arm not in surviving or reading.within_interval is None or margin is None:
                 continue
             low = float(reading.within_interval[0])
+            if not math.isfinite(low):
+                continue
             yield Margin(
                 arm=reading.arm,
                 kind="margin",
@@ -242,6 +276,8 @@ def _interval_margins(report_input: ReportInput, surviving: set[str]) -> Iterato
         if floor.arm not in surviving or floor.interval is None or floor.margin is None:
             continue
         low = float(floor.interval[0])
+        if not math.isfinite(low):
+            continue
         yield Margin(
             arm=floor.arm,
             kind="floor",

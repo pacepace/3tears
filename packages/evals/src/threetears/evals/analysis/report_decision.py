@@ -19,6 +19,8 @@ confidence clauses and landing lists use:
 ``confound:<id>``                         a confound, by its key in ``caveats.confounds``
 ``apparatus:<dimension>``                 an apparatus confound; a confound of the same dimension is this caveat
 ``short_run:<run id>``                    a run short of usable measurements
+``unsettled:<aspect>``                    a surviving candidate's reading on an aspect declaring a margin is left
+                                          unsettled past it (:func:`unsettled_arms`)
 ``latency``                               latency is not compared
 ``unreported:<observation>``              an observation recorded but not reported
 ========================================  ==========================================================================
@@ -27,9 +29,21 @@ confidence clauses and landing lists use:
 judge, and a confound, apparatus confound or short run that touches every comparison the report makes (each
 candidate against the control in a change, every pair in a choice, the one arm in a measurement; a short run touches
 the comparisons its arm is in, every one when it names no arm; a confound touches the comparisons whose contrasts name
-it). Report-wide caveats are what the decision's confidence is conditional on. *Scoped*: a confound or short run
-touching only some comparisons, said beside the claim it qualifies. *Method-level*: latency, an unreported
-observation, and an apparatus confound that is not report-wide.
+it), and an unsettled aspect whose unsettled candidates include the option code's decision names (decide mode with
+one option dominating, which the plan must recommend). Report-wide caveats are what the decision's confidence is
+conditional on. *Scoped*: a confound or short run touching only some comparisons, and an unsettled aspect on no
+option code's decision names, said beside the claim it qualifies; where the plan itself recommends an unsettled
+candidate (a pick by a ranking rule, which code does not make), its confidence is conditional on that caveat too
+(:mod:`~threetears.evals.analysis.report_plan_checks`). *Method-level*: latency, an unreported observation, and an
+apparatus confound that is not report-wide.
+
+**Unsettled past the margin.** A reading is left unsettled past its margin when it is not within the margin (the one
+rule: its :func:`~threetears.evals.analysis.report_margins.flip_margin` at or above the margin), its interval reaches a
+loss (its low end below zero), and its high end sits above the margin's line (``-margin``): the evidence allows a loss
+past the margin and a change short of it. An interval wholly past the line is settled, not unsettled. Asked and
+unasked aspects alike: an asked one's reading decides a candidate's level only where nothing else shows it better, so
+a candidate shown better on one asked aspect, or left the best of the survivors when the control fails a gate, can be
+the call while another asked reading stays unsettled; an unasked one's the decision never reads.
 
 **Immateriality** (:func:`caveat_materiality`). A late criterion is immaterial when the decision, the allowed modes
 and the one option that dominates, is the same across the criterion's whole plausible range. Code checks each piece
@@ -46,22 +60,27 @@ the check covers the range exactly:
   control is another campaign, and a guardrail's reading carries no interval here.
 
 Every other caveat is open: an uncalibrated judge, a confound, a short run, latency and an unreported observation are
-not a criterion with a range.
+not a criterion with a range. An unsettled aspect is open too: the sweep varies a margin, not the change a reading's
+interval leaves open, and the decision reads a reading only as within its margin or not, so a call that holds at
+every margin would show only that code's rule does not weigh the reading (it never reads an unasked aspect), which is
+what the caveat says. Whether a loss past the margin would change the call is the plan's ``material_if`` to state.
 
-**Survivors** (:func:`surviving_options`, GENERATOR §3). An option survives when it passes every gate: each criterion
-of kind ``gate`` or ``guardrail``, read on its point estimate (at least the threshold where higher is better, at most
-where lower is), overall, in its one task, in every task or in every cell as its scope says; and no guardrail the
-pipeline read on it is ``breached``. A gate with no figure for the arm is not shown passed, so the arm does not
-survive it. Borderline counts as passing for the decision (GENERATOR §3). Floors and bars warn and never remove an
-option; a margin is the asked aspect's own axis, not a gate.
+**Survivors** (:func:`surviving_options`, GENERATOR §3). An option survives when the gate check
+(:func:`~threetears.evals.analysis.report_gates.gate_check`) does not fail it, and no guardrail the pipeline read on it
+is ``breached``. The check reads each criterion of kind ``gate`` or ``guardrail`` on its point estimate (at least the
+threshold where higher is better, at most where lower is), overall, in its one task, in every task or in every cell as
+its scope says. A gate with no figure for the arm is not shown passed, so the arm does not survive it. Borderline
+counts as passing for the decision (GENERATOR §3). Floors and bars warn and never remove an option; a margin is the
+asked aspect's own axis, not a gate.
 
 **Dominance** (:func:`dominant_options`). One surviving option dominates when it is at least as good as every other
 survivor on every axis that matters:
 
 - *Every gate*: every survivor passes every gate, so the gates tie among survivors.
-- *Cost*: cost per 1,000 replies (the figure key's source; else the one dollar measure where lower is better; else
-  that measure blended over the tasks by traffic share), lower is better. Two arms with no cost tie; an arm with no
-  cost is not at least as good as one with a cost, nor the reverse.
+- *Cost*: cost per 1,000 replies as the ``cost_per_1k.<arm>`` figure key reads it, the one cost rule
+  (:mod:`~threetears.evals.analysis.report.figure_keys`: a dollar measure's overall figures or the scoreboard's, else
+  a dollar measure blended over the tasks by traffic share), lower is better. Two arms with no cost tie; an arm with
+  no cost is not at least as good as one with a cost, nor the reverse.
 - *The asked aspect*: in a change, each arm takes a level: a candidate shown better (a confirmatory ``better``
   reading, or an ``improved`` contrast on an asked aspect) is 2; one shown no worse (every floor on every asked
   aspect held, each declaring one, and within the margin on each asked reading that declares one) is 1; any other
@@ -92,31 +111,35 @@ from typing import Literal
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.bundle.schema import SEPARATED_VERDICTS
+from threetears.evals.analysis.report_gates import GateCheck, GateStatus, gate_check
 from threetears.evals.analysis.report_input import (
     Aspect,
     Contrast,
-    Criterion,
     FloorRead,
     LateCriterion,
     Reading,
     ReportInput,
 )
-from threetears.evals.analysis.report_margins import criterion_figures, flip_margin
+from threetears.evals.analysis.report_margins import flip_margin
 
 __all__ = [
     "Caveat",
+    "CandidateMargin",
+    "MarginSensitivity",
     "Materiality",
     "allowed_modes",
     "caveat_materiality",
     "control_arm",
     "dominant_options",
     "floors_not_held",
+    "margin_sensitivity",
     "report_caveats",
     "report_kind",
     "separated_by",
     "separating_contrasts",
     "shown_better",
     "surviving_options",
+    "unsettled_arms",
 ]
 
 #: Judge tiers and calibration states that mean no human calibration stands behind the judge.
@@ -141,7 +164,7 @@ class Caveat:
 
     :ivar id: The caveat's id (this module's id table).
     :ivar kind: The id's kind: ``late``, ``judge_uncalibrated``, ``confound``, ``apparatus``, ``short_run``,
-        ``latency`` or ``unreported``.
+        ``unsettled``, ``latency`` or ``unreported``.
     :ivar reach: ``report`` (the confidence is conditional on it), ``scoped`` (said beside a claim) or ``method``.
     """
 
@@ -254,8 +277,8 @@ def report_caveats(report_input: ReportInput) -> list[Caveat]:
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
-    :return: Late criteria, the judge, confounds, apparatus confounds, short runs, latency, then unreported
-        observations, each in the input's order.
+    :return: Late criteria, the judge, confounds, apparatus confounds, short runs, unsettled aspects, latency, then
+        unreported observations, each in the input's order.
     :rtype: list[Caveat]
     """
     caveats = report_input.caveats
@@ -279,6 +302,11 @@ def report_caveats(report_input: ReportInput) -> list[Caveat]:
     for run in caveats.short_runs:
         wide = _touches_every_comparison(report_input, None if run.arm is None else {run.arm})
         add(Caveat(f"short_run:{run.run}", "short_run", "report" if wide else "scoped"))
+    unsettled = unsettled_arms(report_input)
+    if unsettled:
+        called = set(_outcome(report_input, _Overrides())[1])
+        for caveat_id, arms in unsettled.items():
+            add(Caveat(caveat_id, "unsettled", "report" if called & set(arms) else "scoped"))
     if caveats.latency:
         add(Caveat("latency", "latency", "method"))
     for observation in caveats.unreported:
@@ -289,13 +317,13 @@ def report_caveats(report_input: ReportInput) -> list[Caveat]:
 # --- gates and survivors -------------------------------------------------------------------------------------------
 
 
-def _passes(report_input: ReportInput, criterion: Criterion, arm: str) -> bool:
-    values = [figure.value for figure in criterion_figures(report_input, criterion, arm)]
-    if not values:
-        return False
-    if criterion.direction == "higher_is_better":
-        return all(value >= criterion.threshold for value in values)
-    return all(value <= criterion.threshold for value in values)
+#: The gate statuses an option survives: borderline counts as passing for the decision (GENERATOR §3).
+_SURVIVING: frozenset[GateStatus] = frozenset({"pass", "borderline"})
+
+
+def _passes(report_input: ReportInput, arm: str) -> bool:
+    check: GateCheck = gate_check(report_input, arm)
+    return check.status in _SURVIVING
 
 
 def surviving_options(report_input: ReportInput) -> list[str]:
@@ -306,15 +334,10 @@ def surviving_options(report_input: ReportInput) -> list[str]:
     :return: The surviving arms' ids, in the input's arm order.
     :rtype: list[str]
     """
-    gates = [criterion for criterion in report_input.criteria if criterion.kind in ("gate", "guardrail")]
     breached = {
         str(guardrail.get("arm")) for guardrail in report_input.guardrails if guardrail.get("decision") == "breached"
     }
-    return [
-        arm.id
-        for arm in report_input.arms
-        if arm.id not in breached and all(_passes(report_input, gate, arm.id) for gate in gates)
-    ]
+    return [arm.id for arm in report_input.arms if arm.id not in breached and _passes(report_input, arm.id)]
 
 
 # --- the asked aspect ----------------------------------------------------------------------------------------------
@@ -407,6 +430,40 @@ def _within(aspect: Aspect, reading: Reading, overrides: _Overrides) -> bool:
     return margin is not None and flip is not None and flip < margin
 
 
+def _unsettled(aspect: Aspect, reading: Reading) -> bool:
+    """Whether a reading is left unsettled past its declared margin (this module's Unsettled past the margin)."""
+    margin = _margin(aspect, reading, _Overrides())
+    if margin is None or reading.within_interval is None or _within(aspect, reading, _Overrides()):
+        return False
+    low, high = (float(end) for end in reading.within_interval)
+    return low < 0 and high > -margin
+
+
+def unsettled_arms(report_input: ReportInput) -> dict[str, tuple[str, ...]]:
+    """Each aspect on which a surviving candidate's reading is left unsettled past its declared margin (this module's
+    Unsettled past the margin), by its caveat id ``unsettled:<aspect>``, with those candidates.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The candidates left unsettled, in the readings' order, by caveat id in the aspects' order; empty for none.
+    :rtype: dict[str, tuple[str, ...]]
+    """
+    survivors = set(surviving_options(report_input))
+    control = control_arm(report_input)
+    found: dict[str, tuple[str, ...]] = {}
+    for aspect in report_input.aspects:
+        arms = tuple(
+            dict.fromkeys(
+                reading.arm
+                for reading in aspect.readings
+                if reading.arm in survivors and reading.arm != control and _unsettled(aspect, reading)
+            )
+        )
+        if arms:
+            found[f"unsettled:{aspect.id}"] = arms
+    return found
+
+
 def _shown_no_worse(report_input: ReportInput, arm: str, overrides: _Overrides) -> bool:
     asked = _asked(report_input)
     if not asked or _floors_not_held(report_input, arm, asked, overrides):
@@ -495,42 +552,18 @@ def _separable(report_input: ReportInput, arm: str, overrides: _Overrides) -> bo
 
 
 def _costs(report_input: ReportInput) -> dict[str, float]:
-    """Each arm's cost, from the first source that states one (this module's Dominance, cost)."""
+    """Each arm's cost per 1,000 replies, as its ``cost_per_1k`` key reads it (this module's Dominance, cost)."""
     costs: dict[str, float] = {}
     for arm in report_input.arms:
         try:
             figure = resolve(f"cost_per_1k.{arm.id}", report_input)
         except UnresolvableReference:
-            # NOSILENT: an arm with no cost figure key is an expected absence, not a failure: it is left out of the costs
-            # this source states, and when no arm has one the sources below are read instead.
+            # NOSILENT: an arm whose cost no source states is an expected absence, not a failure: it has no cost, which
+            # the dominance rule reads as such.
             continue
         if isinstance(figure.value, (int, float)):
             costs[arm.id] = float(figure.value)
-    if costs:
-        return costs
-    dollars = [
-        key
-        for key, measure in report_input.measures.items()
-        if (measure.unit or "").startswith("usd") and measure.higher_is_better is False
-    ]
-    if len(dollars) != 1:
-        return {}
-    key = dollars[0]
-    stated = {
-        arm: float(stat.mean) for arm, stat in report_input.measures[key].per_arm.items() if stat.mean is not None
-    }
-    if stated:
-        return stated
-    blended: dict[str, float] = {}
-    for arm in report_input.arms:
-        parts = [
-            (task.share, task.per_arm[arm.id][key].mean)
-            for task in report_input.tasks
-            if task.share and arm.id in task.per_arm and key in task.per_arm[arm.id]
-        ]
-        if parts and all(mean is not None for _, mean in parts):
-            blended[arm.id] = sum(float(share or 0) * float(mean or 0) for share, mean in parts)
-    return blended
+    return costs
 
 
 # --- dominance and modes -------------------------------------------------------------------------------------------
@@ -627,12 +660,65 @@ def _holds(report_input: ReportInput, base: _Outcome, trials: Iterator[_Override
     return all(_outcome(report_input, overrides) == base for overrides in trials)
 
 
-def _margin_holds(report_input: ReportInput, base: _Outcome) -> bool:
-    aspects = [
+@dataclass(frozen=True)
+class CandidateMargin:
+    """One reading against its margin: where it flips, and whether it is within the margin declared.
+
+    :ivar arm: The reading's arm.
+    :ivar aspect: The aspect it is read on.
+    :ivar flip_margin: The margin it flips at (``-lo``); None where it states no interval.
+    :ivar within: Whether it is within the declared margin.
+    """
+
+    arm: str
+    aspect: str
+    flip_margin: float | None
+    within: bool
+
+
+@dataclass(frozen=True)
+class MarginSensitivity:
+    """How the call rests on the margins (:func:`margin_sensitivity`): each reading's flip, and whether the call holds
+    at every margin.
+
+    :ivar candidates: Each reading on an aspect that declares a margin, in the input's order.
+    :ivar holds: Whether the decision is the same at every margin from zero up, on each such aspect.
+    """
+
+    candidates: tuple[CandidateMargin, ...]
+    holds: bool
+
+
+def _margined(report_input: ReportInput) -> list[Aspect]:
+    """The aspects that declare a margin, on the aspect or on one of its readings."""
+    return [
         aspect
         for aspect in report_input.aspects
         if aspect.margin is not None or any(reading.margin is not None for reading in aspect.readings)
     ]
+
+
+def margin_sensitivity(report_input: ReportInput) -> MarginSensitivity:
+    """Each reading's flip margin and whether it is within the declared margin, and whether the call holds at every
+    margin (this module's Immateriality, for a late margin). A late margin's materiality reads ``holds``; a page's
+    explore part, each candidate.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: Each reading on an aspect that declares a margin, and whether the call holds at every margin; no
+        candidates, and not holding, where no aspect declares one.
+    :rtype: MarginSensitivity
+    """
+    candidates = tuple(
+        CandidateMargin(reading.arm, aspect.id, flip_margin(reading), _within(aspect, reading, _Overrides()))
+        for aspect in _margined(report_input)
+        for reading in aspect.readings
+    )
+    return MarginSensitivity(candidates, _margin_holds(report_input, _outcome(report_input, _Overrides())))
+
+
+def _margin_holds(report_input: ReportInput, base: _Outcome) -> bool:
+    aspects = _margined(report_input)
     if not aspects:
         return False
     for aspect in aspects:

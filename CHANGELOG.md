@@ -6,6 +6,79 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the reporter judge reads the page's arms key
+
+**Fixed:** `render_plan_for_judge` omitted the arms key the planned page shows, so an arm written `{name} ({tag})`
+read to the reporter judge as an unexplained handle. Where the plan's page shows an arms key, the judged text now
+leads with that key (the page's own `arms_key` table, tag, name and role), then the plan's JSON; a plan whose page
+shows no key judges as before. A plan reporter case frozen before this change keeps its stored text.
+
+### evals: a planned analysis's page is the page its report plan draws
+
+**Changed:** the campaign's page for an analysis the report planner wrote is now the report kit's page, built from
+the stored plan and the report input rebuilt from the analysis's frozen bundle: the masthead, headline, lede, flag,
+confidence and decision, the answers to the warnings on the recommended arm, the options table and summary charts,
+the arms key, the evidence sections, the explore part (a static table of where each reading flips, where the plan's
+control moves the margin), Full results (every table the plan lists) and Method. Each aspect's fold follows Method in
+one closed appendix ("Evidence record"), so `trials=` and each trial's stored result read as before. This is the
+`body` of `report_read` (Markdown and HTML, default and `static=True`) for a `plan` analysis; its JSON is unchanged,
+and the content of memo and code-only pages is unchanged byte for byte (the kit script a default HTML page inlines
+changed, below). `CampaignReport` gains `plan_page` (a `PlannedPage`, set
+only on a planned analysis's page, which then holds no blocks of its own). A stored plan whose figure key or chart no
+longer resolves against its frozen evidence refuses the page with the existing "generate the analysis again
+(`analysis_generate`)" remedy. `report_decision.margin_sensitivity` (with `MarginSensitivity` and `CandidateMargin`)
+is public: each reading's flip margin, and whether the call holds at every margin. The interim first-screen blocks
+(`analysis.report.campaign.plan_blocks`) are removed. A chart over measures in more than one unit draws each in its
+own panel, in its own unit and format, where its kind panels by measure (a heatmap's matrix, a dot strip's strip, bars
+in panels by slice); any other such chart, and a chart of strata or tasks naming no measure where its kind draws one,
+is refused when the plan is generated, by the rule the page draws by, so no page draws one measure on another's
+scale. That rule is now the plan checks' only unit rule, over every source (GENERATOR §5.2, one unit per axis): a dot
+strip, or bars in panels by aspect, over measures or judged dimensions in two units is accepted and drawn a panel per
+unit, where the checks refused it; a share and a percent count as one unit, both drawn as a percent, each figure at
+its own scale on every kind that draws several measures on one axis (bars, a difference heatmap, a strip per arm,
+range bars); and a chart of
+contrasts whose changes are in more than one unit drawn (a rate's change in points beside a score's or a latency's) is
+refused by the checks and the page alike, where the checks compared each contrast's declared unit. A contrast's
+unit is one reading for the checks' spine, their stored unit and the page (`charting.contrast_unit`): an ordinal
+judged dimension's change is a score change, where the checks called every judged change points. A stored chart
+whose rows state several units stores an empty `unit`. A stored plan with a chart the page now refuses (a chart over
+tasks, strata or cells in several units on one axis, or a chart of contrasts mixing a rate's change with a score's)
+refuses its page with the "generate the analysis again" remedy, and generating it again writes one that draws. No
+stored shape moves.
+
+**Changed:** the kit's dot strip (`dot_interval`, in `kit.js`) needs an interval `level` only where its rows carry
+intervals: a strip of points alone draws with none, where it was refused. The script is inlined in every default-mode
+HTML page, memo and code-only pages included, so its text (and its hash) changed: a host allowing the kit by a CSP
+hash it computed from an earlier wheel recomputes it from this one. A `static=True` page carries no script and is
+unaffected.
+
+**Changed:** every chart a report plan names must draw on the plan's own input. When a plan is generated, code draws
+each summary chart and each section's chart through the page's own resolvers
+(`analysis.report.plan_page.drawable.undrawn_charts`, called by `complete_plan`), and a chart the page cannot draw is
+refused there, at its field path with the page's reason, for the planner's repair round, never stored. Before, such a
+plan passed the checks and was stored, and its page then refused with "generate the analysis again", which wrote the
+same plan again. Stored plans are read as before.
+
+**Changed:** names the report planner and its checks made public on this branch, which nothing outside their modules
+used, are private: in `kernel.report_plan` the planner's parts of the flag, options, chart reference, section and
+answer, the structure call's section, control, explore, claim and caveat landing, the prose item, and both contract
+names (`STRUCTURE_SCHEMA_NAME`, `PROSE_SCHEMA_NAME`); `plan_assembly.ProseSlot`; `planned_analysis.PlannedAnalysis`,
+`planned_analysis` and `planned_insights`; `figure_keys.margin_name` (and `NAMED_KINDS`, removed);
+`report_margins.MarginKind`; `report_plan_checks.SPINE_KINDS`; `report_plan_facts.ARMS_KEY_CHARS` and `FactWeakest`;
+and `plan_prompt.PLAN_PROMPT_CHAR_BUDGET` and `PLAN_PROMPT_RULE_BUDGET`, now the contract
+`tests/test_plan_prompt_budget.py` declares (15,500 characters, 13 rules). `plan_recommended_arm` moves from
+`planned_analysis` to `kernel.report_plan`. The planner's two contracts keep every field; the private parts' `$defs`
+names gain a leading underscore, so a recording of the planner's calls is recorded again. None of these was in a
+release.
+
+**Added:** a caveat kind, `unsettled:<aspect>` (#980): a surviving candidate's reading on an aspect declaring a margin,
+asked or not, whose interval allows both a loss past the margin and a change short of it. It is report-wide when the
+option code's decision names is among those candidates, and scoped otherwise; a plan recommending such a candidate
+(a ranking rule's pick included) may not state a plain `high` while it is open, and states `high_if_immaterial` with
+its `material_if` clause, or `low`. Code never proves it immaterial. `report_decision.unsettled_arms` is public, and
+the plan's caveat and flag id patterns accept the new kind, so every stored plan still reads. A flag disclosing one weakens the
+measures that aspect's contrasts read.
+
 ### evals: a static report page, for a host whose policy runs and loads nothing
 
 **Added:** `report_html` and `campaign_report_html` take `static: bool = False`. So do `serialize_report` and

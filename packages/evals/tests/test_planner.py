@@ -36,7 +36,7 @@ from packages.evals.tests.toyhost_memo import MODEL, FixturedClient, FixturedCom
 from threetears.evals.analysis.errors import GenerationError, PlanRefusal, SoundnessRefusal
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.generator import GenerationTally
-from threetears.evals.analysis.plan_assembly import ProseSlot, read_prose
+from threetears.evals.analysis.plan_assembly import prose_slots, read_prose
 from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
 from threetears.evals.analysis.planner import (
     FACTS_HEADING,
@@ -51,6 +51,7 @@ from threetears.evals.analysis.planner import (
 from threetears.evals.analysis.report.figure_keys import GRAMMAR_HEADING
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_checks import validate_plan
+from threetears.evals.analysis.report_plan_facts import plan_facts
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.report_plan import (
@@ -127,6 +128,14 @@ class TestTheRequests:
         assert checked["late:margin"] == "The late margin was checked: the call holds at every margin."
         assert checked["judge_uncalibrated"] == ""
         assert contract == structure_response_format()
+
+    def test_the_facts_tell_the_planner_to_name_each_id_by_its_one_reader_name(self) -> None:
+        _, user, _ = first_plan_request(_input(), PROMPT, toyhost_profile())
+        facts = json.loads(user.split(f"\n\n{FACTS_HEADING}\n", 1)[1])
+        rule = facts["reader_names_rule"]
+        assert "`reader_names`" in rule and "each measure" in rule and "the same name every time" in rule
+        assert list(facts).index("reader_names_rule") == list(facts).index("reader_names") - 1, "said beside them"
+        assert PROMPT not in user and rule not in PROMPT, "code's, outside the prompt and its budget"
 
     def test_the_allowed_modes_are_told(self) -> None:
         _, user, _ = first_plan_request(_input(), PROMPT, toyhost_profile(), allowed_modes=["decide"])
@@ -309,14 +318,20 @@ class TestTheProseCall:
 
 
 class TestReadingProse:
+    """Read against the slots the Kairo structure creates (``prose_slots``), as a generation asks for them."""
+
     def test_a_key_twice_a_key_no_slot_has_and_an_empty_written_slot_are_refused_together(self) -> None:
-        slots = [ProseSlot(key="headline", holds="h", optional=False), ProseSlot(key="t", holds="t", optional=True)]
+        slots = prose_slots(PlanStructure.model_validate(_structure()), plan_facts(_input()))
+        assert any(slot.key == "headline" and not slot.optional for slot in slots)
+        optional = next(slot.key for slot in slots if slot.optional)
+        items = [item for item in _prose()["prose"] if item["key"] not in ("headline", optional)]
         reply = PlanProse.model_validate(
             {
                 "prose": [
+                    *items,
                     {"key": "headline", "text": " "},
                     {"key": "headline", "text": "x"},
-                    {"key": "t", "text": ""},
+                    {"key": optional, "text": ""},
                     {"key": "stray", "text": "x"},
                 ]
             }
@@ -325,10 +340,20 @@ class TestReadingProse:
             read_prose(reply, slots)
         why = " ".join(f"{path} {text}" for path, text in refused.value.faults)
         assert "'stray', which names no prose slot" in why and "'headline' 2 times" in why
+        assert repr(optional) not in why, "an optional slot left empty is no fault"
 
     def test_an_optional_slot_may_be_empty(self) -> None:
-        slots = [ProseSlot(key="t", holds="t", optional=True)]
-        assert read_prose(PlanProse.model_validate({"prose": [{"key": "t", "text": ""}]}), slots) == {"t": ""}
+        slots = prose_slots(PlanStructure.model_validate(_structure()), plan_facts(_input()))
+        optional = next(slot.key for slot in slots if slot.optional)
+        items = [{**item, "text": ""} if item["key"] == optional else item for item in _prose()["prose"]]
+        texts = read_prose(PlanProse.model_validate({"prose": items}), slots)
+        assert texts[optional] == ""
+
+    def test_a_slot_that_must_be_written_left_empty_is_refused(self) -> None:
+        slots = prose_slots(PlanStructure.model_validate(_structure()), plan_facts(_input()))
+        items = [{**item, "text": " "} if item["key"] == "headline" else item for item in _prose()["prose"]]
+        with pytest.raises(PlanRefusal, match="leaves 'headline' empty, and it must be written"):
+            read_prose(PlanProse.model_validate({"prose": items}), slots)
 
 
 class TestTheHostsLimits:

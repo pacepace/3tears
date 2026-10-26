@@ -6,7 +6,7 @@ campaign it generates over, so :func:`structure_reply` chooses the structure cod
 option recommended, each open caveat landed once, one section drawing the spine code gives, one durable claim), and
 :func:`prose_reply`
 writes every prose key that structure creates, with no digit outside a figure key and, in Watch, the weakest margin
-by its keys. :class:`PlanReplies` answers each
+by its keys (money per 1,000 replies, the basis a page states its costs in). :class:`PlanReplies` answers each
 call of a generation by the contract it was sent.
 """
 
@@ -17,16 +17,30 @@ from collections.abc import Callable
 from typing import Any
 
 from threetears.evals.analysis.plan_assembly import check_structure, prose_slots
+from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report_decision import dominant_options, surviving_options
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_facts import plan_facts
-from threetears.evals.kernel.report_plan import PROSE_SCHEMA_NAME, STRUCTURE_SCHEMA_NAME, PlanStructure
+from threetears.evals.kernel.report_plan import PlanStructure, prose_response_format, structure_response_format
 from packages.evals.tests.toyhost_memo import FixturedClient, FixturedCompletion
 
-__all__ = ["PLAN_CALLS", "PlanWriter", "contract_name", "prose_reply", "replies_for", "structure_reply"]
+__all__ = [
+    "PLAN_CALLS",
+    "PROSE_CONTRACT",
+    "STRUCTURE_CONTRACT",
+    "PlanWriter",
+    "contract_name",
+    "prose_reply",
+    "replies_for",
+    "structure_reply",
+]
 
 #: The calls an unrepaired plan takes: its structure and its prose.
 PLAN_CALLS = 2
+
+#: The names the planner's two contracts are sent under, read off the directives a generation sends.
+STRUCTURE_CONTRACT: str = structure_response_format()["json_schema"]["name"]
+PROSE_CONTRACT: str = prose_response_format()["json_schema"]["name"]
 
 #: Where a spine reads when code names no source: the first of these the input holds rows for.
 _SPINE_SOURCES = ("tasks", "floors", "measures", "configs", "strata")
@@ -140,23 +154,31 @@ def prose_reply(report_input: ReportInput, structure: dict[str, Any] | None = No
     :return: The prose call's reply.
     """
     chosen = PlanStructure.model_validate(structure or structure_reply(report_input))
-    recommended = next(row.option for row in chosen.options.rows if row.role == "recommended")
-    key = _claim_key(report_input, recommended)
-    claim = (
-        f"{{arm:{recommended}}} passed {{{key}|pct}} of its trials."
-        if key.startswith("pass_rate.")
-        else f"{{arm:{recommended}}} was the option recommended."
-    )
-    texts: dict[str, str] = {
-        "headline": f"Choose {{arm:{recommended}}}: it is the option the evidence favours.",
-        "lede": f"{{arm:{recommended}}} is ahead where it counts. More cases would settle it.",
-        "durable_claims.0": claim,
-    }
+    recommended = next((row.option for row in chosen.options.rows if row.role == "recommended"), None)
+    if recommended is None:
+        # A trade-off or a no-call sets no option apart: its prose names the first option the table lists.
+        named = chosen.options.rows[0].option
+        texts = {
+            "headline": f"{{arm:{named}}} and the others trade one strength for another.",
+            "lede": f"{{arm:{named}}} leads on one count and trails on another. More cases would settle it.",
+        }
+    else:
+        key = _claim_key(report_input, recommended)
+        claim = (
+            f"{{arm:{recommended}}} passed {{{key}|pct}} of its trials."
+            if key.startswith("pass_rate.")
+            else f"{{arm:{recommended}}} was the option recommended."
+        )
+        texts = {
+            "headline": f"Choose {{arm:{recommended}}}: it is the option the evidence favours.",
+            "lede": f"{{arm:{recommended}}} is ahead where it counts. More cases would settle it.",
+            "durable_claims.0": claim,
+        }
     facts = plan_facts(report_input)
     if facts.weakest is not None:
-        texts["decision.watch"] = (
-            "The weakest margin is {weakest.arm} on {weakest.criterion}, a gap of {weakest.margin}."
-        )
+        money = resolve("weakest.margin", report_input).scale == "usd"
+        margin = "{weakest.margin|usd_per_1k}" if money else "{weakest.margin}"
+        texts["decision.watch"] = f"The weakest margin is {{weakest.arm}} on {{weakest.criterion}}, a gap of {margin}."
     return {
         "prose": [
             {"key": slot.key, "text": texts.get(slot.key, "The evidence reads this way, as the chart shows.")}
@@ -175,9 +197,9 @@ def replies_for(report_input: Callable[[], ReportInput]) -> Callable[[Any], str]
     def reply(response_format: Any) -> str:
         name = contract_name(response_format)
         built = report_input()
-        if name == STRUCTURE_SCHEMA_NAME:
+        if name == STRUCTURE_CONTRACT:
             return json.dumps(structure_reply(built))
-        if name == PROSE_SCHEMA_NAME:
+        if name == PROSE_CONTRACT:
             return json.dumps(prose_reply(built))
         raise AssertionError(f"a planner call was sent under {name!r}, which is neither of the planner's contracts")
 

@@ -51,9 +51,12 @@ A part the input does not settle is the planner's: a source where it holds none 
 kind draws), the measures where no rule names them, and on every spine the arms and their order, strata, limit,
 transform, small multiples and emphasis. Some of what a spine draws is no query field at all: a gate matrix's binding
 reasons and cheapest passing cell, a gate scatter's gate region and one path per factor level, a lattice's row and
-column factors and its tiles' cost and latency. The renderer reads those off the criteria and the configs (P4).
+column factors and its tiles' cost and latency. The page draws those from the criteria and the configs
+(:mod:`~threetears.evals.analysis.report.plan_page.resolve_gates`).
 
-**The checks** (:func:`validate_plan`), each refusing at the field it names:
+**The checks** (:func:`validate_plan`), each refusing at the field it names. They run when a plan is generated
+(:func:`~threetears.evals.analysis.report_plan_facts.complete_plan`), never when a stored plan is read, so a check
+added later refuses no plan already stored:
 
 - *Facts code filled*: ``signals`` and ``shape`` are :func:`classify`'s.
 - *The spine*: the first evidence section's chart is :func:`spine`'s kind, with every query field and reference line
@@ -84,7 +87,9 @@ column factors and its tiles' cost and latency. The renderer reads those off the
   answer names a warning not raised.
 - *Confidence* (GENERATOR §2.5): plain ``high`` only while no open report-wide caveat remains, and listing none;
   ``high_if_immaterial`` lists at least one caveat and every open report-wide one, none of them stated elsewhere;
-  ``low`` is allowed whatever the caveats. Every listed caveat has a non-empty clause (``material_if``).
+  ``low`` is allowed whatever the caveats. Every listed caveat has a non-empty clause (``material_if``). An open
+  unsettled caveat on the arm the plan recommends counts as report-wide here, whatever its scope: code scopes it by
+  the pick code makes, and a ranking rule's pick is the plan's.
 - *Flag*: holds ``no_rule`` exactly when it applies; otherwise only report-wide caveats, each once; a flag on an input
   with no report-wide disclosure is refused.
 - *Coverage*: every caveat :func:`~threetears.evals.analysis.report_decision.report_caveats` lists lands exactly
@@ -96,9 +101,16 @@ column factors and its tiles' cost and latency. The renderer reads those off the
   line. An id that names no caveat of the input is refused wherever it lands.
 - *Charts*: each chart's kind suits its source (a forest reads readings or contrasts, every row with an interval; a
   lattice reads configs; …); its query names only arms, aspects, measures and strata the input holds, and selects at
-  least one row; its reference key and its emphasis name something present. The summary charts show the options
+  least one row (the rows a page draws, :func:`~threetears.evals.analysis.report_rows.query_rows`); its reference
+  key and its emphasis name something present. The summary charts show the options
   table's arm rows in its order, a change-from-control chart (readings, contrasts, or ``arm_minus_control``) leaving
-  the control out.
+  the control out. A chart the page draws as each arm less the control (diverging bars over measures, judged
+  figures, strata or tasks; a difference heatmap naming fewer than two arms, which otherwise draws its second arm
+  less its first) is refused on an input that names no control: the page could not draw it.
+- *Small multiples*: ``small_multiples_by`` other than ``none`` only on a kind the kit draws as panels (its chart
+  model carries ``panels``: bars and diverging bars, the two scatters, dot intervals, heatmaps, confusion matrices).
+- *Options columns*: each is one of :data:`OPTION_COLUMN_FAMILIES`, a ``judged:<dim>`` naming a judged dimension the
+  input holds and a ``measure:<key>`` a measure, or the measure a criterion reads.
 - *Ids*: section ids, explore control ids and option rows are each unique.
 - *Figure keys*: every key in every prose field, every durable claim's ``keys`` and every chart reference parses,
   resolves against the report input and suits its filters (:mod:`~threetears.evals.analysis.report.figure_keys`).
@@ -112,6 +124,13 @@ column factors and its tiles' cost and latency. The renderer reads those off the
   since a reader still reads a digit there as a number, no typed digit either. A control's ``min``, ``max``,
   ``step`` and ``default`` are the control's own scale, numbers and not prose, and are not checked here.
 
+- *Units a key prints*: no prose writes a unit right after a figure key whose spelling already carries it. The unit
+  is read off what code spells (:func:`~threetears.evals.analysis.report.figure_keys.format_figure`: ``513 ms``,
+  ``45%``, ``$1.89 per 1,000 replies``), and refused where the next word repeats it or is one of that unit's names in
+  the package's own vocabulary (:data:`~threetears.evals.analysis.quantities.UNIT_NAMES`: ``3 s seconds``,
+  ``45%%``); a key spelled bare (``{…|int} ms``, ``{…|pts} points``) prints none. And money per reply under one
+  cent, on a page that states its costs per 1,000 replies (a cost per 1,000 replies resolves), is keyed
+  ``usd_per_1k``, so the page reads one cost basis.
 - *Watch names the weakest margin*: a decide plan's Watch slot cites the weakest margin
   (:func:`~threetears.evals.analysis.report_margins.weakest_margin`) by at least one ``weakest.*`` figure key, where the
   input reads any figure against a criterion, margin or floor. Which margin is weakest is code's fact; what Watch says
@@ -153,10 +172,16 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.errors import PlanRefusal, UnresolvableReference
+from threetears.evals.analysis.quantities import MONEY, UNIT_NAMES
+from threetears.evals.analysis.report.charts import KIT_CHARTS
+from threetears.evals.analysis.report.plan_page.charting import contrast_unit
 from threetears.evals.analysis.report.figure_keys import (
+    INTERVAL_TEMPLATE,
     PERCENTILE_NAMES,
     WEAKEST_PREFIX,
+    FigureKey,
     format_figure,
+    Figure,
     keys_in,
     literal_numbers,
     parse_key,
@@ -178,19 +203,20 @@ from threetears.evals.analysis.report_decision import (
     separating_contrasts,
     shown_better,
     surviving_options,
+    unsettled_arms,
 )
-from threetears.evals.analysis.report_input import Aspect, Contrast, Judged, Measure, ReportInput
+from threetears.evals.analysis.report_input import Contrast, ReportInput
 from threetears.evals.analysis.report_margins import criterion_place, weakest_margin
+from threetears.evals.analysis.report_rows import SourceRow, query_aspect, query_rows
 from threetears.evals.kernel.report_plan import ChartSpec, OptionRow, ReportPlan, Signals, WarningRef
 from threetears.evals.schema.prose import field_is_prose
 
 __all__ = [
     "MODE_SLOTS",
-    "SPINE_KINDS",
+    "OPTION_COLUMN_FAMILIES",
     "Spine",
     "classify",
     "contrast_level",
-    "contrast_unit",
     "implied_disclosures",
     "raised_warnings",
     "spine",
@@ -222,13 +248,15 @@ MODE_SLOTS: dict[str, tuple[str, ...]] = {
 _KIND_SOURCES: dict[str, frozenset[str]] = {
     "forest": frozenset({"readings", "contrasts"}),
     "bars": frozenset({"measures", "judged", "scoreboard", "strata", "tasks", "configs", "human_pref"}),
-    "diverging_bars": frozenset({"readings", "contrasts", "measures", "judged", "strata", "tasks", "human_pref"}),
+    "diverging_bars": frozenset(
+        {"readings", "contrasts", "measures", "judged", "strata", "tasks", "configs", "human_pref"}
+    ),
     "lines": frozenset({"measures", "judged", "strata", "tasks"}),
     "scatter_frontier": frozenset({"measures", "judged", "scoreboard", "configs", "tasks"}),
     "gate_scatter": frozenset({"measures", "judged", "configs", "tasks"}),
-    "dot_interval": frozenset({"readings", "contrasts", "measures", "judged", "floors", "tasks"}),
-    "range_bars": frozenset({"measures"}),
-    "gate_matrix": frozenset({"tasks", "floors", "measures", "configs"}),
+    "dot_interval": frozenset({"readings", "contrasts", "measures", "judged", "floors", "tasks", "strata"}),
+    "range_bars": frozenset({"measures", "tasks"}),
+    "gate_matrix": frozenset({"tasks", "readings", "floors", "measures", "configs"}),
     "lattice": frozenset({"configs"}),
     "heatmap": frozenset({"cells", "strata", "tasks"}),
     "diff_heatmap": frozenset({"cells", "strata", "tasks"}),
@@ -243,6 +271,40 @@ _NO_MEASURES = frozenset({"readings", "examples", "human_pref"})
 _SCOREBOARD_FIGURES = frozenset(
     {"ran", "usable", "passed", "cases", "lost", "failed", "reply_cost_usd", "test_cost_usd"}
 )
+
+#: The kinds the kit draws as small multiples: those whose chart model carries ``panels``
+#: (:data:`~threetears.evals.analysis.report.charts.KIT_CHARTS`). A table is no kit chart, and panels nothing.
+_PANELLED_KINDS = frozenset(kind for kind, model in KIT_CHARTS.items() if "panels" in model.model_fields)
+
+#: The options table's column families (GENERATOR §2.6), the one list the options columns are written from
+#: (:func:`~threetears.evals.analysis.report_plan_facts.plan_facts` emits each where the input holds its figure) and
+#: the one vocabulary a stored plan's ``options.columns`` is checked against: the pass rate, the asked
+#: reading's change and verdict, a judged dimension by key, the gate status, a measure by key (a bar's or a
+#: guardrail's), and the cost per 1,000 replies.
+OPTION_COLUMN_FAMILIES: tuple[str, ...] = (
+    "pass_rate",
+    "reading.change",
+    "reading.verdict",
+    "judged:<dim>",
+    "gate",
+    "measure:<key>",
+    "cost_per_1k",
+)
+#: The families written alone, and those written ``<family>:<id>``.
+_COLUMN_WORDS = frozenset(family for family in OPTION_COLUMN_FAMILIES if ":" not in family)
+_COLUMN_PREFIXES = frozenset(family.partition(":")[0] for family in OPTION_COLUMN_FAMILIES if ":" in family)
+
+#: Money under this, per reply, reads per 1,000 replies on a page that states its costs so (one cost basis per page).
+_CENT = 0.01
+#: The filter that reads money per 1,000 replies, and the filters a key keeps beside it (it is a spelling, so it
+#: replaces any other).
+_PER_THOUSAND_FILTER = "usd_per_1k"
+_KEPT_BESIDE_A_SPELLING = frozenset({"abs", "interval"})
+#: What joins an interval's two ends where code spells each with its unit (``1.2 s to 3.4 s``).
+_INTERVAL_JOIN = INTERVAL_TEMPLATE.format(low="", high="")
+#: A figure's number as code spells it, at the start of its spelling: a bound, a sign, money's sign, the digits, and a
+#: range's second end (``< 0.000001``, ``-$0.01``, ``27–28``). What follows it is the unit the figure prints.
+_SPELLED_NUMBER = re.compile(r"^[<>]?\s?[+\-−]?\$?\d[\d.,]*(?:–[+\-−]?\$?\d[\d.,]*)?")
 
 #: One fault: the field path it sits at and why it is refused.
 _Fault = tuple[str, str]
@@ -344,7 +406,7 @@ def _shape(signals: Signals) -> str:
 # --- the spine -----------------------------------------------------------------------------------------------------
 
 #: GENERATOR §1: the spine chart each shape opens its evidence on.
-SPINE_KINDS: dict[str, str] = {"A": "gate_matrix", "B": "gate_scatter", "C": "lattice", "D": "forest", "E": "lines"}
+_SPINE_KINDS: dict[str, str] = {"A": "gate_matrix", "B": "gate_scatter", "C": "lattice", "D": "forest", "E": "lines"}
 
 
 class Spine(BaseModel):
@@ -399,7 +461,7 @@ def spine(report_input: ReportInput) -> Spine:
     :rtype: Spine
     """
     _, shape = classify(report_input)
-    kind = SPINE_KINDS[shape]
+    kind = _SPINE_KINDS[shape]
     gates = [criterion for criterion in report_input.criteria if criterion.kind == "gate"]
     figures = set(report_input.measures) | set(report_input.judged)
     source, aspect = "", ""
@@ -422,24 +484,6 @@ def spine(report_input: ReportInput) -> Spine:
     if source == "readings":
         measures = ()
     return Spine(shape=shape, kind=kind, source=source, aspect=aspect, measures=measures, reference=reference)
-
-
-def contrast_unit(report_input: ReportInput, contrast: Contrast) -> str:
-    """The unit a contrast's change is in: points for a judged dimension or a trial's outcome, else its measure's own
-    unit (empty where the input declares none). A chart of contrasts carries one (GENERATOR §5.2).
-
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
-    :param contrast: One of its contrasts.
-    :ptype contrast: Contrast
-    :return: The unit.
-    :rtype: str
-    """
-    kind = contrast.kind
-    if kind in ("judged", "trial") or (kind is None and contrast.measure in report_input.judged):
-        return "points"
-    figures = report_input.measures.get(contrast.measure)
-    return figures.unit or "" if figures is not None else ""
 
 
 def contrast_level(report_input: ReportInput, contrast: Contrast) -> str:
@@ -489,7 +533,7 @@ def _forest_spine(report_input: ReportInput) -> tuple[str, str, tuple[str, ...] 
     read = [
         aspect for aspect in report_input.aspects if aspect.asked and any(r.within_interval for r in aspect.readings)
     ]
-    asked = read[0] if len(read) == 1 else _aspect_of("", report_input)
+    asked = read[0] if len(read) == 1 else query_aspect("", report_input)
     if asked is not None and any(reading.within_interval for reading in asked.readings):
         return "readings", asked.id, (), ("margin",) if asked.margin is not None else ()
     if any(contrast.interval is not None for contrast in report_input.contrasts):
@@ -595,8 +639,11 @@ def validate_plan(plan: ReportPlan, report_input: ReportInput) -> None:
     faults += _flag_faults(plan, report_input)
     faults += _coverage_faults(plan, report_input)
     faults += _chart_faults(plan, report_input)
+    faults += _small_multiple_faults(plan)
+    faults += _column_faults(plan, report_input)
     faults += _key_faults(plan, report_input)
     faults += _literal_faults(plan, report_input)
+    faults += _unit_faults(plan, report_input)
     faults += _watch_faults(plan, report_input)
     faults += _reader_id_faults(plan, report_input)
     if faults:
@@ -858,6 +905,7 @@ def _confidence_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[
                 f"is empty: the open caveat {clause.id!r} needs the condition that would make it material",
             )
     wide = [disclosure for disclosure in implied_disclosures(report_input, plan.mode) if disclosure != "no_rule"]
+    wide += [item for item in _unsettled_on_the_pick(plan, report_input) if item not in wide]
     listed = {clause.id for clause in confidence.caveats}
     if confidence.form == "high":
         if wide:
@@ -884,9 +932,23 @@ def _confidence_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[
             "decision.confidence.caveats",
             (
                 f"leave out {elsewhere}, stated elsewhere ({', '.join(landed[elsewhere[0]])}): a 'high_if_immaterial' "
-                "confidence lists every open report-wide caveat, each with what would make it material"
+                "confidence lists every open caveat the call is conditional on, each with what would make it material"
             ),
         )
+
+
+def _unsettled_on_the_pick(plan: ReportPlan, report_input: ReportInput) -> list[str]:
+    """The open unsettled caveats on the arm the plan recommends: the confidence is conditional on each, report-wide or
+    not, since code's scope knows only the pick code makes (one dominant option), not a ranking rule's."""
+    row = _recommended(plan)
+    if row is None:
+        return []
+    materiality = caveat_materiality(report_input)
+    return [
+        item
+        for item, arms in unsettled_arms(report_input).items()
+        if row.option in arms and not materiality[item].immaterial
+    ]
 
 
 def _flag_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
@@ -1032,6 +1094,7 @@ def _charts(plan: ReportPlan) -> Iterator[tuple[str, ChartSpec]]:
 def _chart_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
     for path, chart in _charts(plan):
         yield from _query_faults(path, chart, plan, report_input)
+        yield from _no_control_faults(path, chart, report_input)
     control = control_arm(report_input)
     arms = {arm.id for arm in report_input.arms}
     rows = [row.option for row in plan.options.rows if row.option in arms]
@@ -1049,6 +1112,34 @@ def _chart_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Faul
                     + (" (a change-from-control chart leaves out the control)" if from_control else "")
                 ),
             )
+
+
+#: The sources a diverging chart draws as each arm less the control, computed from point figures.
+_LESS_THE_CONTROL = frozenset({"measures", "judged", "strata", "tasks"})
+#: The arms a difference heatmap names to draw its second less its first, needing no control.
+_COMPARED_PAIR = 2
+
+
+def _no_control_faults(path: str, chart: ChartSpec, report_input: ReportInput) -> Iterator[_Fault]:
+    """A chart drawn as each arm less the control, on an input that names no control (this module's Charts)."""
+    if control_arm(report_input) is not None:
+        return
+    if chart.kind == "diverging_bars" and chart.query.source in _LESS_THE_CONTROL:
+        yield (
+            f"{path}.kind",
+            (
+                f"is 'diverging_bars' over {chart.query.source!r}, which draws each arm less the control, and the "
+                "report input names no control"
+            ),
+        )
+    elif chart.kind == "diff_heatmap" and len(chart.query.arms) < _COMPARED_PAIR:
+        yield (
+            f"{path}.query.arms",
+            (
+                f"name {list(chart.query.arms)}, and a 'diff_heatmap' on an input with no control draws its second "
+                "arm less its first: name the two arms it compares"
+            ),
+        )
 
 
 def _from_control(chart: ChartSpec) -> bool:
@@ -1077,15 +1168,52 @@ def _query_faults(path: str, chart: ChartSpec, plan: ReportPlan, report_input: R
     strata = _strata_vocabulary(report_input)
     if stray := [stratum for stratum in query.strata if stratum not in strata]:
         yield f"{path}.query.strata", f"name {stray}, which are no strata or tasks of the report input"
-    rows = list(_source_rows(chart, report_input))
+    rows: list[SourceRow] = query_rows(query, report_input)
     if not rows:
         yield f"{path}.query", f"selects nothing from {source!r}: the chart would be empty"
-    elif chart.kind == "forest" and not all(interval for _, interval in rows):
+    elif chart.kind == "forest" and any(row.interval is None for row in rows):
         yield f"{path}.kind", "is 'forest', and some row it selects carries no interval: a forest draws intervals"
     for index, reference in enumerate(chart.reference):
         yield from _bare_key_faults(f"{path}.reference[{index}].key", reference.key, report_input)
     if chart.emphasis and chart.emphasis not in _emphasizable(plan, report_input):
         yield f"{path}.emphasis", f"is {chart.emphasis!r}, which is no arm, option, stratum or task to stress"
+
+
+def _small_multiple_faults(plan: ReportPlan) -> Iterator[_Fault]:
+    """A chart repeats its panel only where the kit draws small multiples of its kind."""
+    for path, chart in _charts(plan):
+        by = chart.query.small_multiples_by
+        if by != "none" and chart.kind not in _PANELLED_KINDS:
+            yield (
+                f"{path}.query.small_multiples_by",
+                (
+                    f"is {by!r}, and the kit draws no small multiples of a {chart.kind!r}; it panels "
+                    f"{sorted(_PANELLED_KINDS)}. Set it to 'none', or draw a kind that panels"
+                ),
+            )
+
+
+def _column_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
+    """Every options column is one of :data:`OPTION_COLUMN_FAMILIES`, a keyed one naming a dimension or measure the
+    input holds (a measure's being any measure, or the measure a criterion reads, as the columns are written)."""
+    keyed = {
+        "judged": set(report_input.judged),
+        "measure": set(report_input.measures) | {criterion.measure for criterion in report_input.criteria},
+    }
+    for index, column in enumerate(plan.options.columns):
+        family, colon, key = column.partition(":")
+        if column in _COLUMN_WORDS:
+            continue
+        if colon and family in _COLUMN_PREFIXES:
+            if key in keyed[family]:
+                continue
+            reason = f"names the {family} {key!r}, which the input does not hold"
+        else:
+            reason = "is no column family code renders"
+        yield (
+            f"options.columns[{index}]",
+            f"is {column!r}, which {reason}; the families are {list(OPTION_COLUMN_FAMILIES)}",
+        )
 
 
 def _measure_vocabulary(source: str, report_input: ReportInput) -> set[str]:
@@ -1122,90 +1250,6 @@ def _strata_vocabulary(report_input: ReportInput) -> set[str]:
     if report_input.human_pref is not None:
         names |= {row.id for row in report_input.human_pref.rows}
     return names
-
-
-def _source_rows(chart: ChartSpec, report_input: ReportInput) -> Iterator[tuple[str, bool]]:
-    """Each row the query selects, by a label, with whether it carries an interval."""
-    query = chart.query
-    arms = set(query.arms) or {arm.id for arm in report_input.arms}
-    measures = set(query.measures)
-    strata = set(query.strata)
-    source = query.source
-    if source == "readings":
-        aspect = _aspect_of(query.aspect, report_input)
-        for reading in aspect.readings if aspect is not None else []:
-            if reading.arm in arms:
-                yield reading.arm, reading.within_interval is not None
-    elif source == "contrasts":
-        for contrast in report_input.contrasts:
-            if (
-                contrast.arm in arms
-                and (not measures or contrast.measure in measures)
-                and (not query.aspect or contrast.aspect == query.aspect)
-            ):
-                yield f"{contrast.arm}/{contrast.measure}", contrast.interval is not None
-    elif source in ("measures", "judged", "configs"):
-        yield from _figure_rows(source, query.aspect, measures, arms, report_input)
-    elif source == "scoreboard":
-        aspect = _aspect_of(query.aspect, report_input) if query.aspect else None
-        board = aspect.scoreboard if aspect is not None and aspect.scoreboard is not None else report_input.scoreboard
-        yield from ((arm, False) for arm in board if arm in arms)
-    elif source == "floors":
-        for floor in report_input.floors:
-            if floor.arm in arms and (not query.aspect or floor.aspect == query.aspect):
-                if not measures or floor.floor in measures:
-                    yield f"{floor.floor}/{floor.arm}", floor.interval is not None
-    elif source in ("strata", "tasks"):
-        slices = report_input.strata if source == "strata" else report_input.tasks
-        for item in slices:
-            if (not strata or item.id in strata) and any(arm in arms for arm in item.per_arm):
-                yield item.id, False
-    elif source == "examples":
-        for example in report_input.examples:
-            if (
-                (example.arm is None or example.arm in arms)
-                and (not strata or example.stratum in strata)
-                and (not query.aspect or example.aspect in (None, query.aspect))
-            ):
-                yield example.trial or example.case or "example", False
-    elif source == "cells":
-        yield from ((cell, False) for cell in report_input.cells if not strata or cell in strata)
-    elif source == "confusion":
-        yield from ((axis, False) for axis in report_input.confusion if not measures or axis in measures)
-    elif report_input.human_pref is not None:
-        yield from ((row.id, row.half_width is not None) for row in report_input.human_pref.rows)
-
-
-def _figure_rows(
-    source: str, aspect: str, measures: set[str], arms: set[str], report_input: ReportInput
-) -> Iterator[tuple[str, bool]]:
-    """Each arm's figure on each measure or judged dimension the query keeps; a configs chart keeps the arms that
-    ran a config."""
-    tables: list[Mapping[str, Measure | Judged]] = []
-    if source in ("measures", "configs"):
-        tables.append(report_input.measures)
-    if source in ("judged", "configs"):
-        tables.append(report_input.judged)
-    if source == "configs":
-        arms = arms & {config.arm for config in report_input.configs}
-    for table in tables:
-        for key, figures in table.items():
-            if measures and key not in measures:
-                continue
-            per_arm = figures.by_aspect.get(aspect, figures.per_arm) if aspect else figures.per_arm
-            for arm, stat in per_arm.items():
-                if arm in arms:
-                    yield f"{key}/{arm}", stat.ci is not None
-
-
-def _aspect_of(aspect_id: str, report_input: ReportInput) -> Aspect | None:
-    """The aspect a query names, or with none named the one asked aspect (the only one asked, else the only one)."""
-    if aspect_id:
-        return next((aspect for aspect in report_input.aspects if aspect.id == aspect_id), None)
-    asked = [aspect for aspect in report_input.aspects if aspect.asked]
-    if len(asked) == 1:
-        return asked[0]
-    return report_input.aspects[0] if not asked and len(report_input.aspects) == 1 else None
 
 
 def _emphasizable(plan: ReportPlan, report_input: ReportInput) -> set[str]:
@@ -1284,6 +1328,92 @@ def _literal_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fa
                     "the input does not hold is written in words or left out"
                 ),
             )
+
+
+# --- units a key already prints ------------------------------------------------------------------------------------
+
+
+def _states_cost_per_thousand(report_input: ReportInput) -> bool:
+    """Whether the page states the arms' costs per 1,000 replies: the cost per 1,000 replies resolves for some arm."""
+    for arm in report_input.arms:
+        try:
+            resolve(f"cost_per_1k.{arm.id}", report_input)
+        except UnresolvableReference:
+            continue  # NOSILENT: an arm that states no cost states none per 1,000 replies; the others are read
+        return True
+    return False
+
+
+def _unit_words(spelled: str) -> list[str]:
+    """The words a figure's spelling already prints its unit by, longest first: the unit after its number (``ms``,
+    ``%``, ``per 1,000 replies``), and every name :data:`~threetears.evals.analysis.quantities.UNIT_NAMES` gives that
+    unit, money's whenever the spelling carries its sign."""
+    last = spelled.rpartition(_INTERVAL_JOIN)[2]
+    number = _SPELLED_NUMBER.match(last)
+    suffix = last[number.end() :].strip() if number is not None else ""
+    words = {suffix} if suffix else set()
+    for unit, names in UNIT_NAMES.items():
+        if suffix.casefold() in {name.casefold() for name in names} or (unit == MONEY and "$" in spelled):
+            words.update(names)
+    return sorted(words, key=len, reverse=True)
+
+
+def _repeated_unit(after: str, words: Sequence[str]) -> str | None:
+    """The unit word ``after`` opens with (past any space), bounded where it ends in a word character; None for none."""
+    for word in words:
+        bound = r"(?!\w)" if re.match(r"\w", word[-1:]) else ""
+        if re.match(rf"\s*{re.escape(word)}{bound}", after, re.IGNORECASE):
+            return word
+    return None
+
+
+def _sub_cent(figure: Figure, key: FigureKey) -> bool:
+    """A money figure per reply under one cent, not keyed per 1,000 replies."""
+    if figure.scale != MONEY or _PER_THOUSAND_FILTER in key.filters:
+        return False
+    values = figure.value if isinstance(figure.value, tuple) else (figure.value,)
+    sizes = [abs(value) for value in values if isinstance(value, float)]
+    return bool(sizes) and 0 < max(sizes) < _CENT
+
+
+def _unit_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
+    """No prose writes a unit right after a key that prints it, and money per reply under one cent is keyed per
+    1,000 replies where the page states its costs so."""
+    per_thousand = _states_cost_per_thousand(report_input)
+    for path, text in _prose(plan):
+        try:
+            keys = keys_in(text)
+        except UnresolvableReference:
+            continue  # NOSILENT: prose whose keys do not parse is refused by the key check (_key_faults) at this path
+        for key in keys:
+            assert key.span is not None
+            start, end = key.span
+            try:
+                figure = resolve(key.path, report_input)
+                if figure.kind not in ("number", "interval"):
+                    continue
+                spelled = format_figure(figure, key.filters)
+            except UnresolvableReference:
+                continue  # NOSILENT: a key that does not resolve or suit its filters is refused by the key check
+            written = text[start:end]
+            if (word := _repeated_unit(text[end:], _unit_words(spelled))) is not None:
+                yield (
+                    path,
+                    (
+                        f"writes {word!r} right after {written}, which code spells {spelled!r}, its unit included: "
+                        "a key prints its own unit, so drop the word"
+                    ),
+                )
+            if per_thousand and _sub_cent(figure, key):
+                kept = [name for name in key.filters if name in _KEPT_BESIDE_A_SPELLING]
+                wanted = "|".join([key.path, *kept, _PER_THOUSAND_FILTER])
+                yield (
+                    path,
+                    (
+                        f"keys {written}, money per reply under one cent ({spelled}), and the page states its costs "
+                        f"per 1,000 replies: key it per 1,000 replies, {{{wanted}}}, so the page reads one cost basis"
+                    ),
+                )
 
 
 # --- the weakest margin in Watch -----------------------------------------------------------------------------------

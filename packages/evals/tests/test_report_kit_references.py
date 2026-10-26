@@ -26,13 +26,15 @@ from __future__ import annotations
 import re
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from packages.evals.tests.fixtures.report_plans import dataset
 from packages.evals.tests.report_kit_support import KIT, chromium_unavailable, render_checked, rendered, run_script
 from threetears.evals.analysis.report.figure_keys import render
+from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_rows import query_rows
+from threetears.evals.kernel.report_plan import ReportPlan
 
 REFERENCES = sorted(p.name.removesuffix(".src.html") for p in (KIT / "references").glob("*.src.html"))
 
@@ -122,19 +124,11 @@ def test_the_kairo_page_says_what_its_plan_says(tmp_path: Path) -> None:
     assert cards == _example_rows(plan, report_input), "the cards are the rows the plan's examples query selects"
 
 
-def _example_rows(plan: Any, report_input: Any) -> list[str]:
-    """The trials the plan's examples section selects: every example of the arms and strata its query names, in the
-    input's order, to its limit, as the plan checks read a query."""
+def _example_rows(plan: ReportPlan, report_input: ReportInput) -> list[str]:
+    """The trials the plan's examples section selects, as the plan checks and a page read its query
+    (:func:`~threetears.evals.analysis.report_rows.query_rows`)."""
     (section,) = [section for section in plan.sections if section.chart.query.source == "examples"]
-    query = section.chart.query
-    rows = [
-        example.trial or example.case or "example"
-        for example in report_input.examples
-        if (example.arm is None or not query.arms or example.arm in query.arms)
-        and (not query.strata or example.stratum in query.strata)
-        and (not query.aspect or example.aspect in (None, query.aspect))
-    ]
-    return rows[: query.limit] if query.limit else rows
+    return [row.label for row in query_rows(section.chart.query, report_input)]
 
 
 class _SectionHeaders(HTMLParser):

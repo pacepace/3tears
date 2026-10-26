@@ -10,8 +10,13 @@ Contracts held here (``threetears.evals.analysis.report_plan_checks``, GENERATOR
 - each check refuses at the field path it names: code's facts, mode (one code allows), slots, roles, ids, the
   recommendation (the memo's refusals ported, and the one option that dominates; a choice's pick no pair reading
   shows ahead is stated at low confidence unless declared gates leave it the one dominant survivor), the warning answers
-  (``floor_unclear`` among them), the confidence's form and clauses, the flag, caveat coverage, the charts, the figure
-  keys and D3, over every prose field the plan holds.
+  (``floor_unclear`` among them), the confidence's form and clauses, the flag, caveat coverage, the charts (each kind
+  over the sources it draws, small multiples only of a kind the kit panels), the options columns (one of
+  ``OPTION_COLUMN_FAMILIES``), the figure keys, D3, and no unit written right after a key that prints it nor money per
+  reply under one cent on a page stating costs per 1,000 replies, over every prose field the plan holds;
+- completion fills each reference line's key: a margin at the chart's aspect's margin, a floor or a budget at the
+  threshold of the one criterion reading the chart's one measure (direction, statistic and place matched), and refuses
+  a line with no such criterion or several, naming why.
 
 Modes other than r5's own need inputs that allow them (:mod:`threetears.evals.analysis.report_decision`): a tradeoff
 variant where 1017 is the cheapest arm and nothing shows it no worse, a no-call variant where a standing guardrail
@@ -23,19 +28,20 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
+from pydantic import BaseModel
 
 from packages.evals.tests.report_kit_support import KIT
-from packages.evals.tests.report_plan_support import structure_reply
+from packages.evals.tests.report_plan_support import planned_reply, structure_reply
 from threetears.evals.analysis.plan_assembly import check_structure
-from threetears.evals.analysis.report_plan_facts import plan_facts
+from threetears.evals.analysis.report_plan_facts import complete_plan, plan_facts
 from threetears.evals.analysis.errors import PlanRefusal, SoundnessRefusal
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_decision import surviving_options
 from threetears.evals.analysis.report_plan_checks import (
-    SPINE_KINDS,
+    OPTION_COLUMN_FAMILIES,
     classify,
     implied_disclosures,
     raised_warnings,
@@ -43,7 +49,7 @@ from threetears.evals.analysis.report_plan_checks import (
     validate_plan,
 )
 from threetears.evals.kernel import report_plan
-from threetears.evals.kernel.report_plan import PlanStructure, ReportPlan
+from threetears.evals.kernel.report_plan import PlannedReport, PlanStructure, ReportPlan
 from threetears.evals.schema.prose import field_is_prose
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_plans"
@@ -64,6 +70,21 @@ def _input(name: str = "r5", data: dict[str, Any] | None = None) -> ReportInput:
 def _plan() -> dict[str, Any]:
     loaded: dict[str, Any] = json.loads(R5_PLAN.read_text(encoding="utf-8"))
     return loaded
+
+
+def _ordered_versions() -> ReportInput:
+    """Kairo read as ordered versions: shape E."""
+    data = _input_dict()
+    data["meta"]["design_shape"] = "ordered_versions"
+    return _input(data=data)
+
+
+#: Each shape's spine chart kind, read through :func:`spine` off one input per shape: r1 to r4, then Kairo as ordered
+#: versions.
+_SPINES: dict[str, str] = {
+    classify(given)[1]: spine(given).kind
+    for given in (*(_input(name) for name in ("r1", "r2", "r3", "r4")), _ordered_versions())
+}
 
 
 def _faults(plan: dict[str, Any], data: dict[str, Any] | None = None) -> list[tuple[str, str]]:
@@ -206,9 +227,7 @@ class TestClassify:
         assert (signals, shape) == (plan.signals, plan.shape)
 
     def test_ordered_versions_look_up_shape_e(self):
-        data = _input_dict()
-        data["meta"]["design_shape"] = "ordered_versions"
-        signals, shape = classify(_input(data=data))
+        signals, shape = classify(_ordered_versions())
         assert (signals.candidate_structure, shape) == ("ordered_versions", "E")
 
     def test_the_criteria_signal_wins_a_control_under_hard_gates(self):
@@ -441,8 +460,9 @@ class TestTheSpine:
         _passes(plan)
 
     def test_every_shapes_spine_is_the_rubrics(self):
+        """Every shape's spine kind, read off an input of that shape, is the rubric's."""
         rubric: dict[str, Any] = json.loads((FIXTURES / "rubric" / "v2.json").read_text(encoding="utf-8"))
-        assert {shape: [kind] for shape, kind in SPINE_KINDS.items()} == rubric["spine"]
+        assert _SPINES == {shape: kind for shape, [kind] in rubric["spine"].items()}
 
 
 # --- mode, slots and roles -----------------------------------------------------------------------------------------
@@ -988,6 +1008,116 @@ class TestTheConfidence:
         assert "'late:margin'" in _why(plan, "decision.confidence.caveats", _flash_data())
 
 
+# --- an aspect unsettled past its margin --------------------------------------------------------------------------
+
+
+def _nothing_open(data: dict[str, Any]) -> dict[str, Any]:
+    """The input with no late criterion and a calibrated judge: no report-wide caveat of its own stays open."""
+    data["caveats"]["late_criteria"] = []
+    data["caveats"]["judge_tiers"] = {}
+    for judged in data["judged"].values():
+        judged.update(tier="calibrated", calibration="calibrated")
+    return data
+
+
+def _voice(data: dict[str, Any], arm: str | None = None) -> dict[str, Any]:
+    """The input with an unasked ``voice`` aspect read like the asked one, against the same declared margin, and
+    ``arm``'s reading there moved so its interval, its width kept, straddles the margin's line (``-margin``)."""
+    voice = json.loads(json.dumps(data["aspects"][0]))
+    voice.update(id="voice", name="voice", asked=False)
+    for reading in voice["readings"]:
+        if reading["arm"] == arm:
+            low, high = reading["within_interval"]
+            width, line = high - low, -reading["margin"]
+            reading["within_interval"] = [line - width / 2, line + width / 2]
+    data["aspects"].append(voice)
+    return data
+
+
+_UNSETTLED = {"id": "unsettled:voice", "material_if": "Voice is unsettled. Material only if a loss that large would "
+              "change the call."}  # fmt: skip
+
+
+def _confident(plan: dict[str, Any], form: str, *clauses: dict[str, str]) -> dict[str, Any]:
+    return _set(plan, "decision.confidence", {"form": form, "caveats": list(clauses)})
+
+
+def _ranked_flash() -> dict[str, Any]:
+    """Nothing open; qwen3.8-flash shown better on an asked latency aspect and dearer than September, so nothing
+    dominates and the declared priority (latency, then cost) decides: the pick is the plan's, not code's."""
+    data = _nothing_open(_input_dict())
+    data["aspects"].append({"id": "latency", "name": "latency", "asked": True, "readings": []})
+    data["measures"]["research_p95_s"] = {"unit": "s", "higher_is_better": False, "per_arm": {}}
+    data["contrasts"].append(_P95_IMPROVED)
+    data["contrast_families"][0]["merit_axes"] = ["latency", "cost"]
+    return data
+
+
+def _confidence_and_coverage(plan: dict[str, Any], data: dict[str, Any]) -> list[tuple[str, str]]:
+    """The faults the confidence and coverage checks find, apart from any the plan's r5 prose keys meet elsewhere."""
+    try:
+        validate_plan(ReportPlan.model_validate(plan), _input(data=data))
+    except PlanRefusal as refused:
+        return [(at, why) for at, why in refused.faults if at.startswith("decision.confidence") or "unsettled:" in why]
+    return []
+
+
+class TestUnsettledPastTheMargin:
+    """GENERATOR §2.5 on the issue's state: the asked aspect decides the call for qwen3.8-flash, and its unasked voice
+    reading allows a loss past the declared margin."""
+
+    def test_inside_its_margin_plain_high_passes(self):
+        data = _voice(_nothing_open(_flash_data()))
+        assert "unsettled:voice" not in implied_disclosures(_input(data=data), "decide")
+        _passes(_confident(_recommending_flash(_plan()), "high"), data)
+
+    def test_plain_high_is_refused_naming_it(self):
+        data = _voice(_nothing_open(_flash_data()), "qwen3.8-flash")
+        assert implied_disclosures(_input(data=data), "decide") == ["unsettled:voice"]
+        why = _why(_confident(_recommending_flash(_plan()), "high"), "decision.confidence.form", data)
+        assert "open caveats remain: ['unsettled:voice']" in why
+
+    def test_high_if_immaterial_carrying_it_passes(self):
+        data = _voice(_nothing_open(_flash_data()), "qwen3.8-flash")
+        _passes(_confident(_recommending_flash(_plan()), "high_if_immaterial", _UNSETTLED), data)
+
+    def test_low_still_passes_listing_it_or_flagging_it(self):
+        data = _voice(_nothing_open(_flash_data()), "qwen3.8-flash")
+        _passes(_confident(_recommending_flash(_plan()), "low", _UNSETTLED), data)
+        plan = _confident(_recommending_flash(_plan()), "low")
+        plan["flag"] = [{**_NO_RULE_FLAG, "title": "Voice is unsettled.", "discloses": ["unsettled:voice"]}]
+        _passes(plan, data)
+
+    def test_on_a_candidate_not_picked_it_sits_beside_a_claim_under_plain_high(self):
+        data = _voice(_nothing_open(_flash_data()), "1017")
+        plan = _confident(_recommending_flash(_plan()), "high")
+        plan["decision"]["slots"][2]["caveats"].append("unsettled:voice")
+        _passes(plan, data)
+
+    def test_a_pick_by_the_ranking_rule_is_conditional_on_it_though_code_scopes_it(self):
+        data = _voice(_ranked_flash(), "qwen3.8-flash")
+        assert "unsettled:voice" not in implied_disclosures(_input(data=data), "decide")
+        high = dict(_confidence_and_coverage(_confident(_recommending_flash(_plan()), "high"), data))
+        assert "open caveats remain: ['unsettled:voice']" in high["decision.confidence.form"]
+        carried = _confident(_recommending_flash(_plan()), "high_if_immaterial", _UNSETTLED)
+        assert _confidence_and_coverage(carried, data) == []
+
+    def test_a_flag_disclosing_it_weakens_the_measures_its_aspects_contrasts_read(self):
+        """A low plan leaves the open unsettled aspect to the flag, which weakens the measures read on that aspect and
+        leaves the others standing."""
+        data = _voice(_nothing_open(_flash_data()), "qwen3.8-flash")
+        on_voice = {**data["contrasts"][1], "arm": "1017", "aspect": "voice"}
+        data["contrasts"].append(on_voice)
+        plan = _confident(_recommending_flash(_plan()), "low")
+        plan["flag"] = [{**_NO_RULE_FLAG, "title": "Voice is unsettled.", "discloses": ["unsettled:voice"]}]
+        completed, faults = _completed("r5", plan, data)
+        assert faults == [] and completed is not None
+        (flag,) = completed.flag
+        assert flag.discloses == ["unsettled:voice"]
+        assert flag.weakens == [f"judged:{on_voice['measure']}"]
+        assert flag.weakens[0] not in flag.survives and flag.survives
+
+
 # --- coverage ------------------------------------------------------------------------------------------------------
 
 
@@ -1101,6 +1231,383 @@ class TestCharts:
     def test_an_emphasis_on_nothing_present_is_refused(self):
         assert "sections[0].chart.emphasis" in _paths(_set(_plan(), "sections[0].chart.emphasis", "qwen"))
 
+    @pytest.mark.parametrize(
+        ("name", "path", "source", "kind"),
+        [
+            ("r1", "sections[2].chart", "tasks", "range_bars"),
+            ("r5", "sections[1].chart", "strata", "dot_interval"),
+            ("r2", "sections[1].chart", "configs", "diverging_bars"),
+        ],
+    )
+    def test_a_kind_draws_each_source_its_resolver_reads(self, name: str, path: str, source: str, kind: str):
+        plan = _anchor(name)
+        assert _get(plan, f"{path}.query.source") == source
+        assert f"{path}.kind" not in _anchor_paths(_set(plan, f"{path}.kind", kind), name)
+
+    def test_a_gate_matrix_draws_readings(self):
+        plan = _set(_plan(), "summary[0].kind", "gate_matrix")
+        plan["summary"][0]["query"] |= {"source": "readings", "aspect": ASPECT, "measures": []}
+        assert "summary[0].kind" not in [path for path, _ in _faults_or_none(plan)]
+
+    def test_range_bars_still_draw_no_strata(self):
+        plan = _set(_plan(), "sections[1].chart.kind", "range_bars")
+        assert "cannot draw 'strata'" in _why(plan, "sections[1].chart.kind")
+
+
+def _anchor(name: str) -> dict[str, Any]:
+    loaded: dict[str, Any] = json.loads((FIXTURES / name / "anchor.plan.json").read_text(encoding="utf-8"))
+    return loaded
+
+
+def _anchor_faults(plan: dict[str, Any], name: str, data: dict[str, Any] | None = None) -> list[tuple[str, str]]:
+    """The faults validate_plan finds on an edited anchor against its input; empty where it passes."""
+    try:
+        validate_plan(ReportPlan.model_validate(plan), _input(name, data))
+    except PlanRefusal as refused:
+        return list(refused.faults)
+    return []
+
+
+def _anchor_paths(plan: dict[str, Any], name: str, data: dict[str, Any] | None = None) -> list[str]:
+    return [path for path, _ in _anchor_faults(plan, name, data)]
+
+
+#: The kinds whose kit chart model carries ``panels`` (``kit/API.md``: bars, and diverging bars as bars, the two
+#: scatters, dot intervals, the heatmap and confusion matrices).
+PANELLED = {"bars", "diverging_bars", "scatter_frontier", "gate_scatter", "dot_interval", "heatmap", "confusion"}
+
+
+class TestSmallMultiples:
+    def test_small_multiples_of_a_forest_are_refused(self):
+        plan = _set(_plan(), "summary[0].query.small_multiples_by", "arm")
+        why = _why(plan, "summary[0].query.small_multiples_by")
+        assert "no small multiples of a 'forest'" in why and "'none'" in why
+
+    @pytest.mark.parametrize("kind", sorted(set(_SPINES.values()) | PANELLED | {"range_bars", "examples", "table"}))
+    def test_only_a_kind_the_kit_panels_repeats_its_panel(self, kind: str):
+        plan = _set(_plan(), "summary[1].kind", kind)
+        _set(plan, "summary[1].query.small_multiples_by", "arm")
+        refused = "summary[1].query.small_multiples_by" in [path for path, _ in _faults_or_none(plan)]
+        assert refused == (kind not in PANELLED), kind
+
+    def test_no_small_multiples_is_never_refused(self):
+        plan = _set(_plan(), "summary[0].query.small_multiples_by", "none")
+        assert "summary[0].query.small_multiples_by" not in [path for path, _ in _faults_or_none(plan)]
+
+
+def _faults_or_none(plan: dict[str, Any], data: dict[str, Any] | None = None) -> list[tuple[str, str]]:
+    try:
+        validate_plan(ReportPlan.model_validate(plan), _input(data=data))
+    except PlanRefusal as refused:
+        return list(refused.faults)
+    return []
+
+
+class TestOptionColumns:
+    def test_a_column_off_the_families_is_refused(self):
+        plan = _plan()
+        plan["options"]["columns"].append("monthly_cost")
+        assert "is no column family" in _why(plan, "options.columns[5]")
+
+    @pytest.mark.parametrize("column", ["judged:persona.booth_stays_offstage", "measure:production_replicating_cost"])
+    def test_a_keyed_column_on_a_held_key_passes(self, column: str):
+        plan = _plan()
+        plan["options"]["columns"].insert(4, column)
+        _passes(plan)
+
+    @pytest.mark.parametrize("column", ["judged:production_replicating_cost", "measure:persona.nope", "judged:"])
+    def test_a_keyed_column_on_a_key_the_input_does_not_hold_is_refused(self, column: str):
+        plan = _plan()
+        plan["options"]["columns"].append(column)
+        assert "which the input does not hold" in _why(plan, "options.columns[5]")
+
+    @pytest.mark.parametrize("name", ["r1", "r2", "r3", "r4", "r5"])
+    def test_every_column_code_emits_is_one_of_the_families(self, name: str):
+        for column in plan_facts(_input(name)).columns:
+            family, colon, _ = column.partition(":")
+            assert (column if not colon else f"{family}:" + ("<dim>" if family == "judged" else "<key>")) in (
+                OPTION_COLUMN_FAMILIES
+            ), column
+
+
+#: r5 with a measure stated in seconds, read by one arm.
+def _seconds_data() -> dict[str, Any]:
+    data = _input_dict()
+    data["measures"]["reply_s"] = {"unit": "s", "higher_is_better": False, "per_arm": {"September": {"mean": 3.2}}}
+    return data
+
+
+_SECONDS = "{measure.reply_s.September.mean}"
+_R2_P95 = "{measure.latency_ms.brisk-s.low.r1.p95|int} ms"
+
+
+class TestUnits:
+    @pytest.mark.parametrize("after", [" ms", " milliseconds", "ms", " MS"])
+    def test_a_unit_after_a_key_that_prints_it_is_refused(self, after: str):
+        plan = _replace_in(_anchor("r2"), "lede", _R2_P95, "{measure.latency_ms.brisk-s.low.r1.p95}" + after)
+        why = " ".join(why for path, why in _anchor_faults(plan, "r2") if path == "lede")
+        assert "right after {measure.latency_ms.brisk-s.low.r1.p95}" in why and "'513 ms'" in why
+
+    def test_a_unit_after_a_key_spelled_bare_passes(self):
+        plan = _anchor("r2")
+        assert _R2_P95 in plan["lede"]
+        assert "lede" not in _anchor_paths(plan, "r2")
+
+    @pytest.mark.parametrize("after", [" seconds", " second", " s.", " secs"])
+    def test_seconds_after_a_seconds_key_are_refused(self, after: str):
+        plan = _set(_plan(), "sections[0].caption", f"The reply takes {_SECONDS}{after}")
+        assert "right after" in _why(plan, "sections[0].caption", _seconds_data())
+
+    @pytest.mark.parametrize("after", [" so it is slow.", " slower", "."])
+    def test_a_word_that_only_starts_like_a_unit_passes(self, after: str):
+        plan = _set(_plan(), "sections[0].caption", f"The reply takes {_SECONDS}{after}")
+        assert "sections[0].caption" not in [path for path, _ in _faults_or_none(plan, _seconds_data())]
+
+    @pytest.mark.parametrize("after", ["%", " %", " percent", " per cent"])
+    def test_a_percent_after_a_percent_key_is_refused(self, after: str):
+        plan = _set(_plan(), "sections[0].caption", "{pass_rate.September|pct}" + after + " pass.")
+        assert f"writes {after.strip()!r} right after {{pass_rate.September|pct}}" in _why(plan, "sections[0].caption")
+
+    def test_points_after_a_key_spelled_in_points_pass(self):
+        plan = _plan()
+        assert "|pts} points" in _get(plan, "decision.slots[1].text")
+        _passes(plan)
+
+    def test_a_units_own_words_after_a_key_that_prints_them_are_refused(self):
+        plan = _replace_in(
+            _plan(),
+            "decision.slots[0].text",
+            "{cost_per_1k.September|usd_per_1k})",
+            "{cost_per_1k.September|usd_per_1k} per 1,000 replies)",
+        )
+        assert "'per 1,000 replies'" in _why(plan, "decision.slots[0].text")
+
+    def test_the_words_after_a_cost_spelled_without_them_pass(self):
+        plan = _replace_in(
+            _plan(),
+            "decision.slots[0].text",
+            "{cost_per_1k.September|usd_per_1k})",
+            "{cost_per_1k.September} per 1,000 replies)",
+        )
+        _passes(plan)
+
+    @pytest.mark.parametrize("after", [" dollars", " USD", " $"])
+    def test_money_after_a_key_that_prints_its_sign_is_refused(self, after: str):
+        plan = _replace_in(
+            _plan(),
+            "decision.slots[0].text",
+            "{cost_per_1k.September|usd_per_1k})",
+            "{cost_per_1k.September}" + after + ")",
+        )
+        assert "right after {cost_per_1k.September}" in _why(plan, "decision.slots[0].text")
+
+    def test_a_unit_outside_the_vocabulary_is_refused_where_it_repeats_the_printed_one(self):
+        plan = _anchor("r2")
+        plan["lede"] += " It makes {measure.calls_per_task.atlas-m.off.r0.mean} calls a task."
+        why = " ".join(why for path, why in _anchor_faults(plan, "r2") if path == "lede")
+        assert "writes 'calls'" in why
+
+    def test_the_per_million_words_after_a_key_that_prints_them_are_refused(self):
+        plan = _anchor("r3")
+        plan["lede"] += " Zero-shot costs {measure.cost_per_1m.atlas-m.zero.mean} per 1,000,000 replies."
+        why = " ".join(why for path, why in _anchor_faults(plan, "r3") if path == "lede")
+        assert "writes 'per 1,000,000 replies'" in why
+
+    def test_the_per_million_words_after_a_whole_number_pass(self):
+        plan = _anchor("r3")
+        plan["lede"] += " Zero-shot costs {measure.cost_per_1m.atlas-m.zero.mean|int} dollars per 1,000,000 replies."
+        assert "lede" not in _anchor_paths(plan, "r3")
+
+    def test_money_per_reply_under_a_cent_is_refused_where_costs_read_per_thousand(self):
+        plan = _replace_in(
+            _plan(),
+            "decision.slots[0].text",
+            "({cost_per_1k.September|usd_per_1k})",
+            "({scoreboard.September.reply_cost_usd} a reply)",
+        )
+        why = _why(plan, "decision.slots[0].text")
+        assert "under one cent" in why and "{scoreboard.September.reply_cost_usd|usd_per_1k}" in why
+
+    def test_money_per_reply_under_a_cent_keyed_per_thousand_passes(self):
+        plan = _replace_in(
+            _plan(),
+            "decision.slots[0].text",
+            "{cost_per_1k.September|usd_per_1k}",
+            "{scoreboard.September.reply_cost_usd|usd_per_1k}",
+        )
+        _passes(plan)
+
+    def test_a_change_in_money_under_a_cent_keeps_its_other_filters_in_the_key_it_asks_for(self):
+        plan = _set(
+            _plan(), "sections[0].caption", "It costs {contrast.1017.production_replicating_cost.delta|abs|usd} more."
+        )
+        assert "{contrast.1017.production_replicating_cost.delta|abs|usd_per_1k}" in _why(plan, "sections[0].caption")
+
+    def test_money_per_reply_of_a_cent_or_more_passes(self):
+        data = _input_dict()
+        data["scoreboard"]["September"]["reply_cost_usd"] = 0.02
+        plan = _replace_in(
+            _plan(),
+            "decision.slots[0].text",
+            "{cost_per_1k.September|usd_per_1k}",
+            "{scoreboard.September.reply_cost_usd}",
+        )
+        assert "decision.slots[0].text" not in [path for path, _ in _faults_or_none(plan, data)]
+
+    def test_money_under_a_cent_passes_where_the_page_states_no_cost_per_thousand(self):
+        data = _input_dict()
+        for row in data["scoreboard"].values():
+            row["reply_cost_usd"] = None
+        for measure in data["measures"].values():
+            measure.pop("merit_axis", None)
+        data["measures"]["cost_usd"]["per_arm"]["September"]["mean"] = 0.004
+        plan = _set(_plan(), "sections[0].caption", "A reply costs {measure.cost_usd.September.mean}.")
+        assert "sections[0].caption" not in [path for path, _ in _faults_or_none(plan, data)]
+
+
+def _replace_in(plan: dict[str, Any], path: str, old: str, new: str) -> dict[str, Any]:
+    text = _get(plan, path)
+    assert old in text, f"{path} no longer holds {old!r}"
+    return _set(plan, path, text.replace(old, new))
+
+
+# --- reference lines ------------------------------------------------------------------------------------------------
+
+
+def _completed(
+    name: str, plan: dict[str, Any], data: dict[str, Any] | None = None
+) -> tuple[ReportPlan | None, list[tuple[str, str]]]:
+    """An anchor's planned part completed against its input: the stored plan, or the faults completion found."""
+    report = _input(name, data)
+    row = next((row["option"] for row in plan["options"]["rows"] if row["role"] == "recommended"), None)
+    warnings = [warning.model_dump() for warning in raised_warnings(report, row)] if row is not None else []
+    try:
+        return complete_plan(PlannedReport.model_validate(planned_reply(plan, warnings)), report), []
+    except PlanRefusal as refused:
+        return None, list(refused.faults)
+
+
+def _line(name: str, path: str, kind: str, **query: Any) -> dict[str, Any]:
+    plan = _anchor(name)
+    _set(plan, f"{path}.reference", [{"kind": kind, "key": "placeholder"}])
+    _get(plan, f"{path}.query").update(query)
+    return plan
+
+
+def _key_at(plan: ReportPlan, path: str) -> str:
+    chart = _get(plan.model_dump(mode="json", by_alias=True), path)
+    (reference,) = chart["reference"]
+    return str(reference["key"])
+
+
+def _line_fault(name: str, plan: dict[str, Any], path: str, data: dict[str, Any] | None = None) -> str:
+    completed, faults = _completed(name, plan, data)
+    assert completed is None
+    found = [why for at, why in faults if at == f"{path}.reference[0].kind"]
+    assert found, faults
+    return " ".join(found)
+
+
+class TestReferenceLines:
+    @pytest.mark.parametrize("name", ["r1", "r2", "r3", "r4", "r5"])
+    def test_each_anchor_completes_with_the_reference_lines_it_stores(self, name: str):
+        completed, faults = _completed(name, _anchor(name))
+        assert completed is not None, faults
+        stored = ReportPlan.model_validate(_anchor(name))
+        charts = [*stored.summary, *(section.chart for section in stored.sections)]
+        again = [*completed.summary, *(section.chart for section in completed.sections)]
+        assert [chart.reference for chart in again] == [chart.reference for chart in charts]
+
+    def test_a_margin_line_sits_at_the_asked_aspects_margin(self):
+        completed, faults = _completed("r5", _anchor("r5"))
+        assert completed is not None, faults
+        assert _key_at(completed, "sections[0].chart") == "aspect.margin"
+
+    def test_a_floor_sits_at_the_one_criterion_reading_the_charts_measure(self):
+        completed, faults = _completed("r2", _line("r2", "summary[0]", "floor"))
+        assert completed is not None, faults
+        assert _key_at(completed, "summary[0]") == "criteria.pass_rate.threshold"
+
+    def test_a_floor_on_a_task_reads_the_task_criterion_where_the_chart_keeps_that_task(self):
+        completed, faults = _completed("r1", _line("r1", "sections[1].chart", "floor"))
+        assert completed is not None, faults
+        assert _get(_anchor("r1"), "sections[1].chart.query.strata") == ["specul"]
+        assert _key_at(completed, "sections[1].chart") == "criteria.specul.declines.threshold"
+
+    def test_a_task_criterion_reads_nothing_on_a_chart_keeping_every_task(self):
+        plan = _line("r1", "sections[1].chart", "floor", strata=[])
+        assert "no criterion reads 'declines'" in _line_fault("r1", plan, "sections[1].chart")
+
+    def test_a_budget_on_range_bars_sits_at_the_p95_criterion(self):
+        plan = _line("r1", "sections[2].chart", "budget")
+        _set(plan, "sections[2].chart.kind", "range_bars")
+        _set(plan, "sections[2].chart.query.small_multiples_by", "none")
+        completed, faults = _completed("r1", plan)
+        assert completed is not None, faults
+        assert _key_at(completed, "sections[2].chart") == "criteria.p95.threshold"
+
+    def test_a_budget_on_bars_of_the_mean_reads_no_p95_criterion(self):
+        why = _line_fault("r1", _line("r1", "sections[2].chart", "budget"), "sections[2].chart")
+        assert "no criterion reads 'latency_s'" in why and "['mean']" in why
+
+    def test_a_floor_never_sits_at_a_budget(self):
+        plan = _line("r1", "sections[2].chart", "floor")
+        _set(plan, "sections[2].chart.kind", "range_bars")
+        _set(plan, "sections[2].chart.query.small_multiples_by", "none")
+        assert "higher is better" in _line_fault("r1", plan, "sections[2].chart")
+
+    def test_a_floor_on_a_chart_of_cells_sits_at_the_each_cell_criterion(self):
+        completed, faults = _completed("r3", _line("r3", "sections[1].chart", "floor"))
+        assert completed is not None, faults
+        assert _key_at(completed, "sections[1].chart") == "criteria.cell_floor.threshold"
+
+    def test_two_criteria_reading_the_charts_measure_are_refused_naming_both(self):
+        data = _input_dict("r2")
+        data["criteria"].append({**data["criteria"][0], "id": "pass_rate.again", "threshold": 95.0})
+        why = _line_fault("r2", _line("r2", "summary[0]", "floor"), "summary[0]", data)
+        assert "['pass_rate', 'pass_rate.again']" in why
+
+    def test_a_chart_reading_several_measures_takes_no_floor(self):
+        plan = _line("r2", "summary[0]", "floor", measures=["pass_rate", "outcome"])
+        assert "the measures ['pass_rate', 'outcome']" in _line_fault("r2", plan, "summary[0]")
+
+    def test_a_chart_of_readings_reads_no_measure_for_a_floor(self):
+        plan = _anchor("r5")
+        _set(plan, "sections[0].chart.reference", [{"kind": "floor", "key": "placeholder"}])
+        assert "reads no measure" in _line_fault("r5", plan, "sections[0].chart")
+
+    def test_a_no_preference_line_is_refused(self):
+        plan = _line("r2", "summary[0]", "no_preference")
+        assert "a margin, floor or budget line is what it can draw" in _line_fault("r2", plan, "summary[0]")
+
+
+def _level_at(name: str, plan: dict[str, Any], path: str, data: dict[str, Any] | None = None) -> str:
+    completed, faults = _completed(name, plan, data)
+    assert completed is not None, faults
+    return str(_get(completed.model_dump(mode="json", by_alias=True), f"{path}.level"))
+
+
+class TestChartLevel:
+    def test_diverging_strata_with_standard_errors_and_no_interval_are_drawn_at_the_descriptive_level(self):
+        plan = _anchor("r5")
+        assert (_get(plan, "sections[1].chart.kind"), _get(plan, "sections[1].chart.query.source")) == (
+            "diverging_bars",
+            "strata",
+        )
+        assert _level_at("r5", plan, "sections[1].chart") == "95% uncorrected"
+
+    def test_bars_over_the_same_strata_draw_no_level(self):
+        plan = _set(_anchor("r5"), "sections[1].chart.kind", "bars")
+        assert _level_at("r5", plan, "sections[1].chart") == ""
+
+    def test_strata_figures_carrying_an_interval_are_not_drawn_at_the_descriptive_level(self):
+        data = _input_dict()
+        for stratum in data["strata"]:
+            for figures in stratum["per_arm"].values():
+                for stat in figures.values():
+                    stat["ci"] = [0.0, 1.0]
+        assert _level_at("r5", _anchor("r5"), "sections[1].chart", data) == ""
+
 
 # --- figure keys and D3 --------------------------------------------------------------------------------------------
 
@@ -1148,7 +1655,9 @@ KAIRO_PROSE = [
     "durable_claims[1].text",
 ]
 
-#: The plan's prose fields, by model: the D3 field set this module documents.
+#: The plan's prose fields, each by the exported model that holds it and its place there (``[]`` a list's items):
+#: the D3 field set this module documents. A field of a part the module keeps private is named by where it sits in
+#: the exported model holding it, so the set reads the module's front door and never a private model's name.
 PROSE_FIELDS = {
     ("PlannedReport", "headline"),
     ("PlannedReport", "lede"),
@@ -1158,39 +1667,55 @@ PROSE_FIELDS = {
     ("CaveatClause", "material_if"),
     ("WarningAnswer", "text"),
     ("DurableClaim", "text"),
-    ("PlannedSection", "eyebrow"),
-    ("PlannedSection", "headline"),
-    ("PlannedSection", "takeaway"),
-    ("PlannedSection", "caption"),
+    ("PlannedReport", "sections[].eyebrow"),
+    ("PlannedReport", "sections[].headline"),
+    ("PlannedReport", "sections[].takeaway"),
+    ("PlannedReport", "sections[].caption"),
     ("PlannedChart", "title"),
     ("Explore", "title"),
     ("Explore", "recomputes"),
     ("ExploreControl", "title"),
     ("MethodItem", "term"),
     ("MethodItem", "text"),
-    # The planner's own models of the same prose: the flag's words, an answer by its warning's position, and a prose
+    # The planner's own parts of the same prose: the flag's words, an answer by its warning's position, and a prose
     # call's text, which assembles into one of the fields above.
-    ("PlannedFlag", "title"),
-    ("PlannedFlag", "text"),
-    ("PlannedAnswer", "text"),
-    ("ProseItem", "text"),
+    ("PlannedReport", "flag[].title"),
+    ("PlannedReport", "flag[].text"),
+    ("PlannedReport", "answers[].text"),
+    ("PlanProse", "prose[].text"),
 }
+
+
+def _held_models(annotation: Any) -> list[type[BaseModel]]:
+    return [arg for arg in (annotation, *get_args(annotation)) if isinstance(arg, type) and issubclass(arg, BaseModel)]
 
 
 class TestD3:
     def test_the_prose_fields_are_the_documented_set(self):
-        """D3 walks every field typed prose; this holds that set to the one the module documents."""
-        models = [
-            getattr(report_plan, name)
+        """D3 walks every field typed prose; this holds that set to the one the module documents. Each exported model
+        is walked with every model its fields hold that the module does not export, a field named by its place in the
+        exported one; the stored plan's completions of the planner's parts aside (their prose is the parts')."""
+        stored = (report_plan.ReportPlan, report_plan.ChartSpec, report_plan.Section)
+        exported = [
+            model
             for name in report_plan.__all__
-            if isinstance(getattr(report_plan, name), type) and name not in ("ReportPlan", "ChartSpec", "Section")
+            if isinstance(model := getattr(report_plan, name), type) and issubclass(model, BaseModel)
         ]
-        prose = {
-            (model.__name__, name)
-            for model in models
-            for name, field in model.model_fields.items()
-            if field_is_prose(field)
-        }
+        prose: set[tuple[str, str]] = set()
+
+        def walk(owner: type[BaseModel], model: type[BaseModel], place: str) -> None:
+            for name, field in model.model_fields.items():
+                at = f"{place}{name}"
+                if field_is_prose(field):
+                    prose.add((owner.__name__, at))
+                for held in _held_models(field.annotation):
+                    if held not in exported:
+                        many = held is not field.annotation
+                        walk(owner, held, f"{at}[]." if many else f"{at}.")
+
+        for model in exported:
+            if model not in stored:
+                walk(model, model, "")
         assert prose == PROSE_FIELDS
 
     def test_the_kairo_plan_holds_every_prose_field_listed(self):

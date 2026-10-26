@@ -179,6 +179,10 @@ def _no_first_screen(plan: Plan) -> None:
     _slot(plan, "watch")["text"] = "Method lists what to keep in mind, {weakest.arm} first."
 
 
+def _unknown_column(plan: Plan) -> None:
+    plan["options"]["columns"].append("monthly_cost")
+
+
 def _quoted_question(plan: Plan) -> None:
     section = next(section for section in plan["sections"] if section["id"] == "question")
     section["takeaway"] = "The question: {meta.question} The shaded region is the margin."
@@ -348,6 +352,46 @@ WEAKENINGS: tuple[Weakening, ...] = (
         "The campaign's question quoted above Full results, in the campaign's own ids.",
         rule="reader_ids",
         faults=(("sections[0].takeaway", "quotes the campaign's question"),),
+    ),
+    Weakening(
+        "refused-units",
+        "r2",
+        _replace(
+            ("lede",),
+            "{measure.latency_ms.brisk-s.low.r1.p95|int} ms, inside",
+            "{measure.latency_ms.brisk-s.low.r1.p95} ms, inside",
+        ),
+        "A unit written right after a key that prints it (the key spells 513 ms, and the prose adds ms).",
+        rule="units",
+        faults=(("lede", "writes 'ms' right after"),),
+    ),
+    Weakening(
+        "refused-units-sub-cent",
+        "r5",
+        _replace(
+            ("decision", "slots", 0, "text"),
+            "({cost_per_1k.September|usd_per_1k})",
+            "({scoreboard.September.reply_cost_usd} a reply)",
+        ),
+        "A cost per reply under one cent, on a page that states its costs per 1,000 replies.",
+        rule="units",
+        faults=(("decision.slots[0].text", "under one cent"),),
+    ),
+    Weakening(
+        "refused-columns",
+        "r5",
+        _unknown_column,
+        "An options column outside the column families code renders.",
+        rule="columns",
+        faults=(("options.columns[5]", "is no column family code renders"),),
+    ),
+    Weakening(
+        "refused-small-multiples",
+        "r5",
+        _set(("summary", 0, "query", "small_multiples_by"), "arm"),
+        "Small multiples asked of a forest, which the kit does not panel.",
+        rule="small_multiples",
+        faults=(("summary[0].query.small_multiples_by", "draws no small multiples of a 'forest'"),),
     ),
     Weakening(
         "item-R2",

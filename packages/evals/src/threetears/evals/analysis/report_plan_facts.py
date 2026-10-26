@@ -11,11 +11,13 @@ as :class:`PlanFacts`, so the planner's user message and the plan code completes
 - **The masthead** (§2.1): the campaign's kind, the system under test, the counts and the run date, counts and date
   as figure keys where the input holds the figure.
 - **The arms** (§5.2, §6.1): each arm's colour slot (-1 for the control, then series colours in the input's order),
-  its letter tag, and whether the arms key shows (§2.8: any arm's full configuration is longer than
-  :data:`ARMS_KEY_CHARS` characters, or a setting other than the model varied).
-- **The options table's columns** (§2.6: "the criteria plus cost"): the pass rate where one resolves; the asked
-  reading's change and verdict where an aspect is asked and read; the primary judged dimension; a gate column where
-  a gate is declared; each bar's or guardrail's measure; then the cost per 1,000 replies where it resolves.
+  its letter tag, and whether the arms key shows (§2.8: any arm's full configuration is longer than 24 characters,
+  or a setting other than the model varied).
+- **The options table's columns** (§2.6: "the criteria plus cost"), each one of
+  :data:`~threetears.evals.analysis.report_plan_checks.OPTION_COLUMN_FAMILIES`, the vocabulary the plan checks hold
+  a stored plan's columns to: the pass rate where one resolves; the asked reading's change and verdict where an
+  aspect is asked and read; the primary judged dimension; a gate column where a gate is declared; each bar's or
+  guardrail's measure; then the cost per 1,000 replies where it resolves.
 - **The full-results tables** (§2.11: every arm by measure, contrasts, strata), each where the input holds its rows.
 - **What the planner must answer and disclose**: every warning code raises on each arm
   (:func:`~threetears.evals.analysis.report_plan_checks.raised_warnings`, which the plan answers by position for the
@@ -32,10 +34,11 @@ as :class:`PlanFacts`, so the planner's user message and the plan code completes
 
 :func:`complete_plan` turns a reply into the stored :class:`~threetears.evals.kernel.report_plan.ReportPlan`. Besides
 the facts above it fills each unit's code part: the flag's disclosures (:func:`flag_disclosures`) and the measures it
-weakens and leaves standing; each answer's warning, from the position the planner gave; each chart reference's key (a
-margin line sits at its chart's aspect's margin: the one reference line the input holds a figure for); and each chart's
-interval level, unit and value axis. Then it runs
-:func:`~threetears.evals.analysis.report_plan_checks.validate_plan` and refuses every fault it and the checks found,
+weakens and leaves standing; each answer's warning, from the position the planner gave; each chart reference's key
+(this module's reference lines); and each chart's interval level, unit and value axis. Then it runs
+:func:`~threetears.evals.analysis.report_plan_checks.validate_plan`, draws every chart no fault names through the
+page's own resolvers (:func:`~threetears.evals.analysis.report.plan_page.drawable.undrawn_charts`: a chart the page
+cannot draw on this input is refused here, never stored), and refuses every fault it, the checks and the page found,
 together, as one :class:`~threetears.evals.analysis.errors.PlanRefusal`, so the planner's one repair round can mend
 them all.
 
@@ -43,14 +46,40 @@ them all.
 contrast reads; a criterion set after the results weakens the readings those criteria decide (every contrast that is
 not a measure's, which the margin and the floors are read on, and a named late criterion's own measure); a confound or
 an apparatus confound weakens the measures whose contrasts name it; a short run of the whole comparison weakens every
-measure. What survives is
+measure; an aspect left unsettled past its margin weakens the measures its contrasts read. What survives is
 every other measure a contrast reads. Judged dimensions are written ``judged:<dim>``, as the options columns write
 them.
 
+**A chart's reference line** sits at a line the input declares, and code fills its figure key:
+
+- a **margin** at the chart's aspect's margin (``aspect.margin`` for the one asked aspect, else
+  ``aspects.<id>.margin``);
+- a **floor** or a **budget** at ``criteria.<id>.threshold``, the threshold of the one criterion that reads the chart's
+  one measure (the measures its query names, else the ones its rows read): a floor's criterion is higher-is-better and
+  a budget's lower-is-better, as the kit draws them (pass at or above a floor, at or below a budget); its statistic is
+  one the chart draws (range bars draw p50 to p95, every other kind the mean); and it reads where the chart does, over
+  the whole comparison or each task, or within the one task the chart keeps, or each cell on a chart of cells.
+
+No such criterion, or several, is a fault at completion, naming why, and so is any other kind of line.
+
+What the chart reads is :mod:`~threetears.evals.analysis.report_rows`' selection (:func:`query_aspect`,
+:func:`query_rows`), the one the plan checks and the page read too.
+
+**A chart's interval level** is the one its rows carry: a reading's confidence, a contrast's family level, a measure's
+or judged dimension's declared level (a stratum's with "uncorrected"). A diverging chart over judged figures or strata
+whose figures carry a standard error and no interval is drawn at the descriptive level, "95% uncorrected"
+(:data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL`): a bar is separated from zero where its change exceeds
+1.96 times the two arms' standard errors combined (GENERATOR §5.2).
+
 **A chart's axis** is computed only where code holds a rule: a forest of readings spans every interval it draws, zero
 and the margin line, one point beyond each end. Every other chart leaves its domain empty, which lets the renderer fit
-it. A chart that would mix units or interval levels (§5.2: one unit and one interval system per chart) is refused at
-its query.
+it. A chart that would mix interval levels (§5.2: one interval system per chart) is refused at its query. Which
+measures a chart draws, and whether it can draw them in their units, is the page's own rule and the only unit rule
+here (:func:`~threetears.evals.analysis.report.plan_page.charting.unit_refusal`, §5.2: one unit per axis): a chart of
+strata or tasks naming no measure where its slices hold several (a heatmap reads every one), or measures or contrasts
+in more than one unit on one axis, is refused here by the same function the page refuses it by; a kind that draws each
+measure in its own panel (a heatmap's matrix, a dot strip's strip, bars in panels by slice or measure) may read
+several units, and its stored unit is then empty.
 """
 
 from __future__ import annotations
@@ -61,22 +90,26 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.errors import PlanRefusal, SoundnessRefusal, UnresolvableReference
+from threetears.evals.analysis.report.plan_page.charting import contrast_unit, unit_refusal
 from threetears.evals.analysis.report.figure_keys import (
+    DIRECTION_WORDS,
     WEAKEST_PREFIX,
     reader_names,
     render,
     resolve,
 )
+from threetears.evals.analysis.report.plan_page.drawable import undrawn_charts
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_decision import allowed_modes, caveat_materiality, report_caveats
-from threetears.evals.analysis.report_input import Aspect, ReportInput
-from threetears.evals.analysis.report_margins import weakest_margin
+from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, Reading, ReportInput, Stat, Stratum, Task
+from threetears.evals.analysis.report_margins import criterion_place, weakest_margin
+from threetears.evals.analysis.report_rows import query_aspect, query_rows
 from threetears.evals.analysis.report_plan_checks import (
     Spine,
     classify,
     contrast_level,
-    contrast_unit,
     implied_disclosures,
     raised_warnings,
     spine,
@@ -100,11 +133,9 @@ from threetears.evals.kernel.report_plan import (
 )
 
 __all__ = [
-    "ARMS_KEY_CHARS",
     "PLAN_MODES",
     "FactArm",
     "FactCaveat",
-    "FactWeakest",
     "PlanFacts",
     "complete_plan",
     "flag_disclosures",
@@ -112,7 +143,7 @@ __all__ = [
 ]
 
 #: GENERATOR §2.8: the arms key shows when any arm's full configuration is longer than this.
-ARMS_KEY_CHARS = 24
+_ARMS_KEY_CHARS = 24
 
 #: The modes a plan may take, in the order the facts list what each implies.
 PLAN_MODES: tuple[str, ...] = ("decide", "tradeoff", "no_call")
@@ -150,7 +181,7 @@ class FactCaveat(BaseModel):
     checked: str = Field(description="The line code renders for a caveat it proved immaterial; empty for an open one.")
 
 
-class FactWeakest(BaseModel):
+class _FactWeakest(BaseModel):
     """The weakest margin as the planner is told of it: what it is, rendered, and the keys that name it."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -190,7 +221,7 @@ class PlanFacts(BaseModel):
     )
     allowed_modes: tuple[str, ...] = Field(description="The modes the evidence allows, in PLAN_MODES' order.")
     caveats: tuple[FactCaveat, ...] = Field(description="Every caveat the input carries, by id.")
-    weakest: FactWeakest | None = Field(
+    weakest: _FactWeakest | None = Field(
         description="The weakest margin under the call; None where the input reads no figure against a line."
     )
     names: Mapping[str, Mapping[str, str]] = Field(
@@ -242,10 +273,10 @@ def plan_facts(report_input: ReportInput) -> PlanFacts:
     )
 
 
-def _weakest(report_input: ReportInput) -> FactWeakest | None:
+def _weakest(report_input: ReportInput) -> _FactWeakest | None:
     if weakest_margin(report_input) is None:
         return None
-    return FactWeakest(said=render(_WEAKEST_SAID, report_input, {}), keys=_WEAKEST_KEYS)
+    return _FactWeakest(said=render(_WEAKEST_SAID, report_input, {}), keys=_WEAKEST_KEYS)
 
 
 def flag_disclosures(facts: PlanFacts, mode: str, listed: Iterable[str]) -> tuple[str, ...]:
@@ -311,32 +342,25 @@ def _masthead(report_input: ReportInput, control: str | None) -> Masthead:
 
 
 def _shows_arms_key(report_input: ReportInput) -> bool:
-    """GENERATOR §2.8: a full configuration over :data:`ARMS_KEY_CHARS` characters, or a setting beside the model
-    that varied."""
+    """GENERATOR §2.8: a full configuration over ``_ARMS_KEY_CHARS`` characters, or a setting beside the model that
+    varied."""
     for arm in report_input.arms:
         shown = " · ".join(
             str(value) if setting == "model" else f"{setting} {value}" for setting, value in arm.settings.items()
         )
-        if len(shown or arm.served_model or "") > ARMS_KEY_CHARS:
+        if len(shown or arm.served_model or "") > _ARMS_KEY_CHARS:
             return True
     others = {setting for arm in report_input.arms for setting in arm.settings if setting != "model"}
     return any(len({repr(arm.settings.get(setting)) for arm in report_input.arms}) > 1 for setting in others)
 
 
-def _asked(report_input: ReportInput) -> Aspect | None:
-    """The one aspect the campaign asked about: the only one asked, else the only one; None otherwise."""
-    asked = [aspect for aspect in report_input.aspects if aspect.asked]
-    if len(asked) == 1:
-        return asked[0]
-    return report_input.aspects[0] if not asked and len(report_input.aspects) == 1 else None
-
-
 def _columns(report_input: ReportInput) -> Iterator[str]:
-    """GENERATOR §2.6: the criteria plus cost, as figure key families (this module's list)."""
+    """GENERATOR §2.6: the criteria plus cost, as figure key families (this module's list), each one of
+    :data:`~threetears.evals.analysis.report_plan_checks.OPTION_COLUMN_FAMILIES`."""
     arms = [arm.id for arm in report_input.arms]
     if any(_resolves(f"pass_rate.{arm}", report_input) for arm in arms):
         yield "pass_rate"
-    asked = _asked(report_input)
+    asked = query_aspect("", report_input)
     if asked is not None and asked.readings:
         yield from ("reading.change", "reading.verdict")
     columns: dict[str, None] = {}
@@ -384,8 +408,8 @@ def complete_plan(planned: PlannedReport, report_input: ReportInput, facts: Plan
     :return: The stored plan, which passes :func:`~threetears.evals.analysis.report_plan_checks.validate_plan`.
     :rtype: ReportPlan
     :raises PlanRefusal: A part code could not complete (an answer naming no warning, a reference line the input holds
-        no figure for, a chart mixing units or levels, a flag where nothing needs disclosing) or a fault the plan checks
-        found, all together.
+        no figure for, a chart mixing units or levels, a flag where nothing needs disclosing), a fault the plan checks
+        found, or a chart the page cannot draw on this input, all together.
     :raises SoundnessRefusal: The completed plan does not build (repaired once, like any refusal of a finished call).
     """
     facts = facts if facts is not None else plan_facts(report_input)
@@ -436,6 +460,7 @@ def complete_plan(planned: PlannedReport, report_input: ReportInput, facts: Plan
         validate_plan(plan, report_input)
     except PlanRefusal as refused:
         faults.extend(refused.faults)
+    faults += undrawn_charts(plan, report_input, facts, faulted=[path for path, _ in faults])
     if faults:
         raise PlanRefusal(faults)
     return plan
@@ -501,6 +526,9 @@ def _weakened(report_input: ReportInput, discloses: Sequence[str]) -> list[str]:
             weak |= named(confound in c.confounds for c in contrasts)
         elif disclosure.startswith("short_run:"):
             weak |= set(_contrasted(report_input))
+        elif disclosure.startswith("unsettled:"):
+            aspect = disclosure.removeprefix("unsettled:")
+            weak |= named(c.aspect == aspect for c in contrasts)
     ordered = _contrasted(report_input)
     return [measure for measure in ordered if measure in weak] + sorted(weak - set(ordered))
 
@@ -547,38 +575,128 @@ def _chart(chart: PlannedChart, report_input: ReportInput, path: str, faults: li
     )
 
 
-def _chart_aspect(chart: PlannedChart, report_input: ReportInput) -> Aspect | None:
-    if chart.query.aspect:
-        return next((aspect for aspect in report_input.aspects if aspect.id == chart.query.aspect), None)
-    return _asked(report_input)
-
-
 def _references(
     chart: PlannedChart, report_input: ReportInput, path: str, faults: list[_Fault]
 ) -> Iterator[ChartReference]:
-    """Each reference line with the figure key it sits at: a margin line at its chart's aspect's margin."""
+    """Each reference line with the figure key it sits at (this module's reference lines)."""
     for index, reference in enumerate(chart.reference):
         where = f"{path}.reference[{index}].kind"
-        if reference.kind != "margin":
+        if reference.kind == "margin":
+            key = _margin_key(chart, report_input, where, faults)
+        elif reference.kind in _LINE_DIRECTIONS:
+            key = _criterion_key(chart, reference.kind, report_input, where, faults)
+        else:
             faults.append(
                 (
                     where,
                     f"is {reference.kind!r}, and the report input holds no figure a {reference.kind} line sits at; "
-                    "a margin line is the one it can draw",
+                    "a margin, floor or budget line is what it can draw",
                 )
             )
             continue
-        aspect = _chart_aspect(chart, report_input)
-        asked = _asked(report_input)
-        candidates = ["aspect.margin"] if aspect is not None and aspect is asked else []
-        if aspect is not None:
-            candidates.append(f"aspects.{aspect.id}.margin")
-        key = _first_resolving(candidates, report_input)
-        if key is None:
-            named = f"aspect {aspect.id!r}" if aspect is not None else "the chart, which names no single aspect,"
-            faults.append((where, f"is 'margin', and {named} declares no margin to draw"))
-            continue
-        yield ChartReference(kind="margin", key=key)
+        if key is not None:
+            yield ChartReference(kind=reference.kind, key=key)
+
+
+def _margin_key(chart: PlannedChart, report_input: ReportInput, where: str, faults: list[_Fault]) -> str | None:
+    """A margin line's key: its chart's aspect's margin."""
+    aspect = query_aspect(chart.query.aspect, report_input)
+    asked = query_aspect("", report_input)
+    candidates = ["aspect.margin"] if aspect is not None and aspect is asked else []
+    if aspect is not None:
+        candidates.append(f"aspects.{aspect.id}.margin")
+    key = _first_resolving(candidates, report_input)
+    if key is None:
+        named = f"aspect {aspect.id!r}" if aspect is not None else "the chart, which names no single aspect,"
+        faults.append((where, f"is 'margin', and {named} declares no margin to draw"))
+    return key
+
+
+#: The direction of the criterion a floor or a budget line sits at: the kit passes a floor at or above, a budget at
+#: or below.
+_LINE_DIRECTIONS = {"floor": "higher_is_better", "budget": "lower_is_better"}
+#: The statistics a kind draws a measure at, where they are not the mean: range bars run from p50 to p95.
+_KIND_STATISTICS: dict[str, frozenset[str]] = {"range_bars": frozenset({"p50", "p95"})}
+_MEAN = frozenset({"mean"})
+
+
+def _chart_measures(chart: PlannedChart, report_input: ReportInput) -> list[str]:
+    """The measures a chart reads: those its query names, else those its rows read (a figure's, a contrast's, a
+    floor's or an axis's key; a slice's or cell's figures for the arms it keeps), each once, in order."""
+    if chart.query.measures:
+        return list(dict.fromkeys(chart.query.measures))
+    arms = set(chart.query.arms) or {arm.id for arm in report_input.arms}
+    found: list[str] = []
+    for row in query_rows(chart.query, report_input):
+        if row.key:
+            found.append(row.key)
+        elif isinstance(row.item, Stratum | Task | Cell):
+            found += [name for arm, figures in row.item.per_arm.items() if arm in arms for name in figures]
+    return list(dict.fromkeys(found))
+
+
+def _reads_where_the_chart_does(criterion: Criterion, chart: PlannedChart, report_input: ReportInput) -> bool:
+    """Whether a criterion reads where the chart draws: over the whole comparison or each task, within the one task
+    the chart keeps, or each cell on a chart of cells."""
+    place = criterion_place(criterion)
+    if place == "overall" or (place == "task" and criterion.task is None):
+        return True
+    if place == "cell":
+        return chart.query.source == "cells"
+    source = chart.query.source
+    kept = [row.label for row in query_rows(chart.query, report_input)] if source == "tasks" else chart.query.strata
+    return list(kept) == [criterion.task]
+
+
+def _criterion_key(
+    chart: PlannedChart, kind: str, report_input: ReportInput, where: str, faults: list[_Fault]
+) -> str | None:
+    """A floor or budget line's key: the threshold of the one criterion that reads the chart's one measure (this
+    module's reference lines)."""
+    measures = _chart_measures(chart, report_input)
+    if len(measures) != 1:
+        held = f"the measures {measures}" if measures else "no measure"
+        faults.append(
+            (
+                where,
+                f"is {kind!r}, and the chart reads {held}: a {kind} line sits at the criterion that reads the "
+                "chart's one measure, so name that one measure in the query, or draw no line",
+            )
+        )
+        return None
+    (measure,) = measures
+    drawn = _KIND_STATISTICS.get(chart.kind, _MEAN)
+    direction = _LINE_DIRECTIONS[kind]
+    found = [
+        criterion
+        for criterion in report_input.criteria
+        if criterion.measure == measure
+        and criterion.direction == direction
+        and criterion.statistic in drawn
+        and _reads_where_the_chart_does(criterion, chart, report_input)
+    ]
+    if len(found) == 1:
+        return f"criteria.{found[0].id}.threshold"
+    said = DIRECTION_WORDS[direction]
+    if not found:
+        faults.append(
+            (
+                where,
+                f"is {kind!r}, and no criterion reads {measure!r} as a {kind} does ({said}, at a statistic a "
+                f"{chart.kind!r} draws, {sorted(drawn)}, where the chart reads): draw no line, or the line a "
+                "declared criterion gives",
+            )
+        )
+        return None
+    faults.append(
+        (
+            where,
+            f"is {kind!r}, and the criteria {[criterion.id for criterion in found]} all read {measure!r} where the "
+            "chart does: a line sits at one criterion's threshold, so draw no line, or narrow the chart to where only "
+            "one reads (the one task a task's criterion reads)",
+        )
+    )
+    return None
 
 
 def _percent(level: float) -> str:
@@ -595,16 +713,15 @@ def _one(path: str, what: str, values: Iterable[str], faults: list[_Fault]) -> s
 
 
 def _selected_contrasts(chart: PlannedChart, report_input: ReportInput) -> list[tuple[str, str]]:
-    """The contrasts a chart reads: each one's unit and interval level (:func:`contrast_unit`, :func:`contrast_level`)."""
-    query = chart.query
-    arms = set(query.arms) or {arm.id for arm in report_input.arms}
-    return [
-        (contrast_unit(report_input, contrast), contrast_level(report_input, contrast))
-        for contrast in report_input.contrasts
-        if contrast.arm in arms
-        and (not query.measures or contrast.measure in query.measures)
-        and (not query.aspect or contrast.aspect == query.aspect)
-    ]
+    """The contrasts a chart of contrasts reads: each one's unit and interval level (:func:`contrast_unit`,
+    :func:`contrast_level`)."""
+    contrasts = [row.item for row in query_rows(chart.query, report_input) if isinstance(row.item, Contrast)]
+    return [(contrast_unit(report_input, contrast), contrast_level(report_input, contrast)) for contrast in contrasts]
+
+
+def _selected_readings(chart: PlannedChart, report_input: ReportInput) -> list[Reading]:
+    """The readings a chart of readings reads."""
+    return [row.item for row in query_rows(chart.query, report_input) if isinstance(row.item, Reading)]
 
 
 def _figure_levels(chart: PlannedChart, report_input: ReportInput) -> list[str]:
@@ -618,10 +735,8 @@ def _level(chart: PlannedChart, report_input: ReportInput, path: str, faults: li
     """The interval level printed on the chart, from the rows it reads; empty where they carry none."""
     source = chart.query.source
     if source == "readings":
-        aspect = _chart_aspect(chart, report_input)
-        readings = aspect.readings if aspect is not None else []
-        arms = set(chart.query.arms) or {arm.id for arm in report_input.arms}
-        levels = [_percent(r.gain_confidence) for r in readings if r.arm in arms and r.gain_confidence is not None]
+        readings = _selected_readings(chart, report_input)
+        levels = [_percent(r.gain_confidence) for r in readings if r.gain_confidence is not None]
         return _one(path, "interval level", levels, faults)
     if source == "contrasts":
         return _one(path, "interval level", (level for _, level in _selected_contrasts(chart, report_input)), faults)
@@ -629,11 +744,52 @@ def _level(chart: PlannedChart, report_input: ReportInput, path: str, faults: li
         table = report_input.measures if source == "measures" else report_input.judged
         measures = set(chart.query.measures)
         levels = [figures.level or "" for key, figures in table.items() if not measures or key in measures]
-        return _one(path, "interval level", levels, faults)
+        level = _one(path, "interval level", levels, faults)
+        return level or _descriptive_level(chart, report_input)
     if source == "strata":
         level = _one(path, "interval level", _figure_levels(chart, report_input), faults)
-        return f"{level} uncorrected" if level else ""
+        return f"{level} {_UNCORRECTED}" if level else _descriptive_level(chart, report_input)
     return ""
+
+
+def _descriptive_level(chart: PlannedChart, report_input: ReportInput) -> str:
+    """The descriptive level a diverging chart over judged figures or strata is drawn at where its figures carry a
+    standard error and no interval: a bar is separated from zero when its change exceeds the interval level's normal
+    multiple of the two arms' standard errors combined (GENERATOR §5.2: descriptive, uncorrected); empty otherwise."""
+    if chart.kind != "diverging_bars" or chart.query.source not in _DESCRIPTIVE_SOURCES:
+        return ""
+    stats = _selected_stats(chart, report_input)
+    if stats and all(stat.sem is not None and stat.ci is None and stat.half_width is None for stat in stats):
+        return f"{_percent(INTERVAL_LEVEL)} {_UNCORRECTED}"
+    return ""
+
+
+#: How a fault opens where the page cannot draw a chart in the units its query selects.
+_UNDRAWABLE = "cannot be drawn as it asks:"
+
+#: The sources a diverging chart may draw at the descriptive level, and the word that labels it.
+_DESCRIPTIVE_SOURCES = frozenset({"judged", "strata"})
+_UNCORRECTED = "uncorrected"
+
+
+def _selected_stats(chart: PlannedChart, report_input: ReportInput) -> list[Stat]:
+    """Every figure a chart of judged figures or strata reads: a judged row's, or each kept arm's on each measure the
+    query keeps in a stratum."""
+    measures = set(chart.query.measures)
+    arms = set(chart.query.arms) or {arm.id for arm in report_input.arms}
+    found: list[Stat] = []
+    for row in query_rows(chart.query, report_input):
+        if isinstance(row.item, Stat):
+            found.append(row.item)
+        elif isinstance(row.item, Stratum):
+            found += [
+                stat
+                for arm, figures in row.item.per_arm.items()
+                if arm in arms
+                for key, stat in figures.items()
+                if not measures or key in measures
+            ]
+    return found
 
 
 def _judged_unit(report_input: ReportInput, measures: Sequence[str]) -> list[str]:
@@ -642,23 +798,38 @@ def _judged_unit(report_input: ReportInput, measures: Sequence[str]) -> list[str
 
 
 def _unit(chart: PlannedChart, report_input: ReportInput, path: str, faults: list[_Fault]) -> str:
-    """The chart's one unit, from what it reads: a change from the control in points, else the rows' own unit."""
+    """The unit the chart's rows are in: a change from the control in points, else the rows' own unit, empty where
+    they are in several (each drawn in its own panel) or none. Whether the page can draw the chart in its units is the
+    page's one rule, refused here by the same function and by no other (this module's account)."""
     query = chart.query
     source = query.source
+    refusal = unit_refusal(chart.kind, query, report_input)
+    if refusal:
+        faults.append(
+            (
+                f"{path}.query",
+                f"{_UNDRAWABLE} {refusal} (GENERATOR §5.2: one unit per axis, a panel each where the kind panels by measure)",
+            )
+        )
     if source in ("readings", "floors"):
         return "points"
     if source == "contrasts":
-        return _one(path, "unit", (unit for unit, _ in _selected_contrasts(chart, report_input)), faults)
+        return _only(unit for unit, _ in _selected_contrasts(chart, report_input))
     if source == "measures":
-        units = [
+        return _only(
             m.unit or "" for key, m in report_input.measures.items() if not query.measures or key in query.measures
-        ]
-        return _one(path, "unit", units, faults)
+        )
     if source in ("judged", "strata"):
         if query.transform == "arm_minus_control":
             return "points"
-        return _one(path, "unit", _judged_unit(report_input, query.measures), faults)
+        return _only(_judged_unit(report_input, query.measures))
     return ""
+
+
+def _only(values: Iterable[str]) -> str:
+    """The one value the rows agree on; empty for none, or for several."""
+    found = list(dict.fromkeys(value for value in values if value))
+    return found[0] if len(found) == 1 else ""
 
 
 def _domain(chart: PlannedChart, report_input: ReportInput, references: Sequence[ChartReference]) -> list[float]:
@@ -666,14 +837,13 @@ def _domain(chart: PlannedChart, report_input: ReportInput, references: Sequence
     is left to the renderer (empty)."""
     if chart.query.source != "readings":
         return []
-    aspect = _chart_aspect(chart, report_input)
+    aspect = query_aspect(chart.query.aspect, report_input)
     if aspect is None:
         return []
-    arms = set(chart.query.arms) or {arm.id for arm in report_input.arms}
-    ends = [end for r in aspect.readings if r.arm in arms and r.within_interval for end in r.within_interval]
+    ends = [end for r in _selected_readings(chart, report_input) if r.within_interval for end in r.within_interval]
     if not ends:
         return []
     ends.append(0.0)
-    if references and aspect.margin is not None:
+    if any(reference.kind == "margin" for reference in references) and aspect.margin is not None:
         ends.append(-float(aspect.margin))
     return [float(math.floor(min(ends)) - 1), float(math.ceil(max(ends)) + 1)]

@@ -309,6 +309,14 @@ class TestFilters:
         assert _figure("cost_per_1k.September", "usd_per_1k") == "$1.89 per 1,000 replies"
         assert _figure("contrast.1017.production_replicating_cost.delta", "usd_per_1k") == "+$0.49 per 1,000 replies"
 
+    def test_a_price_per_million_replies_states_its_ruler(self):
+        assert _figure("measure.cost_per_1m.brisk-s.few.mean", name="r3") == "$40 per 1,000,000 replies"
+        assert _figure("measure.cost_per_1m.atlas-m.rubric.mean", name="r3") == "$610 per 1,000,000 replies"
+
+    def test_a_price_per_million_replies_keeps_reading_whole_and_reads_per_thousand(self):
+        assert _figure("measure.cost_per_1m.atlas-m.zero.mean", "int", name="r3") == "180"
+        assert _figure("measure.cost_per_1m.atlas-m.zero.mean", "usd_per_1k", name="r3") == "$0.18 per 1,000 replies"
+
     def test_int_rounds_to_a_whole_number(self):
         assert _figure("flip_margin.qwen3.8-flash", "int") == "11"
         assert _figure("scoreboard.qwen3.8-flash.lost", "int") == "2"
@@ -433,6 +441,24 @@ class TestDerivedValues:
         assert _figure("flip_margin.qwen3.8-flash") == "10.8"
         assert _figure("flip_margin.1017") == "5.8"
 
+    def test_a_cost_stated_per_million_replies_is_its_cost_per_1k_over_a_thousand(self):
+        report_input = _input("r3")
+        for arm, stat in report_input.measures["cost_per_1m"].per_arm.items():
+            assert stat.mean is not None
+            assert resolve(f"cost_per_1k.{arm}", report_input).value == pytest.approx(stat.mean / 1000)
+
+    def test_a_cost_stated_only_per_task_is_blended_by_traffic_share(self):
+        report_input = _input("r1")
+        assert not report_input.measures["cost_per_1k"].per_arm, "r1 states its cost per task only"
+        for arm in report_input.arms:
+            parts = [
+                (task.share, task.per_arm[arm.id]["cost_per_1k"].mean) for task in report_input.tasks if task.share
+            ]
+            blended = sum(share * mean for share, mean in parts if share and mean is not None) / sum(
+                share for share, _ in parts if share
+            )
+            assert resolve(f"cost_per_1k.{arm.id}", report_input).value == pytest.approx(blended)
+
     def test_the_uplift_needs_a_control(self):
         with pytest.raises(UnresolvableReference):
             resolve("cost.uplift_range", _input("r1"))
@@ -507,6 +533,7 @@ class TestLiteralNumbers:
     def test_the_package_unit_phrase_passes_whole(self):
         assert literal_numbers("cost per 1,000 replies is up", _input("r5")) == []
         assert literal_numbers("Cost ($/1,000 replies)", _input("r5")) == []
+        assert literal_numbers("a price per 1,000,000 replies", _input("r3")) == []
 
     def test_digits_outside_a_package_phrase_fail(self):
         assert literal_numbers("95 percent of replies", _input("r5")) == [(0, 2)]
@@ -565,6 +592,12 @@ class TestTheGrammar:
         assert "write `{arm:1017}`, not `1017`" in grammar
         assert "`p95`" in grammar and "`per 1,000 replies`" in grammar
         assert "never split at dots" in grammar
+
+    def test_it_teaches_that_a_key_prints_its_own_unit_and_money_per_reply_reads_per_thousand(self):
+        grammar = figure_key_grammar()
+        assert "A key prints its own unit" in grammar and "never write a unit after it" in grammar
+        assert "Money per reply reads per 1,000 replies: write `{scoreboard.base.reply_cost_usd|usd_per_1k}`" in grammar
+        assert '"$1.89 per 1,000 replies"' in grammar
 
     def test_its_worked_example_is_rendered(self):
         assert '"fast.v2 (A) is down 4.3 points (-7.1 to -1.4)."' in figure_key_grammar()
