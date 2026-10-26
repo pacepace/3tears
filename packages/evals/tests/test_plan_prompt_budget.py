@@ -5,8 +5,8 @@
 builds it and fails the moment either ceiling is crossed, as ``test_gen_prompt_budget.py`` does for the writer's.
 
 **What is measured.** The seed, :data:`EVAL_REPORT_PLAN_DEFAULT`, has no placeholders, so the text measured here is,
-byte for byte, the head of both calls' system prompts (:func:`~threetears.evals.analysis.planner.first_plan_request`
-and :func:`~threetears.evals.analysis.planner.prose_plan_request`, checked below). What the planner appends after it —
+byte for byte, the head of both calls' system prompts, as a generation sends them
+(:func:`~threetears.evals.analysis.planner.generate_report_plan`, checked below). What the planner appends after it —
 the figure-key grammar, the host's register and the call's own section — is code-owned, and outside the budget.
 
 **What counts as a rule.** A numbered entry under the ``RULES`` heading, numbered 1..n with no gap or repeat.
@@ -18,12 +18,15 @@ the heading being the rule's opening sentence; the ledger's rows (``analysis/PLA
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
+from typing import Any
 
 import threetears.evals.analysis as analysis_package
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.report_plan_support import r5_input, r5_plan, structure_reply
+from packages.evals.tests.report_plan_support import prose_reply, r5_input, r5_plan, structure_reply
+from packages.evals.tests.toyhost_memo import MODEL, FixturedClient, FixturedCompletion
 from threetears.evals.analysis.plan_prompt import (
     EVAL_REPORT_PLAN_DEFAULT,
     PLAN_PROMPT_CHAR_BUDGET,
@@ -31,13 +34,13 @@ from threetears.evals.analysis.plan_prompt import (
 )
 from threetears.evals.analysis.planner import (
     FACTS_HEADING,
+    PROSE_CALL,
     REPORT_INPUT_HEADING,
-    first_plan_request,
-    prose_plan_request,
+    STRUCTURE_CALL,
+    generate_report_plan,
 )
 from threetears.evals.analysis.report.figure_keys import GRAMMAR_HEADING
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.kernel.report_plan import PlanStructure
 
 #: Where the rules start. Everything before it is preamble, not rules.
 _RULES_HEADING = "\nRULES — "
@@ -79,6 +82,18 @@ def _ledger_disagreements(prompt: str, ledger: str) -> list[str]:
     ]
 
 
+class _TwoReplies(FixturedClient):
+    """A planner answering the structure call, then the prose call, and recording what each was sent."""
+
+    def __init__(self, *bodies: str) -> None:
+        super().__init__(bodies[0])
+        self.bodies = list(bodies)
+
+    async def generate(self, *, system: str, user: str, response_format: Any = None, tools: Any = None) -> Any:
+        self.completion = FixturedCompletion(content=self.bodies[len(self.calls)], stop_reason="end_turn")
+        return await super().generate(system=system, user=user, response_format=response_format, tools=tools)
+
+
 class TestThePromptIsWithinItsBudget:
     def test_it_is_within_the_character_budget(self) -> None:
         length = len(EVAL_REPORT_PLAN_DEFAULT)
@@ -98,14 +113,20 @@ class TestThePromptIsWithinItsBudget:
         numbers = _rule_numbers(EVAL_REPORT_PLAN_DEFAULT)
         assert numbers == list(range(1, len(numbers) + 1))
 
-    def test_what_is_measured_is_the_head_of_both_calls_system_prompts(self) -> None:
-        """The planner only appends; nothing it adds lands inside the budgeted text."""
-        report_input, profile = ReportInput.model_validate(r5_input()), toyhost_profile()
-        structure = PlanStructure.model_validate(structure_reply(r5_plan()))
-        for system, _, _ in (
-            first_plan_request(report_input, EVAL_REPORT_PLAN_DEFAULT, profile),
-            prose_plan_request(report_input, EVAL_REPORT_PLAN_DEFAULT, profile, structure),
-        ):
+    async def test_what_is_measured_is_the_head_of_both_calls_system_prompts(self) -> None:
+        """The planner only appends; nothing it adds lands inside the budgeted text. Read off the two calls a
+        generation sends, the structure's and the prose's."""
+        client = _TwoReplies(json.dumps(structure_reply(r5_plan())), json.dumps(prose_reply(r5_plan())))
+        await generate_report_plan(
+            ReportInput.model_validate(r5_input()),
+            prompt=EVAL_REPORT_PLAN_DEFAULT,
+            model=MODEL,
+            client=client,
+            profile=toyhost_profile(),
+        )
+        systems = [call["system"] for call in client.calls]
+        assert [system.endswith(call) for system, call in zip(systems, (STRUCTURE_CALL, PROSE_CALL))] == [True, True]
+        for system in systems:
             assert system.startswith(EVAL_REPORT_PLAN_DEFAULT + "\n\n")
 
     def test_the_headings_and_sections_it_points_at_are_the_ones_code_sends(self) -> None:

@@ -46,7 +46,6 @@ from threetears.evals.analysis.planner import (
     STRUCTURE_HEADING,
     first_plan_request,
     generate_report_plan,
-    prose_plan_request,
 )
 from threetears.evals.analysis.report.figure_keys import GRAMMAR_HEADING
 from threetears.evals.analysis.report_input import ReportInput
@@ -136,11 +135,17 @@ class TestTheRequests:
         with pytest.raises(ValueError, match="allowed_modes"):
             first_plan_request(_input(), PROMPT, toyhost_profile(), allowed_modes=modes)
 
-    def test_the_prose_request_carries_the_structure_and_exactly_its_keys(self) -> None:
+    async def test_the_prose_request_carries_the_structure_and_exactly_its_keys(self) -> None:
+        """Read through the front door: the prose call a generation sends, the same each time."""
         profile = toyhost_profile()
         structure = PlanStructure.model_validate(_structure())
-        system, user, contract = prose_plan_request(_input(), PROMPT, profile, structure)
-        assert (system, user, contract) == prose_plan_request(_input(), PROMPT, profile, structure)
+        sent = []
+        for _ in range(2):
+            client = _Replies(_reply(_structure()), _reply(_prose()))
+            await _generate(client, profile=profile)
+            sent.append((client.calls[1]["system"], client.calls[1]["user"], client.response_formats[1]))
+        system, user, contract = sent[0]
+        assert sent[0] == sent[1], "the prose request is deterministic"
         assert system.startswith(PROMPT + "\n\n") and system.endswith(PROSE_CALL)
         _, structure_user, _ = first_plan_request(_input(), PROMPT, profile)
         assert user.startswith(structure_user + "\n\n"), "both calls share their prefix, for a prompt cache"
@@ -326,8 +331,9 @@ class TestTheHostsLimits:
         await _generate(client, admit=lambda system, user, contract: asked.append((system, user, contract)))
 
         assert asked[0] == first_plan_request(_input(), PROMPT, toyhost_profile())
-        structure = PlanStructure.model_validate(_structure())
-        assert asked[1] == prose_plan_request(_input(), PROMPT, toyhost_profile(), structure)
+        sent = [(call["system"], call["user"], form) for call, form in zip(client.calls, client.response_formats)]
+        assert asked == sent, "each call is admitted with exactly the request then sent"
+        assert asked[1][0].endswith(PROSE_CALL) and asked[1][2] == prose_response_format()
 
     async def test_a_cap_refusing_a_repair_sends_nothing_more(self) -> None:
         """The cap is the caller's: ``admit`` raising on the repair call stops the generation before it is sent."""

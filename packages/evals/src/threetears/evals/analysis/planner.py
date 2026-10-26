@@ -8,7 +8,7 @@
    explore control by an id the planner chooses; how many Method pairs; and each durable claim's figure keys. Code
    refuses a mode it does not allow and every fault the plan checks find in the choices
    (:func:`~threetears.evals.analysis.plan_assembly.check_structure`).
-2. **The prose call** (:func:`prose_plan_request`): the checked structure and the prose keys it created
+2. **The prose call**: the checked structure and the prose keys it created
    (:func:`~threetears.evals.analysis.plan_assembly.prose_slots`) go back with the same report input, and the planner
    returns a flat list of ``{key, text}`` pairs
    (:class:`~threetears.evals.kernel.report_plan.PlanProse`). Code refuses a key missing, repeated or unknown
@@ -101,7 +101,6 @@ __all__ = [
     "first_plan_request",
     "generate_report_plan",
     "plan_user_message",
-    "prose_plan_request",
 ]
 
 log = get_logger(__name__)
@@ -293,44 +292,14 @@ def plan_user_message(
     return _prefix(report_input, facts, _modes(allowed_modes, facts), budget)
 
 
-def prose_plan_request(
-    report_input: ReportInput,
-    prompt: str,
-    profile: HostProfile,
-    structure: PlanStructure,
-    *,
-    allowed_modes: Sequence[str] | None = None,
-    budget: int | None = None,
+def _prose_request(
+    prefix: str, prompt: str, profile: HostProfile, structure: PlanStructure, facts: PlanFacts
 ) -> tuple[str, str, dict[str, Any]]:
     """The exact first request of the prose call, for a checked structure: system prompt, user message, contract.
 
     The user message is the structure call's, then the structure as checked and every prose key it created, each with
     what it holds and whether it may be empty (:func:`~threetears.evals.analysis.plan_assembly.prose_slots`).
-
-    :param report_input: The campaign's report input.
-    :ptype report_input: ReportInput
-    :param prompt: The resolved ``eval_report_plan`` prompt.
-    :ptype prompt: str
-    :param profile: The host the plan is generated for.
-    :ptype profile: HostProfile
-    :param structure: The structure the prose is for, as checked.
-    :ptype structure: PlanStructure
-    :param allowed_modes: The modes the planner may pick; None for the modes code computes from the input.
-    :ptype allowed_modes: Sequence[str] | None
-    :param budget: The most characters the report input's view may take; None for the view's default.
-    :ptype budget: int | None
-    :return: ``(system, user, response_format)``.
-    :rtype: tuple[str, str, dict[str, Any]]
     """
-    facts = plan_facts(report_input)
-    return _prose_request(
-        _prefix(report_input, facts, _modes(allowed_modes, facts), budget), prompt, profile, structure, facts
-    )
-
-
-def _prose_request(
-    prefix: str, prompt: str, profile: HostProfile, structure: PlanStructure, facts: PlanFacts
-) -> tuple[str, str, dict[str, Any]]:
     keys = [slot.model_dump(mode="json") for slot in prose_slots(structure, facts)]
     user = (
         f"{prefix}\n\n{STRUCTURE_HEADING}\n{_compact(structure.model_dump(mode='json'))}\n\n"
