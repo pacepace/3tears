@@ -142,6 +142,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "analysis/report/plan_page/__init__.py": {},
     "analysis/report/plan_page/build.py": {},
     "analysis/report/plan_page/charting.py": {},
+    "analysis/report/plan_page/drawable.py": {},
     "analysis/report/plan_page/explore.py": {},
     "analysis/report/plan_page/full_results.py": {},
     "analysis/report/plan_page/html.py": {},

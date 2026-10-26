@@ -47,10 +47,14 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.report.figure_keys import format_figure, resolve
 from threetears.evals.analysis.report.plan_page.build import plan_page
-from threetears.evals.analysis.report.plan_page.words import GATE_WORDS
+from threetears.evals.analysis.report.plan_page.drawable import plan_look
+from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
+from threetears.evals.analysis.report.plan_page.words import GATE_WORDS, NOT_GATED
+from threetears.evals.analysis.report_decision import margin_sensitivity
+from threetears.evals.analysis.report_plan_facts import plan_facts
 from threetears.evals.analysis.report_gates import gate_check, routing_picks, task_costs
 from threetears.evals.analysis.report_input import Criterion, FloorRead, Reading, ReportInput, Task
-from threetears.evals.analysis.report_margins import criterion_place
+from threetears.evals.analysis.report_margins import criterion_place, flip_margin
 from threetears.evals.analysis.report_rows import query_rows
 from threetears.evals.kernel.report_plan import ChartSpec, ReportPlan
 
@@ -292,7 +296,7 @@ def test_a_readings_matrix_reads_each_candidate_by_the_direction_of_its_change()
             assert cell.status == {"worse": "bad", "better": "good", "": "neutral"}[direction]
             margin = reading.margin if reading.margin is not None else aspect.margin
             assert reading.within_interval is not None and margin is not None
-            within = -reading.within_interval[0] < margin
+            within = flip_margin(reading) < margin  # the decision's rule, so the pill and the explore part agree
             assert ("within margin" in cell.label) == within and ("outside margin" in cell.label) == (not within)
             floors = [f for f in report_input.floors if f.arm == reading.arm and f.aspect == aspect.id and f.reading]
             assert len(cell.reasons or []) == 1 + len(floors), "each floor reading another rate is shown apart"
@@ -458,6 +462,51 @@ def test_a_lattice_tiles_the_first_factor_by_the_rest_with_each_configs_figures_
             check = gate_check(report_input, arm)
             assert (cell.status, cell.status_label) == (_STATUS_COLOUR[check.status], GATE_WORDS[check.status])
     assert data.emphasis == spec.emphasis
+
+
+def _resolved(report_input: ReportInput, spec: ChartSpec, anchor: str) -> ChartBlock:
+    """The chart as the page's resolver draws it on ``report_input``, under the look the input's anchor plan gives."""
+    plan = _plan(dataset.HERE / anchor / "anchor.plan.json")
+    drawn = resolve_chart(spec, report_input, plan_look(plan, report_input, plan_facts(report_input)), title="")
+    assert isinstance(drawn.chart, ChartBlock)
+    return drawn.chart
+
+
+def test_at_a_zero_margin_a_reading_is_outside_it_by_the_decisions_rule() -> None:
+    """A reading shown better (its interval above zero) flips at a margin of zero: at a declared margin of zero it is
+    not within it, as the decision and the explore part read it."""
+    data = _input("r5").model_dump(mode="json", by_alias=True, exclude_none=True)
+    aspect = data["aspects"][0]
+    aspect["margin"] = 0.0
+    for reading in aspect["readings"]:
+        reading["margin"] = None
+    aspect["readings"][0]["within_interval"] = [0.5, 3.0]
+    report_input = ReportInput.model_validate(data)
+    reading = report_input.aspects[0].readings[0]
+    assert flip_margin(reading) == 0.0 and -float(reading.within_interval[0]) < 0.0  # the two rules differ here
+
+    data_block = _resolved(report_input, _spec("gate_matrix", "readings"), "r5").data
+    assert isinstance(data_block, GateMatrixChart)
+    columns = [column.label for column in data_block.columns]
+    cell = data_block.rows[0].cells[columns.index(_arm_name(report_input, reading.arm))]
+    assert "outside margin" in cell.label and "within margin" not in cell.label
+    assert not any(c.within for c in margin_sensitivity(report_input).candidates if c.arm == reading.arm)
+
+
+def test_a_lattice_tile_no_gate_reads_has_no_status_never_a_pass() -> None:
+    data = _input("r3").model_dump(mode="json", by_alias=True, exclude_none=True)
+    data["criteria"] = []
+    report_input = ReportInput.model_validate(data)
+    arms = [config.arm for config in report_input.configs]
+    key = next(key for key, measure in report_input.measures.items() if all(arm in measure.per_arm for arm in arms))
+
+    lattice = _resolved(report_input, _spec("lattice", "configs", measures=[key]), "r3").data
+
+    assert isinstance(lattice, LatticeChart)
+    tiles = [cell for row in lattice.rows for cell in row.cells]
+    assert len(tiles) == len(report_input.configs)
+    assert all((cell.status, cell.status_label) == ("neutral", NOT_GATED) for cell in tiles)
+    assert not any(label in (cell.tip or []) for cell in tiles for label in GATE_WORDS.values())
 
 
 # --- names are text -----------------------------------------------------------------------------------------------

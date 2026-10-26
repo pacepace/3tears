@@ -36,7 +36,9 @@ as :class:`PlanFacts`, so the planner's user message and the plan code completes
 the facts above it fills each unit's code part: the flag's disclosures (:func:`flag_disclosures`) and the measures it
 weakens and leaves standing; each answer's warning, from the position the planner gave; each chart reference's key
 (this module's reference lines); and each chart's interval level, unit and value axis. Then it runs
-:func:`~threetears.evals.analysis.report_plan_checks.validate_plan` and refuses every fault it and the checks found,
+:func:`~threetears.evals.analysis.report_plan_checks.validate_plan`, draws every chart no fault names through the
+page's own resolvers (:func:`~threetears.evals.analysis.report.plan_page.drawable.undrawn_charts`: a chart the page
+cannot draw on this input is refused here, never stored), and refuses every fault it, the checks and the page found,
 together, as one :class:`~threetears.evals.analysis.errors.PlanRefusal`, so the planner's one repair round can mend
 them all.
 
@@ -92,6 +94,7 @@ from threetears.evals.analysis.report.figure_keys import (
     render,
     resolve,
 )
+from threetears.evals.analysis.report.plan_page.drawable import undrawn_charts
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_decision import allowed_modes, caveat_materiality, report_caveats
 from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, Reading, ReportInput, Stat, Stratum, Task
@@ -402,8 +405,8 @@ def complete_plan(planned: PlannedReport, report_input: ReportInput, facts: Plan
     :return: The stored plan, which passes :func:`~threetears.evals.analysis.report_plan_checks.validate_plan`.
     :rtype: ReportPlan
     :raises PlanRefusal: A part code could not complete (an answer naming no warning, a reference line the input holds
-        no figure for, a chart mixing units or levels, a flag where nothing needs disclosing) or a fault the plan checks
-        found, all together.
+        no figure for, a chart mixing units or levels, a flag where nothing needs disclosing), a fault the plan checks
+        found, or a chart the page cannot draw on this input, all together.
     :raises SoundnessRefusal: The completed plan does not build (repaired once, like any refusal of a finished call).
     """
     facts = facts if facts is not None else plan_facts(report_input)
@@ -454,6 +457,7 @@ def complete_plan(planned: PlannedReport, report_input: ReportInput, facts: Plan
         validate_plan(plan, report_input)
     except PlanRefusal as refused:
         faults.extend(refused.faults)
+    faults += undrawn_charts(plan, report_input, facts, faulted=[path for path, _ in faults])
     if faults:
         raise PlanRefusal(faults)
     return plan

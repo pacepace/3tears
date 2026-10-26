@@ -15,12 +15,26 @@ the arms key, the evidence sections, the explore part (a static table of where e
 control moves the margin), Full results (every table the plan lists) and Method. Each aspect's fold follows Method in
 one closed appendix ("Evidence record"), so `trials=` and each trial's stored result read as before. This is the
 `body` of `report_read` (Markdown and HTML, default and `static=True`) for a `plan` analysis; its JSON is unchanged,
-and memo and code-only pages are unchanged byte for byte. `CampaignReport` gains `plan_page` (a `PlannedPage`, set
+and the content of memo and code-only pages is unchanged byte for byte (the kit script a default HTML page inlines
+changed, below). `CampaignReport` gains `plan_page` (a `PlannedPage`, set
 only on a planned analysis's page, which then holds no blocks of its own). A stored plan whose figure key or chart no
 longer resolves against its frozen evidence refuses the page with the existing "generate the analysis again
 (`analysis_generate`)" remedy. `report_decision.margin_sensitivity` (with `MarginSensitivity` and `CandidateMargin`)
 is public: each reading's flip margin, and whether the call holds at every margin. The interim first-screen blocks
 (`analysis.report.campaign.plan_blocks`) are removed. No stored shape moves.
+
+**Changed:** the kit's dot strip (`dot_interval`, in `kit.js`) needs an interval `level` only where its rows carry
+intervals: a strip of points alone draws with none, where it was refused. The script is inlined in every default-mode
+HTML page, memo and code-only pages included, so its text (and its hash) changed: a host allowing the kit by a CSP
+hash it computed from an earlier wheel recomputes it from this one. A `static=True` page carries no script and is
+unaffected.
+
+**Changed:** every chart a report plan names must draw on the plan's own input. When a plan is generated, code draws
+each summary chart and each section's chart through the page's own resolvers
+(`analysis.report.plan_page.drawable.undrawn_charts`, called by `complete_plan`), and a chart the page cannot draw is
+refused there, at its field path with the page's reason, for the planner's repair round, never stored. Before, such a
+plan passed the checks and was stored, and its page then refused with "generate the analysis again", which wrote the
+same plan again. Stored plans are read as before.
 
 ### evals: a static report page, for a host whose policy runs and loads nothing
 
