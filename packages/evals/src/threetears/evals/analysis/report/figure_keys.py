@@ -54,6 +54,7 @@ from typing import Literal, get_args
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.numbers import format_number, group_thousands
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, number_in, signed_with_unit, with_unit
+from threetears.evals.analysis.report.cost_unit import REPLIES, CostBasis, per_count, per_noun
 from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import (
@@ -111,14 +112,14 @@ _FILTER_MEANS: dict[str, str] = {
     "int": "the nearest whole number, its thousands separated",
     "pct10": "a rate rounded to the nearest 10%",
     "interval": "an interval's two ends, joined by 'to'",
-    "usd_per_1k": "dollars per 1,000 replies, with the words",
+    "usd_per_1k": "dollars per 1,000 of what the cost counts, with the words (`per 1,000 conversations` where the "
+    "measure's label counts conversations)",
 }
 
-#: The unit phrases a rendered figure is joined with, one template each, so a translation replaces them here.
+#: The unit phrases a rendered figure is joined with, one template each, so a translation replaces them here; the
+#: phrase a cost's count reads in is :func:`~threetears.evals.analysis.report.cost_unit.per_count`'s.
 INTERVAL_TEMPLATE = "{low} to {high}"
 RANGE_TEMPLATE = "{low}–{high}"
-PER_THOUSAND_TEMPLATE = "{amount} " + PER_THOUSAND_REPLIES
-_PER_MILLION_TEMPLATE = "{amount} " + PER_MILLION_REPLIES
 ARM_TEMPLATE = "{name} ({tag})"
 #: How a criterion's direction reads.
 DIRECTION_WORDS = {"higher_is_better": "higher is better", "lower_is_better": "lower is better"}
@@ -129,6 +130,7 @@ PERCENTILE_NAMES: tuple[str, ...] = ("p50", "p90", "p95", "p99")
 
 #: The package's own unit phrases, which prose may write whole with their digits: each one a template a rendered
 #: figure is joined with, so prose that says "per 1,000 replies" uses the package's words and no figure of its own.
+#: An input adds the phrases of what its own costs count (:func:`_input_unit_phrases`: ``per 1,000 conversations``).
 _UNIT_PHRASES: tuple[str, ...] = (PER_THOUSAND_REPLIES, PER_THOUSAND_LABEL, PER_MILLION_REPLIES)
 
 #: A key, as plan prose holds it: one pair of single braces around anything but braces.
@@ -162,7 +164,9 @@ class Figure:
     percent. ``whole`` marks a descriptive ratio (a cost uplift, a reasoning share, a stratum's loss share), read in
     whole percents because no interval stands behind a decimal. ``derived`` marks a figure computed here from the
     input's point figures rather than copied (a derived family's, or a derived statistic's: ``vs_control``, a floor's
-    ``held_above``, a criterion figure's ``gap``): descriptive, with no interval and no test behind it.
+    ``held_above``, a criterion figure's ``gap``): descriptive, with no interval and no test behind it. ``per`` is
+    what a money figure counts, as a plural noun (``conversations``), where the input states it
+    (:mod:`~threetears.evals.analysis.report.cost_unit`); empty where it does not, or the figure is no money.
     """
 
     path: str
@@ -173,6 +177,7 @@ class Figure:
     change: bool = False
     whole: bool = False
     derived: bool = False
+    per: str = ""
 
 
 # --- the vocabulary a path is matched against -------------------------------------------------------------------
@@ -707,23 +712,73 @@ def _blended_cost(report_input: ReportInput, key: str) -> dict[str, float]:
     return blended
 
 
-def _costs_per_thousand(report_input: ReportInput) -> dict[str, float]:
-    """Each arm's cost per 1,000 replies, from the first source that holds one: the one rule a page and the decision
-    read cost by (``cost_per_1k.<arm>``).
+#: The cost source that is the scoreboard's cost per reply, as :class:`CostBasis` names it.
+_SCOREBOARD_COST = "scoreboard"
 
-    The arms' overall figures on a measure stated per 1,000 replies; else on one stated per 1,000,000, divided by
-    1,000; else on the one dollar measure on the cost merit axis, times 1,000; else the scoreboard's cost per reply,
-    times 1,000; else the one dollar measure where lower is better. Where none of those states a figure, each measure
-    in the same order blended over the tasks by traffic share (:func:`_blended_cost`).
-    """
+
+def _cost_source(report_input: ReportInput) -> tuple[str, dict[str, float]]:
+    """The first cost source that holds a figure, by name (a measure's key, or :data:`_SCOREBOARD_COST`), and each
+    arm's cost per 1,000 on it; ``("", {})`` where none does (:func:`_costs_per_thousand`'s order)."""
     first, lower = _cost_measures(report_input)
-    sources = [_overall_cost(report_input, key) for key in first]
+    sources = [(key, _overall_cost(report_input, key)) for key in first]
     sources.append(
-        {a: row.reply_cost_usd * 1000 for a, row in report_input.scoreboard.items() if row.reply_cost_usd is not None}
+        (
+            _SCOREBOARD_COST,
+            {
+                a: row.reply_cost_usd * 1000
+                for a, row in report_input.scoreboard.items()
+                if row.reply_cost_usd is not None
+            },
+        )
     )
-    sources += [_overall_cost(report_input, key) for key in lower]
-    sources += [_blended_cost(report_input, key) for key in dict.fromkeys([*first, *lower])]
-    return next((source for source in sources if source), {})
+    sources += [(key, _overall_cost(report_input, key)) for key in lower]
+    sources += [(key, _blended_cost(report_input, key)) for key in dict.fromkeys([*first, *lower])]
+    return next(((name, source) for name, source in sources if source), ("", {}))
+
+
+def _costs_per_thousand(report_input: ReportInput) -> dict[str, float]:
+    """Each arm's cost per 1,000 of what it counts, from the first source that holds one: the one rule a page and the
+    decision read cost by (``cost_per_1k.<arm>``).
+
+    The arms' overall figures on a measure stated per 1,000; else on one stated per 1,000,000, divided by 1,000; else
+    on the one dollar measure on the cost merit axis, times 1,000; else the scoreboard's cost per reply, times 1,000;
+    else the one dollar measure where lower is better. Where none of those states a figure, each measure in the same
+    order blended over the tasks by traffic share (:func:`_blended_cost`). What the count counts is
+    :func:`cost_basis`'s.
+    """
+    return _cost_source(report_input)[1]
+
+
+def cost_basis(report_input: ReportInput) -> CostBasis:
+    """What the page's cost (``cost_per_1k.<arm>``) is per, read from the source it is read from.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The noun (``replies`` from the scoreboard or a dollar-per-reply measure; a per-count measure's label's
+        noun; empty where unstated, or where the input states no cost) and the source.
+    :rtype: CostBasis
+    """
+    source, _costs = _cost_source(report_input)
+    if source == _SCOREBOARD_COST:
+        return CostBasis(noun=REPLIES, source=source)
+    measure = report_input.measures.get(source)
+    return CostBasis(noun=per_noun(measure) if measure is not None else "", source=source)
+
+
+def _money_per(report_input: ReportInput, values: tuple[str, ...]) -> str:
+    """What a money figure read by a path counts: the money measure the path names, else the page's cost basis."""
+    for value in values:
+        measure = report_input.measures.get(value)
+        if measure is not None and measure.unit in _PER_THOUSAND_FACTORS:
+            return per_noun(measure)
+    return cost_basis(report_input).noun
+
+
+def _input_unit_phrases(report_input: ReportInput) -> set[str]:
+    """The phrases this input's costs are counted in, which prose may write whole: ``per 1,000 conversations`` and
+    ``per 1,000,000 conversations`` for each noun a money measure or the cost basis states."""
+    nouns = {per_noun(measure) for measure in report_input.measures.values()} | {cost_basis(report_input).noun}
+    return {per_count(noun, count) for noun in nouns if noun for count in (1_000, 1_000_000)}
 
 
 def _cost_per_1k(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
@@ -839,7 +894,7 @@ def _board_figure(row: ScoreboardRow, statistic: str, path: str) -> Figure:
     if statistic in ("lost", "failed"):
         return _number(path, sum(getattr(row, statistic).values()), f"trials {statistic}", "count")
     if statistic.endswith("_usd"):
-        return _number(path, getattr(row, statistic), f"the {statistic}", "usd")
+        return replace(_number(path, getattr(row, statistic), f"the {statistic}", "usd"), per=REPLIES)
     return _number(path, getattr(row, statistic), f"trials {statistic}", "count")
 
 
@@ -2589,6 +2644,8 @@ def resolve(key: str, report_input: ReportInput) -> Figure:
         raise _refuse(key, f"names no figure: after `{key[: stop.at]}` comes {_listed(stop.expected)}")
     reading = found[0]
     figure = reading.family.resolve(report_input, reading.values, key)
+    if figure.scale in _PER_THOUSAND_FACTORS and not figure.per:
+        figure = replace(figure, per=_money_per(report_input, reading.values))
     return replace(figure, derived=_is_derived(reading))
 
 
@@ -2748,12 +2805,12 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
         if spelling == "usd":
             return _Spelled(_money(value, signed))
         per_thousand = value * _PER_THOUSAND_FACTORS[figure.scale]
-        return _Spelled(PER_THOUSAND_TEMPLATE.format(amount=_money(per_thousand, signed)))
+        return _Spelled(f"{_money(per_thousand, signed)} {per_count(figure.per, 1_000)}")
     if spelling == _PER_MILLION:
         # The package's money spelling (the scoreboard's): a price per million replies is whole dollars or near it,
         # and two decimals on it are noise.
         amount = signed_with_unit(value, MONEY) if signed else with_unit(value, MONEY)
-        return _Spelled(_PER_MILLION_TEMPLATE.format(amount=amount))
+        return _Spelled(f"{amount} {per_count(figure.per, 1_000_000)}")
     if spelling == "int":
         # A price per 1,000,000 replies also reads as a whole number, as stored plans spell it.
         if figure.scale not in ("count", "plain", "points", "usd_per_1m"):
@@ -2896,7 +2953,9 @@ def literal_numbers(text: str, report_input: ReportInput) -> list[tuple[int, int
 
     for match in _KEY.finditer(text):
         mask(*match.span())
-    allowed = _allowed_names(report_input) | set(PERCENTILE_NAMES) | set(_UNIT_PHRASES)
+    allowed = (
+        _allowed_names(report_input) | set(PERCENTILE_NAMES) | set(_UNIT_PHRASES) | _input_unit_phrases(report_input)
+    )
     for name in sorted(allowed, key=len, reverse=True):
         pattern = re.compile(rf"(?<!\w){re.escape(name)}(?!\w)", re.IGNORECASE)
         for match in pattern.finditer("".join(masked)):
@@ -3148,7 +3207,8 @@ def _grammar_filters(example: ReportInput, names: Mapping[str, str]) -> list[str
     lines.append(f'For example, "{sentence}" reads "{render(sentence, example, names)}".')
     per_reply = "scoreboard.base.reply_cost_usd"
     lines.append(
-        "A key prints its own unit (`%`, `$`, `ms`, `s`, `per 1,000 replies`); never write a unit after it. A figure "
+        "A key prints its own unit (`%`, `$`, `ms`, `s`, `per 1,000 replies`, or per 1,000 of what the input's cost "
+        "counts); never write a unit after it. A figure "
         "in points alone prints its bare number, so the word `points` follows it, as above. Money per reply reads per "
         f"1,000 replies: write `{{{per_reply}|usd_per_1k}}`, which reads "
         f'"{format_figure(resolve(per_reply, example), ("usd_per_1k",))}", not `{{{per_reply}}}` '
@@ -3160,7 +3220,8 @@ def _grammar_filters(example: ReportInput, names: Mapping[str, str]) -> list[str
         "text (such as `64k`; one held as a number is a key), an aspect, measure, dimension, stratum or task id or name, the campaign's name, "
         "a trial or case id. An id made only of digits is never such a name: write `{arm:1017}`, not `1017`. "
         f"Percentile names ({', '.join(f'`{name}`' for name in PERCENTILE_NAMES)}) and the package's unit phrases "
-        f"({', '.join(f'`{phrase}`' for phrase in _UNIT_PHRASES)}, whole) are written as they are; any other number "
+        f"({', '.join(f'`{phrase}`' for phrase in _UNIT_PHRASES)}, and `per 1,000` or `per 1,000,000` of what the "
+        "input's costs count, such as `per 1,000 conversations`, whole) are written as they are; any other number "
         "is a key."
     )
     return lines
@@ -3326,6 +3387,7 @@ __all__ = [
     "figure_key_grammar",
     "figure_key_index",
     "figure_key_pages",
+    "cost_basis",
     "flip_margin",
     "format_figure",
     "gain_axis",

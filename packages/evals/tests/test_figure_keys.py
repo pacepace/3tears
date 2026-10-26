@@ -74,6 +74,13 @@ def _rendered(text: str) -> str:
     return render(text, _input("r5"), _r5_names())
 
 
+def _counted(name: str, key: str) -> str:
+    """What a money measure's label says it counts: the label's last word (``Cost per million turns``: ``turns``)."""
+    label = _input(name).measures[key].label
+    assert label is not None
+    return label.split()[-1]
+
+
 def _figure(path: str, filters: str = "", name: str = "r5") -> str:
     return format_figure(resolve(path, _input(name)), tuple(part for part in filters.split("|") if part))
 
@@ -309,13 +316,15 @@ class TestFilters:
         assert _figure("cost_per_1k.September", "usd_per_1k") == "$1.89 per 1,000 replies"
         assert _figure("contrast.1017.production_replicating_cost.delta", "usd_per_1k") == "+$0.49 per 1,000 replies"
 
-    def test_a_price_per_million_replies_states_its_ruler(self):
-        assert _figure("measure.cost_per_1m.brisk-s.few.mean", name="r3") == "$40 per 1,000,000 replies"
-        assert _figure("measure.cost_per_1m.atlas-m.rubric.mean", name="r3") == "$610 per 1,000,000 replies"
+    def test_a_price_per_million_states_its_ruler_in_what_its_label_counts(self):
+        counted = _counted("r3", "cost_per_1m")
+        assert _figure("measure.cost_per_1m.brisk-s.few.mean", name="r3") == f"$40 per 1,000,000 {counted}"
+        assert _figure("measure.cost_per_1m.atlas-m.rubric.mean", name="r3") == f"$610 per 1,000,000 {counted}"
 
-    def test_a_price_per_million_replies_keeps_reading_whole_and_reads_per_thousand(self):
+    def test_a_price_per_million_keeps_reading_whole_and_reads_per_thousand(self):
+        counted = _counted("r3", "cost_per_1m")
         assert _figure("measure.cost_per_1m.atlas-m.zero.mean", "int", name="r3") == "180"
-        assert _figure("measure.cost_per_1m.atlas-m.zero.mean", "usd_per_1k", name="r3") == "$0.18 per 1,000 replies"
+        assert _figure("measure.cost_per_1m.atlas-m.zero.mean", "usd_per_1k", name="r3") == f"$0.18 per 1,000 {counted}"
 
     def test_int_rounds_to_a_whole_number(self):
         assert _figure("flip_margin.qwen3.8-flash", "int") == "11"

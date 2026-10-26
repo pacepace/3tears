@@ -466,7 +466,13 @@ async def test_block_render_echoes_the_line_and_the_emphasis_it_drew_beside_its_
     emphasis = next(arm.id for arm in fixture_inputs()["r2"].arms if arm.role != "control")
     query = {"source": "measures", "measures": ["latency_ms"]}
     outcome = await _call(
-        {"action": "block_render", "block_kind": "range_bars", "query": query, "reference": "budget", "emphasis": emphasis}
+        {
+            "action": "block_render",
+            "block_kind": "range_bars",
+            "query": query,
+            "reference": "budget",
+            "emphasis": emphasis,
+        }
     )
     assert outcome.structured is not None, outcome.text
     assert outcome.structured["reference_line"] == "budget" and outcome.structured["emphasis"] == emphasis

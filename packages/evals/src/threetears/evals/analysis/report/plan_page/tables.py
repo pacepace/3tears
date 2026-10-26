@@ -17,7 +17,7 @@ judged:<dim>     the arm's figure on the judged dimension
 gate             the arm's gate status (:func:`~threetears.evals.analysis.report_gates.gate_check`) as a pill, and
                  its first binding reason
 measure:<key>    the arm's figure on the measure: its mean, else the statistic a criterion on it reads
-cost_per_1k      dollars per 1,000 replies, and the uplift against the control's
+cost_per_1k      dollars per 1,000 of what the cost counts, and the uplift against the control's
 ===============  ===================================================================================================
 
 A cell the input holds no figure for is a dash. A column outside these families is refused: it is no column the
@@ -36,7 +36,8 @@ from collections.abc import Callable
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
 from threetears.evals.analysis.report.charts import ChartStatus
-from threetears.evals.analysis.report.figure_keys import Figure, format_figure, resolve
+from threetears.evals.analysis.report.cost_unit import per_count
+from threetears.evals.analysis.report.figure_keys import Figure, cost_basis, format_figure, resolve
 from threetears.evals.analysis.report.plan_page.charting import figure_stat, measure_words, stat_value
 from threetears.evals.analysis.report.plan_page.look import GATE_STATUS, ArmLook, PageLook
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION, PageArmsKey, PageOptions
@@ -45,6 +46,7 @@ from threetears.evals.analysis.report.plan_page.words import (
     ARM_ROLE_WORDS,
     ARMS_EYEBROW,
     ARMS_TAKEAWAY,
+    COST_HEADER,
     GATE_WORDS,
     OPTION_HEADERS,
     OPTIONS_TITLE,
@@ -188,6 +190,8 @@ def _header(column: str, report_input: ReportInput) -> str:
         return measure_words(report_input, column.removeprefix("judged:"), kind="judged")
     if family == "measure:<key>":
         return measure_words(report_input, column.removeprefix("measure:"))
+    if family == "cost_per_1k":
+        return COST_HEADER.format(per=per_count(cost_basis(report_input).noun))
     return OPTION_HEADERS[family]
 
 

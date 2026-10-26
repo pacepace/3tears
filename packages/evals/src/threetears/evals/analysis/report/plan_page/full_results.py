@@ -46,13 +46,14 @@ from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
 from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.figure_keys import format_figure, resolve
-from threetears.evals.analysis.report.figures import PER_THOUSAND_REPLIES
+from threetears.evals.analysis.report.cost_unit import per_count, per_noun
+from threetears.evals.analysis.report.figure_keys import cost_basis, format_figure, resolve
 from threetears.evals.analysis.report.plan_page.charting import figure_unit, measure_words, stat_value
 from threetears.evals.analysis.report.plan_page.look import GATE_STATUS, PageLook, figure_text, quantity
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
 from threetears.evals.analysis.report.plan_page.words import (
     CONTRAST_VERDICT_WORDS,
+    COST_HEADER,
     FULL_RESULTS_HEADERS,
     FULL_RESULTS_TITLES,
     GATE_WORDS,
@@ -118,7 +119,10 @@ def _named(report_input: ReportInput, key: str, *, kind: str | None = None) -> s
     replies, as every chart does."""
     words = measure_words(report_input, key, kind=kind)
     drawn = quantity(figure_unit(report_input, key, kind=kind))
-    return f"{words}, {PER_THOUSAND_REPLIES}" if drawn.unit == MONEY and drawn.factor != 1.0 else words
+    measure = report_input.measures.get(key) if kind is None else None
+    if measure is None or drawn.unit != MONEY or drawn.factor == 1.0:
+        return words
+    return f"{words}, {per_count(per_noun(measure))}"
 
 
 def _stated(report_input: ReportInput, key: str, stat: Stat | None, *, kind: str | None = None) -> TableCell:
@@ -175,7 +179,7 @@ def _arms_by_measure(report_input: ReportInput, look: PageLook) -> list[TableBlo
         *([_column("pass_rate")] if passing else []),
         *(_column(f"judged:{key}", _named(report_input, key, kind="judged")) for key in judged),
         *(_column(f"measure:{key}", _named(report_input, key)) for key in measures),
-        *([_column("cost_per_1k")] if costed else []),
+        *([_column("cost_per_1k", COST_HEADER.format(per=per_count(cost_basis(report_input).noun)))] if costed else []),
     ]
     rows = []
     for arm in arms:

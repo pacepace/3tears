@@ -29,6 +29,7 @@ from collections.abc import Callable, Iterator
 
 from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.blocks import CellValue, TableBlock, TableCell, TableColumn
+from threetears.evals.analysis.report.cost_unit import per_count, per_noun
 from threetears.evals.analysis.report.plan_page.charting import (
     ChartContext,
     Drawn,
@@ -98,8 +99,9 @@ def _figure_cell(context: ChartContext, key: str, stat: Stat | None) -> tuple[Ta
     name = measure_words(report_input, key)
     read = stat_value(report_input, key, stat) if stat is not None else None
     drawn = quantity(figure_unit(report_input, key), [read[0]] if read is not None else [])
-    if drawn.unit == MONEY and drawn.factor != 1:
-        name = TABLE_PER_THOUSAND.format(name=name)
+    measure = report_input.measures.get(key)
+    if drawn.unit == MONEY and drawn.factor != 1 and measure is not None:
+        name = TABLE_PER_THOUSAND.format(name=name, per=per_count(per_noun(measure)))
     if stat is None or read is None:
         return TableCell(value=None), name
     interval = stat_interval(stat) if read[1] == "mean" else None

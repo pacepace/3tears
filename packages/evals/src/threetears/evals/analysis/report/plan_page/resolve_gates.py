@@ -78,8 +78,8 @@ from threetears.evals.analysis.report.charts import (
     ScatterPath,
     ScatterPoint,
 )
-from threetears.evals.analysis.report.figure_keys import format_figure, resolve
-from threetears.evals.analysis.report.figures import PER_THOUSAND_REPLIES
+from threetears.evals.analysis.report.cost_unit import per_count
+from threetears.evals.analysis.report.figure_keys import cost_basis, format_figure, resolve
 from threetears.evals.analysis.report.plan_page.charting import (
     ChartContext,
     Drawn,
@@ -291,7 +291,7 @@ def _task_matrix(context: ChartContext) -> Drawn:
         rows=rows,
         row_header=GATE_HEADERS["tasks"],
         cost_fmt=priced.fmt if costs_drawn else None,
-        cost_unit=PER_THOUSAND_REPLIES if costs_drawn else None,
+        cost_unit=per_count(cost_basis(report_input).noun) if costs_drawn else None,
         pick_label=PICK_LABEL if picks else None,
     )
     return Drawn(chart_block(context, data))
@@ -793,7 +793,7 @@ def _lattice(context: ChartContext) -> Drawn:
             shown = value * drawn.factor
             tip = [_config_name(report_input, arm), f"{measure_words(report_input, key)} {figure_text(shown, drawn)}"]
             if cost is not None:
-                tip.append(f"{figure_text(cost, priced)} {PER_THOUSAND_REPLIES}")
+                tip.append(f"{figure_text(cost, priced)} {per_count(cost_basis(report_input).noun)}")
             if latency is not None and timed is not None:
                 tip.append(f"p95 {figure_text(latency * timed.factor, timed)}")
             cells.append(
@@ -816,7 +816,7 @@ def _lattice(context: ChartContext) -> Drawn:
         fmt=drawn.fmt,
         bar_domain=(bar[0], bar[1]),
         cost_fmt=priced.fmt if costs else None,
-        cost_unit=PER_THOUSAND_REPLIES if costs else None,
+        cost_unit=per_count(cost_basis(report_input).noun) if costs else None,
         latency_fmt=timed.fmt if timed is not None else None,
         emphasis=context.emphasis,
     )

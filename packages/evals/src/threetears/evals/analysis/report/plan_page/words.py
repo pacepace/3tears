@@ -9,8 +9,6 @@ heads and status words. Held here so a translation replaces them in one place.
 
 from __future__ import annotations
 
-from threetears.evals.analysis.report.figures import PER_THOUSAND_REPLIES
-
 __all__ = [
     "ANSWER_TEMPLATES",
     "APPENDIX_TITLE",
@@ -82,6 +80,7 @@ __all__ = [
     "CONFUSION_NOTE",
     "TABLE_HEADERS",
     "TABLE_PER_THOUSAND",
+    "COST_HEADER",
     "CELL_TEMPLATE",
     "TABLE_ORDER",
 ]
@@ -147,8 +146,11 @@ OPTION_HEADERS: dict[str, str] = {
     "reading.change": "Change (points)",
     "reading.verdict": "Reading",
     "gate": "Gates",
-    "cost_per_1k": "Cost " + PER_THOUSAND_REPLIES,
 }
+
+#: The cost column's head, wherever a table states the page's one cost: what it is per, as the input states it
+#: (:func:`~threetears.evals.analysis.report.cost_unit.per_count`, ``per 1,000 conversations``).
+COST_HEADER = "Cost {per}"
 
 #: A count out of a total, as a cell's marker reads it: passes over usable trials, usable trials over those run.
 PASSES_TEMPLATE = "{passed} of {usable}"
@@ -203,7 +205,6 @@ FULL_RESULTS_TITLES: dict[str, str] = {
 FULL_RESULTS_HEADERS: dict[str, str] = {
     "arm": "Arm",
     "pass_rate": "Pass rate",
-    "cost_per_1k": "Cost " + PER_THOUSAND_REPLIES,
     "measure": "Measure",
     "aspect": "Aspect",
     "change": "Change",
@@ -461,8 +462,9 @@ TABLE_HEADERS = {
     "prefers_control": "Prefers the control",
 }
 
-#: What a plain table states a money figure per reply per, beside its measure's name.
-TABLE_PER_THOUSAND = "{name}, per 1,000 replies"
+#: What a plain table states a money figure per reply per, beside its measure's name: its count, as the input states
+#: it (``per 1,000 replies``).
+TABLE_PER_THOUSAND = "{name}, {per}"
 
 #: How a target-matrix cell's two levels read together, in a plain table.
 CELL_TEMPLATE = "{row} × {column}"
