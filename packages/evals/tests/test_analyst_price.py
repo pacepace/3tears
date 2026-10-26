@@ -44,14 +44,11 @@ from threetears.evals.actions.analyst_analyses import ANALYSES_WORKFLOW
 from threetears.evals.actions.analyst_price import analyst_price_actions
 from threetears.evals.analysis.analyst.price import Price, PriceTradeoff, price_tradeoff
 from threetears.evals.analysis.analyst.snapshot import frozen_input
-from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, key_subjects, render, resolve
 from threetears.evals.analysis.report_decision import surviving_options
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import RefusedInput
-
-#: What a key's refusal says of a figure the input leaves unstated.
-UNSTATED = "which the input does not state"
 
 #: The fields of a listing that page it, which are counts of rows and never figures.
 PAGING = frozenset({"total", "offset", "next_offset", "limit"})
@@ -144,7 +141,7 @@ def test_r4s_switch_to_the_cheaper_option_reads_its_saving_per_point_lost_a_mont
 
 def test_a_lower_is_better_measure_gains_toward_its_better_side() -> None:
     """r4's latency states no mean, so it places no arm; r2's calls per task do, and an arm making fewer gains."""
-    with pytest.raises(UnresolvableReference, match=UNSTATED):
+    with pytest.raises(UnstatedFigure):
         resolve("price.f64.prod.latency_s.gain", _r4())
     data = MISFITS["r2 without its gates"]()
     held = fixture_inputs()["r2 without its gates"]
@@ -168,7 +165,7 @@ def test_with_no_control_a_gain_reads_the_arms_means_and_states_no_interval() ->
         (cost[second] - cost[first]) / (rate[second] - rate[first])
     )
     for field in ("gain_interval", "per_point_low", "per_point_high"):
-        with pytest.raises(UnresolvableReference, match=UNSTATED):
+        with pytest.raises(UnstatedFigure):
             resolve(f"{prefix}.{field}", held)
 
 
@@ -229,7 +226,7 @@ def test_a_monthly_figure_without_a_declared_volume_is_unstated() -> None:
     held = fixture_inputs()["r5"]
     assert held.meta.volume_per_month is None
     for key in ("cost_per_month.September", "price.September.1017.persona.holds_character.monthly_cost_gap"):
-        with pytest.raises(UnresolvableReference, match=UNSTATED):
+        with pytest.raises(UnstatedFigure):
             resolve(key, held)
 
 

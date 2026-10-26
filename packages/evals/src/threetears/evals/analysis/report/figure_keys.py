@@ -51,7 +51,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal, get_args
 
-from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.numbers import format_number, group_thousands
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, number_in, signed_with_unit, with_unit
 from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
@@ -180,9 +180,9 @@ class Figure:
 
 @dataclass(frozen=True)
 class _Word:
-    """A fixed word in a path: a family keyword or a sub-field."""
+    """A fixed word in a path: a family keyword or a sub-field, as the path spells it."""
 
-    text: str
+    spelling: str
 
 
 @dataclass(frozen=True)
@@ -221,7 +221,7 @@ class _Family:
     example: str = ""
 
     def form(self) -> str:
-        return ".".join(slot.text if isinstance(slot, _Word) else slot.name for slot in self.slots)
+        return ".".join(slot.spelling if isinstance(slot, _Word) else slot.name for slot in self.slots)
 
     def statistic(self) -> _Statistic | None:
         return next((slot for slot in self.slots if isinstance(slot, _Statistic)), None)
@@ -229,6 +229,12 @@ class _Family:
 
 def _refuse(path: str, why: str) -> UnresolvableReference:
     return UnresolvableReference(f"figure key {{{path}}} {why}")
+
+
+def _unstated(path: str, why: str) -> UnstatedFigure:
+    """The refusal for a well-formed key whose figure the input leaves unstated, typed so a listing reads it as absent
+    (:class:`~threetears.evals.analysis.errors.UnstatedFigure`)."""
+    return UnstatedFigure(f"figure key {{{path}}} {why}")
 
 
 def _arm(report_input: ReportInput, arm_id: str) -> Arm:
@@ -335,7 +341,7 @@ def _contrast_scale(report_input: ReportInput, measure: str, kind: str | None) -
 
 def _text(path: str, value: str | None, what: str) -> Figure:
     if value is None or not value.strip():
-        raise _refuse(path, f"names {what}, which the input does not state")
+        raise _unstated(path, f"names {what}, which the input does not state")
     return Figure(path=path, kind="text", value=value)
 
 
@@ -350,14 +356,14 @@ def _number(
     whole: bool = False,
 ) -> Figure:
     if value is None:
-        raise _refuse(path, f"names {what}, which the input does not state")
+        raise _unstated(path, f"names {what}, which the input does not state")
     return Figure(path=path, kind="number", value=float(value), scale=scale, unit=unit, change=change, whole=whole)
 
 
 def _end(path: str, interval: tuple[float, float] | None, statistic: str, what: str) -> float:
     """One end of ``interval`` (``low`` or ``high``), refused by name where the input states no interval."""
     if interval is None:
-        raise _refuse(path, f"names {what}, which the input does not state")
+        raise _unstated(path, f"names {what}, which the input does not state")
     return interval[0] if statistic == "low" else interval[1]
 
 
@@ -372,7 +378,7 @@ def _interval(
     whole: bool = False,
 ) -> Figure:
     if value is None:
-        raise _refuse(path, f"names {what}, which the input does not state")
+        raise _unstated(path, f"names {what}, which the input does not state")
     low, high = value
     return Figure(
         path=path, kind="interval", value=(float(low), float(high)), scale=scale, unit=unit, change=change, whole=whole
@@ -798,7 +804,7 @@ def _slice_figure(
         raise _refuse(path, "compares an arm with the control, and names the control itself")
     mine, theirs = per_arm[arm_id][key].mean, per_arm.get(control.id, {}).get(key)
     if mine is None or theirs is None or theirs.mean is None:
-        raise _refuse(
+        raise _unstated(
             path, f"names the arm's and the control's mean on {key} in {where}, which the input does not state"
         )
     return _number(path, mine - theirs.mean, f"the change from the control in {where}", scale, unit=unit, change=True)
@@ -852,13 +858,13 @@ def _depth_figure(report_input: ReportInput, path: str, read: Callable[[ReportIn
     aspect = _asked(report_input)
     if aspect is None:
         ids = ", ".join(f"`aspects.{a.id}.`" for a in report_input.aspects) or "none: the input holds no aspect"
-        raise _refuse(
+        raise _unstated(
             path,
             f"reads the one asked aspect's depth, which the input does not state: it has no single one; name it: {ids}",
         )
     value = read(report_input, aspect)
     if value is None:
-        raise _refuse(
+        raise _unstated(
             path,
             "reads the asked aspect's depth as one figure, which the input does not state: its arms ran it to "
             "different depths or none is stated",
@@ -900,7 +906,7 @@ def _aspect_depth(report_input: ReportInput, values: tuple[str, ...], path: str)
     depth = _depth_of(_aspect_by_id(report_input, aspect_id), report_input)
     value = _agreed(cases if field == "cases" else repeats for cases, repeats in depth)
     if value is None:
-        raise _refuse(
+        raise _unstated(
             path,
             f"names the {field} aspect {aspect_id} ran as one figure, which the input does not state: its arms ran "
             f"it to different depths, or no depth is stated; read each arm's `aspects.{aspect_id}.depth.<arm>.{field}`",
@@ -930,7 +936,7 @@ def _late_set_at(report_input: ReportInput, _: tuple[str, ...], path: str) -> Fi
         raise _refuse(path, "names when the late criteria were set, and no criterion was set late")
     if len(when) > 1:
         per = ", ".join(f"`late_criteria.{late}.set_at`" for late in _late_names(report_input, ()))
-        raise _refuse(
+        raise _unstated(
             path,
             f"names one date, which the input does not state: the late criteria were set at {len(when)} different "
             f"times; name one: {per}",
@@ -1002,7 +1008,7 @@ def _aspect_family(report_input: ReportInput, values: tuple[str, ...], path: str
     aspect_id, field = values
     held = [index for index, family in enumerate(report_input.contrast_families) if family.aspect == aspect_id]
     if not held:
-        raise _refuse(path, f"names aspect {aspect_id}'s contrast family, which the input does not state")
+        raise _unstated(path, f"names aspect {aspect_id}'s contrast family, which the input does not state")
     if len(held) > 1:
         keys = ", ".join(f"`families.{index}.{field}`" for index in held)
         raise _refuse(
@@ -1391,7 +1397,7 @@ def _aspect_flip_margin(report_input: ReportInput, values: tuple[str, ...], path
 def _flip_figure(reading: Reading, path: str) -> Figure:
     flip = flip_margin(reading)
     if flip is None:
-        raise _refuse(path, "names the interval a flip is read on, which the input does not state")
+        raise _unstated(path, "names the interval a flip is read on, which the input does not state")
     return Figure(path=path, kind="number", value=flip, scale="points")
 
 
@@ -1541,7 +1547,7 @@ def _monthly_factor(report_input: ReportInput, path: str) -> float:
     """What turns a figure per 1,000 replies into one per month at the declared volume."""
     volume = report_input.meta.volume_per_month
     if volume is None:
-        raise _refuse(
+        raise _unstated(
             path,
             "names a monthly figure, which needs the monthly volume (meta.volume_per_month), which the input does "
             "not state",
@@ -1573,7 +1579,7 @@ def _price(report_input: ReportInput, values: tuple[str, ...], path: str) -> Fig
     positions = axis.positions
     for arm in (first, second):
         if arm not in positions:
-            raise _refuse(path, f"names {arm}'s figure on {key!r}, which the input does not state")
+            raise _unstated(path, f"names {arm}'s figure on {key!r}, which the input does not state")
     gain = positions[second] - positions[first]
     scale, unit = _gain_scale(report_input, key)
     if field == "gain":
@@ -1581,7 +1587,7 @@ def _price(report_input: ReportInput, values: tuple[str, ...], path: str) -> Fig
     interval, unstated = _gain_interval(report_input, axis, first, second)
     if field == "gain_interval":
         if interval is None:
-            raise _refuse(path, f"names the gain's interval, which the input does not state: {unstated}")
+            raise _unstated(path, f"names the gain's interval, which the input does not state: {unstated}")
         return Figure(path=path, kind="interval", value=interval, scale=scale, unit=unit, change=True)
     costs = _costs_per_thousand(report_input)
     gap = costs[second] - costs[first]
@@ -1601,7 +1607,7 @@ def _price(report_input: ReportInput, values: tuple[str, ...], path: str) -> Fig
     if field == "per_point":
         return Figure(path=path, kind="number", value=gap / (gain * points) * factor, scale=money)
     if interval is None:
-        raise _refuse(path, f"names an end of the price's interval, which the input does not state: {unstated}")
+        raise _unstated(path, f"names an end of the price's interval, which the input does not state: {unstated}")
     bound = _price_bounds(path, gap, gain * points, (interval[0] * points, interval[1] * points), field)
     return Figure(path=path, kind="number", value=bound * factor, scale=money)
 
@@ -1645,7 +1651,7 @@ def _pair(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figu
         return _number(path, pair.p_holm, "the Holm-adjusted p", "plain")
     if statistic == "ahead":
         if pair.ahead is None:
-            raise _refuse(path, "names the arm shown ahead, which the input does not state: neither is shown ahead")
+            raise _unstated(path, "names the arm shown ahead, which the input does not state: neither is shown ahead")
         return Figure(path=path, kind="arm", value=pair.ahead)
     return _text(path, pair.why, "why the pair reads as it does")
 
@@ -2451,7 +2457,7 @@ def _walk(
 ) -> None:
     slot, rest = slots[0], slots[1:]
     if isinstance(slot, _Word):
-        options: Sequence[str] = (slot.text,)
+        options: Sequence[str] = (slot.spelling,)
     elif isinstance(slot, _Ids):
         options = list(slot.options(report_input, values))
     else:
@@ -2477,7 +2483,7 @@ def _walk(
 
 
 def _slot_name(slot: _Slot) -> str:
-    return slot.text if isinstance(slot, _Word) else slot.name
+    return slot.spelling if isinstance(slot, _Word) else slot.name
 
 
 def _readings(path: str, report_input: ReportInput) -> tuple[list[_Reading], _Stop]:
@@ -2493,7 +2499,7 @@ def _named(reading: _Reading) -> str:
     parts: list[str] = []
     values = iter(reading.values)
     for slot in reading.family.slots:
-        parts.append(f"`{slot.text}`" if isinstance(slot, _Word) else f"{_slot_name(slot)} `{next(values)}`")
+        parts.append(f"`{slot.spelling}`" if isinstance(slot, _Word) else f"{_slot_name(slot)} `{next(values)}`")
     return " · ".join(parts)
 
 
@@ -2656,7 +2662,7 @@ def key_subjects(key: str, report_input: ReportInput) -> KeySubjects:
     values = iter(reading.values)
     for slot in reading.family.slots:
         if isinstance(slot, _Word):
-            words.append(slot.text)
+            words.append(slot.spelling)
             continue
         value = next(values)
         if isinstance(slot, _Statistic) and value in _AGAINST_CONTROL_STATISTICS:
@@ -3244,9 +3250,11 @@ def _subject(family: _Family) -> str:
     """What a family's figures are of: its first word, or the word after ``aspects.<aspect>.`` in a qualified form, up
     to any dot a word is written with (``cost.uplift`` is of ``cost``)."""
     (first, *rest) = family.slots
-    qualified = isinstance(first, _Word) and first.text == "aspects" and len(rest) > 1 and isinstance(rest[1], _Word)
+    qualified = (
+        isinstance(first, _Word) and first.spelling == "aspects" and len(rest) > 1 and isinstance(rest[1], _Word)
+    )
     word = rest[1] if qualified else first
-    return word.text.split(".")[0] if isinstance(word, _Word) else word.name
+    return word.spelling.split(".")[0] if isinstance(word, _Word) else word.name
 
 
 def _grouped() -> dict[str, list[_Family]]:

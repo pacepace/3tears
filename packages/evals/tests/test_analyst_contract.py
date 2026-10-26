@@ -54,7 +54,7 @@ from threetears.evals.actions import (
 from threetears.evals.actions.render import render_cited
 from threetears.evals.analysis import assemble_campaign_bundle
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
-from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.analyst.snapshot import ANALYST_EXAMPLES, frozen_input, report_snapshot
 from threetears.evals.analysis.planned_analysis import report_input_digest, report_input_document_digest
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
@@ -453,10 +453,11 @@ def test_a_figure_the_input_leaves_unstated_is_absent_and_a_key_naming_nothing_i
     held = fixture_inputs()["r1"]
     assert held.meta.question is None, "the control: r1 states no question"
     assert cite_if("meta.question", held) is None
-    with pytest.raises(UnresolvableReference, match="does not state"):
+    with pytest.raises(UnstatedFigure, match="does not state"):
         cite("meta.question", held)
-    with pytest.raises(UnresolvableReference, match="names no arm"):
+    with pytest.raises(UnresolvableReference, match="names no arm") as refused:
         cite_if("arm:no-such-arm-here", held)
+    assert not isinstance(refused.value, UnstatedFigure), "a key naming nothing is wrong, not an unstated figure"
     campaign = cite_if("meta.campaign", held)
     assert campaign is not None and campaign.value == held.meta.campaign and campaign.kind == "text"
 
