@@ -34,6 +34,8 @@ class CitedFigure(BaseModel):
     :ivar kind: What the value is: a number, an interval, text, or an arm.
     :ivar scale: The scale a number is on (a share, a percent, points, dollars, a count, or plain).
     :ivar unit: The unit a plain number is in, when it has one.
+    :ivar derived: Whether code derived the figure from the input's figures (a flip margin, a share of a loss, a
+        change against the control in a slice), which is descriptive: no interval and no test.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -44,6 +46,7 @@ class CitedFigure(BaseModel):
     kind: FigureKind = Field(description="What the value is: number, interval, text or arm.")
     scale: Scale = Field(description="The scale a number is on.")
     unit: str = Field(description="The unit a plain number is in; empty when it has none.")
+    derived: bool = Field(description="Whether code derived the figure from the input's figures; descriptive only.")
 
 
 def cite(key: str, report_input: ReportInput) -> CitedFigure:
@@ -66,6 +69,7 @@ def cite(key: str, report_input: ReportInput) -> CitedFigure:
         kind=figure.kind,
         scale=figure.scale,
         unit=figure.unit,
+        derived=figure.derived,
     )
 
 

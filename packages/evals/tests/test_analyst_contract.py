@@ -425,6 +425,18 @@ def test_a_result_reads_back_as_each_figures_key_and_reading_under_its_row() -> 
     _held_to_figures(listing.model_dump(mode="json"), held)
 
 
+def test_a_cited_figure_says_whether_code_derived_it_as_its_key_resolves() -> None:
+    held = fixture_inputs()["r5"]
+    aspect = next(aspect for aspect in held.aspects if aspect.readings)
+    reading = aspect.readings[0]
+    derived = cite(f"aspects.{aspect.id}.flip_margin.{reading.arm}", held)
+    stated = cite(f"pass_rate.{held.arms[0].id}", held)
+    assert derived.derived is True
+    assert derived.derived == resolve(derived.key, held).derived
+    assert stated.derived is False
+    assert stated.derived == resolve(stated.key, held).derived
+
+
 def test_a_figure_the_input_leaves_unstated_is_absent_and_a_key_naming_nothing_is_raised() -> None:
     held = fixture_inputs()["r1"]
     assert held.meta.question is None, "the control: r1 states no question"
