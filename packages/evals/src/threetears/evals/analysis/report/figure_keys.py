@@ -847,9 +847,22 @@ def _reasoning_ratio(report_input: ReportInput, values: tuple[str, ...], path: s
 
 
 def _depth_figure(report_input: ReportInput, path: str, read: Callable[[ReportInput, Aspect], float | None]) -> Figure:
-    value = read(report_input, _asked_or_refuse(report_input, path))
+    """The asked aspect's depth as one figure; refused as a figure the input does not state where it has no single
+    asked aspect, or the aspect's arms ran it to different depths: the input's shape, never a key spelled wrong."""
+    aspect = _asked(report_input)
+    if aspect is None:
+        ids = ", ".join(f"`aspects.{a.id}.`" for a in report_input.aspects) or "none: the input holds no aspect"
+        raise _refuse(
+            path,
+            f"reads the one asked aspect's depth, which the input does not state: it has no single one; name it: {ids}",
+        )
+    value = read(report_input, aspect)
     if value is None:
-        raise _refuse(path, "reads the asked aspect's depth, and its arms ran it to different depths or none is stated")
+        raise _refuse(
+            path,
+            "reads the asked aspect's depth as one figure, which the input does not state: its arms ran it to "
+            "different depths or none is stated",
+        )
     return Figure(path=path, kind="number", value=float(value), scale="count")
 
 
@@ -918,7 +931,9 @@ def _late_set_at(report_input: ReportInput, _: tuple[str, ...], path: str) -> Fi
     if len(when) > 1:
         per = ", ".join(f"`late_criteria.{late}.set_at`" for late in _late_names(report_input, ()))
         raise _refuse(
-            path, f"names one date, and the late criteria were set at {len(when)} different times; name one: {per}"
+            path,
+            f"names one date, which the input does not state: the late criteria were set at {len(when)} different "
+            f"times; name one: {per}",
         )
     return Figure(path=path, kind="text", value=when[0])
 
