@@ -27,7 +27,11 @@ readings    each aspect with readings       the candidates             GENERATOR
 floors      each floor                      the candidates             held good, unclear borderline, broken bad; the
                                                                        worst drop against the floor's margin
 measures,   each gate and guardrail (those  the arms, or each config   the check against that one criterion, wherever
-configs     on the query's measures)        named by its levels        it reads
+configs     on the query's measures), then  named by its levels        it reads. A measure no gate reads has no
+            each measure the query names                               status, as a task no gate reads has none: its
+            (every one, where it names                                 cells are neutral, with each arm's figure
+            none and no gate is declared)
+            that no gate reads
 ==========  ==============================  =========================  ===============================================
 
 **gate_scatter** draws each arm (each config) at the figures the two gates read, the gates' own statistics (a p95
@@ -80,6 +84,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
     Drawn,
     KindResolver,
     chart_block,
+    count_text,
     factor_legend,
     factor_token,
     figure_stat,
@@ -228,7 +233,7 @@ def _check_lines(check: GateCheck) -> list[str]:
 def _task_detail(task: Task) -> str | None:
     parts = []
     if task.n_cases is not None:
-        parts.append(TASK_DETAIL_TEMPLATE.format(cases=with_unit(float(task.n_cases), "")))
+        parts.append(TASK_DETAIL_TEMPLATE.format(cases=count_text(task.n_cases)))
     if task.share:
         parts.append(TASK_SHARE_TEMPLATE.format(share=with_unit(float(task.share) * 100, PERCENT)))
     return " · ".join(parts) or None
@@ -428,9 +433,13 @@ def _criterion_matrix(context: ChartContext) -> Drawn:
     report_input = context.report_input
     measures = set(context.query.measures)
     criteria = [criterion for criterion in _gating(report_input) if not measures or criterion.measure in measures]
-    if not criteria:
-        raise context.refuse("the input declares no gate or guardrail on what it selects")
-    selected = list(dict.fromkeys(row.arm for row in context.rows() if row.arm))
+    rows_read = context.rows()
+    gated = {criterion.measure for criterion in _gating(report_input)}
+    named = list(context.query.measures) or ([] if criteria else list(dict.fromkeys(row.key for row in rows_read)))
+    ungated = [key for key in named if key not in gated]
+    if not criteria and not ungated:
+        raise context.refuse("it selects no gate, guardrail or measure to show")
+    selected = list(dict.fromkeys(row.arm for row in rows_read if row.arm))
     if context.query.source == "configs":
         order = [config.arm for config in report_input.configs]
         arms = [arm for arm in order if arm in selected] if not context.query.arms else context.arm_order(selected)
@@ -448,6 +457,14 @@ def _criterion_matrix(context: ChartContext) -> Drawn:
         )
         for criterion in criteria
     ]
+    figures = {(row.key, row.arm): row.item for row in rows_read if isinstance(row.item, Stat)}
+    for key in ungated:
+        cells = []
+        for arm in arms:
+            stat = figures.get((key, arm))
+            said = _figure_words(context, key, stat) if stat is not None else None
+            cells.append(GateCell(status="neutral", label=NOT_GATED, reasons=[said] if said else None))
+        rows.append(GateRow(label=measure_words(report_input, key), cells=cells))
     data = GateMatrixChart(
         columns=[ChartColumn(label=name) for name in names],
         rows=rows,
@@ -807,6 +824,8 @@ def _cost(report_input: ReportInput, arm: str) -> float | None:
     try:
         figure = resolve(f"cost_per_1k.{arm}", report_input)
     except UnresolvableReference:
+        # NOSILENT: a config whose cost no source states is an expected absence, not a failure: its tile prints no
+        # cost, and the lattice's cost format reads the configs that state one.
         return None
     return figure.value if isinstance(figure.value, float) else None
 

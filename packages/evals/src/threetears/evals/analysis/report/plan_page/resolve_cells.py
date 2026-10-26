@@ -48,6 +48,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
     Drawn,
     KindResolver,
     chart_block,
+    count_text,
     criterion_line,
     figure_unit,
     measure_words,
@@ -125,7 +126,7 @@ def _arm_name(context: ChartContext, arm: str) -> str:
 
 def _cell_tip(place: str, value: float, n: float | None, drawn: Quantity, line: ChartReference | None) -> list[str]:
     said = figure_text(value, drawn)
-    tip = [place, _CASES_TEMPLATE.format(value=said, n=f"{n:,.0f}") if n is not None else said]
+    tip = [place, _CASES_TEMPLATE.format(value=said, n=count_text(n)) if n is not None else said]
     if line is not None and line.kind == "floor" and value < line.value:
         tip.append(_BELOW_TEMPLATE.format(line=line.label or line.kind))
     return tip
