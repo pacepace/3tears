@@ -51,10 +51,12 @@ One tool, `evals_analyst`; each call is `{"action": "<name>", ...}` and, but for
 | | `measure_read` | `measure_key`, `by` (arm, stratum, task, cell), `statistics` | One measure's figures |
 | | `examples_list` | `arm_filter`, `stratum_filter`, `outcome_filter` | Failed trials, reasons, excerpts |
 | | `caveats_list` | | Every caveat and what it touches |
-| analyses | `options_dominance` | `axes` | Which options survive the gates, which dominate, and each gate figure an option fails or borders, by its keys |
-| | `decision_sensitivity` | `parameter` (`margin:<aspect>`, `floor:<aspect>/<floor>`, `threshold:<criterion>`), `range_low`, `range_high` | Where the call flips |
+| analyses | `options_dominance` | `axes` | Which options survive the gates, which dominate, and each gate figure an option fails or borders, by its keys; no dominance call where cost is the only axis declared (`withheld`), with `axes` weighed beside cost |
+| | `decision_sensitivity` | `parameter` (`margin:<aspect>`, `floor:<aspect>/<floor>`, `threshold:<criterion>`, or `hypothetical:<measure>[/<statistic>]` for a line nobody declared), `range_low`, `range_high` | Where the call, and each routable task's pick, flips |
 | | `measure_breakdown` | `measure_key`, `slice_by` | Where a difference concentrates; exploratory |
 | | `price_tradeoff` | `gain_key`, `arm_filter` | Price per point among measured options; never a mix nobody ran |
+| | `arms_compare` | `arm_ids` (two), `measure_key` | Any two arms, control or not: the difference overall and per slice, with its interval (paired where a contrast holds one, else independent), whether it excludes zero |
+| | `settle_cases` | `arm_ids` (one or two), `measure_key`, `criterion_id`, `hypothetical_line` | The cases that would settle an arm against its line, or two arms apart, and how often today's design reads the wrong way |
 | blocks | `block_catalog` | | Block kinds, sources, figure key forms |
 | | `block_render` | `block_kind`, `query`, `reference` | One block's values table |
 | gaps | `capability_gap` | `need`, `why`, `workaround`, `claim_ids` | Record a workaround |

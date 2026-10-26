@@ -28,6 +28,13 @@ gained, whose low and high ends are read off the gain's interval where a contras
 leaves open is refused as unbounded, never written as a number). ``cost_per_month.<arm>`` and the ``monthly_`` price
 fields read the same at the declared ``meta.volume_per_month``. All are derived and marked so.
 
+**Two arms apart, and the cases that would settle a reading.** ``spread.<arm>.<measure>.<where>.*`` reads an arm's
+spread on a figure, ``compare.<arm>.<arm>.<measure>.<where>.*`` the difference between two arms with its interval (a
+contrast's own where one pairs them, else independent), and ``settle.*`` the cases a design needs to separate an arm
+from a declared criterion's threshold, a hypothetical line (``settle.hypothetical.<line>.``, the line a number in the
+key), or another arm (:mod:`~threetears.evals.analysis.separation`). Derived, read off stated spreads: a normal
+approximation, never a test the pipeline ran.
+
 **A figure held on more than one aspect is named by its aspect.** Every figure that sits on an aspect has an
 ``aspects.<aspect>.`` form. Where the input holds a contrast's arm and measure, a stratum id or a contrast family on
 more than one aspect, the unqualified form is refused, naming the qualified key for each aspect, rather than reading
@@ -46,6 +53,7 @@ group's forms).
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -80,6 +88,16 @@ from threetears.evals.analysis.report_margins import (
     criterion_figures,
     flip_margin,
     weakest_margin,
+)
+from threetears.evals.analysis.separation import (
+    POWER,
+    NoSpread,
+    Spread,
+    cases_to_separate,
+    independent_difference,
+    level_share,
+    stat_spread,
+    wrong_side_share,
 )
 from threetears.evals.analysis.style import humanize, measure_name
 from threetears.evals.analysis.summary import dollars_text
@@ -201,7 +219,28 @@ class _Statistic:
     name: str = "<statistic>"
 
 
-_Slot = _Word | _Ids | _Statistic
+@dataclass(frozen=True)
+class _Number:
+    """A slot a number the caller chose fills (a hypothetical line), written as digits with an optional sign and
+    decimals; its name in the grammar."""
+
+    name: str
+
+
+_Slot = _Word | _Ids | _Statistic | _Number
+
+#: A number as a path spells one in a :class:`_Number` slot.
+_NUMBER_AT = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _number_options(path: str, at: int) -> list[str]:
+    """The numbers a path can be read to spell at ``at``: its whole part, and with its decimals where it has them
+    (``97.5`` before a dot may be ``97`` then ``5``, or ``97.5``)."""
+    match = _NUMBER_AT.match(path, at)
+    if match is None:
+        return []
+    whole, _dot, decimals = match.group(0).partition(".")
+    return [whole, match.group(0)] if decimals else [whole]
 
 
 @dataclass(frozen=True)
@@ -210,7 +249,8 @@ class _Family:
 
     ``derived`` marks a family whose every figure is computed here; ``derived_statistics`` the statistics of an
     otherwise copied family that are (a slice's ``vs_control``, a floor's ``held_above``). ``example`` is a key on the
-    grammar's made-up input, which the grammar renders.
+    grammar's made-up input, which the grammar renders. ``derived_note`` replaces the grammar's "descriptive, no
+    interval" line for a derived family that is not descriptive: one whose figures are read off stated spreads.
     """
 
     slots: tuple[_Slot, ...]
@@ -219,6 +259,7 @@ class _Family:
     derived: bool = False
     derived_statistics: tuple[str, ...] = ()
     example: str = ""
+    derived_note: str = ""
 
     def form(self) -> str:
         return ".".join(slot.spelling if isinstance(slot, _Word) else slot.name for slot in self.slots)
@@ -1938,6 +1979,424 @@ def _named_reading_arms(report_input: ReportInput, prior: tuple[str, ...]) -> li
     return _reading_arms(_aspect_by_id(report_input, prior[0]))
 
 
+# --- separation: an arm's spread, two arms' difference, the cases that would settle a reading ------------------------
+#
+# ``spread.*``, ``compare.*`` and ``settle.*`` read a figure's spread and what it says (:mod:`~threetears.evals.analysis
+# .separation` holds the arithmetic and its design note). Each names where it reads with one ``<where>`` slot:
+# ``overall`` (the arm's own figure), ``task.<task>``, ``cells.<row>.<column>`` or ``strata.<stratum>`` (a stratum whose
+# id the input holds once). Every figure is derived: computed here, read off the figures' stated spreads (a normal
+# approximation), never a test the pipeline ran.
+
+#: Where a separation key reads an arm's own figure, rather than one within a slice.
+_OVERALL = "overall"
+
+#: What an arm's spread on a figure reads: its mean, its standard error, the spread of one case, the count it rests on,
+#: the level a result read from it is stated at, and what the standard error was read from.
+_SPREAD_FIELDS = ("mean", "se", "per_case", "n", "level", "basis")
+
+#: What two arms' difference reads: the first minus the second, its interval, the interval's ends and half-width, its
+#: level, and whether it is the paired estimate a contrast states or two independent arms' spreads combined.
+_COMPARE_FIELDS = ("difference", "interval", "low", "high", "half_width", "level", "basis")
+
+#: What settling two arms apart reads: their difference, the cases each needs for an interval centred on it to clear
+#: zero (``cases_needed``: half such designs clear; ``cases_needed_80``: four in five), how often a fresh run of today's
+#: size reads the other arm ahead, and the two-sided level.
+_SETTLE_PAIR_FIELDS = ("difference", "cases_needed", "cases_needed_80", "wrong_side", "level")
+
+#: What settling an arm against a line reads: its distance from the line toward passing, the cases needed (as for two
+#: arms, one-sided), how often a fresh run of today's size lands on the other side, and the one-sided level.
+_SETTLE_LINE_FIELDS = ("distance", "cases_needed", "cases_needed_80", "wrong_side", "level")
+
+#: A hypothetical line's fields: the line itself, then what settling an arm against it reads.
+_HYPOTHETICAL_FIELDS = ("line", *_SETTLE_LINE_FIELDS)
+
+#: How each basis of a spread reads, in words.
+_BASIS_WORDS: dict[str, str] = {
+    "interval": "its stated interval",
+    "half_width": "its stated half-width",
+    "sem": "its standard error",
+    "binomial": "a pass/fail rate's binomial spread, from its count",
+}
+
+
+@dataclass(frozen=True)
+class _Place:
+    """One slice a separation key reads within: how ``<where>`` spells it, each arm's figures there, and its cases."""
+
+    where: str
+    per_arm: Mapping[str, Mapping[str, Stat]]
+    n_cases: int | None
+
+
+def _separation_places(report_input: ReportInput) -> list[_Place]:
+    """Every slice a separation key can read within: each task, each cell its spelling names alone, and each stratum
+    whose id the input holds once."""
+    spellings = [_cell_spelling(cell) for cell in report_input.cells.values()]
+    ids = [stratum.id for stratum in report_input.strata]
+    return [
+        *(_Place(f"task.{task.id}", task.per_arm, task.n_cases) for task in report_input.tasks),
+        *(
+            _Place(f"cells.{spelled}", cell.per_arm, cell.n_cases)
+            for cell, spelled in zip(report_input.cells.values(), spellings, strict=True)
+            if spellings.count(spelled) == 1
+        ),
+        *(
+            _Place(f"strata.{stratum.id}", stratum.per_arm, stratum.n_cases)
+            for stratum in report_input.strata
+            if ids.count(stratum.id) == 1
+        ),
+    ]
+
+
+def _stat_where(report_input: ReportInput, arm_id: str, key: str, where: str) -> tuple[Stat, float | None] | None:
+    """An arm's statistic on a measure or judged dimension at ``where``, with the count it rests on (its own ``n``,
+    else its ``n_cases``, else the place's: the slice's cases, or overall the arm's usable trials, else its cases);
+    None where the input states no mean there."""
+    if where == _OVERALL:
+        table = report_input.measures.get(key) or report_input.judged.get(key)
+        stat = table.per_arm.get(arm_id) if table is not None else None
+        board = report_input.scoreboard.get(arm_id)
+        fallback = None if board is None else board.usable if board.usable is not None else board.cases
+    else:
+        place = next((held for held in _separation_places(report_input) if held.where == where), None)
+        stat = place.per_arm.get(arm_id, {}).get(key) if place is not None else None
+        fallback = None if place is None else place.n_cases
+    if stat is None or stat.mean is None:
+        return None
+    count = stat.n if stat.n is not None else stat.n_cases if stat.n_cases is not None else fallback
+    return stat, None if count is None else float(count)
+
+
+def _wheres(report_input: ReportInput, arms: Sequence[str], key: str) -> list[str]:
+    """Where every one of ``arms`` holds a mean on ``key``: overall first, then each slice in the input's order."""
+    candidates = [_OVERALL, *(place.where for place in _separation_places(report_input))]
+    return [where for where in candidates if all(_stat_where(report_input, arm, key, where) for arm in arms)]
+
+
+def _separated_keys(report_input: ReportInput, arms: Sequence[str]) -> list[str]:
+    """The measures and judged dimensions every one of ``arms`` holds a mean on somewhere."""
+    keys = dict.fromkeys([*report_input.measures, *report_input.judged])
+    return [key for key in keys if _wheres(report_input, arms, key)]
+
+
+def _rate_of(report_input: ReportInput, key: str) -> Literal["share", "percent"] | None:
+    """The scale a pass/fail rate is on (a measure graded pass/fail or by class label, a pass/fail judged dimension),
+    which a binomial spread reads; None for any other figure."""
+    measure = report_input.measures.get(key)
+    judged = report_input.judged.get(key)
+    graded = (measure is not None and measure.grade in ("pass_fail", "class_label")) or (
+        judged is not None and judged.scale == "pass_fail"
+    )
+    scale, _unit = _scale_of(report_input, key)
+    if graded and scale in ("share", "percent"):
+        return "share" if scale == "share" else "percent"
+    return None
+
+
+def _stated_level(report_input: ReportInput, key: str) -> float | None:
+    """The level a measure's or judged dimension's stated intervals are at, as a share; None where it states none."""
+    table = report_input.measures.get(key) or report_input.judged.get(key)
+    return None if table is None else level_share(table.level)
+
+
+def _where_words(where: str) -> str:
+    return "overall" if where == _OVERALL else f"in {where}"
+
+
+def _spread(report_input: ReportInput, arm_id: str, key: str, where: str, path: str) -> Spread:
+    """An arm's spread on a figure at ``where`` (:func:`~threetears.evals.analysis.separation.stat_spread`), refused as
+    unstated, with why, where the input gives none."""
+    held = _stat_where(report_input, arm_id, key, where)
+    if held is None:
+        raise _unstated(path, f"names {arm_id}'s mean on {key!r} {_where_words(where)}, which the input does not state")
+    stat, count = held
+    try:
+        return stat_spread(
+            float(stat.mean) if stat.mean is not None else None,
+            ci=None if stat.ci is None else (float(stat.ci[0]), float(stat.ci[1])),
+            half_width=None if stat.half_width is None else float(stat.half_width),
+            sem=None if stat.sem is None else float(stat.sem),
+            n=count,
+            stated_level=_stated_level(report_input, key),
+            rate=_rate_of(report_input, key),
+        )
+    except NoSpread as none:
+        raise _unstated(
+            path, f"reads {arm_id}'s spread on {key!r} {_where_words(where)}, and the figure has none: {none}"
+        ) from none
+
+
+def _apart(report_input: ReportInput, path: str, key: str, value: float, what: str, *, change: bool) -> Figure:
+    """A difference, distance or spread on a figure: in points for a rate, else in the figure's units."""
+    scale, unit = _scale_of(report_input, key)
+    if scale in ("share", "percent"):
+        return _number(path, value * 100 if scale == "share" else value, what, "points", change=change)
+    return _number(path, value, what, scale, unit=unit, change=change)
+
+
+def _settled(path: str, settle: Callable[[], float]) -> float:
+    """A settle computation's number, refused as unstated, with why, where the arithmetic has none."""
+    try:
+        return settle()
+    except NoSpread as none:
+        raise _unstated(path, f"has no figure: {none}") from none
+
+
+def _spread_figure(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    arm_id, key, where, field = values
+    spread = _spread(report_input, arm_id, key, where, path)
+    if field == "mean":
+        scale, unit = _scale_of(report_input, key)
+        return _number(path, spread.mean, "the arm's mean", scale, unit=unit)
+    if field in ("se", "per_case"):
+        value = spread.se if field == "se" else spread.per_case
+        if value is None:
+            raise _unstated(path, "names the spread of one case, which needs the count the figure rests on")
+        return _apart(report_input, path, key, value, f"the figure's {field}", change=False)
+    if field == "n":
+        return _number(path, spread.n, "the count the figure's spread rests on", "count")
+    if field == "level":
+        return _number(path, spread.level, "the level a result read from it is stated at", "share")
+    return Figure(path=path, kind="text", value=_BASIS_WORDS[spread.basis])
+
+
+def _family_level(report_input: ReportInput, contrast: Contrast) -> float | None:
+    """A contrast's interval's level: its own, else the one family correcting its aspect's."""
+    own = level_share(contrast.level)
+    if own is not None:
+        return own
+    families = [family for family in report_input.contrast_families if family.aspect == contrast.aspect]
+    return level_share(families[0].level) if len(families) == 1 else None
+
+
+def _paired(report_input: ReportInput, arm_id: str, other: str, key: str) -> Contrast | None:
+    """The one contrast stating one of the two arms against the other (the control) on ``key``, with its difference
+    and interval: the paired estimate, which the compare family reads overall in place of the arms' own spreads."""
+    control = _control(report_input)
+    if control is None or control.id not in (arm_id, other):
+        return None
+    candidate = other if arm_id == control.id else arm_id
+    held = [
+        contrast
+        for contrast in report_input.contrasts
+        if contrast.arm == candidate
+        and contrast.measure == key
+        and contrast.control in (None, control.id)
+        and contrast.delta is not None
+        and contrast.interval is not None
+    ]
+    return held[0] if len(held) == 1 else None
+
+
+def _compare_figure(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    arm_id, other, key, where, field = values
+    if arm_id == other:
+        raise _refuse(path, "compares an arm with itself; name two arms")
+    contrast = _paired(report_input, arm_id, other, key) if where == _OVERALL else None
+    if field == "difference" and contrast is None:
+        means = [_stat_where(report_input, arm, key, where) for arm in (arm_id, other)]
+        if means[0] is None or means[1] is None or means[0][0].mean is None or means[1][0].mean is None:
+            raise _unstated(path, f"names the two arms' means on {key!r} {_where_words(where)}, which one lacks")
+        difference = float(means[0][0].mean) - float(means[1][0].mean)
+        return _apart(report_input, path, key, difference, "the two arms' difference", change=True)
+    level: float | None
+    if contrast is not None and contrast.delta is not None and contrast.interval is not None:
+        sign = 1.0 if contrast.arm == arm_id else -1.0
+        difference = sign * float(contrast.delta)
+        low, high = sorted((sign * float(contrast.interval[0]), sign * float(contrast.interval[1])))
+        level = _family_level(report_input, contrast)
+        basis = (
+            f"paired: the contrast of {contrast.arm} against the control on {key!r}, its own interval, corrected "
+            "within its family"
+        )
+    else:
+        first = _spread(report_input, arm_id, key, where, path)
+        second = _spread(report_input, other, key, where, path)
+        level = first.level
+        difference, half = independent_difference(first, second, level)
+        low, high = difference - half, difference + half
+        basis = (
+            f"independent: each arm's own spread ({_BASIS_WORDS[first.basis]}; {_BASIS_WORDS[second.basis]}), "
+            "combined as if the arms ran different cases, which reads wider than a paired interval where they ran the "
+            "same"
+        )
+    if field == "basis":
+        return Figure(path=path, kind="text", value=basis)
+    if field == "level":
+        if level is None:
+            raise _unstated(path, "names the level of the contrast's interval, which the input does not state")
+        return _number(path, level, "the interval's level", "share")
+    if field == "interval":
+        scale, unit = _scale_of(report_input, key)
+        factor = 100.0 if scale == "share" else 1.0
+        shown: Scale = "points" if scale in ("share", "percent") else scale
+        return Figure(
+            path=path,
+            kind="interval",
+            value=(low * factor, high * factor),
+            scale=shown,
+            unit="" if shown == "points" else unit,
+            change=True,
+        )
+    value = {"difference": difference, "low": low, "high": high, "half_width": (high - low) / 2}[field]
+    return _apart(report_input, path, key, value, f"the difference's {field}", change=field != "half_width")
+
+
+def _settle_pair_figure(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    arm_id, other, key, where, field = values
+    if arm_id == other:
+        raise _refuse(path, "settles an arm against itself; name two arms")
+    first = _spread(report_input, arm_id, key, where, path)
+    second = _spread(report_input, other, key, where, path)
+    difference = first.mean - second.mean
+    if field == "difference":
+        return _apart(report_input, path, key, difference, "the two arms' difference", change=True)
+    if field == "level":
+        return _number(path, first.level, "the two-sided level", "share")
+    if field == "wrong_side":
+        share = _settled(path, lambda: wrong_side_share(difference, math.hypot(first.se, second.se)))
+        return _number(path, share, "how often a fresh run of today's size reads the other arm ahead", "share")
+    if first.per_case is None or second.per_case is None:
+        raise _unstated(path, "names the cases a design needs, which needs the count each arm's figure rests on")
+    per_case = math.hypot(first.per_case, second.per_case)
+    power = POWER if field == "cases_needed_80" else 0.5
+    cases = _settled(path, lambda: cases_to_separate(per_case, difference, first.level, sided=2, power=power))
+    return _number(path, cases, "the cases each arm needs", "count")
+
+
+def _settle_line(
+    report_input: ReportInput,
+    path: str,
+    spread: Spread,
+    key: str,
+    line: float,
+    higher_is_better: bool,
+    field: str,
+) -> Figure:
+    """What settling an arm's figure against a line reads, at ``field``: one-sided, toward passing."""
+    distance = spread.mean - line if higher_is_better else line - spread.mean
+    if field == "distance":
+        return _apart(report_input, path, key, distance, "the figure's distance from the line", change=True)
+    if field == "level":
+        return _number(path, spread.level, "the one-sided level", "share")
+    if field == "wrong_side":
+        share = _settled(path, lambda: wrong_side_share(distance, spread.se))
+        return _number(path, share, "how often a fresh run of today's size lands on the other side", "share")
+    per_case = spread.per_case
+    if per_case is None:
+        raise _unstated(path, "names the cases a design needs, which needs the count the figure rests on")
+    power = POWER if field == "cases_needed_80" else 0.5
+    cases = _settled(path, lambda: cases_to_separate(per_case, distance, spread.level, sided=1, power=power))
+    return _number(path, cases, "the cases a design needs", "count")
+
+
+def _criterion_wheres(report_input: ReportInput, criterion: Criterion, arm_id: str) -> list[str]:
+    """Where a criterion reads an arm, as ``<where>`` spells it."""
+    found: list[str] = []
+    for figure in criterion_figures(report_input, criterion, arm_id):
+        if figure.cell is not None:
+            found.append(f"cells.{_cell_spelling(report_input.cells[figure.cell])}")
+        else:
+            found.append(_OVERALL if figure.task is None else f"task.{figure.task}")
+    return found
+
+
+def _settle_criterion_figure(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    criterion_id, arm_id, where, field = values
+    criterion = _criterion(report_input, criterion_id)
+    if criterion.statistic != "mean":
+        raise _unstated(
+            path, f"reads a {criterion.statistic}, which states no spread to size a design by; settle reads a mean"
+        )
+    spread = _spread(report_input, arm_id, criterion.measure, where, path)
+    higher = criterion.direction == "higher_is_better"
+    return _settle_line(report_input, path, spread, criterion.measure, float(criterion.threshold), higher, field)
+
+
+def _directed(report_input: ReportInput, key: str) -> bool | None:
+    """Which way a measure or judged dimension is better: a judged dimension higher; None where a measure states none."""
+    if key in report_input.judged:
+        return True
+    return report_input.measures[key].higher_is_better
+
+
+def _settle_hypothetical_figure(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    line_text, arm_id, key, where, field = values
+    line = float(line_text)
+    if field == "line":
+        scale, unit = _scale_of(report_input, key, (line,))
+        return _number(path, line, "the hypothetical line", scale, unit=unit)
+    higher = _directed(report_input, key)
+    if higher is None:
+        raise _refuse(path, f"reads a line on {key!r}, which states no direction (higher or lower is better)")
+    spread = _spread(report_input, arm_id, key, where, path)
+    return _settle_line(report_input, path, spread, key, line, higher, field)
+
+
+def separation_wheres(report_input: ReportInput, arms: Sequence[str], key: str) -> list[str]:
+    """Where a ``spread.``, ``compare.`` or ``settle.`` key can read every one of ``arms`` on a measure or judged
+    dimension, as its ``<where>`` slot spells it: ``overall`` first, then ``task.<task>``, ``cells.<row>.<column>`` and
+    ``strata.<stratum>``, each where every arm states a mean.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param arms: The arms, by id.
+    :ptype arms: Sequence[str]
+    :param key: The measure or judged dimension, by key.
+    :ptype key: str
+    :return: The places, in the input's order; empty where the arms share none.
+    :rtype: list[str]
+    """
+    return _wheres(report_input, arms, key)
+
+
+def criterion_wheres(report_input: ReportInput, criterion_id: str, arm: str) -> list[str]:
+    """Where a ``settle.criteria.`` key reads an arm against a declared criterion, as its ``<where>`` slot spells it:
+    ``overall``, ``task.<task>`` or ``cells.<row>.<column>``, each place the criterion reads a figure for the arm.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param criterion_id: The criterion, by id.
+    :ptype criterion_id: str
+    :param arm: The arm, by id.
+    :ptype arm: str
+    :return: The places, in the criterion's order; empty where it reads no figure for the arm.
+    :rtype: list[str]
+    :raises StopIteration: The input declares no criterion of that id.
+    """
+    return _criterion_wheres(report_input, _criterion(report_input, criterion_id), arm)
+
+
+def _other_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return [arm.id for arm in report_input.arms if arm.id != prior[-1]]
+
+
+def _pair_keys(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return _separated_keys(report_input, prior[-2:])
+
+
+def _pair_wheres(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return _wheres(report_input, prior[-3:-1], prior[-1])
+
+
+def _one_arm_keys(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return _separated_keys(report_input, prior[-1:])
+
+
+def _one_arm_wheres(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return _wheres(report_input, prior[-2:-1], prior[-1])
+
+
+def _criterion_figure_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    criterion = _criterion(report_input, prior[0])
+    return [arm.id for arm in report_input.arms if criterion_figures(report_input, criterion, arm.id)]
+
+
+def _criterion_figure_wheres(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    criterion_id, arm_id = prior
+    return _criterion_wheres(report_input, _criterion(report_input, criterion_id), arm_id)
+
+
 def _keyed(name: str, read: Callable[[ReportInput], Iterable[str]]) -> _Ids:
     return _Ids(name, lambda report_input, _prior: read(report_input))
 
@@ -1960,6 +2419,7 @@ def _family_of(
     derived: bool = False,
     derived_statistics: tuple[str, ...] = (),
     example: str = "",
+    derived_note: str = "",
 ) -> _Family:
     return _Family(
         slots=slots,
@@ -1968,7 +2428,97 @@ def _family_of(
         derived=derived,
         derived_statistics=derived_statistics,
         example=example,
+        derived_note=derived_note,
     )
+
+
+#: What the grammar says of a separation figure, in place of "descriptive, no interval".
+_SEPARATION_NOTE = (
+    "Derived: computed here from the figures' stated spreads (normal approximation), never a test the pipeline ran."
+)
+
+#: The separation families (an arm's spread, two arms' difference, the cases that would settle a reading), read by
+#: ``arms_compare`` and ``settle_cases``; every figure derived.
+_SEPARATION_FAMILIES: tuple[_Family, ...] = (
+    _family_of(
+        _Word("spread"),
+        _ARM,
+        _Ids("<measure>", _one_arm_keys),
+        _Ids("<where>", _one_arm_wheres),
+        _Statistic(_SPREAD_FIELDS, "<field>"),
+        what="an arm's spread on a measure or judged dimension, `overall` or within a slice (`task.<task>`, "
+        "`cells.<row>.<column>`, `strata.<stratum>`): `se` the standard error of its mean and `per_case` one case's "
+        "spread, in points for a rate; `n` the count it rests on; `level` the level a result read from it is stated "
+        "at; `basis` what the standard error was read from (a stated interval or half-width at a stated level, a "
+        "standard error, or a pass/fail rate's binomial spread from its count)",
+        resolve=_spread_figure,
+        derived=True,
+        derived_note=_SEPARATION_NOTE,
+        example="spread.fast.v2.tone.kept.overall.se",
+    ),
+    _family_of(
+        _Word("compare"),
+        _ARM,
+        _Ids("<arm>", _other_arms),
+        _Ids("<measure>", _pair_keys),
+        _Ids("<where>", _pair_wheres),
+        _Statistic(_COMPARE_FIELDS, "<field>"),
+        what="the first arm minus the second on a measure or judged dimension, `overall` or within a slice, in points "
+        "for a rate, with its interval: paired where a contrast states one against the other (the control) "
+        "overall, else the two arms' own spreads combined as independent; `basis` says which",
+        resolve=_compare_figure,
+        derived=True,
+        derived_note=_SEPARATION_NOTE,
+        example="compare.fast.v2.base.tone.kept.overall.interval|pts",
+    ),
+    _family_of(
+        _Word("settle"),
+        _ARM,
+        _Ids("<arm>", _other_arms),
+        _Ids("<measure>", _pair_keys),
+        _Ids("<where>", _pair_wheres),
+        _Statistic(_SETTLE_PAIR_FIELDS, "<field>"),
+        what="the cases each of two arms needs for an interval on their difference, centred on today's, to clear "
+        "zero at the two-sided level: `cases_needed` (half such designs clear if the truth equals today's "
+        "difference), `cases_needed_80` (four in five do); `wrong_side` how often a fresh run of today's size reads "
+        "the other arm ahead",
+        resolve=_settle_pair_figure,
+        derived=True,
+        derived_note=_SEPARATION_NOTE,
+        example="settle.fast.v2.base.tone.kept.overall.cases_needed",
+    ),
+    _family_of(
+        _Word("settle"),
+        _Word("criteria"),
+        _keyed("<criterion>", lambda ri: [criterion.id for criterion in ri.criteria]),
+        _Ids("<arm>", _criterion_figure_arms),
+        _Ids("<where>", _criterion_figure_wheres),
+        _Statistic(_SETTLE_LINE_FIELDS, "<field>"),
+        what="an arm's mean against a declared criterion's threshold, where it reads it: `distance` toward passing, "
+        "the cases a design needs for a one-sided interval centred on today's figure to clear the line "
+        "(`cases_needed`: half such designs; `cases_needed_80`: four in five), and `wrong_side`, how often a fresh "
+        "run of today's size lands on the other side",
+        resolve=_settle_criterion_figure,
+        derived=True,
+        derived_note=_SEPARATION_NOTE,
+        example="settle.criteria.cell_floor.fast.v2.cells.short.en.cases_needed",
+    ),
+    _family_of(
+        _Word("settle"),
+        _Word("hypothetical"),
+        _Number("<line>"),
+        _ARM,
+        _Ids("<measure>", _one_arm_keys),
+        _Ids("<where>", _one_arm_wheres),
+        _Statistic(_HYPOTHETICAL_FIELDS, "<field>"),
+        what="an arm's mean against a hypothetical line the snapshot does not declare, written in the figure's own "
+        "units: what a declared criterion's settle reads, the line itself as `line`; every figure hypothetical",
+        resolve=_settle_hypothetical_figure,
+        derived=True,
+        derived_note=_SEPARATION_NOTE,
+        example="settle.hypothetical.0.9.fast.v2.tone.kept.overall.wrong_side",
+    ),
+)
 
 
 #: Every path family, in the order the grammar teaches them.
@@ -2426,6 +2976,7 @@ _FAMILIES: tuple[_Family, ...] = (
         derived=True,
         example="cost_per_month.base",
     ),
+    *_SEPARATION_FAMILIES,
 )
 
 
@@ -2460,6 +3011,8 @@ def _walk(
         options: Sequence[str] = (slot.spelling,)
     elif isinstance(slot, _Ids):
         options = list(slot.options(report_input, values))
+    elif isinstance(slot, _Number):
+        options = _number_options(path, at)
     else:
         options = slot.options
     advanced = False
@@ -2475,7 +3028,8 @@ def _walk(
             advanced = True
             _walk(path, end + 1, family, rest, captured, report_input, found, stop)
     if not advanced:
-        expected = tuple(options) if options else (f"{_slot_name(slot)} (none in this input)",)
+        empty = "a number" if isinstance(slot, _Number) else "none in this input"
+        expected = tuple(options) if options else (f"{_slot_name(slot)} ({empty})",)
         if at > stop.at:
             stop.at, stop.expected = at, expected
         elif at == stop.at:
@@ -3110,7 +3664,11 @@ def _family_line(family: _Family, example: ReportInput, names: Mapping[str, str]
     example rendered on the made-up input."""
     statistic = family.statistic()
     listed = f" ({statistic.name}: {', '.join(statistic.options)})" if statistic else ""
-    tag = " Derived: descriptive, no interval." if family.derived else ""
+    tag = (
+        (f" {family.derived_note}" if family.derived_note else " Derived: descriptive, no interval.")
+        if family.derived
+        else ""
+    )
     if family.derived_statistics:
         derived = ", ".join(f"`{name}`" for name in family.derived_statistics)
         tag += f" {derived} derived: descriptive, no interval."
@@ -3243,6 +3801,12 @@ _FAMILY_GROUPS: tuple[tuple[str, str, frozenset[str]], ...] = (
         "cost per reply and per month, cost uplift, and a move between options priced per point",
         frozenset({"cost_per_1k", "cost", "price", "cost_per_month"}),
     ),
+    (
+        "separation",
+        "an arm's spread on a figure, two arms' difference with its interval, and the cases that would settle a "
+        "reading against a line or two arms apart",
+        frozenset({"spread", "compare", "settle"}),
+    ),
 )
 
 
@@ -3323,6 +3887,7 @@ __all__ = [
     "GainAxis",
     "KeySubjects",
     "NamedKind",
+    "criterion_wheres",
     "figure_key_grammar",
     "figure_key_index",
     "figure_key_pages",
@@ -3337,4 +3902,5 @@ __all__ = [
     "reader_names",
     "render",
     "resolve",
+    "separation_wheres",
 ]

@@ -103,7 +103,8 @@ survivor on every axis that matters:
 **The same rules, one point at a time**, for the analyst's analyses (:mod:`threetears.evals.analysis.analyst.analyses`):
 :func:`decision_at` is the decision at hypothetical margins and floor margins, one point of the Immateriality
 sweep; :func:`asked_standing` is each arm's standing on the asked aspects, the quality axis
-dominance compares beside cost.
+dominance compares beside cost; :func:`weighed_axes` names the axes the snapshot declares, so an analysis can say
+when the rule has nothing but cost to weigh.
 """
 
 from __future__ import annotations
@@ -150,6 +151,7 @@ __all__ = [
     "StandingWord",
     "surviving_options",
     "unsettled_arms",
+    "weighed_axes",
 ]
 
 #: Judge tiers and calibration states that mean no human calibration stands behind the judge.
@@ -657,6 +659,40 @@ def allowed_modes(report_input: ReportInput) -> frozenset[str]:
     :rtype: frozenset[str]
     """
     return _outcome(report_input, _Overrides())[0]
+
+
+#: An axis code's decision weighs, as the snapshot declares it (:func:`weighed_axes`).
+DecisionAxis = Literal["gates", "control", "asked", "ranking", "cost"]
+
+
+def weighed_axes(report_input: ReportInput) -> tuple[DecisionAxis, ...]:
+    """The axes code's decision weighs, as the snapshot declares them, in this order: ``gates`` (a gate or guardrail
+    criterion, or a guardrail the pipeline read), ``control`` (a control, which a candidate must be shown no worse
+    than), ``asked`` (an asked aspect), ``ranking`` (a contrast family's merit priority) and ``cost`` (an arm whose
+    cost the cost rule states).
+
+    Where nothing but cost is declared, this module's dominance rule reduces to a cost ranking: every survivor ties
+    on the other axes, so the cheapest dominates. The analyst's analyses read that as no dominance call
+    (:mod:`~threetears.evals.analysis.analyst.analyses`), since nothing declared says the cheapest is good enough; the
+    planner's :func:`allowed_modes` reads the rule as it stands.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The axes declared, in that order; empty where none is.
+    :rtype: tuple[DecisionAxis, ...]
+    """
+    found: list[DecisionAxis] = []
+    if any(criterion.kind in ("gate", "guardrail") for criterion in report_input.criteria) or report_input.guardrails:
+        found.append("gates")
+    if control_arm(report_input) is not None:
+        found.append("control")
+    if _asked(report_input):
+        found.append("asked")
+    if _ranking_rule(report_input):
+        found.append("ranking")
+    if _costs(report_input):
+        found.append("cost")
+    return tuple(found)
 
 
 @dataclass(frozen=True)

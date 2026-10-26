@@ -8,8 +8,11 @@ lists their names.
 
 - ``options_dominance``: which options survive the gates and which dominates, with extra axes compared beside the
   decision's on point estimates.
-- ``decision_sensitivity``: how code's call moves as one declared margin, floor or threshold moves.
+- ``decision_sensitivity``: how code's call, and each routable task's pick, moves as one declared margin, floor or
+  threshold moves, or a hypothetical line the snapshot does not declare.
 - ``measure_breakdown``: a measure slice by slice, each candidate against the control; exploratory.
+- ``arms_compare``: two chosen arms on one measure, the difference overall and per slice with its interval.
+- ``settle_cases``: the cases that would settle an arm against its line, or two arms apart.
 
 Code's call in any of them is code's reading of the declared criteria, for the analyst and the editor to weigh, never
 a constraint on what the report says.
@@ -17,7 +20,7 @@ a constraint on what the report says.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, get_args
 
 from pydantic import Field
 
@@ -26,15 +29,21 @@ from threetears.evals.actions.params import ArmFilter, AspectFilter, MeasureKey,
 from threetears.evals.actions.render import page_sizing, render_cited
 from threetears.evals.ops.analyst_analyses import (
     BREAKDOWN_PAGE,
+    COMPARE_PAGE,
     DOMINANCE_PAGE,
     SENSITIVITY_PAGE,
+    SETTLE_PAGE,
+    ArmsComparison,
     Breakdown,
     Dominance,
     Sensitivity,
+    Settle,
     SliceBy,
+    arms_compare,
     decision_sensitivity,
     measure_breakdown,
     options_dominance,
+    settle_cases,
 )
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
@@ -74,7 +83,8 @@ class SensitivityParams(EvalBaseModel):
         Field(
             min_length=1,
             description="The criterion to sweep: margin:<aspect>, floor:<aspect>/<floor> or threshold:<criterion>, "
-            "by the ids the snapshot holds.",
+            "by the ids the snapshot holds; or hypothetical:<measure> (hypothetical:<measure>/<statistic> for a p50 "
+            "or p95), a gate the snapshot does not declare.",
         ),
     ]
     range_low: float | None = Field(
@@ -101,6 +111,79 @@ class BreakdownParams(EvalBaseModel):
     aspect_filter: AspectFilter = None
     limit: SizedLimit = None
     offset: Offset = 0
+
+
+#: The arms a separation reads: one meaning for both actions that take them.
+ArmIds = Annotated[
+    list[str],
+    Field(
+        min_length=1,
+        max_length=2,
+        description="One arm or two, by their ids in the snapshot: arms_compare reads two, the first minus the "
+        "second; settle_cases reads one against a line, or two apart.",
+    ),
+]
+
+
+class CompareParams(EvalBaseModel):
+    """``arms_compare``: the two arms and the measure."""
+
+    snapshot_id: SnapshotId
+    arm_ids: ArmIds
+    measure_key: MeasureKey
+    limit: SizedLimit = None
+    offset: Offset = 0
+
+
+class SettleParams(EvalBaseModel):
+    """``settle_cases``: the arm or arms, and what to settle them against."""
+
+    snapshot_id: SnapshotId
+    arm_ids: ArmIds
+    measure_key: Annotated[str | None, get_args(MeasureKey)[1]] = None
+    criterion_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="For one arm, the one declared criterion (gate, guardrail, floor or bar) to settle it against, "
+        "by the id campaign_overview lists; omitted, every criterion reading the arm.",
+    )
+    hypothetical_line: float | None = Field(
+        default=None,
+        description="For one arm, a line the snapshot does not declare, on measure_key, in the figure's own units "
+        "(a rate on the scale measure_read prints it on); every figure read against it is keyed hypothetical.",
+    )
+    limit: SizedLimit = None
+    offset: Offset = 0
+
+
+async def _arms_compare(host: OpsHost, caller: Caller, params: CompareParams) -> ArmsComparison:
+    limit, fits = page_sizing("arms_compare", params, COMPARE_PAGE)
+    return await arms_compare(
+        host,
+        caller.scope_id,
+        snapshot_id=params.snapshot_id,
+        arms=params.arm_ids,
+        measure_key=params.measure_key,
+        limit=limit,
+        offset=params.offset,
+        fits=fits,
+    )
+
+
+async def _settle_cases(host: OpsHost, caller: Caller, params: SettleParams) -> Settle:
+    limit, fits = page_sizing("settle_cases", params, SETTLE_PAGE)
+    return await settle_cases(
+        host,
+        caller.scope_id,
+        snapshot_id=params.snapshot_id,
+        arms=params.arm_ids,
+        measure_key=params.measure_key,
+        criterion_id=params.criterion_id,
+        hypothetical_line=params.hypothetical_line,
+        limit=limit,
+        offset=params.offset,
+        fits=fits,
+    )
 
 
 async def _options_dominance(host: OpsHost, caller: Caller, params: DominanceParams) -> Dominance:
@@ -170,15 +253,19 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
                 "worse, behind in a pair), which survivors are at least as good on every axis while it is not, and "
                 "the figures behind it: cost per 1,000 replies, its gap from each gate, its asked readings, pairs "
                 "and separating contrasts. Options the gates removed are listed with each figure they fail on, by its "
-                "keys (gates), and each guardrail read breached. axes adds measures or judged dimensions beside the "
-                "decision's axes, compared on point estimates and marked descriptive; dominant_with_axes says who "
-                "would dominate with them. Options are paged in the snapshot's arm order; without a limit a page "
+                "keys (gates), and each guardrail read breached. weighs names the axes the snapshot declares; where "
+                "cost is the only one, code makes no dominance call (code_call.withheld says why) rather than name "
+                "the cheapest. axes adds measures or judged dimensions beside the decision's axes, compared on point "
+                "estimates and marked descriptive; dominant_with_axes says who would dominate with them, and each "
+                "survivor's dominated_with_axes who is ahead of it on all of them. Options are paged in the "
+                "snapshot's arm order; without a limit a page "
                 f"holds as many as fit one result, up to {DOMINANCE_PAGE}. " + _CODE_CALL
             ),
         ),
         Action(
             name="decision_sensitivity",
-            summary="How code's call moves as one declared margin, floor or threshold moves over a range.",
+            summary="How code's call and per-task picks move as a declared margin, floor or threshold, or a "
+            "hypothetical line, moves over a range.",
             workflow=ANALYSES_WORKFLOW,
             permission="read",
             params=SensitivityParams,
@@ -192,8 +279,12 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
                 "margin), floor:<aspect>/<floor> (that floor's margin, read on each candidate's interval) or "
                 "threshold:<criterion> (a gate's or guardrail's threshold). The range is cut at every value an "
                 "arm's status flips at, each a figure key (a flip margin, a floor's held_above or broken_at, a "
-                "criterion's figure for an arm), and the call is read on each piece; segments join pieces with the "
-                "same call, and holds says whether the declared call stands across the range. Flips are paged with "
+                "criterion's figure for an arm), and the call is read on each piece, with each routable task's pick "
+                "(the cheapest arm passing there and in every cross-cutting task) where the snapshot holds routable "
+                "tasks; segments join pieces with the same call and picks; holds says whether the declared call "
+                "stands across the range, picks_hold whether the picks do. hypothetical:<measure> sweeps a gate the "
+                "snapshot does not declare, read where it states the statistic (overall, else in each task or cell); "
+                "the result is marked hypothetical and its flips are the arms' own figures. Flips are paged with "
                 "limit and offset, each page holding the segments that start at its flips; without a limit a page "
                 f"holds as many flips as fit one result, up to {SENSITIVITY_PAGE}. A weighting is not a parameter: the input carries none. "
                 + _CODE_CALL
@@ -218,6 +309,54 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
                 "candidate (default: every one); aspect_filter narrows strata to one aspect's. A snapshot with no "
                 "control is refused: read a measure per stratum with measure_read (by=stratum) instead. Without a limit a "
                 f"page holds as many slices as fit one result, up to {BREAKDOWN_PAGE}."
+            ),
+        ),
+        Action(
+            name="arms_compare",
+            summary="Two chosen arms on one measure: the difference overall and in each slice, with its interval.",
+            workflow=ANALYSES_WORKFLOW,
+            permission="read",
+            params=CompareParams,
+            result=ArmsComparison,
+            handler=_arms_compare,
+            render=render_cited,
+            paged=True,
+            example={"snapshot_id": _EXAMPLE_SNAPSHOT, "arm_ids": ["fast.v2", "base"], "measure_key": "tone.kept"},
+            detail=(
+                "Any two arms, a control or none: the first minus the second, overall and in each task, cell and "
+                "stratum where both state a mean, each by its compare.* keys, in points for a rate. The interval is "
+                "paired where a contrast states one arm against the other (the control) overall, else the two arms' "
+                "own spreads combined as independent (a stated interval or half-width at its level, a standard "
+                "error, or a pass/fail rate's binomial spread from its count); basis says which, excludes_zero "
+                "whether the interval clears zero, ahead which arm reads better where it does. A measure neither arm "
+                "states a spread for is refused, naming measure_read for the two means. A normal approximation, "
+                "never a test the pipeline ran. Without a limit a page holds as many places as fit one result, up "
+                f"to {COMPARE_PAGE}."
+            ),
+        ),
+        Action(
+            name="settle_cases",
+            summary="The cases that would settle an arm against its line, or two arms apart, and how often today's "
+            "design reads the wrong way.",
+            workflow=ANALYSES_WORKFLOW,
+            permission="read",
+            params=SettleParams,
+            result=Settle,
+            handler=_settle_cases,
+            render=render_cited,
+            paged=True,
+            example={"snapshot_id": _EXAMPLE_SNAPSHOT, "arm_ids": ["fast.v2"], "criterion_id": "cell_floor"},
+            detail=(
+                "One arm: against every declared criterion reading it (or criterion_id alone), at each place it "
+                "reads it, or against a hypothetical_line on measure_key, which the snapshot does not declare "
+                "(keyed settle.hypothetical.*); one-sided. Two arms with measure_key: apart, overall and in each "
+                "slice holding both; two-sided, as independent arms. Each row gives today's estimate and line, the "
+                "distance, cases_needed (an interval at the snapshot's level centred on today's estimate clears: "
+                "half such designs do if the truth equals today's estimate), cases_needed_80 (four in five do), "
+                "wrong_side (how often a fresh run of today's size reads the other way), and the count and spread "
+                "basis it rests on, each a settle.* or spread.* key. A p50 or p95, a figure with no spread or count, "
+                "and an estimate exactly on its line say why in unsettled. Without a limit a page holds as many "
+                f"rows as fit one result, up to {SETTLE_PAGE}."
             ),
         ),
     )

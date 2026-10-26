@@ -8,13 +8,31 @@ renderer prints the same:
   cost per 1,000 replies, the asked aspects) as :mod:`~threetears.evals.analysis.report_decision` reads them, with
   the extra axes the analyst names compared beside them on point estimates, descriptively.
 - :func:`sensitivity`: how the decision moves as one declared criterion moves (an aspect's margin, a floor's margin,
-  a gate's threshold): the value each arm's status flips at, and the call on every piece of the range between them.
+  a gate's threshold), or as a hypothetical line the snapshot does not declare moves: the value each arm's status
+  flips at, and the call and each routable task's pick on every piece of the range between them.
 - :func:`breakdown`: where a candidate's difference from the control sits, slice by slice (strata, tasks or
   target-matrix cells), and, across strata, which slice carries its loss.
 
 **Code's call is a reading, not a constraint.** The modes and the dominant option these return are what code's rule
 reads off the declared criteria: interpretive facts for the analyst and the editor to weigh, never a bound on what a
 report may say. Each result says so where it carries one.
+
+**No dominance from cost alone.** Where the snapshot declares nothing but cost (no gate, guardrail, control, asked
+aspect or ranking rule: :func:`~threetears.evals.analysis.report_decision.weighed_axes`), the dominance rule reduces
+to a cost ranking, and the cheapest option would read as dominant though nothing declared says it is good enough.
+These analyses make no dominance call there: no option is dominant or dominated, code's call is a tradeoff, and the
+result says why (``withheld``). The extra axes the caller names are weighed beside cost, descriptively
+(``dominant_with_axes``, each survivor's ``dominated_with_axes``). Each axis weighed is one the snapshot declares or
+the caller names; none is added.
+
+**Per-slice picks.** Where the snapshot holds routable tasks, a sweep reads each one's pick beside the one-option
+call (:func:`~threetears.evals.analysis.report_gates.routing_picks`: the cheapest arm passing in the task and in every
+cross-cutting task), so a gate that moves a routed plan without moving the one-option call shows it.
+
+**Hypothetical lines.** ``hypothetical:<measure>`` (or ``hypothetical:<measure>/<statistic>``) sweeps a gate the
+snapshot does not declare, on one measure, in its stated direction, read where the snapshot states the statistic
+(overall, else in each task, else in each cell): the call at every line, as if that gate held. The result is marked
+hypothetical; its flips are the arms' own figures.
 
 **Every number is a key.** Segment ends are the flip figures themselves (``aspects.<aspect>.flip_margin.<arm>``, a
 floor's ``held_above`` and ``broken_at``, a criterion's ``value`` at a place); a range end the caller asked for is
@@ -45,8 +63,9 @@ from threetears.evals.analysis.report_decision import (
     dominant_options,
     separating_contrasts,
     surviving_options,
+    weighed_axes,
 )
-from threetears.evals.analysis.report_gates import GateFinding, GateStatus, gate_check, gate_findings
+from threetears.evals.analysis.report_gates import GateFinding, GateStatus, gate_check, gate_findings, routing_picks
 from threetears.evals.analysis.report_input import Aspect, Contrast, Criterion, ReportInput
 from threetears.evals.analysis.report_margins import CriterionFigure, criterion_figures
 from threetears.evals.kernel.errors import RefusedInput
@@ -148,6 +167,10 @@ class CodeCall(BaseModel):
     dominant: list[str] = Field(description="The one option that dominates alone, as arm:<id>; empty for none.")
     ranking_rule: list[str] = Field(
         description="The merit axes a contrast family declares, which rank survivors none dominates; empty for none."
+    )
+    withheld: str = Field(
+        description="Why code makes no dominance call where its rule alone would name the cheapest option: cost is "
+        "the only axis the snapshot declares. Empty where it makes its call."
     )
 
 
@@ -258,7 +281,12 @@ class SurvivorRow(BaseModel):
         "figures of each floor it is not shown to hold are among its figures."
     )
     dominated_by: list[str] = Field(
-        description="The survivors at least as good on every axis while it is not as good as them, as arm:<id>."
+        description="The survivors at least as good on every axis while it is not as good as them, as arm:<id>; "
+        "empty for every survivor where cost is the only axis declared."
+    )
+    dominated_with_axes: list[str] = Field(
+        description="The survivors at least as good on cost, the declared axes and every extra axis with a direction, "
+        "while it is not as good as them; descriptive. Equal to dominated_by when no axis is asked for."
     )
     figures: list[CitedFigure] = Field(
         description="Its cost per 1,000 replies, its gap from each gate, and its asked readings, pairs and contrasts."
@@ -307,9 +335,13 @@ class Dominance(BaseModel):
         description="The options on this page that survive the gates, in the input's arm order."
     )
     out: list[OutRow] = Field(description="The options on this page the gates or a guardrail removed.")
+    weighs: list[str] = Field(
+        description="The axes code's decision weighs, as the snapshot declares them: gates, control, asked, ranking, "
+        "cost."
+    )
     dominant: list[str] = Field(
         description="The survivors each at least as good as every other on every axis; two or more tie, none: none "
-        "dominates.",
+        "dominates, or cost is the only axis declared (code_call.withheld says so).",
     )
     axes: list[AxisRow] = Field(description="The extra axes asked for, each compared on point estimates.")
     dominant_with_axes: list[str] = Field(
@@ -457,6 +489,27 @@ def _axis(report_input: ReportInput, axis: str, survivors: Sequence[str]) -> tup
     return row, (None if higher is None else values)
 
 
+#: What code's call says where cost is the only axis the snapshot declares.
+_COST_ALONE = (
+    "cost is the only axis this snapshot declares (no gate, guardrail, control, asked aspect or ranking rule), so "
+    "code makes no dominance call: its rule would name the cheapest option, which nothing declared shows good "
+    "enough. Name quality axes in axes to weigh them beside cost (dominant_with_axes), descriptively"
+)
+
+
+def _cost_alone(report_input: ReportInput) -> bool:
+    """Whether cost is the only axis the snapshot declares, so the dominance rule would be a cost ranking."""
+    return set(weighed_axes(report_input)) <= {"cost"}
+
+
+def _code_reading(report_input: ReportInput, decision: DecisionAt) -> DecisionAt:
+    """Code's call as the analyses read it: the decision, save that where cost is the only axis declared and more
+    than one option survives, no option dominates and the call is a tradeoff."""
+    if decision.dominant and _cost_alone(report_input) and len(surviving_options(report_input)) > 1:
+        return DecisionAt(modes=frozenset({"tradeoff"}), dominant=())
+    return decision
+
+
 def dominance(
     report_input: ReportInput, axes: Sequence[str] = (), *, limit: int | None = None, offset: int = 0
 ) -> Dominance:
@@ -469,8 +522,10 @@ def dominance(
     The survivors, the dominant options and code's call are :mod:`~threetears.evals.analysis.report_decision`'s own
     (:func:`~threetears.evals.analysis.report_decision.surviving_options`,
     :func:`~threetears.evals.analysis.report_decision.dominant_options`,
-    :func:`~threetears.evals.analysis.report_decision.decision_at`). ``dominated_by`` applies the same pairwise rule,
-    cost per 1,000 replies and the asked standing, to each pair of survivors.
+    :func:`~threetears.evals.analysis.report_decision.decision_at`), save where cost is the only axis the snapshot
+    declares: there no option is dominant or dominated and the call is a tradeoff (this module's No dominance from
+    cost alone). ``dominated_by`` applies the same pairwise rule, cost per 1,000 replies and the asked standing, to
+    each pair of survivors; ``dominated_with_axes`` adds the extra axes.
 
     :param report_input: The snapshot's report input.
     :ptype report_input: ReportInput
@@ -495,6 +550,7 @@ def dominance(
         )
     survivors = surviving_options(report_input)
     standing = asked_standing(report_input)
+    alone = _cost_alone(report_input) and len(survivors) > 1
     costs: dict[str, float] = {}
     cost_figures: dict[str, CitedFigure] = {}
     for arm in survivors:
@@ -504,6 +560,22 @@ def dominance(
 
     def at_least(first: str, second: str) -> bool:
         return _cost_at_least(costs, first, second) and _quality_at_least(standing, first, second)
+
+    axis_rows: list[AxisRow] = []
+    compared: list[tuple[dict[str, float], bool]] = []
+    for axis in dict.fromkeys(axes):
+        row, values = _axis(report_input, axis, survivors)
+        axis_rows.append(row)
+        if values is not None:
+            compared.append((values, row.direction == "higher_is_better"))
+
+    def with_axes(first: str, second: str) -> bool:
+        return at_least(first, second) and all(
+            _axis_at_least(values, higher, first, second) for values, higher in compared
+        )
+
+    def dominated(arm: str, by: Callable[[str, str], bool]) -> list[str]:
+        return [_arm(other) for other in survivors if other != arm and by(other, arm) and not by(arm, other)]
 
     order = [arm.id for arm in report_input.arms]
     end = len(order) if limit is None else min(offset + limit, len(order))
@@ -515,6 +587,7 @@ def dominance(
         check = gate_check(report_input, arm)
         held = standing[arm]
         figures = [*([cost_figures[arm]] if arm in cost_figures else []), *_gate_figures(report_input, arm)]
+        dominated_by = [] if alone else dominated(arm, at_least)
         rows.append(
             SurvivorRow(
                 arm=_arm(arm),
@@ -523,11 +596,8 @@ def dominance(
                 standing=held.standing,
                 behind=[_arm(other) for other in held.behind],
                 why=list(held.why),
-                dominated_by=[
-                    _arm(other)
-                    for other in survivors
-                    if other != arm and at_least(other, arm) and not at_least(arm, other)
-                ],
+                dominated_by=dominated_by,
+                dominated_with_axes=dominated(arm, with_axes) if axis_rows else dominated_by,
                 figures=[*figures, *_standing_figures(report_input, arm)],
             )
         )
@@ -541,38 +611,26 @@ def dominance(
         for arm in report_input.arms
         if arm.id not in kept and arm.id in window
     ]
-    axis_rows: list[AxisRow] = []
-    compared: list[tuple[dict[str, float], bool]] = []
-    for axis in dict.fromkeys(axes):
-        row, values = _axis(report_input, axis, survivors)
-        axis_rows.append(
-            row.model_copy(update={"arms": [held for held in row.arms if held.arm.removeprefix("arm:") in window]})
-        )
-        if values is not None:
-            compared.append((values, row.direction == "higher_is_better"))
-    dominant = dominant_options(report_input)
-    with_axes = [
-        arm
-        for arm in survivors
-        if all(
-            at_least(arm, other) and all(_axis_at_least(values, higher, arm, other) for values, higher in compared)
-            for other in survivors
-            if other != arm
-        )
-    ]
-    declared = decision_at(report_input)
+    dominant = [] if alone else dominant_options(report_input)
+    dominant_with_axes = [arm for arm in survivors if all(with_axes(arm, other) for other in survivors if other != arm)]
+    declared = _code_reading(report_input, decision_at(report_input))
     rule = list(dict.fromkeys(axis for family in report_input.contrast_families for axis in family.merit_axes))
     return Dominance(
         survivors=rows,
         out=out,
+        weighs=list(weighed_axes(report_input)),
         dominant=[_arm(arm) for arm in dominant],
-        axes=axis_rows,
-        dominant_with_axes=[_arm(arm) for arm in with_axes] if axis_rows else [_arm(arm) for arm in dominant],
+        axes=[
+            row.model_copy(update={"arms": [held for held in row.arms if held.arm.removeprefix("arm:") in window]})
+            for row in axis_rows
+        ],
+        dominant_with_axes=[_arm(arm) for arm in dominant_with_axes] if axis_rows else [_arm(arm) for arm in dominant],
         code_call=CodeCall(
             reads_as=CODE_CALL_READS_AS,
             modes=sorted(declared.modes),
             dominant=[_arm(arm) for arm in declared.dominant],
             ranking_rule=rule,
+            withheld=_COST_ALONE if alone else "",
         ),
         total=len(order),
         offset=offset,
@@ -583,6 +641,15 @@ def dominance(
 # =============================================================================
 # Sensitivity
 # =============================================================================
+
+
+class Pick(BaseModel):
+    """One routable task's pick: the cheapest arm passing in it and in every cross-cutting task."""
+
+    model_config = _MODEL
+
+    task: str = Field(description="The routable task, by id.")
+    arm: str | None = Field(description="Its pick, as arm:<id>; None where no arm with a cost there passes.")
 
 
 class Flip(BaseModel):
@@ -596,6 +663,7 @@ class Flip(BaseModel):
     )
     at: CitedFigure = Field(description="The value it flips at, as the key that states it.")
     call_changes: bool = Field(description="Whether code's call differs on the two sides of this value.")
+    picks_change: bool = Field(description="Whether a routable task's pick differs on the two sides of this value.")
 
 
 class SegmentEnd(BaseModel):
@@ -615,6 +683,9 @@ class Segment(BaseModel):
     high: SegmentEnd | None = Field(description="Where it ends: a flip; None at the high end of the range swept.")
     modes: list[str] = Field(description="The modes code's rule allows throughout it.")
     dominant: list[str] = Field(description="The one option that dominates throughout it, as arm:<id>; empty: none.")
+    picks: list[Pick] = Field(
+        description="Each routable task's pick throughout it, where the snapshot holds routable tasks; else empty."
+    )
 
 
 class Sensitivity(BaseModel):
@@ -623,6 +694,10 @@ class Sensitivity(BaseModel):
     model_config = _MODEL
 
     parameter: str = Field(description="The criterion swept, as asked.")
+    hypothetical: bool = Field(
+        description="True where the line swept is one the snapshot does not declare: every call is code's reading as "
+        "if a gate held there."
+    )
     swept: str = Field(description="The range swept, in words.")
     declared: CitedFigure | None = Field(description="The criterion's declared value; None where none is declared.")
     boundary_belongs_to: Boundary = Field(
@@ -630,11 +705,19 @@ class Sensitivity(BaseModel):
     )
     declared_call: Call = Field(description="Code's call at the criteria as declared.")
     reads_as: str = Field(description="What every call here is: code's reading, never a constraint.")
+    declared_picks: list[Pick] = Field(
+        description="Each routable task's pick at the criteria as declared; empty where the snapshot holds none."
+    )
     segments: list[Segment] = Field(
-        description="The range swept, cut where code's call changes, low to high: on each page, the segments starting "
-        "at a flip the page lists, and on the first the one starting at the range's low end."
+        description="The range swept, cut where code's call or a routable task's pick changes, low to high: on each "
+        "page, the segments starting at a flip the page lists, and on the first the one starting at the range's low "
+        "end."
     )
     holds: bool = Field(description="Whether every segment's call is the declared call.")
+    picks_hold: bool = Field(
+        description="Whether every segment's picks are the declared picks: a call that holds can still move a routed "
+        "plan."
+    )
     flips: list[Flip] = Field(description="The values an arm's status flips at inside the range, low to high.")
     total: int = Field(description="The flips inside the range.")
     offset: int = Field(description="The first flip this page holds.")
@@ -663,19 +746,55 @@ class _Sweep:
     declared: CitedFigure | None
     boundary: Boundary
     cuts: list[_Cut]
+    input_at: Callable[[float], ReportInput]
     call_at: Callable[[float], DecisionAt]
     low: float | None
     high: float | None
     notes: list[str]
+    hypothetical: bool = False
+
+    def read_at(self, value: float) -> _Read:
+        """Code's call and the routable tasks' picks with the criterion at ``value``."""
+        return _Read(self.call_at(value), _picks(self.input_at(value)))
+
+
+#: Each routable task's pick, as (task, arm or None), in the tasks' order.
+_Picks = tuple[tuple[str, str | None], ...]
+
+
+@dataclass(frozen=True)
+class _Read:
+    """What a sweep reads at one value: code's call, and each routable task's pick."""
+
+    call: DecisionAt
+    picks: _Picks
+
+
+def _picks(report_input: ReportInput) -> _Picks:
+    """Each routable task's pick (:func:`~threetears.evals.analysis.report_gates.routing_picks`) over every arm, in
+    the tasks' order; empty where the input holds no routable task."""
+    routable = [task.id for task in report_input.tasks if task.routable]
+    if not routable:
+        return ()
+    picks = routing_picks(report_input, [arm.id for arm in report_input.arms])
+    return tuple((task, picks.get(task)) for task in routable)
+
+
+def _pick_rows(picks: _Picks) -> list[Pick]:
+    return [Pick(task=task, arm=None if arm is None else _arm(arm)) for task, arm in picks]
 
 
 @dataclass(frozen=True)
 class _Piece:
-    """A piece of the range between two adjacent flips (None: the range's end), and the call throughout it."""
+    """A piece of the range between two adjacent flips (None: the range's end), and what is read throughout it."""
 
     low: _Cut | None
     high: _Cut | None
-    call: DecisionAt
+    read: _Read
+
+    @property
+    def call(self) -> DecisionAt:
+        return self.read.call
 
 
 def _call(decision: DecisionAt) -> Call:
@@ -708,24 +827,25 @@ def _pieces(sweep: _Sweep, cuts: Sequence[_Cut]) -> list[_Piece]:
     for value in values:
         at_low_end = start_cut is None and sweep.low is not None and value == sweep.low
         if sweep.boundary == "below" and at_low_end:
-            pieces.append(_Piece(first[value], first[value], sweep.call_at(value)))
+            pieces.append(_Piece(first[value], first[value], sweep.read_at(value)))
         elif not at_low_end:
-            pieces.append(_Piece(start_cut, first[value], sweep.call_at(_inside(start, value))))
+            pieces.append(_Piece(start_cut, first[value], sweep.read_at(_inside(start, value))))
         start, start_cut = value, first[value]
     at_high_end = start_cut is not None and sweep.high is not None and start == sweep.high
     if sweep.boundary == "above" and start_cut is not None and at_high_end:
-        pieces.append(_Piece(start_cut, start_cut, sweep.call_at(start_cut.value)))
+        pieces.append(_Piece(start_cut, start_cut, sweep.read_at(start_cut.value)))
     elif not at_high_end:
-        pieces.append(_Piece(start_cut, None, sweep.call_at(_inside(start, sweep.high))))
+        pieces.append(_Piece(start_cut, None, sweep.read_at(_inside(start, sweep.high))))
     return pieces
 
 
 def _segments(pieces: Sequence[_Piece]) -> list[tuple[_Cut | None, Segment]]:
-    """Adjacent pieces with the same call, joined; each with the flip it starts at (None: the range's low end)."""
+    """Adjacent pieces with the same call and picks, joined; each with the flip it starts at (None: the range's low
+    end)."""
     segments: list[tuple[_Cut | None, Segment]] = []
     run: list[_Piece] = []
     for piece in [*pieces, None]:
-        if run and (piece is None or piece.call != run[0].call):
+        if run and (piece is None or piece.read != run[0].read):
             segments.append(
                 (
                     run[0].low,
@@ -734,6 +854,7 @@ def _segments(pieces: Sequence[_Piece]) -> list[tuple[_Cut | None, Segment]]:
                         high=SegmentEnd(at=run[-1].high.at) if run[-1].high is not None else None,
                         modes=sorted(run[0].call.modes),
                         dominant=[_arm(arm) for arm in run[0].call.dominant],
+                        picks=_pick_rows(run[0].read.picks),
                     ),
                 )
             )
@@ -743,21 +864,33 @@ def _segments(pieces: Sequence[_Piece]) -> list[tuple[_Cut | None, Segment]]:
     return segments
 
 
-def _changes(pieces: Sequence[_Piece], value: float) -> bool:
-    """Whether the call differs on the two sides of a flip: the piece ending at it, and the one after."""
+def _changes(pieces: Sequence[_Piece], value: float, read: Callable[[_Piece], object]) -> bool:
+    """Whether what ``read`` reads differs on the two sides of a flip: the piece ending at it, and the one after."""
     for index, piece in enumerate(pieces[:-1]):
         if piece.high is not None and piece.high.value == value:
-            return piece.call != pieces[index + 1].call
+            return read(piece) != read(pieces[index + 1])
     return False
 
 
+def _read_call(report_input: ReportInput) -> DecisionAt:
+    """Code's call on an input, as these analyses read it (:func:`_code_reading`)."""
+    return _code_reading(report_input, decision_at(report_input))
+
+
+def _directed_keys(report_input: ReportInput) -> list[str]:
+    """The measures and judged dimensions a hypothetical line can be swept on: those stating which way is better."""
+    measures = [key for key, measure in report_input.measures.items() if measure.higher_is_better is not None]
+    return list(dict.fromkeys([*report_input.judged, *measures]))
+
+
 def _parameters(report_input: ReportInput) -> list[str]:
-    """Every parameter this input can be swept on."""
+    """Every parameter this input can be swept on: its declared criteria, then a hypothetical line on each measure."""
     floors = dict.fromkeys(f"floor:{read.aspect}/{read.floor}" for read in report_input.floors)
     return [
         *(f"margin:{aspect.id}" for aspect in report_input.aspects),
         *floors,
         *(f"threshold:{criterion.id}" for criterion in report_input.criteria),
+        *(f"{_HYPOTHETICAL}:{key}" for key in _directed_keys(report_input)),
     ]
 
 
@@ -781,7 +914,8 @@ def _margin_sweep(report_input: ReportInput, aspect: Aspect, low: float, high: f
         declared=cite_if(f"aspects.{aspect.id}.margin", report_input),
         boundary="below",
         cuts=cuts,
-        call_at=lambda margin: decision_at(report_input, margins={aspect.id: margin}),
+        input_at=lambda _margin: report_input,
+        call_at=lambda margin: _code_reading(report_input, decision_at(report_input, margins={aspect.id: margin})),
         low=low,
         high=high,
         notes=notes,
@@ -808,7 +942,8 @@ def _floor_sweep(report_input: ReportInput, floor: str, low: float, high: float 
         declared=declared,
         boundary="below",
         cuts=cuts,
-        call_at=lambda margin: decision_at(report_input, floors={floor: margin}),
+        input_at=lambda _margin: report_input,
+        call_at=lambda margin: _code_reading(report_input, decision_at(report_input, floors={floor: margin})),
         low=low,
         high=high,
         notes=notes,
@@ -842,10 +977,126 @@ def _threshold_sweep(
         declared=cite(f"criteria.{criterion.id}.threshold", report_input),
         boundary="below" if criterion.direction == "higher_is_better" else "above",
         cuts=cuts,
-        call_at=lambda threshold: decision_at(_moved(report_input, criterion.id, threshold)),
+        input_at=lambda threshold: _moved(report_input, criterion.id, threshold),
+        call_at=lambda threshold: _read_call(_moved(report_input, criterion.id, threshold)),
         low=low,
         high=high,
         notes=notes,
+    )
+
+
+#: The parameter kind that sweeps a line the snapshot does not declare.
+_HYPOTHETICAL = "hypothetical"
+
+#: The statistics a hypothetical line may read.
+_LINE_STATISTICS = ("mean", "p50", "p95")
+
+
+def _line_scope(report_input: ReportInput, key: str, statistic: str) -> Literal["overall", "each_task", "each_cell"]:
+    """Where a hypothetical line reads: overall where an arm states the statistic overall, else in each task, else in
+    each cell, as the snapshot holds it.
+
+    :raises RefusedInput: No arm states the statistic on the measure anywhere.
+    """
+    table = report_input.measures.get(key) or report_input.judged.get(key)
+    if table is not None and any(getattr(stat, statistic) is not None for stat in table.per_arm.values()):
+        return "overall"
+    places = (
+        ("each_task", [task.per_arm for task in report_input.tasks]),
+        ("each_cell", [cell.per_arm for cell in report_input.cells.values()]),
+    )
+    for scope, held in places:
+        if any(
+            getattr(figures[key], statistic) is not None
+            for per_arm in held
+            for figures in per_arm.values()
+            if key in figures
+        ):
+            return "each_task" if scope == "each_task" else "each_cell"
+    raise RefusedInput(
+        f"no arm states the {statistic} of {key!r} overall, in a task or in a cell, so no line on it reads anything",
+        remedy=f"name the statistic the measure states, as hypothetical:{key}/<statistic> with one of "
+        f"{', '.join(_LINE_STATISTICS)}; measure_read lists what it holds",
+        parameters=("parameter",),
+    )
+
+
+def _with_line(report_input: ReportInput, line: Criterion, threshold: float) -> ReportInput:
+    """The input with a hypothetical gate added at ``threshold``, and nothing else changed."""
+    return report_input.model_copy(
+        update={"criteria": [*report_input.criteria, line.model_copy(update={"threshold": threshold})]}
+    )
+
+
+def _figure_key(report_input: ReportInput, key: str, arm: str, statistic: str, figure: CriterionFigure) -> str:
+    """The key of an arm's own figure a hypothetical line reads, at its place."""
+    place = _place(report_input, figure)
+    if place is None:
+        if key in report_input.measures:
+            return f"measure.{key}.{arm}.{statistic}"
+        return f"judged.{key}.{arm}.{statistic}"
+    return f"{'task' if figure.task is not None else 'cells'}.{place}.{arm}.{key}.{statistic}"
+
+
+def _line_sweep(report_input: ReportInput, spec: str, low: float | None, high: float | None, words: str) -> _Sweep:
+    """A sweep of a gate the snapshot does not declare, on one measure, at the statistic named (the mean unless
+    ``<measure>/<statistic>``), in the measure's direction."""
+    key, statistic = spec, "mean"
+    head, slash, tail = spec.rpartition("/")
+    if slash and tail in _LINE_STATISTICS and head:
+        key, statistic = head, tail
+    directed = _directed_keys(report_input)
+    if key not in directed:
+        known = key in report_input.measures
+        fault = "states no direction (higher or lower is better)" if known else "names no measure the snapshot holds"
+        raise RefusedInput(
+            f"parameter {_HYPOTHETICAL}:{spec!r} {fault}",
+            remedy=f"sweep a hypothetical line on a measure with a direction: {_listed(directed)}",
+            parameters=("parameter",),
+            valid_values=[f"{_HYPOTHETICAL}:{held}" for held in directed],
+        )
+    higher = True if key in report_input.judged else bool(report_input.measures[key].higher_is_better)
+    taken = {criterion.id for criterion in report_input.criteria}
+    line_id = next(
+        f"{_HYPOTHETICAL}{index or ''}"
+        for index in range(len(taken) + 1)
+        if f"{_HYPOTHETICAL}{index or ''}" not in taken
+    )
+    line = Criterion.model_validate(
+        {
+            "id": line_id,
+            "kind": "gate",
+            "measure": key,
+            "statistic": statistic,
+            "direction": "higher_is_better" if higher else "lower_is_better",
+            "threshold": 0.0,
+            "scope": _line_scope(report_input, key, statistic),
+            "label": f"hypothetical line on {key}",
+        }
+    )
+    cuts = [
+        _Cut(
+            arm.id,
+            _place(report_input, figure),
+            cite(_figure_key(report_input, key, arm.id, statistic, figure), report_input),
+        )
+        for arm in report_input.arms
+        for figure in criterion_figures(report_input, line, arm.id)
+    ]
+    return _Sweep(
+        swept=words,
+        declared=None,
+        boundary="below" if higher else "above",
+        cuts=cuts,
+        input_at=lambda threshold: _with_line(report_input, line, threshold),
+        call_at=lambda threshold: _read_call(_with_line(report_input, line, threshold)),
+        low=low,
+        high=high,
+        notes=[
+            f"a hypothetical line: the snapshot declares no gate on {key!r}; every call is code's reading as if a gate "
+            f"on its {statistic} held at the line, the declared criteria unchanged"
+        ],
+        hypothetical=True,
     )
 
 
@@ -900,8 +1151,15 @@ def _sweep_of(report_input: ReportInput, parameter: str, range_low: float | None
             raise _refuse_parameter(report_input, parameter, "names no criterion this snapshot declares")
         words = _range_words("threshold", range_low, range_high, range_low is not None, range_high is not None)
         return _threshold_sweep(report_input, criterion, range_low, range_high, f"{words}, on criterion {name}")
+    if kind == _HYPOTHETICAL:
+        words = _range_words("hypothetical line", range_low, range_high, range_low is not None, range_high is not None)
+        return _line_sweep(
+            report_input, name, range_low, range_high, f"{words}, on {name}, which the snapshot does not declare"
+        )
     raise _refuse_parameter(
-        report_input, parameter, "is none of margin:<aspect>, floor:<aspect>/<floor> or threshold:<criterion>"
+        report_input,
+        parameter,
+        "is none of margin:<aspect>, floor:<aspect>/<floor>, threshold:<criterion> or hypothetical:<measure>",
     )
 
 
@@ -947,7 +1205,8 @@ def sensitivity(
         key=lambda cut: cut.value,
     )
     pieces = _pieces(sweep, inside)
-    declared = decision_at(report_input)
+    declared = _read_call(report_input)
+    declared_picks = _picks(report_input)
     page = inside[offset : offset + limit]
     end = offset + len(page)
     at = {id(cut): index for index, cut in enumerate(inside)}
@@ -959,15 +1218,24 @@ def sensitivity(
         notes.append("flips outside the range swept are not listed")
     return Sensitivity(
         parameter=parameter,
+        hypothetical=sweep.hypothetical,
         swept=sweep.swept,
         declared=sweep.declared,
         boundary_belongs_to=sweep.boundary,
         declared_call=_call(declared),
         reads_as=CODE_CALL_READS_AS,
+        declared_picks=_pick_rows(declared_picks),
         segments=segments,
         holds=all(piece.call == declared for piece in pieces),
+        picks_hold=all(piece.read.picks == declared_picks for piece in pieces),
         flips=[
-            Flip(arm=_arm(cut.arm), where=cut.where, at=cut.at, call_changes=_changes(pieces, cut.value))
+            Flip(
+                arm=_arm(cut.arm),
+                where=cut.where,
+                at=cut.at,
+                call_changes=_changes(pieces, cut.value, lambda piece: piece.call),
+                picks_change=_changes(pieces, cut.value, lambda piece: piece.read.picks),
+            )
             for cut in page
         ],
         total=len(inside),

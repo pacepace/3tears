@@ -6,6 +6,31 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the analyst compares any two arms, sizes the run that would settle a reading, and stops reading cost alone as dominance
+
+**Added:** two actions on the analyst tool's analyses (the editor's cut carries both). `arms_compare` reads the first
+of two arms minus the second on one measure, overall and in each task, cell and stratum where both state a mean, with
+an interval: the contrast's own where one states one arm against the other (paired), else the two arms' own spreads
+combined as independent; it refuses a measure neither arm states a spread for, naming `measure_read`.
+`settle_cases` gives the cases a design needs for an interval centred on today's estimate to clear its line (one arm
+against each declared criterion reading it, one criterion, or a `hypothetical_line`) or zero (two arms), half or four
+in five such designs clearing, and how often a run of today's size reads the wrong way.
+
+**Added:** figure-key families `spread.<arm>.<measure>.<where>.<field>`, `compare.<arm>.<arm>.<measure>.<where>.<field>`,
+`settle.<arm>.<arm>.<measure>.<where>.<field>`, `settle.criteria.<criterion>.<arm>.<where>.<field>` and
+`settle.hypothetical.<line>.<arm>.<measure>.<where>.<field>` (a help page, `figure_keys.separation`), where `<where>`
+is `overall`, `task.<task>`, `cells.<row>.<column>` or `strata.<stratum>`; `separation_wheres` and
+`criterion_wheres` list the places. The arithmetic is `threetears.evals.analysis.separation`. The planner's grammar
+section grows by these lines.
+
+**Changed:** `options_dominance` makes no dominance call where cost is the only axis the snapshot declares (no gate,
+guardrail, control, asked aspect or ranking rule): no option is dominant or dominated, code's call is a tradeoff and
+`code_call.withheld` says why, where it named the cheapest option. It names the declared axes (`weighs`, from the new
+`report_decision.weighed_axes`) and each survivor's `dominated_with_axes`. The planner's `allowed_modes` is unchanged.
+`decision_sensitivity` reads each routable task's pick beside the call (`Segment.picks`, `Sensitivity.declared_picks`,
+`picks_hold`, `Flip.picks_change`), cuts segments where either changes, and sweeps `hypothetical:<measure>` (or
+`/<statistic>`), a gate the snapshot does not declare, marked `hypothetical`.
+
 ### evals: the report analyst's tool, evals_analyst, over a frozen report snapshot
 
 **Added:** `analyst_actions()` and `analyst_tools(prefix="evals", *, writes=True, role="analyst")`: one tool,
