@@ -14,7 +14,10 @@ selects (:func:`~threetears.evals.analysis.report_rows.query_rows`, the one owne
   **Intervals are drawn only where the chart states a level** (``ChartSpec.level``): the kit refuses intervals
   without one.
 - **Reference lines** (:func:`reference_line`): the stored reference's figure key read off the input, in display
-  units: a margin as minus the margin on a change axis, a floor or budget at the criterion's threshold.
+  units: a margin as minus the margin on a change axis, a floor or budget at the criterion's threshold. A kind that
+  draws its criterion's line where the plan stores none (a dot strip's floor, range bars' budget, a heatmap's cell
+  floor) reads it by :func:`criterion_line`: the one criterion on the measure, at the statistic drawn, read where the
+  chart reads it.
 - **Row order** (:meth:`ChartContext.arm_order`): a summary chart's rows in the options table's order (GENERATOR
   §5.3); a section's in its query's order, else the page's.
 - **The descriptive rule** (:func:`separated`): a change code computes from two point figures is bold where it lies
@@ -31,6 +34,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
+from typing import Literal
 
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
@@ -39,20 +43,23 @@ from threetears.evals.analysis.report.figure_keys import Figure, NamedKind, reso
 from threetears.evals.analysis.report.plan_page.look import PageLook, Quantity, figure_text, quantity
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
 from threetears.evals.analysis.report.plan_page.words import MISSING_TEMPLATE, REFERENCE_TEMPLATE
-from threetears.evals.analysis.report_input import Cell, ReportInput, Stat, Stratum, Task
+from threetears.evals.analysis.report_input import Cell, Criterion, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_rows import SourceRow, query_rows
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.report_plan import ChartQuery, ChartSpec
 
 __all__ = [
     "ChartContext",
+    "CriterionWhere",
     "Drawn",
     "KindResolver",
     "chart_block",
+    "criterion_line",
     "figure_stat",
     "figure_unit",
     "interval_words",
     "measure_words",
+    "misses_line",
     "missing_note",
     "reference_line",
     "separated",
@@ -373,6 +380,75 @@ def reference_line(context: ChartContext, drawn: Quantity) -> ChartReference | N
         value = figure.value * drawn.factor
         label = REFERENCE_TEMPLATE.format(kind=stored.kind, value=figure_text(value, drawn))
     return ChartReference(value=value, label=label, kind=stored.kind)
+
+
+#: Where a chart reads a measure, for the criterion whose line it draws (:func:`criterion_line`): its overall figures,
+#: every task's (a criterion read in each task), one task's (that, or one read within that task alone), or every
+#: target-matrix cell's.
+CriterionWhere = Literal["overall", "tasks", "cells"] | tuple[Literal["task"], str]
+
+
+def _reads_there(criterion: Criterion, where: CriterionWhere) -> bool:
+    if where == "overall":
+        return criterion.scope == "overall" and criterion.task is None
+    if where == "tasks":
+        return criterion.scope == "each_task" and criterion.task is None
+    if where == "cells":
+        return criterion.scope == "each_cell"
+    _, task = where
+    return criterion.task == task or (criterion.scope == "each_task" and criterion.task is None)
+
+
+def criterion_line(
+    context: ChartContext, key: str, drawn: Quantity, *, where: CriterionWhere, statistic: str = "mean"
+) -> ChartReference | None:
+    """The line a declared criterion draws on a chart that stores none: the threshold of the one criterion that reads
+    ``key`` at ``statistic`` where the chart reads it, in display units, a floor where higher is better and a budget
+    where lower is, labelled in code's words.
+
+    :param context: The chart being resolved.
+    :ptype context: ChartContext
+    :param key: The measure or judged dimension drawn.
+    :ptype key: str
+    :param drawn: The quantity the chart draws it as.
+    :ptype drawn: Quantity
+    :param where: Where the chart reads the measure (:data:`CriterionWhere`).
+    :ptype where: CriterionWhere
+    :param statistic: The statistic drawn: ``mean``, ``p50`` or ``p95``.
+    :ptype statistic: str
+    :return: The line; None where no criterion, or more than one line, reads it there.
+    :rtype: ChartReference | None
+    """
+    lines = {
+        (float(criterion.threshold), criterion.direction)
+        for criterion in context.report_input.criteria
+        if criterion.measure == key and criterion.statistic == statistic and _reads_there(criterion, where)
+    }
+    if len(lines) != 1:
+        return None
+    ((threshold, direction),) = lines
+    kind: Literal["floor", "budget"] = "floor" if direction == "higher_is_better" else "budget"
+    value = threshold * drawn.factor
+    return ChartReference(
+        value=value, label=REFERENCE_TEMPLATE.format(kind=kind, value=figure_text(value, drawn)), kind=kind
+    )
+
+
+def misses_line(value: float, line: ChartReference | None) -> bool:
+    """Whether a drawn value misses a floor (under it) or a budget (over it); False for any other line or none.
+
+    :param value: The value, in display units.
+    :ptype value: float
+    :param line: The chart's line.
+    :ptype line: ChartReference | None
+    :return: Whether it misses.
+    :rtype: bool
+    """
+    if line is None:
+        return False
+    if line.kind == "floor":
+        return value < line.value
+    return value > line.value if line.kind == "budget" else False
 
 
 def slice_name(context: ChartContext, item: Stratum | Task) -> str:

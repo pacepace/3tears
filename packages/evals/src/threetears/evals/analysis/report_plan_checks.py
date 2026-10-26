@@ -101,7 +101,9 @@ added later refuses no plan already stored:
   least one row (the rows a page draws, :func:`~threetears.evals.analysis.report_rows.query_rows`); its reference
   key and its emphasis name something present. The summary charts show the options
   table's arm rows in its order, a change-from-control chart (readings, contrasts, or ``arm_minus_control``) leaving
-  the control out.
+  the control out. A chart the page draws as each arm less the control (diverging bars over measures, judged
+  figures, strata or tasks; a difference heatmap naming fewer than two arms, which otherwise draws its second arm
+  less its first) is refused on an input that names no control: the page could not draw it.
 - *Small multiples*: ``small_multiples_by`` other than ``none`` only on a kind the kit draws as panels (its chart
   model carries ``panels``: bars and diverging bars, the two scatters, dot intervals, heatmaps, confusion matrices).
 - *Options columns*: each is one of :data:`OPTION_COLUMN_FAMILIES`, a ``judged:<dim>`` naming a judged dimension the
@@ -1092,6 +1094,7 @@ def _charts(plan: ReportPlan) -> Iterator[tuple[str, ChartSpec]]:
 def _chart_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
     for path, chart in _charts(plan):
         yield from _query_faults(path, chart, plan, report_input)
+        yield from _no_control_faults(path, chart, report_input)
     control = control_arm(report_input)
     arms = {arm.id for arm in report_input.arms}
     rows = [row.option for row in plan.options.rows if row.option in arms]
@@ -1109,6 +1112,34 @@ def _chart_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Faul
                     + (" (a change-from-control chart leaves out the control)" if from_control else "")
                 ),
             )
+
+
+#: The sources a diverging chart draws as each arm less the control, computed from point figures.
+_LESS_THE_CONTROL = frozenset({"measures", "judged", "strata", "tasks"})
+#: The arms a difference heatmap names to draw its second less its first, needing no control.
+_COMPARED_PAIR = 2
+
+
+def _no_control_faults(path: str, chart: ChartSpec, report_input: ReportInput) -> Iterator[_Fault]:
+    """A chart drawn as each arm less the control, on an input that names no control (this module's Charts)."""
+    if control_arm(report_input) is not None:
+        return
+    if chart.kind == "diverging_bars" and chart.query.source in _LESS_THE_CONTROL:
+        yield (
+            f"{path}.kind",
+            (
+                f"is 'diverging_bars' over {chart.query.source!r}, which draws each arm less the control, and the "
+                "report input names no control"
+            ),
+        )
+    elif chart.kind == "diff_heatmap" and len(chart.query.arms) < _COMPARED_PAIR:
+        yield (
+            f"{path}.query.arms",
+            (
+                f"name {list(chart.query.arms)}, and a 'diff_heatmap' on an input with no control draws its second "
+                "arm less its first: name the two arms it compares"
+            ),
+        )
 
 
 def _from_control(chart: ChartSpec) -> bool:
