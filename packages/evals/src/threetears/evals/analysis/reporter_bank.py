@@ -39,6 +39,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from threetears.evals.analysis.agreement import JudgeAgreement, judge_agreement
 from threetears.evals.analysis.reporter_kind import (
     LABEL_BANDS,
+    MEMO_CASE_VERSION,
+    WRITER_MESSAGE_DIFFERS,
     LabelCriterion,
     LabelDirection,
     LabelVerdict,
@@ -63,6 +65,7 @@ def case_limits(
     recorded_fingerprint: str | None = None,
     writer_message: str | None = None,
     recorded_message_digest: str | None = None,
+    kind_version: ReporterKindVersion = MEMO_CASE_VERSION,
 ) -> list[str]:
     """State, as sentences, what a judgement grounded on this bundle cannot reach.
 
@@ -81,6 +84,8 @@ def case_limits(
       something other than what the memo's generation recorded sending, over the same bundle, so
       the way bundles are rendered changed in between. Stated only when the bundle reproduces:
       when it does not, the message differs as a consequence and the sentence above already says so.
+      The sentence is the one :data:`WRITER_MESSAGE_DIFFERS` holds for what the case judges: a plan
+      case's speaks of the planner and the report input it was shown, not of a memo's writer.
     - **an arm whose levels are unavailable** — its variant was keyed by a predicate this build
       cannot reproduce, so the bundle shows it measured and pooled but cannot say what it RAN. A
       memo's claim naming that arm's configuration cannot be checked against this case.
@@ -100,6 +105,9 @@ def case_limits(
     :param recorded_message_digest: The pinned memo's ``generation.user_message_digest``, or ``None``
         when the case pins no memo.
     :ptype recorded_message_digest: str | None
+    :param kind_version: What the case judges: a memo (``MEMO_CASE_VERSION``) or a report plan
+        (``PLAN_CASE_VERSION``), whose sentence on a message that differs is its own.
+    :ptype kind_version: ReporterKindVersion
     :return: The limits — the reproduction or rendering sentence first, then per arm in
         ``variant_index`` order; empty when the bundle and its rendering reproduce and every
         variant is described and has a cell.
@@ -121,13 +129,7 @@ def case_limits(
         and recorded_message_digest is not None
         and message_check(writer_message, recorded_message_digest) == "differs"
     ):
-        limits.append(
-            f"The bundle reproduces the one the recorded memo was written from, but the writer message frozen here "
-            f"is not the one its generator was sent (recorded digest {recorded_message_digest}): how a bundle is "
-            "rendered changed between the generation and this freeze. The memo is judged against a message its "
-            "writer did not read, so a claim resting on something only the older rendering showed scores as "
-            "ungrounded here."
-        )
+        limits.append(WRITER_MESSAGE_DIFFERS[kind_version].format(recorded=recorded_message_digest))
     index = list({entry.variant_key: entry for aspect in bundle.aspects for entry in aspect.variant_index}.values())
     if not index:
         limits.append(
