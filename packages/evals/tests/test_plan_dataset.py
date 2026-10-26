@@ -17,10 +17,12 @@ Contracts held here:
   passes the plan checks with its anchor's structure, only prose changed, and every model-scored item has one.
   ``weaken_anchors.py`` writes exactly the committed copies and labels.
 - **Scores.** Every run plan the dataset keeps, current or historical, has exactly one score record beside it, and
-  every record is sound (its digests are its files', every item scored once, every quote text the plan holds) and
-  scores a plan the dataset keeps; a run recorded and not yet scored is red here until it is. A scorer's reply becomes
-  a record only when it is sound, its planner is the run's recorded provenance, and records pool only by planner prompt
-  digest, rubric digest and scorer.
+  every record is sound (its plan and rubric digests are its files', its input digest names an archived input, every
+  item scored once) and scores a plan the dataset keeps; a run recorded and not yet scored is red here until it is. A
+  current run's quotes are text its plan holds, as written or rendered against the input it was scored against; a
+  historical record is pinned instead, byte for byte (``history.json``), so editing, deleting or leaving one unpinned is
+  red. A scorer's reply becomes a record only when it is sound, quotes included, its planner is the run's recorded
+  provenance, and records pool only by planner prompt digest, rubric digest and scorer.
 - **The brief** carries the rubric, R1's verdict, the plan rendered and every item to score, and names neither the
   plan's file nor its planner.
 """
@@ -57,8 +59,11 @@ RULES = frozenset(
         "flag",
         "coverage",
         "charts",
+        "small_multiples",
+        "columns",
         "keys",
         "literal_digits",
+        "units",
         "weakest",
         "reader_ids",
     }
@@ -290,8 +295,72 @@ def test_every_run_plan_has_one_sound_score_record() -> None:
             unscored.append(plan.relative_to(HERE).as_posix())
             continue
         scores = dataset.PlanScores.model_validate_json(dataset.scores_path(plan).read_text(encoding="utf-8"))
-        assert dataset.score_faults(scores, plan) == [], plan
+        assert dataset.score_faults(scores, plan, quotes=dataset.is_current(plan)) == [], plan
     assert unscored == [], f"run plans with no score record (score them: dataset.py brief, then record): {unscored}"
+    assert dataset.history_faults() == []
+
+
+def _records() -> list[tuple[Path, dataset.PlanScores]]:
+    return [
+        (plan, dataset.PlanScores.model_validate_json(dataset.scores_path(plan).read_text(encoding="utf-8")))
+        for plan in dataset.run_plans()
+        if dataset.scores_path(plan).is_file()
+    ]
+
+
+def test_every_record_names_an_input_archived_by_its_digest() -> None:
+    for plan, scores in _records():
+        assert dataset.archived_input_path(scores.input_digest).is_file(), plan
+        dataset.archived_input(scores.input_digest)
+    for path in dataset.INPUTS.glob("*.json"):
+        assert dataset.sha256_file(path) == path.name.removesuffix(".json"), path
+
+
+def test_a_record_naming_an_input_the_dataset_does_not_keep_is_unsound() -> None:
+    plan, scores = _records()[0]
+    stale = scores.model_copy(update={"input_digest": "0" * 64})
+    assert any("names no input the dataset keeps" in fault for fault in dataset.score_faults(stale, plan))
+
+
+def test_a_historical_records_quotes_are_held_by_its_pin_not_by_todays_renderer() -> None:
+    plan = HERE / "r3" / "runs" / "gemini-3.8-flash-20261025-fbe870c655ce.plan.json"
+    assert not dataset.is_current(plan)
+    scores = dataset.PlanScores.model_validate_json(dataset.scores_path(plan).read_text(encoding="utf-8"))
+    assert any("which no prose field of the plan holds" in fault for fault in dataset.score_faults(scores, plan))
+    assert dataset.score_faults(scores, plan, quotes=False) == []
+    assert dataset.scores_path(plan).relative_to(HERE).as_posix() in dataset.pinned_records()
+
+
+def _pins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, records: dict[str, str]) -> None:
+    history = tmp_path / "history.json"
+    history.write_text(json.dumps({"schema": "plan-score-history/1", "records": records}), encoding="utf-8")
+    monkeypatch.setattr(dataset, "HISTORY", history)
+
+
+def test_an_edited_historical_record_is_red(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pinned = dataset.pinned_records()
+    edited = next(iter(pinned))
+    _pins(tmp_path, monkeypatch, pinned | {edited: "0" * 64})
+    assert dataset.history_faults() == [f"{edited} changed after it was pinned: a historical record is immutable"]
+
+
+def test_a_deleted_or_unpinned_historical_record_is_red(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pinned = dataset.pinned_records()
+    dropped = next(iter(pinned))
+    _pins(tmp_path, monkeypatch, {k: v for k, v in pinned.items() if k != dropped} | {"r9/runs/gone.scores.json": "0"})
+    faults = dataset.history_faults()
+    assert "r9/runs/gone.scores.json is pinned and gone: history is kept, never deleted" in faults
+    assert any(fault.startswith(f"{dropped} is a historical run's record and is not pinned") for fault in faults)
+
+
+def test_pinning_adds_the_unpinned_and_keeps_every_pin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pinned = dataset.pinned_records()
+    kept, dropped = list(pinned)[:2]
+    _pins(tmp_path, monkeypatch, {kept: "0" * 64})
+    added = dataset.pin_history()
+    assert dropped in added and kept not in added
+    assert dataset.pinned_records()[kept] == "0" * 64
+    assert set(dataset.pinned_records()) == set(pinned)
 
 
 def test_every_score_record_scores_a_plan_the_dataset_keeps() -> None:

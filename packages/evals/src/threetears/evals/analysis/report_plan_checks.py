@@ -53,7 +53,9 @@ transform, small multiples and emphasis. Some of what a spine draws is no query 
 reasons and cheapest passing cell, a gate scatter's gate region and one path per factor level, a lattice's row and
 column factors and its tiles' cost and latency. The renderer reads those off the criteria and the configs (P4).
 
-**The checks** (:func:`validate_plan`), each refusing at the field it names:
+**The checks** (:func:`validate_plan`), each refusing at the field it names. They run when a plan is generated
+(:func:`~threetears.evals.analysis.report_plan_facts.complete_plan`), never when a stored plan is read, so a check
+added later refuses no plan already stored:
 
 - *Facts code filled*: ``signals`` and ``shape`` are :func:`classify`'s.
 - *The spine*: the first evidence section's chart is :func:`spine`'s kind, with every query field and reference line
@@ -100,6 +102,10 @@ column factors and its tiles' cost and latency. The renderer reads those off the
   key and its emphasis name something present. The summary charts show the options
   table's arm rows in its order, a change-from-control chart (readings, contrasts, or ``arm_minus_control``) leaving
   the control out.
+- *Small multiples*: ``small_multiples_by`` other than ``none`` only on a kind the kit draws as panels (its chart
+  model carries ``panels``: bars and diverging bars, the two scatters, dot intervals, heatmaps, confusion matrices).
+- *Options columns*: each is one of :data:`OPTION_COLUMN_FAMILIES`, a ``judged:<dim>`` naming a judged dimension the
+  input holds and a ``measure:<key>`` a measure, or the measure a criterion reads.
 - *Ids*: section ids, explore control ids and option rows are each unique.
 - *Figure keys*: every key in every prose field, every durable claim's ``keys`` and every chart reference parses,
   resolves against the report input and suits its filters (:mod:`~threetears.evals.analysis.report.figure_keys`).
@@ -113,6 +119,13 @@ column factors and its tiles' cost and latency. The renderer reads those off the
   since a reader still reads a digit there as a number, no typed digit either. A control's ``min``, ``max``,
   ``step`` and ``default`` are the control's own scale, numbers and not prose, and are not checked here.
 
+- *Units a key prints*: no prose writes a unit right after a figure key whose spelling already carries it. The unit
+  is read off what code spells (:func:`~threetears.evals.analysis.report.figure_keys.format_figure`: ``513 ms``,
+  ``45%``, ``$1.89 per 1,000 replies``), and refused where the next word repeats it or is one of that unit's names in
+  the package's own vocabulary (:data:`~threetears.evals.analysis.quantities.UNIT_NAMES`: ``3 s seconds``,
+  ``45%%``); a key spelled bare (``{…|int} ms``, ``{…|pts} points``) prints none. And money per reply under one
+  cent, on a page that states its costs per 1,000 replies (a cost per 1,000 replies resolves), is keyed
+  ``usd_per_1k``, so the page reads one cost basis.
 - *Watch names the weakest margin*: a decide plan's Watch slot cites the weakest margin
   (:func:`~threetears.evals.analysis.report_margins.weakest_margin`) by at least one ``weakest.*`` figure key, where the
   input reads any figure against a criterion, margin or floor. Which margin is weakest is code's fact; what Watch says
@@ -154,10 +167,15 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.errors import PlanRefusal, UnresolvableReference
+from threetears.evals.analysis.quantities import MONEY, UNIT_NAMES
+from threetears.evals.analysis.report.charts import KIT_CHARTS
 from threetears.evals.analysis.report.figure_keys import (
+    INTERVAL_TEMPLATE,
     PERCENTILE_NAMES,
     WEAKEST_PREFIX,
+    FigureKey,
     format_figure,
+    Figure,
     keys_in,
     literal_numbers,
     parse_key,
@@ -188,6 +206,7 @@ from threetears.evals.schema.prose import field_is_prose
 
 __all__ = [
     "MODE_SLOTS",
+    "OPTION_COLUMN_FAMILIES",
     "SPINE_KINDS",
     "Spine",
     "classify",
@@ -224,13 +243,15 @@ MODE_SLOTS: dict[str, tuple[str, ...]] = {
 _KIND_SOURCES: dict[str, frozenset[str]] = {
     "forest": frozenset({"readings", "contrasts"}),
     "bars": frozenset({"measures", "judged", "scoreboard", "strata", "tasks", "configs", "human_pref"}),
-    "diverging_bars": frozenset({"readings", "contrasts", "measures", "judged", "strata", "tasks", "human_pref"}),
+    "diverging_bars": frozenset(
+        {"readings", "contrasts", "measures", "judged", "strata", "tasks", "configs", "human_pref"}
+    ),
     "lines": frozenset({"measures", "judged", "strata", "tasks"}),
     "scatter_frontier": frozenset({"measures", "judged", "scoreboard", "configs", "tasks"}),
     "gate_scatter": frozenset({"measures", "judged", "configs", "tasks"}),
-    "dot_interval": frozenset({"readings", "contrasts", "measures", "judged", "floors", "tasks"}),
-    "range_bars": frozenset({"measures"}),
-    "gate_matrix": frozenset({"tasks", "floors", "measures", "configs"}),
+    "dot_interval": frozenset({"readings", "contrasts", "measures", "judged", "floors", "tasks", "strata"}),
+    "range_bars": frozenset({"measures", "tasks"}),
+    "gate_matrix": frozenset({"tasks", "readings", "floors", "measures", "configs"}),
     "lattice": frozenset({"configs"}),
     "heatmap": frozenset({"cells", "strata", "tasks"}),
     "diff_heatmap": frozenset({"cells", "strata", "tasks"}),
@@ -245,6 +266,40 @@ _NO_MEASURES = frozenset({"readings", "examples", "human_pref"})
 _SCOREBOARD_FIGURES = frozenset(
     {"ran", "usable", "passed", "cases", "lost", "failed", "reply_cost_usd", "test_cost_usd"}
 )
+
+#: The kinds the kit draws as small multiples: those whose chart model carries ``panels``
+#: (:data:`~threetears.evals.analysis.report.charts.KIT_CHARTS`). A table is no kit chart, and panels nothing.
+_PANELLED_KINDS = frozenset(kind for kind, model in KIT_CHARTS.items() if "panels" in model.model_fields)
+
+#: The options table's column families (GENERATOR §2.6), the one list the options columns are written from
+#: (:func:`~threetears.evals.analysis.report_plan_facts.plan_facts` emits each where the input holds its figure) and
+#: the one vocabulary a stored plan's ``options.columns`` is checked against: the pass rate, the asked
+#: reading's change and verdict, a judged dimension by key, the gate status, a measure by key (a bar's or a
+#: guardrail's), and the cost per 1,000 replies.
+OPTION_COLUMN_FAMILIES: tuple[str, ...] = (
+    "pass_rate",
+    "reading.change",
+    "reading.verdict",
+    "judged:<dim>",
+    "gate",
+    "measure:<key>",
+    "cost_per_1k",
+)
+#: The families written alone, and those written ``<family>:<id>``.
+_COLUMN_WORDS = frozenset(family for family in OPTION_COLUMN_FAMILIES if ":" not in family)
+_COLUMN_PREFIXES = frozenset(family.partition(":")[0] for family in OPTION_COLUMN_FAMILIES if ":" in family)
+
+#: Money under this, per reply, reads per 1,000 replies on a page that states its costs so (one cost basis per page).
+_CENT = 0.01
+#: The filter that reads money per 1,000 replies, and the filters a key keeps beside it (it is a spelling, so it
+#: replaces any other).
+_PER_THOUSAND_FILTER = "usd_per_1k"
+_KEPT_BESIDE_A_SPELLING = frozenset({"abs", "interval"})
+#: What joins an interval's two ends where code spells each with its unit (``1.2 s to 3.4 s``).
+_INTERVAL_JOIN = INTERVAL_TEMPLATE.format(low="", high="")
+#: A figure's number as code spells it, at the start of its spelling: a bound, a sign, money's sign, the digits, and a
+#: range's second end (``< 0.000001``, ``-$0.01``, ``27–28``). What follows it is the unit the figure prints.
+_SPELLED_NUMBER = re.compile(r"^[<>]?\s?[+\-−]?\$?\d[\d.,]*(?:–[+\-−]?\$?\d[\d.,]*)?")
 
 #: One fault: the field path it sits at and why it is refused.
 _Fault = tuple[str, str]
@@ -597,8 +652,11 @@ def validate_plan(plan: ReportPlan, report_input: ReportInput) -> None:
     faults += _flag_faults(plan, report_input)
     faults += _coverage_faults(plan, report_input)
     faults += _chart_faults(plan, report_input)
+    faults += _small_multiple_faults(plan)
+    faults += _column_faults(plan, report_input)
     faults += _key_faults(plan, report_input)
     faults += _literal_faults(plan, report_input)
+    faults += _unit_faults(plan, report_input)
     faults += _watch_faults(plan, report_input)
     faults += _reader_id_faults(plan, report_input)
     if faults:
@@ -1090,6 +1148,43 @@ def _query_faults(path: str, chart: ChartSpec, plan: ReportPlan, report_input: R
         yield f"{path}.emphasis", f"is {chart.emphasis!r}, which is no arm, option, stratum or task to stress"
 
 
+def _small_multiple_faults(plan: ReportPlan) -> Iterator[_Fault]:
+    """A chart repeats its panel only where the kit draws small multiples of its kind."""
+    for path, chart in _charts(plan):
+        by = chart.query.small_multiples_by
+        if by != "none" and chart.kind not in _PANELLED_KINDS:
+            yield (
+                f"{path}.query.small_multiples_by",
+                (
+                    f"is {by!r}, and the kit draws no small multiples of a {chart.kind!r}; it panels "
+                    f"{sorted(_PANELLED_KINDS)}. Set it to 'none', or draw a kind that panels"
+                ),
+            )
+
+
+def _column_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
+    """Every options column is one of :data:`OPTION_COLUMN_FAMILIES`, a keyed one naming a dimension or measure the
+    input holds (a measure's being any measure, or the measure a criterion reads, as the columns are written)."""
+    keyed = {
+        "judged": set(report_input.judged),
+        "measure": set(report_input.measures) | {criterion.measure for criterion in report_input.criteria},
+    }
+    for index, column in enumerate(plan.options.columns):
+        family, colon, key = column.partition(":")
+        if column in _COLUMN_WORDS:
+            continue
+        if colon and family in _COLUMN_PREFIXES:
+            if key in keyed[family]:
+                continue
+            reason = f"names the {family} {key!r}, which the input does not hold"
+        else:
+            reason = "is no column family code renders"
+        yield (
+            f"options.columns[{index}]",
+            f"is {column!r}, which {reason}; the families are {list(OPTION_COLUMN_FAMILIES)}",
+        )
+
+
 def _measure_vocabulary(source: str, report_input: ReportInput) -> set[str]:
     if source in _NO_MEASURES:
         return set()
@@ -1202,6 +1297,92 @@ def _literal_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fa
                     "the input does not hold is written in words or left out"
                 ),
             )
+
+
+# --- units a key already prints ------------------------------------------------------------------------------------
+
+
+def _states_cost_per_thousand(report_input: ReportInput) -> bool:
+    """Whether the page states the arms' costs per 1,000 replies: the cost per 1,000 replies resolves for some arm."""
+    for arm in report_input.arms:
+        try:
+            resolve(f"cost_per_1k.{arm.id}", report_input)
+        except UnresolvableReference:
+            continue  # NOSILENT: an arm that states no cost states none per 1,000 replies; the others are read
+        return True
+    return False
+
+
+def _unit_words(spelled: str) -> list[str]:
+    """The words a figure's spelling already prints its unit by, longest first: the unit after its number (``ms``,
+    ``%``, ``per 1,000 replies``), and every name :data:`~threetears.evals.analysis.quantities.UNIT_NAMES` gives that
+    unit, money's whenever the spelling carries its sign."""
+    last = spelled.rpartition(_INTERVAL_JOIN)[2]
+    number = _SPELLED_NUMBER.match(last)
+    suffix = last[number.end() :].strip() if number is not None else ""
+    words = {suffix} if suffix else set()
+    for unit, names in UNIT_NAMES.items():
+        if suffix.casefold() in {name.casefold() for name in names} or (unit == MONEY and "$" in spelled):
+            words.update(names)
+    return sorted(words, key=len, reverse=True)
+
+
+def _repeated_unit(after: str, words: Sequence[str]) -> str | None:
+    """The unit word ``after`` opens with (past any space), bounded where it ends in a word character; None for none."""
+    for word in words:
+        bound = r"(?!\w)" if re.match(r"\w", word[-1:]) else ""
+        if re.match(rf"\s*{re.escape(word)}{bound}", after, re.IGNORECASE):
+            return word
+    return None
+
+
+def _sub_cent(figure: Figure, key: FigureKey) -> bool:
+    """A money figure per reply under one cent, not keyed per 1,000 replies."""
+    if figure.scale != MONEY or _PER_THOUSAND_FILTER in key.filters:
+        return False
+    values = figure.value if isinstance(figure.value, tuple) else (figure.value,)
+    sizes = [abs(value) for value in values if isinstance(value, float)]
+    return bool(sizes) and 0 < max(sizes) < _CENT
+
+
+def _unit_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
+    """No prose writes a unit right after a key that prints it, and money per reply under one cent is keyed per
+    1,000 replies where the page states its costs so."""
+    per_thousand = _states_cost_per_thousand(report_input)
+    for path, text in _prose(plan):
+        try:
+            keys = keys_in(text)
+        except UnresolvableReference:
+            continue  # NOSILENT: prose whose keys do not parse is refused by the key check (_key_faults) at this path
+        for key in keys:
+            assert key.span is not None
+            start, end = key.span
+            try:
+                figure = resolve(key.path, report_input)
+                if figure.kind not in ("number", "interval"):
+                    continue
+                spelled = format_figure(figure, key.filters)
+            except UnresolvableReference:
+                continue  # NOSILENT: a key that does not resolve or suit its filters is refused by the key check
+            written = text[start:end]
+            if (word := _repeated_unit(text[end:], _unit_words(spelled))) is not None:
+                yield (
+                    path,
+                    (
+                        f"writes {word!r} right after {written}, which code spells {spelled!r}, its unit included: "
+                        "a key prints its own unit, so drop the word"
+                    ),
+                )
+            if per_thousand and _sub_cent(figure, key):
+                kept = [name for name in key.filters if name in _KEPT_BESIDE_A_SPELLING]
+                wanted = "|".join([key.path, *kept, _PER_THOUSAND_FILTER])
+                yield (
+                    path,
+                    (
+                        f"keys {written}, money per reply under one cent ({spelled}), and the page states its costs "
+                        f"per 1,000 replies: key it per 1,000 replies, {{{wanted}}}, so the page reads one cost basis"
+                    ),
+                )
 
 
 # --- the weakest margin in Watch -----------------------------------------------------------------------------------
