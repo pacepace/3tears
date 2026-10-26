@@ -50,7 +50,7 @@ from dataclasses import dataclass, replace
 from typing import Literal, get_args
 
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.numbers import format_number, group_thousands
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, number_in, signed_with_unit, with_unit
 from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report.words import arm_tags
@@ -118,9 +118,6 @@ RANGE_TEMPLATE = "{low}–{high}"
 PER_THOUSAND_TEMPLATE = "{amount} " + PER_THOUSAND_REPLIES
 _PER_MILLION_TEMPLATE = "{amount} " + PER_MILLION_REPLIES
 ARM_TEMPLATE = "{name} ({tag})"
-#: What separates a whole number's thousands under the ``int`` filter (``12,000,000``). Prose only: the package's
-#: number rule (:mod:`threetears.evals.analysis.numbers`) writes no separator inside its tables' intervals and lists.
-THOUSANDS_SEPARATOR = ","
 #: How a criterion's direction reads.
 DIRECTION_WORDS = {"higher_is_better": "higher is better", "lower_is_better": "lower is better"}
 
@@ -2683,19 +2680,6 @@ def _money(value: float, signed: bool) -> str:
     return _plus(text, value) if signed else text
 
 
-def _grouped(text: str) -> str:
-    """A whole number as :func:`~threetears.evals.analysis.numbers.format_number` spells it, its thousands separated
-    by :data:`THOUSANDS_SEPARATOR` (``12000000`` reads ``12,000,000``); any other text unchanged."""
-    sign, digits = (text[:1], text[1:]) if text[:1] in "+-" else ("", text)
-    if not digits.isdigit():
-        return text
-    groups: list[str] = []
-    while len(digits) > 3:
-        digits, tail = digits[:-3], digits[-3:]
-        groups.insert(0, tail)
-    return sign + THOUSANDS_SEPARATOR.join([digits, *groups])
-
-
 #: The spelling a figure on the ``usd_per_1m`` scale reads in without a filter: dollars with the words, ``$180 per
 #: 1,000,000 replies``. No filter names it: a key's own spelling, never chosen.
 _PER_MILLION = "per_million"
@@ -2751,7 +2735,7 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
         # A price per 1,000,000 replies also reads as a whole number, as stored plans spell it.
         if figure.scale not in ("count", "plain", "points", "usd_per_1m"):
             raise _refuse(figure.path, f"cannot read as a whole number: it is on the {figure.scale} scale")
-        text = _grouped(format_number(float(round(value))))
+        text = group_thousands(format_number(float(round(value))))
         return _Spelled(_plus(text, value) if signed else text)
     text = format_number(value)
     text = _plus(text, value) if signed else text

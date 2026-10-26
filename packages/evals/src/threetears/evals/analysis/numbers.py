@@ -95,6 +95,32 @@ def _digits(value: float) -> str:
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
+#: What separates the thousands of a whole amount where the package groups them (``12,000,000``, ``$7,560.00``).
+#: The package's one spelling, not a locale setting: prose and standalone amounts group, the tables' intervals and
+#: lists (above) do not.
+THOUSANDS_SEPARATOR = ","
+
+
+def group_thousands(text: str) -> str:
+    """The integer part of a number's text with its thousands separated by :data:`THOUSANDS_SEPARATOR`.
+
+    :param text: A number as written, optionally signed and optionally with a decimal part (``12000000``,
+        ``-7560.00``). Any text that is not digits, after the sign and before a ``.``, comes back unchanged.
+    :ptype text: str
+    :return: ``12,000,000`` and ``-7,560.00`` for the examples above.
+    :rtype: str
+    """
+    sign, body = (text[:1], text[1:]) if text[:1] in "+-" else ("", text)
+    whole, point, fraction = body.partition(".")
+    if not whole.isdigit():
+        return text
+    groups: list[str] = []
+    while len(whole) > 3:
+        whole, tail = whole[:-3], whole[-3:]
+        groups.insert(0, tail)
+    return sign + THOUSANDS_SEPARATOR.join([whole, *groups]) + point + fraction
+
+
 #: :data:`WRITTEN_FROM` as the bound a smaller value reads as.
 _WRITTEN_FROM_TEXT = f"{WRITTEN_FROM:.6f}"
 

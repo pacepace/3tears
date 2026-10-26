@@ -66,7 +66,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue, computed_field, model_val
 
 from threetears.evals.analysis.agreement import InterJudgeDimension, inter_judge_agreement
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.numbers import format_number, group_thousands
 from threetears.evals.analysis.reporting import (
     RequestSettingsReading,
     UnconfirmedModelIdentity,
@@ -139,6 +139,10 @@ def dollars_text(amount: float | None) -> str:
     the spend was measured and was nothing. Said here rather than by each caller, so every surface that prints a
     possibly-unpriced amount says it in one word.
 
+    From a thousand dollars up the whole dollars are grouped (``$7,560.00``), with
+    :func:`~threetears.evals.analysis.numbers.group_thousands`: the package's one spelling of a grouped
+    amount, not a locale setting. A negative amount carries its sign before the dollar sign (``-$1,234.50``).
+
     :param amount: Dollars, as stored; ``None`` when the amount went unpriced.
     :ptype amount: float | None
     :return: The amount with its dollar sign: ``$0`` for zero, two decimals from ten cents up (``$0.50``,
@@ -149,10 +153,12 @@ def dollars_text(amount: float | None) -> str:
         return UNPRICED
     if amount == 0:
         return "$0"
-    if abs(amount) >= 0.1:
-        return f"${amount:.2f}"
-    decimals = 2 - math.floor(math.log10(abs(amount)))
-    return f"${amount:.{decimals}f}"
+    sign = "-" if amount < 0 else ""
+    amount = abs(amount)
+    if amount >= 0.1:
+        return f"{sign}${group_thousands(f'{amount:.2f}')}"
+    decimals = 2 - math.floor(math.log10(amount))
+    return f"{sign}${amount:.{decimals}f}"
 
 
 def _plural(count: int, noun: str) -> str:
