@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a static report page, for a host whose policy runs and loads nothing
+
+**Added:** `report_html` and `campaign_report_html` take `static: bool = False`. So do `serialize_report` and
+`report_read`, and the `report_read` action takes an optional `static` field. With `static=True` the HTML page
+carries no `<script>` and no `<link>`, so a host can serve it under `default-src 'none'; style-src 'unsafe-inline'`.
+Its text is set in the system faces the kit's stylesheet names after each Plex face, and every chart is shown as its
+table of values. The default page is unchanged, byte for byte: the kit's one inlined script draws the charts and it
+links the Google Fonts stylesheet. Markdown and JSON are the same either way. No stored shape moves.
+
 ### evals: the report planner writes a campaign's analysis, in place of the memo writer
 
 **Changed:** a generation is written by the report planner (`threetears.evals.analysis.planner`), not the memo

@@ -1,6 +1,7 @@
 """A report in one of its three forms: the one switch every door that hands a report out reads.
 
-Markdown is what an agent reads and a pull request quotes, HTML the one page a person reads, its charts drawn by the kit's inlined script, and JSON
+Markdown is what an agent reads and a pull request quotes, HTML the one page a person reads, its charts drawn by the kit's inlined script
+(or, static, shown as their tables, for a host whose policy runs and loads nothing), and JSON
 the bundle the report was computed from — the machine form, versioned by its ``schema_version`` — so a program never
 reads the page's layout as data.
 """
@@ -18,7 +19,7 @@ from threetears.evals.analysis.report.serialize_md import campaign_report_markdo
 ReportFormat = Literal["markdown", "json", "html"]
 
 
-def serialize_report(report: Report | CampaignReport, format: ReportFormat) -> str:
+def serialize_report(report: Report | CampaignReport, format: ReportFormat, *, static: bool = False) -> str:
     """A report in one of its three forms: an aspect's page, or a campaign's.
 
     :param report: The report: one aspect's page, or a campaign's page over its aspects.
@@ -27,6 +28,10 @@ def serialize_report(report: Report | CampaignReport, format: ReportFormat) -> s
         as ``bundle.json`` holds it; a campaign's is code's readings across its aspects, the person's call and each
         aspect's bundle by its fingerprint and shape (:meth:`CampaignReport.json_document`).
     :ptype format: ReportFormat
+    :param static: For ``html``, the static page (:func:`~threetears.evals.analysis.report.serialize_html.report_html`):
+        no script, no link, every chart its table. Markdown and JSON carry no script either way, so it changes
+        neither.
+    :ptype static: bool
     :return: The serialized report.
     :rtype: str
     """
@@ -35,14 +40,14 @@ def serialize_report(report: Report | CampaignReport, format: ReportFormat) -> s
             case "markdown":
                 return campaign_report_markdown(report)
             case "html":
-                return campaign_report_html(report)
+                return campaign_report_html(report, static=static)
             case "json":
                 return json.dumps(report.json_document(), indent=2)
     match format:
         case "markdown":
             return report_markdown(report)
         case "html":
-            return report_html(report)
+            return report_html(report, static=static)
         case "json":
             return report.bundle.to_json(indent=2)
 
