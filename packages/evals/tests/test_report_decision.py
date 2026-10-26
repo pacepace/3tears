@@ -8,7 +8,11 @@ Contracts held here (``threetears.evals.analysis.report_decision``, GENERATOR.md
   September) holds at every margin; its late floor likewise; a late aspect, control or guardrail stays open; a bar only
   warns, so it is checked; a margin that decides the call is open;
 - the survivors, the dominant option and the allowed modes of r1 to r5 are the reference pages' (r1 Atlas-M, r2
-  Brisk-S low reasoning one retry, r3 Brisk-S few-shot, r4 a tradeoff, r5 keep September), and each mode rule fires.
+  Brisk-S low reasoning one retry, r3 Brisk-S few-shot, r4 a tradeoff, r5 keep September), and each mode rule fires;
+- a surviving candidate's reading left unsettled past its aspect's declared margin (asked or not) is the caveat
+  ``unsettled:<aspect>``, report-wide when code's call names that candidate, scoped otherwise, and never proved
+  immaterial; a reading within its margin, one wholly past its line, and one on a candidate a guardrail removes raise
+  none.
 """
 
 from __future__ import annotations
@@ -26,10 +30,12 @@ from threetears.evals.analysis.report_decision import (
     dominant_options,
     report_caveats,
     surviving_options,
+    unsettled_arms,
 )
 from threetears.evals.analysis.report_input import ReportInput
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_plans"
+ASPECT = "character adherence (v2)"
 FLOOR = "character adherence (v2)/rate_drop/*"
 RUNS = ("01a170ab-d2da-750d-a1e3-f4b43716844d", "01a17121-6e85-732d-ab3a-cf86aed8cdc6")
 
@@ -69,6 +75,26 @@ def _cost(data: dict[str, Any], arm: str, usd: float) -> dict[str, Any]:
     return data
 
 
+def _voice(data: dict[str, Any], arm: str | None = None, *, past: bool = False) -> dict[str, Any]:
+    """r5 with an unasked ``voice`` aspect read like the asked one, against the same declared margin; ``arm``'s reading
+    there moved so its interval, its width kept, straddles the margin's line (``-margin``), or with ``past`` sits wholly
+    beyond it."""
+    voice = json.loads(json.dumps(data["aspects"][0]))
+    voice.update(id="voice", name="voice", asked=False)
+    for reading in voice["readings"]:
+        if reading["arm"] == arm:
+            low, high = reading["within_interval"]
+            width, line = high - low, -reading["margin"]
+            top = line - width / 4 if past else line + width / 2
+            reading["within_interval"] = [top - width, top]
+    data["aspects"].append(voice)
+    return data
+
+
+def _unsettled_ids(report_input: ReportInput) -> list[tuple[str, str]]:
+    return [(caveat.id, caveat.reach) for caveat in report_caveats(report_input) if caveat.kind == "unsettled"]
+
+
 class TestCaveatIds:
     def test_every_kairo_caveat_has_its_id_and_scope(self):
         assert [(caveat.id, caveat.reach) for caveat in report_caveats(_input())] == [
@@ -97,6 +123,64 @@ class TestCaveatIds:
 
     def test_an_id_is_stable_across_reads(self):
         assert report_caveats(_input()) == report_caveats(_input())
+
+
+class TestUnsettledPastTheMargin:
+    def test_an_unasked_aspect_left_unsettled_on_the_pick_is_report_wide_and_open(self):
+        """The issue's state: the asked aspect leaves qwen3.8-flash (the cheapest) dominant, and its unasked voice
+        reading allows a loss past the declared margin and a change short of it."""
+        report_input = _input(data=_voice(_cost(_data(), "qwen3.8-flash", 0.0015), "qwen3.8-flash"))
+        assert (allowed_modes(report_input), dominant_options(report_input)) == ({"decide"}, ["qwen3.8-flash"])
+        assert unsettled_arms(report_input) == {"unsettled:voice": ("qwen3.8-flash",)}
+        assert _unsettled_ids(report_input) == [("unsettled:voice", "report")]
+        materiality = caveat_materiality(report_input)["unsettled:voice"]
+        assert (materiality.immaterial, materiality.checked) == (False, None)
+
+    def test_a_reading_within_its_margin_raises_none(self):
+        report_input = _input(data=_voice(_cost(_data(), "qwen3.8-flash", 0.0015)))
+        voice = report_input.aspects[-1]
+        assert all(flip_margin(reading) < float(reading.margin or 0) for reading in voice.readings)
+        assert unsettled_arms(report_input) == {} and _unsettled_ids(report_input) == []
+
+    def test_a_reading_wholly_past_its_line_is_settled_and_raises_none(self):
+        report_input = _input(data=_voice(_cost(_data(), "qwen3.8-flash", 0.0015), "qwen3.8-flash", past=True))
+        reading = report_input.aspects[-1].readings[0]
+        assert reading.within_interval is not None and reading.margin is not None
+        assert float(reading.within_interval[1]) < -float(reading.margin)
+        assert _unsettled_ids(report_input) == []
+
+    def test_on_a_candidate_code_does_not_call_it_is_scoped(self):
+        """r5 keeps September, so qwen3.8-flash's unsettled voice reading qualifies a claim, not the call."""
+        report_input = _input(data=_voice(_data(), "qwen3.8-flash"))
+        assert dominant_options(report_input) == ["September"]
+        assert _unsettled_ids(report_input) == [("unsettled:voice", "scoped")]
+
+    def test_on_a_candidate_a_guardrail_removes_it_raises_none(self):
+        data = _voice(_data(), "qwen3.8-flash")
+        data["guardrails"] = [{"arm": "qwen3.8-flash", "decision": "breached"}]
+        assert _unsettled_ids(_input(data=data)) == []
+
+    def test_an_asked_aspect_left_unsettled_on_a_pick_shown_better_elsewhere_is_report_wide(self):
+        """A corrected p95 contrast shows qwen3.8-flash better on an asked latency aspect, so code's call takes it
+        whatever its asked pass-rate reading says, and that reading straddles the margin's line."""
+        data = _cost(_p95_improved(_data()), "qwen3.8-flash", 0.0015)
+        reading = data["aspects"][0]["readings"][0]
+        low, high = reading["within_interval"]
+        reading["within_interval"] = [-reading["margin"] - (high - low) / 2, -reading["margin"] + (high - low) / 2]
+        report_input = _input(data=data)
+        assert dominant_options(report_input) == ["qwen3.8-flash"]
+        assert _unsettled_ids(report_input) == [(f"unsettled:{ASPECT}", "report")]
+
+    def test_a_reading_shown_better_at_a_margin_of_zero_raises_none(self):
+        """At a declared margin of zero a reading above zero is outside it by the decision's rule, yet allows no loss."""
+        data = _voice(_data())
+        voice = data["aspects"][-1]
+        voice["margin"] = 0.0
+        for reading in voice["readings"]:
+            reading["margin"] = None
+            low, high = reading["within_interval"]
+            reading["within_interval"] = [high - low, 2 * (high - low)]
+        assert _unsettled_ids(_input(data=data)) == []
 
 
 class TestFlipMargin:
