@@ -9,6 +9,9 @@ kit's real Kairo input (``fixtures/report_plans/r5/input.json``):
   untested, with its reason), contrast family, floor, bar, measured figure and caveat reaches the input, counted against the bundle;
 - figures are copied, never recomputed: a reading's change and interval, a contrast's delta, a pair's change;
 - a shown trial's excerpt reads as the reply did, its JSON escapes decoded;
+- a wider example pool shows up to ``per_slice`` failed trials per aspect, arm and stratum, every slice's first before
+  any slice's second and a slice's other cases before a repeat, its first round the planner's examples; and a
+  failure excerpt is centred on the passage the judge's reason quotes, else is the text's end, each cut end marked;
 - the planner's view stays within its budget, trims in the design's order and says what it cut, never cuts the arms,
   readings, floors, caveats or the asked aspects' and judged dimensions' contrasts, and refuses when what it may not
   cut is over the budget alone.
@@ -23,6 +26,7 @@ from typing import Any
 import jsonschema
 import pytest
 
+from packages.evals.tests.fixtures.report_plans.dataset import kairo_bundle
 from packages.evals.tests.report_kit_support import KIT
 from packages.evals.tests.report_shapes_support import SHAPES, Shape
 from threetears.evals.analysis.bundle.schema import LateCriterion as BundleLateCriterion
@@ -32,7 +36,7 @@ from threetears.evals.analysis.campaign_bundle import (
     build_campaign_bundle,
 )
 from threetears.evals.analysis.report_input import Example, ReportInput, Stat, Stratum
-from threetears.evals.analysis.report_input_build import planner_view, report_input
+from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS, planner_view, report_input
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.kernel.errors import RefusedInput
 
@@ -245,6 +249,100 @@ def test_an_examples_excerpt_reads_as_the_reply_did(bundles: dict[str, CampaignB
     changed = bundle.model_copy(update={"aspects": [first.model_copy(update={"trials": trials}), *bundle.aspects[1:]]})
     shown = next(e for e in report_input(changed).examples if e.case == failed.case_label and e.aspect == first.aspect)
     assert shown.excerpt == 'queued: {"content": "dead boiler — landlord\'s job\nkeep "replies""}'
+
+
+def _failed_by_slice(bundle: CampaignBundle, primary: str | None) -> dict[tuple[str, str, str | None], list[str]]:
+    """Each slice's failed trials' cases, by (aspect, arm, stratum): failed on the primary judged dimension."""
+    held: dict[tuple[str, str, str | None], list[str]] = {}
+    arms = {key: arm.label for arm in bundle.arms for key in bundle.arm_keys(arm)}
+    for aspect in bundle.aspects:
+        for trial in aspect.trials:
+            if primary is not None and trial.judged.get(primary) == 0:
+                held.setdefault((aspect.aspect, arms.get(trial.arm, trial.arm), trial.stratum), []).append(
+                    trial.case_label
+                )
+    return held
+
+
+def _turns(examples: list[Example]) -> list[int]:
+    """Each example's turn in its slice: how many examples before it share its aspect, arm and stratum."""
+    seen: dict[tuple[str | None, str | None, str | None], int] = {}
+    turns: list[int] = []
+    for example in examples:
+        key = (example.aspect, example.arm, example.stratum)
+        turns.append(seen.get(key, 0))
+        seen[key] = turns[-1] + 1
+    return turns
+
+
+def test_a_wider_pool_shows_up_to_per_slice_failures_per_slice_each_slices_first_before_any_second() -> None:
+    bundle = kairo_bundle()
+    planner = report_input(bundle, examples=1000)
+    wide = report_input(bundle, examples=1000, per_slice=3)
+    failed = _failed_by_slice(bundle, wide.primary_judged)
+    assert any(len(cases) > 1 for cases in failed.values()), "the control: a slice holds more than one failure"
+    shown: dict[tuple[str | None, str | None, str | None], list[str | None]] = {}
+    for example in wide.examples:
+        shown.setdefault((example.aspect, example.arm, example.stratum), []).append(example.case)
+    assert {key: len(cases) for key, cases in shown.items()} == {
+        key: min(len(cases), 3) for key, cases in failed.items()
+    }
+    for key, cases in shown.items():
+        distinct = len(set(failed[(str(key[0]), str(key[1]), key[2])]))
+        assert len(set(cases)) == min(len(cases), distinct), "a slice's other cases come before a repeat"
+    turns = _turns(wide.examples)
+    assert turns == sorted(turns), "every slice's first before any slice's second"
+    firsts = [example for example, turn in zip(wide.examples, turns, strict=True) if turn == 0]
+    assert [(e.trial, e.case, e.arm, e.stratum) for e in firsts] == [
+        (e.trial, e.case, e.arm, e.stratum) for e in planner.examples
+    ], "the first round is the planner's pool"
+    capped = report_input(bundle, examples=len(firsts) + 2, per_slice=3)
+    assert len(capped.examples) == len(firsts) + 2 and _turns(capped.examples)[-1] == 1
+
+
+def _with_excerpt(bundle: CampaignBundle, text: str, reason: str) -> tuple[CampaignBundle, str]:
+    """The bundle with one failed trial's excerpt and judge's reason replaced, and that trial's case."""
+    first = bundle.aspects[0]
+    failed = next(trial for trial in first.trials if trial.judged.get("answer.correct") == 0)
+    judge = [judged.model_copy(update={"reason": reason}) for judged in failed.judge]
+    trials = [
+        trial.model_copy(update={"excerpt": text, "judge": judge}) if trial.trial_id == failed.trial_id else trial
+        for trial in first.trials
+    ]
+    aspects = [first.model_copy(update={"trials": trials}), *bundle.aspects[1:]]
+    return bundle.model_copy(update={"aspects": aspects}), failed.case_label
+
+
+def _shown(bundle: CampaignBundle, case: str) -> str:
+    built = report_input(bundle, examples=1000, per_slice=3, excerpt="failure")
+    excerpt = next(e.excerpt for e in built.examples if e.case == case and e.aspect == bundle.aspects[0].aspect)
+    assert excerpt is not None
+    return excerpt
+
+
+def test_a_failure_excerpt_is_centred_on_the_passage_the_reason_quotes(bundles: dict[str, CampaignBundle]) -> None:
+    passage = "I'd rather tell you that than make up a synth name"
+    before, after = "tool output line\n" * 80, "queued the next record\n" * 80
+    reason = f"It fails: \u201c{passage.replace(chr(39), chr(0x2019)).upper()},\u201d which breaks the rule."
+    changed, case = _with_excerpt(bundles["s3"], before + passage + after, json.loads(f'"{reason}"'))
+    excerpt = _shown(changed, case)
+    assert len(excerpt) <= EXAMPLE_EXCERPT_CHARS and passage in excerpt
+    assert excerpt.startswith("…") and excerpt.endswith("…")
+    left, right = excerpt[1:-1].split(passage)
+    assert abs(len(left) - len(right)) <= 1
+    head = report_input(changed, examples=1000).examples
+    assert all(passage not in (e.excerpt or "") for e in head), "the control: the start of the text misses it"
+
+
+def test_a_failure_excerpt_with_no_quote_found_is_the_texts_end_and_a_short_one_is_whole(
+    bundles: dict[str, CampaignBundle],
+) -> None:
+    text = "".join(f"line {index} of the transcript\n" for index in range(200))
+    changed, case = _with_excerpt(bundles["s3"], text, "It fails: \u201cthis passage appears nowhere at all\u201d.")
+    excerpt = _shown(changed, case)
+    assert len(excerpt) == EXAMPLE_EXCERPT_CHARS and excerpt.startswith("…") and text.endswith(excerpt[1:])
+    short, case = _with_excerpt(bundles["s3"], "a short reply", "It fails: \u201ca short reply\u201d.")
+    assert _shown(short, case) == "a short reply"
 
 
 # --- the planner's view -------------------------------------------------------------------------------------------

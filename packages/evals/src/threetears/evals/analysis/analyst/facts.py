@@ -177,10 +177,11 @@ _SLICE_WORDS: dict[MeasureBy, str] = {"arm": "arms", "stratum": "strata", "task"
 #: The statistic that reads an arm against the control within a slice, which an arm's overall figure has no key for.
 _VS_CONTROL = "vs_control"
 
-#: What the examples a snapshot holds are: the frozen pool an analyst pages.
+#: What the examples a snapshot holds are: the frozen pool an analyst pages (three per slice: ``snapshot.ANALYST_PER_SLICE``).
 _POOL = (
-    "the failed trials frozen with the snapshot: at most one per aspect, arm and stratum, each reply's end and the "
-    "judge's or the check's reason"
+    "the failed trials frozen with the snapshot: up to three per aspect, arm and stratum, every slice's first before "
+    "any slice's second and its other cases before a repeat; each excerpt cut around the failure (centred on the "
+    "passage the judge's reason quotes, else the reply's end), with the judge's or the check's reason"
 )
 
 
@@ -1214,8 +1215,10 @@ class ExampleRow(_Fact):
     arm: CitedFigure | None = Field(description="The arm that ran it.")
     repeat: str | None = Field(description="Which repeat of the case it was, as a label.")
     outcome: str | None = Field(description="The failure class.")
-    reason: str | None = Field(description="Why it failed: the judge's reason or a note.")
-    excerpt: str | None = Field(description="The end of the reply, or what the arm produced.")
+    reason: str | None = Field(description="Why it failed: the judge's reason or a note, whole.")
+    excerpt: str | None = Field(
+        description="What the judge read, cut around the failure where the snapshot was frozen so; each cut end marked."
+    )
     input: str | None = Field(description="The input the case gave.")
     expected: str | None = Field(description="What the case expected.")
     result_id: str | None = Field(description="The stored result the trial records, where the bundle named it.")
@@ -1247,7 +1250,7 @@ def _example_row(report_input: ReportInput, example: Example, results: Mapping[s
         arm=_arm_figure(report_input, example.arm),
         repeat=str(example.repeat) if example.repeat is not None else None,
         outcome=example.outcome,
-        reason=_clipped(example.reason),
+        reason=example.reason,
         excerpt=_clipped(example.excerpt),
         input=_clipped(example.input),
         expected=_clipped(example.expected),

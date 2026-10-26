@@ -770,6 +770,26 @@ def test_kairos_examples_name_their_stored_results_and_filter_by_arm_stratum_and
     assert by_outcome.total == sum(e.outcome == example.outcome for e in held.examples)
 
 
+def test_kairos_pool_holds_more_than_one_failure_of_a_slice_and_a_filter_pages_them() -> None:
+    snapshot, held = _held(KAIRO)
+    slices: dict[tuple[str | None, str | None], list[str | None]] = {}
+    for example in held.examples:
+        slices.setdefault((example.arm, example.stratum), []).append(example.trial)
+    (arm, stratum), trials = max(slices.items(), key=lambda item: len(item[1]))
+    assert len(trials) > 1, "the pool holds more than one failure of some arm and stratum"
+    assert arm is not None and stratum is not None
+    pages: list[str | None] = []
+    offset: int | None = 0
+    while offset is not None:
+        page = examples_list(
+            held, snapshot.example_result_ids, arm_filter=arm, stratum_filter=stratum, limit=1, offset=offset
+        )
+        pages += [row.trial for row in page.examples]
+        offset = page.next_offset
+    assert pages == [e.trial for e in held.examples if e.arm in (None, arm) and e.stratum == stratum]
+    assert set(trials) <= set(pages)
+
+
 # =============================================================================
 # caveats_list
 # =============================================================================

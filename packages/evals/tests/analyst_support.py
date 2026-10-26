@@ -23,9 +23,8 @@ from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.actions import Action, analyst_actions
 from threetears.evals.analysis.analyst.blocks import block_catalog, block_render
 from threetears.evals.analysis.analyst.price import PriceTradeoff, price_tradeoff
-from threetears.evals.analysis.analyst.snapshot import ANALYST_EXAMPLES, report_snapshot
+from threetears.evals.analysis.analyst.snapshot import analyst_input, report_snapshot
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel import EvalReportSnapshot
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.report_plan import ChartQuery
@@ -171,7 +170,7 @@ def fixture_inputs() -> Mapping[str, ReportInput]:
 def _kairo_snapshot(scope_id: str) -> EvalReportSnapshot:
     bundle = kairo_bundle()
     return report_snapshot(
-        report_input(bundle, examples=ANALYST_EXAMPLES),
+        analyst_input(bundle),
         scope_id=scope_id,
         campaign_id=bundle.campaign_id,
         source="campaign",
@@ -284,7 +283,7 @@ def budget_inputs() -> Mapping[str, ReportInput]:
         bundle = build_campaign_bundle(
             shape.campaign, list(shape.bundles.values()), arms=shape.arms, readings=shape.readings
         )
-        built[name] = report_input(bundle, examples=ANALYST_EXAMPLES)
+        built[name] = analyst_input(bundle)
     built[WIDE] = widened(fixture_inputs()[_GATES_IN_EACH_TASK], arms=1, tasks=1)
     built[f"{WIDE} choice"] = widened(fixture_inputs()["r1"], arms=3, tasks=1)
     built[f"{WIDE} {KAIRO}"] = widened(ReportInput.model_validate(_kairo_snapshot("s").report_input), arms=3, tasks=0)

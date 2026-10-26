@@ -10,6 +10,12 @@ tier and per-arm figure is the pipeline's own. Two things here are orderings, no
 shown as examples, and in what order (where the candidates lose most first), and which strata come first (most cases
 first).
 
+**Examples.** The planner's input shows one failed trial per aspect, arm and stratum (and cause, with no judged
+dimension), its excerpt the start of what the judge read. A wider pool (``per_slice``) shows up to that many per
+slice, every slice's first before any slice's second, a slice's other cases before another repeat of one it shows; and
+``excerpt="failure"`` cuts each excerpt around the failure rather than from the start: centred on the longest passage
+the judge's reason quotes that the text holds, else the text's end, where the reply ends.
+
 **Every arm, reading, contrast and caveat the bundle holds reaches the input.** An arm is named by its campaign label
 everywhere, and carries the short name it declares (``Arm.short_name``), which ``{arm:<id>}`` prints. A choice's pair readings sit on their aspect, a measurement's readings on its measures, and a contrast
 the pipeline could not test is carried with its reason rather than dropped. On more than one aspect the by-arm maps
@@ -30,7 +36,7 @@ import json
 import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 
 from threetears.evals.analysis.arms import writer_arms
 from threetears.evals.analysis.bundle.caps import capped_text
@@ -85,6 +91,25 @@ EXAMPLES = 12
 #: How much of a shown trial's excerpt the input keeps: the kit's cut.
 EXAMPLE_EXCERPT_CHARS = 420
 
+#: Where a shown trial's excerpt is cut from what the judge read: its start, or around the failure (this module's
+#: Examples).
+ExcerptAt = Literal["start", "failure"]
+
+#: A passage a judge's reason quotes: between straight or curly double quotes.
+_QUOTED = re.compile(r"[\"“]([^\"“”]+)[\"”]")
+
+#: The shortest quoted passage an excerpt is centred on: a shorter one ("it", "the box") is found anywhere.
+_QUOTE_FLOOR = 8
+
+#: The quotation marks and apostrophes a reason may type one way and a reply another, read as one.
+_FOLDED = str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"'})
+
+#: What a quoted passage's ends are trimmed of before it is found: the punctuation a quote carries off its sentence.
+_QUOTE_TRIM = " \t\n,.;:!?—–-'"
+
+#: What marks an excerpt's cut end.
+_CUT = "…"
+
 #: What a measure's definition is cut to, as the writer's view cuts it.
 MEANING_CHARS = 200
 
@@ -111,7 +136,14 @@ _ESCAPE = re.compile(r'\\u[dD][89abAB][0-9a-fA-F]{2}\\u[dD][c-fC-F][0-9a-fA-F]{2
 # ---------------------------------------------------------------------- the report input
 
 
-def report_input(bundle: CampaignBundle, *, provenance: str | None = None, examples: int = EXAMPLES) -> ReportInput:
+def report_input(
+    bundle: CampaignBundle,
+    *,
+    provenance: str | None = None,
+    examples: int = EXAMPLES,
+    per_slice: int = 1,
+    excerpt: ExcerptAt = "start",
+) -> ReportInput:
     """The report input for one campaign, read off its bundle.
 
     :param bundle: The campaign's bundle.
@@ -120,10 +152,15 @@ def report_input(bundle: CampaignBundle, *, provenance: str | None = None, examp
     :ptype provenance: str | None
     :param examples: The most failed trials to show.
     :ptype examples: int
+    :param per_slice: The most failed trials to show per aspect, arm and stratum (this module's Examples).
+    :ptype per_slice: int
+    :param excerpt: Where each shown trial's excerpt is cut from: the start of what the judge read, or around the
+        failure.
+    :ptype excerpt: ExcerptAt
     :return: The input.
     :rtype: ReportInput
     """
-    return _Builder(bundle).build(provenance=provenance, examples=examples)
+    return _Builder(bundle).build(provenance=provenance, examples=examples, per_slice=per_slice, excerpt=excerpt)
 
 
 class _Builder:
@@ -148,7 +185,7 @@ class _Builder:
             self.labels[variant_key] = self.bundle.label_of(variant_key)
         return self.labels[variant_key]
 
-    def build(self, *, provenance: str | None, examples: int) -> ReportInput:
+    def build(self, *, provenance: str | None, examples: int, per_slice: int, excerpt: ExcerptAt) -> ReportInput:
         """The whole input."""
         bundle = self.bundle
         judged = self.judged()
@@ -171,7 +208,7 @@ class _Builder:
                 "contrasts": self.contrasts(),
                 "contrast_families": self.families(),
                 "strata": strata,
-                "examples": self.examples(primary, strata, examples),
+                "examples": self.examples(primary, strata, examples, per_slice=per_slice, excerpt=excerpt),
                 "caveats": self.caveats(),
                 "prior_insights": [
                     PriorInsight(statement=insight.statement, confidence=insight.confidence)
@@ -660,10 +697,13 @@ class _Builder:
             )
         return sorted(strata, key=lambda stratum: -(stratum.n_cases or 0))
 
-    def examples(self, primary: str | None, strata: Sequence[Stratum], limit: int) -> list[Example]:
-        """Failed trials to show: on the primary judged dimension, one per arm and stratum, candidates first and the
-        strata where the candidates lose most on it first; with no judged dimension, failed trials, one per arm,
-        stratum and cause, candidates first."""
+    def examples(
+        self, primary: str | None, strata: Sequence[Stratum], limit: int, *, per_slice: int = 1, excerpt: ExcerptAt
+    ) -> list[Example]:
+        """Failed trials to show: on the primary judged dimension, up to ``per_slice`` per arm and stratum, candidates
+        first and the strata where the candidates lose most on it first; with no judged dimension, failed trials, up
+        to ``per_slice`` per arm, stratum and cause, candidates first. Every slice's first comes before any slice's
+        second, and a slice's other cases before another repeat of a case it shows."""
         control = self.bundle.control()
         control_label = control.label if control is not None else None
         loss = _loss(strata, primary, control_label) if primary is not None else {}
@@ -682,30 +722,31 @@ class _Builder:
                 trial.stratum or "",
             )
 
-        shown: list[Example] = []
-        seen: set[tuple[str, str, str | None, str | None]] = set()
+        by_slice: dict[tuple[str, str, str | None, str | None], list[tuple[AnalysisContextBundle, TrialRow]]] = {}
         for aspect, trial in sorted(trials, key=order):
-            arm = self.arm(trial.arm)
-            key = (aspect.aspect, arm, trial.stratum, None if primary is not None else trial.cause)
-            if not failed(trial) or key in seen:
-                continue
-            seen.add(key)
-            shown.append(
-                Example(
-                    trial=self.trial_ids.get((aspect.aspect, trial.trial_id), trial.trial_id),
-                    case=trial.case_label,
-                    stratum=trial.stratum,
-                    aspect=aspect.aspect,
-                    arm=arm,
-                    repeat=trial.repeat,
-                    reason=_reason(trial, primary),
-                    excerpt=_unescaped(trial.excerpt)[:EXAMPLE_EXCERPT_CHARS] or None,
-                    outcome=trial.cause,
-                )
-            )
-            if len(shown) >= limit:
-                break
-        return shown
+            if failed(trial):
+                key = (aspect.aspect, self.arm(trial.arm), trial.stratum, None if primary is not None else trial.cause)
+                by_slice.setdefault(key, []).append((aspect, trial))
+        picks = [_distinct_cases_first(held)[:per_slice] for held in by_slice.values()]
+        rounds = (pick[turn] for turn in range(per_slice) for pick in picks if turn < len(pick))
+        return [self.example(aspect, trial, primary, excerpt) for aspect, trial in rounds][:limit]
+
+    def example(self, aspect: AnalysisContextBundle, trial: TrialRow, primary: str | None, at: ExcerptAt) -> Example:
+        """One failed trial as an example, its excerpt cut where ``at`` says."""
+        reason = _reason(trial, primary)
+        text = _unescaped(trial.excerpt)
+        cut = text[:EXAMPLE_EXCERPT_CHARS] if at == "start" else _failure_excerpt(text, reason, EXAMPLE_EXCERPT_CHARS)
+        return Example(
+            trial=self.trial_ids.get((aspect.aspect, trial.trial_id), trial.trial_id),
+            case=trial.case_label,
+            stratum=trial.stratum,
+            aspect=aspect.aspect,
+            arm=self.arm(trial.arm),
+            repeat=trial.repeat,
+            reason=reason,
+            excerpt=cut or None,
+            outcome=trial.cause,
+        )
 
     # ------------------------------------------------------------------ caveats
 
@@ -793,6 +834,53 @@ def _unescaped(text: str) -> str:
         return match.group(0) if any(0xD800 <= ord(char) <= 0xDFFF for char in decoded) else decoded
 
     return _ESCAPE.sub(one, text)
+
+
+def _distinct_cases_first[T: tuple[AnalysisContextBundle, TrialRow]](held: Sequence[T]) -> list[T]:
+    """One slice's failed trials, in order, each case's first before any case's second."""
+    seen: set[str] = set()
+    first: list[T] = []
+    again: list[T] = []
+    for item in held:
+        case = item[1].case_id
+        (again if case in seen else first).append(item)
+        seen.add(case)
+    return first + again
+
+
+def _quoted_span(text: str, reason: str | None) -> tuple[int, int] | None:
+    """Where in ``text`` the longest passage ``reason`` quotes sits, read with quotation marks, apostrophes and case
+    folded; None where it quotes none the text holds."""
+    if not reason:
+        return None
+    folded = text.translate(_FOLDED)
+    lowered = folded.lower()
+    haystack = lowered if len(lowered) == len(text) else folded
+    passages = (match.group(1).translate(_FOLDED).strip(_QUOTE_TRIM) for match in _QUOTED.finditer(reason))
+    for passage in sorted(passages, key=len, reverse=True):
+        if len(passage) < _QUOTE_FLOOR:
+            break
+        needle = passage.lower() if haystack is lowered else passage
+        at = haystack.find(needle)
+        if at >= 0:
+            return at, at + len(needle)
+    return None
+
+
+def _failure_excerpt(text: str, reason: str | None, chars: int) -> str:
+    """At most ``chars`` of what the judge read, around the failure: centred on the longest passage the reason quotes
+    that the text holds, else the text's end, where the reply ends; each cut end marked."""
+    if len(text) <= chars:
+        return text
+    width = chars - 2 * len(_CUT)
+    span = _quoted_span(text, reason)
+    if span is None:
+        start = len(text) - (chars - len(_CUT))
+        return _CUT + text[start:]
+    low, high = span
+    start = low if high - low > width else max(0, min((low + high - width) // 2, len(text) - width))
+    end = min(len(text), start + width)
+    return (_CUT if start > 0 else "") + text[start:end] + (_CUT if end < len(text) else "")
 
 
 def _reason(trial: TrialRow, primary: str | None) -> str | None:

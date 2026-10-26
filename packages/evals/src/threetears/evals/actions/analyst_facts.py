@@ -313,9 +313,14 @@ def analyst_facts_actions() -> tuple[Action, ...]:
             paged=True,
             example=snapshot,
             detail=(
-                "The pool holds at most one failed trial per aspect, arm and stratum. A report names an example by its "
-                "trial id. An arm or aspect filter keeps an example naming none. Long texts are cut to an excerpt's "
-                f"length, the cut marked. Without a limit a page holds as many as fit one result, up to {EXAMPLES_LIMIT}."
+                "The pool holds up to three failed trials per aspect, arm and stratum (every slice's first before any "
+                "slice's second, its other cases before a repeat), so arm_filter with stratum_filter shows whether a "
+                "failure is typical of its slice. Each excerpt is cut around the failure: centred on the passage the "
+                "judge's reason quotes, else the reply's end, each cut end marked. A report names an example by its "
+                "trial id. The judge's reason is whole; a long input or expected answer is cut to an excerpt's length, "
+                "the cut marked. An arm or aspect filter keeps an example naming none. Without a limit a page holds "
+                "as many "
+                f"as fit one result, up to {EXAMPLES_LIMIT}."
             ),
         ),
         Action(

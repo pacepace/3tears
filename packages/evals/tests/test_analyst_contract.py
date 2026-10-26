@@ -61,13 +61,12 @@ from threetears.evals.analysis.analyst.analyses import dominance, sensitivity
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
 from threetears.evals.analysis.analyst.facts import campaign_overview
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.analysis.analyst.snapshot import ANALYST_EXAMPLES, frozen_input, report_snapshot
+from threetears.evals.analysis.analyst.snapshot import analyst_input, frozen_input, report_snapshot
 from threetears.evals.analysis.planned_analysis import report_input_digest, report_input_document_digest
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, reader_names, render, resolve
 from threetears.evals.analysis.report.figures import PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel import EvalReportSnapshot, report_snapshot_id
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.ops import analysis_generate
@@ -155,7 +154,7 @@ async def test_a_campaign_freezes_to_the_report_input_its_evidence_builds_and_ag
     snapshot = _stored(fixture, first.structured["snapshot_id"])
 
     bundle = off_loop(assemble_campaign_bundle, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE)
-    built = report_input(bundle, examples=ANALYST_EXAMPLES)
+    built = analyst_input(bundle)
     assert frozen_input(snapshot) == built
     assert snapshot.id == report_snapshot_id(fixture.campaign.id, report_input_digest(built))
     assert (snapshot.campaign_id, snapshot.analysis_id, snapshot.created_by) == (
@@ -187,7 +186,7 @@ async def test_a_stored_analysis_freezes_to_the_report_input_its_frozen_bundle_b
     snapshot = _stored(fixture, outcome.structured["snapshot_id"])
 
     bundle = analysis_campaign_bundle(analysis)
-    built = report_input(bundle, examples=ANALYST_EXAMPLES)
+    built = analyst_input(bundle)
     assert frozen_input(snapshot) == built
     assert snapshot.id == report_snapshot_id(analysis.campaign_id, report_input_digest(built))
     assert snapshot.bundle_assembled_at == analysis.generation.bundle_assembled_at
@@ -215,7 +214,7 @@ async def test_a_freeze_reusing_a_snapshot_frozen_another_way_reports_the_stored
     fixture = off_loop(ops_fixture)
     bundle = off_loop(assemble_campaign_bundle, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE)
     earlier = report_snapshot(
-        report_input(bundle, examples=ANALYST_EXAMPLES),
+        analyst_input(bundle),
         scope_id=TOYHOST_SCOPE,
         campaign_id=fixture.campaign.id,
         source="analysis",

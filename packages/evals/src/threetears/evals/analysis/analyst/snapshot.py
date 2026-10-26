@@ -7,10 +7,12 @@ input is read: a snapshot whose input moved, or no longer reads, is refused with
 read as something else.
 
 **The analyst's example pool is wider than the planner's.** A planner was sent at most
-:data:`~threetears.evals.analysis.report_input_build.EXAMPLES` failed trials; an analyst pages through them
-(``examples_list``), so a snapshot's input is built with :data:`ANALYST_EXAMPLES`. A report rendered against a
-snapshot is rendered against the snapshot's own input, never against a fresh ``report_input(bundle)``, whose example
-pool differs.
+:data:`~threetears.evals.analysis.report_input_build.EXAMPLES` failed trials, one per aspect, arm and stratum, each
+excerpt the start of what the judge read; an analyst pages through them (``examples_list``), so a snapshot's input is
+built by :func:`analyst_input`: up to :data:`ANALYST_PER_SLICE` failed trials per aspect, arm and stratum, at most
+:data:`ANALYST_EXAMPLES` in all, each excerpt cut around the failure the judge's reason quotes. More than one per slice
+shows whether a failure is typical of it or a one-off. A report rendered against a snapshot is rendered against the
+snapshot's own input, never against a fresh ``report_input(bundle)``, whose example pool differs.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from pydantic import ValidationError
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.planned_analysis import report_input_document_digest
 from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_input_build import report_input as built_input
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.report_snapshot import (
     FREEZE_AGAIN_REMEDY,
@@ -30,9 +33,24 @@ from threetears.evals.kernel.report_snapshot import (
     report_snapshot_id,
 )
 
-#: The most failed trials a snapshot's report input holds: one per aspect, arm and stratum, as the planner's, from a
-#: pool four times its size, which ``examples_list`` pages.
-ANALYST_EXAMPLES = 48
+#: The most failed trials a snapshot's report input holds, eight times the planner's, which ``examples_list`` pages.
+ANALYST_EXAMPLES = 96
+
+#: The most failed trials a snapshot's report input holds per aspect, arm and stratum: enough to see whether a failure
+#: is typical of its slice.
+ANALYST_PER_SLICE = 3
+
+
+def analyst_input(bundle: CampaignBundle) -> ReportInput:
+    """The report input a snapshot freezes for one campaign bundle: the planner's, with the analyst's example pool.
+
+    :param bundle: The campaign's bundle.
+    :ptype bundle: CampaignBundle
+    :return: The input, up to :data:`ANALYST_PER_SLICE` failed trials per aspect, arm and stratum and
+        :data:`ANALYST_EXAMPLES` in all, each excerpt cut around the failure.
+    :rtype: ReportInput
+    """
+    return built_input(bundle, examples=ANALYST_EXAMPLES, per_slice=ANALYST_PER_SLICE, excerpt="failure")
 
 
 def report_snapshot(
@@ -139,4 +157,4 @@ def _first_place(unread: ValidationError) -> str:
     return ".".join(str(part) for part in first["loc"]) or "(the input)"
 
 
-__all__ = ["ANALYST_EXAMPLES", "frozen_input", "report_snapshot"]
+__all__ = ["ANALYST_EXAMPLES", "ANALYST_PER_SLICE", "analyst_input", "frozen_input", "report_snapshot"]

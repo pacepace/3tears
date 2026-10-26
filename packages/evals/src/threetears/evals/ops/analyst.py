@@ -20,11 +20,10 @@ from typing import Literal
 from pydantic import Field, ValidationError
 
 from threetears.evals.analysis.analyst.cited import CitedFigure
-from threetears.evals.analysis.analyst.snapshot import ANALYST_EXAMPLES, frozen_input, report_snapshot
+from threetears.evals.analysis.analyst.snapshot import analyst_input, frozen_input, report_snapshot
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.service import assemble_campaign_bundle, get_analysis, require_evidence
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, RefusedInput, ValidationFailedError
 from threetears.evals.kernel.offload import run_blocking
@@ -153,7 +152,7 @@ def _frozen(
 ) -> EvalReportSnapshot:
     """The snapshot of one bundle's report input, built with the analyst's example pool. Blocking."""
     return report_snapshot(
-        report_input(bundle, examples=ANALYST_EXAMPLES),
+        analyst_input(bundle),
         scope_id=scope_id,
         campaign_id=bundle.campaign_id,
         source=source,
@@ -232,7 +231,7 @@ async def report_snapshot_freeze(
 
     From a campaign, its evidence is assembled as it stands, the instant stamped before the assembly reads the insight
     ledger; from an analysis, its frozen bundle is put back together. Either way the report input is built with the
-    analyst's example pool (:data:`~threetears.evals.analysis.analyst.snapshot.ANALYST_EXAMPLES`) and stored only
+    analyst's example pool (:func:`~threetears.evals.analysis.analyst.snapshot.analyst_input`) and stored only
     when its id is not: the same evidence frozen twice names one snapshot (``reused``). A snapshot stored under the
     id that a read would refuse, because it no longer reads or no longer matches its digest, is written again in its
     place (``replaced``), so freezing again is the remedy every such refusal names.
