@@ -1,0 +1,21 @@
+{
+  "schema": "plan-score-history/1",
+  "records": {
+    "r1/runs/gemini-3.8-flash-20261025-a94d2be04a65.scores.json": "040152dd92be42e4814650fbd6be246bba94d5509c381d6dd0eb2f042a7015a0",
+    "r1/runs/gemini-3.8-flash-20261025-bb0dfb481054.scores.json": "bf0ec8227e3555180437d98b6a3e95df6fb9f033f46c854d8c797e2487a2b926",
+    "r1/runs/gemini-3.8-flash-20261025-fbe870c655ce.scores.json": "0f72fbe689d9ac9df9c5593d8216a13488b8f680461d8db095130a0156802e69",
+    "r2/runs/gemini-3.8-flash-20261025-a94d2be04a65.scores.json": "34851fb795a15b381a91c5f4d8ff53e5e6f1c44ba098f056f676e273f64b86b6",
+    "r2/runs/gemini-3.8-flash-20261025-bb0dfb481054.scores.json": "c116d5f5bf59537fe360d8527ab7e17a4a21b7b3ed2b372008dd92bae290eed5",
+    "r2/runs/gemini-3.8-flash-20261025-fbe870c655ce.scores.json": "9edf6a65c75a385e99c72b7378ce09d1e300565cef59407cab5ae8a6ee8c93af",
+    "r3/runs/gemini-3.8-flash-20261025-a94d2be04a65.scores.json": "20ab726f09b4beb84655f711de93d57f42e802a589f0dd43e1e34bbb594c8ed5",
+    "r3/runs/gemini-3.8-flash-20261025-bb0dfb481054.scores.json": "75bbab40f478608ca89d0b0742361a9bc889a66252444bb27be2908e55092c3f",
+    "r3/runs/gemini-3.8-flash-20261025-fbe870c655ce.scores.json": "de40eebc06cd9b9d4f4b8269c22d26ebac92eb8800dfd62b1cb43855541908ff",
+    "r4/runs/gemini-3.8-flash-20261025-a94d2be04a65.scores.json": "4005dc0a2b37b12a9e4d27394efd9c3432d80f3d07560fe3adbe12dfcf577c18",
+    "r4/runs/gemini-3.8-flash-20261025-bb0dfb481054.scores.json": "ea0911e9b96c0b1604b51460fc0ac4900c126b61e4dd32ab2ebfcbce45d16cd5",
+    "r4/runs/gemini-3.8-flash-20261025-fbe870c655ce.scores.json": "f5618ed326ee48e8d6e48a6b6ada0afe9d38ccb24fc24062cd5f534d852c0688",
+    "r5/runs/gemini-3.8-flash-20261025-a94d2be04a65.scores.json": "c91d2732fba0ba212f7193d68b3de3629d5152b3c572d390a2042c124209a179",
+    "r5/runs/gemini-3.8-flash-20261025-bb0dfb481054.scores.json": "fd9b96afd40f00d361bde03ee564d1a871a9535f1eaf37ea38a96ee16fdcebaf",
+    "r5/runs/gemini-3.8-flash-20261025-fbe870c655ce.scores.json": "90e2a8114caa845999d43bdb6c4111b164e0e577cab5985cea3075c4af9e9143",
+    "r5/runs/gemini-3.8-flash-20261026-9323f2d4f638.scores.json": "a9399445967b42172fe31d0cde65b34f556b26d2010b08166f534e4e297533a7"
+  }
+}

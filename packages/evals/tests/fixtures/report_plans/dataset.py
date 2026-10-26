@@ -21,19 +21,31 @@ later. This module is the dataset's one reader:
   ``rubric/DIGESTS.json``. R1 is code's (:func:`code_score`); the rest are a model judge's. The brief and a record
   use the newest version (:func:`latest_rubric`) unless told otherwise, and a record names the version it scored.
 - **Scores.** ``rN/runs/<run_id>.scores.json``, one :class:`PlanScores` per run plan. A record is sound when
-  :func:`score_faults` finds nothing: its digests match the files, every model-scored item is scored once, and every
-  quote is text the plan holds. Records pool only by :func:`pool_key`: the planner prompt digest, the rubric digest and
-  the scorer. Nothing else may join them.
+  :func:`score_faults` finds nothing: its plan and rubric digests match the files, its input digest resolves to an
+  input the dataset keeps, and every model-scored item is scored once. Records pool only by :func:`pool_key`: the
+  planner prompt digest, the rubric digest and the scorer. Nothing else may join them.
+- **Inputs are kept by digest.** An input changes (a fixture rebuilt, a field filled), and a record names the input it
+  was scored against by its sha256, so every input a record was scored against is archived byte for byte as
+  ``inputs/<sha256>.json`` (:func:`archived_input`), written when the record is (``dataset.py record``). History stays
+  verifiable without scoring again.
+- **History is immutable.** A quote is text the plan rendered when it was scored; the renderer moves on. So quotes are
+  checked when a record is written and for each input's current run, and a historical record (any run not current) is
+  pinned instead: ``history.json`` holds the sha256 of every historical record's file (:func:`history_faults`), and
+  ``dataset.py pin`` adds a run that a re-record made historical, never changing a pin already there. Nobody edits
+  history to pass.
 
 Scoring one plan is two commands from the repository root, with the scorer's reply saved to a file between them::
 
     uv run python packages/evals/tests/fixtures/report_plans/dataset.py brief r5/runs/<run_id>.plan.json
     uv run python packages/evals/tests/fixtures/report_plans/dataset.py record r5/runs/<run_id>.plan.json reply.json claude-opus-5-5
 
+After a re-record makes the previous current runs historical, ``dataset.py pin`` pins their records.
+
 The brief holds the rubric, R1 as code scored it, the plan in page order with every prose field as written and as
 rendered, the input's facts and the planner's view of the input, and the reply's shape. It is blind: it names neither
 the plan's file nor its planner. ``record`` adds the run, the digests, the planner and the rubric to the reply, checks
-the record (:func:`score_faults`) and writes ``<run_id>.scores.json`` beside the plan.
+the record (:func:`score_faults`, quotes included), writes ``<run_id>.scores.json`` beside the plan and archives the
+input it was scored against.
 """
 
 from __future__ import annotations
@@ -62,12 +74,21 @@ from threetears.evals.schema.prose import field_is_prose
 __all__ = [
     "HERE",
     "KAIRO_BUNDLE",
+    "HISTORY",
+    "INPUTS",
     "LABELS",
     "OPUS_SCORER",
     "PAGE_ORDER",
     "SCORES_SCHEMA",
     "PlanScores",
     "PlannerInfo",
+    "archive_input",
+    "archived_input",
+    "archived_input_path",
+    "history_faults",
+    "is_current",
+    "pin_history",
+    "pinned_records",
     "RubricRef",
     "ScoreItem",
     "ScorerReply",
@@ -112,6 +133,12 @@ RECORDINGS = HERE / "recordings"
 CURRENT_RUNS = RECORDINGS / "runs.json"
 #: The schema id every score record carries.
 SCORES_SCHEMA = "plan-scores/1"
+#: Every report input a score record was scored against, by its sha256: ``inputs/<sha256>.json``.
+INPUTS = HERE / "inputs"
+#: The sha256 of every historical score record's file, by its path under this directory.
+HISTORY = HERE / "history.json"
+#: The schema id the history file carries.
+HISTORY_SCHEMA = "plan-score-history/1"
 #: The scorer the dataset's model-scored records name: the id the score records were written under, an identity in
 #: recorded calibration data, never a model this code calls (records pool by it, ``pool_key``).
 OPUS_SCORER = "claude-opus-5-5"
@@ -133,6 +160,47 @@ def kairo_bundle() -> CampaignBundle:
 def report_input_of(name: str) -> ReportInput:
     """One fixture input (``r1`` to ``r5``)."""
     return ReportInput.model_validate_json((HERE / name / "input.json").read_text(encoding="utf-8"))
+
+
+def archived_input_path(digest: str) -> Path:
+    """Where the input with sha256 ``digest`` is archived."""
+    return INPUTS / f"{digest}.json"
+
+
+def archived_input(digest: str) -> ReportInput:
+    """The archived input with sha256 ``digest``, checked against its digest.
+
+    :raises ValueError: No input with that digest is archived, or the archived file is not that input.
+    """
+    path = archived_input_path(digest)
+    if not path.is_file():
+        raise ValueError(f"no input with sha256 {digest} is archived under {INPUTS.name}/")
+    if sha256_file(path) != digest:
+        raise ValueError(f"{INPUTS.name}/{path.name} is not the input its name says: its bytes changed")
+    return ReportInput.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def archive_input(name: str) -> str:
+    """Archive one fixture input's current bytes under its digest, if not archived yet.
+
+    :return: Its sha256.
+    """
+    current = (HERE / name / "input.json").read_bytes()
+    digest = hashlib.sha256(current).hexdigest()
+    path = archived_input_path(digest)
+    if not path.is_file():
+        INPUTS.mkdir(exist_ok=True)
+        path.write_bytes(current)
+    return digest
+
+
+def _input_at(name: str, digest: str) -> ReportInput | None:
+    """The input with sha256 ``digest``: the archived one, else ``name``'s current input where it is that one."""
+    if archived_input_path(digest).is_file():
+        return archived_input(digest)
+    if sha256_file(HERE / name / "input.json") == digest:
+        return report_input_of(name)
+    return None
 
 
 def load_plan(path: Path) -> ReportPlan:
@@ -247,7 +315,9 @@ class PlanScores(_Record):
     schema_id: Literal["plan-scores/1"] = Field(alias="schema")
     run_id: str = Field(description="The plan file's name without ``.plan.json``.")
     input: str = Field(description="The input directory the plan was written against, ``r1`` to ``r5``.")
-    input_digest: str = Field(description="sha256 of that input's ``input.json``.")
+    input_digest: str = Field(
+        description="sha256 of that input's ``input.json`` as scored, archived as ``inputs/<sha256>.json``."
+    )
     plan_digest: str = Field(description="sha256 of the plan file scored.")
     planner: PlannerInfo
     scorer: str = Field(description="The scorer: a model id (``claude-opus-5-5``) or ``owner``.")
@@ -278,12 +348,15 @@ def _readable(plan: ReportPlan, report_input: ReportInput) -> list[tuple[str, st
     return [(path, text, render(text, report_input, {})) for path, text in prose_fields(plan)]
 
 
-def score_faults(scores: PlanScores, plan_path: Path) -> list[str]:
+def score_faults(scores: PlanScores, plan_path: Path, *, quotes: bool = True) -> list[str]:
     """Everything wrong with a score record of the plan at ``plan_path``; empty when it is sound.
 
-    Sound means: it names the plan's file and input by their digests; its rubric version exists and its digest is
-    that version's; every model-scored item of the version is scored exactly once and nothing else is; every quote is
-    a substring of one of the plan's prose fields, as written or as rendered; and every fail quotes what failed.
+    Sound means: it names the plan's file by its digest, and its input by a digest that resolves to an input the
+    dataset keeps (archived, or the input as it stands); its rubric version exists and its digest is that version's;
+    every model-scored item of the version is scored exactly once and nothing else is; and every fail quotes what
+    failed. With ``quotes``, every quote is also a substring of one of the plan's prose fields, as written or as
+    rendered against that input: checked when a record is written and for a current run, while a historical record is
+    pinned instead (:func:`history_faults`).
     """
     faults: list[str] = []
     name = plan_path.name.removesuffix(".plan.json")
@@ -292,10 +365,16 @@ def score_faults(scores: PlanScores, plan_path: Path) -> list[str]:
     if scores.plan_digest != sha256_file(plan_path):
         faults.append("plan_digest is not the plan file's sha256: the plan changed after it was scored")
     expected_input = plan_input(plan_path)
+    scored_against: ReportInput | None = None
     if scores.input != expected_input:
         faults.append(f"input is {scores.input!r}, and the plan was written against {expected_input!r}")
-    elif scores.input_digest != sha256_file(HERE / expected_input / "input.json"):
-        faults.append("input_digest is not the input's sha256: the input changed after the plan was scored")
+    else:
+        scored_against = _input_at(expected_input, scores.input_digest)
+        if scored_against is None:
+            faults.append(
+                f"input_digest {scores.input_digest} names no input the dataset keeps: neither archived under "
+                f"{INPUTS.name}/ nor {expected_input}/input.json as it stands"
+            )
     if not (RUBRICS / f"{scores.rubric.version}.json").is_file():
         return [*faults, f"rubric version {scores.rubric.version!r} does not exist"]
     if scores.rubric.digest != rubric_digest(scores.rubric.version):
@@ -306,13 +385,71 @@ def score_faults(scores: PlanScores, plan_path: Path) -> list[str]:
         if ids.count(item_id) != 1:
             faults.append(f"item {item_id} is scored {ids.count(item_id)} times, and every item is scored once")
     faults += [f"item {item_id} is not a model-scored item of the rubric" for item_id in ids if item_id not in wanted]
-    readable = _readable(load_plan(plan_path), report_input_of(expected_input))
     for item in scores.items:
         if item.verdict == "fail" and not item.quote.strip():
             faults.append(f"item {item.id} fails with no quote of what failed")
+    if not quotes or scored_against is None:
+        return faults
+    readable = _readable(load_plan(plan_path), scored_against)
+    for item in scores.items:
         if item.quote and not any(item.quote in text or item.quote in shown for _, text, shown in readable):
             faults.append(f"item {item.id} quotes {item.quote[:60]!r}, which no prose field of the plan holds")
     return faults
+
+
+def is_current(plan_path: Path) -> bool:
+    """Whether a run plan is its input's current run (:func:`current_run`)."""
+    return any(plan_path.resolve() == current_run(name).resolve() for name in current_runs())
+
+
+def pinned_records() -> dict[str, str]:
+    """Every pinned historical record's sha256, by its path under this directory (``history.json``)."""
+    if not HISTORY.is_file():
+        return {}
+    loaded: dict[str, Any] = json.loads(HISTORY.read_text(encoding="utf-8"))
+    records: dict[str, str] = loaded["records"]
+    return records
+
+
+def _historical_records() -> list[Path]:
+    return [scores_path(plan) for plan in run_plans() if not is_current(plan) and scores_path(plan).is_file()]
+
+
+def history_faults() -> list[str]:
+    """Everything wrong with the pinned history; empty when it holds: every pinned record is on disk with the bytes
+    it was pinned with, and every historical run's record is pinned."""
+    pinned = pinned_records()
+    faults: list[str] = []
+    for relative, digest in pinned.items():
+        path = HERE / relative
+        if not path.is_file():
+            faults.append(f"{relative} is pinned and gone: history is kept, never deleted")
+        elif sha256_file(path) != digest:
+            faults.append(f"{relative} changed after it was pinned: a historical record is immutable")
+    for path in _historical_records():
+        relative = path.relative_to(HERE).as_posix()
+        if relative not in pinned:
+            faults.append(f"{relative} is a historical run's record and is not pinned: run `dataset.py pin`")
+    return faults
+
+
+def pin_history() -> list[str]:
+    """Pin every historical run's record not pinned yet, keeping every pin already there.
+
+    :return: The paths pinned now.
+    """
+    pinned = pinned_records()
+    added = [
+        path.relative_to(HERE).as_posix()
+        for path in _historical_records()
+        if path.relative_to(HERE).as_posix() not in pinned
+    ]
+    records = pinned | {relative: sha256_file(HERE / relative) for relative in added}
+    HISTORY.write_text(
+        json.dumps({"schema": HISTORY_SCHEMA, "records": dict(sorted(records.items()))}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return added
 
 
 def pool_key(scores: PlanScores) -> tuple[str, str, str]:
@@ -577,11 +714,14 @@ _USAGE = """usage, from the repository root (paths relative to report_plans/):
   dataset.py brief <plan>                  print the plan's scoring brief
   dataset.py record <plan> <reply> <scorer> [<rubric version>]
                                            write <run_id>.scores.json beside the plan from a scorer's reply file,
-                                           scored against the newest rubric unless a version is named"""
+                                           scored against the newest rubric unless a version is named, and archive
+                                           the input it was scored against
+  dataset.py pin                           pin every historical run's record not pinned yet"""
 
 
 def main(argv: Sequence[str]) -> int:
-    """``brief <plan>`` prints a plan's scoring brief; ``record <plan> <reply file> <scorer>`` writes its record."""
+    """``brief <plan>`` prints a plan's scoring brief; ``record <plan> <reply file> <scorer>`` writes its record;
+    ``pin`` pins the historical records."""
 
     def at(given: str) -> Path:
         path = Path(given)
@@ -594,8 +734,13 @@ def main(argv: Sequence[str]) -> int:
         plan = at(argv[1])
         version = argv[4] if len(argv) == 5 else None
         scores = record(plan, Path(argv[2]).read_text(encoding="utf-8"), scorer=argv[3], version=version)
+        archive_input(scores.input)
         scores_path(plan).write_text(scores_json(scores), encoding="utf-8")
         print(f"Wrote {scores_path(plan).relative_to(HERE)}.")
+        return 0
+    if argv == ["pin"]:
+        added = pin_history()
+        print(f"Pinned {len(added)} historical record(s) in {HISTORY.name}.")
         return 0
     print(_USAGE, file=sys.stderr)
     return 2
