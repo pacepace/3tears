@@ -18,7 +18,13 @@ packages (bumped in lock-step).
 - `check_variant`: a name is up to 32 lowercase letters, digits or underscores. The package gives a name no
   meaning.
 - `load_identity_propose_tool(..., variants=("",))` binds which variants the tool may write. Any other name is
-  refused without a proposal, and the description names the variants only when the host opened one.
+  refused without a proposal. The `variant` argument, and the names in the description, appear only when the
+  host opened a variant, so a default host's tool is exactly what it was. A bare string for `variants` raises.
+- `variant_label(block_key, variant)`: `presence` or `presence/alt`, as the tool and the errors name a block.
+
+Why a column and not more block keys: a block key is a platform enum, so a consumer that wanted a second text of
+a block would need a platform release and a key that means something only to it. A variant is the consumer's own
+name over the platform's blocks, with the block's tier, and needs no release to add.
 
 Migration **v003** adds the column (`NOT NULL DEFAULT ''`, so every existing row is the block itself) and moves
 the indexes onto it: `uq_identity_active_per_variant` and `idx_identity_variant_history` are created before

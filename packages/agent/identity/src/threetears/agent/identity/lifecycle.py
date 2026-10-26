@@ -77,6 +77,7 @@ from threetears.agent.identity.types import (
     IdentityTier,
     IdentityVersionStatus,
     check_variant,
+    variant_label,
 )
 
 log = get_logger(__name__)
@@ -110,7 +111,7 @@ class IdentityProposalOutOfDate(ValueError):
     def __init__(self, version: IdentityVersionEntity) -> None:
         self.version = version
         super().__init__(
-            f"the {_block_name(version)} block has changed since version {version.version_id} was proposed; "
+            f"the {variant_label(version.block_key, version.variant)} block has changed since version {version.version_id} was proposed; "
             "consenting would undo those changes, so it can only be rejected"
         )
 
@@ -129,11 +130,6 @@ def is_out_of_date(version: IdentityVersionEntity, active: IdentityVersionEntity
     :rtype: bool
     """
     return active is not None and version.parent_version_id != active.version_id
-
-
-def _block_name(version: IdentityVersionEntity) -> str:
-    """The block a version belongs to, with its variant when it has one."""
-    return f"{version.block_key}/{version.variant}" if version.variant else version.block_key
 
 
 def content_hash(content: str) -> str:

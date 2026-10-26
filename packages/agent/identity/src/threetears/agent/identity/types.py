@@ -32,13 +32,14 @@ __all__ = [
     "IdentityTier",
     "IdentityVersionStatus",
     "check_variant",
+    "variant_label",
 ]
 
 
 class IdentityBlockKey(str, Enum):
     """Which identity block a version belongs to.
 
-    These mirror metallm's ``users.config_*`` prompt columns: the
+    These are the prompt blocks an agent's system prompt is built from: the
     system-prefix persona (``PERSONALITY``), the post-history reinforcement
     (``REINFORCEMENT``), the anti-sycophancy guard (``ANTI_SYCOPHANT``),
     the self-improvement scratch prompt (``SELF_IMPROVEMENT``), the
@@ -138,3 +139,16 @@ def check_variant(variant: str) -> str:
             f"{_VARIANT_MAX_LEN} lowercase letters, digits or underscores"
         )
     return variant
+
+
+def variant_label(block_key: str, variant: str) -> str:
+    """The block as a person or a model reads it: ``block_key``, or ``block_key/variant`` for a variant.
+
+    :param block_key: the identity block
+    :ptype block_key: str
+    :param variant: the block's variant; ``""`` is the block itself
+    :ptype variant: str
+    :return: the label
+    :rtype: str
+    """
+    return f"{block_key}/{variant}" if variant else block_key

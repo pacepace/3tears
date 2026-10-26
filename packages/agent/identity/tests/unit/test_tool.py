@@ -75,18 +75,15 @@ async def test_wants_and_needs_are_advertised() -> None:
 
 
 async def test_the_block_itself_is_the_only_variant_by_default() -> None:
-    """A loader that opens no variant passes '' and refuses any other name without proposing."""
+    """A loader that opens no variant writes the block itself and shows no variant at all."""
     version = SimpleNamespace(version_id=uuid4())
     with patch(_PROPOSE, new_callable=AsyncMock, return_value=version) as prop:
         tool = await _tool()
         out = await tool.ainvoke({"block_key": "presence", "content": "v2", "rationale": "r"})
-        assert prop.await_args.kwargs["variant"] == ""
-        assert "'presence'" in out
-        prop.reset_mock()
-        refused = await tool.ainvoke({"block_key": "presence", "content": "v2", "rationale": "r", "variant": "alt"})
-    assert "Variant 'alt' is not open here" in refused
-    prop.assert_not_awaited()
+    assert prop.await_args.kwargs["variant"] == ""
+    assert "'presence'" in out
     assert "Variants you may write" not in tool.description
+    assert "variant" not in tool.args  # a model is not shown an argument it cannot use
 
 
 async def test_an_opened_variant_is_proposed_and_named() -> None:
@@ -101,6 +98,7 @@ async def test_an_opened_variant_is_proposed_and_named() -> None:
     assert "'presence/alt'" in out
     assert "Variant 'second' is not open here" in refused
     assert "Variants you may write: '', alt." in tool.description
+    assert "'', alt" in tool.args["variant"]["description"]
 
 
 async def test_a_loader_must_open_a_variant_it_can_name() -> None:
@@ -108,3 +106,15 @@ async def test_a_loader_must_open_a_variant_it_can_name() -> None:
         await load_identity_propose_tool(_USER, _AGENT, _CUST, MagicMock(), MagicMock(), variants=())
     with pytest.raises(ValueError, match="not a name a block takes"):
         await load_identity_propose_tool(_USER, _AGENT, _CUST, MagicMock(), MagicMock(), variants=("Bad Name",))
+    with pytest.raises(TypeError, match="not one name"):
+        await load_identity_propose_tool(_USER, _AGENT, _CUST, MagicMock(), MagicMock(), variants="alt")
+
+
+async def test_a_host_that_opens_only_variants_must_name_one() -> None:
+    """Without the block itself among them the argument has no default, so the model must choose."""
+    version = SimpleNamespace(version_id=uuid4())
+    with patch(_PROPOSE, new_callable=AsyncMock, return_value=version) as prop:
+        tool = (await load_identity_propose_tool(_USER, _AGENT, _CUST, MagicMock(), MagicMock(), variants=("alt",)))[0]
+        await tool.ainvoke({"block_key": "presence", "content": "v2", "rationale": "r", "variant": "alt"})
+    assert prop.await_args.kwargs["variant"] == "alt"
+    assert "variant" in tool.tool_call_schema.model_json_schema()["required"]

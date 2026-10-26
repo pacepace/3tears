@@ -4,7 +4,9 @@ agent-identity v003: block variants.
 Adds ``variant`` to ``identity_versions``: a consumer-named copy of a block
 with its own version chain and its own active version. ``''`` is the block
 itself, so every existing row keeps its meaning and every caller that never
-names a variant reads and writes exactly what it did before.
+names a variant reads and writes exactly what it did before. A column rather
+than more ``identity_block_key`` labels: a label is a platform release and a
+name every consumer carries, where a variant is the consumer's own name.
 
 The one-active rule and the history index move from ``(agent, customer,
 user, block_key)`` to ``(..., block_key, variant)``. Each new index is

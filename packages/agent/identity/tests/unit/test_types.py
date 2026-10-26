@@ -12,6 +12,7 @@ from threetears.agent.identity.types import (
     IdentityTier,
     IdentityVersionStatus,
     check_variant,
+    variant_label,
 )
 
 
@@ -69,3 +70,8 @@ def test_check_variant_takes_a_name_a_block_takes(name: str) -> None:
 def test_check_variant_refuses_any_other_name(name: object) -> None:
     with pytest.raises(ValueError, match="not a name a block takes"):
         check_variant(name)  # type: ignore[arg-type]
+
+
+def test_variant_label_names_the_block_and_its_variant() -> None:
+    assert variant_label("presence", "") == "presence"
+    assert variant_label("presence", "alt") == "presence/alt"

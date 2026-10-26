@@ -10,7 +10,7 @@ A version is an immutable snapshot in a **linear** parent-pointer chain
 ``(agent_id, customer_id, user_id, block_key, variant)`` (a partial unique
 index enforces it). ``variant`` is a consumer-named copy of a block with its
 own chain; ``""`` is the block itself. User isolation is the ``user_id`` WHERE clause, NOT RBAC:
-every metallm user shares one ``agent_id`` (the partition), so ``user_id``
+a consumer's users can share one ``agent_id`` (the partition), so ``user_id``
 is the sole boundary -- the reads below take it as a required parameter.
 
 This chunk (T2.1a) ships the schema + table factory + the read paths
@@ -99,7 +99,7 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
             Column("version_id", UUID_TYPE),
             Column("agent_id", UUID_TYPE, partition=True),
             # customer_id / user_id are nullable scope grains (like memory /
-            # intention). metallm sets both + filters reads on user_id; a
+            # intention). A per-user consumer sets both + filters reads on user_id; a
             # null here is an agent-internal / global block. Both immutable
             # (write-once): a version never moves across scopes.
             Column("customer_id", UUID_TYPE, immutable=True, nullable=True),

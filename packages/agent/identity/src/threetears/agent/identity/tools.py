@@ -22,10 +22,11 @@ variant the host did not open for this run.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 from uuid import UUID
 
 from langchain_core.tools import BaseTool, tool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 from threetears.observe import get_logger
 
@@ -38,6 +39,7 @@ from threetears.agent.identity.types import (
     IdentityBlockKey,
     IdentityTier,
     check_variant,
+    variant_label,
 )
 
 __all__ = [
@@ -54,7 +56,21 @@ class IdentityProposeInput(BaseModel):
     block_key: str = Field(description=f"which identity block to change: one of {', '.join(IDENTITY_BLOCK_KEY_VALUES)}")
     content: str = Field(description="the full new text of the block")
     rationale: str = Field(description="why you want to change it (one or two sentences)")
-    variant: str = Field(default="", description="which variant of the block; leave empty for the block itself")
+
+
+def _input_for(allowed: tuple[str, ...]) -> type[BaseModel]:
+    """The tool's arguments: ``variant`` only when the host opened one besides the block itself.
+
+    A model shown an argument it cannot use will try it, so a host that opened
+    no variant gets :class:`IdentityProposeInput` exactly as it was.
+    """
+    if allowed == ("",):
+        return IdentityProposeInput
+    field: Any = Field(
+        default="" if "" in allowed else ...,
+        description=f"which variant of the block to change: one of {_named(allowed)}",
+    )
+    return create_model("IdentityProposeVariantInput", __base__=IdentityProposeInput, variant=(str, field))
 
 
 async def load_identity_propose_tool(
@@ -82,20 +98,24 @@ async def load_identity_propose_tool(
     :ptype variants: Sequence[str]
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
+    :raises TypeError: when ``variants`` is a single string rather than a sequence of names
     :raises ValueError: when ``variants`` is empty or names a variant a block does not take
     """
+    if isinstance(variants, str):
+        # a bare string is a sequence of its letters: "alt" would open "a", "l" and "t"
+        raise TypeError("variants takes a sequence of names, not one name; pass (name,)")
     allowed = tuple(dict.fromkeys(check_variant(v) for v in variants))
     if not allowed:
         raise ValueError("identity_propose needs at least one variant it may write")
 
-    @tool("identity_propose", args_schema=IdentityProposeInput)
+    @tool("identity_propose", args_schema=_input_for(allowed))
     async def identity_propose(block_key: str, content: str, rationale: str, variant: str = "") -> str:
         """Propose a change to one of your own identity blocks."""
         if block_key not in IDENTITY_BLOCK_KEY_VALUES:
             return f"[TOOL ERROR] Unknown block_key '{block_key}'. Use one of: {', '.join(IDENTITY_BLOCK_KEY_VALUES)}."
         if variant not in allowed:
             return f"[TOOL ERROR] Variant '{variant}' is not open here. Use one of: {_named(allowed)}."
-        name = f"{block_key}/{variant}" if variant else block_key
+        name = variant_label(block_key, variant)
         version = await propose(
             collection,
             authorizer,
