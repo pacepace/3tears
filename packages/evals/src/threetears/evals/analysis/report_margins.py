@@ -67,11 +67,16 @@ class CriterionFigure:
     :ivar value: The arm's figure, at the criterion's statistic.
     :ivar task: The task it was read in; None when not read in a task.
     :ivar cell: The target-matrix cell it was read in, by id; None when not read in a cell.
+    :ivar ci: The interval on the figure, low then high, where the input states one. Only a mean carries one: the
+        input's interval is on the mean, so a p50 or p95 figure has none.
+    :ivar half_width: The interval's half-width, where the input states only that; for a mean alone, like ``ci``.
     """
 
     value: float
     task: str | None = None
     cell: str | None = None
+    ci: tuple[float, float] | None = None
+    half_width: float | None = None
 
 
 @dataclass(frozen=True)
@@ -147,7 +152,7 @@ def criterion_figures(report_input: ReportInput, criterion: Criterion, arm: str)
     :param arm: The arm's id.
     :ptype arm: str
     :return: One figure per place the criterion reads it (overall, its task, every task or every cell), each where the
-        input states it.
+        input states it, with the interval the input states on it.
     :rtype: list[CriterionFigure]
     """
     holders: list[tuple[Mapping[str, Stat], str | None, str | None]] = []
@@ -170,8 +175,12 @@ def criterion_figures(report_input: ReportInput, criterion: Criterion, arm: str)
     for holder, task, cell in holders:
         stat = holder.get(criterion.measure)
         value = getattr(stat, criterion.statistic) if stat is not None else None
-        if value is not None:
-            found.append(CriterionFigure(float(value), task, cell))
+        if stat is None or value is None:
+            continue
+        mean = criterion.statistic == "mean"
+        ci = (float(stat.ci[0]), float(stat.ci[1])) if mean and stat.ci is not None else None
+        half_width = float(stat.half_width) if mean and stat.half_width is not None else None
+        found.append(CriterionFigure(float(value), task, cell, ci, half_width))
     return found
 
 
