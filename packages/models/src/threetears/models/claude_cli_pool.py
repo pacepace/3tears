@@ -57,8 +57,9 @@ of its own, as a call does when every session is busy. Once the served loop clos
 run a call again, so the next checkout's loop takes the pool over, and the CLIs the closed loop
 held are stopped rather than handed on.
 
-Standard library and lazy SDK imports only, so importing this module costs nothing on a host that
-never spends a subscription.
+The SDK and ``mcp`` come with the ``claude-cli`` extra. They are imported when this module loads,
+guarded, so a host without the extra imports it; starting a pooled CLI without them raises an
+``ImportError`` naming the extra.
 """
 
 from __future__ import annotations
@@ -92,6 +93,14 @@ from threetears.models._claude_sdk_internals import (
     spawn_clis_without_fork,
 )
 from threetears.observe import BuildOnce, cancel_and_wait, contain, contained, gauge, get_logger
+
+#: why the claude-cli extra is unavailable, when it is not installed
+_CLAUDE_CLI_IMPORT_ERROR: ImportError | None = None
+try:
+    import claude_agent_sdk
+    from mcp.types import CallToolRequest
+except ImportError as _exc:  # NOSILENT: the claude-cli extra is optional; starting a CLI names it
+    _CLAUDE_CLI_IMPORT_ERROR = _exc
 
 __all__ = [
     "POOL_MARKER_ENV",
@@ -850,8 +859,6 @@ def _context_bound_server(server: Any, context: contextvars.Context) -> Any:
         return bound
 
     # mcp 1.x: a public dict keyed by request type, each handler taking the request
-    from mcp.types import CallToolRequest  # noqa: PLC0415 -- arrives with the claude-cli extra
-
     bound.request_handlers = dict(server.request_handlers)
     original = bound.request_handlers.get(CallToolRequest)
     if original is not None:
@@ -1030,15 +1037,18 @@ class PooledCliSession:
         :return: the connected session
         :rtype: PooledCliSession
         :raises ClaudeCliSessionError: when the CLI cannot be started
+        :raises ImportError: when the ``claude-cli`` extra is not installed
         """
-        import claude_agent_sdk as sdk  # noqa: PLC0415 -- the claude-cli extra, imported only when used
-
+        if _CLAUDE_CLI_IMPORT_ERROR is not None:
+            raise ImportError(
+                "a pooled Claude CLI needs the claude-cli extra: install 3tears-models[claude-cli]",
+            ) from _CLAUDE_CLI_IMPORT_ERROR
         marker = _marker()
         options.env = {**(options.env or {}), POOL_MARKER_ENV: marker}
         prompts: dict[str, str] = dict(getattr(options, "agents", None) or {})
         if prompts:
             options.agents = {
-                name: sdk.AgentDefinition(description=_AGENT_DESCRIPTION, prompt=prompt)
+                name: claude_agent_sdk.AgentDefinition(description=_AGENT_DESCRIPTION, prompt=prompt)
                 for name, prompt in prompts.items()
             }
         # The SDK spawns `claude -v` before every start unless this is set in the PROCESS environment (it
@@ -1050,7 +1060,7 @@ class PooledCliSession:
         # Under uvloop the SDK's spawn forks the whole worker with the interpreter lock held: no thread
         # ran for 2-12 s and the worker was killed (_claude_cli_spawn). It starts the CLI by vfork instead.
         spawn_clis_without_fork()
-        client = sdk.ClaudeSDKClient(options=options)
+        client = claude_agent_sdk.ClaudeSDKClient(options=options)
         try:
             await client.connect()
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- any start failure (including an SDK whose surface moved) must become "no pooled session", so the call falls back to its own CLI instead of failing the turn

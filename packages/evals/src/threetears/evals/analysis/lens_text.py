@@ -9,6 +9,8 @@ from __future__ import annotations
 
 
 from threetears.evals.analysis.arms import short_digest
+from threetears.evals.analysis.depth import times
+from threetears.evals.analysis.depth_reading import SubjectDepth, subject_depth
 
 
 from threetears.evals.analysis.numbers import format_number
@@ -16,7 +18,13 @@ from threetears.evals.analysis.report.verdict import MIN_CASES
 
 
 from threetears.evals.analysis.reporting import ProjectionExclusions
-from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, FrontierResult, pass_hat_k_cell_lines
+from threetears.evals.analysis.lenses.frontier import (
+    PASS_HAT_K_CELL_READING,
+    FrontierPoint,
+    FrontierResult,
+    SubjectFrontier,
+    pass_hat_k_cell_lines,
+)
 
 
 def exclusion_lines(exclusions: ProjectionExclusions) -> list[str]:
@@ -47,6 +55,41 @@ def _pass_hat_k_text(k: int, value: float, n_cases: int, low: float | None, high
     return f"pass^{k} {format_number(value)}{interval} over {n_cases} case(s)"
 
 
+#: The frontier text's depth lines, each one template: a subject's place, a contestant's delivered depth, the cases it
+#: is short of ``k``, its model's reading, and its reading at the common depth.
+WHERE_SUBJECT = "subject {subject}"
+POINT_DEPTH = "ran each case {times} over {cases} case(s)"
+POINT_SHORT = ", {short} short of k={k}"
+POINT_MODEL = "; pass^{k} {value} {assumes}"
+POINT_COMMON = "; pass^{k} {value} over {cases} case(s) at the common depth"
+
+
+def _depth_lines(subject: SubjectFrontier) -> list[str]:
+    """What depth a subject's pass^k compares at, or that its contestants share no case, and each contestant it is
+    unmeasured for at its planned ``k``: :class:`~threetears.evals.analysis.depth_reading.SubjectDepth`'s sentences,
+    each contestant named as this text names it."""
+    named = {point.variant_key: _contestant(point.model, point.variant_key) for point in subject.points}
+    where = WHERE_SUBJECT.format(subject=subject.subject_label or subject.subject_id)
+    depth: SubjectDepth = subject_depth(subject, lambda key: named.get(key, short_digest(key)), where=where)
+    return depth.lines()
+
+
+def _point_depth(point: FrontierPoint, subject: SubjectFrontier) -> str | None:
+    """One contestant's delivered depth, and its pass^k at the subject's common depth where it differs from ``k``."""
+    if point.depth is None:
+        return None
+    said = POINT_DEPTH.format(times=times(point.depth), cases=point.depth.cases)
+    if point.n_cases_short_of_k:
+        said += POINT_SHORT.format(short=point.n_cases_short_of_k, k=subject.k)
+    if (model := point.model_pass_hat_k) is not None:
+        said += POINT_MODEL.format(k=model.k, value=format_number(model.pass_hat_k), assumes=model.assumes)
+    if subject.common_depth is not None and subject.common_depth != subject.k and point.common_pass_hat_k is not None:
+        said += POINT_COMMON.format(
+            k=subject.common_depth, value=format_number(point.common_pass_hat_k), cases=point.n_common_cases
+        )
+    return said
+
+
 def frontier_text(result: FrontierResult) -> str:
     """A frontier as text: each subject's variants, best pass^k first, with each one's axes and the verdict."""
     bar = "no bar, so no verdict" if result.bar is None else f"bar {format_number(result.bar)} on pass^k"
@@ -61,6 +104,7 @@ def frontier_text(result: FrontierResult) -> str:
         lines.append(f"## subject {subject.subject_label or subject.subject_id}, pass^k at k={subject.k}")
         if subject.boundary_pillar:
             lines.append(subject.boundary_pillar)
+        lines += _depth_lines(subject)
         for point in subject.points:
             quality = (
                 _pass_hat_k_text(
@@ -97,6 +141,8 @@ def frontier_text(result: FrontierResult) -> str:
                 f"- {_contestant(point.model, point.variant_key)}: {quality}{cleared}; {cost}; {latency}"
                 + (f"; {standing}" if standing else "")
             )
+            if (depth := _point_depth(point, subject)) is not None:
+                lines.append(f"  {depth}")
             cell_lines = [line for cell in point.pass_hat_k_cells for line in pass_hat_k_cell_lines(cell)]
             if cell_lines and not said_reading:
                 lines.append(f"  {PASS_HAT_K_CELL_READING}")

@@ -23,7 +23,7 @@ from threetears.evals.analysis.bundle.schema import host_declarations_digest
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.host.profile import HostProfile
-from threetears.evals.kernel.host.sweepables import Sweepable
+from threetears.evals.kernel.host.sweepables import Sweepable, SweepableRegistry
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -96,6 +96,21 @@ class TestTheDigestIsDerivedFromTheDeclarations:
         assert host_declarations_digest(_with_a_lamp(base)) != host_declarations_digest(
             _with_a_lamp(base, name="desk_lamp")
         )
+
+    def test_taking_an_apparatus_sweepable_out_of_the_rig_moves_it(self) -> None:
+        """A declaration that stops splitting cells moves every apparatus class, so it moves the digest too."""
+        base = _with_a_lamp(toyhost_profile())
+        (lamp,) = [d for d in base.host_sweepables.declarations if d.name == "bench_lamp"]
+        waived = replace(lamp, confounds=None, no_rig_coordinate="the lamp lights the bench, never the scan")
+        out_of_rig = replace(
+            base,
+            host_sweepables=SweepableRegistry(
+                [waived if d.name == "bench_lamp" else d for d in base.host_sweepables.declarations],
+                roles=base.host_sweepables.roles,
+            ),
+        )
+
+        assert host_declarations_digest(out_of_rig) != host_declarations_digest(base)
 
     async def test_the_generation_records_it_and_the_bundle_version(self) -> None:
         host, campaign_id, scope_id = off_loop(_corpus_host)

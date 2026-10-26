@@ -2,25 +2,38 @@
 
 from __future__ import annotations
 
+import operator
+import sqlite3
 import threading
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import Any, ClassVar
 
 import pytest
 from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Float,
     Integer,
     LargeBinary,
     MetaData,
+    Numeric,
     String,
     Table,
 )
 from sqlalchemy.dialects.postgresql import BYTEA, JSONB, UUID
 
+from threetears.core.cache.base import UnsupportedL1ColumnError
 from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.collections.schema_backed import (
+    NUMERIC_TYPE,
+    STRING_TYPE,
+    TableSchema,
+)
+from threetears.core.collections.schema_backed import Column as SchemaColumn
 
 
 def _make_metadata() -> MetaData:
@@ -525,5 +538,190 @@ class TestAdditiveInitialize:
             b.upsert("multi_b", {"id": "b", "name": "beta"})
             assert b.select_by_id("multi_a", "a") is not None
             assert b.select_by_id("multi_b", "b") is not None
+        finally:
+            b.reset()
+
+
+class TestNumericReadsBackAsDecimal:
+    """an exact NUMERIC(p, s) column is an INTEGER scaled by 10**s, read back as the Decimal L3 answers.
+
+    The defect: the L1 stored NUMERIC as REAL and answered a float, so money read through L1 was a
+    float, and ``Decimal * float`` raised wherever it was priced. Kept as a scaled integer, the
+    column is exact, and compares, sorts and sums by value in SQL run against L1 directly.
+    """
+
+    def _backend(self) -> SQLiteBackend:
+        metadata = MetaData()
+        TableSchema(
+            name="rates",
+            primary_key="id",
+            columns=[
+                SchemaColumn("id", STRING_TYPE),
+                SchemaColumn("price", NUMERIC_TYPE, precision=12, scale=2, nullable=True),
+            ],
+        ).to_sqlalchemy_table(metadata)
+        Table("ratios", metadata, Column("id", String(255), primary_key=True), Column("ratio", Float()))
+        b = SQLiteBackend(db_name=f"test_numeric_{uuid.uuid4().hex[:8]}")
+        b.initialize(metadata)
+        return b
+
+    def test_a_numeric_column_reads_back_as_its_decimal_at_scale(self) -> None:
+        b = self._backend()
+        try:
+            b.upsert("rates", {"id": "a", "price": Decimal("1.5")})
+            b.upsert("rates", {"id": "b", "price": 2.125})
+            b.upsert("rates", {"id": "c", "price": Decimal("-12345678.125")})
+            a = b.select_by_id("rates", "a")
+            assert a is not None
+            assert isinstance(a["price"], Decimal) and str(a["price"]) == "1.50"
+            assert a["price"] * Decimal(3) == Decimal("4.50")
+            row_b = b.select_by_id("rates", "b")
+            assert row_b is not None and str(row_b["price"]) == "2.13"
+            # Postgres rounds half away from zero to the column's scale, negatives too
+            row_c = b.select_by_id("rates", "c")
+            assert row_c is not None and str(row_c["price"]) == "-12345678.13"
+            assert b.column_types("rates")["price"] == "INTEGER_DECIMAL_2"
+            b.upsert("ratios", {"id": "a", "ratio": 0.25})
+            ratio = b.select_by_id("ratios", "a")
+            # a float column stays a float: Postgres stores it as one, and asyncpg answers one
+            assert ratio is not None and ratio["ratio"] == 0.25 and isinstance(ratio["ratio"], float)
+        finally:
+            b.reset()
+
+    def test_sql_against_l1_compares_sorts_and_sums_by_value(self) -> None:
+        """``'10.00' < '9.50'`` as text; as the scaled integers the column holds, 1000 > 950."""
+        b = self._backend()
+        try:
+            for key, price in (("a", "9.50"), ("b", "10.00"), ("c", "-2.25"), ("d", "-10.00")):
+                b.upsert("rates", {"id": key, "price": Decimal(price)})
+            code = b.column_types("rates")["price"]
+            ordered = b.execute_query('SELECT "id" FROM "rates" ORDER BY "price"')
+            assert [row["id"] for row in ordered] == ["d", "c", "a", "b"]
+            bounds = b.execute_query('SELECT MIN("price") AS low, MAX("price") AS high FROM "rates"')[0]
+            assert b.deserialize_field(bounds["low"], code) == Decimal("-10.00")
+            assert b.deserialize_field(bounds["high"], code) == Decimal("10.00")
+            # an operand is compared through numeric_comparison, against the scaled column
+            condition, params = b.numeric_comparison('"price"', ">", Decimal("9.6"), code)
+            above = b.execute_query(f'SELECT "id" FROM "rates" WHERE {condition} ORDER BY "id"', params)
+            assert [row["id"] for row in above] == ["b"]
+            total = b.execute_query('SELECT SUM("price") AS total FROM "rates"')[0]["total"]
+            assert b.deserialize_field(total, code) == Decimal("7.25")
+            assert str(b.deserialize_field(total, code)) == "7.25"
+        finally:
+            b.reset()
+
+    _STORED: ClassVar[dict[str, Decimal | None]] = {
+        "a": Decimal("10.00"),
+        "b": Decimal("-10.00"),
+        "c": Decimal("9.99"),
+        "d": Decimal("-9.99"),
+        "e": None,
+    }
+    _OPERATORS: ClassVar[dict[str, Callable[[Decimal, Decimal], bool]]] = {
+        "=": operator.eq,
+        "!=": operator.ne,
+        "<>": operator.ne,
+        "<": operator.lt,
+        "<=": operator.le,
+        ">": operator.gt,
+        ">=": operator.ge,
+    }
+
+    def _matching(self, b: SQLiteBackend, op: str, operand: Any) -> list[str]:
+        for key, price in self._STORED.items():
+            b.upsert("rates", {"id": key, "price": price})
+        condition, params = b.numeric_comparison('"price"', op, operand, b.column_types("rates")["price"])
+        rows = b.execute_query(f'SELECT "id" FROM "rates" WHERE {condition} ORDER BY "id"', params)
+        return [row["id"] for row in rows]
+
+    @pytest.mark.parametrize("op", ["=", "!=", "<>", "<", "<=", ">", ">="])
+    @pytest.mark.parametrize(
+        "operand",
+        [
+            Decimal("9.995"),
+            Decimal("-9.995"),
+            "9.995",
+            9.995,
+            Decimal("10.00"),
+            Decimal("10"),
+            Decimal("-10.000"),
+            10,
+            Decimal("9.99"),
+            Decimal("-9.99"),
+            Decimal("1E+30"),
+            Decimal("-1E+30"),
+            Decimal("0.0000001"),
+        ],
+    )
+    def test_an_operand_finer_than_the_scale_compares_as_l3_compares_it(self, op: str, operand: Any) -> None:
+        """``price > 9.995`` against ``10.00`` is true in L3; rounded to the scale first, it was ``1000 > 1000``."""
+        b = self._backend()
+        try:
+            exact = Decimal(repr(operand)) if isinstance(operand, float) else Decimal(operand)
+            expected = sorted(
+                key for key, price in self._STORED.items() if price is not None and self._OPERATORS[op](price, exact)
+            )
+            assert self._matching(b, op, operand) == expected
+        finally:
+            b.reset()
+
+    @pytest.mark.parametrize(
+        ("operand", "above"),
+        [(Decimal("NaN"), True), (Decimal("Infinity"), True), (float("inf"), True), (Decimal("-Infinity"), False)],
+    )
+    @pytest.mark.parametrize("op", ["=", "!=", "<>", "<", "<=", ">", ">="])
+    def test_a_non_finite_operand_compares_above_or_below_every_value(self, op: str, operand: Any, above: bool) -> None:
+        b = self._backend()
+        try:
+            held = sorted(key for key, price in self._STORED.items() if price is not None)
+            true_for = {"!=", "<>", "<", "<="} if above else {"!=", "<>", ">", ">="}
+            assert self._matching(b, op, operand) == (held if op in true_for else [])
+        finally:
+            b.reset()
+
+    def test_an_unknown_operator_or_a_column_that_is_not_numeric_is_refused(self) -> None:
+        b = self._backend()
+        try:
+            with pytest.raises(ValueError, match="LIKE"):
+                b.numeric_comparison('"price"', "LIKE", 1, b.column_types("rates")["price"])
+            with pytest.raises(ValueError, match="TEXT"):
+                b.numeric_comparison('"id"', "=", 1, b.column_types("rates")["id"])
+        finally:
+            b.reset()
+
+    def test_a_sum_past_a_64_bit_integer_raises_naming_the_column(self) -> None:
+        """ten of NUMERIC(18, 2)'s largest values total past 2**63 once scaled; SQLite says only "integer overflow"."""
+        metadata = MetaData()
+        TableSchema(
+            name="ledger",
+            primary_key="id",
+            columns=[SchemaColumn("id", STRING_TYPE), SchemaColumn("amount", NUMERIC_TYPE, precision=18, scale=2)],
+        ).to_sqlalchemy_table(metadata)
+        b = SQLiteBackend(db_name=f"test_numeric_sum_{uuid.uuid4().hex[:8]}")
+        b.initialize(metadata)
+        try:
+            b.upsert_many("ledger", [{"id": str(i), "amount": Decimal("9999999999999999.99")} for i in range(10)], "id")
+            with pytest.raises(OverflowError, match=r"ledger\.amount"):
+                b.execute_query('SELECT SUM("amount") AS total FROM "ledger"')
+            # a statement that fails some other way raises as SQLite raised it
+            with pytest.raises(sqlite3.OperationalError, match="no such column"):
+                b.execute_query('SELECT SUM(missing) FROM "ledger"')
+        finally:
+            b.reset()
+
+    @pytest.mark.parametrize(
+        ("sa_type", "reason"),
+        [(Numeric(), "no declared precision and scale"), (Numeric(19, 2), r"NUMERIC\(19, 2\)")],
+    )
+    def test_a_numeric_this_l1_cannot_hold_exactly_is_refused_naming_its_column(
+        self, sa_type: Numeric, reason: str
+    ) -> None:
+        metadata = MetaData()
+        Table("wide", metadata, Column("id", String(255), primary_key=True), Column("amount", sa_type))
+        b = SQLiteBackend(db_name=f"test_numeric_refused_{uuid.uuid4().hex[:8]}")
+        try:
+            with pytest.raises(UnsupportedL1ColumnError, match=rf"wide\.amount: .*{reason}"):
+                b.initialize(metadata)
+            assert not b.has_table("wide")
         finally:
             b.reset()

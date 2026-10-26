@@ -53,6 +53,16 @@ _SRC_ROOTS = (
 #: Genuinely ephemeral, non-serializable, or the infrastructure itself -- never migrating.
 _ALLOWLIST = (
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/versioned_answers.py",
+        class_name="VersionedAnswers",
+        attr_name="_retirements",
+        rationale=(
+            "one background retirement task per scope this replica has been told the current version of; "
+            "the floors it drives are in L2 (the index's versions rows), and a restart that forgets the tasks "
+            "is asked again by the next read"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/security/door_proof.py",
         class_name="DoorProofModes",
         attr_name="_switches",
@@ -311,6 +321,16 @@ _ALLOWLIST = (
             "the revision of each deleted key's marker -- the other half of the double's storage "
             "beside _entries, since a real delete publishes a message whose revision a fenced "
             "write depends on. Same test-double rationale as FakeKvBucket._entries above"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/kv.py",
+        class_name="FakeKvBucket",
+        attr_name="_marker_expiry",
+        rationale=(
+            "when each marker given a lifetime (delete's marker_ttl) is removed, on the double's own "
+            "clock -- the lifetime half of _markers, cleared with it. Same test-double rationale as "
+            "FakeKvBucket._entries above"
         ),
     ),
     DictStateAllowlistEntry(

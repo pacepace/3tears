@@ -23,6 +23,7 @@ from threetears.models.capabilities import (
     get_capabilities,
     get_capability_override,
     get_published_capabilities,
+    get_registered_capabilities,
     list_capabilities,
     register_capabilities,
     register_capability_override,
@@ -802,6 +803,32 @@ class TestPublishedLayer:
         assert caps is not None
         assert caps.reasoning_budget is True
         assert get_published_capabilities(model_id) is None
+
+    def test_the_registered_entry_is_read_without_the_layers_above_it(self, model_id: str) -> None:
+        """the bare entry answers under both layers, and leaves them in place for every other reader.
+
+        :param model_id: the registered id
+        :ptype model_id: str
+        :return: nothing
+        :rtype: None
+        """
+        published = CapabilityOverride(reasoning_budget=False)
+        override = CapabilityOverride(adaptive_reasoning=True)
+        register_published_capabilities(model_id, published)
+        register_capability_override(model_id, override)
+        try:
+            bare = get_registered_capabilities(model_id)
+            assert bare is not None
+            assert bare.reasoning_budget is True
+            layered = get_capabilities(model_id)
+            assert layered is not None
+            assert layered.reasoning_budget is False
+            assert layered.adaptive_reasoning is True
+            assert get_published_capabilities(model_id) == published
+            assert get_capability_override(model_id) == override
+        finally:
+            unregister_capability_override(model_id)
+        assert get_registered_capabilities(f"test-unregistered-{uuid4().hex}") is None
 
     def test_a_model_without_a_static_entry_keeps_its_published_facts_apart(self) -> None:
         """no registry entry: get_capabilities stays None (no invented tier), the facts stay readable.

@@ -67,6 +67,8 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
+from threetears.core.coordination import LockHeld, nats_distributed_lock
+from threetears.nats.errors import KvError, NatsClientError
 from threetears.observe import contain, get_logger
 
 from threetears.scheduled_jobs.config import JobConfig, reap_after_seconds_for_kind
@@ -395,10 +397,6 @@ class BackgroundDispatch:
 
     async def _run(self, callback: DispatchCallback, trigger: JobTrigger, fire_id: UUID) -> None:
         self._started.add(fire_id)
-        # local import: the same optional-NATS stance as the tick engine's own lock import.
-        from threetears.core.coordination import LockHeld, nats_distributed_lock  # noqa: PLC0415
-        from threetears.nats.errors import KvError, NatsClientError  # noqa: PLC0415
-
         outcome: _Outcome | None = None
         try:
             # cancel_on_loss=False: the in-flight lock only saves duplicate work across pods
@@ -837,8 +835,6 @@ async def _release_in_flight_lock(
     A ``KvError`` here is the release that failed: the fire's own result stands, and the bucket's TTL
     frees the entry nobody deleted.
     """
-    from threetears.nats.errors import KvError  # noqa: PLC0415
-
     try:
         if exc is None:
             await lock.__aexit__(None, None, None)

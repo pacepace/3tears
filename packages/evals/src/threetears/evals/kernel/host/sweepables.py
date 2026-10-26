@@ -28,7 +28,8 @@ different name, or not at all?*
 comparison silently stopped being about the lever. A ``label`` is neither — it identifies rather
 than determines, so a change in it is reportable in a diff and is never a confound. Only
 ``apparatus`` inputs carry :attr:`~Sweepable.confounds` prose, because they are the only ones a
-confound scan speaks for.
+confound scan speaks for — and of those, only the ones that are a dimension of the rig: an input
+carrying :attr:`~Sweepable.no_rig_coordinate` is diffed by a bisection and scanned by nothing.
 
 **The prose is the point, not decoration.** A bare dimension name is a label; the reason is what
 lets a reader judge whether it matters for the measure in front of them. Two runs on different
@@ -37,7 +38,7 @@ other composite — while a purely mechanical measure like latency means the sam
 sides and stays worth comparing. That judgement belongs to the reader, and it needs the reason
 to make it. An eval system whose inputs are opaque names degrades to "component 3 moved" and
 cannot write a readable analysis, which is why :attr:`~Sweepable.reader_prose` is required on
-every declaration and :attr:`~Sweepable.confounds` on every apparatus one.
+every declaration and :attr:`~Sweepable.confounds` on every apparatus one that splits the rig.
 
 **Bounded claim: this is the vocabulary those two surfaces share, not every input that
 determines a score.** :func:`threetears.evals.kernel.identity.compute_context_components` enumerates the
@@ -63,6 +64,7 @@ from threetears.evals.schema.values import (
     Scale,
     SweepableValue,
 )
+from threetears.evals.schema.models import ROLE_MODEL_ORIGINS
 
 if TYPE_CHECKING:
     from threetears.evals.schema.models import EvalResult, EvalRun
@@ -167,7 +169,11 @@ class Sweepable:
     """
 
     confounds: str | None = None
-    """Why a change in this input clouds a comparison. Required for ``apparatus``, absent otherwise."""
+    """Why a change in this input clouds a comparison.
+
+    Required for ``apparatus``, except on one carrying :attr:`no_rig_coordinate`, which no confound scan reads; absent
+    otherwise.
+    """
 
     indeterminate_when_blank: bool = False
     """True when a blank value means 'never recorded' rather than a value — see :func:`SweepableRegistry.is_indeterminate`."""
@@ -193,6 +199,23 @@ class Sweepable:
 
     Required on ``lever`` only; a value here on any other role is a contradiction, since apparatus
     and label inputs never carry a coordinate to begin with.
+    """
+
+    no_rig_coordinate: str | None = None
+    """Why this ``apparatus`` input contributes no coordinate to the rig, though a kind may seat it.
+
+    The rig's coordinate is the apparatus class a cell is keyed by, and every other apparatus input is a dimension
+    of it: two runs that differ in one are two cells, and the confound scans name the difference. An input carrying
+    this is still read, still compared by a bisection and still disclosed where its own value is the fact, but it
+    splits no cell, and no confound scan, lever cohort, divergence or factor-aliasing read names it. The spend
+    ceiling is the case it exists for: a cap decides when a run may stop, never what a measured case scored, and a
+    run the cap did stop part-way is marked by its own status and completeness. Read as a dimension, it would split
+    two launches that differ only in the cap they were given, leaving neither arm a test setup in common with the
+    other and no interval to read.
+
+    Prose rather than a bool for the reason :attr:`no_own_coordinate` is: taking an input out of the rig is how a
+    host stops the engine from naming a difference in it, so saying why has to cost a sentence. Valid on
+    ``apparatus`` only, and refused beside :attr:`confounds`, which nothing would read.
     """
 
     open_family: str | None = None
@@ -360,6 +383,17 @@ class Sweepable:
     own :attr:`owns_member` would not claim, a blank name, or a member two families both declare is
     refused at registration. Declaration metadata like :attr:`acts_on`: it enters no key.
     """
+
+    @property
+    def rig_dimension(self) -> bool:
+        """Whether this input is a dimension of the rig: apparatus, and not taken out of it by
+        :attr:`no_rig_coordinate`. The one rule the apparatus class, the confound scans and the host declarations
+        digest read, so none can disagree about which inputs split a cell.
+
+        :return: True for a rig dimension.
+        :rtype: bool
+        """
+        return self.role == "apparatus" and self.no_rig_coordinate is None
 
 
 @dataclass(frozen=True)
@@ -544,10 +578,11 @@ class SweepableRegistry(HostAttributed):
             seen.add(name)
             if not declared.reader_prose.strip():
                 defects.append(f"{name} states no reader prose — a bare dimension name cannot be rendered to a reader")
-            if declared.role == "apparatus" and not declared.confounds:
+            if declared.rig_dimension and not declared.confounds:
                 defects.append(f"{name} is apparatus but states no reason it confounds — a bare name is a label")
             if declared.role != "apparatus" and declared.confounds:
                 defects.append(f"{name} states a confound reason but is not apparatus — no scan would ever read it")
+            defects.extend(self._rig_coordinate_defects(declared))
             if declared.departs_production is not None and (declared.role == "label" or declared.open_family):
                 defects.append(
                     f"{name} declares departs_production but is "
@@ -565,6 +600,11 @@ class SweepableRegistry(HostAttributed):
             elif pinned.role != "apparatus":
                 defects.append(
                     f"{name} is named as a role pin but is not apparatus — a role pin is the rig, and only apparatus states why it confounds"
+                )
+            elif pinned.no_rig_coordinate is not None:
+                defects.append(
+                    f"{name} is named as a role pin but declares no_rig_coordinate — a role pin identifies who filled a "
+                    "seat in the rig, so it is a dimension of the rig"
                 )
         defects.extend(self._role_defects())
         defects.extend(self._resolution_defects())
@@ -714,6 +754,31 @@ class SweepableRegistry(HostAttributed):
         return []
 
     @staticmethod
+    def _rig_coordinate_defects(declared: Sweepable) -> list[str]:
+        """Check a ``no_rig_coordinate`` waiver is on apparatus, says why, and stands without a confound reason.
+
+        :param declared: The declaration to check.
+        :ptype declared: Sweepable
+        :return: One message per defect, empty when the declaration is well-formed.
+        :rtype: list[str]
+        """
+        if declared.no_rig_coordinate is None:
+            return []
+        if declared.role != "apparatus":
+            return [
+                f"{declared.name!r} is a {declared.role} and declares no_rig_coordinate — only apparatus is a "
+                "dimension of the rig, so waiving one it never had says nothing"
+            ]
+        if not declared.no_rig_coordinate.strip():
+            return [f"{declared.name!r} declares no_rig_coordinate blank — taking an input out of the rig states why"]
+        if declared.confounds:
+            return [
+                f"{declared.name!r} declares no_rig_coordinate and a confound reason — no scan reads an input that "
+                "is no dimension of the rig, so the reason would never be read"
+            ]
+        return []
+
+    @staticmethod
     def _mechanism_defects(declared: Sweepable) -> list[str]:
         """Check an ``acts_on`` declaration is on a fixed lever and names something.
 
@@ -835,6 +900,16 @@ class SweepableRegistry(HostAttributed):
     def declarations(self) -> tuple[Sweepable, ...]:
         """Every declaration, in reporting order."""
         return self._declarations
+
+    @property
+    def rig_dimensions(self) -> tuple[Sweepable, ...]:
+        """Every declaration that is a dimension of the rig (:attr:`Sweepable.rig_dimension`), in reporting order:
+        what an apparatus class is keyed by and the confound scans read.
+
+        :return: The rig's dimensions.
+        :rtype: tuple[Sweepable, ...]
+        """
+        return tuple(declared for declared in self._declarations if declared.rig_dimension)
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -1327,7 +1402,8 @@ class SweepableRegistry(HostAttributed):
         :return: The declaration's :attr:`Sweepable.confounds` prose.
         :rtype: str
         :raises KeyError: ``name`` is not declared by this host, or is declared with no confound
-            reason — which validation already makes impossible for an ``apparatus`` input.
+            reason — which validation makes impossible for an ``apparatus`` input unless it carries
+            :attr:`Sweepable.no_rig_coordinate`, and no confound scan asks about one of those.
         """
         declared = self._by_name.get(name)
         if declared is None:
@@ -1707,8 +1783,6 @@ def _candidate_model_departs(run: EvalRun, _results: Sequence[EvalResult]) -> bo
     origin = (run.model_role_provenance or {}).get("candidate")
     if origin is None:
         return None
-    # Imported here: the models module imports from this package, so a module-level import would cycle.
-    from threetears.evals.schema.models import ROLE_MODEL_ORIGINS
 
     if origin not in ROLE_MODEL_ORIGINS:
         # An origin a newer build recorded: whether it moved the model is that build's to say, and reading
@@ -1907,7 +1981,10 @@ CORE_SWEEPABLES: tuple[Sweepable, ...] = (
         role="apparatus",
         read=_max_cost_usd,
         reader_prose="the spend ceiling in force for the run",
-        confounds="a different spend ceiling was in force, which can stop a run before it finishes its cases",
+        no_rig_coordinate=(
+            "the cap decides when a run may stop, never what a measured case scored, so raising it is no difference; "
+            "a run it stopped part-way is marked by its status and completeness"
+        ),
         indeterminate_when_blank=True,
     ),
 )

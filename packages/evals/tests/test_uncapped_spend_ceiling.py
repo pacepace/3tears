@@ -3,8 +3,9 @@
 ``max_cost_usd`` is null for two reasons: the run was uncapped (cost enforcement off), or its writer
 recorded no ceiling. ``EvalRun.max_cost_usd_origin`` says which (``uncapped`` against ``None``), and
 the ``max_cost_usd`` reader now reads it: an uncapped run reports :data:`UNCAPPED_SPEND`, so two
-uncapped runs agree, and only a run with no recorded ceiling stays undecidable. Pinned on both
-surfaces that read the declaration: the bisection and the bundle's apparatus scan.
+uncapped runs agree, and only a run with no recorded ceiling stays undecidable. Pinned on the bisection,
+which compares the ceiling as a plain fact. The bundle's apparatus scan never names it, uncapped, capped or
+unrecorded: the ceiling is no dimension of the rig (``Sweepable.no_rig_coordinate``).
 """
 
 from __future__ import annotations
@@ -74,5 +75,6 @@ def test_two_uncapped_runs_raise_no_spend_ceiling_confound_in_the_bundle() -> No
     assert "max_cost_usd" not in _bundle_confounds(_UNCAPPED, _UNCAPPED)
 
 
-def test_a_run_with_no_recorded_ceiling_still_raises_an_undecided_confound_in_the_bundle() -> None:
-    assert _bundle_confounds(_UNCAPPED, _UNRECORDED).get("max_cost_usd") == "undecided"
+def test_a_run_with_no_recorded_ceiling_raises_no_spend_ceiling_confound_in_the_bundle() -> None:
+    """Undecided is a claim that the ceiling might have differed, and a ceiling that differed is no confound."""
+    assert "max_cost_usd" not in _bundle_confounds(_UNCAPPED, _UNRECORDED)

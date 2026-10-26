@@ -1253,6 +1253,21 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.collection_keys.purge", kind="point")
 
     @classmethod
+    def hub_cache_index_moved(cls) -> Subject:
+        """request/reply subject for a tool pod telling the hub that a customer's cached index moved.
+
+        A pod that serves an index a CDN caches (a report's newest version, named per customer) moves it
+        to a new version; the hub, which owns the CDN, purges that customer's cached index so viewers
+        read the new one (``threetears.nats.cache_index_requests.report_cache_index_moved``). The pod
+        forwards its ``identity_token``; the hub verifies it and purges only what the verified pod
+        serves, so the request buys reach and never authority.
+
+        :return: subject ``{ns}.hub.cache.index.moved``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.cache.index.moved", kind="point")
+
+    @classmethod
     def hub_channel_engagement_default_resolve(cls) -> Subject:
         """request/reply subject for resolving a channel's default engagement.
 

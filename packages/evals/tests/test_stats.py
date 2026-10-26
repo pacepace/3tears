@@ -18,6 +18,7 @@ from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     UNIFORM_MOVE_NEEDS_RANGE,
     UNPAIRED_TEST_NAME,
+    bounded_mean_interval,
     bounded_separation_p,
     composite_significance,
     difference_interval,
@@ -812,3 +813,15 @@ def test_a_difference_interval_stays_inside_the_differences_a_declared_range_all
     )
     on_a_wider_scale = difference_interval(control, contrast, paired=True, value_range=(1.0, 5.0))
     assert on_a_wider_scale == (low, high), "a 1-5 difference can reach 4"
+
+
+def test_a_bounded_mean_interval_is_none_for_too_few_values_and_refuses_one_outside_its_range() -> None:
+    assert bounded_mean_interval([0.5], (0.0, 1.0)) is None
+    assert bounded_mean_interval([], (0.0, 1.0)) is None
+    interval = bounded_mean_interval([0.0, 0.5, 1.0, 1.0], (0.0, 1.0))
+    assert interval is not None and 0.0 <= interval[0] < interval[1] <= 1.0
+    # A value outside the declared range is the caller's defect, not "no interval", even beside too few values.
+    with pytest.raises(ValueError, match="outside the declared range"):
+        bounded_mean_interval([0.5, 1.5], (0.0, 1.0))
+    with pytest.raises(ValueError, match="outside the declared range"):
+        bounded_mean_interval([-0.1], (0.0, 1.0))

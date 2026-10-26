@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from threetears.core.ddl.write_marks import MARK_FUNCTION, WRITE_MARK_TRIGGER, write_mark_trigger_sql
 from threetears.observe import get_logger
 
 __all__ = ["give_switched_tables_their_trigger"]
@@ -52,11 +53,6 @@ async def give_switched_tables_their_trigger(store: Any, tables: Sequence[str]) 
     :return: ``schema.table`` for each trigger created
     :rtype: list[str]
     """
-    from threetears.core.collections.write_marks import (  # noqa: PLC0415 - the collections module imports this package
-        MARK_FUNCTION,
-        WRITE_MARK_TRIGGER,
-        write_mark_trigger_sql,
-    )
 
     here = str((await store.query("SELECT current_schema() AS schema"))[0]["schema"])
     holders = [str(row["schema"]) for row in await store.query(_FUNCTION_SCHEMAS, MARK_FUNCTION)]

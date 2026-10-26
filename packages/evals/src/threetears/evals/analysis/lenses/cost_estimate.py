@@ -17,6 +17,12 @@ from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.analysis.reporting import _subject_id_of, pooled_cost_compositions
+from threetears.evals.analysis.stats import (
+    INTERVAL_LEVEL,
+    lognormal_sum_prediction_band,
+    standard_error_of_mean,
+    t_critical_two_sided,
+)
 
 if TYPE_CHECKING:
     from threetears.evals.schema.models import (
@@ -112,13 +118,6 @@ def _cost_band(history: Sequence[float], n_observations: int) -> tuple[float, fl
     :return: ``(low, high, basis)``: the band in dollars and the sentence stating its method and assumptions.
     :rtype: tuple[float, float, str]
     """
-    from threetears.evals.analysis.stats import (
-        INTERVAL_LEVEL,
-        lognormal_sum_prediction_band,
-        standard_error_of_mean,
-        t_critical_two_sided,
-    )
-
     n = len(history)
     log_band = lognormal_sum_prediction_band(history, n_observations)
     if log_band is not None:

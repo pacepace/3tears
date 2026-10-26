@@ -222,8 +222,11 @@ about the lever. The engine's own: the judge model, which judge each dimension w
 scored by (`judge_dim_divergence`), the temperature each judge call was sent at, the request settings the judge was
 asked for and those its calls were sent with (`judge_request_settings`, `judge_sent_settings`), the judge configs,
 the simulator model and the request settings it was asked for and sent with (`simulator_request_settings`,
-`simulator_sent_settings`), and the per-run cost ceiling (`max_cost_usd`). *Example:* the v1 runs were judged by
-judge-a and the v2 runs by judge-b: the rig moved, so the report will not pool them as one condition.
+`simulator_sent_settings`). The per-run cost ceiling (`max_cost_usd`) is declared apparatus too, so a kind can seat
+it, but it is no dimension of the rig (`no_rig_coordinate`): a cap decides when a run may stop, not what it measured,
+so runs that differ only in their cap are one rig and the bisection states the difference as a plain fact.
+*Example:* the v1 runs were judged by judge-a and the v2 runs by judge-b: the rig moved, so the report will not pool
+them as one condition.
 
 #### Apparatus class
 One configuration of the rig as recorded on the runs (`ApparatusClass`). Two observations pool only when
@@ -318,6 +321,21 @@ arm; when the arms ran is never said. It is a disclosure, never part of a run's 
 #### k (repeats)
 How many times each case is played in a run (`k_runs`, `Eval(k=...)`, CLI `--k`; default 3). LLM
 answers vary, so one play per case under-reports that variance. *Example:* 40 tickets, `k=3`, 120 trials.
+
+#### Depth
+How many times an arm actually ran each case: its cases, its usable trials, and its repeats per case, fewest,
+median and most (`Depth`, on `ArmScoreboard.depth`, each reading's `control_depth` / `arm_depth` and each
+`FrontierPoint.depth`). `k` is what a run planned; depth is what the arm delivered, pooled over every run of it.
+Arms differ in depth when old runs pool forward or a run stops part-way. A comparison of pass^k reads the
+**common depth** (`SubjectFrontier.common_depth`): the fewest runs any arm gave a case every arm shares, over
+every shared case, each arm read there over all its runs by `C(c, k) / C(n, k)`, exactly. A depth some arm never
+reached is unmeasured for it (`unmeasured_for`), and at depth 1 the comparison is of pass rates, not reliability.
+Extra repeats tighten an arm's own estimate, not a comparison much: they shrink the noise within cases, and the
+spread between cases is a floor only more cases lower (a reading's `precision`). The pass-rate interval weighs each
+shared case's share equally whatever its depth, while the passed-of-measured counts pool every trial. Above an
+arm's depth nothing is measured; a host may ask for a **model-based** pass^k there (`HostProfile.model_pass_hat_k`,
+off by default): a beta-binomial over the per-case pass chance, labelled as a model with what it assumes, never
+ranked or gated on.
 
 #### Cell
 The docs use this word in two senses. **While running**, a cell is one trial: one case at one repeat,

@@ -11,13 +11,11 @@ from threetears.evals.analysis.style import (
     BANNED_PHRASES,
     GLOSSARY,
     arm_name,
-    discounts_by_age,
-    fix_prose,
     humanize,
-    lint_page,
     lint_prose,
     measure_name,
 )
+from packages.evals.tests.style_support import lint_page
 
 
 def _rules(text: str, **kwargs: object) -> list[str]:
@@ -84,56 +82,10 @@ def test_a_long_or_number_laden_sentence_is_flagged() -> None:
     assert _rules("deepseek-v4.1-flash and T4 and v2 ran.") == []
 
 
-def test_the_declared_question_repeated_in_the_body_is_flagged_and_dropped() -> None:
+def test_the_declared_question_repeated_in_the_body_is_flagged() -> None:
     question = "Does the cheaper model hold every queue dimension within ten points of production's pass rate?"
     body = f"We asked: {question} The answer is no."
     assert "question" in _rules(body, question=question)
-    fixed, remaining = fix_prose(body + " Every number is code's.", question=question)
-    assert fixed == "The answer is no." and remaining == []
-
-
-@pytest.mark.parametrize(
-    "sentence",
-    [
-        "The question was set after the runs began, so these readings are weaker.",
-        "Because the runs predate the campaign, treat the gain as provisional.",
-        "These readings rest on older runs and should be confirmed by fresh ones.",
-        "Read post hoc, the tone gain is only a lead.",
-        "The arms ran on different days, so they are not one experiment.",
-        "Control and candidate were measured hours apart, which confounds the comparison.",
-        "The margin was set after the readings were in, so the gain is provisional.",
-        "The control runs were collected before the question, so read them with lower confidence.",
-        # An arm named by its model is no change: the noun alone never keeps an age discount.
-        "The candidate model's gain rests on older runs, so it is provisional.",
-        # A causal "since" is no change; "a different" naming the arm is none; nor is a version in an arm's name.
-        "The candidate model's gain is provisional, since it rests on older runs.",
-        "The candidate, a different model, rests on older runs, so its gain is provisional.",
-        "The prompt v2 arm's gain rests on older runs, so it is provisional.",
-    ],
-)
-def test_a_sentence_discounting_a_reading_by_data_age_or_time_apart_is_named(sentence: str) -> None:
-    """Owner rulings (2026-10-23): a run whose measurement context is unchanged reads exactly like a fresh one, and arms
-    measured apart are one experiment, so the writer never discounts a reading for when it ran."""
-    assert discounts_by_age(sentence)
-
-
-@pytest.mark.parametrize(
-    "sentence",
-    [
-        # A real config change between the arms, which is what the owner ruled still matters.
-        "The judge was re-pinned after the runs started, so the arms were graded by different judges.",
-        "The older runs were scored by a judge since replaced.",
-        "Older runs used the v1 prompt.",
-        "Older runs used the v1 prompt, so they are not directly comparable.",
-        "The arms ran on different days and the judge changed between them, so the comparison is confounded.",
-        # The late-criterion disclosure the writer is asked for, in its own words and in code's.
-        "The margin was set after the results were in.",
-        "The margin on billing was set on 20 Oct 2026, after its readings were visible.",
-    ],
-)
-def test_a_sentence_naming_a_change_or_a_late_criterion_is_never_read_as_a_discount(sentence: str) -> None:
-    assert not discounts_by_age(sentence)
-    assert fix_prose(sentence) == (sentence, [])
 
 
 def test_a_page_lints_its_prose_and_headers_not_its_data() -> None:
@@ -176,10 +128,3 @@ def test_every_glossary_entry_is_one_short_plain_sentence() -> None:
     for term, sentence in GLOSSARY.items():
         assert lint_prose(sentence) == [], term
         assert sentence.endswith(".") and sentence.count(". ") == 0, term
-
-
-def test_an_arm_named_by_a_change_word_keeps_no_age_discount() -> None:
-    """The arms' names are taken out before the sentence is read: a label holding a change word is still a name."""
-    sentence = "The judge swap arm's gain rests on older runs, so it is provisional."
-    assert not discounts_by_age(sentence), "read without the names, 'judge swap' reads as a change"
-    assert discounts_by_age(sentence, names=["judge swap"])

@@ -48,13 +48,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
+from langchain_core.messages import AIMessageChunk
+from langchain_core.outputs import ChatGenerationChunk
+
 from threetears.models.tool_name_validation import is_valid_tool_name
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from langchain_core.messages import ToolCallChunk
-    from langchain_core.outputs import ChatGenerationChunk
-
 __all__ = ["JunkToolCallStreamFilter", "drop_junk_tool_calls"]
 
 _logger = get_logger(__name__)
@@ -283,9 +284,6 @@ def _bare_chunk(source: ChatGenerationChunk, *, content: Any, tool_call_chunks: 
     :return: the new chunk
     :rtype: ChatGenerationChunk
     """
-    from langchain_core.messages import AIMessageChunk
-    from langchain_core.outputs import ChatGenerationChunk
-
     message = AIMessageChunk(content=content, tool_call_chunks=tool_call_chunks, id=source.message.id)
     return ChatGenerationChunk(message=message)
 
@@ -305,8 +303,6 @@ def _rebuilt_chunk(source: ChatGenerationChunk, *, content: Any, kept: list[Tool
     :return: the rebuilt chunk, or ``None`` when nothing is left worth emitting
     :rtype: ChatGenerationChunk | None
     """
-    from langchain_core.outputs import ChatGenerationChunk
-
     message = source.message
     fields = {
         name: getattr(message, name)

@@ -484,3 +484,32 @@ class TestAScanIsDroppedWhenAnAccessTableItDependsOnChanges:
         await coll.list_visible_to_user(user_id, customer_scope=customer_scope)
 
         assert cache.drop_for_table(table) == 1, f"a change to {table} left the cached scan in place"
+
+
+class TestSchemasDeclareTheHubTablesDefaults:
+    """the schemas carry every default the hub migrates onto ``concepts`` and ``playbook_entries``.
+
+    Found by the hub's live tier-parity gate: a default the schema does not declare is a column a
+    save that leaves it out lets the database fill, without reading the stored value back, so every
+    tier cached the row without it. ``embedding`` and ``playbook_entries.enforcement`` are deliberately
+    not owned by these collections and stay out of the schemas.
+    """
+
+    def test_concepts(self) -> None:
+        defaults = {column.name: column.server_default for column in ConceptCollection.schema.columns}
+        assert {name: defaults[name] for name in ("visibility", "aliases", "tags", "always_inject")} == {
+            "visibility": "'private'",
+            "aliases": "'[]'::jsonb",
+            "tags": "'[]'::jsonb",
+            "always_inject": "false",
+        }
+        assert "embedding" not in defaults
+
+    def test_playbook_entries(self) -> None:
+        defaults = {column.name: column.server_default for column in PlaybookEntryCollection.schema.columns}
+        assert {name: defaults[name] for name in ("visibility", "tags", "always_inject")} == {
+            "visibility": "'private'",
+            "tags": "'[]'::jsonb",
+            "always_inject": "false",
+        }
+        assert "embedding" not in defaults and "enforcement" not in defaults

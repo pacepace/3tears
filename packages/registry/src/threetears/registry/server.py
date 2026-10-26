@@ -11,12 +11,13 @@ usage: python -m threetears.registry.server
 from __future__ import annotations
 
 import asyncio
+import importlib
 import importlib.metadata
 import inspect
 import os
 import signal
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.bucket import (
@@ -42,7 +43,14 @@ from threetears.nats import (
     Subjects,
     kv_key_scope_for,
 )
-from threetears.observe import HealthCheck, HealthServer, HealthTier, InflightRequestsGauge, get_logger
+from threetears.observe import (
+    HealthCheck,
+    HealthServer,
+    HealthTier,
+    InflightRequestsGauge,
+    configure_logging,
+    get_logger,
+)
 from threetears.observe.resilience import retry_with_backoff
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.catalog_persistence import catalog_bucket
@@ -53,21 +61,25 @@ from threetears.registry.l1_cache import create_registry_l1_backend
 from threetears.registry.proxy import CallProxy
 from threetears.registry.auth import (
     AgentToolAuthorizer,
+    AllowAllAuthorizer,
     AllowAllLimitGuard,
+    DenyAllAuthorizer,
     EndpointUsageEmitter,
     LimitGuard,
     RegistryIdentity,
     ToolPodAuthenticator,
 )
 from threetears.registry.config import (
+    get_call_timeout,
+    get_heartbeat_check_interval,
+    get_heartbeat_timeout,
     get_jwks_request_timeout,
     get_delegated_token_signing_key_ref,
     get_proxy_assertion_signing_key_ref,
 )
+from threetears.registry.rbac_authorizer import RbacEvaluatorAuthorizer
+from threetears.registry.rbac_stack import RegistryRbacStack, build_registry_rbac_stack
 from threetears.registry.registration import RegistrationHandler
-
-if TYPE_CHECKING:
-    from threetears.registry.rbac_stack import RegistryRbacStack
 
 __all__ = [
     "IdentityTokenProvider",
@@ -356,8 +368,6 @@ class RegistryServer:
             body's ``version`` null
         :ptype version: str | None
         """
-        from threetears.registry.config import get_call_timeout, get_heartbeat_check_interval, get_heartbeat_timeout
-
         self._nats_url = nats_url or os.environ.get(
             "THREETEARS_NATS_URL",
             "nats://localhost:4222",
@@ -1055,8 +1065,6 @@ def _run_server() -> None:
     purely as a panic-button kill switch for misconfigured prod
     deployments.
     """
-    from threetears.observe import configure_logging
-
     configure_logging(level="INFO")
 
     allow_all = (
@@ -1085,16 +1093,12 @@ def _run_server() -> None:
     built_rbac_stacks: list["RegistryRbacStack"] = []
 
     if allow_all:
-        from threetears.registry.auth import AllowAllAuthorizer
-
         authorizer = AllowAllAuthorizer()
         _logger.warning(
             "registry running in allow-all mode (THREETEARS_REGISTRY_ALLOW_ALL_TOOLS=true)",
             extra={"extra_data": {"mode": "allow_all"}},
         )
     elif force_deny:
-        from threetears.registry.auth import DenyAllAuthorizer
-
         authorizer = DenyAllAuthorizer()
         _logger.warning(
             "registry running in forced deny-all mode "
@@ -1108,21 +1112,9 @@ def _run_server() -> None:
         # against it. the placeholder denies any dispatch that races
         # the wiring (a cold-start window of milliseconds); once the
         # rbac stack is live the server swaps in the real authorizer.
-        from threetears.registry.auth import DenyAllAuthorizer
-
         authorizer = DenyAllAuthorizer()
 
         async def _rbac_factory(nc: NatsClient, identity_token: IdentityTokenProvider | None) -> AgentToolAuthorizer:
-            from threetears.registry.l1_cache import (
-                create_registry_l1_backend,
-            )
-            from threetears.registry.rbac_authorizer import (
-                RbacEvaluatorAuthorizer,
-            )
-            from threetears.registry.rbac_stack import (
-                build_registry_rbac_stack,
-            )
-
             namespace = os.environ.get(
                 "THREETEARS_NATS_SUBJECT_NAMESPACE",
                 "3tears",
@@ -1205,8 +1197,6 @@ def _resolve_identity_factory() -> "Callable[[NatsClient], Awaitable[RegistryIde
     :raises ImportError / AttributeError: when the path does not resolve (fail loud -- a
         misconfigured identity plugin must crash startup, never silently drop to unidentified)
     """
-    import importlib
-
     spec = os.environ.get("THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY", "").strip()
     result: "Callable[[NatsClient], Awaitable[RegistryIdentity]] | None" = None
     if spec:
@@ -1247,8 +1237,6 @@ def _resolve_pod_authenticator_factory() -> (
     :raises ImportError / AttributeError: when the path does not resolve (fail loud -- a
         misconfigured authenticator plugin must crash startup, never silently drop to open mode)
     """
-    import importlib
-
     spec = os.environ.get("THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY", "").strip()
     result: "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[ToolPodAuthenticator | None]] | None" = None
     if spec:
@@ -1286,8 +1274,6 @@ def _resolve_limit_guard_factory() -> (
     :raises ImportError / AttributeError: when the path does not resolve (fail loud -- a
         misconfigured limit-guard plugin must crash startup, never silently drop to allow-all)
     """
-    import importlib
-
     spec = os.environ.get("THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY", "").strip()
     result: "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[LimitGuard | None]] | None" = None
     if spec:
@@ -1339,8 +1325,6 @@ def _resolve_usage_emitter_factory() -> "UsageEmitterFactory | LegacyUsageEmitte
     :raises ImportError / AttributeError: when the path does not resolve (fail loud -- a
         misconfigured emitter plugin must crash startup, never silently drop usage events)
     """
-    import importlib
-
     spec = os.environ.get("THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY", "").strip()
     result: "UsageEmitterFactory | LegacyUsageEmitterFactory | None" = None
     if spec:

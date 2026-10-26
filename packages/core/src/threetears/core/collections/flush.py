@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, NamedTuple, TYPE_CHECKING
 
@@ -183,8 +184,6 @@ class WriteBuffer:
         # this newer one when it completes.
         self._in_flight.discard(key)
         if self._l1 is not None:
-            from datetime import UTC, datetime
-
             l1_key = f"{table_name}:{entity_id}"
             self._l1.upsert(
                 "write_buffer",

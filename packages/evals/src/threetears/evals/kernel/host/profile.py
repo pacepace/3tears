@@ -94,6 +94,10 @@ from threetears.evals.kernel.host.sweepables import CANDIDATE_KIND_LEVER, CANDID
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.host.world import WorldRegistry
 from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.models import USAGE_ROLES
+from threetears.evals.kernel.covariates import REASONING_RATIO_KEY
+from threetears.evals.kernel.carried_measures import mechanism_measure_names
+from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS
 
 log = get_logger(__name__)
 
@@ -339,6 +343,15 @@ class HostProfile:
     before the first provider request, so a writer known unable to produce the contract costs nothing,
     not a billed call and its billed repair. A reporter run measuring writers is exempt: it exists to
     find out which models belong here. Ids are compared exactly, as the host's client is asked for them.
+    """
+
+    model_pass_hat_k: bool = False
+    """Whether the frontier also reads a model-based pass^k for each contestant at a depth it never reached.
+
+    Off by default, and a model when on: a beta-binomial over the per-case pass chance, fitted to the cases the
+    contestant ran (:func:`~threetears.evals.analysis.depth.model_pass_hat_k`), carried as
+    ``FrontierPoint.model_pass_hat_k`` with ``basis: "model"`` and what it assumes. Nothing ranks, gates or bars on
+    it.
     """
 
     sweepables: SweepableRegistry = field(init=False, repr=False, compare=False)
@@ -614,9 +627,6 @@ class HostProfile:
         :raises ProfileRegistrationError: A key names no declarable lever, with the remedy the registry prints;
             or a value names no usage role.
         """
-        # Imported here: the models module imports from this package, so a module-level import would cycle.
-        from threetears.evals.schema.models import USAGE_ROLES
-
         roles = USAGE_ROLES
         if misnamed := {name: role for name, role in sorted(self.observed_model_levers.items()) if role not in roles}:
             raise ProfileRegistrationError(
@@ -649,11 +659,6 @@ class HostProfile:
         :raises ProfileRegistrationError: An ``acts_on`` names no declared measure, a non-numeric one, or one
             no result carries as a single value.
         """
-        # Imported here: both modules import the models module, which imports this package.
-        from threetears.evals.kernel.covariates import REASONING_RATIO_KEY
-        from threetears.evals.kernel.declaration import mechanism_measure_names
-        from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS
-
         readable = mechanism_measure_names(self.measures)
         defects: list[str] = []
         # Fixed levers' acts_on and open families' named members (member_acts_on, #585) alike.

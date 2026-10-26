@@ -3,6 +3,8 @@
 - :class:`L1Backend`, the protocol every L1 backend implements.
 - :data:`MISSING`, the cache-miss sentinel (distinct from a cached ``None``).
 - :func:`build_select_clause` and :func:`bulk_columns`, shared SQL construction.
+- :func:`exact_decimal_type`, :func:`stored_decimal`, :class:`UnsupportedL1ColumnError` and
+  :class:`NonFiniteNumericError`, how an exact ``NUMERIC`` column keeps its ``Decimal``, or is refused.
 
 Nothing cached in L1 ages: a row stays until a write that reaches it is heard
 (the collection broadcasts and their tables' write generations).
@@ -11,7 +13,10 @@ Nothing cached in L1 ages: a row stays until a write that reaches it is heard
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from decimal import ROUND_HALF_UP, Context, Decimal
 from typing import Any, Protocol, runtime_checkable
+
+from sqlalchemy import Float, Numeric
 
 from threetears.core.sql_fragments import quote_identifier
 
@@ -20,6 +25,10 @@ __all__ = [
     "MISSING",
     "build_select_clause",
     "bulk_columns",
+    "NonFiniteNumericError",
+    "UnsupportedL1ColumnError",
+    "exact_decimal_type",
+    "stored_decimal",
     # released here (v0.66.0) before it moved to threetears.core.sql_fragments; still importable
     "quote_identifier",
 ]
@@ -80,6 +89,92 @@ def bulk_columns(rows: Sequence[Mapping[str, Any]], schema: Mapping[str, str]) -
     if ragged is not None:
         raise ValueError(f"row {ragged} names different columns from row 0; a bulk write needs every row alike")
     return [c for c in schema if c in named] if schema else sorted(named)
+
+
+#: wide enough for any value a Postgres ``NUMERIC`` holds, so quantizing one to its scale never
+#: runs out of digits (the default context's 28 would refuse a ``NUMERIC(38, 10)`` value)
+_NUMERIC_CONTEXT = Context(prec=1000, rounding=ROUND_HALF_UP)
+
+
+class UnsupportedL1ColumnError(TypeError):
+    """a column an L1 backend cannot hold exactly, refused when its table is created.
+
+    An L1 that kept such a column anyway would hand back a different type or a rounded value from
+    the one L3 holds, on every read it serves. Its message names the table and the column.
+    """
+
+
+def exact_decimal_type(
+    sa_type: Any, *, table: str, column: str, max_precision: int, backend: str
+) -> tuple[int, int] | None:
+    """the declared ``(precision, scale)`` of an exact ``NUMERIC`` column an L1 can hold exactly.
+
+    ``Float`` and its subclasses are ``Numeric`` to SQLAlchemy too, but Postgres stores them as binary
+    floats and asyncpg answers a ``float``; they are not exact and answer ``None`` here, as every
+    non-numeric type does. An exact ``NUMERIC`` is held only at a declared ``NUMERIC(p, s)`` with
+    ``0 <= s <= p <= max_precision``: anything else is refused, never kept approximately.
+
+    :param sa_type: the column's SQLAlchemy type
+    :ptype sa_type: Any
+    :param table: the table, for the refusal
+    :ptype table: str
+    :param column: the column, for the refusal
+    :ptype column: str
+    :param max_precision: the widest precision the backend holds exactly
+    :ptype max_precision: int
+    :param backend: the backend's name, for the refusal
+    :ptype backend: str
+    :return: ``(precision, scale)``, or ``None`` when the column is not an exact ``NUMERIC``
+    :rtype: tuple[int, int] | None
+    :raises UnsupportedL1ColumnError: when the column declares no precision and scale, or one the
+        backend cannot hold exactly
+    """
+    result: tuple[int, int] | None = None
+    if isinstance(sa_type, Numeric) and not isinstance(sa_type, Float):
+        precision, scale = sa_type.precision, sa_type.scale
+        if precision is None or scale is None:
+            raise UnsupportedL1ColumnError(
+                f"{table}.{column}: NUMERIC with no declared precision and scale cannot be cached in the "
+                f"{backend} L1, which holds an exact NUMERIC only as a declared NUMERIC(p, s); declare both"
+            )
+        if not 0 <= scale <= precision <= max_precision:
+            raise UnsupportedL1ColumnError(
+                f"{table}.{column}: NUMERIC({precision}, {scale}) cannot be cached in the {backend} L1, which "
+                f"holds an exact NUMERIC(p, s) only with 0 <= s <= p <= {max_precision}"
+            )
+        result = (precision, scale)
+    return result
+
+
+class NonFiniteNumericError(ValueError):
+    """a ``NUMERIC`` value is ``NaN`` or infinite, which an exact L1 cannot hold as a scaled integer.
+
+    Postgres stores ``'NaN'`` (and, from 14, ``'Infinity'``) in a ``NUMERIC(p, s)`` column. A
+    collection serves such a row from L3 and keeps no L1 copy of it.
+    """
+
+
+def stored_decimal(value: Any, scale: int) -> Decimal:
+    """``value`` as the ``Decimal`` a ``NUMERIC`` column of ``scale`` stores and L3 answers.
+
+    Postgres rounds a value to its column's scale half away from zero, and asyncpg hands it back
+    carrying exactly that many places: ``1.5`` written to ``NUMERIC(12, 4)`` reads back as
+    ``Decimal("1.5000")``. A float is taken by its shortest repr, which is the decimal it was
+    written from for any value of at most 15 significant digits.
+
+    :param value: the value written: a ``Decimal``, ``int``, ``float`` or decimal string
+    :ptype value: Any
+    :param scale: the column's declared scale
+    :ptype scale: int
+    :return: the value as stored
+    :rtype: Decimal
+    :raises NonFiniteNumericError: when ``value`` is ``NaN`` or infinite, which no L1 holds at a scale
+    :raises decimal.InvalidOperation: when ``value`` is not a number
+    """
+    number = value if isinstance(value, Decimal) else Decimal(repr(value) if isinstance(value, float) else str(value))
+    if not number.is_finite():
+        raise NonFiniteNumericError(f"{number} has no value at scale {scale}; an L1 holds only finite NUMERIC values")
+    return number.quantize(Decimal(1).scaleb(-scale), context=_NUMERIC_CONTEXT)
 
 
 @runtime_checkable

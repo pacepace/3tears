@@ -26,7 +26,7 @@ from __future__ import annotations
 import html
 from collections.abc import Mapping, Sequence
 
-from threetears.evals.analysis.report.model import ChartBlock, IntervalRow, OutcomeBar, interval_text
+from threetears.evals.analysis.report.blocks import ChartBlock, IntervalRow, OutcomeBar, interval_text
 from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
 from threetears.evals.analysis.style import GLOSSARY
 

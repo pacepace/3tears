@@ -169,24 +169,6 @@ class TestComputedOnce:
         with pytest.raises(AnswerNotComputable, match="only through answer"):
             await answers.get_for(("v1", "a"))
 
-    async def test_no_l1_is_taken_whatever_the_registry_offers(self) -> None:
-        class _RecordingL1:
-            """an L1 backend that records every call naming a table."""
-
-            def __init__(self) -> None:
-                self.tables: list[str] = []
-
-            def __getattr__(self, name: str) -> Any:
-                def call(*args: Any, **kwargs: Any) -> None:
-                    self.tables.extend(str(a) for a in (*args, *kwargs.values()) if isinstance(a, str))
-
-                return call
-
-        l1 = _RecordingL1()
-        answers = _replica(FakeNatsClient(), l1_backend=l1)
-        assert _text(await answers.answer("v1", "a", _Computer("from L2 alone"), order=1)) == "from L2 alone"
-        assert [table for table in l1.tables if table.startswith(_TABLE)] == []
-
 
 class TestRetirement:
     async def test_retiring_deletes_older_versions_answers_and_keeps_the_current(self) -> None:

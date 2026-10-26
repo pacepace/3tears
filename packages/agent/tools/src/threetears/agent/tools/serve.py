@@ -11,6 +11,16 @@ import os
 from importlib.util import find_spec
 
 from threetears.agent.tools.bootstrap import ToolPodConfigError, ToolServerBootstrap
+from threetears.agent.tools.builtin.calculator import CalculatorTool
+from threetears.agent.tools.builtin.current_date import CurrentDateTool
+from threetears.agent.tools.builtin.date_math import DateMathTool
+from threetears.agent.tools.builtin.dictionary import DictionaryTool
+from threetears.agent.tools.builtin.image_prep import ImagePrepTool
+from threetears.agent.tools.builtin.timezone_converter import TimezoneConverterTool
+from threetears.agent.tools.builtin.unit_converter import UnitConverterTool
+from threetears.agent.tools.builtin.web_fetch import WebFetchTool
+from threetears.agent.tools.builtin.web_search import WebSearchTool
+from threetears.agent.tools.document import ParseDocumentTool
 from threetears.agent.tools.server import ToolServer
 from threetears.core.security import IdentityMinter
 from threetears.core.security.secret_refs import resolve_secret
@@ -35,8 +45,11 @@ _PLATFORM_CUSTOMER_SENTINEL = "3tears-platform"
 def _register_builtin_tools(server: ToolServer) -> None:
     """register all available built-in tools on server.
 
-    tools with missing optional dependencies are skipped with
-    warning log. tools requiring external configuration (e.g.
+    every builtin module imports without its optional extra (a tool
+    whose extra is missing refuses at call time, naming the extra);
+    web_fetch, whose missing extractor would only show at call time,
+    is probed and skipped with a warning log. tools requiring
+    external configuration (e.g.
     WebSearchTool, AnalyzeMediaTool) or session-scoped state
     (workflow, todo) are only registered when required environment
     variables or host-application context are present.
@@ -48,52 +61,20 @@ def _register_builtin_tools(server: ToolServer) -> None:
     skipped_count = 0
     skipped_reasons: list[str] = []
 
-    from threetears.agent.tools.builtin.calculator import CalculatorTool
-    from threetears.agent.tools.builtin.current_date import CurrentDateTool
-    from threetears.agent.tools.builtin.date_math import DateMathTool
-    from threetears.agent.tools.builtin.dictionary import DictionaryTool
-
     server.register(CalculatorTool())
     server.register(CurrentDateTool())
     server.register(DateMathTool())
     server.register(DictionaryTool())
-    registered_count += 4
-
-    try:
-        from threetears.agent.tools.builtin.unit_converter import UnitConverterTool
-
-        server.register(UnitConverterTool())
-        registered_count += 1
-    except ImportError:
-        skipped_count += 1
-        skipped_reasons.append("unit_converter: missing pint dependency")
-        _logger.warning(
-            "skipping unit_converter (missing pint dependency)",
-            extra={"extra_data": {"tool": "threetears.unit_converter"}},
-        )
-
-    try:
-        from threetears.agent.tools.builtin.timezone_converter import TimezoneConverterTool
-
-        server.register(TimezoneConverterTool())
-        registered_count += 1
-    except ImportError:
-        skipped_count += 1
-        skipped_reasons.append("timezone_converter: missing dependency")
-        _logger.warning(
-            "skipping timezone_converter (missing dependency)",
-            extra={"extra_data": {"tool": "threetears.timezone_converter"}},
-        )
+    server.register(UnitConverterTool())
+    server.register(TimezoneConverterTool())
+    registered_count += 6
 
     # web_fetch reaches the extractor through the search leaf's Extract path, which
-    # imports trafilatura lazily so importing the package never pays for it. That
-    # laziness moves the failure: without the extra the tool CONSTRUCTS fine and
-    # refuses every call. A pod that registers a tool it cannot serve is exactly
+    # does not need trafilatura to import. So without the extra the tool CONSTRUCTS
+    # fine and refuses every call. A pod that registers a tool it cannot serve is exactly
     # what the skip-with-reason pattern exists to prevent, so the availability is
     # probed here -- at registration, where a reason still reaches an operator.
     if find_spec("trafilatura") is not None:
-        from threetears.agent.tools.builtin.web_fetch import WebFetchTool
-
         server.register(WebFetchTool())
         registered_count += 1
     else:
@@ -119,8 +100,6 @@ def _register_builtin_tools(server: ToolServer) -> None:
         # spans, injected into the leaf, which opens no client of its own. A pod
         # wanting a shared breaker or a named egress constructs the transport and
         # passes it -- the base URL stays deployment config either way (D21).
-        from threetears.agent.tools.builtin.web_search import WebSearchTool
-
         server.register(WebSearchTool(base_url=searxng_url))
         registered_count += 1
     else:
@@ -147,31 +126,9 @@ def _register_builtin_tools(server: ToolServer) -> None:
             },
         )
 
-    try:
-        from threetears.agent.tools.document import ParseDocumentTool
-
-        server.register(ParseDocumentTool())
-        registered_count += 1
-    except ImportError:
-        skipped_count += 1
-        skipped_reasons.append("parse_document: missing dependency")
-        _logger.warning(
-            "skipping parse_document (missing dependency)",
-            extra={"extra_data": {"tool": "threetears.parse_document"}},
-        )
-
-    try:
-        from threetears.agent.tools.builtin.image_prep import ImagePrepTool
-
-        server.register(ImagePrepTool())
-        registered_count += 1
-    except ImportError:
-        skipped_count += 1
-        skipped_reasons.append("image_prep: missing Pillow dependency")
-        _logger.warning(
-            "skipping image_prep (missing Pillow dependency)",
-            extra={"extra_data": {"tool": "threetears.image_prep"}},
-        )
+    server.register(ParseDocumentTool())
+    server.register(ImagePrepTool())
+    registered_count += 2
 
     # -- session-scoped tools (not registerable in shared tool server) --------
 

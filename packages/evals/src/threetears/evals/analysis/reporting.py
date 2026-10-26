@@ -73,6 +73,7 @@ from threetears.evals.kernel.scoring import (
 )
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.analysis.completeness import degraded_run_disclosures
+from threetears.evals.kernel.usage_capture import count_substituted_deliveries
 
 if TYPE_CHECKING:
     from threetears.evals.schema.models import (
@@ -1532,8 +1533,6 @@ def project_score_records(
         none.
     :rtype: ScoreProjection
     """
-    from threetears.evals.kernel.usage_capture import count_substituted_deliveries
-
     placed, exclusions = place_results(
         runs, results, known_run_ids, source="project_score_records", archived_run_ids=archived_run_ids
     )

@@ -160,6 +160,7 @@ from threetears.evals.analysis.bundle.judges import _judge_change
 from threetears.evals.analysis.bundle.trials import trials_and_census
 from threetears.evals.analysis.bundle.time_axis import _time_axis
 from threetears.evals.analysis.bundle.surface import _measure_catalog
+from threetears.evals.kernel.host.measures import MeasureRegistry
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.kernel.campaign import EvalCampaign
@@ -926,8 +927,6 @@ def _as_launched(runs: Sequence[EvalRun], profile: HostProfile) -> tuple[HostPro
         the reader declares it.
     :rtype: tuple[HostProfile, list[str]]
     """
-    from threetears.evals.kernel.host.measures import MeasureRegistry
-
     recorded = [run for run in runs if run.declared_measures]
     if not recorded:
         return profile, []
