@@ -68,6 +68,22 @@ __all__ = [
     "change_words",
     "reading_words",
     "slot_title",
+    "FLOOR_STRIP_NOTE",
+    "MISSES_TEMPLATE",
+    "LOG_X_NOTE",
+    "RANGE_TEMPLATE",
+    "P95_TEMPLATE",
+    "NO_MEDIAN_TEMPLATE",
+    "CASES_TEMPLATE",
+    "BELOW_TEMPLATE",
+    "DIFFERENCE_NOTE",
+    "POINTS_WORDS",
+    "UNIT_WORDS",
+    "CONFUSION_NOTE",
+    "TABLE_HEADERS",
+    "TABLE_PER_THOUSAND",
+    "CELL_TEMPLATE",
+    "TABLE_ORDER",
 ]
 
 #: GENERATOR §2.5: how sure the decision is, in exactly three forms, verbatim.
@@ -380,3 +396,76 @@ PASSES_EVERY_GATE = "Passes every gate"
 
 #: A scatter's caption where an axis is drawn on a log scale (GENERATOR §5.2).
 LOG_AXIS_NOTE = "The {axis} axis is on a log scale: its values span more than ten times."
+
+
+#: The caption under a dot strip of floors.
+FLOOR_STRIP_NOTE = "Each dot is the largest drop its interval allows; a floor holds where the dot stays above its line."
+
+#: A dot's tooltip line where it misses its line.
+MISSES_TEMPLATE = "Misses the {line}"
+
+#: The caption under a scatter whose x axis is logarithmic.
+LOG_X_NOTE = "The horizontal axis is logarithmic: each step is a multiple."
+
+#: A range bar's tooltip line: its two ends.
+RANGE_TEMPLATE = "p50 {p50} · p95 {p95}"
+
+#: A range bar's tooltip line where the input holds only its p95, which is drawn as its end mark alone.
+P95_TEMPLATE = "p95 {p95}; no p50 in the evidence"
+
+#: The caption naming the range bars drawn as their p95 alone.
+NO_MEDIAN_TEMPLATE = "Drawn at the p95 alone, with no p50 in the evidence: {missing}."
+
+#: A heatmap cell's tooltip line under its place: its value and the cases under it.
+CASES_TEMPLATE = "{value} · n = {n}"
+
+#: A heatmap cell's tooltip line where its value is below the floor.
+BELOW_TEMPLATE = "Below the {line}"
+
+#: The caption naming which arm a difference heatmap draws less which, and in what unit.
+DIFFERENCE_NOTE = "Each cell is {compared} less {base}, {unit}; the small figure is {compared}'s own."
+
+#: What a rate's difference is stated in, in a difference heatmap's caption.
+POINTS_WORDS = "in points"
+
+#: What any other difference is stated in, in a difference heatmap's caption.
+UNIT_WORDS = "in its own unit"
+
+#: The caption under confusion matrices.
+CONFUSION_NOTE = "Rows are the true label and columns the predicted one; each row is shared out to 100%."
+
+#: A plain table chart's column header, by column key.
+TABLE_HEADERS = {
+    "arm": "Arm",
+    "measure": "Measure",
+    "value": "Value",
+    "change": "Change",
+    "reading": "Reading",
+    "verdict": "Verdict",
+    "figure": "Figure",
+    "floor": "Floor",
+    "status": "Status",
+    "worst_drop": "Largest drop",
+    "margin": "Margin",
+    "slice": "Slice",
+    "trial": "Trial",
+    "case": "Case",
+    "stratum": "Stratum or task",
+    "outcome": "Outcome",
+    "reason": "Reason",
+    "cell": "Cell",
+    "cases": "Cases",
+    "axis": "Axis",
+    "expected": "True label",
+    "predicted": "Predicted label",
+    "prefers_control": "Prefers the control",
+}
+
+#: What a plain table states a money figure per reply per, beside its measure's name.
+TABLE_PER_THOUSAND = "{name}, per 1,000 replies"
+
+#: How a target-matrix cell's two levels read together, in a plain table.
+CELL_TEMPLATE = "{row} × {column}"
+
+#: How a plain table's rows are ordered, in words.
+TABLE_ORDER = "as the chart's query selects them, in the input's order"

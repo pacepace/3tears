@@ -54,42 +54,16 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Task,
 )
+from threetears.evals.analysis.report.plan_page.words import (
+    CELL_TEMPLATE,
+    TABLE_HEADERS,
+    TABLE_ORDER,
+    TABLE_PER_THOUSAND,
+)
 from threetears.evals.analysis.style import humanize
 
 __all__ = ["RESOLVERS"]
 
-#: Each column's header, by key.
-_HEADERS = {
-    "arm": "Arm",
-    "measure": "Measure",
-    "value": "Value",
-    "change": "Change",
-    "reading": "Reading",
-    "verdict": "Verdict",
-    "figure": "Figure",
-    "floor": "Floor",
-    "status": "Status",
-    "worst_drop": "Largest drop",
-    "margin": "Margin",
-    "slice": "Slice",
-    "trial": "Trial",
-    "case": "Case",
-    "stratum": "Stratum or task",
-    "outcome": "Outcome",
-    "reason": "Reason",
-    "cell": "Cell",
-    "cases": "Cases",
-    "axis": "Axis",
-    "expected": "True label",
-    "predicted": "Predicted label",
-    "prefers_control": "Prefers the control",
-}
-#: What a money figure per reply is stated per, beside its measure's name.
-_PER_THOUSAND = "{name}, per 1,000 replies"
-#: How a cell's two levels read together.
-_CELL_TEMPLATE = "{row} × {column}"
-#: How the table's rows are ordered, in words.
-_ORDER = "as the chart's query selects them, in the input's order"
 
 #: One table row's cells, by column key.
 _Row = dict[str, TableCell]
@@ -125,7 +99,7 @@ def _figure_cell(context: ChartContext, key: str, stat: Stat | None) -> tuple[Ta
     read = stat_value(report_input, key, stat) if stat is not None else None
     drawn = quantity(figure_unit(report_input, key), [read[0]] if read is not None else [])
     if drawn.unit == MONEY and drawn.factor != 1:
-        name = _PER_THOUSAND.format(name=name)
+        name = TABLE_PER_THOUSAND.format(name=name)
     if stat is None or read is None:
         return TableCell(value=None), name
     interval = stat_interval(stat) if read[1] == "mean" else None
@@ -257,7 +231,7 @@ def _cells(context: ChartContext) -> Iterator[_Row]:
     for row in context.rows():
         cell = row.item
         assert isinstance(cell, Cell)
-        place = _CELL_TEMPLATE.format(row=names.get(cell.row, cell.row), column=names.get(cell.column, cell.column))
+        place = CELL_TEMPLATE.format(row=names.get(cell.row, cell.row), column=names.get(cell.column, cell.column))
         for arm in _kept_arms(context, iter(cell.per_arm)):
             for key, stat in cell.per_arm[arm].items():
                 if named and key not in named:
@@ -327,9 +301,9 @@ def _table(context: ChartContext) -> Drawn:
         section=PLANNED_SECTION,
         name=context.query.source,
         title=context.title,
-        columns=[TableColumn(key=key, header=_HEADERS[key]) for key in keys],
+        columns=[TableColumn(key=key, header=TABLE_HEADERS[key]) for key in keys],
         rows=rows,
-        order=_ORDER,
+        order=TABLE_ORDER,
         total_rows=len(rows),
     )
     return Drawn(table)

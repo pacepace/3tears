@@ -66,6 +66,14 @@ from threetears.evals.analysis.report.plan_page.charting import (
     unit_refusal,
 )
 from threetears.evals.analysis.report.plan_page.look import Quantity, band_domain, figure_text, quantity
+from threetears.evals.analysis.report.plan_page.words import (
+    BELOW_TEMPLATE,
+    CASES_TEMPLATE,
+    CONFUSION_NOTE,
+    DIFFERENCE_NOTE,
+    POINTS_WORDS,
+    UNIT_WORDS,
+)
 from threetears.evals.analysis.report_input import Cell, ConfusionTable, Stat, Stratum, Task
 from threetears.evals.analysis.style import humanize
 
@@ -74,18 +82,6 @@ __all__ = ["RESOLVERS"]
 #: The count from which a matrix's counts print in thousands.
 _THOUSANDS_FROM = 10_000
 
-#: A cell's tooltip line under its place: its value and the cases under it.
-_CASES_TEMPLATE = "{value} · n = {n}"
-#: A cell's tooltip line where its value is below the floor.
-_BELOW_TEMPLATE = "Below the {line}"
-#: The caption naming which arm a difference heatmap draws less which, and in what unit.
-_DIFFERENCE_NOTE = "Each cell is {compared} less {base}, {unit}; the small figure is {compared}'s own."
-#: What a rate's difference is stated in, in the caption.
-_POINTS_WORDS = "in points"
-#: What any other difference is stated in, in the caption.
-_UNIT_WORDS = "in its own unit"
-#: The caption under confusion matrices.
-_CONFUSION_NOTE = "Rows are the true label and columns the predicted one; each row is shared out to 100%."
 
 #: The fraction of a non-rate difference heatmap's largest difference that is grayed as no difference.
 _NEUTRAL_SHARE = 1 / 16
@@ -129,9 +125,9 @@ def _arm_name(context: ChartContext, arm: str) -> str:
 
 def _cell_tip(place: str, value: float, n: float | None, drawn: Quantity, line: ChartReference | None) -> list[str]:
     said = figure_text(value, drawn)
-    tip = [place, _CASES_TEMPLATE.format(value=said, n=count_text(n)) if n is not None else said]
+    tip = [place, CASES_TEMPLATE.format(value=said, n=count_text(n)) if n is not None else said]
     if line is not None and line.kind == "floor" and value < line.value:
-        tip.append(_BELOW_TEMPLATE.format(line=line.label or line.kind))
+        tip.append(BELOW_TEMPLATE.format(line=line.label or line.kind))
     return tip
 
 
@@ -456,7 +452,7 @@ def _diff_heatmap(context: ChartContext) -> Drawn:
         neutral=None if rate or not largest else largest * _NEUTRAL_SHARE,
         saturate=None if rate or not largest else largest,
     )
-    note = _DIFFERENCE_NOTE.format(compared=compared_name, base=base_name, unit=_POINTS_WORDS if rate else _UNIT_WORDS)
+    note = DIFFERENCE_NOTE.format(compared=compared_name, base=base_name, unit=POINTS_WORDS if rate else UNIT_WORDS)
     return Drawn(chart_block(context, data), (note,))
 
 
@@ -502,7 +498,7 @@ def _confusion(context: ChartContext) -> Drawn:
         raise context.refuse("no arm it reads holds a confusion table")
     several_arms = len({arm for _, arm, _, _ in drawn}) > 1
     several_axes = len({axis for axis, _, _, _ in drawn}) > 1
-    notes = (_CONFUSION_NOTE, *missing_note(missing))
+    notes = (CONFUSION_NOTE, *missing_note(missing))
     if len(drawn) == 1:
         axis, _, table, matrix = drawn[0]
         data = ConfusionChart(
