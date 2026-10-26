@@ -96,7 +96,8 @@ column factors and its tiles' cost and latency. The renderer reads those off the
   line. An id that names no caveat of the input is refused wherever it lands.
 - *Charts*: each chart's kind suits its source (a forest reads readings or contrasts, every row with an interval; a
   lattice reads configs; …); its query names only arms, aspects, measures and strata the input holds, and selects at
-  least one row; its reference key and its emphasis name something present. The summary charts show the options
+  least one row (the rows a page draws, :func:`~threetears.evals.analysis.report_rows.query_rows`); its reference
+  key and its emphasis name something present. The summary charts show the options
   table's arm rows in its order, a change-from-control chart (readings, contrasts, or ``arm_minus_control``) leaving
   the control out.
 - *Ids*: section ids, explore control ids and option rows are each unique.
@@ -179,8 +180,9 @@ from threetears.evals.analysis.report_decision import (
     shown_better,
     surviving_options,
 )
-from threetears.evals.analysis.report_input import Aspect, Contrast, Judged, Measure, ReportInput
+from threetears.evals.analysis.report_input import Contrast, ReportInput
 from threetears.evals.analysis.report_margins import criterion_place, weakest_margin
+from threetears.evals.analysis.report_rows import SourceRow, query_aspect, query_rows
 from threetears.evals.kernel.report_plan import ChartSpec, OptionRow, ReportPlan, Signals, WarningRef
 from threetears.evals.schema.prose import field_is_prose
 
@@ -489,7 +491,7 @@ def _forest_spine(report_input: ReportInput) -> tuple[str, str, tuple[str, ...] 
     read = [
         aspect for aspect in report_input.aspects if aspect.asked and any(r.within_interval for r in aspect.readings)
     ]
-    asked = read[0] if len(read) == 1 else _aspect_of("", report_input)
+    asked = read[0] if len(read) == 1 else query_aspect("", report_input)
     if asked is not None and any(reading.within_interval for reading in asked.readings):
         return "readings", asked.id, (), ("margin",) if asked.margin is not None else ()
     if any(contrast.interval is not None for contrast in report_input.contrasts):
@@ -1077,10 +1079,10 @@ def _query_faults(path: str, chart: ChartSpec, plan: ReportPlan, report_input: R
     strata = _strata_vocabulary(report_input)
     if stray := [stratum for stratum in query.strata if stratum not in strata]:
         yield f"{path}.query.strata", f"name {stray}, which are no strata or tasks of the report input"
-    rows = list(_source_rows(chart, report_input))
+    rows: list[SourceRow] = query_rows(query, report_input)
     if not rows:
         yield f"{path}.query", f"selects nothing from {source!r}: the chart would be empty"
-    elif chart.kind == "forest" and not all(interval for _, interval in rows):
+    elif chart.kind == "forest" and any(row.interval is None for row in rows):
         yield f"{path}.kind", "is 'forest', and some row it selects carries no interval: a forest draws intervals"
     for index, reference in enumerate(chart.reference):
         yield from _bare_key_faults(f"{path}.reference[{index}].key", reference.key, report_input)
@@ -1122,90 +1124,6 @@ def _strata_vocabulary(report_input: ReportInput) -> set[str]:
     if report_input.human_pref is not None:
         names |= {row.id for row in report_input.human_pref.rows}
     return names
-
-
-def _source_rows(chart: ChartSpec, report_input: ReportInput) -> Iterator[tuple[str, bool]]:
-    """Each row the query selects, by a label, with whether it carries an interval."""
-    query = chart.query
-    arms = set(query.arms) or {arm.id for arm in report_input.arms}
-    measures = set(query.measures)
-    strata = set(query.strata)
-    source = query.source
-    if source == "readings":
-        aspect = _aspect_of(query.aspect, report_input)
-        for reading in aspect.readings if aspect is not None else []:
-            if reading.arm in arms:
-                yield reading.arm, reading.within_interval is not None
-    elif source == "contrasts":
-        for contrast in report_input.contrasts:
-            if (
-                contrast.arm in arms
-                and (not measures or contrast.measure in measures)
-                and (not query.aspect or contrast.aspect == query.aspect)
-            ):
-                yield f"{contrast.arm}/{contrast.measure}", contrast.interval is not None
-    elif source in ("measures", "judged", "configs"):
-        yield from _figure_rows(source, query.aspect, measures, arms, report_input)
-    elif source == "scoreboard":
-        aspect = _aspect_of(query.aspect, report_input) if query.aspect else None
-        board = aspect.scoreboard if aspect is not None and aspect.scoreboard is not None else report_input.scoreboard
-        yield from ((arm, False) for arm in board if arm in arms)
-    elif source == "floors":
-        for floor in report_input.floors:
-            if floor.arm in arms and (not query.aspect or floor.aspect == query.aspect):
-                if not measures or floor.floor in measures:
-                    yield f"{floor.floor}/{floor.arm}", floor.interval is not None
-    elif source in ("strata", "tasks"):
-        slices = report_input.strata if source == "strata" else report_input.tasks
-        for item in slices:
-            if (not strata or item.id in strata) and any(arm in arms for arm in item.per_arm):
-                yield item.id, False
-    elif source == "examples":
-        for example in report_input.examples:
-            if (
-                (example.arm is None or example.arm in arms)
-                and (not strata or example.stratum in strata)
-                and (not query.aspect or example.aspect in (None, query.aspect))
-            ):
-                yield example.trial or example.case or "example", False
-    elif source == "cells":
-        yield from ((cell, False) for cell in report_input.cells if not strata or cell in strata)
-    elif source == "confusion":
-        yield from ((axis, False) for axis in report_input.confusion if not measures or axis in measures)
-    elif report_input.human_pref is not None:
-        yield from ((row.id, row.half_width is not None) for row in report_input.human_pref.rows)
-
-
-def _figure_rows(
-    source: str, aspect: str, measures: set[str], arms: set[str], report_input: ReportInput
-) -> Iterator[tuple[str, bool]]:
-    """Each arm's figure on each measure or judged dimension the query keeps; a configs chart keeps the arms that
-    ran a config."""
-    tables: list[Mapping[str, Measure | Judged]] = []
-    if source in ("measures", "configs"):
-        tables.append(report_input.measures)
-    if source in ("judged", "configs"):
-        tables.append(report_input.judged)
-    if source == "configs":
-        arms = arms & {config.arm for config in report_input.configs}
-    for table in tables:
-        for key, figures in table.items():
-            if measures and key not in measures:
-                continue
-            per_arm = figures.by_aspect.get(aspect, figures.per_arm) if aspect else figures.per_arm
-            for arm, stat in per_arm.items():
-                if arm in arms:
-                    yield f"{key}/{arm}", stat.ci is not None
-
-
-def _aspect_of(aspect_id: str, report_input: ReportInput) -> Aspect | None:
-    """The aspect a query names, or with none named the one asked aspect (the only one asked, else the only one)."""
-    if aspect_id:
-        return next((aspect for aspect in report_input.aspects if aspect.id == aspect_id), None)
-    asked = [aspect for aspect in report_input.aspects if aspect.asked]
-    if len(asked) == 1:
-        return asked[0]
-    return report_input.aspects[0] if not asked and len(report_input.aspects) == 1 else None
 
 
 def _emphasizable(plan: ReportPlan, report_input: ReportInput) -> set[str]:
