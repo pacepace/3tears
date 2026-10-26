@@ -287,17 +287,19 @@ def _end(segment: dict[str, Any], side: str) -> float | None:
     return None if end is None else float(end["at"]["value"])
 
 
-def _midpoint(segment: dict[str, Any], low: float | None, high: float | None) -> float:
-    """A value inside a segment: its middle, or one past its one stated end (the range's ends where it has none)."""
-    start = _end(segment, "low") if segment["low"] is not None else low
-    stop = _end(segment, "high") if segment["high"] is not None else high
-    if start is not None and stop is not None:
-        return (start + stop) / 2
-    if stop is not None:
-        return stop - 1.0
-    if start is not None:
-        return start + 1.0
-    return 0.0
+def _probes(flips: Sequence[float], low: float | None) -> list[float]:
+    """Values to read a sweep's call at, chosen from the input's own flips and not the sweep's rule: just below and
+    just above every flip, each end of the range, and far past the last flip and below the first; a flip the sweep
+    missed sits between two of them, on either side of it."""
+    values = sorted(set(flips))
+    gaps = [high - low_end for low_end, high in zip(values, values[1:], strict=False) if high > low_end]
+    epsilon = min([1e-6, *(gap / 4 for gap in gaps)])
+    reach = max([1.0, *(abs(value) for value in values)])
+    points = {value + side * epsilon * max(1.0, abs(value)) for value in values for side in (-1, 1)}
+    points |= {reach * 10, -reach * 10, *(value for value in values)}
+    if low is not None:
+        points = {point for point in points if point >= low} | {low}
+    return sorted(points)
 
 
 def _holding(segments: list[dict[str, Any]], value: float, boundary: str) -> list[dict[str, Any]]:
@@ -320,9 +322,7 @@ def _sweeps() -> list[tuple[str, str]]:
 
 
 @pytest.mark.parametrize(("name", "parameter"), _sweeps(), ids=lambda value: str(value))
-def test_each_flip_is_its_figure_and_each_segments_call_is_the_decision_at_its_midpoint(
-    name: str, parameter: str
-) -> None:
+def test_each_flip_is_its_figure_and_the_call_at_every_probe_is_its_segments(name: str, parameter: str) -> None:
     held = _all_inputs()[name]
     result = sensitivity(held, parameter, limit=WHOLE).model_dump(mode="json")
     _each_figure_resolves(result, held)
@@ -335,8 +335,8 @@ def test_each_flip_is_its_figure_and_each_segments_call_is_the_decision_at_its_m
     low = 0.0 if not parameter.startswith("threshold:") else None
     segments = result["segments"]
     assert segments, "a sweep always has a segment"
-    for segment in segments:
-        point = _midpoint(segment, low, None)
+    for point in _probes(list(expected.values()), low):
+        (segment,) = _holding(segments, point, result["boundary_belongs_to"])
         assert (segment["modes"], segment["dominant"]) == _decision_at(held, parameter, point), (name, point)
     for left, right in zip(segments, segments[1:], strict=False):
         assert (left["modes"], left["dominant"]) != (right["modes"], right["dominant"]), "adjacent segments differ"
@@ -370,10 +370,11 @@ def test_a_sweep_over_a_range_cuts_only_inside_it_and_pages_its_flips() -> None:
     }
     assert ranged.segments[0].low is None and ranged.segments[-1].high is None
     assert "flips outside the range swept are not listed" in ranged.notes
-    for segment in ranged.segments:
-        point = _midpoint(segment.model_dump(mode="json"), low, high)
-        assert low <= point <= high
-        assert (segment.modes, segment.dominant) == _decision_at(held, "threshold:pass_rate", point)
+    segments = [segment.model_dump(mode="json") for segment in ranged.segments]
+    inside = [float(flip.at.value) for flip in ranged.flips if isinstance(flip.at.value, float)]
+    for point in [low, high, *(point for point in _probes(inside, low) if point <= high)]:
+        (segment,) = _holding(segments, point, ranged.boundary_belongs_to)
+        assert (segment["modes"], segment["dominant"]) == _decision_at(held, "threshold:pass_rate", point), point
 
     seen: list[str] = []
     offset: int | None = 0

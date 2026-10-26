@@ -474,8 +474,13 @@ def test_a_family_naming_no_aspect_among_several_is_keyed_by_its_place_and_each_
 def test_a_kairo_contrasts_confound_is_named_by_its_caveat() -> None:
     _snapshot, held = _held(KAIRO)
     confounded = [row for row in contrasts_list(held).contrasts if row.confounds]
-    assert confounded, "the control: Kairo's 1017 contrasts carry a confound"
-    assert {name for row in confounded for name in row.confounds} == {"confound:observed:reasoning_ratio"}
+    assert confounded, "the control: Kairo's contrasts carry a confound"
+    named = {name for row in confounded for name in row.confounds}
+    caveats = {caveat.id: caveat.kind for caveat in report_caveats(held)}
+    assert all(caveats.get(name) in ("confound", "apparatus") for name in named), "each is a caveat the input carries"
+    assert {name.partition(":")[2] for name in named} == {
+        dimension for contrast in held.contrasts for dimension in contrast.confounds
+    }, "each confound a contrast names, by its caveat"
 
 
 def test_contrasts_list_keeps_only_the_arm_measure_and_aspect_named() -> None:
