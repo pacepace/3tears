@@ -13,7 +13,9 @@ page's menu was readable; the article is at about:blank", with "fetch about:blan
 an agent fetched one site six times in an hour for that (metallm, 2026-10-26). A frame whose address is not
 http or https is now neither the pointer nor counted among the frames, so such a page is answered as it is, and
 a placeholder beside the article's own frame no longer stops that frame being followed. A `citation_pdf_url`
-that is not a web address is passed over for the frames in the same way.
+that is not a web address is passed over for the frames in the same way, and a frame address that will not
+split is dropped rather than hiding a readable frame beside it; only a page none of whose frame addresses split
+still reads as "its frames could not be looked for".
 
 ## v0.78.0 -- 2026-10-24
 

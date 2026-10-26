@@ -1098,7 +1098,9 @@ def _pointer_of(markup: str, base: str) -> tuple[str | None, int, bool]:
     (``about:blank``, ``javascript:``, ``data:``) holds no article: a frame with
     one is a placeholder an ad or an embed fills in later, so it is neither the
     pointer nor counted among the frames, and a ``citation_pdf_url`` with one is
-    passed over for the frames.
+    passed over for the frames. A frame address that will not split is dropped the
+    same way, so it cannot hide a readable frame beside it; only when no frame
+    address on the page splits is that an answer of its own.
 
     :param markup: the decoded page
     :ptype markup: str
@@ -1110,12 +1112,26 @@ def _pointer_of(markup: str, base: str) -> tuple[str | None, int, bool]:
     :raises AssertionError: from the stdlib HTML parser, which reports a declaration it cannot
         make sense of that way; the caller says the frames could not be looked for, since
         "points nowhere" is a different answer
-    :raises ValueError: from ``urljoin``, on an address that will not split (``http://[::1``)
+    :raises ValueError: from ``urljoin``, on a ``citation_pdf_url`` that will not split, or when
+        no frame address on the page splits (``http://[::1``)
     """
     parser = _FramesAndPointers()
     parser.feed(markup)
     parser.close()
-    frames = [url for url in (urljoin(base, src) for src in parser.frames) if urlsplit(url).scheme in _WEB_SCHEMES]
+    frames: list[str] = []
+    resolved = False
+    unsplit: ValueError | None = None
+    for src in parser.frames:
+        try:
+            url = urljoin(base, src)
+        except ValueError as exc:
+            unsplit = unsplit or exc
+            continue
+        resolved = True
+        if urlsplit(url).scheme in _WEB_SCHEMES:
+            frames.append(url)
+    if unsplit is not None and not resolved:
+        raise unsplit
     cited = urljoin(base, parser.citation_pdf) if parser.citation_pdf else None
     if cited is not None and urlsplit(cited).scheme in _WEB_SCHEMES:
         return cited, len(frames), True

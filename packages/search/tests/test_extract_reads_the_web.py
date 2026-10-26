@@ -458,6 +458,24 @@ async def test_a_placeholder_frame_beside_the_article_s_frame_leaves_it_the_one_
     assert result.facets[EXTRACTION_FINAL_URL_FACET] == f"{_SITE}/viewer/42.html"
 
 
+@pytest.mark.parametrize("order", ["bad first", "bad last"])
+async def test_a_frame_address_that_will_not_split_does_not_hide_the_readable_frame(order: str) -> None:
+    bad = b"<iframe src='http://[bad/frame'></iframe>"
+    page = (
+        _MENU_WITH_FRAME.replace(b"<iframe", bad + b"<iframe", 1)
+        if order == "bad first"
+        else _MENU_WITH_FRAME.replace(b"</body>", bad + b"</body>", 1)
+    )
+    transport = RecordedFetchTransport(
+        {_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=page), f"{_SITE}/viewer/42.html": RecordedPage(body=_ARTICLE)}
+    )
+
+    result = await extract(_candidate(), transport=transport, thin_page_chars=1000, max_bytes=100_000)
+
+    assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_COMPLETE
+    assert result.facets[EXTRACTION_FINAL_URL_FACET] == f"{_SITE}/viewer/42.html"
+
+
 async def test_a_long_page_with_a_frame_is_read_as_it_is() -> None:
     """Good traffic: a page with real text and an embedded video is not a menu."""
     page = _ARTICLE.replace(b"</article>", b"</article><iframe src='https://video.example.net/embed/1'></iframe>")
