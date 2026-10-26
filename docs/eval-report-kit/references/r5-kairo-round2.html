@@ -247,7 +247,7 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
 
 <section>
   <header><span class="eyebrow">Where character is lost</span><h2 id="st-h"></h2>
-  <p class="takeaway">Change in in-character rate against September, by kind of listener message. The twelve largest strata, by cases. Bold rows are separated from zero at 95%, before any correction; read them as leads.</p></header>
+  <p class="takeaway">Change in in-character rate against September, by kind of listener message. The twelve largest strata, by cases. Bold rows are separated from zero before any correction; read them as leads.</p></header>
   <div class="chart" id="strata" data-kind="diverging_bars"></div>
 </section>
 
@@ -705,7 +705,10 @@ const SB=D.scoreboard;const pr=a=>SB[a].passed/SB[a].usable*100;
 const prim=D.primary_judged;const J=D.judged;const jm=(dim,a)=>J[dim].per_arm[a].mean;
 const cost=a=>D.measures.production_replicating_cost.per_arm[a];
 const C=(arm,meas)=>D.contrasts.find(c=>c.arm===arm&&c.measure===meas);
-const pts=v=>(v>0?"+":"")+v.toFixed(1);const fam=D.contrast_families[0];
+const pts=v=>(v>0?"+":"")+v.toFixed(1);
+// The plan's number rule (numbers.py) for every figure the page writes into the plan's prose: one decimal at most, a
+// whole value without it (-6.0 reads -6), a change signed.
+const num=v=>v.toFixed(1).replace(/\.0$/,"");const fig=v=>(v>0?"+":"")+num(v);const fam=D.contrast_families[0];
 const famLevel=fam?`${(100-fam.alpha/fam.family_size*100).toFixed(2)}%`:"95%";
 const usd=v=>"$"+v.toFixed(2);
 
@@ -714,7 +717,7 @@ const usd=v=>"$"+v.toFixed(2);
   const lo=Math.round(Math.min(...ups)*100),hi=Math.round(Math.max(...ups)*100);
   const sep=cands.filter(a=>R[a.id].within_interval[1]<0);const worst=cands.slice().sort((a,b)=>R[a.id].change-R[b.id].change)[0];
   document.getElementById("h1").textContent=`Keep ${ctl.name}. Both candidates cost ${lo===hi?lo:lo+"–"+hi}% more per reply and stay in character less often.`;
-  document.getElementById("lede").innerHTML=`${worst.name} has a lower pass rate, by ${(-R[worst.id].within_interval[1]).toFixed(1)} to ${(-R[worst.id].within_interval[0]).toFixed(1)} points, and neither candidate beats ${ctl.name} on anything this campaign measured. A candidate priced at or below ${ctl.name} whose pass rate stays within the margin would change the answer.`;
+  document.getElementById("lede").innerHTML=`${worst.name} has a lower pass rate, by ${num(-R[worst.id].within_interval[1])} to ${num(-R[worst.id].within_interval[0])} points, and neither candidate beats ${ctl.name} on anything this campaign measured. A candidate priced at or below ${ctl.name} whose pass rate stays within the margin would change the answer.`;
   // The decision's confidence: one clause per open caveat (the plan's words), then code's checked line for each late
   // criterion the call holds across: a reading flips at its worst drop (-lo), and every flip point lies under the margin
   // the campaign set, and keeping the control holds at every margin either way.
@@ -727,8 +730,8 @@ const usd=v=>"$"+v.toFixed(2);
   const checked=[lateOf("margin")&&"The late margin was checked: the call holds at every margin.",
     lateOf("floor")&&"The late floor was checked: the call holds at every margin the floor could take."].filter(Boolean);
   document.getElementById("flag").innerHTML=`<b>Keep ${ctl.name}. Confidence: high, if the caveats below aren't material.</b><ul>${clauses.map(c=>`<li>${c}</li>`).join("")}${checked.map(c=>`<li class="checked">${c}</li>`).join("")}</ul>`;
-  document.getElementById("d-rec").innerHTML=`<strong>Keep ${ctl.name}</strong> (${ctl.served_model}). It has the highest pass rate (${pr(ctl.id).toFixed(1)}%), the highest in-character rate (${(jm(prim,ctl.id)*100).toFixed(1)}%) and the lowest cost (${usd(cc)} per 1,000 replies).`;
-  document.getElementById("d-why").innerHTML=cands.map(a=>{const c1=C(a.id,"production_replicating_cost"),c2=C(a.id,prim);return `<strong>${a.name}:</strong> ${Math.round((cost(a.id).mean*1000/cc-1)*100)}% more per reply${c2?`, in-character ${pts(c2.delta*100).replace(/\.0$/,"")} points`:""}${R[a.id].within_interval[1]<0?`, pass rate ${pts(R[a.id].change)}`:""}.`;}).join("<br>");
+  document.getElementById("d-rec").innerHTML=`<strong>Keep ${ctl.name}</strong> (${ctl.served_model}). It has the highest pass rate (${num(pr(ctl.id))}%), the highest in-character rate (${num(jm(prim,ctl.id)*100)}%) and the lowest cost (${usd(cc)} per 1,000 replies).`;
+  document.getElementById("d-why").innerHTML=cands.map(a=>{const c1=C(a.id,"production_replicating_cost"),c2=C(a.id,prim);return `<strong>${a.name}:</strong> ${Math.round((cost(a.id).mean*1000/cc-1)*100)}% more per reply${c2?`, in-character ${fig(c2.delta*100)} points`:""}${R[a.id].within_interval[1]<0?`, pass rate ${fig(R[a.id].change)}`:""}.`;}).join("<br>");
   const conf=cands.filter(a=>Math.abs(a.reasoning_ratio-ctl.reasoning_ratio)>=0.2);
   // Watch opens with the weakest margin (report_margins.weakest_margin): the reading whose worst drop sits nearest the
   // margin, and why the call holds past it.
@@ -779,9 +782,10 @@ document.getElementById("key").innerHTML=`<thead><tr><th>Arm</th><th>Role</th><t
           tip:[`${st.id.replace(/_/g," ")} · ${st.n_cases} cases`,`${ctl.name} ${(c.mean*100).toFixed(1)}% · ${a.name} ${(x.mean*100).toFixed(1)}%`,`${pts(dv)} points (±${(1.96*se).toFixed(1)}, uncorrected)`]};})}))});})();
 
 // ---- examples (failed in-character trials, candidates first)
-(function(){const pick=[];const want=[["off_lane",cands[0]],["off_lane",cands[1]],["multi",cands[1]],["about",cands[0]]];
-  for(const [st,a] of want){const e=D.examples.find(x=>x.stratum===st&&x.arm===a.id&&!pick.includes(x));if(e)pick.push(e);}
-  for(const e of D.examples)if(pick.length<4&&!pick.includes(e))pick.push(e);
+// The plan's query for this section, as it selects rows (report_plan_checks: every example of the arms and strata it
+// names, in the input's order, to its limit), so the cards are the ones the headline speaks of.
+(function(){const q={arms:["qwen3.8-flash","1017","September"],strata:["off_lane","multi","about"],limit:4};
+  const pick=D.examples.filter(e=>(e.arm==null||!q.arms.length||q.arms.includes(e.arm))&&(!q.strata.length||q.strata.includes(e.stratum))).slice(0,q.limit);
   setChart(document.getElementById("ex"),{cards:pick.map(e=>({meta:[{text:e.trial,mono:true},{text:e.case,mono:true},{text:e.stratum.replace(/_/g," ")},{tag:A[e.arm].tag,label:A[e.arm].short,color:COL[e.arm]},{text:`repeat ${e.repeat}`}],
     reason:e.reason||"No judge reason recorded.",excerpt:e.excerpt}))});})();
 
