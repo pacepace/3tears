@@ -1,0 +1,190 @@
+### c1 / 1
+rendered block
+block_kind: lattice
+query:
+  source: configs
+  aspect: 
+  measures: [balanced_accuracy]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [, Zero-shot, Few-shot (12 ex.), Rubric + reasoning]
+rows (3):
+  - cells: [Atlas-M, 89.8% · $0.18 per 1,000 replies · 420 ms · Fails, 92.1% · $0.26 per 1,000 replies · 483 ms · Fails, 93.2% · $0.61 per 1,000 replies · 1302 ms · Fails]
+  - cells: [Brisk-S, 86% · $0.028 per 1,000 replies · 160 ms · Fails, 90.7% · $0.04 per 1,000 replies · 184 ms · Passes, 91.5% · $0.095 per 1,000 replies · 496 ms · Fails]
+  - cells: [Nano-XS, 78.2% · $0.0013 per 1,000 replies · 70 ms · Fails, 90.1% · $0.0019 per 1,000 replies · 80 ms · Fails, 83.9% · $0.0046 per 1,000 replies · 217 ms · Fails]
+total: 3
+offset: 0
+truncated: False
+notes: []
+
+### c2 / 1
+rendered block
+block_kind: dot_interval
+query:
+  source: measures
+  aspect: 
+  measures: [balanced_accuracy]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: pct
+domain: 
+criteria.overall.threshold = 90%
+columns: [Row, Value]
+rows (10):
+  - cells: [A · Atlas-M · Zero-shot, 89.8%]
+  - cells: [B · Atlas-M · Few-shot (12 ex.), 92.1%]
+  - cells: [C · Atlas-M · Rubric + reasoning, 93.2%]
+  - cells: [D · Brisk-S · Zero-shot, 86%]
+  - cells: [E · Brisk-S · Few-shot (12 ex.), 90.7%]
+  - cells: [F · Brisk-S · Rubric + reasoning, 91.5%]
+  - cells: [G · Nano-XS · Zero-shot, 78.2%]
+  - cells: [H · Nano-XS · Few-shot (12 ex.), 90.1%]
+  - cells: [I · Nano-XS · Rubric + reasoning, 83.9%]
+  - cells: [floor 90%, 90%]
+total: 10
+offset: 0
+truncated: False
+notes: []
+
+### c3 / 1
+rendered block
+block_kind: heatmap
+query:
+  source: cells
+  aspect: 
+  measures: [accuracy]
+  arms: [brisk-s.few, nano-xs.few]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+criteria.cell_floor.threshold = 80%
+columns: [Panel, , Science, Conversational, News]
+rows (6):
+  - cells: [Brisk-S · Few-shot (12 ex.), Simple, 95.1% (n = 3120), 97.1% (n = 14880), 94% (n = 4410)]
+  - cells: [Brisk-S · Few-shot (12 ex.), Medium, 89.9% (n = 4260), 91.6% (n = 7350), 87.5% (n = 5190)]
+  - cells: [Brisk-S · Few-shot (12 ex.), Complex, 88.5% (n = 3440), 89.4% (n = 1960), 82.9% (n = 3600)]
+  - cells: [Nano-XS · Few-shot (12 ex.), Simple, 96.2% (n = 3120), 98.2% (n = 14880), 94.5% (n = 4410)]
+  - cells: [Nano-XS · Few-shot (12 ex.), Medium, 89.4% (n = 4260), 91.9% (n = 7350), 86% (n = 5190)]
+  - cells: [Nano-XS · Few-shot (12 ex.), Complex, 88.2% (n = 3440), 89.8% (n = 1960), 76.7% (n = 3600)]
+total: 6
+offset: 0
+truncated: False
+notes: []
+
+### c4 / 1
+rendered block
+block_kind: gate_scatter
+query:
+  source: configs
+  aspect: 
+  measures: [balanced_accuracy, latency_ms]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Point, Latency (p95), Balanced accuracy]
+rows (11):
+  - cells: [atlas-m.zero, 420 ms, 89.8%]
+  - cells: [atlas-m.few, 483 ms, 92.1%]
+  - cells: [atlas-m.rubric, 1302 ms, 93.2%]
+  - cells: [brisk-s.zero, 160 ms, 86%]
+  - cells: [brisk-s.few, 184 ms, 90.7%]
+  - cells: [brisk-s.rubric, 496 ms, 91.5%]
+  - cells: [nano-xs.zero, 70 ms, 78.2%]
+  - cells: [nano-xs.few, 80 ms, 90.1%]
+  - cells: [nano-xs.rubric, 217 ms, 83.9%]
+  - cells: [budget 250 ms, 250 ms, ]
+  - cells: [floor 90%, , 90%]
+total: 11
+offset: 0
+truncated: False
+notes: [The Latency (p95) axis is on a log scale: its values span more than ten times.]
+
+### c5 / 1
+rendered block
+block_kind: bars
+query:
+  source: configs
+  aspect: 
+  measures: [balanced_accuracy]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+criteria.overall.threshold = 90%
+columns: [Group, Row, Value, Note]
+rows (10):
+  - cells: [Atlas-M, Zero-shot, 89.8%, 89.8%]
+  - cells: [Atlas-M, Few-shot (12 ex.), 92.1%, 92.1%]
+  - cells: [Atlas-M, Rubric + reasoning, 93.2%, 93.2%]
+  - cells: [Brisk-S, Zero-shot, 86%, 86%]
+  - cells: [Brisk-S, Few-shot (12 ex.), 90.7%, 90.7%]
+  - cells: [Brisk-S, Rubric + reasoning, 91.5%, 91.5%]
+  - cells: [Nano-XS, Zero-shot, 78.2%, 78.2%]
+  - cells: [Nano-XS, Few-shot (12 ex.), 90.1%, 90.1%]
+  - cells: [Nano-XS, Rubric + reasoning, 83.9%, 83.9%]
+  - cells: [, floor 90%, 90%, ]
+total: 10
+offset: 0
+truncated: False
+notes: []
+
+### c5 / 2
+rendered block
+block_kind: confusion
+query:
+  source: confusion
+  aspect: 
+  measures: [complexity]
+  arms: [nano-xs.few, nano-xs.rubric]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Panel, , Simple, Medium, Complex]
+rows (6):
+  - cells: [Nano-XS · Few-shot (12 ex.), Simple, 96.5%, 3.2%, 0.2%]
+  - cells: [Nano-XS · Few-shot (12 ex.), Medium, 6%, 88%, 6%]
+  - cells: [Nano-XS · Few-shot (12 ex.), Complex, 0.5%, 7.2%, 92.3%]
+  - cells: [Nano-XS · Rubric + reasoning, Simple, 94.4%, 5.3%, 0.4%]
+  - cells: [Nano-XS · Rubric + reasoning, Medium, 9.7%, 80.5%, 9.7%]
+  - cells: [Nano-XS · Rubric + reasoning, Complex, 0.9%, 11.7%, 87.5%]
+total: 6
+offset: 0
+truncated: False
+notes: [Rows are the true label and columns the predicted one; each row is shared out to 100%.]
+

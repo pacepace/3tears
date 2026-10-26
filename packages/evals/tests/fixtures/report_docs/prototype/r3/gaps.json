@@ -1,0 +1,62 @@
+[
+  {
+    "need": "An interval (cases-based) on every gate figure: balanced accuracy overall and accuracy within each cell",
+    "why": "The only survivor clears the overall gate by under a point and its nearest cell floor by a few points; without an interval the report cannot say whether either clearance is borderline, and dot_interval draws bare dots that read as certain",
+    "workaround": "State in the flag, captions and confidence that every gate reads a point estimate; carry the overall clearance as an open caveat"
+  },
+  {
+    "need": "settle: the cases needed to separate the recommended option's overall balanced accuracy from the 90% gate, and its Complex x News cell from the 80% floor",
+    "why": "Watch and next steps should say whether more cases or a changed configuration is what settles the thin clearance",
+    "workaround": "Say in words that the clearance is unresolved and that the first step is computing the interval on the frozen cases"
+  },
+  {
+    "need": "Lever effects over the factorial grid: what each prompt style buys per model, as signed deltas, with an interaction check",
+    "why": "Rubric + reasoning raises two models and lowers the third; the claim that the levers interact rests on reading nine lattice tiles by eye, and diverging_bars has no lever-delta source",
+    "workaround": "Show the lattice for the grid and a confusion pair for the one model the rubric hurts; state the interaction in words with the two balanced-accuracy keys"
+  },
+  {
+    "need": "Confusion within one target-matrix cell (which axis, complexity or domain, carries the errors in Complex x News)",
+    "why": "Complex x News is the binding cell for every configuration and the one that keeps the cheapest near-passing option out; a fix needs to know whether it misreads complexity or domain there",
+    "workaround": "Show per-axis confusion over all cases and say the per-cell split is not available; name it as a next step"
+  },
+  {
+    "need": "A figure-key check action: resolve a list of figure keys against the snapshot without rendering a block",
+    "why": "Drafting prose needs to confirm every key resolves before submission; the mechanical checker is not reachable from the analyst tool yet",
+    "workaround": "Put all keys in the title of a one-row table block_render and read the resolved title"
+  },
+  {
+    "need": "confound_check: whether the rubric arm's two changes (a rubric and a reasoning step) can be separated, and whether latency was measured on a shared machine",
+    "why": "Rubric + reasoning bundles two levers, so its accuracy gain and its latency cost cannot be credited to either one; the snapshot carries no latency caveat either way",
+    "workaround": "Name the bundle in Watch-adjacent prose and propose a rubric-without-reasoning run as a next step"
+  },
+  {
+    "need": "An interval on balanced accuracy, derived from the cell accuracies it averages (it is their plain mean over disjoint cells)",
+    "why": "The overall gate reads balanced accuracy and the pick clears it narrowly; the cell half-widths imply an overall interval far narrower than the clearance, but no key states it, so the page can only say so in words",
+    "workaround": "Cite the widest cell half-width and state the inference qualitatively; keep it as an open caveat with a material_if"
+  },
+  {
+    "need": "Interval statistics surfaced by default: measure_read returning half_width when it exists, and heatmap or dot_interval drawing a cell's interval",
+    "why": "measure_read by cell with no statistics argument returns the mean alone, and the heatmap values table prints mean and n only with an empty level, so the cell intervals were invisible in round one and the report wrongly said none existed",
+    "workaround": "Pass statistics=[half_width] to measure_read explicitly and cite the half_width keys in prose"
+  },
+  {
+    "need": "A cells-source filter that selects one target-matrix cell (for example Complex x News) across every configuration",
+    "why": "query.strata refuses cell ids on the cells source, so a claim about one cell across all configurations needs the full heatmap with every panel",
+    "workaround": "Show the full all-configuration heatmap as a second block"
+  },
+  {
+    "need": "gate_scatter point labels by display name and letter tag, like every other block",
+    "why": "The gate_scatter values table labels points with raw arm ids above the appendix, which the editor flags as an invariant concern",
+    "workaround": "Keep the block, since no other kind draws both gates, and note the labelling in the notes"
+  },
+  {
+    "need": "A stated definition of a correct turn on a two-axis label, and figures that reconcile per-axis confusion with cell accuracy",
+    "why": "Nano-XS rubric's medium-complexity diagonal is below its medium cells' mean accuracy, so the confusion tables and the cell accuracies cannot both be read as the same error; a per-axis cause cannot be credited",
+    "workaround": "Drop the per-axis cause, show the per-cell difference instead, and make the definition a next step"
+  },
+  {
+    "need": "A way to register an analyst-raised caveat on the snapshot, so confidence.caveats ids resolve",
+    "why": "caveats_list is empty, so both open caveats are the analyst's under self-chosen ids that no tool knows",
+    "workaround": "Name them in the report with self-chosen ids and say so in the notes"
+  }
+]
