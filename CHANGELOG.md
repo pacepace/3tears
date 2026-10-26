@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.80.0 -- 2026-10-26
+
 ### search, agent-tools: grounded answers (Brooks, #930)
 
 **Added:** an agent can ask a provider for a cited answer to a question, beside searching and fetching.
