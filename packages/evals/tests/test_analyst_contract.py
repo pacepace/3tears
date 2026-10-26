@@ -46,8 +46,6 @@ from threetears.evals.actions import (
     MountedTool,
     analyst_actions,
     analyst_tools,
-    analyst_toolset,
-    editor_toolset,
     engine_actions,
     eval_catalogue,
     read_only_tools,
@@ -511,18 +509,27 @@ async def test_an_analyst_action_called_on_evals_is_refused_naming_the_analyst_t
     assert "capability_gap is not an action of tool evals: it is a read action of the analyst tools" in outcome.text
 
 
-def test_the_toolsets_are_read_off_the_workflows() -> None:
+def test_the_editors_cut_is_the_analyst_tool_read_off_the_workflows_with_no_blocks_and_no_freeze() -> None:
+    (analyst_spec,) = analyst_tools()
+    (editor_spec,) = analyst_tools(role="editor")
+    analyst, editor = eval_catalogue().mount(analyst_spec), eval_catalogue().mount(editor_spec)
+    assert editor.name == analyst.name == "evals_analyst" and editor.spec.description != analyst.spec.description
     by_name = {action.name: action for action in analyst_actions()}
-    assert set(editor_toolset()) <= set(analyst_toolset()) <= set(by_name)
-    assert "report_snapshot_freeze" not in analyst_toolset()
-    assert all(by_name[name].workflow != "Investigate: blocks" for name in editor_toolset())
-    assert {by_name[name].workflow for name in analyst_toolset()} <= {
+    blocks = {name for name, action in by_name.items() if action.workflow == "Investigate: blocks"}
+    assert blocks, "the control: the analyst's cut holds block actions for the editor's to leave out"
+    enum = editor.input_schema()["properties"]["action"]["enum"]
+    assert enum == ["help", *(a.name for a in analyst_actions() if a.name not in blocks | {"report_snapshot_freeze"})]
+    assert not blocks & set(enum) and "capability_gap" in enum
+    assert {by_name[name].workflow for name in enum[1:]} == {
         "Investigate: facts",
         "Investigate: analyses",
-        "Investigate: blocks",
         "Investigate: gaps",
     }
-    assert "capability_gap" in editor_toolset()
+    assert editor.hints.read_only and editor.hints.idempotent
+    # One meaning per parameter: every parameter the editor's cut carries reads exactly as the analyst's tool says it.
+    editor_params, analyst_params = editor.input_schema()["properties"], analyst.input_schema()["properties"]
+    assert all(editor_params[name] == analyst_params[name] for name in editor_params if name != "action")
+    assert set(editor_params) < set(analyst_params), "the block parameters are the analyst's alone"
 
 
 # =============================================================================

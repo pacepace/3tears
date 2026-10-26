@@ -488,6 +488,20 @@ def test_a_tool_with_no_action_of_its_classes_is_refused() -> None:
         ActionCatalogue([_action()]).mount(ToolSpec(name="t", description="d", permissions=frozenset({"spend"})))
 
 
+def test_a_tool_cut_to_workflows_mounts_their_actions_alone() -> None:
+    catalogue = ActionCatalogue(
+        [_action(), _action(name="note_count", workflow="Count", params=_OtherMeaning, example={"note": 1})]
+    )
+    counts = catalogue.mount(
+        ToolSpec(name="t", description="d", permissions=frozenset({"read"}), workflows=frozenset({"Count"}))
+    )
+    assert [action.name for action in counts.actions] == ["note_count"], "and 'note' means one thing on it"
+    with pytest.raises(ValueError, match=r"no action has those classes in workflows \['Elsewhere'\]"):
+        catalogue.mount(
+            ToolSpec(name="t", description="d", permissions=frozenset({"read"}), workflows=frozenset({"Elsewhere"}))
+        )
+
+
 def test_two_tools_with_one_name_are_refused() -> None:
     with pytest.raises(ValueError, match="two tools share a name"):
         eval_catalogue().mount_all([*read_only_tools(), *read_only_tools()])
@@ -500,6 +514,14 @@ def test_two_tools_with_one_name_are_refused() -> None:
         ({"name": "evals", "description": " ", "permissions": frozenset({"read"})}, "the description is blank"),
         ({"name": "evals", "description": "d", "permissions": frozenset()}, "it mounts one or more of"),
         ({"name": "evals", "description": "d", "permissions": frozenset({"admin"})}, "it mounts one or more of"),
+        (
+            {"name": "evals", "description": "d", "permissions": frozenset({"read"}), "workflows": frozenset()},
+            "workflows",
+        ),
+        (
+            {"name": "evals", "description": "d", "permissions": frozenset({"read"}), "workflows": frozenset({" "})},
+            "workflows names one or more workflows, none blank",
+        ),
     ],
 )
 def test_a_malformed_tool_is_refused(fields: dict[str, Any], message: str) -> None:

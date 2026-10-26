@@ -305,15 +305,19 @@ class ToolSpec:
     :ivar permissions: The classes of action it mounts.
     :ivar cut: The cut whose actions it mounts (:attr:`Action.cut`); ``None``, the default, for a standard tool, which
         mounts the actions that name no cut.
+    :ivar workflows: The workflows (:attr:`Action.workflow`) whose actions it mounts, a subset of its cut's for a tool
+        one role uses (the report editor's, which reads no blocks); ``None``, the default, for every workflow.
     """
 
     name: str
     description: str
     permissions: frozenset[PermissionClass]
     cut: str | None = None
+    workflows: frozenset[str] | None = None
 
     def __post_init__(self) -> None:
-        """Refuse a malformed name or cut, a blank description or a set of classes that is empty or unknown.
+        """Refuse a malformed name or cut, a blank description, a set of classes that is empty or unknown, or a set of
+        workflows that is empty or names a blank one.
 
         :raises ValueError: As described.
         """
@@ -323,6 +327,10 @@ class ToolSpec:
             raise ValueError(f"tool {self.name!r}: cut {self.cut!r} is not a lowercase identifier")
         if not self.description.strip():
             raise ValueError(f"tool {self.name!r}: the description is blank")
+        if self.workflows is not None and (not self.workflows or not all(name.strip() for name in self.workflows)):
+            raise ValueError(
+                f"tool {self.name!r}: workflows names one or more workflows, none blank, or is None for all"
+            )
         unknown = sorted(set(self.permissions) - set(PERMISSION_CLASSES))
         if not self.permissions or unknown:
             raise ValueError(
@@ -721,22 +729,26 @@ class ActionCatalogue:
         return ActionCatalogue([*self._actions.values(), *actions])
 
     def mount(self, spec: ToolSpec) -> MountedTool:
-        """Cut one tool from the catalogue: the actions of the tool's cut whose class the tool mounts.
+        """Cut one tool from the catalogue: the actions of the tool's cut and workflows whose class the tool mounts.
 
         :param spec: The tool.
         :ptype spec: ToolSpec
         :return: The mounted tool.
         :rtype: MountedTool
-        :raises ValueError: No action of its cut has a class the tool mounts, or two of its actions declare one
-            parameter name with different meanings (type or description).
+        :raises ValueError: No action of its cut and workflows has a class the tool mounts, or two of its actions
+            declare one parameter name with different meanings (type or description).
         """
         actions = tuple(
             action
             for action in self._actions.values()
-            if action.permission in spec.permissions and action.cut == spec.cut
+            if action.permission in spec.permissions
+            and action.cut == spec.cut
+            and (spec.workflows is None or action.workflow in spec.workflows)
         )
         if not actions:
             where = "" if spec.cut is None else f" in cut {spec.cut!r}"
+            if spec.workflows is not None:
+                where += f" in workflows {sorted(spec.workflows)}"
             raise ValueError(
                 f"tool {spec.name!r} mounts {sorted(spec.permissions)} and no action has those classes{where}"
             )

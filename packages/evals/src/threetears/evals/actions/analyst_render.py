@@ -3,7 +3,7 @@
 The actions of the ``Investigate: blocks`` workflow, each an
 :class:`~threetears.evals.actions.catalogue.Action` over its operation in :mod:`threetears.evals.ops` and rendered by
 :func:`~threetears.evals.actions.render.render_cited`. :func:`~threetears.evals.actions.analyst.analyst_actions`
-gathers them onto the analyst's cut, and the analyst's and editor's toolsets are read off this workflow, so no file
+gathers them onto the analyst's cut, and the editor's cut of the analyst tool is read off the workflows, so no file
 lists their names.
 
 ``block_catalog`` comes first: it lists every kind ``block_render`` draws, the sources each reads, and the query
@@ -25,7 +25,7 @@ from threetears.evals.ops.analyst_blocks import BLOCK_ROWS, BlockCatalog, Render
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
 
-#: The help index's group for these actions, which the toolsets are read off.
+#: The help index's group for these actions, which the editor's cut is read off.
 BLOCKS_WORKFLOW = "Investigate: blocks"
 
 #: An example snapshot id, as a freeze returns one.

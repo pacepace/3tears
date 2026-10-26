@@ -40,7 +40,7 @@ from packages.evals.tests.fixtures.report_plans.misfits import MISFITS, NAMES
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
 from packages.evals.tests.report_shapes_support import SHAPES
-from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, analyst_toolset, eval_catalogue
+from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, eval_catalogue
 from threetears.evals.analysis.analyst.cited import CitedFigure
 from threetears.evals.analysis.analyst.facts import (
     campaign_overview,
@@ -708,9 +708,11 @@ async def _call(fixture: OpsFixture, arguments: dict[str, Any]) -> ActionOutcome
     return await _analyst_tool().call(arguments, host=fixture.host, caller=CALLER)
 
 
-def test_the_fact_tools_are_in_the_analysts_and_the_editors_toolsets() -> None:
+def test_the_fact_tools_are_on_the_analysts_and_the_editors_cuts() -> None:
     names = {"campaign_overview", "readings_list", "contrasts_list", "measure_read", "examples_list", "caveats_list"}
-    assert names <= set(analyst_toolset())
+    for role in ("analyst", "editor"):
+        (spec,) = analyst_tools(writes=False, role=role)
+        assert names <= {action.name for action in eval_catalogue().mount(spec).actions}, role
     tool = _analyst_tool()
     assert {action.workflow for action in tool.actions if action.name in names} == {"Investigate: facts"}
     assert {action.permission for action in tool.actions if action.name in names} == {"read"}

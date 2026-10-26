@@ -8121,11 +8121,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.actions.analyst_toolset": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.actions.Caller": {
       "kind": "dataclass",
       "signature": "Caller(scope_id: str, identity: str)",
@@ -8150,11 +8145,6 @@
       "kind": "function",
       "signature": "definition_drift_actions(corpus: Callable[[str], SeedCorpus], *, seeded_digests: Callable[[str], Mapping[str, str]] | None = None) -> tuple[Action, Action]",
       "tier": "host-contract"
-    },
-    "threetears.evals.actions.editor_toolset": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.actions.engine_actions": {
       "kind": "function",
