@@ -38,6 +38,7 @@ from packages.evals.tests.hostile_page_support import (
     HOSTILE_LINE,
     hostile_campaign_page,
     hostile_kit_charts,
+    hostile_planned_page,
     hostile_report,
 )
 from packages.evals.tests.page_contract_support import (
@@ -49,6 +50,7 @@ from packages.evals.tests.page_contract_support import (
     what_runs,
 )
 from packages.evals.tests.report_kit_support import chromium_unavailable, rendered
+from packages.evals.tests.static_page_support import assert_static
 from packages.evals.tests.report_support import toy_report
 
 
@@ -67,6 +69,30 @@ async def test_markup_a_host_or_a_model_put_on_a_campaign_page_is_text_not_marku
     assert page.count("&lt;script&gt;alert(1)&lt;/script&gt;") > 10, "every field's markup is escaped"
     ids = [value for _, attrs in read.tags for name, value in attrs if name == "id"]
     assert len(ids) == len(set(ids)), "an author's label claimed an id the page already holds"
+    hrefs = [value or "" for tag, attrs in read.tags for name, value in attrs if name == "href" and tag != "link"]
+    assert {href[1:] for href in hrefs} <= set(ids), "a link lands nowhere"
+
+
+@pytest.mark.parametrize("static", [False, True], ids=["default", "static"])
+async def test_markup_in_a_planned_page_s_plan_prose_and_input_names_is_text_not_markup(static: bool) -> None:
+    report = await hostile_planned_page()
+    page = campaign_report_html(report, static=static)
+    read = parsed(page)
+
+    assert 'data-page="planned"' in page, "the page is the plan's"
+    for part in ("explore", "full_results", "appendix"):
+        assert f'data-part="{part}"' in page, f"every part is drawn, so markup reaches the {part} part too"
+    assert what_runs(page) == []
+    if static:
+        assert_static(page)
+    else:
+        assert font_links(page) == list(FONT_LINKS), "an author's link, even a copy of the package's, is text"
+    assert any("<script>alert(1)</script>" in text for text in read.text), "the plan's words survive as text"
+    assert any(text.startswith(HOSTILE_LINE) for text in read.text), "the input's names are words too"
+    assert any(HOSTILE_ASPECT in text for text in read.text), "the appendix's fold labels are words too"
+    assert page.count("&lt;script&gt;alert(1)&lt;/script&gt;") > 10, "every field's markup is escaped"
+    ids = [value for _, attrs in read.tags for name, value in attrs if name == "id"]
+    assert len(ids) == len(set(ids)), "a name claimed an id the page already holds"
     hrefs = [value or "" for tag, attrs in read.tags for name, value in attrs if name == "href" and tag != "link"]
     assert {href[1:] for href in hrefs} <= set(ids), "a link lands nowhere"
 

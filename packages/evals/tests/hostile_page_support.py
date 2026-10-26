@@ -5,7 +5,10 @@ The markup is a script, a handler, a ``javascript:`` link, a frame, a stylesheet
 package's own font links; a line adds an attribute that tries to break out of its quotes and an element claiming one
 of the page's own ids. :func:`hostile_report` is one aspect's page with it in every field and every string a chart
 of each of the kit's kinds draws; :func:`hostile_campaign_page` is a campaign's page of two real aspects with it in
-the campaign's name, its arm and aspect labels, its memo, its fold lines and its second folded page.
+the campaign's name, its arm and aspect labels, its memo, its fold lines and its second folded page;
+:func:`hostile_planned_page` is that campaign's page as a planned analysis lays it out, the page the Kairo reference
+plan draws over its input, with markup in every prose field of the plan and every name the input gives a reader, the
+hostile folds its appendix.
 """
 
 from __future__ import annotations
@@ -19,12 +22,17 @@ from threetears.evals.analysis import (
     campaign_readings,
 )
 from threetears.evals.analysis.report import Report
+from threetears.evals.analysis.report.plan_page.build import plan_page
+from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.kernel.report_plan import ReportPlan
 from threetears.evals.kernel.authored import AspectSummary, AuthoredCampaignAnalysis, NextStep
 from threetears.evals.kernel.declaration import CampaignArm
 from packages.evals.tests.campaign_page_support import campaign_fixture, two_aspect_memo
 from packages.evals.tests.campaign_support import ASSEMBLED_AT
+from packages.evals.tests.fixtures.report_plans import dataset
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.page_contract_support import FONT_LINK_MARKUP
+from packages.evals.tests.report_kit_support import KIT
 
 __all__ = [
     "HOSTILE",
@@ -33,6 +41,8 @@ __all__ = [
     "hostile_campaign_page",
     "hostile_kit_charts",
     "hostile_memo",
+    "hostile_plan_input",
+    "hostile_planned_page",
     "hostile_report",
 ]
 
@@ -413,3 +423,61 @@ async def hostile_campaign_page() -> CampaignReport:
         second.model_copy(update={"shows": HOSTILE_LINE, "report": hostile_report()}),
     ]
     return page.model_copy(update={"aspects": folds})
+
+
+#: The plan fields that hold the planner's prose.
+_PROSE_FIELDS = frozenset(
+    {"headline", "lede", "title", "text", "material_if", "eyebrow", "takeaway", "caption", "term", "recomputes"}
+)
+
+
+def _hostile_prose(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: HOSTILE if key in _PROSE_FIELDS and isinstance(item, str) and item else _hostile_prose(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_hostile_prose(item) for item in value]
+    return value
+
+
+def hostile_plan_input(plan: ReportPlan, report_input: ReportInput) -> tuple[ReportPlan, ReportInput]:
+    """A plan with markup in every prose field and its masthead's system, and its input with markup in every name it
+    gives a reader: campaign, arms, aspects, strata, tasks, factors, measure and dimension labels, example cards."""
+    data = _hostile_prose(plan.model_dump(by_alias=True))
+    data["masthead"]["system"] = HOSTILE_LINE
+    data["lede"] = HOSTILE.split("<iframe")[0]  # the lede holds two sentences at most
+    held = report_input.model_dump(by_alias=True, exclude_none=True)
+    held["meta"]["campaign"] = HOSTILE_LINE
+    for index, arm in enumerate(held["arms"]):
+        arm.update(name=f"{HOSTILE_LINE} {index}")
+        arm.pop("short_name", None)
+    for part in ("aspects", "strata", "tasks", "factors"):
+        for item in held.get(part, []):
+            item["name"] = HOSTILE_LINE
+    for table in ("measures", "judged"):
+        for figures in held[table].values():
+            figures["label"] = HOSTILE_LINE
+    for example in held.get("examples", []):
+        example.update(reason=HOSTILE, excerpt=HOSTILE, input=HOSTILE)
+    return ReportPlan.model_validate(data), ReportInput.model_validate(held)
+
+
+async def hostile_planned_page() -> CampaignReport:
+    """The hostile campaign's page as a planned analysis lays it out: the page the Kairo reference plan draws over its
+    input, both carrying markup (:func:`hostile_plan_input`), every part of it drawn (its explore part and Full
+    results too), the hostile campaign's folds and glossary its appendix."""
+    plan, report_input = hostile_plan_input(
+        dataset.load_plan(KIT / "references" / "r5-kairo-round2.plan.json"), dataset.report_input_of("r5")
+    )
+    page = await hostile_campaign_page()
+    return CampaignReport.model_validate(
+        {
+            **dict(page),
+            "blocks": [],
+            "recommendation": None,
+            "recommended_variant_key": None,
+            "plan_page": plan_page(plan, report_input, made=HOSTILE_LINE),
+        }
+    )

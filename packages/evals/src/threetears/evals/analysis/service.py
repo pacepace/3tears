@@ -67,10 +67,10 @@ from threetears.evals.analysis.reporter_kind import (
 )
 from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleInspection
 from threetears.evals.analysis.report import CampaignReport, Verdict, build_campaign_report, build_code_only_report
-from threetears.evals.analysis.report.blocks import DisclosureBlock
-from threetears.evals.analysis.report.campaign.plan_blocks import plan_first_screen_blocks
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.model import TrialDetail
+from threetears.evals.analysis.report.plan_page.build import plan_page
+from threetears.evals.analysis.report.plan_page.words import MADE_TEMPLATE
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
 from threetears.evals.analysis.report.words import campaign_arm_tags, declared_arm_names
 from threetears.evals.schema.base import EvalBaseModel
@@ -1584,8 +1584,8 @@ def _campaign_page(
 
     Each aspect's fold is that aspect's code-only page over its bundle, its arms named by the campaign's labels; the
     memo, when there is one, is laid out once, on the campaign's page, never again inside a fold. A planned analysis is
-    laid out as the code-only page with the plan's first screen in its answer section
-    (:func:`~threetears.evals.analysis.report.campaign.plan_blocks.plan_first_screen_blocks`).
+    laid out as the page its plan draws (:func:`~threetears.evals.analysis.report.plan_page.build.plan_page`), the
+    code-only page's folds its appendix.
 
     :param campaign: The campaign, declaring what the bundle was assembled against.
     :ptype campaign: EvalCampaign
@@ -1645,34 +1645,24 @@ def _campaign_page(
 def _planned_page(
     page: CampaignReport, bundle: CampaignBundle, plan: EvalReportPlan, *, analysis_id: str
 ) -> CampaignReport:
-    """The code-only page with the plan's first screen where a memo's summary and recommendation sit.
+    """The page a planned analysis's report plan draws, over the report input built from its frozen bundle, in place
+    of the code-only page's blocks; the code-only page's folds stay, as the planned page's appendix.
 
-    The line saying no recommendation was written is the code-only page's; the plan replaces it.
-
-    :raises RefusedInput: A figure key in the plan's first screen no longer resolves against the report input built
-        from the frozen bundle.
+    :raises RefusedInput: A figure key or a chart in the plan no longer resolves against the report input built from
+        the frozen bundle.
     """
+    made = MADE_TEMPLATE.format(
+        model=plan.generation.generator_model, date=plan.generation.generated_at[:10], analysis=analysis_id
+    )
     try:
-        planned = plan_first_screen_blocks(report_plan_of(plan), build_report_input(bundle))
+        planned = plan_page(report_plan_of(plan), build_report_input(bundle), made=made)
     except UnresolvableReference as unresolved:
         raise RefusedInput(
-            f"analysis {analysis_id}'s plan names a figure its frozen evidence no longer holds: {unresolved}",
+            f"analysis {analysis_id}'s plan names a figure or a chart its frozen evidence no longer holds: {unresolved}",
             remedy="generate the analysis again (analysis_generate), which plans over the campaign's evidence as it stands",
         ) from unresolved
-    blocks = list(page.blocks)
-    unwritten = [
-        index
-        for index, block in enumerate(blocks)
-        if isinstance(block, DisclosureBlock) and block.section == "answer" and block.source == "memo"
-    ]
-    at = (
-        unwritten[0]
-        if unwritten
-        else next((index for index, block in enumerate(blocks) if block.section != "answer"), len(blocks))
-    )
-    blocks[at : at + (1 if unwritten else 0)] = planned
     return CampaignReport.model_validate(
-        {**dict(page), "basis": "analysis", "analysis_id": analysis_id, "blocks": blocks}
+        {**dict(page), "basis": "analysis", "analysis_id": analysis_id, "blocks": [], "plan_page": planned}
     )
 
 
@@ -1709,8 +1699,8 @@ def _as_analysed(analysis: EvalAnalysis, campaign: EvalCampaign | None) -> EvalC
 def _analysis_page(
     analysis: EvalAnalysis, campaign: EvalCampaign | None, *, trials: TrialDetail, plan: EvalReportPlan | None = None
 ) -> CampaignReport:
-    """A stored analysis laid out as its campaign's page, over everything frozen with it, and its plan's first screen
-    for a planned one."""
+    """A stored analysis laid out as its campaign's page, over everything frozen with it: the page its plan draws, for
+    a planned one."""
     bundle = analysis_campaign_bundle(analysis)
     # Putting the bundle back together refused it unless each aspect's entry in the frame is that aspect's bundle
     # fingerprint in the entry's version, so an entry in the current version is the one each fold's source names.

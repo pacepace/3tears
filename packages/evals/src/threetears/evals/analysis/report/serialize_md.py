@@ -45,6 +45,7 @@ from threetears.evals.analysis.report.md_parts import (
     paragraphs,
     table_lines,
 )
+from threetears.evals.analysis.report.plan_page.markdown import planned_page_markdown
 from threetears.evals.analysis.report.verdict import cause_short
 from threetears.evals.analysis.style import GLOSSARY
 
@@ -87,11 +88,17 @@ def campaign_report_markdown(report: CampaignReport) -> str:
     any disclosure the campaign states once for every aspect; its headings a level down, its trials' ids prefixed with
     the aspect's), then how the page was made, then the one glossary.
 
+    A planned analysis's page (``plan_page`` set) is the page its report plan draws
+    (:func:`~threetears.evals.analysis.report.plan_page.markdown.planned_page_markdown`), with each aspect's fold and
+    the glossary as its appendix after Method.
+
     :param report: The campaign's page.
     :ptype report: CampaignReport
     :return: The Markdown text, ending in a newline.
     :rtype: str
     """
+    if report.plan_page is not None:
+        return planned_page_markdown(report.plan_page, appendix=[*_fold_lines(report), *_glossary_lines(report.terms)])
     # The title first, then the decision: the question, the answer, then what warns, as consequences.
     lines = [f"# {one_line(report.title)}"]
     head = [block for block in report.blocks if block.section in FIRST_SCREEN]
@@ -102,21 +109,28 @@ def campaign_report_markdown(report: CampaignReport) -> str:
     titles = report.section_titles
     for section in before:
         lines += ["", f"## {titles[section]}", *_folded([b for b in report.blocks if b.section == section])]
+    lines += _fold_lines(report)
+    for section in after:
+        lines += ["", f"## {titles[section]}", *_folded([b for b in report.blocks if b.section == section])]
+    lines += _glossary_lines(report.terms)
+    return "\n".join(lines) + "\n"
+
+
+def _fold_lines(report: CampaignReport) -> list[str]:
+    """Each aspect under its own heading with what code read there, then its page in one ``<details>``, each opening
+    on a blank line."""
+    lines: list[str] = []
     for fold, slug in zip(report.aspects, report.fold_ids, strict=True):
         prefix = f"a-{slug}--"
         lines += ["", f"## {inert(one_line(fold.aspect))}", "", f"{inert(one_line(fold.shows))}.", ""]
         lines += [f"<details><summary>{html.escape(one_line(fold.aspect), quote=False)} in full</summary>"]
         lines += _folded(fold.summary, prefix=prefix)
-        aspect = fold.report
         own = [block for block in fold.head if not _repeats_scoreboard(block)]
         for block in own:
             lines += ["", *_block(block, prefix=prefix)]
-        lines += _section_lines(aspect, depth=3, prefix=prefix)
+        lines += _section_lines(fold.report, depth=3, prefix=prefix)
         lines += ["", "</details>"]
-    for section in after:
-        lines += ["", f"## {titles[section]}", *_folded([b for b in report.blocks if b.section == section])]
-    lines += _glossary_lines(report.terms)
-    return "\n".join(lines) + "\n"
+    return lines
 
 
 def _section_lines(report: Report, *, depth: int, prefix: str = "") -> list[str]:

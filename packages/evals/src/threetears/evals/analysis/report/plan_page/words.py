@@ -2,8 +2,9 @@
 
 The planner writes the page's sentences; code writes its frame: the decision's confidence (GENERATOR §2.5's three forms,
 verbatim), the decision slots' titles by mode and kind, the options table's role words and column heads, each
-warning an answer answers, the arms key's eyebrow and takeaway, an example card's missing reason, and the captions a
-chart needs that no planner sentence holds. Held here so a translation replaces them in one place.
+warning an answer answers, the arms key's eyebrow and takeaway, an example card's missing reason, the captions a
+chart needs that no planner sentence holds, the explore part's flip table, and the Full results tables' titles,
+heads and status words. Held here so a translation replaces them in one place.
 """
 
 from __future__ import annotations
@@ -19,14 +20,25 @@ __all__ = [
     "ARMS_TAKEAWAY",
     "CONFIDENCE_LABEL",
     "CONFIDENCE_WORDS",
+    "CONTRAST_VERDICT_WORDS",
     "EXPECTED_TERM",
+    "EXPLORE_HEADERS",
+    "EXPLORE_HOLDS",
+    "EXPLORE_TITLE",
+    "FULL_RESULTS_HEADERS",
     "FULL_RESULTS_TITLE",
+    "FULL_RESULTS_TITLES",
     "GATE_WORDS",
     "HUMAN_PREF_NOTE",
     "INPUT_TERM",
     "LEVER_NOTE",
+    "LINE_TEMPLATES",
+    "MADE_TEMPLATE",
+    "MARGIN_STATUS_WORDS",
     "MISSING_TEMPLATE",
+    "NO_FIGURE",
     "NO_REASON",
+    "OVERALL",
     "OPTIONS_TITLE",
     "OPTION_HEADERS",
     "PASSES_TEMPLATE",
@@ -157,6 +169,83 @@ ARMS_TAKEAWAY = "Each arm's full configuration, once. The rest of the page names
 
 #: The Full results part's title (GENERATOR §2.11).
 FULL_RESULTS_TITLE = "Full results"
+
+#: Each Full results table's title, by the plan's name for it (GENERATOR §2.11); ``tasks`` is the strata table's
+#: second part, where the input holds tasks.
+FULL_RESULTS_TITLES: dict[str, str] = {
+    "arms_by_measure": "Every arm by measure",
+    "contrasts": "Every corrected comparison",
+    "strata": "Every stratum",
+    "tasks": "Every task",
+    "gate_matrix_full": "Every gate, wherever it is read",
+    "configs": "Every arm's configuration",
+    "cells": "Every cell",
+}
+
+#: The Full results tables' column heads (an arm's column is headed by its name, a measure's by its reader name, a
+#: factor's by its name).
+FULL_RESULTS_HEADERS: dict[str, str] = {
+    "arm": "Arm",
+    "pass_rate": "Pass rate",
+    "cost_per_1k": "Cost " + PER_THOUSAND_REPLIES,
+    "measure": "Measure",
+    "aspect": "Aspect",
+    "change": "Change",
+    "interval": "Interval",
+    "level": "Level",
+    "p_adjusted": "Adjusted p",
+    "verdict": "Verdict",
+    "confounds": "Confounds",
+    "stratum": "Stratum",
+    "task": "Task",
+    "cell": "Cell",
+    "cases": "Cases",
+    "where": "Where",
+    "criterion": "Criterion",
+    "line": "Line",
+}
+
+#: A corrected comparison's verdict as its pill says it, by the pipeline's verdict.
+CONTRAST_VERDICT_WORDS: dict[str, str] = {
+    "improved": "Improved",
+    "regressed": "Regressed",
+    "equivalent": "Equivalent",
+    "not_separated": "Not separated",
+    "untested": "Untested",
+}
+
+#: Where a criterion read on an arm's overall figure is read, in the gate matrix's Where column.
+OVERALL = "Overall"
+
+#: A criterion's line, by its direction.
+LINE_TEMPLATES: dict[str, str] = {"higher_is_better": "at least {line}", "lower_is_better": "at most {line}"}
+
+#: What a gate matrix cell says beside its status where the input holds no figure there.
+NO_FIGURE = "no figure"
+
+#: The explore part's flip table: its title (a screen reader and Markdown are given it) and its heads.
+EXPLORE_TITLE = "Where each reading flips"
+EXPLORE_HEADERS: dict[str, str] = {
+    "arm": "Arm",
+    "aspect": "Aspect",
+    "flip": "Holds at any margin above",
+    "declared": "At the declared margin",
+}
+
+#: A reading at its declared margin, as its pill says it.
+MARGIN_STATUS_WORDS: dict[bool, str] = {True: "Within the margin", False: "Outside the margin"}
+
+#: Whether the call holds at every margin, as the line under the flip table says it.
+EXPLORE_HOLDS: dict[bool, str] = {
+    True: "The call holds at every margin.",
+    False: "The call changes at some margin: a reading is within any margin above the point it flips at.",
+}
+
+#: How a stored analysis's planned page was made, in its one line at the foot (GENERATOR §2: the made line).
+MADE_TEMPLATE = (
+    "Planned by {model} on {date} as analysis {analysis}; code drew every figure and chart from the campaign's "
+    "evidence as frozen with it."
+)
 
 #: The closed appendix's title: the evidence record a page built from a plan keeps below Method.
 APPENDIX_TITLE = "Evidence record"

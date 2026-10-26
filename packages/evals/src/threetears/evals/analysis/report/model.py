@@ -84,6 +84,7 @@ from threetears.evals.analysis.report.blocks import (
     reading_anchor,
     table_row,
 )
+from threetears.evals.analysis.report.plan_page.model import PlannedPage
 from threetears.evals.analysis.report.serialize_html import campaign_report_html, report_html
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown, report_markdown
 
@@ -346,6 +347,10 @@ class CampaignReport(EvalDocumentModel):
 
     **Who wrote what is part of the shape**, as on an aspect's page: a ``text`` block holds what the writer wrote and
     nothing else, and a code-only campaign page (no memo) holds none.
+
+    **A planned analysis's page** holds no blocks: its :attr:`plan_page` is the page its report plan draws, which the
+    serializers write in place of the first screen and headed sections, the folds a closed appendix after its
+    Method.
     """
 
     basis: ReportBasis = Field(description="`analysis` with a memo over the campaign, `code_only` without one.")
@@ -375,6 +380,14 @@ class CampaignReport(EvalDocumentModel):
             "later relabels the arm. Set exactly when the page holds a recommendation."
         ),
     )
+    plan_page: PlannedPage | None = Field(
+        default=None,
+        description=(
+            "The page a planned analysis's report plan draws, in GENERATOR §2 order, which the serializers write in "
+            "place of the blocks (the aspects' folds a closed appendix after its Method); None for a memo or a "
+            "code-only page. Set only on an analysis's page, and then with no blocks of its own."
+        ),
+    )
 
     @model_validator(mode="after")
     def _the_recommendation_is_keyed(self) -> Self:
@@ -386,6 +399,23 @@ class CampaignReport(EvalDocumentModel):
             raise ValueError(
                 "recommended_variant_key is the key of the arm the recommendation names: set exactly when the page "
                 "holds a recommendation"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _a_planned_page_is_an_analysiss_and_holds_no_blocks(self) -> Self:
+        """Refuse a planned page on a code-only page, or beside blocks of the page's own: the plan's page is the whole
+        of what the page says above its folds.
+
+        :raises ValueError: ``plan_page`` is set and ``basis`` is not ``analysis``, or ``blocks`` is not empty.
+        """
+        if self.plan_page is None:
+            return self
+        if self.basis != "analysis":
+            raise ValueError(f"a planned page lays out an analysis, and this page's basis is {self.basis}")
+        if self.blocks:
+            raise ValueError(
+                f"a planned page is the page's whole first part, and this page holds {len(self.blocks)} blocks"
             )
         return self
 

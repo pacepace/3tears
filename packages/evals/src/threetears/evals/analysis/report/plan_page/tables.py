@@ -2,7 +2,9 @@
 
 **The options table** (GENERATOR §2.6): a row per option in the plan's order, the recommended (or leaned) one set
 apart; its first columns name the option, as its arm's chip, and why it is shown; then one column per family code
-filled (``Options.columns``), each cell from the input, by the package's number rule:
+filled (``Options.columns``), each cell from the input, by the package's number rule. The families are the plan
+checks' vocabulary (:data:`~threetears.evals.analysis.report_plan_checks.OPTION_COLUMN_FAMILIES`), each with its one
+cell renderer, and a family the vocabulary holds that no renderer fills stops this module loading:
 
 ===============  ===================================================================================================
 family           cell
@@ -19,7 +21,8 @@ cost_per_1k      dollars per 1,000 replies, and the uplift against the control's
 ===============  ===================================================================================================
 
 A cell the input holds no figure for is a dash. A column outside these families is refused: it is no column the
-page can fill.
+page can fill. A pill's cell says its status in words (``Passes``, ``Worse, within margin``), so Markdown and a
+screen reader, which lose the colour, lose nothing.
 
 **The arms key** (GENERATOR §2.8, §6.1): each arm's full configuration once: its chip, its role, its settings as the
 campaign declared them, its served model, the share of its output spent reasoning, and its usable trials, each column
@@ -51,6 +54,7 @@ from threetears.evals.analysis.report.plan_page.words import (
 )
 from threetears.evals.analysis.report_gates import gate_check
 from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_plan_checks import OPTION_COLUMN_FAMILIES
 from threetears.evals.analysis.report_rows import query_aspect
 from threetears.evals.kernel.report_plan import ReportPlan
 
@@ -152,27 +156,39 @@ def _cost(column: str, arm: str, report_input: ReportInput, look: PageLook) -> T
     return TableCell(value=_said(figure, ("usd",)), flag=flag)
 
 
-#: Each column family's cell reader, by the family's name (its prefix, for ``judged:`` and ``measure:``).
-_FAMILIES: dict[str, _CellReader] = {
+#: Each column family's cell reader, keyed by the family exactly as
+#: :data:`~threetears.evals.analysis.report_plan_checks.OPTION_COLUMN_FAMILIES` spells it (``judged:<dim>``,
+#: ``measure:<key>`` for the keyed ones).
+_RENDERERS: dict[str, _CellReader] = {
     "pass_rate": _pass_rate,
     "reading.change": _reading_change,
     "reading.verdict": _reading_verdict,
-    "judged": _judged,
+    "judged:<dim>": _judged,
     "gate": _gate,
-    "measure": _measure,
+    "measure:<key>": _measure,
     "cost_per_1k": _cost,
 }
 
+if _unrendered := [family for family in OPTION_COLUMN_FAMILIES if family not in _RENDERERS]:
+    # The vocabulary is the plan checks'; a family they accept that this table cannot fill would refuse a stored plan.
+    raise RuntimeError(f"the options table has no cell renderer for the column families {_unrendered}")
+
+#: Each keyed family by its prefix (``judged`` → ``judged:<dim>``).
+_KEYED = {family.partition(":")[0]: family for family in OPTION_COLUMN_FAMILIES if ":" in family}
+
 
 def _family(column: str) -> str:
-    return column.partition(":")[0] if column.startswith(("judged:", "measure:")) else column
+    """The family a column is of: itself for a family written alone, its keyed family for ``judged:<dim>`` and
+    ``measure:<key>``; a column of no family is returned as it is, which no renderer holds."""
+    prefix, keyed, _ = column.partition(":")
+    return _KEYED.get(prefix, column) if keyed else column
 
 
 def _header(column: str, report_input: ReportInput) -> str:
     family = _family(column)
-    if family == "judged":
+    if family == "judged:<dim>":
         return measure_words(report_input, column.removeprefix("judged:"), kind="judged")
-    if family == "measure":
+    if family == "measure:<key>":
         return measure_words(report_input, column.removeprefix("measure:"))
     return OPTION_HEADERS[family]
 
@@ -200,9 +216,10 @@ def options_table(plan: ReportPlan, report_input: ReportInput, look: PageLook) -
     :rtype: PageOptions
     :raises UnresolvableReference: A column is no family the page fills.
     """
-    if stray := [column for column in plan.options.columns if _family(column) not in _FAMILIES]:
+    if stray := [column for column in plan.options.columns if _family(column) not in _RENDERERS]:
         raise UnresolvableReference(
-            f"the options table's columns {stray} are no column family the page fills; it fills {sorted(_FAMILIES)}"
+            f"the options table's columns {stray} are no column family the page fills; it fills "
+            f"{list(OPTION_COLUMN_FAMILIES)}"
         )
     columns = [
         TableColumn(key="option", header=OPTION_HEADERS["option"]),
@@ -214,7 +231,7 @@ def options_table(plan: ReportPlan, report_input: ReportInput, look: PageLook) -
         cells = {"option": _option_cell(row.option, look), "role": TableCell(value=ROLE_WORDS[row.role])}
         for column in plan.options.columns:
             cells[column] = (
-                _FAMILIES[_family(column)](column, row.option, report_input, look)
+                _RENDERERS[_family(column)](column, row.option, report_input, look)
                 if row.option in look.arms
                 else TableCell(value=None)
             )

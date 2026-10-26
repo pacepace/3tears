@@ -18,9 +18,10 @@ It needs no campaign and no bundle, so any plan renders through it from its inpu
   the plan shows it.
 - *Summary* and *sections*: each chart resolved from its query
   (:func:`~threetears.evals.analysis.report.plan_page.resolve.resolve_chart`).
+- *Explore*: a static flip table where the plan's control moves the margin
+  (:mod:`~threetears.evals.analysis.report.plan_page.explore`); none otherwise.
+- *Full results*: every table the plan lists (:mod:`~threetears.evals.analysis.report.plan_page.full_results`).
 - *Method*: the plan's terms. *Made*: the caller's one line.
-
-The explore part and the full-results tables are left empty here; the parts that fill them are their own.
 """
 
 from __future__ import annotations
@@ -30,6 +31,8 @@ from collections.abc import Callable
 from threetears.evals.analysis.planned_analysis import plan_recommended_arm
 from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report.plan_page.charting import measure_words
+from threetears.evals.analysis.report.plan_page.explore import explore_part
+from threetears.evals.analysis.report.plan_page.full_results import full_results
 from threetears.evals.analysis.report.plan_page.look import PageLook, page_look
 from threetears.evals.analysis.report.plan_page.model import (
     PageAnswer,
@@ -198,6 +201,8 @@ def plan_page(plan: ReportPlan, report_input: ReportInput, *, made: str = "") ->
         summary=summary,
         arms_key=arms_key(report_input, look) if plan.show_arms_key else None,
         sections=sections,
+        explore=explore_part(plan, report_input, look, written),
+        full_results=full_results(plan, report_input, look),
         method=[_term(item, written) for item in plan.method],
         made=made,
     )

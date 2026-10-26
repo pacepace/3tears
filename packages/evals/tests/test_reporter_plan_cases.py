@@ -39,8 +39,7 @@ from threetears.evals.analysis.generator import user_message_digest
 from threetears.evals.analysis.planned_analysis import report_input_digest, report_plan_of
 from threetears.evals.analysis.planner import plan_user_message
 from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
-from threetears.evals.analysis.report.blocks import TextBlock
-from threetears.evals.analysis.report.campaign.plan_blocks import plan_first_screen_blocks
+from threetears.evals.analysis.report.plan_page.build import plan_page
 from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_checks import validate_plan
@@ -115,14 +114,12 @@ class TestWhatTheJudgeReads:
     def test_every_prose_field_is_written_out_as_the_page_writes_it(self, pair: tuple[ReportPlan, ReportInput]) -> None:
         plan, report = pair
         read = json.loads(render_plan_for_judge(plan, report))
-        page = plan_first_screen_blocks(plan, report)
+        page = plan_page(plan, report)
 
-        headline = next(block for block in page if isinstance(block, TextBlock) and block.role == "answer")
-        assert read["headline"] == headline.body == render(plan.headline, report, {})
-        assert read["lede"] == render(plan.lede, report, {})
-        assert [slot["text"] for slot in read["decision"]["slots"]] == [
-            render(slot.text, report, {}) for slot in plan.decision.slots
-        ]
+        assert read["headline"] == page.headline == render(plan.headline, report, {})
+        assert read["lede"] == page.lede == render(plan.lede, report, {})
+        assert [slot["text"] for slot in read["decision"]["slots"]] == [slot.text for slot in page.decision]
+        assert [slot.text for slot in page.decision] == [render(slot.text, report, {}) for slot in plan.decision.slots]
         assert [claim["keys"] for claim in read["durable_claims"]] == [claim.keys for claim in plan.durable_claims]
 
     def test_one_plan_renders_to_one_string(self, pair: tuple[ReportPlan, ReportInput]) -> None:
@@ -527,7 +524,8 @@ async def test_a_two_aspect_campaign_planned_paged_read_and_frozen_agrees_on_eve
     # The campaign's page, and its report_read, are that plan.
     page = off_loop(campaign_report, host, campaign_id, TOYHOST_SCOPE)
     assert (page.basis, page.analysis_id) == ("analysis", analysis.id)
-    page_text = {block.role: block.body for block in page.blocks if isinstance(block, TextBlock)}
+    assert page.plan_page is not None
+    page_text = {"answer": page.plan_page.headline, "summary": page.plan_page.lede}
     read = off_loop(report_read, host, campaign_id, TOYHOST_SCOPE, format="json")
     assert (read.analysis_id, read.analysis_basis, read.plan) == (analysis.id, "plan", stored.plan)
 

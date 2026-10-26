@@ -90,11 +90,11 @@ async def test_an_agent_lists_launches_polls_and_reads_a_report() -> None:
         )
         assert not is_error and document is not None and document["format"] == "markdown"
         assert (document["basis"], document["analysis_id"]) == ("analysis", analysis_status["analysis_id"])
-        # The title opens the page; what warns (each broken floor and missed bar, and the memo's why beside one)
-        # follows the question and the answer, never above the title.
-        assert report.startswith("# ")
-        assert "**Adopting " in report[: report.index("\n## ")]
-        assert "| Analysis | " in report and "none written" not in report
+        # A planned analysis's page is the one its plan draws: the masthead line, then the headline as the page's
+        # heading, the decision with its recommendation, and each aspect's fold in the appendix after Method.
+        assert report.split("\n")[2].startswith("# ")
+        assert "**Recommendation.**" in report[: report.index("\n## ")]
+        assert "\n## Evidence record\n" in report and "none written" not in report
 
 
 async def test_a_report_s_body_is_sent_once_as_the_text_and_every_other_field_as_data() -> None:

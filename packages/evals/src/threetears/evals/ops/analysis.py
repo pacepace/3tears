@@ -339,7 +339,8 @@ class ReportDocument(EvalBaseModel):
     format: ReportFormat
     body: VerbatimText = Field(
         description="The report in that form, exactly as its serializer wrote it: Markdown, canonical JSON, or "
-        "HTML (one page whose one script is the kit's, or, static, with no script and no link)."
+        "HTML (one page whose one script is the kit's, or, static, with no script and no link). A `plan` analysis's "
+        "Markdown and HTML are the page its plan draws, each aspect's fold a closed appendix after its Method."
     )
 
 
@@ -1178,8 +1179,10 @@ def report_read(
     :func:`~threetears.evals.analysis.campaign_report`: its newest analysis that is not archived, else a
     code-only report of its evidence. ``basis`` on the result says which, and ``analysis_basis`` what wrote the
     analysis: ``memo`` (one stored before the report planner, laid out as written) or ``plan``, whose report plan is
-    ``plan``, as ``report-plan/1`` JSON. A planned analysis's page is the code-only page with the plan's first screen
-    (its headline, lede, confidence and decision slots) where a memo's summary and recommendation sit.
+    ``plan``, as ``report-plan/1`` JSON. A planned analysis's page is the page its plan draws (the report kit's page:
+    masthead, headline, lede, confidence and decision, options table and summary charts, the evidence sections, the
+    explore part and Full results, Method), with each aspect's fold as a closed appendix after Method; a memo's and a
+    code-only page are laid out as before.
 
     **The trials.** By default each aspect's trials section is the census line, the table of its failed and lost
     trials, each row naming its stored result (read one with ``result_get``), and the table of its passed trials;
