@@ -53,7 +53,7 @@ Every tool reads the run's frozen snapshot, and every figure it returns carries 
 | Analyses | `dominance(axes)` | Which options survive the gates and guardrails, and which dominate on which axes |
 | | `sensitivity(decision_param, range)` | Where the call or a reading flips: margin, floor, weighting |
 | | `breakdown(measure, by, arm_vs_control)` | Where a difference concentrates. Always exploratory |
-| | `price_tradeoff(axis_a, axis_b, volume?)` | Price per point, flip bands, modeled hybrids |
+| | `price_tradeoff(axis_a, axis_b, volume?)` | Price per point and flip bands over the measured options (a mix nobody ran is a next step, never priced) |
 | | `settle(question)` | Cases or calibration labels needed to separate a reading |
 | | `confound_check(arm, covariate)` | How much of a difference a covariate could explain |
 | Render | `render_block(kind, query, options)` | One block: its values table and warnings |

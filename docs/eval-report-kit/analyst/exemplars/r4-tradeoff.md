@@ -10,9 +10,9 @@
 
 **The trap.** Corvid looks like the sensible middle path: a small personality loss for real savings. Pricing it beside A would put an option that breaks a standing policy into the trade. Guardrail failures remove options before any pricing. The second trap is deciding at all. With no declared price for a point of personality, any recommendation is a business choice. The report prices the trade and says who makes the call.
 
-**Story.** Tradeoff. "Switching to A saves $7.6k a month but loses 6 points of personality, mostly in long conversations." The first screen says plainly that no rule was set in advance, and names the persona owner as the decider. The lean (labelled as ours): pilot a hybrid that hands conversations back to Production after turn five. Modeled from the depth breakdown, it keeps about 55% of the savings for about 36% of the loss. It is the best option between roughly $870 and $1,920 per point per month. Below that band, a full switch wins. Above it, keep Production.
+**Story.** Tradeoff. "Switching to A saves $7.6k a month but loses 6 points of personality, mostly in long conversations." The first screen says plainly that no rule was set in advance, and names the persona owner as the decider. The lean (labelled as ours): before switching, run a hybrid that hands conversations back to Production after turn five. The depth breakdown is the seam that suggests it: the loss sits in long conversations, and the savings sit in short ones. Nobody has run that mix, so the report prices only the options that were measured and names the hybrid as the next experiment.
 
-**Lead evidence.** Change against Production on every aspect, as diverging bars with intervals, so the reader sees in one chart why B and Corvid are out and that A loses only personality. Then in-character rate by turn depth, which is where the hybrid comes from. Then the savings-against-loss map with a price line, which carries the trade itself.
+**Lead evidence.** Change against Production on every aspect, as diverging bars with intervals, so the reader sees in one chart why B and Corvid are out and that A loses only personality. Then in-character rate by turn depth, which is the seam the recommended hybrid would exploit. Then the savings-against-loss map with a price line, which carries the trade itself.
 
 **What I looked for and found.**
 - What users notice. A blind preference test on 240 conversations: raters split evenly on short conversations and prefer Production in longer ones (61%, interval just clear of 50%). It is small, so it anchors direction, not size.
@@ -20,14 +20,15 @@
 
 **What I left out, and why.**
 - Completion of the requested action. Every option holds it, so it doesn't bear on the trade.
-- Hybrids handing off after turn two or turn ten. They sit on the same curve, and they stay in the explore control rather than in the decision block, where they would thin the bands.
+- Any figure for the hybrid itself. It was never run, so its savings and loss would be modeled numbers no key states. It appears only as a next step.
 
 **What I'd watch.**
 - A's speculation rate is 96.4% against the 95% guardrail. Its drop from Production reaches 2.8 points at the interval's edge, so the guardrail isn't settled. That bears on every option that uses A, including the hybrid.
 - The hybrid assumes Production's voice returns after the handoff. That is untested.
 
 **Next steps, each with what it settles.**
-- A two-week live pilot of the hybrid on 10% of traffic, watching session length and thumbs-down past turn five: tests the hybrid's assumption and anchors points to user behavior.
+- Run the hybrid (hand back to Production after turn five) as a measured option on the same cases: settles what it keeps of the savings and of the personality, so it can be priced like the others.
+- Then a two-week live pilot on 10% of traffic, watching session length and thumbs-down past turn five: anchors points to user behavior.
 - The persona owner declares a price per point: turns the tradeoff into a decision.
 - More speculation bait on A: settles its guardrail.
 
