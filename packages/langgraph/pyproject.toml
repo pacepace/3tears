@@ -37,7 +37,7 @@ dependencies = [
 [project.optional-dependencies]
 # threetears.langgraph.nats_l2: the checkpoint L2 cache over NATS KV. Optional because a saver
 # with no L2, or another L2, never needs a NATS client.
-nats = ["3tears-nats>=0.75.0,<0.76.0"]
+nats = ["3tears-nats>=0.79.0,<0.80.0"]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
