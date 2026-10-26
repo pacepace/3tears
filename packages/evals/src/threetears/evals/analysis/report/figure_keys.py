@@ -39,8 +39,8 @@ from typing import Literal, get_args
 
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.quantities import PERCENT, POINTS, number_in
-from threetears.evals.analysis.report.figures import PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
+from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, number_in, signed_with_unit, with_unit
+from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import (
     Arm,
@@ -63,8 +63,12 @@ FigureKind = Literal["number", "interval", "text", "arm"]
 
 #: The scale a figure's number is on, which decides the filters it takes. ``share``: 0 to 1. ``percent``: 0 to 100.
 #: ``points``: a difference already in percentage points. ``usd``: dollars per reply or per unit. ``usd_per_1k``:
-#: dollars per 1,000 replies. ``count``: a count. ``plain``: any other number, in ``Figure.unit`` when it has one.
-Scale = Literal["share", "percent", "points", "usd", "usd_per_1k", "count", "plain"]
+#: dollars per 1,000 replies. ``usd_per_1m``: dollars per 1,000,000 replies. ``count``: a count. ``plain``: any other
+#: number, in ``Figure.unit`` when it has one.
+Scale = Literal["share", "percent", "points", "usd", "usd_per_1k", "usd_per_1m", "count", "plain"]
+
+#: The dollar scales, each with the factor that states its figure per 1,000 replies.
+_PER_THOUSAND_FACTORS: dict[str, float] = {"usd": 1000.0, "usd_per_1k": 1.0, "usd_per_1m": 0.001}
 
 #: The filters a key may carry. One spelling at most (``pct``, ``pts``, ``usd``, ``usd_per_1k``, ``int``,
 #: ``pct10``), plus ``abs`` and ``interval``, in any order.
@@ -88,6 +92,7 @@ _FILTER_MEANS: dict[str, str] = {
 INTERVAL_TEMPLATE = "{low} to {high}"
 RANGE_TEMPLATE = "{low}–{high}"
 PER_THOUSAND_TEMPLATE = "{amount} " + PER_THOUSAND_REPLIES
+_PER_MILLION_TEMPLATE = "{amount} " + PER_MILLION_REPLIES
 ARM_TEMPLATE = "{name} ({tag})"
 #: What separates a whole number's thousands under the ``int`` filter (``12,000,000``). Prose only: the package's
 #: number rule (:mod:`threetears.evals.analysis.numbers`) writes no separator inside its tables' intervals and lists.
@@ -101,7 +106,7 @@ PERCENTILE_NAMES: tuple[str, ...] = ("p50", "p90", "p95", "p99")
 
 #: The package's own unit phrases, which prose may write whole with their digits: each one a template a rendered
 #: figure is joined with, so prose that says "per 1,000 replies" uses the package's words and no figure of its own.
-_UNIT_PHRASES: tuple[str, ...] = (PER_THOUSAND_REPLIES, PER_THOUSAND_LABEL)
+_UNIT_PHRASES: tuple[str, ...] = (PER_THOUSAND_REPLIES, PER_THOUSAND_LABEL, PER_MILLION_REPLIES)
 
 #: A key, as plan prose holds it: one pair of single braces around anything but braces.
 _KEY = re.compile(r"\{([^{}]*)\}")
@@ -249,6 +254,8 @@ def _measure_scale(measure: Measure) -> tuple[Scale, str]:
         return "usd", ""
     if unit == "usd_per_1k":
         return "usd_per_1k", ""
+    if unit == "usd_per_1m":
+        return "usd_per_1m", ""
     if not unit and measure.grade in ("pass_fail", "class_label"):
         return "share", ""
     return "plain", unit
@@ -517,22 +524,72 @@ def _pass_rate(report_input: ReportInput, values: tuple[str, ...], path: str) ->
     return _number(path, _passing(report_input)[values[0]], "the pass rate", _pass_rate_scale(report_input))
 
 
-def _costs_per_thousand(report_input: ReportInput) -> dict[str, float]:
-    """Each arm's cost per 1,000 replies, from the first source that holds one.
+def _cost_measures(report_input: ReportInput) -> tuple[list[str], list[str]]:
+    """The measures an arm's cost may be read from, in the order they are tried: each one alone of its kind.
 
-    A measure stated per 1,000 replies; else the one measure on the cost merit axis in dollars, times 1,000; else
-    the scoreboard's cost per reply, times 1,000.
+    First the measures read before the scoreboard: the one stated per 1,000 replies, the one stated per 1,000,000,
+    the one in dollars on the cost merit axis. Then the one dollar measure, in any of those units, where lower is
+    better, read after it.
     """
-    sources: list[dict[str, float]] = []
-    for unit, merit, factor in (("usd_per_1k", None, 1.0), ("usd", "cost", 1000.0)):
-        found = [
-            m for m in report_input.measures.values() if m.unit == unit and (merit is None or m.merit_axis == merit)
+    measures = report_input.measures
+
+    def alone(keys: list[str]) -> list[str]:
+        return keys if len(keys) == 1 else []
+
+    first = [
+        *alone([key for key, m in measures.items() if m.unit == "usd_per_1k"]),
+        *alone([key for key, m in measures.items() if m.unit == "usd_per_1m"]),
+        *alone([key for key, m in measures.items() if m.unit == "usd" and m.merit_axis == "cost"]),
+    ]
+    lower = alone(
+        [key for key, m in measures.items() if m.unit in _PER_THOUSAND_FACTORS and m.higher_is_better is False]
+    )
+    return first, lower
+
+
+def _overall_cost(report_input: ReportInput, key: str) -> dict[str, float]:
+    measure = report_input.measures[key]
+    factor = _PER_THOUSAND_FACTORS[measure.unit or ""]
+    return {arm: stat.mean * factor for arm, stat in measure.per_arm.items() if stat.mean is not None}
+
+
+def _blended_cost(report_input: ReportInput, key: str) -> dict[str, float]:
+    """Each arm's cost on one measure blended over the tasks: its task figures weighted by each task's traffic share.
+
+    An arm is blended over the tasks that carry traffic and hold its figure, each weighted by its share of their
+    traffic, and left out where any of those figures is unstated.
+    """
+    factor = _PER_THOUSAND_FACTORS[report_input.measures[key].unit or ""]
+    blended: dict[str, float] = {}
+    for arm in report_input.arms:
+        parts = [
+            (float(task.share), task.per_arm[arm.id][key].mean)
+            for task in report_input.tasks
+            if task.share and arm.id in task.per_arm and key in task.per_arm[arm.id]
         ]
-        if len(found) == 1:
-            sources.append({a: s.mean * factor for a, s in found[0].per_arm.items() if s.mean is not None})
+        means = [mean for _, mean in parts if mean is not None]
+        if parts and len(means) == len(parts):
+            total = sum(share for share, _ in parts)
+            blended[arm.id] = factor * sum(share * mean for (share, _), mean in zip(parts, means, strict=True)) / total
+    return blended
+
+
+def _costs_per_thousand(report_input: ReportInput) -> dict[str, float]:
+    """Each arm's cost per 1,000 replies, from the first source that holds one: the one rule a page and the decision
+    read cost by (``cost_per_1k.<arm>``).
+
+    The arms' overall figures on a measure stated per 1,000 replies; else on one stated per 1,000,000, divided by
+    1,000; else on the one dollar measure on the cost merit axis, times 1,000; else the scoreboard's cost per reply,
+    times 1,000; else the one dollar measure where lower is better. Where none of those states a figure, each measure
+    in the same order blended over the tasks by traffic share (:func:`_blended_cost`).
+    """
+    first, lower = _cost_measures(report_input)
+    sources = [_overall_cost(report_input, key) for key in first]
     sources.append(
         {a: row.reply_cost_usd * 1000 for a, row in report_input.scoreboard.items() if row.reply_cost_usd is not None}
     )
+    sources += [_overall_cost(report_input, key) for key in lower]
+    sources += [_blended_cost(report_input, key) for key in dict.fromkeys([*first, *lower])]
     return next((source for source in sources if source), {})
 
 
@@ -1443,6 +1500,11 @@ def _grouped(text: str) -> str:
     return sign + THOUSANDS_SEPARATOR.join([digits, *groups])
 
 
+#: The spelling a figure on the ``usd_per_1m`` scale reads in without a filter: dollars with the words, ``$180 per
+#: 1,000,000 replies``. No filter names it: a key's own spelling, never chosen.
+_PER_MILLION = "per_million"
+
+
 def _spelling_for(figure: Figure, filters: tuple[str, ...]) -> str:
     chosen = next((name for name in filters if name in _SPELLINGS), None)
     if chosen is not None:
@@ -1453,6 +1515,7 @@ def _spelling_for(figure: Figure, filters: tuple[str, ...]) -> str:
         "points": "pts" if figure.change else "points",
         "usd": "usd",
         "usd_per_1k": "usd",
+        "usd_per_1m": _PER_MILLION,
     }
     return defaults.get(figure.scale, "plain")
 
@@ -1477,14 +1540,20 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
         text = number_in(hundred, POINTS)
         return _Spelled(_plus(text, hundred) if spelling == "pts" and not absolute else text)
     if spelling in ("usd", "usd_per_1k"):
-        if figure.scale not in ("usd", "usd_per_1k"):
+        if figure.scale not in _PER_THOUSAND_FACTORS:
             raise _refuse(figure.path, f"cannot read as dollars: it is on the {figure.scale} scale")
         if spelling == "usd":
             return _Spelled(_money(value, signed))
-        per_thousand = value * 1000 if figure.scale == "usd" else value
+        per_thousand = value * _PER_THOUSAND_FACTORS[figure.scale]
         return _Spelled(PER_THOUSAND_TEMPLATE.format(amount=_money(per_thousand, signed)))
+    if spelling == _PER_MILLION:
+        # The package's money spelling (the scoreboard's): a price per million replies is whole dollars or near it,
+        # and two decimals on it are noise.
+        amount = signed_with_unit(value, MONEY) if signed else with_unit(value, MONEY)
+        return _Spelled(_PER_MILLION_TEMPLATE.format(amount=amount))
     if spelling == "int":
-        if figure.scale not in ("count", "plain", "points"):
+        # A price per 1,000,000 replies also reads as a whole number, as stored plans spell it.
+        if figure.scale not in ("count", "plain", "points", "usd_per_1m"):
             raise _refuse(figure.path, f"cannot read as a whole number: it is on the {figure.scale} scale")
         text = _grouped(format_number(float(round(value))))
         return _Spelled(_plus(text, value) if signed else text)
@@ -1763,6 +1832,14 @@ def figure_key_grammar() -> str:
         lines.append(f'- `{name}`: {means}. `{{{example_key}}}` reads "{shown}".')  # one line: module constants
     sentence = "{arm:fast.v2} is down {reading.fast.v2.change|abs|pts} points ({reading.fast.v2.interval|pts})."
     lines.append(f'For example, "{sentence}" reads "{render(sentence, example, names)}".')
+    per_reply = "scoreboard.base.reply_cost_usd"
+    lines.append(
+        "A key prints its own unit (`%`, `$`, `ms`, `s`, `per 1,000 replies`); never write a unit after it. A figure "
+        "in points alone prints its bare number, so the word `points` follows it, as above. Money per reply reads per "
+        f"1,000 replies: write `{{{per_reply}|usd_per_1k}}`, which reads "
+        f'"{format_figure(resolve(per_reply, example), ("usd_per_1k",))}", not `{{{per_reply}}}` '
+        f'("{format_figure(resolve(per_reply, example))}", a fraction of a cent).'
+    )
     lines.append(
         "Without a filter a rate reads as a percent, a change in points, money in dollars. A digit outside a key is "
         "refused unless it is part of a name the input holds: an arm's id or name, a served model, a setting as "

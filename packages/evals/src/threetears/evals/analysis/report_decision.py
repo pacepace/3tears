@@ -60,9 +60,10 @@ asked aspect's own axis, not a gate.
 survivor on every axis that matters:
 
 - *Every gate*: every survivor passes every gate, so the gates tie among survivors.
-- *Cost*: cost per 1,000 replies (the figure key's source; else the one dollar measure where lower is better; else
-  that measure blended over the tasks by traffic share), lower is better. Two arms with no cost tie; an arm with no
-  cost is not at least as good as one with a cost, nor the reverse.
+- *Cost*: cost per 1,000 replies as the ``cost_per_1k.<arm>`` figure key reads it, the one cost rule
+  (:mod:`~threetears.evals.analysis.report.figure_keys`: a dollar measure's overall figures or the scoreboard's, else
+  a dollar measure blended over the tasks by traffic share), lower is better. Two arms with no cost tie; an arm with
+  no cost is not at least as good as one with a cost, nor the reverse.
 - *The asked aspect*: in a change, each arm takes a level: a candidate shown better (a confirmatory ``better``
   reading, or an ``improved`` contrast on an asked aspect) is 2; one shown no worse (every floor on every asked
   aspect held, each declaring one, and within the margin on each asked reading that declares one) is 1; any other
@@ -491,42 +492,18 @@ def _separable(report_input: ReportInput, arm: str, overrides: _Overrides) -> bo
 
 
 def _costs(report_input: ReportInput) -> dict[str, float]:
-    """Each arm's cost, from the first source that states one (this module's Dominance, cost)."""
+    """Each arm's cost per 1,000 replies, as its ``cost_per_1k`` key reads it (this module's Dominance, cost)."""
     costs: dict[str, float] = {}
     for arm in report_input.arms:
         try:
             figure = resolve(f"cost_per_1k.{arm.id}", report_input)
         except UnresolvableReference:
-            # NOSILENT: an arm with no cost figure key is an expected absence, not a failure: it is left out of the costs
-            # this source states, and when no arm has one the sources below are read instead.
+            # NOSILENT: an arm whose cost no source states is an expected absence, not a failure: it has no cost, which
+            # the dominance rule reads as such.
             continue
         if isinstance(figure.value, (int, float)):
             costs[arm.id] = float(figure.value)
-    if costs:
-        return costs
-    dollars = [
-        key
-        for key, measure in report_input.measures.items()
-        if (measure.unit or "").startswith("usd") and measure.higher_is_better is False
-    ]
-    if len(dollars) != 1:
-        return {}
-    key = dollars[0]
-    stated = {
-        arm: float(stat.mean) for arm, stat in report_input.measures[key].per_arm.items() if stat.mean is not None
-    }
-    if stated:
-        return stated
-    blended: dict[str, float] = {}
-    for arm in report_input.arms:
-        parts = [
-            (task.share, task.per_arm[arm.id][key].mean)
-            for task in report_input.tasks
-            if task.share and arm.id in task.per_arm and key in task.per_arm[arm.id]
-        ]
-        if parts and all(mean is not None for _, mean in parts):
-            blended[arm.id] = sum(float(share or 0) * float(mean or 0) for share, mean in parts)
-    return blended
+    return costs
 
 
 # --- dominance and modes -------------------------------------------------------------------------------------------
