@@ -708,7 +708,7 @@ class CatalogueTool(Tool):
                 "annotations": {
                     "readOnlyHint": hints.read_only,
                     "destructiveHint": hints.destructive,
-                    "idempotentHint": False,
+                    "idempotentHint": hints.idempotent,
                     "openWorldHint": hints.open_world,
                 },
                 "binding": binding,

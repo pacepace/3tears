@@ -202,13 +202,15 @@ async def test_each_tool_shows_a_client_its_hints_schema_and_help() -> None:
     assert (
         evals.annotations.read_only_hint,
         evals.annotations.destructive_hint,
+        evals.annotations.idempotent_hint,
         evals.annotations.open_world_hint,
     ) == (
         False,
         False,
+        False,
         True,
     )
-    assert admin.annotations.destructive_hint is True
+    assert admin.annotations.destructive_hint is True and admin.annotations.idempotent_hint is False
     assert evals.input_schema["properties"]["action"]["enum"][:2] == ["help", "templates_list"]
     assert set(admin.input_schema["properties"]) == {
         "action",
@@ -227,6 +229,7 @@ async def test_a_host_mounts_a_read_only_tool_under_its_own_prefix() -> None:
         (tool,) = await client.list_tools()
         text, _, is_error = await _text(client, "lab", {"action": "run_launch", "template_id": "t", "subject_id": "s"})
     assert tool.name == "lab" and tool.annotations is not None and tool.annotations.read_only_hint is True
+    assert tool.annotations.idempotent_hint is True, "every read may be repeated to no further effect"
     assert is_error and "run_launch is a spend action, and tool lab carries read actions only" in text
 
 

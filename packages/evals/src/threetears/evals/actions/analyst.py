@@ -118,6 +118,7 @@ def _snapshot_actions() -> tuple[Action, ...]:
             handler=_report_snapshot_freeze,
             render=render_cited,
             example={"campaign_id": "0193a1b2-campaign"},
+            idempotent=True,
             detail=(
                 "A campaign's evidence is assembled as it stands; an analysis's is the bundle frozen with it. The "
                 "report input built from it is stored whole, and every analyst tool takes the snapshot_id returned "

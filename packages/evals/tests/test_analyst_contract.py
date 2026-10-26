@@ -495,9 +495,11 @@ def test_the_evals_and_read_only_tools_carry_the_engines_actions_and_parameters_
 def test_the_analyst_tool_carries_every_analyst_action_and_read_only_it_carries_no_freeze() -> None:
     names = [action.name for action in analyst_actions()]
     assert [action.name for action in _analyst_tool().actions] == names
+    assert _analyst_tool().hints.idempotent, "the freeze, its one write, names the snapshot it stored on a repeat"
     (reading,) = analyst_tools(writes=False)
     read_only = eval_catalogue().mount(reading)
     assert read_only.hints.read_only and "report_snapshot_freeze" not in {a.name for a in read_only.actions}
+    assert read_only.hints.idempotent
     assert {action.permission for action in analyst_actions()} <= {"read", "write"}
     assert [action.name for action in analyst_actions() if action.permission == "write"] == ["report_snapshot_freeze"]
 

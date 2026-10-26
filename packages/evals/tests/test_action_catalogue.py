@@ -173,11 +173,13 @@ def test_the_standard_tools_split_on_class_and_take_the_hosts_prefix() -> None:
     assert [action.name for action in admin.actions] == ["run_delete", "analysis_delete", "insight_delete"]
     assert evals.hints.open_world and not evals.hints.destructive and not evals.hints.read_only
     assert admin.hints.destructive
+    assert not evals.hints.idempotent, "a spend starts work again on every call"
+    assert not admin.hints.idempotent, "no engine delete declares itself idempotent"
 
 
 def test_a_read_only_tool_carries_only_reads() -> None:
     (tool,) = eval_catalogue().mount_all(read_only_tools())
-    assert tool.hints.read_only
+    assert tool.hints.read_only and tool.hints.idempotent
     assert {action.permission for action in tool.actions} == {"read"}
     assert tool.action("run_launch") is None and tool.action("job_poll") is not None
 
@@ -358,6 +360,11 @@ class _OtherMeaning(EvalBaseModel):
     note: int = Field(description="A note, but a number.")
 
 
+async def _no_path(stage: Any) -> dict[str, Any]:
+    del stage
+    return {"note": "x"}
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
@@ -375,6 +382,12 @@ class _OtherMeaning(EvalBaseModel):
         ({"result": JobsStarted}, "long work returns JobsStarted"),
         ({"example": {"note": "x", "extra": 1}}, "its example is not a valid call"),
         ({"example": {}}, "its example is not a valid call"),
+        ({"idempotent": True}, "a read is idempotent by its class"),
+        ({"idempotent": True, "permission": "spend", "happy_path": _no_path}, "idempotent is declared by a write"),
+        (
+            {"idempotent": True, "permission": "write", "result": JobsStarted, "long_running": True},
+            "idempotent is declared by a write or destructive action that starts no long work",
+        ),
     ],
 )
 def test_an_action_no_transport_could_mount_honestly_is_refused(overrides: dict[str, Any], message: str) -> None:
@@ -446,6 +459,14 @@ def test_no_engine_parameter_is_described_by_the_action_that_takes_it() -> None:
 def test_the_valid_action_the_refusals_start_from_is_accepted() -> None:
     """The control: every refusal above differs from this action by its override alone."""
     assert _action().name == "note_echo"
+
+
+def test_a_tool_is_idempotent_when_every_action_is_a_read_or_a_write_declared_so() -> None:
+    reads = ToolSpec(name="notes", description="d", permissions=frozenset({"read", "write"}))
+    declared = _action(name="note_keep", permission="write", idempotent=True)
+    undeclared = _action(name="note_add", permission="write")
+    assert ActionCatalogue([_action(), declared]).mount(reads).hints.idempotent
+    assert not ActionCatalogue([_action(), declared, undeclared]).mount(reads).hints.idempotent
 
 
 def test_one_parameter_name_meaning_two_things_on_a_tool_is_refused() -> None:

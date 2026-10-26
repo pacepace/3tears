@@ -210,6 +210,9 @@ class Action:
         send it twice; ``None``, the default, for a render that composes its text, whose result is sent whole.
     :ivar cut: The cut whose tools alone mount it (:attr:`ToolSpec.cut`); ``None``, the default, for an action the
         standard tools mount.
+    :ivar idempotent: A ``write`` or ``destructive`` action a caller may repeat with the same parameters to no further
+        effect (``report_snapshot_freeze`` names the snapshot it stored); a ``read`` is idempotent by its class, and
+        neither a ``spend`` nor long work can be, since each call spends or starts work again. ``False``, the default.
     """
 
     name: str
@@ -226,6 +229,7 @@ class Action:
     happy_path: HappyPath | None = None
     text_field: str | None = None
     cut: str | None = None
+    idempotent: bool = False
 
     def __post_init__(self) -> None:
         """Refuse an action no transport could mount honestly.
@@ -235,7 +239,8 @@ class Action:
             nested model; a destructive action declares no required ``confirm``; ``long_running``
             disagrees with whether the result is ``JobsStarted``; an action whose result is anything else
             declares no ``render`` of its own; a spend action declares no ``happy_path``; the cut is not a
-            lowercase identifier; or the example does not validate.
+            lowercase identifier; an action that is not a ``write`` or ``destructive`` one, or is long work, is
+            declared idempotent; or the example does not validate.
         """
         where = f"action {self.name!r}"
         if not ACTION_NAME.fullmatch(self.name):
@@ -274,6 +279,11 @@ class Action:
             raise ValueError(
                 f"{where}: a spend action declares a happy_path — the parameters that reach its work — so the jobs "
                 "conformance kit can show its call makes no completion request and its job makes some"
+            )
+        if self.idempotent and (self.permission not in ("write", "destructive") or self.long_running):
+            raise ValueError(
+                f"{where}: idempotent is declared by a write or destructive action that starts no long work; a read "
+                "is idempotent by its class, and a spend or long work spends or starts work again on every call"
             )
         if self.text_field is not None and self.text_field not in self.result.model_fields:
             raise ValueError(
@@ -469,11 +479,14 @@ class ToolHints:
     :ivar read_only: Every action is ``read``.
     :ivar destructive: Some action is ``destructive``.
     :ivar open_world: Some action spends on a provider outside the host.
+    :ivar idempotent: Every action may be repeated with the same parameters to no further effect: a ``read``, or a
+        write or destructive action declared so (:attr:`Action.idempotent`).
     """
 
     read_only: bool
     destructive: bool
     open_world: bool
+    idempotent: bool
 
 
 def _property_meaning(schema: Mapping[str, Any]) -> dict[str, Any]:
@@ -526,7 +539,10 @@ class MountedTool:
         """The behaviour hints this tool's actions earn."""
         classes = {action.permission for action in self.actions}
         return ToolHints(
-            read_only=classes == {"read"}, destructive="destructive" in classes, open_world="spend" in classes
+            read_only=classes == {"read"},
+            destructive="destructive" in classes,
+            open_world="spend" in classes,
+            idempotent=all(action.permission == "read" or action.idempotent for action in self.actions),
         )
 
     def action(self, name: str) -> Action | None:
