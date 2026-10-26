@@ -397,7 +397,9 @@ def spine(report_input: ReportInput) -> Spine:
     kind = SPINE_KINDS[shape]
     gates = [criterion for criterion in report_input.criteria if criterion.kind == "gate"]
     figures = set(report_input.measures) | set(report_input.judged)
-    source, aspect, measures, reference = "", "", None, ()
+    source, aspect = "", ""
+    measures: tuple[str, ...] | None = None
+    reference: tuple[str, ...] = ()
     if shape == "A":
         source = "tasks" if report_input.tasks else ""
     elif shape == "B":
