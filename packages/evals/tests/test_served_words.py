@@ -79,6 +79,9 @@ def test_a_cell_stores_its_value_never_its_text() -> None:
         "anchor": None,
         "ref": None,
         "flag": None,
+        "status": None,
+        "tag": None,
+        "color": None,
     }
     with pytest.raises(ValueError, match="extra"):
         TableCell.model_validate({"value": 0.5, "text": "a lie"})

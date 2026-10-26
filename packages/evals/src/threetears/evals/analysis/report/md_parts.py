@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Sequence
 
-from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
+from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell
 
 
 def code_span(text: str) -> str:
@@ -76,10 +76,16 @@ def table_lines(block: TableBlock) -> list[str]:
     if not block.rows:
         return ["_(no rows)_"]
     headers = [column.header for column in block.columns]
-    lines = markdown_table(headers, [[row[column.key].text for column in block.columns] for row in block.rows])
+    lines = markdown_table(headers, [[_words(row[column.key]) for column in block.columns] for row in block.rows])
     if block.total_rows > len(block.rows):
         lines += ["", f"_{len(block.rows)} of {block.total_rows} rows shown._"]
     return lines
+
+
+def _words(cell: TableCell) -> str:
+    """A cell as Markdown prints it: its text, after its arm's tag where it names an arm (``A · Spark``). A status
+    is the text's own word; Markdown has no colour to add."""
+    return cell.text if cell.tag is None else f"{cell.tag} · {cell.text}"
 
 
 def markdown_table(headers: Sequence[str], rows: Iterable[Sequence[str]]) -> list[str]:

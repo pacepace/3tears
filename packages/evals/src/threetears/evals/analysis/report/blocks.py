@@ -27,10 +27,12 @@ from threetears.evals.analysis.report.charts import (
     BarsChart,
     ChartPattern,
     ChartShape,
+    ChartStatus,
     KitChart,
     LegendItem,
     ScatterChart,
     ScatterPoint,
+    Token,
 )
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.schema.base import EvalDocumentModel
@@ -499,6 +501,39 @@ class TableCell(EvalDocumentModel):
             "serializer prints it after the value, in parentheses. None for none."
         ),
     )
+    status: ChartStatus | None = Field(
+        default=None,
+        description=(
+            "A status the cell reads as, drawn in HTML as the kit's pill: its colour and icon beside the cell's text, "
+            "which says the status in words, so it never rests on a colour alone. Markdown prints the words. None for "
+            "none."
+        ),
+    )
+    tag: str | None = Field(
+        default=None,
+        pattern=r"^[A-Z]+$",
+        description=(
+            "An arm's letter tag, where the cell names an arm: HTML draws the cell as the kit's arm chip, the tag on "
+            "the arm's identity colour (`color`) before the cell's text, its name; Markdown prints `<tag> · <name>`. "
+            "None for none."
+        ),
+    )
+    color: Token | None = Field(
+        default=None,
+        description="The arm chip's colour token, set with `tag`; the kit's ink-gray where the chip names none.",
+    )
+
+    @model_validator(mode="after")
+    def _a_chip_or_a_pill_is_drawn_whole(self) -> Self:
+        """Refuse a chip's colour with no chip, and a pill and a chip on one cell.
+
+        :raises ValueError: ``color`` is set without ``tag``, or ``status`` and ``tag`` are both set.
+        """
+        if self.color is not None and self.tag is None:
+            raise ValueError("a cell's colour colours its arm chip's tag, and this cell has no tag")
+        if self.status is not None and self.tag is not None:
+            raise ValueError("a cell is drawn as a status pill or as an arm chip, and this cell sets both")
+        return self
 
     @model_validator(mode="after")
     def _a_unit_qualifies_a_number(self) -> Self:

@@ -262,6 +262,10 @@ def _grid(block: TableBlock) -> str:
                 )
             if (block.name, column.key) in _TRIAL_COLUMNS:
                 text = TRIAL_ID.sub(lambda match: f'<a href="#{match.group(0)}">{match.group(0)}</a>', text)
+            if cell.status is not None:
+                text = pill_html(cell.status, text)
+            elif cell.tag is not None:
+                text = _arm_chip(cell.tag, cell.color, text)
             if block.name == "cases" and column.key == "trials":
                 # Navigation beside the marks, not information: the stylesheet mutes it.
                 css = ' class="trial-links"'
