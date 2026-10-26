@@ -26,6 +26,8 @@ async def price_tradeoff(
     snapshot_id: str,
     gain_key: str,
     arm: str | None = None,
+    slice_filter: str | None = None,
+    what_if: str | None = None,
     limit: int = PRICE_PAGE,
     offset: int = 0,
     fits: Callable[[PriceTradeoff], bool] | None = None,
@@ -42,26 +44,33 @@ async def price_tradeoff(
     :ptype gain_key: str
     :param arm: The option every other is priced against; None for the control.
     :ptype arm: str | None
-    :param limit: The most moves against that option one page holds.
+    :param slice_filter: The one task, stratum or cell to price within, by id; None prices overall.
+    :ptype slice_filter: str | None
+    :param what_if: An option the gates remove, to price as a labelled what-if; None for none.
+    :ptype what_if: str | None
+    :param limit: The most options one page covers.
     :ptype limit: int
     :param offset: The first of them the page holds.
     :ptype offset: int
     :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
         ``None`` takes ``limit`` as it is.
     :ptype fits: Callable[[PriceTradeoff], bool] | None
-    :return: The frontier, the price per point at each step along it, every option priced against one, and why each
-        other option is off the frontier.
+    :return: The frontier, the price per point at each step along it, every option priced against one, why each other
+        option is off the frontier, and the what-if asked for.
     :rtype: PriceTradeoff
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read; the gain key names no measure or judged dimension with
-        a direction; no arm has a cost; or ``arm`` names no priced option.
+        a direction; no arm has a cost; ``arm`` names no priced option; ``slice_filter`` names no one slice; or
+        ``what_if`` names no option the gates remove.
     """
     held = await snapshot_input(host, scope_id, snapshot_id)
     try:
         return await run_blocking(
             host.eval_host.blocking_executor,
             sized_page,
-            lambda rows: priced(held, gain_key, arm=arm, limit=rows, offset=offset),
+            lambda rows: priced(
+                held, gain_key, arm=arm, slice_filter=slice_filter, what_if=what_if, limit=rows, offset=offset
+            ),
             limit,
             fits,
         )

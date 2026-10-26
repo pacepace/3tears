@@ -22,12 +22,20 @@ examples        an :class:`Example`                                             
 cells           a target-matrix :class:`Cell`                                     its id                     no
 confusion       a :class:`ConfusionTable`, one per axis                           the axis's key             no
 human_pref      a :class:`PreferenceRow` slice                                    its id                     yes
+prices          a :class:`PriceStep` along the price frontier on a gain axis      ``from→to``                yes
+                (each the query's ``measures`` keeps)
 ==============  ================================================================  =========================  ========
 
 A figure row reads the query's aspect from the measure's ``by_aspect`` where it names one the measure holds, else its
 ``per_arm`` (the lead aspect's). A scoreboard reads the named aspect's own scoreboard where it has one. A row has an
 interval where the input carries one: a reading's ``within_interval``, a contrast's or a floor's ``interval``, a
-figure's ``ci``, a preference slice's half-width about its share.
+figure's ``ci``, a preference slice's half-width about its share, a price step's ends off its gain's interval (paired
+where every step's is, else unpaired; none on a step whose interval leaves its high end open).
+
+**A price step** is one move along the frontier of the options best at some price per point
+(:func:`~threetears.evals.analysis.report.figure_keys.price_frontier`), on each gain axis a ``prices`` query keeps
+(a block draws one, named in ``measures``): its price per point a month at the declared volume, else per 1,000 replies, each figure read through
+the key that states it. ``arms`` keeps the steps both of whose options it keeps.
 
 **The filters.** An empty filter keeps everything (:class:`~threetears.evals.kernel.report_plan.ChartQuery`).
 ``arms`` keeps the rows of those arms, where a row is of one arm (an example with no arm is kept; a preference slice
@@ -46,6 +54,8 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 
+from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.report.figure_keys import price_frontier, resolve
 from threetears.evals.analysis.report_input import (
     Aspect,
     Cell,
@@ -65,7 +75,33 @@ from threetears.evals.analysis.report_input import (
 )
 from threetears.evals.kernel.report_plan import ChartQuery
 
-__all__ = ["SourceRow", "query_aspect", "query_rows"]
+__all__ = ["PriceStep", "SourceRow", "query_aspect", "query_rows"]
+
+
+@dataclass(frozen=True)
+class PriceStep:
+    """One step along a price frontier: the move from one frontier option to the next dearer, at its price per point.
+
+    :ivar first: The cheaper option's id.
+    :ivar second: The dearer option's id.
+    :ivar gain_key: The gain axis, by key.
+    :ivar key: The key that states the price drawn: ``monthly_per_point`` at the declared volume, else ``per_point``.
+    :ivar value: The price per point the key reads.
+    :ivar monthly: Whether it is a month's price at the declared volume (else per 1,000 replies).
+    :ivar low_key: The key of the interval's low end; empty where the row carries no interval.
+    :ivar high_key: The key of its high end; empty where the row carries no interval.
+    :ivar paired: Whether the ends are read off the paired interval (a contrast's), else off the unpaired one.
+    """
+
+    first: str
+    second: str
+    gain_key: str
+    key: str
+    value: float
+    monthly: bool
+    low_key: str = ""
+    high_key: str = ""
+    paired: bool = False
 
 
 @dataclass(frozen=True)
@@ -93,6 +129,7 @@ class SourceRow:
         | Cell
         | ConfusionTable
         | PreferenceRow
+        | PriceStep
     )
     arm: str = ""
     key: str = ""
@@ -261,6 +298,75 @@ def _human_pref(query: ChartQuery, report_input: ReportInput) -> Iterator[Source
         yield SourceRow(row.id, row, arm=preference.arm, interval=_interval(interval))
 
 
+def _number_at(key: str, report_input: ReportInput) -> float | None:
+    """The number a key reads, or None where it refuses: an end an interval leaves open, or one unstated."""
+    try:
+        value = resolve(key, report_input).value
+    except UnresolvableReference:
+        # NOSILENT: a price's end refused as unbounded or unstated is a row with no interval, which the step's keys
+        # say; the price the row draws is read below and raises if it does not resolve.
+        return None
+    return float(value) if isinstance(value, int | float) else None
+
+
+def _gain_keys(report_input: ReportInput) -> list[str]:
+    """Every measure or judged dimension a price frontier can be read on: a judged dimension, or a measure with a
+    direction."""
+    directed = [key for key, measure in report_input.measures.items() if measure.higher_is_better is not None]
+    return list(dict.fromkeys([*report_input.judged, *directed]))
+
+
+def _prices(query: ChartQuery, report_input: ReportInput) -> Iterator[SourceRow]:
+    """Each step along the price frontier on each gain axis the query keeps (every one where it names none), kept
+    where the query keeps both of its options; on each axis its interval paired where every kept step's is, else
+    unpaired, else none."""
+    keys = list(query.measures) or _gain_keys(report_input)
+    for gain_key in keys:
+        yield from _steps(query, report_input, gain_key)
+
+
+def _steps(query: ChartQuery, report_input: ReportInput, gain_key: str) -> Iterator[SourceRow]:
+    try:
+        frontier = price_frontier(report_input, gain_key)
+    except UnresolvableReference:
+        # NOSILENT: a key naming no gain axis (no such measure, or one of no direction) selects no row; the chart
+        # checks refuse a query naming a measure the source does not hold.
+        return
+    arms = _arms(query, report_input)
+    monthly = report_input.meta.volume_per_month is not None
+    field = "monthly_per_point" if monthly else "per_point"
+    steps = [(first, second) for first, second in frontier.steps if first in arms and second in arms]
+
+    def ends(first: str, second: str, suffix: str) -> tuple[str, str] | None:
+        low, high = (frontier.key(first, second, f"{field}_{end}{suffix}") for end in ("low", "high"))
+        held = (_number_at(low, report_input), _number_at(high, report_input))
+        return (low, high) if None not in held else None
+
+    paired = bool(steps) and all(ends(first, second, "") is not None for first, second in steps)
+    for first, second in steps:
+        key = frontier.key(first, second, field)
+        value = resolve(key, report_input).value
+        assert isinstance(value, float)
+        found = ends(first, second, "" if paired else "_unpaired")
+        interval = None
+        if found is not None:
+            low, high = (_number_at(end, report_input) for end in found)
+            assert low is not None and high is not None
+            interval = (low, high)
+        step = PriceStep(
+            first=first,
+            second=second,
+            gain_key=gain_key,
+            key=key,
+            value=value,
+            monthly=monthly,
+            low_key=found[0] if found else "",
+            high_key=found[1] if found else "",
+            paired=paired and found is not None,
+        )
+        yield SourceRow(f"{first}→{second}", step, key=gain_key, interval=interval)
+
+
 #: Each source's selector (this module's table).
 _SELECTORS: dict[str, Callable[[ChartQuery, ReportInput], Iterator[SourceRow]]] = {
     "readings": _readings,
@@ -276,4 +382,5 @@ _SELECTORS: dict[str, Callable[[ChartQuery, ReportInput], Iterator[SourceRow]]] 
     "cells": _cells,
     "confusion": _confusion,
     "human_pref": _human_pref,
+    "prices": _prices,
 }

@@ -836,6 +836,7 @@ _PAGED_CALLS: dict[str, tuple[str, dict[str, Any]]] = {
     "decision_sensitivity": ("r2", {"parameter": "threshold:pass_rate", "limit": 1}),
     "measure_breakdown": (KAIRO, {"measure_key": "persona.holds_character", "limit": 2}),
     "price_tradeoff": (KAIRO, {"gain_key": "persona.holds_character", "limit": 1}),
+    "figure_keys_check": (KAIRO, {"keys": ["arm:September", "arm:1017", "n_candidates", "judge.tier"], "limit": 1}),
     "block_render": (KAIRO, {"block_kind": "table", "query": {"source": "contrasts"}, "limit": 2}),
     "arms_compare": ("r1", {"arm_ids": ["atlas-l", "atlas-m"], "measure_key": "overall", "limit": 2}),
     "settle_cases": ("r1", {"arm_ids": ["atlas-m"], "limit": 3}),
@@ -902,6 +903,7 @@ _ROWS = {
     "block_render": "rows",
     "arms_compare": "rows",
     "settle_cases": "rows",
+    "figure_keys_check": "keys",
 }
 
 
@@ -930,11 +932,13 @@ def _page_rows(action: str, structured: dict[str, Any]) -> list[Any]:
             ("interaction", row) for row in structured["interactions"]
         ]
     if action == "price_tradeoff":
-        # A page covers options in arm order, each priced against one or listed off the frontier: tagged by which.
-        return sorted(
-            [("against", row) for row in structured["against"]] + [("off", row) for row in structured["off_frontier"]],
-            key=lambda tagged: tagged[0],
-        )
+        # A page covers a window of the options, each on the frontier (with the step from it), priced against one, or
+        # listed off the frontier: tagged by which.
+        tagged = [("against", row) for row in structured["against"]] + [
+            ("off", row) for row in structured["off_frontier"]
+        ]
+        tagged += [("frontier", row) for row in structured["frontier"]] + [("step", row) for row in structured["steps"]]
+        return sorted(tagged, key=lambda pair: pair[0])
     kinds = ("readings", "pairs", "floors", "bars")
     return [row for group in structured["aspects"] for kind in kinds for row in group[kind]]
 

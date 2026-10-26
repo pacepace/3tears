@@ -3,66 +3,73 @@
 ``price_tradeoff`` does the arithmetic a tradeoff page owes (``docs/eval-report-kit/GENERATOR.md`` §4: price one axis
 in the other, at real volume, and say where the best option flips), which the planner otherwise did in prose. Every
 number it returns is a figure key (:mod:`~threetears.evals.analysis.analyst.cited`): the ``price.<from>.<to>.<gain>.*``
-and ``cost_per_month.<arm>`` families of :mod:`~threetears.evals.analysis.report.figure_keys`.
+and ``cost_per_month.<arm>`` families of :mod:`~threetears.evals.analysis.report.figure_keys`, the same within one
+slice (``task.<task>.price.…``, ``strata.<stratum>.price.…``, ``cells.<cell>.price.…``), and the frontier's counts.
 
 Design note. What the spec left open and this module decided is marked *(inferred)*.
 
-**The options priced.** Only options that survive the gates
-(:func:`~threetears.evals.analysis.report_decision.surviving_options`): an option a gate or a guardrail removes is
-never priced beside the others, since a trade that includes it would weigh a broken policy as a cost. Of the
-survivors, an option is priced when the cost rule states its cost per 1,000 replies (``cost_per_1k.<arm>``) and the
-gain axis places it.
+**The options priced, and the frontier**, are :func:`~threetears.evals.analysis.report.figure_keys.price_frontier`'s,
+the one owner of that rule, so the count keys, a ``prices`` block and this tool read one frontier. Only options that
+survive the gates are priced: an option a gate or a guardrail removes is never priced beside the others, since a trade
+that includes it would weigh a broken policy as a cost. Of the survivors, an option is priced when the cost rule states
+its cost per 1,000 replies and the gain axis places it. An option is dominated when another costs no more and reads no
+worse, and is ahead on one of the two. Of the undominated options, ordered by cost, the frontier is the upper hull:
+the options that are best at some price per point. Each step from one frontier option to the next is priced by
+``price.<cheaper>.<dearer>.<gain>.per_point``, the price per point at which the best option moves from the one to the
+other: GENERATOR §4's flip points. An undominated option under the hull is best at no single price, and is listed off
+the frontier with the two step prices that pass it by.
 
 **The two axes.** Cost is cost per 1,000 replies, read as exact: the input states no interval on it *(inferred: the
 pipeline's cost is tokens at list price, with no sampling error stated)*. The gain axis is the one measure or judged
-dimension the caller names (``gain_key``, as ``campaign_overview`` lists it), read toward its better side: a judged
-dimension is higher is better, and a measure that states no direction is refused.
+dimension the caller names (``gain_key``), read toward its better side; a measure that states no direction is refused.
 :func:`~threetears.evals.analysis.report.figure_keys.gain_axis` places each arm on it: on its contrast against the
-control, when every arm holding a figure there holds exactly one contrast stating a difference (the paired estimate,
-which the contrast's interval belongs to); otherwise on its overall mean, with no interval. One basis per axis, so
-every price on an axis is a difference of the same positions *(inferred)*.
+control where every arm holding a figure there holds exactly one; otherwise on its overall mean; and where no arm
+states an overall figure, on its figures **pooled** over the slices holding them (``pooled.<gain>.<arm>.*``): weighted
+by the traffic share the input states for every slice, else equally. An equal weighting is no traffic mix: the result
+says so as its basis and as a caveat in its notes, since a mix would move every price *(inferred: the owner asked for
+equal weights stated as such, with a caveat)*.
 
-**The frontier.** An option is dominated when another costs no more and reads no worse, and is ahead on one of the
-two. Of the undominated options, ordered by cost, the frontier is the upper hull: the options that are best at some
-price per point, where an option's net value at a price ``p`` is ``p`` times its position less its cost. Each step
-from one frontier option to the next is priced by ``price.<cheaper>.<dearer>.<gain>.per_point``, the price per point
-at which the best option moves from the one to the other: GENERATOR §4's flip points, read on every surviving
-option. An undominated option under the hull is best at no single price, and is listed off the frontier with the two
-step prices that pass it by.
+**Within one slice** (``slice_filter``: a task, a stratum or a cell), each option is placed by its mean there, at the
+slice's own cost where the slice states one for every option it places, else at each option's overall cost; the
+result's ``cost_basis`` says which. There is no monthly figure within a slice: the declared volume is the whole
+campaign's *(inferred)*.
 
 **A price per point, and its interval.** ``per_point`` is the cost gap over the gain, the gain in points (a share's
-difference times 100; per unit on an axis not in points). Cost being exact, the interval comes from the gain's: over
-the part of the gain's interval on the gain's side of zero, the price runs from the cost gap over the end farthest
-from zero (``per_point_low``) to the cost gap over the end nearest it (``per_point_high``). When the gain's interval
-reaches or crosses zero, the evidence allows a gain as small as nothing, so a point may cost any amount: the high end
-is **unbounded**. The key refuses it as unbounded and the result says so in words; no number stands in for it. A gain
-with no interval (a move between two candidates, each holding its contrast against the control alone; an axis read
-on means) has no interval on its price, and the result says that too. A move where one option is at least as good on
-both axes has no price per point: the key refuses it, and the result names which option is ahead on both.
+difference times 100; per unit on an axis not in points). Cost being exact, the interval comes from the gain's. Two
+intervals carry through, each labelled:
+
+- **paired** (``per_point_low``, ``per_point_high``): the contrast's interval, on a move between the control and a
+  candidate on the contrast basis;
+- **unpaired** (``unpaired``: the ``_unpaired`` fields): the gain plus or minus the two options' own half-widths on the
+  axis combined as independent, wherever both state one: descriptive and uncorrected, and wider than a paired interval
+  where the two share cases. It is what prices a move between two candidates, a move on means, pooled figures or
+  within a slice.
+
+Over the part of an interval on the gain's side of zero, the price runs from the cost gap over the end farthest from
+zero (low) to the cost gap over the end nearest it (high). When the interval reaches or crosses zero, a point may cost
+any amount: the high end is **unbounded**, refused so by its key and said in words. A move where one option is at least
+as good on both axes has no price per point: the key refuses it, and the result names which option is ahead on both.
 
 **Against one option.** Beside the steps, every priced option is priced against one: the control, or ``arm_filter``,
-each move written from the cheaper option to the dearer, so ``per_point`` reads as the saving per point lost, or the
-cost per point gained (GENERATOR §4's formula). These are paged with ``limit`` and ``offset`` *(inferred: the design's
-result lists the frontier, the steps, the monthly costs and the options off the frontier; GENERATOR states its price
-against the control, so that comparison is here too)*.
+each move written from the cheaper option to the dearer.
+
+**A what-if** (``what_if``): an option a gate or guardrail removes, priced as if it survived, and labelled so: never a
+recommendation, its label naming each gate figure it fails (by keys) and each guardrail read breached. It shows the
+frontier with that option admitted, each step touching it, and its move against the option the others are priced
+against. Its figures are the same price keys, which resolve for any costed option.
 
 **A month's cost.** Only at the declared ``meta.volume_per_month``: ``cost_per_month.<arm>``, and the ``monthly_``
-price fields, each the figure per 1,000 replies times the volume over 1,000 *(inferred: the monthly fields are added
-to the price family, so that the monthly price per point GENERATOR asks for is a key)*. With no declared volume no
-monthly figure is stated, and the result says so. A volume the caller supplies is never used: no key could state a
-figure on it.
+price fields. With no declared volume no monthly figure is stated, and the result says so. A volume the caller
+supplies is never used: no key could state a figure on it.
 
-**Off the frontier, and why.** Every other option, with its reason: removed by a gate or guardrail (each failing
-figure, as the gate check words it), no cost stated, no figure on the gain axis, dominated (by which option, with
-that move's gain and cost gap), or under the hull (best at no price).
+**Paging.** A page covers a window of the options, the frontier's first, cheapest first, then every other in the
+input's order: the frontier options in it, the steps starting from one of them, the moves against the baseline and
+the options off the frontier among them. Every page states how many options the whole frontier holds and how many
+steps it takes (``count.frontier.<gain>``, ``count.steps.<gain>``; overall only), so a page is never read as the
+whole frontier.
 
-**Hybrids: deferred.** A modeled hybrid (GENERATOR §4: hand conversations back after turn five) is an option nobody
-ran. Its cost and gain would be a model resting on an assumption (that the control's quality returns after the hand
-back), and no key of the frozen input states them, so code could only print numbers no key names. It stays the
-analyst's to describe from ``measure_breakdown`` and the strata keys, labelled modeled, not measured. A routed mix
-over routable tasks is code's (:func:`~threetears.evals.analysis.report_gates.routing_picks`) and shows on
-``block_render``'s gate matrix, in its pick column; it is not priced here, since the blended cost of the picks is a
-number no key states. Pricing either needs a ruling on which assumptions a key may rest on.
+**Hybrids: not priced.** A modeled hybrid, or a mix nobody ran, is an option nobody measured; no key states its cost
+or gain (owner: backlog #657). A routed mix over routable tasks shows in a gate_matrix block's pick column.
 
 **Code's arithmetic, not a call.** The result prices the trade and chooses nothing: where nothing ranked the axes in
 advance, which price band holds is the decider's call. No condition here reads what kind of eval a campaign is.
@@ -71,7 +78,6 @@ advance, which price band holds is the decider's call. No condition here reads w
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -79,7 +85,15 @@ from pydantic import BaseModel, ConfigDict, Field
 from threetears.evals.analysis.analyst.analyses import GateRead, breached_guardrails, gate_reads
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.figure_keys import GainAxis, gain_axis
+from threetears.evals.analysis.report.figure_keys import (
+    POOL_WEIGHT_WORDS,
+    SLICE_COST_WORDS,
+    PriceFrontier,
+    SliceKind,
+    gain_axis,
+    pooled_figures,
+    price_frontier,
+)
 from threetears.evals.analysis.report_decision import control_arm, surviving_options
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import RefusedInput
@@ -102,12 +116,26 @@ _READS_AS = (
 
 #: Why hybrids are not priced, as every result says it.
 _HYBRIDS = (
-    "not priced: a modeled hybrid is an option nobody ran, and no key states its cost or gain; describe one from "
-    "measure_breakdown and the strata keys, labelled modeled, not measured. A routed mix over routable tasks shows "
-    "in a gate_matrix block's pick column"
+    "not priced: a modeled hybrid or a mix nobody ran is an option nobody measured, and no key states its cost or "
+    "gain; name it as a next step. A routed mix over routable tasks shows in a gate_matrix block's pick column"
 )
 
-#: How the interval on a move's price reads: both ends stated, the high end unbounded, no interval stated, or no price.
+#: How an unpaired interval is labelled.
+_UNPAIRED = (
+    "unpaired: the gain plus or minus the two options' own half-widths combined as independent; descriptive and "
+    "uncorrected, wider than a paired interval where the two share cases"
+)
+
+#: How a what-if is labelled, before the gates it fails.
+_WHAT_IF = (
+    "a what-if, never a recommendation: {arm} is removed by the gates, and is priced here as if it survived; each "
+    "figure it fails is under gates"
+)
+
+#: How an option is named in a refusal's list of what a parameter takes.
+_SLICE_KINDS: tuple[SliceKind, ...] = ("task", "strata", "cells")
+
+#: How a move's price interval reads: both ends stated, the high end unbounded, no interval stated, or no price.
 Bounds = Literal["bounded", "unbounded_above", "unstated", "no_price"]
 
 #: Why an option is off the frontier.
@@ -138,9 +166,26 @@ class FrontierOption(BaseModel):
     model_config = _MODEL
 
     arm: str = Field(description="The option, as arm:<id>.")
-    cost: CitedFigure = Field(description="Its cost per 1,000 replies.")
+    cost: CitedFigure = Field(
+        description="Its cost: per 1,000 replies, or within a slice its figure there on the cost measure, as the key "
+        "states it."
+    )
     monthly_cost: CitedFigure | None = Field(description="Its cost a month at the declared volume; None without one.")
-    level: CitedFigure | None = Field(description="Its own mean on the gain axis, where the input states one.")
+    level: CitedFigure | None = Field(description="Its own figure on the gain axis, where the input states one.")
+
+
+class UnpairedInterval(BaseModel):
+    """A move's price read off an unpaired interval on its gain: the two options' own half-widths combined."""
+
+    model_config = _MODEL
+
+    gain_interval: CitedFigure = Field(description="The unpaired interval on the gain.")
+    per_point_low: CitedFigure | None = Field(description="The least a point costs, as the interval allows.")
+    per_point_high: CitedFigure | None = Field(description="The most a point costs; None where unbounded.")
+    monthly_per_point_low: CitedFigure | None = Field(description="Its low end a month, where stated.")
+    monthly_per_point_high: CitedFigure | None = Field(description="Its high end a month, where stated and bounded.")
+    bounds: Bounds = Field(description="How the price's interval reads: bounded, unbounded_above or no_price.")
+    says: str = Field(description="What the interval is, and how the price's ends read, in words.")
 
 
 class Price(BaseModel):
@@ -151,19 +196,22 @@ class Price(BaseModel):
     from_arm: str = Field(description="The cheaper option, as arm:<id>.")
     to_arm: str = Field(description="The dearer option, as arm:<id>.")
     gain: CitedFigure = Field(description="How much better the dearer reads on the gain axis, toward better.")
-    gain_interval: CitedFigure | None = Field(description="The interval on the gain; None where none is stated.")
+    gain_interval: CitedFigure | None = Field(description="The paired interval on the gain; None where none is stated.")
     cost_gap: CitedFigure = Field(description="What the dearer costs more per 1,000 replies.")
     per_point: CitedFigure | None = Field(description="The cost gap per point gained; None where the move has none.")
-    per_point_low: CitedFigure | None = Field(description="The least a point costs, as the gain's interval allows.")
+    per_point_low: CitedFigure | None = Field(description="The least a point costs, as the paired interval allows.")
     per_point_high: CitedFigure | None = Field(
-        description="The most a point costs, as the gain's interval allows; None where unbounded or unstated."
+        description="The most a point costs, as the paired interval allows; None where unbounded or unstated."
     )
-    bounds: Bounds = Field(description="How the price's interval reads: bounded, unbounded_above, unstated, no_price.")
-    says: str = Field(description="The price's interval, or the absence of one, in words.")
+    bounds: Bounds = Field(description="How the paired interval reads: bounded, unbounded_above, unstated, no_price.")
+    says: str = Field(description="The price's paired interval, or the absence of one, in words.")
+    unpaired: UnpairedInterval | None = Field(
+        description="The price read off the unpaired interval, where both options state their own half-width."
+    )
     monthly_cost_gap: CitedFigure | None = Field(description="The cost gap a month at the declared volume.")
     monthly_per_point: CitedFigure | None = Field(description="The price per point a month at the declared volume.")
-    monthly_per_point_low: CitedFigure | None = Field(description="Its low end a month, where stated.")
-    monthly_per_point_high: CitedFigure | None = Field(description="Its high end a month, where stated and bounded.")
+    monthly_per_point_low: CitedFigure | None = Field(description="Its paired low end a month, where stated.")
+    monthly_per_point_high: CitedFigure | None = Field(description="Its paired high end a month, where bounded.")
 
 
 class OffFrontier(BaseModel):
@@ -184,6 +232,21 @@ class OffFrontier(BaseModel):
     figures: list[CitedFigure] = Field(description="The figures that show it, where a figure does.")
 
 
+class WhatIf(BaseModel):
+    """An option the gates remove, priced as if it survived: a labelled what-if, never a recommendation."""
+
+    model_config = _MODEL
+
+    arm: str = Field(description="The option, as arm:<id>.")
+    label: str = Field(description="What this is: a what-if, never a recommendation, and why the option is out.")
+    gates: list[GateRead] = Field(description="Each gate or guardrail figure it fails, by the keys that state it.")
+    breached: list[str] = Field(description="Each guardrail the pipeline read breached on it, by name.")
+    frontier: list[str] = Field(description="The frontier with it admitted, cheapest first, as arm:<id>.")
+    steps: list[Price] = Field(description="Each step of that frontier that starts or ends at it.")
+    against: Price | None = Field(description="It priced against the option the others are priced against.")
+    off: OffFrontier | None = Field(description="Why it is off the admitted frontier, where it is.")
+
+
 class PriceTradeoff(BaseModel):
     """A trade priced: the options best at some price, the prices the best option moves at, and every move priced
     against one option."""
@@ -191,64 +254,101 @@ class PriceTradeoff(BaseModel):
     model_config = _MODEL
 
     reads_as: str = Field(description="What this is: code's arithmetic, which chooses nothing.")
-    notes: list[str] = Field(description="What could not be read, and why; first, so a cut reading keeps it.")
+    notes: list[str] = Field(description="What could not be read, and why, and the caveats; first, so a cut keeps it.")
     gain_key: str = Field(description="The gain axis: a measure or judged dimension, by key.")
     better: Literal["higher_is_better", "lower_is_better"] = Field(description="Which way the gain axis is better.")
-    basis: str = Field(description="What the gain axis places each option by, in words.")
-    volume: CitedFigure | None = Field(description="The declared monthly volume; None where the input states none.")
-    frontier: list[FrontierOption] = Field(description="The options best at some price per point, cheapest first.")
+    basis: str = Field(description="What the gain axis places each option by, and whose cost it reads, in words.")
+    within: str | None = Field(description="The slice the trade is priced within, as its keys begin; None overall.")
+    volume: CitedFigure | None = Field(description="The declared monthly volume; None where unstated or in a slice.")
+    frontier_options: CitedFigure | None = Field(description="How many options the whole frontier holds; overall only.")
+    frontier_steps: CitedFigure | None = Field(description="How many steps the whole frontier takes; overall only.")
+    frontier: list[FrontierOption] = Field(description="The frontier options in this page's window, cheapest first.")
     steps: list[Price] = Field(
-        description="Each move along the frontier, cheapest first: its per_point is the price per point at which the "
-        "best option moves from from_arm to to_arm."
+        description="Each move along the frontier starting at an option in this page's window, cheapest first: its "
+        "per_point is the price per point at which the best option moves from from_arm to to_arm."
     )
     against_arm: str | None = Field(description="The option the others are priced against, as arm:<id>.")
     against: list[Price] = Field(description="Each priced option on this page, priced against against_arm.")
     off_frontier: list[OffFrontier] = Field(description="Each option on this page off the frontier, and why.")
-    total: int = Field(description="The options paged, every arm in the input's order.")
+    what_if: WhatIf | None = Field(description="The what-if asked for: an option the gates remove, priced as if not.")
+    total: int = Field(description="The options paged: the frontier's, cheapest first, then every other arm.")
     offset: int = Field(description="The first option this page covers.")
     next_offset: int | None = Field(description="The offset of the next page; None when this is the last.")
-    hybrids: str = Field(description="Why a modeled hybrid or a routed mix is not priced here.")
+    hybrids: str = Field(description="Why a modeled hybrid or a mix nobody ran is not priced here.")
 
 
-@dataclass(frozen=True)
-class _Option:
-    """One priced option: its cost figure, and its place on the gain axis (used to order, never printed)."""
-
-    arm: str
-    cost: CitedFigure
-    position: float
-
-    @property
-    def spend(self) -> float:
-        return _number(self.cost)
+def _say_bounds(gained: float, interval: tuple[float, float]) -> tuple[Bounds, str]:
+    """How a price's interval reads off a gain's interval: bounded, or unbounded above where it reaches zero."""
+    near = interval[0] if gained > 0 else interval[1]
+    if near * gained <= 0:
+        return (
+            "unbounded_above",
+            "unbounded above: the gain's interval reaches zero, so any price above the low end fits",
+        )
+    return "bounded", "both ends read off the gain's interval"
 
 
-def _cost_or_none(report_input: ReportInput, arm: str) -> CitedFigure | None:
-    try:
-        return cite(f"cost_per_1k.{arm}", report_input)
-    except UnresolvableReference:
-        # NOSILENT: an arm the cost rule states no cost for has no `cost_per_1k.<arm>` key at all, so its refusal is
-        # how "no cost" reads; the option is listed off the frontier as no_cost, with that reason in the result.
+def _unpaired(
+    report_input: ReportInput, frontier: PriceFrontier, first: str, second: str, priced: bool, monthly: bool
+) -> UnpairedInterval | None:
+    interval = cite_if(frontier.key(first, second, "gain_interval_unpaired"), report_input)
+    if interval is None:
         return None
+    if not priced:
+        return UnpairedInterval(
+            gain_interval=interval,
+            per_point_low=None,
+            per_point_high=None,
+            monthly_per_point_low=None,
+            monthly_per_point_high=None,
+            bounds="no_price",
+            says=f"{_UNPAIRED}; the move has no price per point",
+        )
+
+    def at(field: str) -> CitedFigure:
+        return cite(frontier.key(first, second, field), report_input)
+
+    ends = interval.value
+    assert isinstance(ends, tuple)
+    gained = _number(cite(frontier.key(first, second, "gain"), report_input))
+    if (ends[1] if gained > 0 else ends[0]) * gained <= 0:
+        return UnpairedInterval(
+            gain_interval=interval,
+            per_point_low=None,
+            per_point_high=None,
+            monthly_per_point_low=None,
+            monthly_per_point_high=None,
+            bounds="no_price",
+            says=f"{_UNPAIRED}; it does not hold the gain on its own side of zero, so no price is read off it",
+        )
+    bounds, says = _say_bounds(gained, ends)
+    bounded = bounds == "bounded"
+    return UnpairedInterval(
+        gain_interval=interval,
+        per_point_low=at("per_point_low_unpaired"),
+        per_point_high=at("per_point_high_unpaired") if bounded else None,
+        monthly_per_point_low=at("monthly_per_point_low_unpaired") if monthly else None,
+        monthly_per_point_high=at("monthly_per_point_high_unpaired") if monthly and bounded else None,
+        bounds=bounds,
+        says=f"{_UNPAIRED}; {says}",
+    )
 
 
-def _key(first: str, second: str, gain_key: str, field: str) -> str:
-    return f"price.{first}.{second}.{gain_key}.{field}"
-
-
-def _price(report_input: ReportInput, first: str, second: str, gain_key: str, monthly: bool) -> Price:
+def _price(report_input: ReportInput, frontier: PriceFrontier, first: str, second: str, monthly: bool) -> Price:
     """The move from ``first`` (the cheaper) to ``second``, every figure its key's."""
-    gain = cite(_key(first, second, gain_key, "gain"), report_input)
-    interval = cite_if(_key(first, second, gain_key, "gain_interval"), report_input)
-    gap = cite(_key(first, second, gain_key, "cost_gap"), report_input)
+    key = frontier.key
+    gain = cite(key(first, second, "gain"), report_input)
+    interval = cite_if(key(first, second, "gain_interval"), report_input) if not frontier.within else None
+    gap = cite(key(first, second, "cost_gap"), report_input)
     gained, spent = _number(gain), _number(gap)
 
     def at(field: str) -> CitedFigure:
-        return cite(_key(first, second, gain_key, field), report_input)
+        return cite(key(first, second, field), report_input)
 
     per_point = low = high = None
     monthly_per_point = monthly_low = monthly_high = None
-    if gained == 0 or gained * spent <= 0:
+    priced = not (gained == 0 or gained * spent <= 0)
+    if not priced:
         ahead = second if gained >= 0 and spent <= 0 else first
         bounds: Bounds = "no_price"
         says = f"no price per point: {_arm(ahead)} is at least as good on both axes"
@@ -256,20 +356,16 @@ def _price(report_input: ReportInput, first: str, second: str, gain_key: str, mo
         per_point = at("per_point")
         monthly_per_point = at("monthly_per_point") if monthly else None
         if interval is None:
-            bounds, says = "unstated", "no interval: the input states none on this gain"
+            bounds, says = "unstated", "no interval paired by a contrast: the input states none on this gain"
         else:
-            low = at("per_point_low")
-            monthly_low = at("monthly_per_point_low") if monthly else None
             ends = interval.value
             assert isinstance(ends, tuple)
-            near = ends[0] if gained > 0 else ends[1]
-            if near * gained <= 0:
-                bounds = "unbounded_above"
-                says = "unbounded above: the gain's interval reaches zero, so any price above the low end fits"
-            else:
+            low = at("per_point_low")
+            monthly_low = at("monthly_per_point_low") if monthly else None
+            bounds, says = _say_bounds(gained, ends)
+            if bounds == "bounded":
                 high = at("per_point_high")
                 monthly_high = at("monthly_per_point_high") if monthly else None
-                bounds, says = "bounded", "both ends read off the gain's interval"
     return Price(
         from_arm=_arm(first),
         to_arm=_arm(second),
@@ -281,6 +377,7 @@ def _price(report_input: ReportInput, first: str, second: str, gain_key: str, mo
         per_point_high=high,
         bounds=bounds,
         says=says,
+        unpaired=_unpaired(report_input, frontier, first, second, priced, monthly),
         monthly_cost_gap=at("monthly_cost_gap") if monthly else None,
         monthly_per_point=monthly_per_point,
         monthly_per_point_low=monthly_low,
@@ -296,67 +393,76 @@ def _gated(report_input: ReportInput, arm: str) -> OffFrontier:
     return OffFrontier(arm=_arm(arm), reason="gated", by=[], says=says, gates=gates, figures=[])
 
 
-def _at_least(first: _Option, second: _Option) -> bool:
-    """Whether ``first`` costs no more than ``second`` and reads no worse."""
-    return first.spend <= second.spend and first.position >= second.position
+def _off(report_input: ReportInput, frontier: PriceFrontier, arm: str) -> OffFrontier | None:
+    """Why one option is off the frontier, with the figures that show it; None where it is on it."""
+    gain_key = frontier.gain_key
+    reason = frontier.unpriced.get(arm)
+    if reason == "gated":
+        return _gated(report_input, arm)
+    if reason == "no_cost":
+        says = "the cost rule states no cost per 1,000 replies for it"
+        return OffFrontier(arm=_arm(arm), reason="no_cost", by=[], says=[says], gates=[], figures=[])
+    if reason == "no_gain_figure":
+        says = f"it holds no figure on {gain_key} that the gain axis reads"
+        return OffFrontier(arm=_arm(arm), reason="no_gain_figure", by=[], says=[says], gates=[], figures=[])
+    if arm in frontier.dominated:
+        by = frontier.dominated[arm]
+        first, second = (arm, by) if frontier.costs[arm] < frontier.costs[by] else (by, arm)
+        return OffFrontier(
+            arm=_arm(arm),
+            reason="dominated",
+            by=[_arm(by)],
+            says=[f"{_arm(by)} costs no more and reads no worse on {gain_key}"],
+            gates=[],
+            figures=[
+                cite(frontier.key(first, second, "gain"), report_input),
+                cite(frontier.key(first, second, "cost_gap"), report_input),
+            ],
+        )
+    if arm in frontier.under:
+        below, above = frontier.under[arm]
+        return OffFrontier(
+            arm=_arm(arm),
+            reason="never_best",
+            by=[_arm(below), _arm(above)],
+            says=[
+                f"a point bought from {_arm(below)} to it costs at least what one bought on to {_arm(above)} does, so "
+                "the best option moves past it at every price"
+            ],
+            gates=[],
+            figures=[
+                cite(frontier.key(below, arm, "per_point"), report_input),
+                cite(frontier.key(arm, above, "per_point"), report_input),
+            ],
+        )
+    return None
 
 
-def _undominated(options: Sequence[_Option]) -> tuple[list[_Option], dict[str, _Option]]:
-    """The options no other is at least as good as on both axes while ahead on one; and, for each other, the first
-    option (in the input's order) that puts it off. Of two alike on both axes, the first in the input's order stays."""
-    kept: list[_Option] = []
-    beaten: dict[str, _Option] = {}
-    for index, option in enumerate(options):
-        for rank, other in enumerate(options):
-            if other is option or not _at_least(other, option):
-                continue
-            alike = other.spend == option.spend and other.position == option.position
-            if not alike or rank < index:
-                beaten[option.arm] = other
-                break
-        else:
-            kept.append(option)
-    return kept, beaten
-
-
-def _hull(options: Sequence[_Option]) -> tuple[list[_Option], dict[str, tuple[_Option, _Option]]]:
-    """The undominated options best at some price per point (the upper hull, cheapest first), and, for each option
-    under it, the two frontier options either side of it, whose step passes it by."""
-    ordered = sorted(options, key=lambda option: (option.spend, option.position))
-    hull: list[_Option] = []
-    for option in ordered:
-        while len(hull) >= 2 and _passed_by(hull[-2], hull[-1], option):
-            hull.pop()
-        hull.append(option)
-    on = {option.arm for option in hull}
-    under: dict[str, tuple[_Option, _Option]] = {}
-    for option in ordered:
-        if option.arm in on:
-            continue
-        below = max((held for held in hull if held.spend < option.spend), key=lambda held: held.spend)
-        above = min((held for held in hull if held.spend > option.spend), key=lambda held: held.spend)
-        under[option.arm] = (below, above)
-    return hull, under
-
-
-def _passed_by(cheaper: _Option, middle: _Option, dearer: _Option) -> bool:
-    """Whether a point bought on the way to ``middle`` costs at least what one bought on from it does: then the best
-    option moves from ``cheaper`` to ``dearer`` without stopping at ``middle``."""
-    into = (middle.spend - cheaper.spend) * (dearer.position - middle.position)
-    onward = (dearer.spend - middle.spend) * (middle.position - cheaper.position)
-    return into >= onward
-
-
-def _basis(axis: GainAxis) -> str:
+def _basis(report_input: ReportInput, frontier: PriceFrontier) -> str:
+    axis = frontier.axis
+    if frontier.within:
+        whose = f"; cost is {SLICE_COST_WORDS['slice' if frontier.cost_key else 'overall']}"
+        return (
+            f"each option's mean on {axis.key} within {frontier.within}, with no paired interval and no monthly "
+            f"figure{whose}"
+        )
     if axis.basis == "contrast":
         return (
             f"each option's contrast against the control on {axis.key}, the control at zero: a move between the "
-            "control and a candidate carries the contrast's interval, a move between two candidates none"
+            "control and a candidate carries the contrast's interval (paired), a move between two candidates the "
+            "unpaired one where both state their own"
+        )
+    if axis.basis == "pooled":
+        weights = {figure.weights for figure in pooled_figures(report_input, axis.key).values()}
+        words = "; ".join(POOL_WEIGHT_WORDS[weight] for weight in sorted(weights))
+        return (
+            f"each option's figures on {axis.key} pooled over the slices holding them ({words}): no option states an "
+            f"overall figure; pooled.{axis.key}.<arm> keys read each"
         )
     return f"each option's overall mean on {axis.key}, which carries no paired interval"
 
 
-def _refuse_unknown(report_input: ReportInput, gain_key: str) -> GainAxis:
+def _refuse_unknown(report_input: ReportInput, gain_key: str) -> None:
     known = list(dict.fromkeys([*report_input.measures, *report_input.judged]))
     if gain_key not in known:
         raise RefusedInput(
@@ -366,7 +472,7 @@ def _refuse_unknown(report_input: ReportInput, gain_key: str) -> GainAxis:
             valid_values=known,
         )
     try:
-        return gain_axis(report_input, gain_key)
+        gain_axis(report_input, gain_key)
     except UnresolvableReference as refused:
         directed = [
             key
@@ -381,16 +487,61 @@ def _refuse_unknown(report_input: ReportInput, gain_key: str) -> GainAxis:
         ) from refused
 
 
+def _slices(report_input: ReportInput) -> dict[str, list[tuple[SliceKind, str]]]:
+    """Every slice a trade may be priced within, by the id a caller names it by: each task, each stratum, each cell
+    (as ``<row>.<column>``); an id two slices share lists both."""
+    named: dict[str, list[tuple[SliceKind, str]]] = {}
+    places: list[tuple[SliceKind, str]] = [("task", task.id) for task in report_input.tasks]
+    places += [("strata", stratum.id) for stratum in report_input.strata]
+    places += [("cells", f"{cell.row}.{cell.column}") for cell in report_input.cells.values()]
+    for kind, slice_id in places:
+        if (kind, slice_id) not in named.get(slice_id, []):
+            named.setdefault(slice_id, []).append((kind, slice_id))
+    return named
+
+
+def _within(report_input: ReportInput, slice_filter: str | None) -> tuple[SliceKind, str] | None:
+    if slice_filter is None:
+        return None
+    named = _slices(report_input)
+    found = named.get(slice_filter, [])
+    if len(found) != 1:
+        unique = [slice_id for slice_id, held in named.items() if len(held) == 1]
+        why = "names two slices" if found else "names no task, stratum or cell this snapshot holds"
+        raise RefusedInput(
+            f"slice_filter {slice_filter!r} {why}",
+            remedy=f"name one slice by the id campaign_overview lists: {_listed(unique)}",
+            parameters=("slice_filter",),
+            valid_values=unique,
+        )
+    return found[0]
+
+
+def _refuse_what_if(report_input: ReportInput, what_if: str) -> None:
+    gated = [arm.id for arm in report_input.arms if arm.id not in set(surviving_options(report_input))]
+    if what_if not in gated:
+        survives = what_if in {arm.id for arm in report_input.arms}
+        why = "survives the gates, so it is priced already" if survives else "names no option this snapshot holds"
+        raise RefusedInput(
+            f"what_if {what_if!r} {why}: a what-if prices an option the gates remove",
+            remedy=f"name an option the gates remove: {_listed(gated)}, or omit what_if",
+            parameters=("what_if",),
+            valid_values=gated,
+        )
+
+
 def price_tradeoff(
     report_input: ReportInput,
     gain_key: str,
     *,
     arm: str | None = None,
+    slice_filter: str | None = None,
+    what_if: str | None = None,
     limit: int = PRICE_PAGE,
     offset: int = 0,
 ) -> PriceTradeoff:
     """The trade between the surviving options priced on one gain axis: the frontier, the price per point at each
-    step along it, every option priced against one, and why each other option is off the frontier.
+    step along it, every option priced against one, why each other option is off the frontier, and a what-if.
 
     :param report_input: The snapshot's report input.
     :ptype report_input: ReportInput
@@ -398,48 +549,33 @@ def price_tradeoff(
     :ptype gain_key: str
     :param arm: The option every other is priced against; None for the control, where it is priced.
     :ptype arm: str | None
-    :param limit: The most options one page covers, in the input's arm order: each priced against that option, or
-        listed off the frontier with why.
+    :param slice_filter: The one task, stratum or cell to price within, by id (a cell as ``<row>.<column>``); None
+        prices overall.
+    :ptype slice_filter: str | None
+    :param what_if: An option the gates remove, to price as a labelled what-if; None for none.
+    :ptype what_if: str | None
+    :param limit: The most options one page covers: the frontier's first, cheapest first, then the others.
     :ptype limit: int
     :param offset: The first option the page covers.
     :ptype offset: int
     :return: The trade, priced.
     :rtype: PriceTradeoff
     :raises RefusedInput: The gain key names no measure or judged dimension, or one with no direction; no arm has a
-        cost; or ``arm`` names no priced option.
+        cost; ``arm`` names no priced option; ``slice_filter`` names no one slice; ``what_if`` names no gated option.
     """
-    axis = _refuse_unknown(report_input, gain_key)
-    arms = [held.id for held in report_input.arms]
-    costs = {held: _cost_or_none(report_input, held) for held in arms}
-    if not any(costs.values()):
+    _refuse_unknown(report_input, gain_key)
+    within = _within(report_input, slice_filter)
+    frontier = price_frontier(report_input, gain_key, within=within)
+    if not frontier.costs:
         raise RefusedInput(
             "price_tradeoff prices each option's cost per 1,000 replies, and this snapshot states no arm's: no "
             "measure in usd_per_1k or usd_per_1m, no dollar measure on the cost axis, and no scoreboard reply_cost_usd",
             remedy="compare the options without a price with options_dominance",
         )
-    notes: list[str] = []
-    volume = cite_if("meta.volume_per_month", report_input)
-    if volume is None:
-        notes.append(
-            "no monthly volume is declared (meta.volume_per_month): prices are per 1,000 replies, and no monthly "
-            "figure is stated"
-        )
-    survivors = set(surviving_options(report_input))
-    off: list[OffFrontier] = []
-    options: list[_Option] = []
-    for held in arms:
-        cost = costs[held]
-        if held not in survivors:
-            off.append(_gated(report_input, held))
-        elif cost is None:
-            says = "the cost rule states no cost per 1,000 replies for it"
-            off.append(OffFrontier(arm=_arm(held), reason="no_cost", by=[], says=[says], gates=[], figures=[]))
-        elif held not in axis.positions:
-            says = f"it holds no figure on {gain_key} that the gain axis reads"
-            off.append(OffFrontier(arm=_arm(held), reason="no_gain_figure", by=[], says=[says], gates=[], figures=[]))
-        else:
-            options.append(_Option(held, cost, axis.positions[held]))
-    priced = [option.arm for option in options]
+    if what_if is not None:
+        _refuse_what_if(report_input, what_if)
+    arms = [held.id for held in report_input.arms]
+    priced = list(frontier.priced)
     if arm is not None and arm not in priced:
         raise RefusedInput(
             f"arm_filter {arm!r} names no option this tool prices: it must survive the gates, hold a cost and hold a "
@@ -448,95 +584,91 @@ def price_tradeoff(
             parameters=("arm_filter",),
             valid_values=priced,
         )
+    notes: list[str] = []
+    volume = None if frontier.within else cite_if("meta.volume_per_month", report_input)
+    if frontier.within:
+        notes.append(f"priced within {frontier.within}: no monthly figure is stated, the volume being the campaign's")
+    elif volume is None:
+        notes.append(
+            "no monthly volume is declared (meta.volume_per_month): prices are per 1,000 replies, and no monthly "
+            "figure is stated"
+        )
+    if frontier.axis.basis == "pooled" and any(
+        figure.weights == "equal" for figure in pooled_figures(report_input, gain_key).values()
+    ):
+        notes.append(
+            f"caveat: the gain axis pools each option's figures on {gain_key} over its slices weighted equally, "
+            "because the input states no traffic share for every slice; a traffic mix would move every price"
+        )
+    survivors = set(surviving_options(report_input))
     if not survivors:
         notes.append("no option survives the gates: there is nothing to price")
-    elif len(options) == 1:
+    elif len(priced) == 1:
         notes.append("one option is priced: there is no trade to price")
     monthly = volume is not None
-    kept, beaten = _undominated(options)
-    hull, under = _hull(kept)
-    for option in options:
-        if option.arm in beaten:
-            by = beaten[option.arm]
-            first, second = (option, by) if option.spend < by.spend else (by, option)
-            off.append(
-                OffFrontier(
-                    arm=_arm(option.arm),
-                    reason="dominated",
-                    by=[_arm(by.arm)],
-                    says=[f"{_arm(by.arm)} costs no more and reads no worse on {gain_key}"],
-                    gates=[],
-                    figures=[
-                        cite(_key(first.arm, second.arm, gain_key, "gain"), report_input),
-                        cite(_key(first.arm, second.arm, gain_key, "cost_gap"), report_input),
-                    ],
-                )
-            )
-        elif option.arm in under:
-            below, above = under[option.arm]
-            off.append(
-                OffFrontier(
-                    arm=_arm(option.arm),
-                    reason="never_best",
-                    by=[_arm(below.arm), _arm(above.arm)],
-                    says=[
-                        f"a point bought from {_arm(below.arm)} to it costs at least what one bought on to "
-                        f"{_arm(above.arm)} does, so the best option moves past it at every price"
-                    ],
-                    gates=[],
-                    figures=[
-                        cite(_key(below.arm, option.arm, gain_key, "per_point"), report_input),
-                        cite(_key(option.arm, above.arm, gain_key, "per_point"), report_input),
-                    ],
-                )
-            )
     baseline = arm if arm is not None else control_arm(report_input)
     if baseline is not None and baseline not in priced:
         notes.append(f"{_arm(baseline)} is not priced, so no option is priced against it; name arm_filter")
         baseline = None
-    elif baseline is None and options:
+    elif baseline is None and priced:
         notes.append("no control: name arm_filter to price every option against one")
-    window = set(arms[offset : offset + limit])
-    end = min(offset + limit, len(arms))
-    base = next((option for option in options if option.arm == baseline), None)
-    shown = [option for option in options if option.arm in window]
-    against = _against(report_input, shown, base, gain_key, monthly)
-    off = [row for row in off if row.arm.removeprefix("arm:") in window]
+    order = [*frontier.frontier, *(held for held in arms if held not in frontier.frontier)]
+    paged = order[offset : offset + limit]
+    window = set(paged)
+    end = min(offset + limit, len(order))
+    off = [found for held in paged if (found := _off(report_input, frontier, held)) is not None]
     return PriceTradeoff(
         reads_as=_READS_AS,
         notes=notes,
         gain_key=gain_key,
-        better="higher_is_better" if axis.higher_is_better else "lower_is_better",
-        basis=_basis(axis),
+        better="higher_is_better" if frontier.axis.higher_is_better else "lower_is_better",
+        basis=_basis(report_input, frontier),
+        within=frontier.within or None,
         volume=volume,
+        frontier_options=None if frontier.within else cite(f"count.frontier.{gain_key}", report_input),
+        frontier_steps=None if frontier.within else cite(f"count.steps.{gain_key}", report_input),
         frontier=[
-            FrontierOption(
-                arm=_arm(option.arm),
-                cost=option.cost,
-                monthly_cost=cite(f"cost_per_month.{option.arm}", report_input) if monthly else None,
-                level=_level(report_input, gain_key, option.arm),
-            )
-            for option in hull
+            _frontier_option(report_input, frontier, held, monthly) for held in frontier.frontier if held in window
         ],
         steps=[
-            _price(report_input, cheaper.arm, dearer.arm, gain_key, monthly)
-            for cheaper, dearer in zip(hull, hull[1:], strict=False)
+            _price(report_input, frontier, cheaper, dearer, monthly)
+            for cheaper, dearer in frontier.steps
+            if cheaper in window
         ],
         against_arm=None if baseline is None else _arm(baseline),
-        against=against,
+        against=_against(report_input, frontier, [held for held in paged if held in priced], baseline, monthly),
         off_frontier=off,
-        total=len(arms),
+        what_if=None if what_if is None else _what_if(report_input, frontier, what_if, within, baseline, monthly),
+        total=len(order),
         offset=offset,
-        next_offset=end if end < len(arms) else None,
+        next_offset=end if end < len(order) else None,
         hybrids=_HYBRIDS,
     )
 
 
+def _frontier_option(report_input: ReportInput, frontier: PriceFrontier, arm: str, monthly: bool) -> FrontierOption:
+    cost = cite(f"cost_per_1k.{arm}", report_input) if not frontier.within else _slice_cost(report_input, frontier, arm)
+    return FrontierOption(
+        arm=_arm(arm),
+        cost=cost,
+        monthly_cost=cite(f"cost_per_month.{arm}", report_input) if monthly else None,
+        level=_level(report_input, frontier, arm),
+    )
+
+
+def _slice_cost(report_input: ReportInput, frontier: PriceFrontier, arm: str) -> CitedFigure:
+    """An option's cost within a slice, as the key the basis reads it by states it: its figure there on the cost
+    measure where the slice states every option's own, else its overall cost per 1,000 replies."""
+    if frontier.cost_key:
+        return cite(f"{frontier.within}.{arm}.{frontier.cost_key}.mean", report_input)
+    return cite(f"cost_per_1k.{arm}", report_input)
+
+
 def _against(
     report_input: ReportInput,
-    options: Sequence[_Option],
-    baseline: _Option | None,
-    gain_key: str,
+    frontier: PriceFrontier,
+    options: Sequence[str],
+    baseline: str | None,
     monthly: bool,
 ) -> list[Price]:
     """Every other priced option against the baseline, in the input's order, each move from the cheaper to the
@@ -545,15 +677,55 @@ def _against(
         return []
     moves: list[Price] = []
     for option in options:
-        if option.arm == baseline.arm:
+        if option == baseline:
             continue
-        first, second = (option, baseline) if option.spend < baseline.spend else (baseline, option)
-        moves.append(_price(report_input, first.arm, second.arm, gain_key, monthly))
+        cheaper = frontier.costs[option] < frontier.costs[baseline]
+        first, second = (option, baseline) if cheaper else (baseline, option)
+        moves.append(_price(report_input, frontier, first, second, monthly))
     return moves
 
 
-def _level(report_input: ReportInput, gain_key: str, arm: str) -> CitedFigure | None:
-    """An option's own mean on the gain axis, where the input states one."""
+def _what_if(
+    report_input: ReportInput,
+    frontier: PriceFrontier,
+    what_if: str,
+    within: tuple[SliceKind, str] | None,
+    baseline: str | None,
+    monthly: bool,
+) -> WhatIf:
+    """The option the gates remove, priced as if it survived, labelled so."""
+    admitted = price_frontier(report_input, frontier.gain_key, within=within, admit=(what_if,))
+    off = _off(report_input, admitted, what_if)
+    against = None
+    if baseline is not None and what_if in admitted.priced and baseline != what_if:
+        cheaper = admitted.costs[what_if] < admitted.costs[baseline]
+        first, second = (what_if, baseline) if cheaper else (baseline, what_if)
+        against = _price(report_input, admitted, first, second, monthly)
+    return WhatIf(
+        arm=_arm(what_if),
+        label=_WHAT_IF.format(arm=_arm(what_if)),
+        gates=gate_reads(report_input, what_if, "fail"),
+        breached=breached_guardrails(report_input, what_if),
+        frontier=[_arm(held) for held in admitted.frontier],
+        steps=[
+            _price(report_input, admitted, cheaper, dearer, monthly)
+            for cheaper, dearer in admitted.steps
+            if what_if in (cheaper, dearer)
+        ],
+        against=against,
+        off=off,
+    )
+
+
+def _level(report_input: ReportInput, frontier: PriceFrontier, arm: str) -> CitedFigure | None:
+    """An option's own figure on the gain axis, where the input states one: its mean overall, its pooled figure, or
+    its mean within the slice."""
+    gain_key = frontier.gain_key
+    if frontier.within:
+        kind, slice_id = frontier.within.split(".", 1)
+        return cite_if(f"{kind}.{slice_id}.{arm}.{gain_key}.mean", report_input)
+    if frontier.axis.basis == "pooled":
+        return cite_if(f"pooled.{gain_key}.{arm}.mean", report_input)
     if gain_key in report_input.judged:
         held = arm in report_input.judged[gain_key].per_arm
         return cite_if(f"judged.{gain_key}.{arm}.mean", report_input) if held else None

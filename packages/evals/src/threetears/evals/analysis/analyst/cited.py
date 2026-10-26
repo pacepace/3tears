@@ -16,7 +16,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.errors import UnstatedFigure
-from threetears.evals.analysis.report.figure_keys import FigureKind, Scale, render, resolve
+from threetears.evals.analysis.report.figure_keys import FigureKind, Scale, format_figure, render, resolve
 from threetears.evals.analysis.report_input import ReportInput
 
 
@@ -43,6 +43,31 @@ class CitedFigure(BaseModel):
     scale: Scale = Field(description="The scale a number is on.")
     unit: str = Field(description="The unit a plain number is in; empty when it has none.")
     derived: bool = Field(description="Whether code derived the figure from the input's figures; descriptive only.")
+
+    def cited_as(self) -> str:
+        """The key as a report cites it, as a result's text writes it before `` = ``: the path.
+
+        :return: The path.
+        :rtype: str
+        """
+        return self.key
+
+
+class WrittenFigure(CitedFigure):
+    """One figure as a key with filters writes it: the figure, its filters, and ``reads`` written through them.
+
+    :ivar filters: The key's filters, in the order the key names them; empty for none.
+    """
+
+    filters: list[str] = Field(description="The key's filters, as the key names them; empty for none.")
+
+    def cited_as(self) -> str:
+        """The key as a report cites it: the path and its filters, ``path|filter``.
+
+        :return: The path, then each filter after a bar.
+        :rtype: str
+        """
+        return "|".join([self.key, *self.filters])
 
 
 def cite(key: str, report_input: ReportInput) -> CitedFigure:
@@ -92,4 +117,31 @@ def cite_if(key: str, report_input: ReportInput) -> CitedFigure | None:
         return None
 
 
-__all__ = ["CitedFigure", "cite", "cite_if"]
+def cite_written(key: str, filters: tuple[str, ...], report_input: ReportInput) -> WrittenFigure:
+    """The figure a key names, written through its filters as the page writes ``{key|filter}``.
+
+    :param key: The path, without braces or filters; never an arm, which takes no filter.
+    :ptype key: str
+    :param filters: The key's filters, as :func:`~threetears.evals.analysis.report.figure_keys.parse_key` checked them.
+    :ptype filters: tuple[str, ...]
+    :param report_input: The frozen report input the tool reads.
+    :ptype report_input: ReportInput
+    :return: The figure, ``reads`` written through the filters.
+    :rtype: WrittenFigure
+    :raises UnresolvableReference: The key does not resolve, or a filter does not suit its figure.
+    """
+    figure = resolve(key, report_input)
+    reads = render("{" + key + "}", report_input, {}) if figure.kind == "arm" else format_figure(figure, filters)
+    return WrittenFigure(
+        key=key,
+        reads=reads,
+        value=figure.value,
+        kind=figure.kind,
+        scale=figure.scale,
+        unit=figure.unit,
+        derived=figure.derived,
+        filters=list(filters),
+    )
+
+
+__all__ = ["CitedFigure", "WrittenFigure", "cite", "cite_if", "cite_written"]

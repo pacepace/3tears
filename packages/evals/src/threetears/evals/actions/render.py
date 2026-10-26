@@ -411,8 +411,8 @@ def render_cited(result: BaseModel) -> str:
     """An analyst action's result as text: each figure ``key = reads``, grouped under the row that holds it.
 
     What the result is comes first, then its fields in the model's own order. A figure
-    (:class:`~threetears.evals.ops.analyst.CitedFigure`) is one line, its key and the figure as the page writes it, so
-    an analyst cites the key it read; the value, kind and scale stay in the structured result. A row of a list is one
+    (:class:`~threetears.evals.ops.analyst.CitedFigure`) is one line, its key (with its filters, for a figure written
+    through them) and the figure as the page writes it, so an analyst cites the key it read; the value, kind and scale stay in the structured result. A row of a list is one
     bullet of its plain fields, its figures and nested rows indented beneath it. Nothing is summarised or left out,
     but a page's ``next_offset``: the tool writes the next page's whole call in its place (:func:`render_page`).
     """
@@ -519,7 +519,7 @@ def page_sizing(action: str, params: BaseModel, default: int) -> tuple[int, Call
 def _cited_field(name: str, value: Any, indent: str) -> list[str]:
     """One field: a figure as ``key = reads``, a model or a map of them under its name, a list of rows as bullets."""
     if isinstance(value, CitedFigure):
-        return [f"{indent}{value.key} = {value.reads}"]
+        return [f"{indent}{value.cited_as()} = {value.reads}"]
     if isinstance(value, BaseModel):
         return [f"{indent}{name}:", *_cited_body(value, indent + "  ")]
     if isinstance(value, Mapping) and value and all(isinstance(item, BaseModel) for item in value.values()):
@@ -538,7 +538,7 @@ def _cited_field(name: str, value: Any, indent: str) -> list[str]:
 def _cited_row(item: BaseModel, indent: str) -> list[str]:
     """One row of a list: a bullet of its plain fields, then its figures and nested rows beneath it."""
     if isinstance(item, CitedFigure):
-        return [f"{indent}{item.key} = {item.reads}"]
+        return [f"{indent}{item.cited_as()} = {item.reads}"]
     plain: list[str] = []
     beneath: list[str] = []
     for name in type(item).model_fields:

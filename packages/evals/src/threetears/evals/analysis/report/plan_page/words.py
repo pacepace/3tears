@@ -80,6 +80,8 @@ __all__ = [
     "POINTS_WORDS",
     "UNIT_WORDS",
     "CONFUSION_NOTE",
+    "PRICE_STEP_NOTES",
+    "PRICE_STEP_TEMPLATE",
     "TABLE_HEADERS",
     "TABLE_PER_THOUSAND",
     "CELL_TEMPLATE",
@@ -459,6 +461,18 @@ TABLE_HEADERS = {
     "expected": "True label",
     "predicted": "Predicted label",
     "prefers_control": "Prefers the control",
+    "step": "Step along the frontier",
+    "per_point": "Price per point",
+}
+
+#: How a step along a price frontier is named: the option it moves from, then the one it moves to.
+PRICE_STEP_TEMPLATE = "{first} → {second}"
+
+#: What a chart of price steps says its prices are: a month's at the declared volume, or per 1,000 replies.
+PRICE_STEP_NOTES = {
+    True: "Each step's price per point a month at the declared volume: where the best option moves as a point's "
+    "price rises.",
+    False: "Each step's price per point per 1,000 replies: where the best option moves as a point's price rises.",
 }
 
 #: What a plain table states a money figure per reply per, beside its measure's name.

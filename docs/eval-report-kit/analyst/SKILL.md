@@ -51,15 +51,16 @@ One tool, `evals_analyst`; each call is `{"action": "<name>", ...}` and, but for
 | | `measure_read` | `measure_key`, `by` (arm, stratum, task, cell), `statistics` | One measure's figures; without `statistics`, every one held, its interval (`ci` or `half_width`) and level among them |
 | | `examples_list` | `arm_filter`, `stratum_filter`, `outcome_filter` | Failed trials (up to three per arm and stratum), reasons, excerpts cut around the failure |
 | | `caveats_list` | | Every caveat, stated or implied (`source`), with `matters_if` and what it touches; cite each by its id |
+| | `figure_keys_check` | `keys` | Read each key a draft cites, as the page prints it through its filters, or why it reads nothing; check a whole draft before you submit |
 | analyses | `options_dominance` | `axes` | Which options survive the gates, which dominate, and each gate figure an option fails or borders, by its keys; no dominance call where cost is the only axis declared (`withheld`), with `axes` weighed beside cost |
 | | `decision_sensitivity` | `parameter` (`margin:<aspect>`, `floor:<aspect>/<floor>`, `threshold:<criterion>`, or `hypothetical:<measure>[/<statistic>]` for a line nobody declared), `range_low`, `range_high` | Where the call, and each routable task's pick, flips |
 | | `measure_breakdown` | `measure_key`, `slice_by` | Where a difference concentrates; exploratory |
-| | `price_tradeoff` | `gain_key`, `arm_filter` | Price per point among measured options; never a mix nobody ran |
+| | `price_tradeoff` | `gain_key`, `arm_filter`, `slice_filter`, `what_if` | Price per point among measured options, overall or within one task, stratum or cell; a gated option as a labelled what-if; never a mix nobody ran |
 | | `arms_compare` | `arm_ids` (two), `measure_key` | Any two arms, control or not: the difference overall and per slice, with its interval (paired where a contrast holds one, else independent), whether it excludes zero |
 | | `settle_cases` | `arm_ids` (one or two), `measure_key`, `criterion_id`, `hypothetical_line` | The cases that would settle an arm against its line, or two arms apart, and how often today's design reads the wrong way |
 | | `levers_effects` | `measure_key`, `setting_filter`, `place_filter` | What one setting buys between arms differing in it alone, with an interval, and whether it reverses or differs across another setting |
 | blocks | `block_catalog` | | Block kinds, sources, figure key forms |
-| | `block_render` | `block_kind`, `query`, `reference` | One block's values table |
+| | `block_render` | `block_kind`, `query`, `reference` | One block's values table; `bars` or `table` over source `prices` (one gain axis in `query.measures`) draws the price frontier's steps |
 | gaps | `capability_gap` | `need`, `why`, `workaround`, `claim_ids` | Record a workaround |
 
 **Help.** `action='help'` lists the actions; `topic='<action>'` gives one's parameters and an example; `topic='figure_keys'` the figure-key grammar's rules, filters and path groups, and `topic='figure_keys.<group>'` a group's forms. **Paging.** Every result that grows with the campaign is paged, the overview included, each page sized to one result. A page with more ends with `next: action=…, offset=N`: send that call. **Refusals** end with `recovery: {…}` (the parameters at fault, those accepted, an example, valid values): build the next call from it.

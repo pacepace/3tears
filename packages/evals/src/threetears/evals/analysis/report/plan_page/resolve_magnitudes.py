@@ -8,7 +8,9 @@
 - *scoreboard*: a row per arm on each scoreboard figure the query names (a count, or a cost);
 - *strata*, *tasks*: each slice's figures, in panels by task (or by arm) where the plan asks for them, else an arm
   per row grouped under each slice (a single slice needs no group);
-- *human_pref*: a row per slice, the share of ratings preferring the control.
+- *human_pref*: a row per slice, the share of ratings preferring the control;
+- *prices*: a row per step along the price frontier, its price per point (a month's at the declared volume, else per
+  1,000 replies) from zero, its interval's ends where both are stated.
 
 Bars share one axis, so the measures a chart reads are in one unit, each at its own scale; in panels by slice or by
 measure, where the plan asks for them, each panel is its measure's own, in its unit
@@ -60,7 +62,8 @@ from threetears.evals.analysis.report.plan_page.look import (
     magnitude_domain,
     quantity,
 )
-from threetears.evals.analysis.report.plan_page.words import STATISTIC_NOTE
+from threetears.evals.analysis.report.plan_page.words import PRICE_STEP_NOTES, PRICE_STEP_TEMPLATE, STATISTIC_NOTE
+from threetears.evals.analysis.report_rows import PriceStep
 from threetears.evals.analysis.report_input import (
     Measure,
     PreferenceRow,
@@ -254,6 +257,28 @@ def _preference_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[s
     return bars, drawn, {"mean"}
 
 
+def _price_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[str]]:
+    """prices: a bar per step along the frontier, its price per point from zero, named by the options it moves
+    between."""
+    steps = [(row.item, row.interval) for row in context.rows() if isinstance(row.item, PriceStep)]
+    monthly = any(step.monthly for step, _ in steps)
+    drawn = quantity("dollars" if monthly else "usd_per_1k", [step.value for step, _ in steps])
+
+    def name(arm: str) -> str:
+        return context.look.arm(arm).name if arm in context.look.arms else arm
+
+    bars = [
+        _Bar(
+            id=f"{step.first}→{step.second}",
+            label=PRICE_STEP_TEMPLATE.format(first=name(step.first), second=name(step.second)),
+            value=step.value * drawn.factor,
+            interval=(interval[0] * drawn.factor, interval[1] * drawn.factor) if interval is not None else None,
+        )
+        for step, interval in steps
+    ]
+    return bars, drawn, {"mean"}
+
+
 def _bar_row(context: ChartContext, bar: _Bar, drawn: Quantity) -> BarRow:
     drawn = bar.drawn or drawn
     interval = bar.interval if context.level else None
@@ -359,8 +384,12 @@ def _bars(context: ChartContext) -> Drawn:
         bars, drawn, statistics = _slice_bars(context)
     elif source == "human_pref":
         bars, drawn, statistics = _preference_bars(context)
+    elif source == "prices":
+        bars, drawn, statistics = _price_bars(context)
     else:
-        raise context.refuse("bars draw measures, judged, scoreboard, strata, tasks, configs or human preference")
+        raise context.refuse(
+            "bars draw measures, judged, scoreboard, strata, tasks, configs, human preference or prices"
+        )
     if not bars:
         raise context.refuse("it selects no figure to draw")
     if len({bar.group for bar in bars}) == 1:
@@ -384,7 +413,13 @@ def _bars(context: ChartContext) -> Drawn:
         reference=reference,
         emphasis=context.emphasis,
     )
-    return Drawn(chart_block(context, data), _statistic_note(statistics))
+    notes = _statistic_note(statistics)
+    if source == "prices":
+        notes = (
+            *notes,
+            PRICE_STEP_NOTES[any(isinstance(row.item, PriceStep) and row.item.monthly for row in context.rows())],
+        )
+    return Drawn(chart_block(context, data), notes)
 
 
 # --- lines ------------------------------------------------------------------------------------------------------

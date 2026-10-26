@@ -28,6 +28,7 @@ from pydantic import Field, model_validator
 
 from threetears.evals.actions.analyst_analyses import ANALYSES_WORKFLOW, analyst_analyses_actions
 from threetears.evals.actions.analyst_facts import FACTS_WORKFLOW, analyst_facts_actions
+from threetears.evals.actions.analyst_keys import analyst_keys_actions
 from threetears.evals.actions.analyst_levers import analyst_levers_actions
 from threetears.evals.actions.analyst_price import analyst_price_actions
 from threetears.evals.actions.analyst_render import analyst_render_actions
@@ -65,7 +66,10 @@ _FIGURE_KEYS_TOPIC = HelpTopic(
 )
 
 #: The rule every call to the analyst tool is held to, whichever role it is cut for.
-_CITE_BY_KEY = "every figure reads key = reads: cite its key in a report, never the number typed."
+_CITE_BY_KEY = (
+    "every figure reads key = reads: cite its key in a report, never the number typed; figure_keys_check reads a "
+    "draft's keys."
+)
 
 #: What a tool carrying the freeze says of the snapshot id, and what one without it says: a tool names only the
 #: actions it carries.
@@ -204,6 +208,7 @@ def analyst_actions() -> tuple[Action, ...]:
     built = (
         freeze,
         *analyst_facts_actions(),
+        *analyst_keys_actions(),
         *analyst_analyses_actions(),
         *analyst_price_actions(),
         *analyst_levers_actions(),
