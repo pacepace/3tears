@@ -1,5 +1,7 @@
 # Eval report generator: procedure and rules
 
+> **Superseded in part by [ANALYST.md](ANALYST.md)** (agreed with the owner, 2026-10-26). An expert analyst agent writes the report; code computes and verifies and never chooses structure. ANALYST.md replaces, as rules: the shape table and its spine (§1), the mode computed by code as a refusal (§1.1), and the two-call planner. The rest of this file stays as guidance the analyst reads until it moves into the analyst skill.
+
 This is the complete spec for turning one campaign's results into a decision memo like the references in `references/`. It assumes no other context. Read it top to bottom once; after that, sections 3–6 are the working reference.
 
 The generator has three stages. Each one has a typed output that is stored and testable:
