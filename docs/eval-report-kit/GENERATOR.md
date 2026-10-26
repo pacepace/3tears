@@ -95,6 +95,7 @@ Rules for every section:
 
 - One gate function decides pass / borderline / fail (§3). The headline, the options table, the matrix, the charts and the explore part all call it, so they cannot disagree.
 - Every number in prose is bound to data (§6.2). If a figure isn't in the input, the sentence doesn't say it.
+- Every chart the plan names draws on the plan's own input. When a plan is generated, code draws each chart through the renderer's own resolvers and refuses one that does not draw, at its field, for the planner to repair: one rule at both ends, so no stored plan names a chart its page cannot draw.
 - Drop a section that would show nothing new. A task with no task-specific behaviors gets a one-line note, not an empty chart.
 - Method statistics (depth, repeats, pass^k, precision decomposition) go in Method or Full results. They never sit between the decision and the evidence.
 - When the input was trimmed and a comparison the page wants is missing, say so in one caption line. Never fill it in.

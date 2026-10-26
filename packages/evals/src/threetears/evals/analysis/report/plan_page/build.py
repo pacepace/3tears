@@ -28,12 +28,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from threetears.evals.analysis.planned_analysis import plan_recommended_arm
 from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report.plan_page.charting import measure_words
+from threetears.evals.analysis.report.plan_page.drawable import plan_look
 from threetears.evals.analysis.report.plan_page.explore import explore_part
 from threetears.evals.analysis.report.plan_page.full_results import full_results
-from threetears.evals.analysis.report.plan_page.look import PageLook, page_look
+from threetears.evals.analysis.report.plan_page.look import PageLook
 from threetears.evals.analysis.report.plan_page.model import (
     PageAnswer,
     PageClause,
@@ -48,7 +48,7 @@ from threetears.evals.analysis.report.plan_page.model import (
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report.plan_page.tables import arms_key, options_table
 from threetears.evals.analysis.report.plan_page.words import ANSWER_TEMPLATES, CONFIDENCE_WORDS, slot_title
-from threetears.evals.analysis.report_decision import report_kind, surviving_options
+from threetears.evals.analysis.report_decision import report_kind
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_facts import FactCaveat, PlanFacts, plan_facts
 from threetears.evals.analysis.style import humanize
@@ -69,17 +69,6 @@ _SET_APART = {"decide": "recommendation", "tradeoff": "our_lean"}
 
 #: Plan prose, its keys written out.
 _Written = Callable[[str], str]
-
-
-def _look(plan: ReportPlan, report_input: ReportInput, facts: PlanFacts) -> PageLook:
-    return page_look(
-        facts.arms,
-        {arm.id: arm.color_slot for arm in plan.arms},
-        order=[row.option for row in plan.options.rows],
-        survivors=surviving_options(report_input),
-        recommended=plan_recommended_arm(plan),
-        names=facts.names,
-    )
 
 
 def _masthead(plan: ReportPlan, written: _Written) -> PageMasthead:
@@ -156,7 +145,7 @@ def plan_page(plan: ReportPlan, report_input: ReportInput, *, made: str = "") ->
         from it (its kind has no resolver, or its query selects nothing it can draw).
     """
     facts = plan_facts(report_input)
-    look = _look(plan, report_input, facts)
+    look = plan_look(plan, report_input, facts)
     arm_names = {arm.id: arm.name for arm in facts.arms}
 
     def written(text: str) -> str:
