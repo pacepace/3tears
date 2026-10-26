@@ -1770,12 +1770,14 @@ class ScopedSnapshot:
         await asyncio.wait_for(self._ready.wait(), timeout)
 
     def on_change(self, listener: Callable[[], None]) -> Callable[[], None]:
-        """call ``listener`` after every commit that changes what this L1 holds.
+        """call ``listener`` after every commit that changes what this L1 holds, and once when the copy becomes ready.
 
         A load from L2, a scope applied or dropped, a publish made here: each calls every listener
         once its DuckDB transaction has committed, so a reader opened from the listener sees the
-        change. Called on the event loop; a listener that raises is logged, never propagated. Call
-        this on the event loop too: the listeners are the loop's.
+        change. The copy becoming ready (:attr:`is_ready` turning true) calls each once more, so a
+        listener that skips a change while the copy is not ready yet is told when it is. Called on the
+        event loop; a listener that raises is logged, never propagated. Call this on the event loop
+        too: the listeners are the loop's.
 
         :param listener: called with no arguments
         :ptype listener: Callable[[], None]
@@ -2273,8 +2275,13 @@ class ScopedSnapshot:
         :rtype: None
         """
         self._progress = replace(self._progress, source=source, ready_at=self._progress.ready_at or datetime.now(UTC))
+        becoming = not self._ready.is_set()
         self._ready.set()
         self._settle()
+        if becoming:
+            # a listener told of a commit while the copy was not ready yet skipped it; with no later write it
+            # would never hear again, and a consumer built on the copy would never build
+            self._notify()
 
     async def _apply_moved(self, index: frozenset[str]) -> None:
         """apply each scope whose pointer moved past what the L1 holds; drop scopes the index left.

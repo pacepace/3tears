@@ -2871,6 +2871,29 @@ async def test_a_rebuild_that_waits_on_a_write_keeps_what_it_published_and_reads
     await snapshot.stop()
 
 
+@pytest.mark.parametrize("source", ["l3", "l2"])
+async def test_a_listener_that_skips_changes_before_ready_is_told_when_the_copy_becomes_ready(source: str) -> None:
+    # a consumer that builds only from a ready copy skipped each commit of the rebuild; the last landed before
+    # ready, and with no later write it never built (reports' "Preparing reports" on dev, 2026-10-26)
+    if source == "l3":
+        snapshot, _, _, _ = _snapshot()
+    else:
+        built, pointers, store, l3 = _snapshot()
+        await built.start()
+        await built.wait_ready(timeout=5)
+        await built.stop()
+        snapshot, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    seen: list[bool] = []
+    snapshot.on_change(lambda: seen.append(snapshot.is_ready))
+
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+
+    assert snapshot.status().source is (SnapshotSource.L3 if source == "l3" else SnapshotSource.L2)
+    assert seen and seen[-1] is True, f"no listener call saw the copy ready: {seen}"
+    await snapshot.stop()
+
+
 async def test_a_rebuild_after_the_snapshot_was_lost_reads_every_scope_again() -> None:
     # what an earlier rebuild published is kept only while its chunks and pointers are: NATS losing them loses it
     snapshot, pointers, _, l3, _ = _paged(_SIZES, l3_concurrency=1)
