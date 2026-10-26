@@ -78,6 +78,7 @@ __all__ = [
     "POINTS_WORDS",
     "UNIT_WORDS",
     "CONFUSION_NOTE",
+    "PRICE_OPEN_NOTE",
     "PRICE_STEP_NOTES",
     "PRICE_STEP_TEMPLATE",
     "TABLE_HEADERS",
@@ -481,6 +482,13 @@ PRICE_STEP_NOTES = {
     "price rises.",
     False: "Each step's price per point {per}: where the best option moves as a point's price rises.",
 }
+
+#: What a chart or table of price steps says of each step whose gain's interval reaches zero: its price is open above,
+#: ``{steps}`` the steps by name (:data:`PRICE_STEP_TEMPLATE`), joined by semicolons.
+PRICE_OPEN_NOTE = (
+    "No upper bound on {steps}: the gain's interval reaches zero there, so the evidence allows any price per point "
+    "above the low end shown."
+)
 
 #: An interval column's head in a plain table: the chart's interval level, where it states one (``95% interval``).
 INTERVAL_HEADER = "{level} interval"

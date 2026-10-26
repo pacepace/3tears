@@ -1049,3 +1049,68 @@ def test_a_prices_chart_says_its_prices_are_per_1000_of_what_the_snapshots_cost_
     bars = block_render(held, block_kind="bars", query=_prices_query(["overall"]))
     assert any(f"price per point {per}:" in note for note in bars.notes), bars.notes
     assert not any("replies" in note for note in bars.notes), bars.notes
+
+
+def _reads(key: str, held: ReportInput) -> float | None:
+    """The number a key reads, or None where it refuses (an end the interval leaves open, or one unstated)."""
+    try:
+        value = resolve(key, held).value
+    except UnresolvableReference:
+        return None
+    return float(value) if isinstance(value, int | float) else None
+
+
+def _drawn_ends(held: ReportInput, key: str, steps: list[Price]) -> list[tuple[float | None, float | None]]:
+    """Each step's interval ends as a prices block draws them, read off its keys: the paired interval where every
+    step states its low end, else the unpaired one; a high end None where it is unbounded (open above)."""
+    field = "monthly_per_point" if held.meta.volume_per_month is not None else "per_point"
+    moves = [(step.from_arm.removeprefix("arm:"), step.to_arm.removeprefix("arm:")) for step in steps]
+
+    def ends(first: str, second: str, suffix: str) -> tuple[float | None, float | None]:
+        prefix = f"price.{first}.{second}.{key}.{field}"
+        return _reads(f"{prefix}_low{suffix}", held), _reads(f"{prefix}_high{suffix}", held)
+
+    paired = all(ends(first, second, "")[0] is not None for first, second in moves)
+    return [ends(first, second, "" if paired else "_unpaired") for first, second in moves]
+
+
+def test_a_step_whose_gain_interval_reaches_zero_is_drawn_open_above_never_as_a_bare_price() -> None:
+    """The Critic's W4: a step whose price is unbounded above was drawn with no interval at all, beside steps with
+    one, so the least certain price read as the firmest. Every step whose low end is stated is drawn with it: both ends
+    where its high end is bounded, else open above, in the values table and the tooltip's words and named in a note."""
+    seen_open = seen_bounded_beside = 0
+    for name, held in fixture_inputs().items():
+        if not _costed(held):
+            continue
+        names = {arm.id: arm.name for arm in fact_arms(held)}
+        for key in _axes(held):
+            steps = price_tradeoff(held, key, limit=len(held.arms)).steps
+            if not steps:
+                continue
+            drawn = _drawn_ends(held, key, steps)
+            opened = [
+                f"{names[s.from_arm[4:]]} → {names[s.to_arm[4:]]}"
+                for s, (low, high) in zip(steps, drawn, strict=True)
+                if low is not None and high is None
+            ]
+            bars = block_render(held, block_kind="bars", query=_prices_query([key]))
+            table = block_render(held, block_kind="table", query=_prices_query([key]))
+            for block in (bars, table):
+                for row, (low, high) in zip(block.rows, drawn, strict=True):
+                    text = " | ".join(row.cells)
+                    if low is not None and high is None:
+                        assert "no upper bound" in text, (name, key, block.block_kind, text)
+                    else:
+                        assert "no upper bound" not in text, (name, key, block.block_kind, text)
+                    if low is not None and high is not None and block.block_kind == "bars":
+                        assert " to " in text, (name, key, text)
+                said = [note for note in block.notes if "No upper bound on" in note]
+                if opened:
+                    assert block.level, (name, key, block.block_kind, "an open interval is drawn at its level")
+                    assert len(said) == 1 and all(step in said[0] for step in opened), (name, key, block.notes)
+                else:
+                    assert not said, (name, key, block.notes)
+            seen_open += bool(opened)
+            seen_bounded_beside += bool(opened) and any(high is not None for _, high in drawn)
+    assert seen_open, "the control: some fixture's frontier takes a step whose gain's interval reaches zero"
+    assert seen_bounded_beside, "the control: some axis draws an open step beside a bounded one"

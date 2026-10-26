@@ -314,6 +314,17 @@ def _interval(spec: str, low: float | None, high: float | None) -> str:
     return f"{_formatted(spec, low)} to {_formatted(spec, high)}"
 
 
+#: An interval open above, as a table cell or a tooltip writes it: its low end, and no upper bound.
+OPEN_ABOVE = "from {low} up, no upper bound"
+
+
+def _bar_interval(spec: str, low: float | None, high: float | None) -> str:
+    """A bar's interval as a table cell: :func:`_interval`'s, or one open above (a low end alone) in words."""
+    if low is not None and high is None:
+        return OPEN_ABOVE.format(low=_formatted(spec, low))
+    return _interval(spec, low, high)
+
+
 def _reference_row(reference: ChartReference | None, spec: str, width: int) -> list[list[str]]:
     """A chart's reference line as a last table row: its label (or kind) and its value, padded to ``width``."""
     if reference is None or reference.kind == "no_preference":
@@ -353,7 +364,11 @@ class BarRow(_KitModel):
         "label fits.",
     )
     lo: float | None = Field(default=None, description="The interval's low end.")
-    hi: float | None = Field(default=None, description="The interval's high end.")
+    hi: float | None = Field(
+        default=None,
+        description="The interval's high end; none with a `lo` where the interval is open above (no upper bound): its "
+        "whisker runs on to the axis's end, opening into a chevron.",
+    )
     color: Token | None = Field(default=None, description="The bar's colour token.")
     strong: bool | None = Field(default=None, description="Bold label and note.")
     muted: bool | None = Field(default=None, description="Faded bar.")
@@ -363,12 +378,16 @@ class BarRow(_KitModel):
 
     @model_validator(mode="after")
     def _one_measure(self) -> Self:
-        """Refuse a bar with neither a value nor segments, or with both.
+        """Refuse a bar with neither a value nor segments, or with both, and a high end with no low end.
 
-        :raises ValueError: Both or neither of ``value`` and ``segments``.
+        :raises ValueError: Both or neither of ``value`` and ``segments``; ``hi`` without ``lo``.
         """
         if (self.value is None) == (self.segments is None):
             raise ValueError(f"bar {self.label!r} needs a value or segments, not both")
+        if self.hi is not None and self.lo is None:
+            raise ValueError(
+                f"bar {self.label!r} sets a high end with no low end; only an interval open above has one end"
+            )
         return self
 
     @property
@@ -429,7 +448,7 @@ class _BarsFields(_Kind):
                     row.label,
                     _formatted(self._format, row.total),
                     *([parts] if stacked else []),
-                    *([_interval(self._format, row.lo, row.hi)] if intervals else []),
+                    *([_bar_interval(self._format, row.lo, row.hi)] if intervals else []),
                     *([row.note or ""] if notes else []),
                 ]
             )
@@ -1272,6 +1291,7 @@ __all__ = [
     "LegendItem",
     "LineSeries",
     "LinesChart",
+    "OPEN_ABOVE",
     "PriceLine",
     "RangeBarsChart",
     "RangeGroup",

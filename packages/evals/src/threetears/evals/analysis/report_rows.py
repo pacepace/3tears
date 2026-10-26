@@ -30,7 +30,10 @@ A figure row reads the query's aspect from the measure's ``by_aspect`` where it 
 ``per_arm`` (the lead aspect's). A scoreboard reads the named aspect's own scoreboard where it has one. A row has an
 interval where the input carries one: a reading's ``within_interval``, a contrast's or a floor's ``interval``, a
 figure's ``ci``, a preference slice's half-width about its share, a price step's ends off its gain's interval (paired
-where every step's is, else unpaired; none on a step whose interval leaves its high end open).
+where every step states a paired one, else unpaired). A price step whose gain's interval reaches zero has no high end:
+the evidence allows any price above its low end, so the row carries no two-ended interval and its step holds the low
+end it does state (:attr:`PriceStep.open_from`), which a chart draws as a whisker open above and a table writes as
+having no upper bound, never as a bare price.
 
 **A price step** is one move along the frontier of the options best at some price per point
 (:func:`~threetears.evals.analysis.report.figure_keys.price_frontier`), on each gain axis a ``prices`` query keeps (a
@@ -88,9 +91,12 @@ class PriceStep:
     :ivar key: The key that states the price drawn: ``monthly_per_point`` at the declared volume, else ``per_point``.
     :ivar value: The price per point the key reads.
     :ivar monthly: Whether it is a month's price at the declared volume (else per 1,000 of what the cost counts).
-    :ivar low_key: The key of the interval's low end; empty where the row carries no interval.
-    :ivar high_key: The key of its high end; empty where the row carries no interval.
+    :ivar low_key: The key of the interval's low end; empty where the step states no interval.
+    :ivar high_key: The key of its high end (one refused as unbounded where the interval is open above); empty where
+        the step states no interval.
     :ivar paired: Whether the ends are read off the paired interval (a contrast's), else off the unpaired one.
+    :ivar open_from: The low end of an interval open above: the gain's interval reaches zero, so no price bounds the
+        step above and the row carries no two-ended interval; None where the interval is bounded or unstated.
     """
 
     first: str
@@ -102,6 +108,7 @@ class PriceStep:
     low_key: str = ""
     high_key: str = ""
     paired: bool = False
+    open_from: float | None = None
 
 
 @dataclass(frozen=True)
@@ -318,8 +325,8 @@ def _gain_keys(report_input: ReportInput) -> list[str]:
 
 def _prices(query: ChartQuery, report_input: ReportInput) -> Iterator[SourceRow]:
     """Each step along the price frontier on each gain axis the query keeps (every one where it names none), kept
-    where the query keeps both of its options; on each axis its interval paired where every kept step's is, else
-    unpaired, else none."""
+    where the query keeps both of its options; on each axis its interval paired where every kept step states a paired
+    one (its low end, bounded above or open), else unpaired, else none."""
     keys = list(query.measures) or _gain_keys(report_input)
     for gain_key in keys:
         yield from _steps(query, report_input, gain_key)
@@ -337,10 +344,12 @@ def _steps(query: ChartQuery, report_input: ReportInput, gain_key: str) -> Itera
     field = "monthly_per_point" if monthly else "per_point"
     steps = [(first, second) for first, second in frontier.steps if first in arms and second in arms]
 
-    def ends(first: str, second: str, suffix: str) -> tuple[str, str] | None:
-        low, high = (frontier.key(first, second, f"{field}_{end}{suffix}") for end in ("low", "high"))
-        held = (_number_at(low, report_input), _number_at(high, report_input))
-        return (low, high) if None not in held else None
+    def ends(first: str, second: str, suffix: str) -> tuple[str, str, float, float | None] | None:
+        """The interval's keys and ends where its low end is stated: the high end None where the price is unbounded
+        above (its low end bounds the gain's far end, so only its near end can reach zero); None where unstated."""
+        low_key, high_key = (frontier.key(first, second, f"{field}_{end}{suffix}") for end in ("low", "high"))
+        low = _number_at(low_key, report_input)
+        return (low_key, high_key, low, _number_at(high_key, report_input)) if low is not None else None
 
     paired = bool(steps) and all(ends(first, second, "") is not None for first, second in steps)
     for first, second in steps:
@@ -348,11 +357,7 @@ def _steps(query: ChartQuery, report_input: ReportInput, gain_key: str) -> Itera
         value = resolve(key, report_input).value
         assert isinstance(value, float)
         found = ends(first, second, "" if paired else "_unpaired")
-        interval = None
-        if found is not None:
-            low, high = (_number_at(end, report_input) for end in found)
-            assert low is not None and high is not None
-            interval = (low, high)
+        low_key, high_key, low, high = found if found is not None else ("", "", None, None)
         step = PriceStep(
             first=first,
             second=second,
@@ -360,10 +365,12 @@ def _steps(query: ChartQuery, report_input: ReportInput, gain_key: str) -> Itera
             key=key,
             value=value,
             monthly=monthly,
-            low_key=found[0] if found else "",
-            high_key=found[1] if found else "",
+            low_key=low_key,
+            high_key=high_key,
             paired=paired and found is not None,
+            open_from=low if high is None else None,
         )
+        interval = (low, high) if low is not None and high is not None else None
         yield SourceRow(f"{first}→{second}", step, key=gain_key, interval=interval)
 
 
