@@ -13,7 +13,10 @@ Contracts held here (``threetears.evals.analysis.report_plan_checks``, GENERATOR
   (``floor_unclear`` among them), the confidence's form and clauses, the flag, caveat coverage, the charts (each kind
   over the sources it draws, small multiples only of a kind the kit panels), the options columns (one of
   ``OPTION_COLUMN_FAMILIES``), the figure keys, D3, and no unit written right after a key that prints it nor money per
-  reply under one cent on a page stating costs per 1,000 replies, over every prose field the plan holds.
+  reply under one cent on a page stating costs per 1,000 replies, over every prose field the plan holds;
+- completion fills each reference line's key: a margin at the chart's aspect's margin, a floor or a budget at the
+  threshold of the one criterion reading the chart's one measure (direction, statistic and place matched), and refuses
+  a line with no such criterion or several, naming why.
 
 Modes other than r5's own need inputs that allow them (:mod:`threetears.evals.analysis.report_decision`): a tradeoff
 variant where 1017 is the cheapest arm and nothing shows it no worse, a no-call variant where a standing guardrail
@@ -30,9 +33,9 @@ from typing import Any
 import pytest
 
 from packages.evals.tests.report_kit_support import KIT
-from packages.evals.tests.report_plan_support import structure_reply
+from packages.evals.tests.report_plan_support import planned_reply, structure_reply
 from threetears.evals.analysis.plan_assembly import check_structure
-from threetears.evals.analysis.report_plan_facts import plan_facts
+from threetears.evals.analysis.report_plan_facts import complete_plan, plan_facts
 from threetears.evals.analysis.errors import PlanRefusal, SoundnessRefusal
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_decision import surviving_options
@@ -46,7 +49,7 @@ from threetears.evals.analysis.report_plan_checks import (
     validate_plan,
 )
 from threetears.evals.kernel import report_plan
-from threetears.evals.kernel.report_plan import PlanStructure, ReportPlan
+from threetears.evals.kernel.report_plan import PlannedReport, PlanStructure, ReportPlan
 from threetears.evals.schema.prose import field_is_prose
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_plans"
@@ -1331,6 +1334,116 @@ def _replace_in(plan: dict[str, Any], path: str, old: str, new: str) -> dict[str
     text = _get(plan, path)
     assert old in text, f"{path} no longer holds {old!r}"
     return _set(plan, path, text.replace(old, new))
+
+
+# --- reference lines ------------------------------------------------------------------------------------------------
+
+
+def _completed(
+    name: str, plan: dict[str, Any], data: dict[str, Any] | None = None
+) -> tuple[ReportPlan | None, list[tuple[str, str]]]:
+    """An anchor's planned part completed against its input: the stored plan, or the faults completion found."""
+    report = _input(name, data)
+    row = next((row["option"] for row in plan["options"]["rows"] if row["role"] == "recommended"), None)
+    warnings = [warning.model_dump() for warning in raised_warnings(report, row)] if row is not None else []
+    try:
+        return complete_plan(PlannedReport.model_validate(planned_reply(plan, warnings)), report), []
+    except PlanRefusal as refused:
+        return None, list(refused.faults)
+
+
+def _line(name: str, path: str, kind: str, **query: Any) -> dict[str, Any]:
+    plan = _anchor(name)
+    _set(plan, f"{path}.reference", [{"kind": kind, "key": "placeholder"}])
+    _get(plan, f"{path}.query").update(query)
+    return plan
+
+
+def _key_at(plan: ReportPlan, path: str) -> str:
+    chart = _get(plan.model_dump(mode="json", by_alias=True), path)
+    (reference,) = chart["reference"]
+    return str(reference["key"])
+
+
+def _line_fault(name: str, plan: dict[str, Any], path: str, data: dict[str, Any] | None = None) -> str:
+    completed, faults = _completed(name, plan, data)
+    assert completed is None
+    found = [why for at, why in faults if at == f"{path}.reference[0].kind"]
+    assert found, faults
+    return " ".join(found)
+
+
+class TestReferenceLines:
+    @pytest.mark.parametrize("name", ["r1", "r2", "r3", "r4", "r5"])
+    def test_each_anchor_completes_with_the_reference_lines_it_stores(self, name: str):
+        completed, faults = _completed(name, _anchor(name))
+        assert completed is not None, faults
+        stored = ReportPlan.model_validate(_anchor(name))
+        charts = [*stored.summary, *(section.chart for section in stored.sections)]
+        again = [*completed.summary, *(section.chart for section in completed.sections)]
+        assert [chart.reference for chart in again] == [chart.reference for chart in charts]
+
+    def test_a_margin_line_sits_at_the_asked_aspects_margin(self):
+        completed, faults = _completed("r5", _anchor("r5"))
+        assert completed is not None, faults
+        assert _key_at(completed, "sections[0].chart") == "aspect.margin"
+
+    def test_a_floor_sits_at_the_one_criterion_reading_the_charts_measure(self):
+        completed, faults = _completed("r2", _line("r2", "summary[0]", "floor"))
+        assert completed is not None, faults
+        assert _key_at(completed, "summary[0]") == "criteria.pass_rate.threshold"
+
+    def test_a_floor_on_a_task_reads_the_task_criterion_where_the_chart_keeps_that_task(self):
+        completed, faults = _completed("r1", _line("r1", "sections[1].chart", "floor"))
+        assert completed is not None, faults
+        assert _get(_anchor("r1"), "sections[1].chart.query.strata") == ["specul"]
+        assert _key_at(completed, "sections[1].chart") == "criteria.specul.declines.threshold"
+
+    def test_a_task_criterion_reads_nothing_on_a_chart_keeping_every_task(self):
+        plan = _line("r1", "sections[1].chart", "floor", strata=[])
+        assert "no criterion reads 'declines'" in _line_fault("r1", plan, "sections[1].chart")
+
+    def test_a_budget_on_range_bars_sits_at_the_p95_criterion(self):
+        plan = _line("r1", "sections[2].chart", "budget")
+        _set(plan, "sections[2].chart.kind", "range_bars")
+        _set(plan, "sections[2].chart.query.small_multiples_by", "none")
+        completed, faults = _completed("r1", plan)
+        assert completed is not None, faults
+        assert _key_at(completed, "sections[2].chart") == "criteria.p95.threshold"
+
+    def test_a_budget_on_bars_of_the_mean_reads_no_p95_criterion(self):
+        why = _line_fault("r1", _line("r1", "sections[2].chart", "budget"), "sections[2].chart")
+        assert "no criterion reads 'latency_s'" in why and "['mean']" in why
+
+    def test_a_floor_never_sits_at_a_budget(self):
+        plan = _line("r1", "sections[2].chart", "floor")
+        _set(plan, "sections[2].chart.kind", "range_bars")
+        _set(plan, "sections[2].chart.query.small_multiples_by", "none")
+        assert "higher is better" in _line_fault("r1", plan, "sections[2].chart")
+
+    def test_a_floor_on_a_chart_of_cells_sits_at_the_each_cell_criterion(self):
+        completed, faults = _completed("r3", _line("r3", "sections[1].chart", "floor"))
+        assert completed is not None, faults
+        assert _key_at(completed, "sections[1].chart") == "criteria.cell_floor.threshold"
+
+    def test_two_criteria_reading_the_charts_measure_are_refused_naming_both(self):
+        data = _input_dict("r2")
+        data["criteria"].append({**data["criteria"][0], "id": "pass_rate.again", "threshold": 95.0})
+        why = _line_fault("r2", _line("r2", "summary[0]", "floor"), "summary[0]", data)
+        assert "['pass_rate', 'pass_rate.again']" in why
+
+    def test_a_chart_reading_several_measures_takes_no_floor(self):
+        plan = _line("r2", "summary[0]", "floor", measures=["pass_rate", "outcome"])
+        assert "the measures ['pass_rate', 'outcome']" in _line_fault("r2", plan, "summary[0]")
+
+    def test_a_chart_of_readings_reads_no_measure_for_a_floor(self):
+        plan = _anchor("r5")
+        _set(plan, "sections[0].chart.reference", [{"kind": "floor", "key": "placeholder"}])
+        assert "reads no measure" in _line_fault("r5", plan, "sections[0].chart")
+
+    def test_a_no_preference_line_is_refused(self):
+        plan = _line("r2", "summary[0]", "no_preference")
+        assert "a margin, floor or budget line is what it can draw" in _line_fault("r2", plan, "summary[0]")
 
 
 # --- figure keys and D3 --------------------------------------------------------------------------------------------
