@@ -28,20 +28,22 @@ from typing import Any
 import pytest
 
 from packages.evals.tests.report_kit_support import KIT
+from packages.evals.tests.report_plan_support import structure_reply
+from threetears.evals.analysis.plan_assembly import check_structure
+from threetears.evals.analysis.report_plan_facts import plan_facts
 from threetears.evals.analysis.errors import PlanRefusal, SoundnessRefusal
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_decision import surviving_options
 from threetears.evals.analysis.report_plan_checks import (
     SPINE_KINDS,
     classify,
-    contrast_unit,
     implied_disclosures,
     raised_warnings,
     spine,
     validate_plan,
 )
 from threetears.evals.kernel import report_plan
-from threetears.evals.kernel.report_plan import ReportPlan
+from threetears.evals.kernel.report_plan import PlanStructure, ReportPlan
 from threetears.evals.schema.prose import field_is_prose
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_plans"
@@ -283,6 +285,25 @@ def _latency_question() -> dict[str, Any]:
     return data
 
 
+def _first_chart_faults(report: ReportInput, aspect: str, measures: list[str]) -> list[tuple[str, str]]:
+    """The faults the structure check finds at the first section's chart when it is a forest of contrasts on
+    ``aspect`` over ``measures``: code's facts complete it there, its one unit and one level among them."""
+    structure = structure_reply(_plan())
+    structure["sections"][0]["chart"] = {
+        "kind": "forest",
+        "query": {"source": "contrasts", "aspect": aspect, "measures": measures, "arms": [], "strata": [],
+                  "limit": 0, "transform": "none", "small_multiples_by": "none"},
+        "reference": [],
+        "emphasis": "",
+    }  # fmt: skip
+    facts = plan_facts(report)
+    try:
+        check_structure(PlanStructure.model_validate(structure), report, facts, facts.allowed_modes)
+    except PlanRefusal as refused:
+        return [(path, why) for path, why in refused.faults if path.startswith("sections[0].chart")]
+    return []
+
+
 class TestTheSpine:
     @pytest.mark.parametrize(
         ("name", "fact"),
@@ -339,8 +360,10 @@ class TestTheSpine:
         report = _input(data=data)
         found = spine(report)
         assert (found.source, found.aspect, found.measures) == ("contrasts", "latency", ("research_p95_s",))
-        units = {contrast_unit(report, c) for c in report.contrasts if c.aspect == "latency"}
-        assert units == {"s"}
+        assert _first_chart_faults(report, found.aspect, list(found.measures)) == []
+        # The check bites: both deciding measures, across both aspects, mix seconds and points on one chart.
+        mixed = _first_chart_faults(report, "", ["research_p95_s", "persona.holds_character"])
+        assert any(path == "sections[0].chart.query" and "one unit" in why for path, why in mixed), mixed
 
     def test_the_measured_spine_reads_the_survivors_as_the_modes_do(self):
         """A candidate a gate removes does not hold the spine on readings: qwen3.8-flash's reading separates it, and
