@@ -26,10 +26,13 @@ import pytest
 from pydantic import BaseModel, Field
 
 from threetears.evals.actions import (
+    PRIMER_BUDGET,
     Action,
     ActionCatalogue,
     Caller,
     HelpTopic,
+    analyst_tools,
+    catalogue_primer,
     ToolSpec,
     engine_actions,
     eval_catalogue,
@@ -557,6 +560,48 @@ def test_a_malformed_or_colliding_help_topic_is_refused() -> None:
         ActionCatalogue([_action()]).mount(
             ToolSpec(name="t", description="d", permissions=frozenset({"read"}), topics=(named,))
         )
+
+
+@pytest.mark.parametrize(
+    "specs",
+    [
+        pytest.param((*standard_tools(), *analyst_tools()), id="every tool a host mounts"),
+        pytest.param((*standard_tools(), *analyst_tools(role="editor")), id="with the editor's cut"),
+        pytest.param(read_only_tools(), id="read-only"),
+    ],
+)
+def test_the_primer_names_help_first_every_tool_and_its_rules_within_its_budget(specs: tuple[ToolSpec, ...]) -> None:
+    tools = eval_catalogue().mount_all(specs)
+    primer = catalogue_primer(tools)
+    lines = primer.splitlines()
+    assert len(primer) <= PRIMER_BUDGET, f"{len(primer)} characters"
+    assert "action='help'" in lines[0], "how to get help opens the primer"
+    for tool in tools:
+        assert f"- {tool.name}: {tool.spec.description} Call action='help' first." in lines
+        for topic in tool.spec.topics:
+            assert f"{topic.name} ({tool.name})" in lines[1], "a reference topic is named in the opening lines"
+        for rule in tool.spec.constraints:
+            assert f"- {tool.name}: {rule}" in lines
+    launches = any(action.long_running for tool in tools for action in tool.actions)
+    assert ("- Long work starts a job: poll it with action='job_poll' until it reads done." in lines) == launches
+    deletes = any(tool.hints.destructive for tool in tools)
+    assert any("needs `confirm` echoing the id it destroys" in line for line in lines) == deletes
+
+
+def test_the_analyst_tools_rules_are_in_its_help_index() -> None:
+    (spec,) = analyst_tools()
+    index = eval_catalogue().mount(spec).help_index()
+    assert spec.constraints and "## Rules\n" + "\n".join(f"- {rule}" for rule in spec.constraints) in index
+
+
+def test_a_primer_past_its_budget_or_naming_no_tool_is_refused() -> None:
+    wordy = ToolSpec(name="notes", description="A note. " * 300, permissions=frozenset({"read"}))
+    with pytest.raises(ValueError, match="past the 1800 a client is known to deliver whole"):
+        catalogue_primer([ActionCatalogue([_action()]).mount(wordy)])
+    with pytest.raises(ValueError, match="none were given"):
+        catalogue_primer([])
+    with pytest.raises(ValueError, match="each constraint is one non-blank line"):
+        ToolSpec(name="t", description="d", permissions=frozenset({"read"}), constraints=("two\nlines",))
 
 
 def test_two_tools_with_one_name_are_refused() -> None:

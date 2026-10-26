@@ -8126,6 +8126,11 @@
       "signature": "Caller(scope_id: str, identity: str)",
       "tier": "stable"
     },
+    "threetears.evals.actions.catalogue_primer": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.actions.ConformanceSample": {
       "kind": "dataclass",
       "signature": "ConformanceSample(template_id: str, subject_id: str, models: tuple[str, ...], second_judge_model: str)",
@@ -8183,6 +8188,11 @@
     },
     "threetears.evals.actions.PermissionClass": {
       "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.actions.PRIMER_BUDGET": {
+      "kind": "constant (int)",
       "signature": "",
       "tier": "provisional"
     },

@@ -102,6 +102,10 @@ def render_help_index(tool: MountedTool) -> str:
             job = ", starts a job" if action.long_running else ""
             lines.append(f"- {action.name} ({action.permission}{job}): {one_line(action.summary)}")
         lines.append("")
+    if tool.spec.constraints:
+        lines.append("## Rules")
+        lines += [f"- {rule}" for rule in tool.spec.constraints]
+        lines.append("")
     if tool.spec.topics:
         lines.append("## Reference")
         lines += [f"- {topic.name}: {one_line(topic.summary)}" for topic in tool.spec.topics]
@@ -111,6 +115,30 @@ def render_help_index(tool: MountedTool) -> str:
         )
     else:
         lines.append("For one action's parameters and an example: action='help', topic='<action>'.")
+    return "\n".join(lines)
+
+
+def render_primer(tools: Sequence[MountedTool]) -> str:
+    """The primer :func:`~threetears.evals.actions.catalogue_primer` holds to its budget: help first, then the tools,
+    then the rules."""
+    lines = [
+        "Eval tools. Each takes `action`: action='help' lists a tool's actions by workflow, and action='help', "
+        "topic='<action>' gives one action's parameters and an example."
+    ]
+    topics = [f"{topic.name} ({tool.name})" for tool in tools for topic in tool.spec.topics]
+    if topics:
+        lines.append(f"Reference topics, as action='help', topic='<topic>': {', '.join(topics)}.")
+    lines.append("Tools:")
+    lines += [f"- {tool.name}: {one_line(tool.spec.description)} Call action='help' first." for tool in tools]
+    rules: list[str] = []
+    if any(action.long_running for tool in tools for action in tool.actions):
+        rules.append("Long work starts a job: poll it with action='job_poll' until it reads done.")
+    for tool in tools:
+        if any(action.permission == "destructive" for action in tool.actions):
+            rules.append(f"{tool.name}: a destructive action needs `confirm` echoing the id it destroys.")
+        rules += [f"{tool.name}: {rule}" for rule in tool.spec.constraints]
+    lines.append("Rules:")
+    lines += [f"- {rule}" for rule in rules]
     return "\n".join(lines)
 
 
@@ -709,6 +737,7 @@ __all__ = [
     "render_jobs_started",
     "render_model",
     "render_page",
+    "render_primer",
     "render_report",
     "render_result",
     "render_results",

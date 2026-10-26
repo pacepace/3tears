@@ -99,6 +99,7 @@ from threetears.evals.actions import (
     Caller,
     MountedTool,
     ToolSpec,
+    catalogue_primer,
     eval_catalogue,
     read_only_tools,
     standard_tools,
@@ -821,7 +822,9 @@ def mount_fastmcp(
     **In one line**, ``mount_fastmcp(as_host([...], store=...), scope="dev").run()`` serves an eval host's runs: a
     server named ``evals``, the engine's catalogue, :func:`~threetears.evals.actions.read_only_tools` (nothing
     launches over it: :meth:`~threetears.evals.ops.OpsHost.reading`), and every call in ``scope`` as ``identity``. A
-    host of the full shape mounts on its own server with every hook below.
+    host of the full shape mounts on its own server with every hook below. A server built here carries the tools'
+    primer as its instructions (:func:`~threetears.evals.actions.catalogue_primer`); a host building its own passes
+    ``instructions=catalogue_primer(...)`` there.
 
     :param server: The host's server; or the one host every action works in, an
         :class:`~threetears.evals.kernel.host.EvalHost` or an :class:`~threetears.evals.ops.OpsHost`, to serve
@@ -860,6 +863,7 @@ def mount_fastmcp(
     :return: The names of the tools added; or, handed a host alone, the server built, ready to ``run()``.
     :rtype: FastMCP | tuple[str, ...]
     :raises ValueError: The catalogue refuses a tool (see :meth:`~threetears.evals.actions.ActionCatalogue.mount`),
+        a server built here would carry a primer past its budget (:func:`~threetears.evals.actions.catalogue_primer`),
         or both or neither of ``host`` and ``host_resolver``, or of ``caller`` and ``scope``, were given, or
         ``call_timeout_s`` is a number that is not positive — before any tool is added. A function's value is
         checked per call instead.
@@ -870,7 +874,9 @@ def mount_fastmcp(
             raise ValueError("mount_fastmcp(host, ...) serves the host it is handed; pass no host= or host_resolver=")
         from fastmcp import FastMCP  # the server stack, loaded only when a server is built here
 
-        built = FastMCP(_SERVER_NAME)
+        specs = tools if tools is not None else read_only_tools() if isinstance(server, EvalHost) else standard_tools()
+        primer = catalogue_primer((catalogue if catalogue is not None else eval_catalogue()).mount_all(specs))
+        built = FastMCP(_SERVER_NAME, instructions=primer)
         mount_fastmcp(
             built,
             catalogue,
@@ -880,7 +886,7 @@ def mount_fastmcp(
             identity=identity,
             around=around,
             annotate=annotate,
-            tools=tools,
+            tools=specs,
             call_timeout_s=call_timeout_s,
         )
         return built

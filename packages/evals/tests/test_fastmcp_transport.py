@@ -22,7 +22,15 @@ from fastmcp import Client, FastMCP
 
 from pydantic import Field
 
-from threetears.evals.actions import Action, Caller, eval_catalogue, read_only_tools, standard_tools
+from threetears.evals.actions import (
+    Action,
+    Caller,
+    analyst_tools,
+    catalogue_primer,
+    eval_catalogue,
+    read_only_tools,
+    standard_tools,
+)
 from threetears.evals.ops import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.ops import report_read
@@ -332,6 +340,7 @@ async def test_an_eval_host_is_served_in_one_line_read_only_in_one_scope() -> No
             client, "evals", {"action": "run_launch", "template_id": "t", "subject_id": "s"}
         )
     assert server.name == "evals" and tool.name == "evals" and tool.annotations is not None
+    assert server.instructions == catalogue_primer(eval_catalogue().mount_all(read_only_tools()))
     assert tool.annotations.read_only_hint is True
     assert toyhost_template().id in listed, "the scope named, over the eval host's own storage"
     assert is_error and "carries read actions only" in refused
@@ -355,6 +364,17 @@ async def test_a_reading_host_refuses_a_launch_by_name_under_the_full_tools() ->
 async def test_an_ops_host_handed_alone_keeps_its_launch_tools() -> None:
     async with Client(mount_fastmcp(off_loop(ops_fixture).host, scope=CALLER.scope_id)) as client:
         assert sorted(tool.name for tool in await client.list_tools()) == ["evals", "evals_admin"]
+
+
+async def test_a_server_built_here_hands_a_client_the_primer_of_the_tools_it_mounts() -> None:
+    tools = (*standard_tools(), *analyst_tools())
+    server = mount_fastmcp(off_loop(ops_fixture).host, scope=CALLER.scope_id, tools=tools)
+    async with Client(server) as client:
+        instructions = client.instructions
+    assert instructions == catalogue_primer(eval_catalogue().mount_all(tools))
+    assert (
+        instructions is not None and "evals_analyst" in instructions and "figure_keys" in instructions.splitlines()[1]
+    )
 
 
 @pytest.mark.parametrize(

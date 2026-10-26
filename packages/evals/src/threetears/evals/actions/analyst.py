@@ -56,6 +56,12 @@ FIGURE_KEYS_TOPIC = HelpTopic(
     text=figure_key_grammar,
 )
 
+#: The rules every call to the analyst tool is held to, whichever role it is cut for.
+_CONSTRAINTS = (
+    "every call but the freeze names snapshot_id, the snapshot report_snapshot_freeze returned; the same id throughout.",
+    "every figure reads key = reads: cite its key in a report, never the number typed.",
+)
+
 #: Each role's tool description.
 _DESCRIPTIONS = {
     "analyst": (
@@ -205,6 +211,7 @@ def analyst_tools(
             cut=ANALYST_CUT,
             workflows=_EDITOR_WORKFLOWS if role == "editor" else None,
             topics=(FIGURE_KEYS_TOPIC,),
+            constraints=_CONSTRAINTS,
         ),
     )
 

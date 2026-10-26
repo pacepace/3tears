@@ -46,7 +46,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, get_args
+from typing import Any, Final, Literal, get_args
 
 from pydantic import BaseModel, ValidationError
 
@@ -353,6 +353,8 @@ class ToolSpec:
         one role uses (the report editor's, which reads no blocks); ``None``, the default, for every workflow.
     :ivar topics: The reference pages its ``help`` serves beside its actions' (:class:`HelpTopic`), listed in its help
         index; none, the default.
+    :ivar constraints: The rules every call to it is held to, one line each, which its help index and the primer
+        (:func:`catalogue_primer`) repeat, so a client reads them before its first call; none, the default.
     """
 
     name: str
@@ -361,10 +363,12 @@ class ToolSpec:
     cut: str | None = None
     workflows: frozenset[str] | None = None
     topics: tuple[HelpTopic, ...] = ()
+    constraints: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """Refuse a malformed name or cut, a blank description, a set of classes that is empty or unknown, a set of
-        workflows that is empty or names a blank one, or two help topics of one name.
+        workflows that is empty or names a blank one, two help topics of one name, or a constraint that is blank or
+        more than one line.
 
         :raises ValueError: As described.
         """
@@ -378,6 +382,8 @@ class ToolSpec:
             raise ValueError(
                 f"tool {self.name!r}: workflows names one or more workflows, none blank, or is None for all"
             )
+        if not all(rule.strip() and "\n" not in rule.strip() for rule in self.constraints):
+            raise ValueError(f"tool {self.name!r}: each constraint is one non-blank line")
         topics = [topic.name for topic in self.topics]
         if len(set(topics)) != len(topics):
             raise ValueError(f"tool {self.name!r}: two help topics share a name among {topics}")
@@ -740,6 +746,39 @@ class MountedTool:
         return ActionOutcome(self.help_page(topic), action=HELP_ACTION)
 
 
+#: The most characters the primer may run to: one client was measured handing a model the first 2,045 characters of
+#: a server's instructions and cutting the rest without a mark, so a primer within this reaches a model whole.
+PRIMER_BUDGET: Final = 1_800
+
+
+def catalogue_primer(tools: Sequence[MountedTool]) -> str:
+    """What a client reads before its first call, for a server's instructions: every tool in a line, then its rules.
+
+    The opening lines say how to get help and name every reference topic; then each tool, its domain and to call
+    ``help`` first; then the rules every call is held to, derived from the tools' actions (long work is a job to poll,
+    a destructive action echoes what it destroys, a refusal carries its recovery as data) and each tool's own
+    (:attr:`ToolSpec.constraints`). Everything else is served by ``help``, so the primer stays within
+    :data:`PRIMER_BUDGET`. :func:`~threetears.evals.transports.fastmcp.mount_fastmcp` passes it as the instructions
+    of a server it builds; a host building its own server passes it there.
+
+    :param tools: The tools the server mounts.
+    :ptype tools: Sequence[MountedTool]
+    :return: The primer.
+    :rtype: str
+    :raises ValueError: No tool is given, or the primer runs past :data:`PRIMER_BUDGET`: a client would cut it, so
+        shorten a tool's description or constraints.
+    """
+    if not tools:
+        raise ValueError("a primer names the tools a server mounts; none were given")
+    text = render.render_primer(tools)
+    if len(text) > PRIMER_BUDGET:
+        raise ValueError(
+            f"the primer runs to {len(text)} characters, past the {PRIMER_BUDGET} a client is known to deliver whole; "
+            "shorten a tool's description or constraints"
+        )
+    return text
+
+
 class ActionCatalogue:
     """Every action a host offers: the engine's, and any the host contributes.
 
@@ -848,6 +887,7 @@ __all__ = [
     "DEFAULT_PREFIX",
     "HELP_ACTION",
     "PERMISSION_CLASSES",
+    "PRIMER_BUDGET",
     "REFUSAL_KINDS",
     "RESERVED_PARAMETERS",
     "TOOL_NAME",
@@ -866,6 +906,7 @@ __all__ = [
     "RefusalKind",
     "ToolHints",
     "ToolSpec",
+    "catalogue_primer",
     "read_only_tools",
     "standard_tools",
 ]
