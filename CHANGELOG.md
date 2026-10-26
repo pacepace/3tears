@@ -6,6 +6,57 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a refused call carries its corrected call as fields
+
+**Added:** a refusal whose call has a corrected form carries `Recovery` (`ActionOutcome.recovery`): the `parameters`
+at fault, the ones the action `accepted`, an `example` call, the `valid_values` or the action that lists them
+(`valid_values_from`), and the help call that explains (`see`), each present only where it applies. It covers no
+action, an unknown action or help topic, an undeclared parameter, a value that does not validate, and an engine
+refusal whose raiser named its parameters. Over FastMCP a refused call's structured content gains `recovery` beside
+`ending` and `refusal`, and its text ends with the same fields as compact JSON (`recovery: {...}`), since a client may
+forward only the text. A not-found, a conflict or a raised call carries none, and reads as before. `RefusedInput` and
+`ValidationFailedError` take optional `parameters`, `valid_values` and `valid_values_from`
+(`ValidationFailedError.refusing(refused)` carries a lower layer's whole); the analyst's tools fill them for an
+unknown arm, aspect, stratum, measure, failure class, axis, sweep, gain axis or block field, naming the values the
+snapshot holds, or `block_catalog` for a block.
+
+### evals: a server mount_fastmcp builds hands its client a primer
+
+**Added:** `catalogue_primer(tools)` writes what a client reads before its first call: how to get help, every reference
+topic, one line per tool, and the rules every call is held to (long work is a job to poll, a destructive action
+echoes what it destroys, a refusal's recovery line, and each tool's own `ToolSpec.constraints`, new, which its help
+index also lists). It is held to `PRIMER_BUDGET` (1,800 characters, inside what one client was measured to deliver
+whole) and refused past it. `mount_fastmcp(host, ...)` passes it as the instructions of the server it builds; a host
+with its own server passes `instructions=catalogue_primer(...)` there.
+
+### evals: help serves reference topics, and the analyst tool's figure_keys is the whole grammar
+
+**Added:** `HelpTopic` and `ToolSpec.topics`: a reference page `help topic='<name>'` serves beside the actions' pages,
+listed under "Reference" in the help index. The analyst tool serves `figure_keys`, the figure-key grammar the planner
+is taught, which `block_catalog`'s `figure_key_forms` are read from; each names the other. A tool with no topics
+reads its help exactly as before.
+
+### evals: an analyst page names the call to the next
+
+**Changed:** every analyst listing (`readings_list`, `contrasts_list`, `measure_read`, `examples_list`,
+`decision_sensitivity`, `measure_breakdown`, `price_tradeoff`, `block_render`) is a paged action (`Action.paged`,
+new): while a page follows, its text ends `next: action='…', …, offset=N`, the arguments the caller sent with the
+offset advanced, and its structured result carries the same call as `next` beside `next_offset`; the last page
+carries neither, and no `next_offset`. A page sized to one result counts that line in its 12,000 characters.
+
+### evals: the editor's evals_analyst is a cut of the analyst's, and the in-process loop calls the same tool
+
+**Added:** `ToolSpec.workflows` cuts a tool to some of its cut's workflows; `analyst_tools(prefix, role="editor")`
+is `<prefix>_analyst` with the facts, the analyses and the gap note, and no blocks or freeze. The in-process loop
+mounts the same `MountedTool` an MCP client is served (its `name`, `description`, `input_schema()` and `call()`), so
+`ActionTool`, `action_tools`, `analyst_toolset` and `editor_toolset` are gone, with the `standalone` refusal dialect.
+
+### evals: a tool's idempotent hint is read off its actions
+
+**Changed:** `idempotentHint` is true for a tool whose every action is a read or a write declared idempotent
+(`Action.idempotent`, new; `report_snapshot_freeze` is): a read-only tool and `evals_analyst` now say so, where every
+tool said false. `ToolHints` gains `idempotent`. `evals` and `evals_admin` still say false.
+
 ### evals: figure keys for every figure the report analyst cites, and a figure held on two aspects is named by its aspect
 
 **Added:** the figure-key grammar keys a contrast, a measure's and a judged dimension's figures, the scoreboard, the
