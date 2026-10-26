@@ -492,3 +492,33 @@ def test_markup_in_the_names_these_charts_print_is_text_on_the_page(name: str) -
     assert what_runs(html) == []
     assert "<script>alert" not in html and "&lt;script&gt;alert(1)&lt;/script&gt;" in html
     assert HOSTILE_LINE.split("<")[1] in planned_page_markdown(page)
+
+
+@pytest.mark.parametrize(
+    ("name", "measures"),
+    [("r5", ["cost_usd", "delivered_items"]), ("r2", ["pass_rate", "calls_per_task"]), ("r5", [])],
+    ids=["no-gate-declared", "one-gated-one-not", "no-gate-none-named"],
+)
+def test_a_measure_no_gate_reads_is_a_row_without_a_status_showing_each_arms_figure(
+    name: str, measures: list[str]
+) -> None:
+    """An unordered set with no gate (a candidate selection the classifier calls A) still draws its gate matrix: a
+    measure no gate reads states no status, only the figures, as a task no gate reads does."""
+    report_input = _input(name)
+    spec = _spec("gate_matrix", "measures", measures=measures)
+    block, _ = _draw(name, spec)
+    data = block.data
+    assert isinstance(data, GateMatrixChart)
+    gated = {criterion.measure for criterion in _gating(report_input)}
+    criteria = [c for c in _gating(report_input) if not measures or c.measure in measures]
+    shown = measures or (
+        [] if criteria else list(dict.fromkeys(row.key for row in query_rows(spec.query, report_input)))
+    )
+    ungated = [key for key in shown if key not in gated]
+    assert ungated, "the case reaches a measure no gate reads"
+    assert len(data.rows) == len(criteria) + len(ungated)
+    for row in data.rows[len(criteria) :]:
+        assert all(cell.status == "neutral" and cell.label not in GATE_WORDS.values() for cell in row.cells)
+        assert any(cell.reasons for cell in row.cells), "the row shows the arms' figures"
+    for criterion, row in zip(criteria, data.rows, strict=False):
+        assert row.label == (criterion.label or criterion.id)
