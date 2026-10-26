@@ -18,7 +18,8 @@ kit's `bars` row takes `lo` without `hi` as an interval open above (`kit/API.md`
 `$1,240.000`. Padding now stops at the significant figures the number rule rounded the number to: none from 1,000 up.
 
 **Fixed:** a price within a slice whose cost is the slice's own measure is per what that measure counts
-(`per 1,000 conversations`), not per the page's cost basis.
+(`per 1,000 conversations`), not per the page's cost basis. A gate matrix's task costs are likewise per what the task
+cost measure counts: `task_costs` returns `TaskCosts`, a dict that also names the measure it read.
 
 ### evals: the analyst's texts say what the snapshot's cost counts, and a prices block reads its money and its refusals plainly
 
