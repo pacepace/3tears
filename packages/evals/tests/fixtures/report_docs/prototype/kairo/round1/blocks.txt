@@ -1,0 +1,167 @@
+### c1 / 1
+rendered block
+block_kind: forest
+query:
+  source: readings
+  aspect: character adherence (v2)
+  measures: []
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 95%
+unit: points
+domain: -16 to 3
+aspect.margin = 15
+columns: [Row, Change, 95% interval, Note]
+rows (3):
+  - cells: [A · qwen3.8-flash, -7.581, -10.79 to -3.381, worse]
+  - cells: [B · 1017, -3.01, -5.815 to +1.136, not separated]
+  - cells: [margin -15 pts, -15, , ]
+total: 3
+offset: 0
+truncated: False
+notes: []
+
+### c2 / 1
+rendered block
+block_kind: bars
+query:
+  source: measures
+  aspect: 
+  measures: [production_replicating_cost]
+  arms: []
+  strata: []
+  limit: 0
+  transform: per_1k
+  small_multiples_by: none
+title: 
+level: 95%
+unit: usd
+domain: 
+reference: none
+columns: [Row, Value, 95% interval, Note]
+rows (3):
+  - cells: [September, $1.892, $1.755 to $2.028, $1.892]
+  - cells: [qwen3.8-flash, $2.427, $2.26 to $2.594, $2.427]
+  - cells: [1017, $2.406, $2.206 to $2.605, $2.406]
+total: 3
+offset: 0
+truncated: False
+notes: []
+
+### c3 / 1
+rendered block
+block_kind: forest
+query:
+  source: contrasts
+  aspect: character adherence (v2)
+  measures: [persona.holds_character, persona.booth_stays_offstage, passed]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 99.69%
+unit: points
+domain: 
+reference: none
+columns: [Group, Row, Change, 99.69% interval, Note]
+rows (6):
+  - cells: [persona holds character, A · qwen3.8-flash, -5.964, -10.09 to -1.84, -6 pts worse]
+  - cells: [persona holds character, B · 1017, -4.738, -8.199 to -1.277, -4.7 pts worse]
+  - cells: [persona booth stays offstage, A · qwen3.8-flash, -2.954, -6.79 to +0.8814, -3 pts not separated]
+  - cells: [persona booth stays offstage, B · 1017, +0.7804, -2.356 to +3.916, +0.8 pts not separated]
+  - cells: [pass rate, A · qwen3.8-flash, -7.581, -12.59 to -2.573, -7.6 pts worse]
+  - cells: [pass rate, B · 1017, -3.01, -7.355 to +1.335, -3 pts not separated]
+total: 6
+offset: 0
+truncated: False
+notes: []
+
+### c4 / 1
+rendered block
+block_kind: diverging_bars
+query:
+  source: strata
+  aspect: 
+  measures: [persona.holds_character]
+  arms: []
+  strata: []
+  limit: 8
+  transform: arm_minus_control
+  small_multiples_by: none
+title: 
+level: 95% uncorrected
+unit: points
+domain: 
+reference: none
+columns: [Group, Row, Value, Note]
+rows (16):
+  - cells: [A · qwen3.8-flash, off lane, -22.93, -22.9 pts]
+  - cells: [A · qwen3.8-flash, machinery, -4.607, -4.6 pts]
+  - cells: [A · qwen3.8-flash, about, -2.899, -2.9 pts]
+  - cells: [A · qwen3.8-flash, superlative, -3.175, -3.2 pts]
+  - cells: [A · qwen3.8-flash, small talk, -1.961, -2 pts]
+  - cells: [A · qwen3.8-flash, multi, -8.333, -8.3 pts]
+  - cells: [A · qwen3.8-flash, emotional, -3.03, -3 pts]
+  - cells: [A · qwen3.8-flash, lineage, 0, 0 pts]
+  - cells: [B · 1017, off lane, -20.18, -20.2 pts]
+  - cells: [B · 1017, machinery, -4.444, -4.4 pts]
+  - cells: [B · 1017, about, 0, 0 pts]
+  - cells: [B · 1017, superlative, -1.515, -1.5 pts]
+  - cells: [B · 1017, small talk, 0, 0 pts]
+  - cells: [B · 1017, multi, -13.89, -13.9 pts]
+  - cells: [B · 1017, emotional, -3.03, -3 pts]
+  - cells: [B · 1017, lineage, +0.1149, +0.1 pts]
+total: 16
+offset: 0
+truncated: False
+notes: [Changes computed from each arm's figures, uncorrected. Bold rows are separated at 95% before any correction; read them as leads.]
+
+### c5 / 1
+rendered block
+block_kind: examples
+query:
+  source: examples
+  aspect: 
+  measures: []
+  arms: []
+  strata: [off_lane]
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Example, Reason, Excerpt]
+rows (3):
+  - cells: [T15 · oft-match-score · off lane · 1017 · judged · repeat 2, The first reply brushes off the match question and pivots to Joy Orbison in Kairo’s dry DJ voice. But the queued spoken line—“Jules asks me who won the match tonight”—sounds like a behind-the-scenes recap rather than Kairo addressing the listener, so the replies do not consistently hold character., [… 1607 characters earlier]
+] **Burial, Archangel** — Hyperdub *(3:59)* [1.5M views]
+[r4] **Sample Breakdown: Burial - Archangel** — TRACKLIB *(0:59)* [450.5K views]
+[r5] **Burial - Archangel (Music Video)** — Jack *(3:59)* [20.1K views]
+
+Use `music__queue_track` with the `track_ref` shown in brackets (e.g. r12) to add to your playlist.
+[A card with this info will be auto-attached to your next message. Keep your text]
+  - cells: [T44 · oft-landlord-email · off lane · qwen3.8-flash · judged · repeat 1, Jules asked for help with a non-music task, and Kairo gave practical advice to put the breakage date in writing, keep replies, and said the boiler was the landlord’s job. The musical turn to King Tubby does not undo that out-of-lane answer., [… 694 characters earlier]
+t put it in writing with the date it broke and keep the replies on file — a dead boiler is the landlord's job, not yours, wherever you rent. i'll put the heating on in the mix instead."}) → Message sent to Discord via webhook
+  ✓ music.search({"query": "King Tubby dub"}) → **Search results for "King Tubby dub":**
+[r1] **Zion Gate Dub** — King Tubby - Topic *(3:13)* [official · 621.9K views]]
+  - cells: [T14 · oft-match-score · off lane · September · judged · repeat 2, The first line brushes off the score in Kairo’s DJ voice, but the follow-up says “Scores and fixtures, I can’t help you with — but I got something for you,” which shifts into customer-service-style inability and an offer of help. That makes the delivered replies slip out of the persona., [… 886 characters earlier]
+* [official · 83.8K views]
+[r3] **Aerial** — Rhythm & Sound - Topic *(9:29)* [official · 73.0K views]
+[r4] **Roll Off / B** — Rhythm & Sound - Topic *(13:25)* [official · 10.0K views]
+[r5] **Rhythm & Sound - Roll Off** — BounceBiomehanika *(9:35)* [175.8K views]
+
+Use `music__queue_track` with the `track_ref` shown in brackets (e.g. r12) to add to your playlist.
+[A card with this info will b]
+total: 3
+offset: 0
+truncated: False
+notes: []
+

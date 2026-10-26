@@ -1,0 +1,148 @@
+{
+  "resolutions": [
+    {
+      "finding": "Lede: 'one of the cheapest configurations tried' is false (9 of 18 cost less).",
+      "status": "resolved",
+      "evidence": "The lede now reads 'the cheapest configuration that clears the pass-rate gate, at {cost_per_month.brisk-s.low.r1} a month'. That is true: of the five configurations at or above 97%, the pick is $0.302 per 1k and the next is brisk-s.high.r1 at $0.633 (c3 table). price_tradeoff gives cost_per_month.brisk-s.low.r1 = $1,208.00."
+    },
+    {
+      "finding": "Old c2: 'each step up in reasoning pushes latency past the budget' is contradicted by the lattice, and 'almost no added cost' hides the retry's latency.",
+      "status": "resolved",
+      "evidence": "The new c2 says only that on Brisk-S the step from low to high reasoning crosses the budget (513 to 870 ms, 465 to 810 ms). It states the pick's no-retry p95 ({measure.latency_ms.brisk-s.low.r0.p95} = 465 ms), so the 48 ms the retry costs is visible. The range_bars back 'lengthens only the tail': p50 is 209 ms with and without the retry. c1's 'for a few cents per thousand' holds: the retry adds $0.014 to $0.021 per 1k on Brisk-S, $0.006 to $0.009 on Nano-XS and $0.055 to $0.077 on Atlas-M."
+    },
+    {
+      "finding": "Confidence form high_if_immaterial although the first caveat concedes the risk cannot be ruled out.",
+      "status": "resolved",
+      "evidence": "confidence.form is now 'low'. The headline, recommendation and Next all make the ship decision conditional on a re-test."
+    },
+    {
+      "finding": "Flag: 'the best of 18 configurations' is false (four have a higher pass rate).",
+      "status": "resolved",
+      "evidence": "The flag now says it is 'the one configuration of {n_candidates|int} that landed inside both gates, which makes its estimate optimistic', which is the correct selection point."
+    },
+    {
+      "finding": "Explore, pass-rate gate: the step-down to brisk-s.low.r0 was the only rung given; the Nano-XS rungs were missing.",
+      "status": "resolved",
+      "evidence": "Explore now gives the full ladder: brisk-s.low.r0 at or below 95.3%, then nano-xs.high.r1 (94.8%), nano-xs.low.r1 (92.7%), nano-xs.off.r1 (88.5%) and nano-xs.off.r0 (81%), with nothing passing above 97.1%. This matches the seven segments of decision_sensitivity threshold:pass_rate exactly."
+    },
+    {
+      "finding": "Explore, latency budget: 'the pick holds from 513 ms up' assumed cost breaks the tie, with no ranking rule declared.",
+      "status": "resolved",
+      "evidence": "Explore now says that from 870 ms brisk-s.high.r1 also passes and clears by about 1 point, and that 'the pick stays the call there only if the cheaper option wins; the campaign declared no rule ranking cost against clearance'. options_dominance confirms ranking_rule: []."
+    },
+    {
+      "finding": "Cost basis stated three ways (per call, per reply, per query); monthly figures may understate by about 1.5x.",
+      "status": "resolved",
+      "evidence": "Method now has a 'Cost basis' term. It names all three readings, states that the monthly figures assume per query, and says that if cost is per call they understate by calls per task (1.539 for the pick). The omitted 'Calls per task' entry now mentions cost. I checked the claim that the order holds on either basis: per-query cost (cost_per_1k x calls_per_task) for the five pass-rate clearers is 0.465, 0.934, 2.49, 4.86 and 5.05, in the same order. The lattice still prints 'per 1,000 replies' and the c3 table prints 'Cost per 1k calls', but the page now discloses this. A remaining wording point is under new findings."
+    },
+    {
+      "finding": "c3: the block showed cost only, while the claim rested on pass rate and latency.",
+      "status": "resolved",
+      "evidence": "The c3 table now holds cost_per_1k, pass_rate and latency_ms for the pick and the four other pass-rate clearers. The claim is narrowed to what the table shows: only relaxing the latency budget admits a wider clearance, and brisk-s.high.r1 is the cheapest such option."
+    },
+    {
+      "finding": "c4: the examples block showed three failures but the claim used one; Next leaned on a single frozen example without saying so.",
+      "status": "resolved",
+      "evidence": "c4 now uses the ambiguous-entity failure (TQ-1103) for the scoring convention behind the 96.4% rate. Next 4's 'settles' says 'today the pattern rests on one frozen failure', and Next 4 starts by reading a sample of failures. The date-math card is accounted for in omitted, though that entry has a small error (see new findings)."
+    },
+    {
+      "finding": "The latency gate rests on one harness p95 with no interval; Next asked only for pass-rate intervals; production load was never named.",
+      "status": "resolved",
+      "evidence": "The new caveat latency_from_harness has a material_if tied to {criteria.p95.brisk-s.low.r1.gap} (87 ms). Watch calls the headroom 'one harness measurement with no interval, not production latency under load'. Next 2 asks for intervals on both pass rate and p95, and Next 3 measures p95 under production-like load."
+    },
+    {
+      "finding": "Invariant concern: the gate_scatter labelled 17 of 18 points by internal arm id.",
+      "status": "resolved",
+      "evidence": "The gate_scatter is now restricted to the six Brisk-S configurations, and every row carries a display name ('Brisk-S · Low · 1 retry'). The all-configuration scatter is listed in omitted with its reason, and the lattice shows all 18 by name."
+    },
+    {
+      "finding": "Invariant concern: cost printed in three units across blocks.",
+      "status": "partially_resolved",
+      "evidence": "c3's caption no longer says 'per thousand planner queries', and Method reconciles the units. But the lattice cell ('$0.302 per 1,000 replies') and the c3 table row ('Cost per 1k calls', $0.302) still label the same figure differently on one page."
+    }
+  ],
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline, the four decision slots and c1 give the action: re-test brisk-s.low.r1 and ship it if it holds, and decide the fallback now. They give the reason: it is the only one of 18 configurations inside both gates, at 97.1% against 97% and 513 ms against 600 ms. They give the main risk: a 0.1-point clearance on a point estimate, with no configuration passing if it fails. why_not explains every rival family in one sentence each. The 'holds' condition is underspecified (item 6), but the first screen still says what to do and what is at risk."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "c1 (the only configuration inside both gates, lifted over by the retry) leads to c2 (the retry costs only tail latency, and high reasoning is what breaks the budget). c3 follows (the only wider clearance needs a relaxed latency budget, at {cost_per_month.brisk-s.high.r1}), then c4 (where the pick is weakest). Watch, the caveats, Explore and Next all follow from the thin margin. Nothing contradicts the headline, and the round-1 contradictions (lede cheapness, the reasoning-latency claim) are gone."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 2,
+      "reason": "The weak axes appear prominently: the 0.1-point margin is in the headline, Watch and c1. Multi-hop at 95.6% and ambiguous-entity at 96.4% are in Watch, c4 and the case_mix caveat. The 87 ms latency headroom is called one harness measurement. The confidence form is low. The flag names the selection optimism, and the lede's cost claim is now the narrow true one. One overstatement remains, and it is small: omitted says date math is 'above the gate' for the pick, but task.datemath.brisk-s.low.r1.pass_rate.mean is 97%, exactly the gate."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "None of the eight omitted items would change the call. price_tradeoff confirms one priced option ('there is no trade to price'). calls_per_task does not reorder the pass-rate clearers on a per-query basis (0.465 < 0.934 < 2.49 < 4.86 < 5.05). Extra calls and outcome hold no figures in this snapshot. The routed mix is a modeled figure, which the tool refuses to price. Explore's latency rung stops at 870 ms and leaves out the Atlas-M options admitted from 1500 ms, but those cost $1.655 to $3.477 per 1k, so leaving them out changes nothing."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "Every live confound has a caveat with a material_if and a Next step: no interval (pick_clears_gate_on_point_estimate, Next 2), selection of the one inside (selection_of_the_one_inside, Next 2), eval case mix against traffic (case_mix_vs_traffic, Next 5), harness against production latency (latency_from_harness, Next 3), cost basis (Method, checked as order-preserving), and the clarification-required scoring convention (c4, Method 'Pass'). The snapshot itself lists no caveats (caveats_list is empty)."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 1,
+      "reason": "Next 1 (declare the fallback before the result), Next 3 (p95 under load), Next 4 (read failures, then a planning directive) and Next 5 (declare the production mix) each name an action and what it settles. Next 2 does not: 'several times the current set, reporting intervals' cannot settle 'whether it really clears both gates' at a 0.1-point margin. At a true 97.1%, binomial SE is 0.28 points at 3,600 cases and 0.22 at 6,000, so a fresh point estimate lands below 97% about 32 to 36% of the time even if the pick is genuinely above. A one-sided 95% lower bound at or above 97% would need about 76,000 cases. The report never says what result counts as 'holds' (point estimate at or above the gate, or interval lower end), and the recommendation hinges on that word."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 2,
+      "reason": "c1's lattice shows every configuration's gate status and the retry lift in all nine model-reasoning pairs, and the Brisk-S gate_scatter shows the corner. If the values flipped, the claim would change. c2's range_bars carry exactly what the claim says: p50 is fixed at 209 ms while p95 moves from 465 to 513 ms, and the high-reasoning rows sit above 600 ms. c3's table now carries all three axes. Two smaller misfits remain. c4's bars include brisk-s.high.r1, which no sentence uses: it lifts multi-hop to 97.3% and bears on Next 4's 'without paying for more reasoning'. And c4's examples caption is factually wrong (see findings). c3's 15-row Arm/Measure/Value layout makes the reader assemble each configuration's profile from three separate runs of rows."
+    }
+  ],
+  "total": 13,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "report",
+      "severity": "must_fix",
+      "finding": "The recommendation, Next slot and Next 2 all say 'ship it if it holds' without defining 'holds', and Next 2's re-test cannot settle the question as sized. At a true 97.1%, a re-run of 3,600 to 6,000 fresh cases has a binomial SE of 0.28 to 0.22 points. Its point estimate falls below 97% about a third of the time even when the pick is truly above, and its interval will straddle the gate almost surely: a one-sided 95% lower bound at or above 97% needs about 76,000 cases. As with the fallback in Next 1, the owner should declare before the re-test what result ships: a point estimate at or above the gate, a lower bound at or above it, or a tolerance band. Next 2's 'settles' should then say what that size can and cannot show."
+    },
+    {
+      "claim": "c4",
+      "severity": "should_fix",
+      "finding": "The examples caption says 'The snapshot froze one failure per query type for the pick, three in all.' There are four query types. examples_list holds pick failures for multi-hop, date math and ambiguous entity only, and the fourth frozen failure (TQ-0051, single lookup) belongs to nano-xs.low.r1. Say 'one failure in each of three query types; none for single lookup'."
+    },
+    {
+      "claim": "c4",
+      "severity": "should_fix",
+      "finding": "The bars show brisk-s.high.r1 next to the pick, but no sentence uses it. The sibling lifts multi-hop from 95.6% to 97.3% and ambiguous entity from 96.4% to 97.6%. That is the evidence that more reasoning closes the pick's weak types, and it is what Next 4 means by 'without paying for more reasoning'. State it in c4, or drop the sibling series."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Omitted, 'The date-math failure card's detail', says 'date math is above the gate for the pick'. task.datemath.brisk-s.low.r1.pass_rate.mean is 97%, exactly the gate. Say 'at the gate'. The reason for omitting still stands, because the gate reads the overall rate."
+    },
+    {
+      "claim": "c1",
+      "severity": "should_fix",
+      "finding": "The lattice caption 'The cost label is the renderer's; Method gives the basis' talks to the reader about tooling, and the omitted scatter entry does the same ('point labels print internal ids'). The page also labels one figure two ways: '$0.302 per 1,000 replies' in the lattice and 'Cost per 1k calls' in the c3 table. Use one reader-facing label for cost on both blocks (for example, 'cost per thousand, as the snapshot measures it; Method gives the basis') and give the omission a reader-facing reason (the lattice already names every configuration)."
+    },
+    {
+      "claim": "c3",
+      "severity": "should_fix",
+      "finding": "The table renders long, as 15 Arm/Measure/Value rows, so seeing that brisk-s.high.r1 is 98% at $0.633 and 870 ms means finding three rows in three runs. One row per configuration, with pass rate, cost and p95 as columns, would show the claim (wider clearance only past the latency budget, and its price) at a glance. If the table block cannot pivot, consider whether the c1 lattice already carries this and c3 can cite it."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 1: counts written as words sit outside figure keys. 'three in all' (c4 examples caption, and factually wrong), 'one frozen failure' (Next 4 settles) and 'one harness measurement' (Watch). The digit check would not catch them. Only the first is a problem in substance.",
+    "Invariant 5: the caveat ids (for example 'pick_clears_gate_on_point_estimate', 'case_mix_vs_traffic') are snake_case internal ids. If the renderer prints caveat ids above the appendix, they break invariant 5. If it prints only material_if, no concern.",
+    "Not covered by an invariant: one cost figure carries two unit labels on the page ('per 1,000 replies' in the lattice, 'Cost per 1k calls' in the c3 table). Method discloses it."
+  ],
+  "calls": 17
+}

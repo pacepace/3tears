@@ -1,0 +1,87 @@
+{
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "Headline, recommendation and c1's gate matrix say what to do (Atlas-M on all traffic), why (the only model with no failing cell), and the main risk (watch: resolves 90% against a 90% gate, half-width 4.4 points). The lede repeats the risk, and the matrix shows Atlas-M's troubleshooting cell as Borderline, so a reader is not misled."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "c1 (only survivor) leads to c2 (why the cheap models can't take any task), then c3 (why Atlas-L is out) and c4 (the weak margin). Each claim follows from the one before and matches options_dominance (one survivor, atlas-m) and decision_sensitivity. One loose end: the resolves_borderline caveat says 'the decision becomes which gate to relax', but explore already shows that relaxing the resolve gate admits no one else. So the pick survives that case unless latency is relaxed, and the report never says so."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 1,
+      "reason": "Atlas-M's weak axes are visible (c4, both watch slots, cost in why_not). Three things are stated more strongly than the intervals allow. (a) The headline says Atlas-M 'passes every gate' with no qualifier, while code's own gate_status is borderline, with a gap of 0 on criteria.trouble.resolves. (b) The judge caveat says the cheaper models 'miss their gates by more than their intervals'. That is false for several gates: Open-70B toolcall 88% ±4.1, Open-70B unsupported 86% ±4.4 and Brisk-S cites 89% ±4 all cross 90%. (c) why_not says Atlas-L 'passes every quality gate', but its resolve rate of 91% ±4.2 is just as borderline as Atlas-M's."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "I checked each omission against the snapshot. The gates Atlas-M 'clears with room' do clear on their intervals: confirms 98% ±2, toolcall 95% ±2.8, cites and unsupported 94% ±3, overall-quality gaps of at least 3 with half-widths of at most 1.8, and declines 98% (lower end 95.8%). Failure examples: examples_list returns none. Open-70B's billing borderline and Atlas-L's quality lead cannot change the call. The cost chart is fairly omitted (per-task cost runs from $3.30 to $140), and the cost figures sit in the matrix and the decision. Nothing omitted would change the decision."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 1,
+      "reason": "Each confound is carried into the story and the next steps: the uncalibrated judge (caveat and next[1]), unstated latency conditions (watch and next[2]), and no control (flag). But the judge caveat's materiality argument is wrong. It says 'only a bias that differs by model would reverse the call'. Atlas-M's resolve gap is 0, so a uniform judge leniency of any size on resolves puts Atlas-M below the line and leaves no model passing. The cost-basis conflict (per conversation in the prose, per reply in the gate matrix, on a multi-turn task) is noted in Method but left unresolved."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "All four steps name an experiment or a declaration and say what it settles: a resolution fix and re-run, human ratings against the judge, declared or re-measured latency, and a fixed Brisk-S plus a measured routed arm. A flaw in next[0]: 'a larger sample only narrows the interval around the line' assumes the true rate equals the observed 90%. The lede's stated flip condition, whether the true rate is below the line, is exactly what more troubleshooting cases would answer. The step is still sound advice."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 2,
+      "reason": "Each block is the clearest view of its claim, and each passes the counterfactual: c1 gate_matrix (only clean column), c2 dot_interval of declines against the 95% floor (Brisk-S upper end 87.3%, Open-70B upper end 94%), c3 range_bars against the 3 s budget (Atlas-L above it in billing, troubleshooting, research and speculation), and c4 dot_interval of resolves with Atlas-M emphasised (85.6% to 94.4% around 90%). If the values flipped, each claim would have to change. Minor: the gate matrix labels cost per 1,000 replies, while the recommendation reads per thousand conversations."
+    }
+  ],
+  "total": 12,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "report",
+      "severity": "must_fix",
+      "finding": "The judge_unstated caveat's material_if misstates when the call reverses. Atlas-M's troubleshooting resolve gap is 0 (criteria.trouble.resolves.atlas-m.gap), so a uniform judge leniency on resolves, even of one point, puts Atlas-M below the gate and leaves no model passing. It is not only a bias that differs by model. Also drop 'the cheaper models miss their gates by more than their intervals'. Several misses sit inside the interval: Open-70B toolcall 88% ±4.1, Open-70B unsupported 86% ±4.4, Brisk-S cites 89% ±4. What is true is that each cheaper model has at least one miss beyond its interval: declines (Brisk-S upper end 87.3%, Open-70B 94%) and Brisk-S resolves (upper end 80.4%). So only a bias that differs by model would readmit them, while any bias on resolves can remove Atlas-M."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The headline says Atlas-M 'passes every gate in every task' with no qualifier, while code reads its gate status as borderline and the c1 matrix prints 'Borderline' in its troubleshooting cell. Qualify it in the headline, for example: passes every gate, one of them exactly on the line."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The resolves_borderline caveat says that below the line 'the decision becomes which gate to relax', but leaves that unanswered. Explore already answers it: relaxing the resolve gate admits no one else, so Atlas-M is still the only option. Relaxing latency admits Atlas-L, whose resolve rate (91% ±4.2) is just as borderline, at more than twice the cost per task. Say this in the confidence clause: in practice the pick survives unless latency is relaxed."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "why_not says Atlas-L 'passes every quality gate'. On point estimates it does, but its troubleshooting resolve rate (91%, interval 86.8% to 95.2%) crosses the 90% gate just as Atlas-M's does. State it the way Atlas-M's is stated, or say 'on point estimates'."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "next[0] and decision.next say more cases 'cannot clear it' because a larger sample 'only narrows the interval around the line'. That assumes the true rate equals the observed 90%. The lede's flip condition, whether the true rate is below the line, is exactly what a larger troubleshooting sample settles. Reword: a larger sample tells whether Atlas-M is above or below the line; only a handling fix can give it room."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The cost basis is unresolved. The recommendation reads 'per thousand conversations', the c1 gate matrix prints 'per 1,000 replies', and Method only notes the conflict. Troubleshooting is multi-turn, so the two units differ there. Settle which unit the figure is, and label the prose and the block the same way. The call doesn't depend on it, but the cost the reader is told to pay does."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 1: counts are written as words outside any figure key: 'four of five tasks' (decision why_not, c3), 'five tasks' (method Cases), 'the three research gates' (omitted). A digit check won't catch them, but they are numbers in prose that no key resolves.",
+    "Invariant 3: the confidence caveats (judge_unstated, resolves_borderline) are the analyst's own. The snapshot's caveats_list is empty, so the store's caveat check has nothing to match them against. Confirm that caveats raised by the analyst are accepted and shown with their material_if.",
+    "Schema: report.json carries fields that report-doc/1 as given in ANALYST.md section 5 does not list: a top-level 'flag', 'evidence' as a list rather than an object, and 'reference' and 'emphasis' on evidence entries. This is not an invariant failure, but the stored schema and the documented one have drifted apart.",
+    "Invariant 6 (appendix and Method present): Method is present. The full-results appendix can't be checked from report.json or blocks.txt."
+  ],
+  "calls": 24
+}

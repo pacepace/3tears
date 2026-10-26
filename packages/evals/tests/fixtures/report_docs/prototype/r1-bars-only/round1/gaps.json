@@ -1,0 +1,42 @@
+[
+  {
+    "need": "An arm-level figure for every judged dimension and the overall quality score (pooled over tasks at the campaign's mix), so price_tradeoff can price the cost-quality trade and a block can show one row per model.",
+    "why": "Quality is stated only per task; measure_read by arm returns no rows, price_tradeoff puts every model off the frontier as no_gain_figure, so the trade the report exists to price has no price per point.",
+    "workaround": "Show the trade per task on a log-cost scatter and state where it flips in words; no price per point is written."
+  },
+  {
+    "need": "options_dominance to say when it weighs no quality axis at all, and to refuse or flag a 'dominant' verdict that rests on cost alone.",
+    "why": "With no criteria and no aspects, it returns Brisk-S as dominant with axes [] although Brisk-S is lowest or near-lowest on every judged behaviour; a reader of that one line would ship the weakest model.",
+    "workaround": "The page disagrees with the dominance call and states why: the computation weighs cost only because nothing declared a quality axis."
+  },
+  {
+    "need": "A declared bar to draw as a reference line (range_bars reference='budget' from aspects.<aspect>.bar), and the bar's value per arm.",
+    "why": "readings_list holds a latency bar met by every model, but range_bars refuses reference='budget' because no criterion reads latency, and the bar's value field is not stated, so the line the campaign did set cannot be drawn and the figure it was met on is unknown.",
+    "workaround": "range_bars with no line; the bar is cited in the claim sentence by its key."
+  },
+  {
+    "need": "A usd_per_1k filter (or a cost unit phrase) that follows the measure's own unit: this measure is cost per 1k conversations.",
+    "why": "{cost_per_1k.<arm>|usd_per_1k} prints 'per 1,000 replies', which misstates the unit; 'per 1,000 conversations' is not an allowed unit phrase, so the digits would be refused.",
+    "workaround": "Cite the bare dollar key and write 'per thousand conversations' in words."
+  },
+  {
+    "need": "A figure-key check action: resolve a list of keys and return what each reads, or the refusal.",
+    "why": "Before drafting prose there is no way to confirm a key resolves except to render a throwaway block with the key in its title, one key per call.",
+    "workaround": "Probed keys through block_render titles in a shell loop."
+  },
+  {
+    "need": "caveats_list to raise the caveats the snapshot itself implies: judge not stated (no model, tier or calibration), no control, no criteria declared, no monthly volume, no traffic mix.",
+    "why": "caveats_list returns none, yet judge.* keys are refused as not stated; the analyst has to coin caveat ids that code cannot check.",
+    "workaround": "Coined caveat ids in confidence with material_if clauses; noted in Method."
+  },
+  {
+    "need": "A paired contrast between two candidates when the campaign named no control (any arm as reference), and measure_breakdown against a chosen reference arm.",
+    "why": "With no control there are no readings, contrasts or pairs, and measure_breakdown refuses; the only intervals are each model's own per-task 95% intervals, so 'separated' can only be read off non-overlap, which is conservative and unpaired.",
+    "workaround": "dot_interval on per-task judged rates; claims say 'intervals do not overlap' or 'not separated', never 'equivalent'."
+  },
+  {
+    "need": "settle: how many cases would separate Atlas-L from Atlas-M on the overall quality score in the tasks where their intervals touch.",
+    "why": "The lean rests partly on Atlas-M's gap being small; the cases needed to pin it are a next step the report can only describe in words.",
+    "workaround": "Next step stated in words without a case count."
+  }
+]

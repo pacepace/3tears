@@ -1,0 +1,248 @@
+### c1 / 1
+rendered block
+block_kind: scatter_frontier
+query:
+  source: tasks
+  aspect: 
+  measures: [cost_per_1k, overall]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: task
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Panel, Point, Cost per 1k conversations, Overall quality]
+rows (20):
+  - cells: [Billing & account Q&A, A · Atlas-L, $58, 94]
+  - cells: [Billing & account Q&A, B · Atlas-M, $24, 92]
+  - cells: [Billing & account Q&A, C · Brisk-S, $4.6, 89]
+  - cells: [Billing & account Q&A, D · Open-70B, $8.9, 86]
+  - cells: [Troubleshooting (multi-turn), A · Atlas-L, $140, 93]
+  - cells: [Troubleshooting (multi-turn), B · Atlas-M, $59, 88]
+  - cells: [Troubleshooting (multi-turn), C · Brisk-S, $11, 79]
+  - cells: [Troubleshooting (multi-turn), D · Open-70B, $21, 83]
+  - cells: [Persona small talk, A · Atlas-L, $41, 91]
+  - cells: [Persona small talk, B · Atlas-M, $17, 88]
+  - cells: [Persona small talk, C · Brisk-S, $3.3, 84]
+  - cells: [Persona small talk, D · Open-70B, $6.4, 90]
+  - cells: [Research-needed questions, A · Atlas-L, $95, 92]
+  - cells: [Research-needed questions, B · Atlas-M, $40, 89]
+  - cells: [Research-needed questions, C · Brisk-S, $8, 81]
+  - cells: [Research-needed questions, D · Open-70B, $15, 80]
+  - cells: [Speculation bait, A · Atlas-L, $45, 90]
+  - cells: [Speculation bait, B · Atlas-M, $19, 89]
+  - cells: [Speculation bait, C · Brisk-S, $3.6, 83]
+  - cells: [Speculation bait, D · Open-70B, $7, 86]
+total: 20
+offset: 0
+truncated: False
+notes: [The horizontal axis is logarithmic: each step is a multiple.]
+
+### c1 / 2
+rendered block
+block_kind: dot_interval
+query:
+  source: tasks
+  aspect: 
+  measures: [overall]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Panel, Row, Value, 95% interval]
+rows (20):
+  - cells: [Billing & account Q&A, A · Atlas-L, 94, 92.9 to 95.1]
+  - cells: [Billing & account Q&A, B · Atlas-M, 92, 90.9 to 93.1]
+  - cells: [Billing & account Q&A, C · Brisk-S, 89, 87.9 to 90.1]
+  - cells: [Billing & account Q&A, D · Open-70B, 86, 84.9 to 87.1]
+  - cells: [Troubleshooting (multi-turn), A · Atlas-L, 93, 91.4 to 94.6]
+  - cells: [Troubleshooting (multi-turn), B · Atlas-M, 88, 86.4 to 89.6]
+  - cells: [Troubleshooting (multi-turn), C · Brisk-S, 79, 77.4 to 80.6]
+  - cells: [Troubleshooting (multi-turn), D · Open-70B, 83, 81.4 to 84.6]
+  - cells: [Persona small talk, A · Atlas-L, 91, 89.5 to 92.5]
+  - cells: [Persona small talk, B · Atlas-M, 88, 86.5 to 89.5]
+  - cells: [Persona small talk, C · Brisk-S, 84, 82.5 to 85.5]
+  - cells: [Persona small talk, D · Open-70B, 90, 88.5 to 91.5]
+  - cells: [Research-needed questions, A · Atlas-L, 92, 90.6 to 93.4]
+  - cells: [Research-needed questions, B · Atlas-M, 89, 87.6 to 90.4]
+  - cells: [Research-needed questions, C · Brisk-S, 81, 79.6 to 82.4]
+  - cells: [Research-needed questions, D · Open-70B, 80, 78.6 to 81.4]
+  - cells: [Speculation bait, A · Atlas-L, 90, 88.2 to 91.8]
+  - cells: [Speculation bait, B · Atlas-M, 89, 87.2 to 90.8]
+  - cells: [Speculation bait, C · Brisk-S, 83, 81.2 to 84.8]
+  - cells: [Speculation bait, D · Open-70B, 86, 84.2 to 87.8]
+total: 20
+offset: 0
+truncated: False
+notes: []
+
+### c2 / 1
+rendered block
+block_kind: dot_interval
+query:
+  source: tasks
+  aspect: 
+  measures: [declines, confirms]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Panel, Row, Value, 95% interval]
+rows (8):
+  - cells: [Troubleshooting (multi-turn) · Confirms before account changes, A · Atlas-L, 98%, 96% to 100%]
+  - cells: [Troubleshooting (multi-turn) · Confirms before account changes, B · Atlas-M, 98%, 96% to 100%]
+  - cells: [Troubleshooting (multi-turn) · Confirms before account changes, C · Brisk-S, 88%, 83.3% to 92.7%]
+  - cells: [Troubleshooting (multi-turn) · Confirms before account changes, D · Open-70B, 81%, 75.3% to 86.7%]
+  - cells: [Speculation bait · Declines to speculate, A · Atlas-L, 99%, 97.4% to 100%]
+  - cells: [Speculation bait · Declines to speculate, B · Atlas-M, 98%, 95.8% to 100%]
+  - cells: [Speculation bait · Declines to speculate, C · Brisk-S, 81%, 74.7% to 87.3%]
+  - cells: [Speculation bait · Declines to speculate, D · Open-70B, 89%, 84% to 94%]
+total: 8
+offset: 0
+truncated: False
+notes: []
+
+### c2 / 2
+rendered block
+block_kind: dot_interval
+query:
+  source: tasks
+  aspect: 
+  measures: [resolves, steps, escalates, character, toolcall, cites, unsupported]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Panel, Row, Value, 95% interval]
+rows (28):
+  - cells: [Troubleshooting (multi-turn) · Resolves the issue, A · Atlas-L, 91%, 86.8% to 95.2%]
+  - cells: [Troubleshooting (multi-turn) · Resolves the issue, B · Atlas-M, 90%, 85.6% to 94.4%]
+  - cells: [Troubleshooting (multi-turn) · Resolves the issue, C · Brisk-S, 74%, 67.6% to 80.4%]
+  - cells: [Troubleshooting (multi-turn) · Resolves the issue, D · Open-70B, 82%, 76.4% to 87.6%]
+  - cells: [Troubleshooting (multi-turn) · Gives clear steps, A · Atlas-L, 96%, 93.1% to 98.9%]
+  - cells: [Troubleshooting (multi-turn) · Gives clear steps, B · Atlas-M, 95%, 91.8% to 98.2%]
+  - cells: [Troubleshooting (multi-turn) · Gives clear steps, C · Brisk-S, 90%, 85.6% to 94.4%]
+  - cells: [Troubleshooting (multi-turn) · Gives clear steps, D · Open-70B, 93%, 89.3% to 96.7%]
+  - cells: [Troubleshooting (multi-turn) · Escalates when stuck, A · Atlas-L, 94%, 90.5% to 97.5%]
+  - cells: [Troubleshooting (multi-turn) · Escalates when stuck, B · Atlas-M, 95%, 91.8% to 98.2%]
+  - cells: [Troubleshooting (multi-turn) · Escalates when stuck, C · Brisk-S, 85%, 79.8% to 90.2%]
+  - cells: [Troubleshooting (multi-turn) · Escalates when stuck, D · Open-70B, 90%, 85.6% to 94.4%]
+  - cells: [Persona small talk · Stays in character, A · Atlas-L, 95%, 92.1% to 97.9%]
+  - cells: [Persona small talk · Stays in character, B · Atlas-M, 95%, 92.1% to 97.9%]
+  - cells: [Persona small talk · Stays in character, C · Brisk-S, 86%, 81.4% to 90.6%]
+  - cells: [Persona small talk · Stays in character, D · Open-70B, 97%, 94.7% to 99.3%]
+  - cells: [Research-needed questions · Calls research tool only when required, A · Atlas-L, 97%, 94.8% to 99.2%]
+  - cells: [Research-needed questions · Calls research tool only when required, B · Atlas-M, 95%, 92.2% to 97.8%]
+  - cells: [Research-needed questions · Calls research tool only when required, C · Brisk-S, 83%, 78.2% to 87.8%]
+  - cells: [Research-needed questions · Calls research tool only when required, D · Open-70B, 88%, 83.9% to 92.1%]
+  - cells: [Research-needed questions · Cites the retrieved source, A · Atlas-L, 96%, 93.5% to 98.5%]
+  - cells: [Research-needed questions · Cites the retrieved source, B · Atlas-M, 94%, 91% to 97%]
+  - cells: [Research-needed questions · Cites the retrieved source, C · Brisk-S, 89%, 85% to 93%]
+  - cells: [Research-needed questions · Cites the retrieved source, D · Open-70B, 85%, 80.5% to 89.5%]
+  - cells: [Research-needed questions · No unsupported claims, A · Atlas-L, 95%, 92.2% to 97.8%]
+  - cells: [Research-needed questions · No unsupported claims, B · Atlas-M, 94%, 91% to 97%]
+  - cells: [Research-needed questions · No unsupported claims, C · Brisk-S, 84%, 79.4% to 88.6%]
+  - cells: [Research-needed questions · No unsupported claims, D · Open-70B, 86%, 81.6% to 90.4%]
+total: 28
+offset: 0
+truncated: False
+notes: []
+
+### c3 / 1
+rendered block
+block_kind: dot_interval
+query:
+  source: tasks
+  aspect: 
+  measures: [overall, character]
+  arms: []
+  strata: [persona]
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Panel, Row, Value, 95% interval]
+rows (8):
+  - cells: [Persona small talk · Overall quality, A · Atlas-L, 91, 89.5 to 92.5]
+  - cells: [Persona small talk · Overall quality, B · Atlas-M, 88, 86.5 to 89.5]
+  - cells: [Persona small talk · Overall quality, C · Brisk-S, 84, 82.5 to 85.5]
+  - cells: [Persona small talk · Overall quality, D · Open-70B, 90, 88.5 to 91.5]
+  - cells: [Persona small talk · Stays in character, A · Atlas-L, 95%, 92.1% to 97.9%]
+  - cells: [Persona small talk · Stays in character, B · Atlas-M, 95%, 92.1% to 97.9%]
+  - cells: [Persona small talk · Stays in character, C · Brisk-S, 86%, 81.4% to 90.6%]
+  - cells: [Persona small talk · Stays in character, D · Open-70B, 97%, 94.7% to 99.3%]
+total: 8
+offset: 0
+truncated: False
+notes: []
+
+### c4 / 1
+rendered block
+block_kind: range_bars
+query:
+  source: tasks
+  aspect: 
+  measures: [latency_s]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Group, Row, From, To]
+rows (20):
+  - cells: [Billing & account Q&A, A · Atlas-L, 1.81 s, 3.6 s]
+  - cells: [Billing & account Q&A, B · Atlas-M, 1.03 s, 2.1 s]
+  - cells: [Billing & account Q&A, C · Brisk-S, 0.47 s, 0.9 s]
+  - cells: [Billing & account Q&A, D · Open-70B, 0.78 s, 1.6 s]
+  - cells: [Troubleshooting (multi-turn), A · Atlas-L, 2.42 s, 4.68 s]
+  - cells: [Troubleshooting (multi-turn), B · Atlas-M, 1.38 s, 2.73 s]
+  - cells: [Troubleshooting (multi-turn), C · Brisk-S, 0.57 s, 1.17 s]
+  - cells: [Troubleshooting (multi-turn), D · Open-70B, 1.07 s, 2.08 s]
+  - cells: [Persona small talk, A · Atlas-L, 1.39 s, 2.88 s]
+  - cells: [Persona small talk, B · Atlas-M, 0.86 s, 1.68 s]
+  - cells: [Persona small talk, C · Brisk-S, 0.35 s, 0.72 s]
+  - cells: [Persona small talk, D · Open-70B, 0.62 s, 1.28 s]
+  - cells: [Research-needed questions, A · Atlas-L, 2.48 s, 4.86 s]
+  - cells: [Research-needed questions, B · Atlas-M, 1.53 s, 2.84 s]
+  - cells: [Research-needed questions, C · Brisk-S, 0.6 s, 1.22 s]
+  - cells: [Research-needed questions, D · Open-70B, 1.07 s, 2.16 s]
+  - cells: [Speculation bait, A · Atlas-L, 1.7 s, 3.24 s]
+  - cells: [Speculation bait, B · Atlas-M, 1.03 s, 1.89 s]
+  - cells: [Speculation bait, C · Brisk-S, 0.42 s, 0.81 s]
+  - cells: [Speculation bait, D · Open-70B, 0.73 s, 1.44 s]
+total: 20
+offset: 0
+truncated: False
+notes: []
+

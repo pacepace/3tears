@@ -1,0 +1,42 @@
+[
+  {
+    "need": "settle: how many more troubleshooting cases would move Atlas-M resolves off the gate",
+    "why": "Atlas-M resolves troubleshooting at exactly the 90% gate with a +/-4.4 interval; Watch and Next must say what would decide it",
+    "workaround": "Said in words that with the estimate on the line, more cases alone cannot settle it and a change to the candidate is the lever"
+  },
+  {
+    "need": "Interval ends (low, high) of a per-task criterion figure as figure keys: criteria.<criterion>.<arm>.low/high and task.<task>.<arm>.<measure>.ci are refused as not stated",
+    "why": "dot_interval draws 85.6% to 94.4% for Atlas-M resolves and 84% to 94% for Open-70B declines, but prose cannot cite those ends; the claim that Open-70B's whole interval sits under the speculation gate needs the high end",
+    "workaround": "Cite the value and its half-width ({task.<task>.<arm>.<measure>.half_width|pts}) and let the block's values table carry the ends"
+  },
+  {
+    "need": "A block source for an arm's all-traffic cost (cost_per_1k.<arm>, the traffic-weighted figure)",
+    "why": "bars over source measures with measures [cost_per_1k] is refused as empty; only per-task cost rows exist, so the single number a decider compares (cost of the pick for all traffic) has no chart or table",
+    "workaround": "All-traffic cost cited in prose via cost_per_1k.<arm>; per-task cost is read from the gate matrix cells"
+  },
+  {
+    "need": "A routing check: whether a per-task assignment of models (e.g. billing to Brisk-S, persona to Open-70B) survives the gates, cross-cutting ones included",
+    "why": "decision_sensitivity on threshold:specul.declines reports call_changes False for every flip because it reads only the single-model call; the speculation gate is exactly what blocks routing cheap tasks to Brisk-S and Open-70B, and no tool says so",
+    "workaround": "Read the gate matrix's 'Applies to all traffic' note and its 'Cheapest passing' marks, and state in words that no task can be routed to a model failing the speculation gate; no routed mix is priced"
+  },
+  {
+    "need": "Caveats code should raise on its own: judge model and calibration not stated, and the recommended option clearing a gate only on its point estimate",
+    "why": "caveats_list is empty, yet every gate but latency is judged with no judge recorded (judge.tier is refused), and options_dominance itself marks Atlas-M borderline on troubleshooting resolution",
+    "workaround": "Wrote two analyst-named open caveats (judge_unstated, resolves_borderline) with material_if clauses; no code check exists for them"
+  },
+  {
+    "need": "A unit phrase for cost per 1,000 conversations",
+    "why": "The campaign names cost_per_1k 'Cost per 1k conversations', but the usd_per_1k filter and the gate matrix print 'per 1,000 replies'; a conversation is multi-turn in troubleshooting, so the two are not the same unit",
+    "workaround": "Wrote the bare dollar key followed by the words 'per thousand conversations' (no digit), and named the mismatch in Method"
+  },
+  {
+    "need": "A log-axis option (or automatic log axis) for bars whose values span more than ten times",
+    "why": "Per-task cost runs from $3.30 to $140 (over 40 times); bars render with no domain or axis control, so the cheap models would pile up at zero",
+    "workaround": "Dropped the cost bars; per-task cost is in the gate matrix cells and the all-traffic figures are in prose"
+  },
+  {
+    "need": "confound_check: how latency was measured (machine, concurrency, region) and whether it could explain Atlas-L's misses",
+    "why": "Atlas-L is ruled out only by the p95 budget, and Atlas-M's research p95 sits 0.16 s under it with no interval; the snapshot states no latency conditions and no caveats.latency",
+    "workaround": "Put the unknown latency conditions in Watch beside Atlas-L and Atlas-M's thin headroom, and a declaration of measurement conditions in Next"
+  }
+]
