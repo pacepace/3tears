@@ -4,7 +4,7 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.79.0 -- 2026-10-26
 
 ### search: a placeholder frame is not named as the article
 
@@ -16,8 +16,6 @@ a placeholder beside the article's own frame no longer stops that frame being fo
 that is not a web address is passed over for the frames in the same way, and a frame address that will not
 split is dropped rather than hiding a readable frame beside it; only a page none of whose frame addresses split
 still reads as "its frames could not be looked for".
-
-## v0.79.0 -- 2026-10-26
 
 ### core: a compare-and-swap reads its bucket's creation time once, not twice
 
