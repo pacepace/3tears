@@ -360,3 +360,32 @@ def test_the_brief_is_blind_and_carries_what_a_scorer_needs(plan: str) -> None:
     assert "against rubric v2" in brief
     plan_model = dataset.load_plan(path)
     assert f"as written: {plan_model.headline}" in brief
+
+
+def test_the_brief_lists_the_plan_in_generator_section_two_order() -> None:
+    """Masthead to Method, as the page runs (GENERATOR §2), so a scorer can tell what sits above Full results (R6):
+    every part under its heading in that order, and every prose field once, under its part."""
+    path = dataset.current_run("r5")
+    brief = dataset.scoring_brief(path)
+    assert [part for part, _ in dataset.PAGE_ORDER] == [
+        "Masthead",
+        "Headline",
+        "Lede",
+        "Flag",
+        "Decision block",
+        "Options table",
+        "Summary charts",
+        "Arms key",
+        "Evidence sections",
+        "Explore",
+        "Full results",
+        "Method",
+        "Durable claims (not on the page)",
+    ]
+    at = [brief.index(f"\n### {part}\n") for part, _ in dataset.PAGE_ORDER]
+    assert at == sorted(at)
+    plan = dataset.load_plan(path)
+    for prose_path, _ in dataset.prose_fields(plan):
+        assert brief.count(f"[{prose_path}]\n") == 1, prose_path
+    order = ["[masthead.", "[headline]", "[lede]", "[decision.", "[sections[0].", "\n### Full results", "[method[0]."]
+    assert [brief.index(marker) for marker in order] == sorted(brief.index(marker) for marker in order)

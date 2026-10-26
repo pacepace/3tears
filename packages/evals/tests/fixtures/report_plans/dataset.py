@@ -55,7 +55,7 @@ from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import planner_view
 from threetears.evals.analysis.report_plan_checks import validate_plan
 from threetears.evals.analysis.report_plan_facts import plan_facts
-from threetears.evals.kernel.report_plan import ReportPlan, prose_response_format, structure_response_format
+from threetears.evals.kernel.report_plan import ChartSpec, ReportPlan, prose_response_format, structure_response_format
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.schema.prose import field_is_prose
 
@@ -64,6 +64,7 @@ __all__ = [
     "KAIRO_BUNDLE",
     "LABELS",
     "OPUS_SCORER",
+    "PAGE_ORDER",
     "SCORES_SCHEMA",
     "PlanScores",
     "PlannerInfo",
@@ -415,35 +416,80 @@ def score_skeleton(plan_path: Path, *, scorer: str = OPUS_SCORER, version: str |
     }
 
 
+#: GENERATOR §2's page order, top to bottom, as the brief lists the plan: each part's heading and the plan fields
+#: whose prose it holds. Durable claims are not on the page; they close the brief.
+PAGE_ORDER: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Masthead", ("masthead",)),
+    ("Headline", ("headline",)),
+    ("Lede", ("lede",)),
+    ("Flag", ("flag",)),
+    ("Decision block", ("decision", "answers")),
+    ("Options table", ("options",)),
+    ("Summary charts", ("summary",)),
+    ("Arms key", ()),
+    ("Evidence sections", ("sections",)),
+    ("Explore", ("explore",)),
+    ("Full results", ("full_results",)),
+    ("Method", ("method",)),
+    ("Durable claims (not on the page)", ("durable_claims",)),
+)
+
+
+def _top(path: str) -> str:
+    """The plan field a prose path sits under: ``sections[1].headline`` is under ``sections``."""
+    return path.split(".", 1)[0].split("[", 1)[0]
+
+
+def _chart_line(where: str, chart: ChartSpec) -> str:
+    query = chart.query
+    return (
+        f"Chart {where}: {chart.kind} of {query.source} aspect={query.aspect!r} measures={query.measures} "
+        f"arms={query.arms} strata={query.strata} transform={query.transform} by={query.small_multiples_by} "
+        f"emphasis={chart.emphasis!r} level={chart.level!r} unit={chart.unit!r}"
+    )
+
+
+def _choices(part: str, plan: ReportPlan) -> Iterator[str]:
+    """The choices one part of the page makes, each in a line, after its prose."""
+    if part == "Flag":
+        for flag in plan.flag:
+            yield f"Flag discloses {flag.discloses}; weakens {flag.weakens}; survives {flag.survives}"
+    elif part == "Decision block":
+        yield f"Confidence form: {plan.decision.confidence.form}"
+        for slot in plan.decision.slots:
+            if slot.caveats:
+                yield f"Caveats landed on decision slot {slot.key}: {slot.caveats}"
+    elif part == "Options table":
+        yield "Options table rows: " + ", ".join(f"{row.option} ({row.role})" for row in plan.options.rows)
+        yield f"Options columns: {plan.options.columns}"
+    elif part == "Summary charts":
+        yield from (_chart_line(f"summary[{i}]", chart) for i, chart in enumerate(plan.summary))
+    elif part == "Arms key":
+        yield f"Shown: {plan.show_arms_key}"
+    elif part == "Evidence sections":
+        for index, section in enumerate(plan.sections):
+            yield _chart_line(f"sections[{index}] {section.id}", section.chart)
+            if section.caveats:
+                yield f"Caveats landed on sections[{index}] {section.id}: {section.caveats}"
+    elif part == "Full results":
+        yield f"Tables: {plan.full_results}"
+    elif part == "Method":
+        for index, item in enumerate(plan.method):
+            if item.caveats:
+                yield f"Caveats landed on method[{index}]: {item.caveats}"
+
+
 def _page(plan: ReportPlan, report_input: ReportInput) -> Iterator[str]:
-    """The plan in page order: each prose field as written and rendered, and each choice in a line."""
+    """The plan in page order (GENERATOR §2, :data:`PAGE_ORDER`): each part under its heading, its prose fields as
+    written and rendered, then the choices it makes, so a scorer sees what sits above Full results and what below."""
     yield f"Shape {plan.shape}, mode {plan.mode}, headline kind {plan.headline_kind}."
-    for path, text, shown in _readable(plan, report_input):
-        yield f"\n[{path}]\n  as written: {text}\n  rendered:   {shown}"
-    yield f"\nConfidence form: {plan.decision.confidence.form}"
-    yield "Options table rows: " + ", ".join(f"{row.option} ({row.role})" for row in plan.options.rows)
-    yield f"Options columns: {plan.options.columns}"
-    for where, chart in [
-        *((f"summary[{i}]", c) for i, c in enumerate(plan.summary)),
-        *((f"sections[{i}] {s.id}", s.chart) for i, s in enumerate(plan.sections)),
-    ]:
-        query = chart.query
-        yield (
-            f"Chart {where}: {chart.kind} of {query.source} aspect={query.aspect!r} measures={query.measures} "
-            f"arms={query.arms} strata={query.strata} transform={query.transform} by={query.small_multiples_by} "
-            f"emphasis={chart.emphasis!r} level={chart.level!r} unit={chart.unit!r}"
-        )
-    for index, section in enumerate(plan.sections):
-        if section.caveats:
-            yield f"Caveats landed on sections[{index}] {section.id}: {section.caveats}"
-    for slot in plan.decision.slots:
-        if slot.caveats:
-            yield f"Caveats landed on decision slot {slot.key}: {slot.caveats}"
-    for index, item in enumerate(plan.method):
-        if item.caveats:
-            yield f"Caveats landed on method[{index}]: {item.caveats}"
-    for flag in plan.flag:
-        yield f"Flag discloses {flag.discloses}; weakens {flag.weakens}; survives {flag.survives}"
+    readable = _readable(plan, report_input)
+    for part, fields in PAGE_ORDER:
+        yield f"\n### {part}"
+        for path, text, shown in readable:
+            if _top(path) in fields:
+                yield f"\n[{path}]\n  as written: {text}\n  rendered:   {shown}"
+        yield from _choices(part, plan)
 
 
 class ScorerReply(_Record):
