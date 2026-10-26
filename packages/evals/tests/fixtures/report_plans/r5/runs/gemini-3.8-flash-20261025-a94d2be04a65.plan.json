@@ -1,0 +1,402 @@
+{
+  "mode": "decide",
+  "headline_kind": "decision",
+  "headline": "Keep {arm:September}: both candidates increase reply spend and fail to improve character adherence.",
+  "lede": "Neither challenger outperforms {arm:September} on {aspect.name}, while both raise production spend per reply. A switch would require showing clear cost savings or superior persona adherence.",
+  "decision": {
+    "slots": [
+      {
+        "key": "recommendation",
+        "text": "Retain {arm:September}. It delivers {pass_rate.September|pct} character pass rate at {scoreboard.September.reply_cost_usd|usd_per_1k}.",
+        "caveats": []
+      },
+      {
+        "key": "why_not",
+        "text": "{arm:1017} drops pass rate by {reading.1017.change|abs|pts} points and increases cost by {cost.uplift.1017|pct}. {arm:qwen3.8-flash} drops pass rate by {reading.qwen3.8-flash.change|abs|pts} points and costs {cost.uplift.qwen3.8-flash|pct} more.",
+        "caveats": []
+      },
+      {
+        "key": "watch",
+        "text": "Prior insight claimed {arm:qwen3.8-flash} reduces cost, but production cost increased by {contrast.qwen3.8-flash.production_replicating_cost.delta|usd} here. Reasoning ratio varied from {reasoning_ratio.1017|pct} to {reasoning_ratio.September|pct}.",
+        "caveats": [
+          "confound:observed:reasoning_ratio",
+          "confound:model",
+          "short_run:01a170ab-d2da-750d-a1e3-f4b43716844d",
+          "short_run:01a17121-6e85-732d-ab3a-cf86aed8cdc6"
+        ]
+      },
+      {
+        "key": "next",
+        "text": "Evaluate lower-parameter candidates under calibrated judge scoring before altering production directives.",
+        "caveats": []
+      }
+    ],
+    "confidence": {
+      "form": "high_if_immaterial",
+      "caveats": [
+        {
+          "id": "late:aspect",
+          "material_if": "The primary aspect was designated after the run, material only if other metrics were selectively disregarded."
+        },
+        {
+          "id": "late:control",
+          "material_if": "The baseline control was designated post-run, material only if another variant served as the true reference."
+        },
+        {
+          "id": "judge_uncalibrated",
+          "material_if": "The evaluation judge lacks calibration data, material only if judge bias systematically favors {arm:September}."
+        }
+      ]
+    }
+  },
+  "method": [
+    {
+      "term": "Dataset scale",
+      "text": "{cases} cases evaluated with {repeats} repeats per case.",
+      "caveats": []
+    },
+    {
+      "term": "Pass definition",
+      "text": "A trial passes when tool directives succeed and judge approves character adherence.",
+      "caveats": []
+    },
+    {
+      "term": "Interval method",
+      "text": "Bootstrap intervals reported at {reading.1017.level|pct} confidence.",
+      "caveats": []
+    },
+    {
+      "term": "Family correction",
+      "text": "{family.family_size} contrasts adjusted using {family.correction} procedure at alpha {family.alpha}.",
+      "caveats": []
+    },
+    {
+      "term": "Judge model",
+      "text": "{judge.model} operating at tier {judge.tier} with {judge.calibration} calibration.",
+      "caveats": []
+    },
+    {
+      "term": "Simulator apparatus",
+      "text": "Simulator settings were unrecorded and may confound conversation flow across arms.",
+      "caveats": [
+        "apparatus:simulator_sent_settings"
+      ]
+    },
+    {
+      "term": "Latency exclusion",
+      "text": "{caveats.latency}",
+      "caveats": [
+        "latency"
+      ]
+    },
+    {
+      "term": "Unreported telemetry",
+      "text": "Raw token counts and API request numbers were omitted from the bundle.",
+      "caveats": [
+        "unreported:input_tokens",
+        "unreported:llm_calls",
+        "unreported:output_tokens"
+      ]
+    }
+  ],
+  "schema": "report-plan/1",
+  "signals": {
+    "candidate_structure": "control_plus_candidates",
+    "baseline": "control",
+    "score_type": "mixed",
+    "strata": "many_strata",
+    "criteria": "margin",
+    "cross_cutting": [],
+    "log_cost_axis": false
+  },
+  "shape": "D",
+  "masthead": {
+    "kind": "Change · control vs candidates",
+    "system": "Kairo's character across persona models",
+    "counts": "{control.name} vs {n_candidates} candidates · {aspect.name} · {cases} cases × {repeats} repeats",
+    "run_date": "{meta.run_date}",
+    "synthetic": false
+  },
+  "arms": [
+    {
+      "id": "September",
+      "color_slot": -1
+    },
+    {
+      "id": "qwen3.8-flash",
+      "color_slot": 0
+    },
+    {
+      "id": "1017",
+      "color_slot": 1
+    }
+  ],
+  "show_arms_key": true,
+  "flag": [],
+  "options": {
+    "rows": [
+      {
+        "option": "September",
+        "role": "recommended"
+      },
+      {
+        "option": "1017",
+        "role": "near_miss"
+      },
+      {
+        "option": "qwen3.8-flash",
+        "role": "alternative"
+      }
+    ],
+    "columns": [
+      "pass_rate",
+      "reading.change",
+      "reading.verdict",
+      "judged:persona.holds_character",
+      "cost_per_1k"
+    ]
+  },
+  "summary": [
+    {
+      "kind": "forest",
+      "title": "Character adherence change relative to {arm:September}",
+      "query": {
+        "source": "readings",
+        "aspect": "character adherence (v2)",
+        "measures": [],
+        "arms": [
+          "1017",
+          "qwen3.8-flash"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [
+        {
+          "kind": "margin",
+          "key": "aspect.margin"
+        }
+      ],
+      "emphasis": "",
+      "level": "95%",
+      "unit": "points",
+      "domain": [
+        -16.0,
+        3.0
+      ]
+    },
+    {
+      "kind": "bars",
+      "title": "Production cost per thousand replies",
+      "query": {
+        "source": "measures",
+        "aspect": "",
+        "measures": [
+          "production_replicating_cost"
+        ],
+        "arms": [
+          "September",
+          "1017",
+          "qwen3.8-flash"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "per_1k",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "September",
+      "level": "",
+      "unit": "usd",
+      "domain": []
+    }
+  ],
+  "sections": [
+    {
+      "id": "change_from_control",
+      "eyebrow": "Primary aspect",
+      "headline": "Both candidates remain within margin but show negative point estimates.",
+      "takeaway": "Neither arm improves adherence; {arm:1017} holds closer to control than {arm:qwen3.8-flash}.",
+      "chart": {
+        "kind": "forest",
+        "title": "",
+        "query": {
+          "source": "readings",
+          "aspect": "character adherence (v2)",
+          "measures": [],
+          "arms": [
+            "1017",
+            "qwen3.8-flash"
+          ],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [
+          {
+            "kind": "margin",
+            "key": "aspect.margin"
+          }
+        ],
+        "emphasis": "",
+        "level": "95%",
+        "unit": "points",
+        "domain": [
+          -16.0,
+          3.0
+        ]
+      },
+      "caption": "Intervals shown at {reading.1017.level|pct} confidence against the {aspect.margin|int}-point margin.",
+      "caveats": []
+    },
+    {
+      "id": "cost_breakdown",
+      "eyebrow": "Operating spend",
+      "headline": "Both challengers increase production spend per reply.",
+      "takeaway": "{arm:September} remains the lowest-cost option across all measured runs.",
+      "chart": {
+        "kind": "bars",
+        "title": "",
+        "query": {
+          "source": "measures",
+          "aspect": "",
+          "measures": [
+            "production_replicating_cost"
+          ],
+          "arms": [
+            "September",
+            "1017",
+            "qwen3.8-flash"
+          ],
+          "strata": [],
+          "limit": 0,
+          "transform": "per_1k",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "September",
+        "level": "",
+        "unit": "usd",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "strata_character_loss",
+      "eyebrow": "Strata breakdown",
+      "headline": "Character adherence losses concentrate heavily in off-lane prompts.",
+      "takeaway": "Prompt deviations occur primarily when steering conversation away from music.",
+      "chart": {
+        "kind": "diverging_bars",
+        "title": "",
+        "query": {
+          "source": "strata",
+          "aspect": "",
+          "measures": [
+            "persona.holds_character"
+          ],
+          "arms": [
+            "1017",
+            "qwen3.8-flash"
+          ],
+          "strata": [
+            "off_lane",
+            "machinery",
+            "about",
+            "superlative",
+            "small_talk",
+            "multi",
+            "emotional"
+          ],
+          "limit": 7,
+          "transform": "arm_minus_control",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "",
+        "level": "",
+        "unit": "points",
+        "domain": []
+      },
+      "caption": "Uncorrected differences shown across {cases} evaluation cases.",
+      "caveats": []
+    },
+    {
+      "id": "failure_modes",
+      "eyebrow": "Error cases",
+      "headline": "Failures stem from explaining backend mechanics and addressing non-music queries.",
+      "takeaway": "Challengers frequently break character when handling technical or out-of-lane topics.",
+      "chart": {
+        "kind": "examples",
+        "title": "",
+        "query": {
+          "source": "examples",
+          "aspect": "",
+          "measures": [],
+          "arms": [
+            "1017",
+            "qwen3.8-flash"
+          ],
+          "strata": [],
+          "limit": 4,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    }
+  ],
+  "explore": [
+    {
+      "title": "Threshold exploration",
+      "controls": [
+        {
+          "id": "margin_threshold",
+          "kind": "slider",
+          "title": "Margin threshold",
+          "binds": "margin",
+          "min": 1.0,
+          "max": 20.0,
+          "step": 1.0,
+          "default": 15.0,
+          "options": []
+        }
+      ],
+      "recomputes": "No margin threshold flips the decision to keep {arm:September} because candidates do not beat control."
+    }
+  ],
+  "full_results": [
+    "arms_by_measure",
+    "contrasts",
+    "strata"
+  ],
+  "durable_claims": [
+    {
+      "text": "{arm:1017} and {arm:qwen3.8-flash} increase production cost by {contrast.1017.production_replicating_cost.delta|usd} and {contrast.qwen3.8-flash.production_replicating_cost.delta|usd} per reply.",
+      "confidence": "high",
+      "keys": [
+        "contrast.1017.production_replicating_cost.delta",
+        "contrast.qwen3.8-flash.production_replicating_cost.delta"
+      ]
+    },
+    {
+      "text": "Persona adherence regresses by {contrast.1017.persona.holds_character.delta|abs|pts} points on {arm:1017} and {contrast.qwen3.8-flash.persona.holds_character.delta|abs|pts} points on {arm:qwen3.8-flash}.",
+      "confidence": "high",
+      "keys": [
+        "contrast.1017.persona.holds_character.delta",
+        "contrast.qwen3.8-flash.persona.holds_character.delta"
+      ]
+    }
+  ],
+  "answers": []
+}

@@ -1,0 +1,294 @@
+{
+  "mode": "decide",
+  "headline_kind": "decision",
+  "headline": "Select {arm:atlas-m}. It is the only model that satisfies every quality gate while meeting the latency budget.",
+  "lede": "{arm:atlas-m} passes all quality criteria across every task while keeping p95 latency under the threshold. A tighter latency cap below its p95 response times would leave no model compliant.",
+  "decision": {
+    "slots": [
+      {
+        "key": "recommendation",
+        "text": "Deploy {arm:atlas-m}. It clears all quality floors and delivers troubleshooting p95 latency at {task.trouble.atlas-m.latency_s.p95} seconds.",
+        "caveats": []
+      },
+      {
+        "key": "why_not",
+        "text": "{arm:atlas-l} breaches the latency budget on four tasks, while {arm:open-70b} and {arm:brisk-s} fail multiple task quality gates.",
+        "caveats": []
+      },
+      {
+        "key": "watch",
+        "text": "Monitor troubleshooting quality where {arm:atlas-m} scored close to the threshold on issue resolution.",
+        "caveats": []
+      },
+      {
+        "key": "next",
+        "text": "Roll out {arm:atlas-m} to staging and verify real-world token consumption against billing benchmarks.",
+        "caveats": []
+      }
+    ],
+    "confidence": {
+      "form": "high",
+      "caveats": []
+    }
+  },
+  "method": [
+    {
+      "term": "Scope and cases",
+      "text": "Evaluation ran across distinct domain tasks with cases evaluated per candidate.",
+      "caveats": []
+    },
+    {
+      "term": "Quality criteria",
+      "text": "Overall quality requires meeting task-specific threshold floors and pass-fail criteria.",
+      "caveats": []
+    },
+    {
+      "term": "Latency budget",
+      "text": "End-to-end response time measured to final token in staging, gated at p95.",
+      "caveats": []
+    },
+    {
+      "term": "Judge calibration",
+      "text": "Overall quality dimensions evaluated with a calibrated judge.",
+      "caveats": []
+    }
+  ],
+  "schema": "report-plan/1",
+  "signals": {
+    "candidate_structure": "unordered",
+    "baseline": "none",
+    "score_type": "mixed",
+    "strata": "tasks",
+    "criteria": "hard_gates",
+    "cross_cutting": [
+      "specul"
+    ],
+    "log_cost_axis": false
+  },
+  "shape": "A",
+  "masthead": {
+    "kind": "Choice · candidates compared",
+    "system": "Concierge chat assistant",
+    "counts": "4 arms · 5 tasks",
+    "run_date": "{meta.run_date}",
+    "synthetic": true
+  },
+  "arms": [
+    {
+      "id": "atlas-l",
+      "color_slot": 0
+    },
+    {
+      "id": "atlas-m",
+      "color_slot": 1
+    },
+    {
+      "id": "brisk-s",
+      "color_slot": 2
+    },
+    {
+      "id": "open-70b",
+      "color_slot": 3
+    }
+  ],
+  "show_arms_key": false,
+  "flag": [],
+  "options": {
+    "rows": [
+      {
+        "option": "atlas-m",
+        "role": "recommended"
+      },
+      {
+        "option": "atlas-l",
+        "role": "near_miss"
+      },
+      {
+        "option": "brisk-s",
+        "role": "cheapest"
+      },
+      {
+        "option": "open-70b",
+        "role": "alternative"
+      }
+    ],
+    "columns": [
+      "gate"
+    ]
+  },
+  "summary": [
+    {
+      "kind": "bars",
+      "title": "Billing cost per thousand conversations",
+      "query": {
+        "source": "tasks",
+        "aspect": "",
+        "measures": [
+          "cost_per_1k"
+        ],
+        "arms": [
+          "atlas-m",
+          "atlas-l",
+          "brisk-s",
+          "open-70b"
+        ],
+        "strata": [
+          "billing"
+        ],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "atlas-m",
+      "level": "",
+      "unit": "",
+      "domain": []
+    },
+    {
+      "kind": "bars",
+      "title": "Troubleshooting p95 latency in seconds",
+      "query": {
+        "source": "tasks",
+        "aspect": "",
+        "measures": [
+          "latency_s"
+        ],
+        "arms": [
+          "atlas-m",
+          "atlas-l",
+          "brisk-s",
+          "open-70b"
+        ],
+        "strata": [
+          "trouble"
+        ],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "atlas-m",
+      "level": "",
+      "unit": "",
+      "domain": []
+    }
+  ],
+  "sections": [
+    {
+      "id": "gate-overview",
+      "eyebrow": "Task criteria compliance",
+      "headline": "{arm:atlas-m} clears every task gate while smaller models fail quality floors",
+      "takeaway": "Green cells show passing criteria; {arm:atlas-m} is the single candidate passing without failures.",
+      "chart": {
+        "kind": "gate_matrix",
+        "title": "",
+        "query": {
+          "source": "tasks",
+          "aspect": "",
+          "measures": [
+            "overall"
+          ],
+          "arms": [
+            "atlas-m",
+            "atlas-l",
+            "open-70b",
+            "brisk-s"
+          ],
+          "strata": [
+            "billing",
+            "trouble",
+            "persona",
+            "research",
+            "specul"
+          ],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "atlas-m",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "latency-gates",
+      "eyebrow": "Latency budgets",
+      "headline": "{arm:atlas-l} exceeds the p95 latency threshold across multiple tasks",
+      "takeaway": "Bars show p95 latency across evaluated tasks against the budget line.",
+      "chart": {
+        "kind": "bars",
+        "title": "",
+        "query": {
+          "source": "tasks",
+          "aspect": "",
+          "measures": [
+            "latency_s"
+          ],
+          "arms": [
+            "atlas-m",
+            "atlas-l",
+            "open-70b",
+            "brisk-s"
+          ],
+          "strata": [
+            "billing",
+            "trouble",
+            "persona",
+            "research",
+            "specul"
+          ],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "task"
+        },
+        "reference": [],
+        "emphasis": "atlas-m",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    }
+  ],
+  "explore": [
+    {
+      "title": "Threshold exploration",
+      "controls": [
+        {
+          "id": "latency-ceiling",
+          "kind": "slider",
+          "title": "Latency budget ceiling",
+          "binds": "p95",
+          "min": 2.0,
+          "max": 5.0,
+          "step": 0.5,
+          "default": 3.0,
+          "options": []
+        }
+      ],
+      "recomputes": "Adjusting the p95 latency ceiling above the threshold allows {arm:atlas-l} to qualify on latency, while lowering it eliminates all models."
+    }
+  ],
+  "full_results": [
+    "arms_by_measure",
+    "strata",
+    "gate_matrix_full"
+  ],
+  "durable_claims": [
+    {
+      "text": "On troubleshooting tasks, {arm:atlas-m} achieves p95 latency of {task.trouble.atlas-m.latency_s.p95} seconds compared to {task.trouble.atlas-l.latency_s.p95} seconds for {arm:atlas-l}.",
+      "confidence": "high",
+      "keys": [
+        "task.trouble.atlas-m.latency_s.p95",
+        "task.trouble.atlas-l.latency_s.p95"
+      ]
+    }
+  ],
+  "answers": []
+}

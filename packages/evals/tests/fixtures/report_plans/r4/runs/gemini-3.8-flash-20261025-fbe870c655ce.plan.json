@@ -1,0 +1,358 @@
+{
+  "mode": "tradeoff",
+  "headline_kind": "trade",
+  "headline": "Trade {contrast.f64.persona.delta|abs|pts} points of persona consistency for {cost_per_1k.f64|usd} per 1,000 replies on {arm:f64}, or keep {arm:prod}.",
+  "lede": "{arm:f64} cuts cost from {cost_per_1k.prod|usd} to {cost_per_1k.f64|usd} while clearing all guardrails, but drops character consistency from {judged.persona.prod|pct} to {judged.persona.f64|pct}. A choice depends on the business valuation of consistency points.",
+  "decision": {
+    "slots": [
+      {
+        "key": "the_trade",
+        "text": "{arm:f64} lowers cost by {cost_per_1k.f64|usd} per 1,000 replies against {cost_per_1k.prod|usd} on {arm:prod}, conceding {contrast.f64.persona.delta|abs|pts} points ({contrast.f64.persona.interval|pts}) on persona consistency.",
+        "caveats": []
+      },
+      {
+        "key": "where_it_flips",
+        "text": "If preserving one point of persona consistency is worth more than ten cents per 1,000 replies, {arm:prod} remains preferable.",
+        "caveats": []
+      },
+      {
+        "key": "our_lean",
+        "text": "Lean toward {arm:f64} if monthly volume warrants the cost reduction and human reviewers tolerate minor persona drift on long turns.",
+        "caveats": []
+      },
+      {
+        "key": "what_settles_it",
+        "text": "A live prompt routing test or human acceptance threshold on long conversations would confirm whether users detect the persona degradation.",
+        "caveats": []
+      }
+    ],
+    "confidence": {
+      "form": "high",
+      "caveats": []
+    }
+  },
+  "method": [
+    {
+      "term": "Evaluation design",
+      "text": "Four arms evaluated across {scoreboard.prod.cases|int} cases with {scoreboard.prod.ran|int} total runs per arm.",
+      "caveats": []
+    },
+    {
+      "term": "Judge calibration",
+      "text": "Persona consistency assessed by a calibrated judge with {judged.persona.agreement} agreement on {judged.persona.calibration_ratings|int} ratings.",
+      "caveats": []
+    },
+    {
+      "term": "Confidence intervals",
+      "text": "Ninety-five percent paired intervals computed against control, reported without multiple-comparison correction.",
+      "caveats": []
+    },
+    {
+      "term": "Guardrail criteria",
+      "text": "Music facts required at {criteria.facts.threshold|pct}; speculation refusal required at {criteria.specul.threshold|pct} on bait prompts.",
+      "caveats": []
+    },
+    {
+      "term": "Cost basis",
+      "text": "Cost per 1,000 replies calculated from token consumption against standard list prices.",
+      "caveats": []
+    },
+    {
+      "term": "Latency comparison",
+      "text": "Reported via telemetry distributions across runs rather than formal comparative hypothesis testing.",
+      "caveats": []
+    }
+  ],
+  "schema": "report-plan/1",
+  "signals": {
+    "candidate_structure": "control_plus_candidates",
+    "baseline": "control",
+    "score_type": "pass_fail",
+    "strata": "many_strata",
+    "criteria": "margin",
+    "cross_cutting": [],
+    "log_cost_axis": false
+  },
+  "shape": "D",
+  "masthead": {
+    "kind": "Change · control vs candidates",
+    "system": "Persona chat model",
+    "counts": "{control.name} vs {n_candidates} candidates · 4 aspects",
+    "run_date": "{meta.run_date}",
+    "synthetic": true
+  },
+  "arms": [
+    {
+      "id": "prod",
+      "color_slot": -1
+    },
+    {
+      "id": "f64",
+      "color_slot": 0
+    },
+    {
+      "id": "f16",
+      "color_slot": 1
+    },
+    {
+      "id": "cor",
+      "color_slot": 2
+    }
+  ],
+  "show_arms_key": true,
+  "flag": [
+    {
+      "title": "No target trade ratio set in advance",
+      "text": "The evaluation did not specify a pre-registered exchange rate between cost and character consistency, so leadership must price the tradeoff directly.",
+      "discloses": [
+        "no_rule"
+      ],
+      "weakens": [],
+      "survives": [
+        "judged:persona",
+        "task",
+        "judged:facts",
+        "specul"
+      ]
+    }
+  ],
+  "options": {
+    "rows": [
+      {
+        "option": "prod",
+        "role": "control"
+      },
+      {
+        "option": "f64",
+        "role": "lean"
+      },
+      {
+        "option": "f16",
+        "role": "cheapest"
+      },
+      {
+        "option": "cor",
+        "role": "alternative"
+      }
+    ],
+    "columns": [
+      "judged:persona",
+      "judged:facts",
+      "measure:specul",
+      "cost_per_1k"
+    ]
+  },
+  "summary": [
+    {
+      "kind": "bars",
+      "title": "Cost per 1,000 replies",
+      "query": {
+        "source": "measures",
+        "aspect": "",
+        "measures": [
+          "cost_per_1k"
+        ],
+        "arms": [
+          "prod",
+          "f64",
+          "f16",
+          "cor"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "f64",
+      "level": "",
+      "unit": "usd_per_1k",
+      "domain": []
+    },
+    {
+      "kind": "dot_interval",
+      "title": "Stays in character pass rate",
+      "query": {
+        "source": "judged",
+        "aspect": "persona",
+        "measures": [
+          "persona"
+        ],
+        "arms": [
+          "prod",
+          "f64",
+          "f16",
+          "cor"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "f64",
+      "level": "",
+      "unit": "percent",
+      "domain": []
+    }
+  ],
+  "sections": [
+    {
+      "id": "contrasts",
+      "eyebrow": "Primary aspect",
+      "headline": "All candidates regress significantly on persona consistency",
+      "takeaway": "Points show differences against {arm:prod} with paired ninety-five percent intervals.",
+      "chart": {
+        "kind": "forest",
+        "title": "",
+        "query": {
+          "source": "contrasts",
+          "aspect": "",
+          "measures": [
+            "persona"
+          ],
+          "arms": [
+            "f64",
+            "f16",
+            "cor"
+          ],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "f64",
+        "level": "95%",
+        "unit": "points",
+        "domain": []
+      },
+      "caption": "Differences are uncorrected across the three challengers.",
+      "caveats": []
+    },
+    {
+      "id": "depth",
+      "eyebrow": "Conversation length",
+      "headline": "Persona degradation concentrates in later conversation turns",
+      "takeaway": "Performance across candidates diverges sharply after turn five.",
+      "chart": {
+        "kind": "lines",
+        "title": "",
+        "query": {
+          "source": "strata",
+          "aspect": "persona",
+          "measures": [
+            "persona"
+          ],
+          "arms": [
+            "prod",
+            "f64",
+            "f16",
+            "cor"
+          ],
+          "strata": [
+            "depth:1-2",
+            "depth:3-5",
+            "depth:6-10",
+            "depth:11+"
+          ],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "f64",
+        "level": "",
+        "unit": "percent",
+        "domain": []
+      },
+      "caption": "Stratum differences are descriptive and uncorrected.",
+      "caveats": []
+    },
+    {
+      "id": "scenarios",
+      "eyebrow": "Failure modes",
+      "headline": "{arm:f64} drops steepest during corrections and banter",
+      "takeaway": "Bars show change in points relative to {arm:prod} by scenario.",
+      "chart": {
+        "kind": "diverging_bars",
+        "title": "",
+        "query": {
+          "source": "strata",
+          "aspect": "persona",
+          "measures": [
+            "persona"
+          ],
+          "arms": [
+            "f64",
+            "cor"
+          ],
+          "strata": [
+            "scenario:intro",
+            "scenario:rec",
+            "scenario:deflect",
+            "scenario:banter",
+            "scenario:correct"
+          ],
+          "limit": 0,
+          "transform": "arm_minus_control",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "",
+        "level": "",
+        "unit": "points",
+        "domain": []
+      },
+      "caption": "Uncorrected scenario breakdowns across sample cases.",
+      "caveats": []
+    }
+  ],
+  "explore": [
+    {
+      "title": "Explore tradeoff valuation",
+      "controls": [
+        {
+          "id": "price_tradeoff",
+          "kind": "slider",
+          "title": "Valuation per consistency point",
+          "binds": "price_per_point",
+          "min": 0.0,
+          "max": 0.2,
+          "step": 0.01,
+          "default": 0.1,
+          "options": []
+        }
+      ],
+      "recomputes": "Adjusting the consistency value threshold flips preference between {arm:prod} and {arm:f64} at approximately ten cents per point."
+    }
+  ],
+  "full_results": [
+    "arms_by_measure",
+    "contrasts",
+    "strata"
+  ],
+  "durable_claims": [
+    {
+      "text": "{arm:f64} lowers cost from {cost_per_1k.prod|usd} to {cost_per_1k.f64|usd} while persona consistency drops from {judged.persona.prod|pct} to {judged.persona.f64|pct} ({contrast.f64.persona.delta|pts} points).",
+      "confidence": "high",
+      "keys": [
+        "judged.persona.prod",
+        "judged.persona.f64",
+        "contrast.f64.persona.delta",
+        "cost_per_1k.prod",
+        "cost_per_1k.f64"
+      ]
+    },
+    {
+      "text": "{arm:cor} fails the speculation guardrail threshold of {criteria.specul.threshold|pct} with a score of {measure.specul.cor.mean|pct} ({contrast.cor.specul.delta|pts} points).",
+      "confidence": "high",
+      "keys": [
+        "contrast.cor.specul.delta",
+        "criteria.specul.threshold",
+        "measure.specul.cor.mean"
+      ]
+    }
+  ],
+  "answers": []
+}

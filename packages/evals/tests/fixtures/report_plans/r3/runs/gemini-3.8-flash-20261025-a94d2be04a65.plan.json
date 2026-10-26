@@ -1,0 +1,363 @@
+{
+  "mode": "decide",
+  "headline_kind": "decision",
+  "headline": "Select {arm:brisk-s.few} as the turn router. It satisfies every accuracy gate and tail latency budget at modest operating cost.",
+  "lede": "{arm:brisk-s.few} delivers {measure.balanced_accuracy.brisk-s.few.mean}% balanced accuracy with {measure.latency_ms.brisk-s.few.p95} ms tail latency. Lowering the cell floor threshold would allow cheaper options like {arm:nano-xs.few}.",
+  "decision": {
+    "slots": [
+      {
+        "key": "recommendation",
+        "text": "Deploy {arm:brisk-s.few}. It clears the overall accuracy threshold with {measure.balanced_accuracy.brisk-s.few.mean}%, holds every cell floor, and meets tail latency at {measure.latency_ms.brisk-s.few.p95} ms.",
+        "caveats": []
+      },
+      {
+        "key": "why_not",
+        "text": "{arm:nano-xs.few} fails the cell floor on complex news turns. Larger models like {arm:atlas-m.rubric} breach the latency budget and increase cost.",
+        "caveats": []
+      },
+      {
+        "key": "watch",
+        "text": "Accuracy on complex news turns remains the tightest margin across all smaller candidate models.",
+        "caveats": []
+      },
+      {
+        "key": "next",
+        "text": "Validate {arm:brisk-s.few} under live production turn latency distribution.",
+        "caveats": []
+      }
+    ],
+    "confidence": {
+      "form": "low",
+      "caveats": []
+    }
+  },
+  "method": [
+    {
+      "term": "Evaluation unit",
+      "text": "Full prompt-response turns classified across complexity and domain.",
+      "caveats": []
+    },
+    {
+      "term": "Passing criterion",
+      "text": "A trial passes only if both complexity and domain match truth.",
+      "caveats": []
+    },
+    {
+      "term": "Latency metric",
+      "text": "Measured tail wall-clock routing time in milliseconds.",
+      "caveats": []
+    },
+    {
+      "term": "Cost estimation",
+      "text": "Standard model pricing applied to measured input and output tokens.",
+      "caveats": []
+    }
+  ],
+  "schema": "report-plan/1",
+  "signals": {
+    "candidate_structure": "factorial",
+    "baseline": "none",
+    "score_type": "class_label",
+    "strata": "target_matrix",
+    "criteria": "hard_gates",
+    "cross_cutting": [],
+    "log_cost_axis": false
+  },
+  "shape": "C",
+  "masthead": {
+    "kind": "Choice · candidates compared",
+    "system": "Turn router: complexity × domain",
+    "counts": "9 arms",
+    "run_date": "{meta.run_date}",
+    "synthetic": true
+  },
+  "arms": [
+    {
+      "id": "atlas-m.zero",
+      "color_slot": 0
+    },
+    {
+      "id": "atlas-m.few",
+      "color_slot": 1
+    },
+    {
+      "id": "atlas-m.rubric",
+      "color_slot": 2
+    },
+    {
+      "id": "brisk-s.zero",
+      "color_slot": 3
+    },
+    {
+      "id": "brisk-s.few",
+      "color_slot": 4
+    },
+    {
+      "id": "brisk-s.rubric",
+      "color_slot": 5
+    },
+    {
+      "id": "nano-xs.zero",
+      "color_slot": 6
+    },
+    {
+      "id": "nano-xs.few",
+      "color_slot": 7
+    },
+    {
+      "id": "nano-xs.rubric",
+      "color_slot": 8
+    }
+  ],
+  "show_arms_key": true,
+  "flag": [],
+  "options": {
+    "rows": [
+      {
+        "option": "brisk-s.few",
+        "role": "recommended"
+      },
+      {
+        "option": "nano-xs.few",
+        "role": "near_miss"
+      },
+      {
+        "option": "atlas-m.rubric",
+        "role": "most_accurate"
+      },
+      {
+        "option": "nano-xs.zero",
+        "role": "cheapest"
+      }
+    ],
+    "columns": [
+      "gate"
+    ]
+  },
+  "summary": [
+    {
+      "kind": "bars",
+      "title": "Cost per million turns",
+      "query": {
+        "source": "measures",
+        "aspect": "",
+        "measures": [
+          "cost_per_1m"
+        ],
+        "arms": [
+          "brisk-s.few",
+          "nano-xs.few",
+          "atlas-m.rubric",
+          "nano-xs.zero"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "brisk-s.few",
+      "level": "",
+      "unit": "usd_per_1m",
+      "domain": []
+    },
+    {
+      "kind": "bars",
+      "title": "Balanced accuracy",
+      "query": {
+        "source": "measures",
+        "aspect": "",
+        "measures": [
+          "balanced_accuracy"
+        ],
+        "arms": [
+          "brisk-s.few",
+          "nano-xs.few",
+          "atlas-m.rubric",
+          "nano-xs.zero"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "brisk-s.few",
+      "level": "",
+      "unit": "pct",
+      "domain": []
+    },
+    {
+      "kind": "bars",
+      "title": "Tail latency (ms)",
+      "query": {
+        "source": "measures",
+        "aspect": "",
+        "measures": [
+          "latency_ms"
+        ],
+        "arms": [
+          "brisk-s.few",
+          "nano-xs.few",
+          "atlas-m.rubric",
+          "nano-xs.zero"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "brisk-s.few",
+      "level": "",
+      "unit": "ms",
+      "domain": []
+    }
+  ],
+  "sections": [
+    {
+      "id": "gate_eval",
+      "eyebrow": "Gating matrix",
+      "headline": "{arm:brisk-s.few} is the lowest-cost configuration clearing all three operational criteria",
+      "takeaway": "Cells show gate status across overall accuracy, cell floor, and latency.",
+      "chart": {
+        "kind": "gate_matrix",
+        "title": "",
+        "query": {
+          "source": "configs",
+          "aspect": "",
+          "measures": [],
+          "arms": [],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "brisk-s.few",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "target_cells",
+      "eyebrow": "Per-cell accuracy",
+      "headline": "{arm:brisk-s.few} maintains accuracy across all complexity and domain combinations",
+      "takeaway": "Read accuracy across complexity rows and domain columns.",
+      "chart": {
+        "kind": "heatmap",
+        "title": "",
+        "query": {
+          "source": "cells",
+          "aspect": "",
+          "measures": [
+            "accuracy"
+          ],
+          "arms": [
+            "brisk-s.few",
+            "nano-xs.few"
+          ],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "arm"
+        },
+        "reference": [],
+        "emphasis": "brisk-s.few",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "error_breakdown",
+      "eyebrow": "Confusion analysis",
+      "headline": "Complexity misclassifications cluster between adjacent levels",
+      "takeaway": "Off-diagonal values indicate misclassification shares.",
+      "chart": {
+        "kind": "confusion",
+        "title": "",
+        "query": {
+          "source": "confusion",
+          "aspect": "",
+          "measures": [],
+          "arms": [
+            "brisk-s.few"
+          ],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    }
+  ],
+  "explore": [
+    {
+      "title": "Constraint thresholds",
+      "controls": [
+        {
+          "id": "cell_floor_slider",
+          "kind": "slider",
+          "title": "Cell accuracy floor",
+          "binds": "floor:cell_floor",
+          "min": 70.0,
+          "max": 85.0,
+          "step": 1.0,
+          "default": 80.0,
+          "options": []
+        },
+        {
+          "id": "latency_p95_slider",
+          "kind": "slider",
+          "title": "Latency budget",
+          "binds": "p95",
+          "min": 100.0,
+          "max": 500.0,
+          "step": 25.0,
+          "default": 250.0,
+          "options": []
+        }
+      ],
+      "recomputes": "Adjusting the cell floor below the complex news result makes {arm:nano-xs.few} viable."
+    }
+  ],
+  "full_results": [
+    "arms_by_measure",
+    "gate_matrix_full",
+    "configs",
+    "cells"
+  ],
+  "durable_claims": [
+    {
+      "text": "{arm:brisk-s.few} achieves {measure.balanced_accuracy.brisk-s.few.mean}% balanced accuracy, {measure.latency_ms.brisk-s.few.p95} ms tail latency, and costs ${measure.cost_per_1m.brisk-s.few.mean} per million turns.",
+      "confidence": "high",
+      "keys": [
+        "measure.balanced_accuracy.brisk-s.few.mean",
+        "measure.latency_ms.brisk-s.few.p95",
+        "measure.cost_per_1m.brisk-s.few.mean"
+      ]
+    },
+    {
+      "text": "{arm:nano-xs.few} achieves {measure.balanced_accuracy.nano-xs.few.mean}% balanced accuracy and {measure.latency_ms.nano-xs.few.p95} ms tail latency but misses difficult cells.",
+      "confidence": "high",
+      "keys": [
+        "measure.balanced_accuracy.nano-xs.few.mean",
+        "measure.latency_ms.nano-xs.few.p95"
+      ]
+    }
+  ],
+  "answers": []
+}

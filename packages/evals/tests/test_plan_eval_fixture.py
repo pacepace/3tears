@@ -6,8 +6,10 @@ Contracts held here:
   recording, each call recorded once, and every run ends in a plan;
 - each replayed plan passes the plan checks against its report input, and is byte for byte the run plan the dataset
   keeps (``rN/runs/<run_id>.plan.json``), so a scored plan is the plan its recording makes;
-- the run id names the model, the day the recording was made and the planner's prompt version, and every run plan the
-  dataset keeps has its recording.
+- the replayed runs are the current runs ``recordings/runs.json`` names; every other run plan is a historical record a
+  re-record added to, never deleted (``test_plan_dataset.py`` holds those to record soundness);
+- the run id names the model, the day the recording was made and the planner's prompt version; every input has its
+  recording, and every run plan the dataset keeps, current or historical, has its provenance beside it.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from packages.evals.tests.fixtures.report_plans import plan_eval
+from packages.evals.tests.fixtures.report_plans import dataset, plan_eval
 from threetears.evals.analysis.planner import PlanGeneration
 from threetears.evals.analysis.report_plan_checks import validate_plan
 from threetears.evals.schema import ClientRequestSettings
@@ -95,12 +97,21 @@ async def test_the_run_id_names_model_day_and_prompt_version(generations: dict[s
         )
 
 
-def test_every_kept_run_plan_has_its_recording_and_the_prompt_it_was_made_under() -> None:
+async def test_the_replayed_runs_are_the_current_runs(generations: dict[str, PlanGeneration]) -> None:
+    assert sorted(dataset.current_runs()) == sorted(plan_eval.RUNS)
+    for run, generated in generations.items():
+        assert dataset.current_run(run) == plan_eval.run_plan_path(run, generated), run
+
+
+def test_every_input_has_its_recording_and_every_run_plan_its_provenance() -> None:
     assert plan_eval.RECORDED_PROMPT.is_file()
-    kept = sorted(Path(plan_eval.HERE).glob("r*/runs/*.plan.json"))
+    for run in plan_eval.RUNS:
+        assert plan_eval.recording(run).is_file(), run
+    kept = dataset.run_plans()
     assert {path.parts[-3] for path in kept} == set(plan_eval.RUNS)
     for path in kept:
-        assert plan_eval.recording(path.parts[-3]).is_file(), path
+        assert dataset.planner_path(path).is_file(), f"{path}: no provenance beside it"
+        assert dataset.planner_of(path).model == plan_eval.MODEL, path
 
 
 def test_recording_needs_its_key(monkeypatch: pytest.MonkeyPatch) -> None:

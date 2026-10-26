@@ -9,11 +9,18 @@ later. This module is the dataset's one reader:
 - **Plans.** ``rN/anchor.plan.json`` is a hand-written plan for that input; ``anchors/weak/*.plan.json`` are copies
   weakened on one plan-check rule or one rubric item (``weaken_anchors.py`` writes them). ``anchors/LABELS.json`` says
   what each anchor is expected to be and who labeled it: every anchor starts ``pending_owner`` and counts as a label
-  only once the owner approves it. ``rN/runs/<run_id>.plan.json`` are the planner's plans (``plan_eval.py``).
+  only once the owner approves it. ``rN/runs/<run_id>.plan.json`` are the planner's plans (``plan_eval.py``), each
+  beside ``<run_id>.planner.json``, what wrote it (:class:`PlannerInfo`: the model, its settings, the digests of the
+  prompt and contracts it was asked under), written when it was recorded.
+- **Runs are kept.** A re-record adds a run and never deletes one or its score (owner, 2026-10-25: every plan and every
+  score is the calibration dataset). The **current** run of an input is the one its recording replays to, named in
+  ``recordings/runs.json`` (:func:`current_run`); the planner eval's checks (the plan checks, R1, the replay) hold for
+  it. Every other run is a historical record, held only to record soundness: its provenance and its scores' digests,
+  rubric and quotes.
 - **Rubric.** ``rubric/v<N>.md`` and ``rubric/v<N>.json``, one pair per version: immutable, pinned by
   ``rubric/DIGESTS.json``. R1 is code's (:func:`code_score`); the rest are a model judge's. The brief and a record
   use the newest version (:func:`latest_rubric`) unless told otherwise, and a record names the version it scored.
-- **Scores.** ``rN/runs/<run_id>.scores.json``, one :class:`PlanScores` per plan scored. A record is sound when
+- **Scores.** ``rN/runs/<run_id>.scores.json``, one :class:`PlanScores` per run plan. A record is sound when
   :func:`score_faults` finds nothing: its digests match the files, every model-scored item is scored once, and every
   quote is text the plan holds. Records pool only by :func:`pool_key`: the planner prompt digest, the rubric digest and
   the scorer. Nothing else may join them.
@@ -63,20 +70,27 @@ __all__ = [
     "ScoreItem",
     "ScorerReply",
     "code_score",
+    "current_run",
+    "current_runs",
     "kairo_bundle",
     "labels",
     "load_plan",
     "model_items",
     "plan_input",
+    "planner_json",
+    "planner_of",
+    "planner_path",
     "pool_key",
     "pools",
     "prose_fields",
+    "recorded_planner",
     "report_input_of",
     "latest_rubric",
     "rubric",
     "record",
     "rubric_digest",
     "rubric_versions",
+    "run_plans",
     "score_faults",
     "score_skeleton",
     "scores_json",
@@ -92,6 +106,8 @@ KAIRO_BUNDLE = HERE / "kairo-round2-bundle.json.gz"
 LABELS = HERE / "anchors" / "LABELS.json"
 RUBRICS = HERE / "rubric"
 RECORDINGS = HERE / "recordings"
+#: Each input's current run: the run its recording replays to, by input.
+CURRENT_RUNS = RECORDINGS / "runs.json"
 #: The schema id every score record carries.
 SCORES_SCHEMA = "plan-scores/1"
 #: Who wrote an anchor's plan, in place of a planner model.
@@ -315,11 +331,33 @@ def _contract_digest() -> str:
     return hashlib.sha256(json.dumps(both, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def _planner(plan_path: Path, name: str) -> PlannerInfo:
-    """What wrote a plan: read off the run's recording for a planner run, else hand-written."""
+def planner_path(plan_path: Path) -> Path:
+    """Where a run plan's provenance is kept: beside it, ``<run_id>.planner.json``."""
+    return plan_path.with_name(plan_path.name.removesuffix(".plan.json") + ".planner.json")
+
+
+def _is_run(plan_path: Path) -> bool:
     relative = plan_path.resolve().relative_to(HERE)
-    if len(relative.parts) < 3 or relative.parts[1] != "runs":
+    return len(relative.parts) == 3 and relative.parts[1] == "runs"
+
+
+def planner_of(plan_path: Path) -> PlannerInfo:
+    """What wrote a plan: a run's provenance, kept beside it since it was recorded, else hand-written.
+
+    :raises ValueError: The plan is a run with no provenance beside it.
+    """
+    if not _is_run(plan_path):
         return PlannerInfo(model=HAND_WRITTEN, provider="", settings={}, prompt_digest="", contract_digest="")
+    kept = planner_path(plan_path)
+    if not kept.is_file():
+        raise ValueError(f"{plan_path.name} is a run with no {kept.name} beside it saying what wrote it")
+    return PlannerInfo.model_validate_json(kept.read_text(encoding="utf-8"))
+
+
+def recorded_planner(name: str) -> PlannerInfo:
+    """What the current recording of one input was made with: its model and settings, read off the recording, and
+    the digests of the recorded prompt and of today's contracts. True only while recording, which is when
+    ``plan_eval.py`` writes it beside the new run."""
     first = json.loads((RECORDINGS / f"{name}.jsonl").read_text(encoding="utf-8").splitlines()[0])
     model = str(first["result"].get("model") or "")
     return PlannerInfo(
@@ -329,6 +367,27 @@ def _planner(plan_path: Path, name: str) -> PlannerInfo:
         prompt_digest=sha256_file(RECORDINGS / "prompt.txt"),
         contract_digest=_contract_digest(),
     )
+
+
+def planner_json(info: PlannerInfo) -> str:
+    """A run's provenance as the dataset keeps it."""
+    return info.model_dump_json(indent=2) + "\n"
+
+
+def current_runs() -> dict[str, str]:
+    """Each input's current run id: the run its recording replays to."""
+    loaded: dict[str, str] = json.loads(CURRENT_RUNS.read_text(encoding="utf-8"))
+    return loaded
+
+
+def current_run(name: str) -> Path:
+    """The plan of one input's current run."""
+    return HERE / name / "runs" / f"{current_runs()[name]}.plan.json"
+
+
+def run_plans() -> list[Path]:
+    """Every run plan the dataset keeps, current and historical, in path order."""
+    return sorted(HERE.glob("r*/runs/*.plan.json"))
 
 
 def score_skeleton(plan_path: Path, *, scorer: str = "claude-opus-5-5", version: str | None = None) -> dict[str, Any]:
@@ -341,7 +400,7 @@ def score_skeleton(plan_path: Path, *, scorer: str = "claude-opus-5-5", version:
         "input": name,
         "input_digest": sha256_file(HERE / name / "input.json"),
         "plan_digest": sha256_file(plan_path),
-        "planner": _planner(plan_path, name).model_dump(),
+        "planner": planner_of(plan_path).model_dump(),
         "scorer": scorer,
         "rubric": {"version": version, "digest": rubric_digest(version)},
         "items": [

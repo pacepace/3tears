@@ -10,14 +10,20 @@ wrote:
 - ``recordings/prompt.txt``: the planner prompt the recordings were made under, which a replay hands the planner, as
   the shipped one moves on;
 - ``r1/runs/<run_id>.plan.json`` to ``r5/runs/<run_id>.plan.json``: the plan each recording replays to, the planner
-  eval's dataset (scored against ``rubric/`` by a model judge; ``scoring_brief.py`` prints the brief for one run).
+  eval's dataset (scored against ``rubric/`` by a model judge; ``dataset.py brief`` prints the brief for one run),
+  each beside ``<run_id>.planner.json``, what wrote it;
+- ``recordings/runs.json``: each input's current run, the one its recording replays to.
+
+**A re-record adds runs.** The recordings and the prompt are replaced, since a replay answers only the code it was made
+under, but every run plan, its provenance and its scores stay in the dataset (owner, 2026-10-25): a new prompt version
+writes a new run id beside the old ones, and ``runs.json`` moves to it.
 
 Without ``RECORD=1`` it replays the recordings, calls nothing and needs no key, which is how
 ``tests/test_plan_eval_fixture.py`` runs it. ``RECORD=1``, with ``OPENROUTER_API_KEY`` set, records all five again and
 rewrites the prompt and the run plans; a recording answers only the prompt, report input and planner code it was made
 under, so any of those changing makes a replay refuse by name, and the remedy is to record again::
 
-    RECORD=1 uv run python packages/evals/tests/fixtures/report_plans/plan_eval.py
+    RECORD=1 uv run python -m packages.evals.tests.fixtures.report_plans.plan_eval
 
 A generation the planner refuses twice raises, and that run gets no plan: every run must end in a plan that passes the
 plan checks (``validate_plan``), or it is not a dataset entry.
@@ -33,6 +39,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from packages.evals.tests.fixtures.report_plans import dataset
 from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
 from threetears.evals.analysis.planner import PlanGeneration, generate_report_plan
 from threetears.evals.analysis.report_input import ReportInput
@@ -51,6 +58,7 @@ __all__ = [
     "RUNS",
     "SETTINGS",
     "client",
+    "keep",
     "main",
     "plan",
     "recording",
@@ -71,7 +79,7 @@ HERE = Path(__file__).resolve().parent
 RECORDINGS = HERE / "recordings"
 #: The planner prompt the recordings were made under.
 RECORDED_PROMPT = RECORDINGS / "prompt.txt"
-RERECORD = "RECORD=1 uv run python packages/evals/tests/fixtures/report_plans/plan_eval.py"
+RERECORD = "RECORD=1 uv run python -m packages.evals.tests.fixtures.report_plans.plan_eval"
 
 #: The host the plans are written for: a bare one, so the system prompt carries the default register and nothing else.
 PROFILE = HostProfile(host_id="report-plan-eval", host_sweepables=SHARED_CORE, measures=MeasureRegistry(()))
@@ -148,6 +156,22 @@ def plan_json(generation: PlanGeneration) -> str:
     return generation.plan.model_dump_json(by_alias=True, indent=2) + "\n"
 
 
+def keep(run: str, generation: PlanGeneration) -> None:
+    """Add a freshly recorded run to the dataset: its plan, what wrote it, and its place as the input's current run.
+
+    :raises SystemExit: A run under this id is kept already and differs: a run is never overwritten.
+    """
+    path = run_plan_path(run, generation)
+    if path.is_file() and path.read_text(encoding="utf-8") != plan_json(generation):
+        raise SystemExit(f"{path.name} is kept already and this recording differs; a kept run is never overwritten")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(plan_json(generation), encoding="utf-8")
+    dataset.planner_path(path).write_text(dataset.planner_json(dataset.recorded_planner(run)), encoding="utf-8")
+    current = dataset.current_runs() if dataset.CURRENT_RUNS.is_file() else {}
+    current[run] = run_id(run, generation)
+    dataset.CURRENT_RUNS.write_text(json.dumps(dict(sorted(current.items())), indent=2) + "\n", encoding="utf-8")
+
+
 async def main(runs: tuple[str, ...] = RUNS) -> dict[str, PlanGeneration]:
     """Plan every run, print what each cost and how often it was repaired, and, recording, keep each plan."""
     how = f"recording into {RECORDINGS.name}/" if recording_live() else f"replaying {RECORDINGS.name}/"
@@ -169,9 +193,7 @@ async def main(runs: tuple[str, ...] = RUNS) -> dict[str, PlanGeneration]:
             f"${generated.token_cost:.4f}, prompt {generated.prompt_version}"
         )
         if recording_live():
-            path = run_plan_path(run, generated)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(plan_json(generated), encoding="utf-8")
+            keep(run, generated)
     total = sum(generated.token_cost for generated in generations.values())
     print(f"Total, as the recordings report it: ${total:.4f} ({datetime.now(UTC).date().isoformat()}).")
     return generations

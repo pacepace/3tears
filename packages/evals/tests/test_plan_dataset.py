@@ -14,9 +14,11 @@ Contracts held here:
   its label lists (one rule, nothing more), and every rule of the plan checks has one. Each copy weakened on an item
   passes the plan checks with its anchor's structure, only prose changed, and every model-scored item has one.
   ``weaken_anchors.py`` writes exactly the committed copies and labels.
-- **Scores.** Every committed score record is sound (its digests are its files', every item scored once, every quote
-  text the plan holds), a scorer's reply becomes a record only when it is sound, and records pool only by planner
-  prompt digest, rubric digest and scorer.
+- **Scores.** Every run plan the dataset keeps, current or historical, has exactly one score record beside it, and
+  every record is sound (its digests are its files', every item scored once, every quote text the plan holds) and
+  scores a plan the dataset keeps; a run recorded and not yet scored is red here until it is. A scorer's reply becomes
+  a record only when it is sound, its planner is the run's recorded provenance, and records pool only by planner prompt
+  digest, rubric digest and scorer.
 - **The brief** carries the rubric, R1's verdict, the plan rendered and every item to score, and names neither the
   plan's file nor its planner.
 """
@@ -254,11 +256,31 @@ def test_weaken_anchors_writes_exactly_the_committed_copies_and_labels() -> None
 # --- score records ---------------------------------------------------------------------------------------------------
 
 
-def test_every_committed_score_record_is_sound() -> None:
-    for path in HERE.glob("**/*.scores.json"):
-        scores = dataset.PlanScores.model_validate_json(path.read_text(encoding="utf-8"))
-        plan = path.with_name(path.name.removesuffix(".scores.json") + ".plan.json")
-        assert dataset.score_faults(scores, plan) == [], path
+def test_every_run_plan_has_one_sound_score_record() -> None:
+    plans = dataset.run_plans()
+    assert plans, "the dataset keeps no run plan"
+    unscored: list[str] = []
+    for plan in plans:
+        if not dataset.scores_path(plan).is_file():
+            unscored.append(plan.relative_to(HERE).as_posix())
+            continue
+        scores = dataset.PlanScores.model_validate_json(dataset.scores_path(plan).read_text(encoding="utf-8"))
+        assert dataset.score_faults(scores, plan) == [], plan
+    assert unscored == [], f"run plans with no score record (score them: dataset.py brief, then record): {unscored}"
+
+
+def test_every_score_record_scores_a_plan_the_dataset_keeps() -> None:
+    records = sorted(HERE.glob("**/*.scores.json"))
+    assert records
+    for path in records:
+        assert path.with_name(path.name.removesuffix(".scores.json") + ".plan.json").is_file(), path
+
+
+def test_a_runs_record_names_the_planner_its_provenance_records() -> None:
+    for plan in dataset.run_plans():
+        if dataset.scores_path(plan).is_file():
+            scores = dataset.PlanScores.model_validate_json(dataset.scores_path(plan).read_text(encoding="utf-8"))
+            assert scores.planner == dataset.planner_of(plan), plan
 
 
 R5_ANCHOR = HERE / "r5" / "anchor.plan.json"
@@ -325,11 +347,9 @@ def test_records_pool_only_by_prompt_rubric_and_scorer() -> None:
 # --- the brief -------------------------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("plan", ["anchors/weak/item-R7.plan.json", "r5/runs"])
+@pytest.mark.parametrize("plan", ["anchors/weak/item-R7.plan.json", "r5 current run"])
 def test_the_brief_is_blind_and_carries_what_a_scorer_needs(plan: str) -> None:
-    path = HERE / plan
-    if path.is_dir():
-        path = next(path.glob("*.plan.json"))
+    path = dataset.current_run("r5") if plan == "r5 current run" else HERE / plan
     brief = dataset.scoring_brief(path)
     assert path.name.removesuffix(".plan.json") not in brief
     assert "gemini" not in brief and "item-R" not in brief
