@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a prices block draws an unbounded price as open above, a values table pads no digit a number was never rounded to
+
+**Fixed:** a price step whose gain's interval reaches zero was drawn with no interval at all, beside steps with one, so
+the least certain price read as the firmest. It now keeps the low end it states: bars draw a whisker capped at the low
+end and opening into a chevron at the axis's end, the values table and tooltip write `from $X up, no upper bound`, and a
+note names each open step. A prices block reads paired intervals wherever every step states a paired low end. The
+kit's `bars` row takes `lo` without `hi` as an interval open above (`kit/API.md`); `hi` without `lo` is refused.
+
+**Fixed:** a block's values table padded every number to the most decimals a peer held, so `1240` beside `1.655` read
+`$1,240.000`. Padding now stops at the significant figures the number rule rounded the number to: none from 1,000 up.
+
+**Fixed:** a price within a slice whose cost is the slice's own measure is per what that measure counts
+(`per 1,000 conversations`), not per the page's cost basis.
+
 ### evals: the analyst's texts say what the snapshot's cost counts, and a prices block reads its money and its refusals plainly
 
 **Fixed:** no analyst-tool text says a cost is per reply where the snapshot's cost counts something else. Static
