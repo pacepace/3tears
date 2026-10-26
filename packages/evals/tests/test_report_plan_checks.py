@@ -1446,6 +1446,34 @@ class TestReferenceLines:
         assert "a margin, floor or budget line is what it can draw" in _line_fault("r2", plan, "summary[0]")
 
 
+def _level_at(name: str, plan: dict[str, Any], path: str, data: dict[str, Any] | None = None) -> str:
+    completed, faults = _completed(name, plan, data)
+    assert completed is not None, faults
+    return str(_get(completed.model_dump(mode="json", by_alias=True), f"{path}.level"))
+
+
+class TestChartLevel:
+    def test_diverging_strata_with_standard_errors_and_no_interval_are_drawn_at_the_descriptive_level(self):
+        plan = _anchor("r5")
+        assert (_get(plan, "sections[1].chart.kind"), _get(plan, "sections[1].chart.query.source")) == (
+            "diverging_bars",
+            "strata",
+        )
+        assert _level_at("r5", plan, "sections[1].chart") == "95% uncorrected"
+
+    def test_bars_over_the_same_strata_draw_no_level(self):
+        plan = _set(_anchor("r5"), "sections[1].chart.kind", "bars")
+        assert _level_at("r5", plan, "sections[1].chart") == ""
+
+    def test_strata_figures_carrying_an_interval_are_not_drawn_at_the_descriptive_level(self):
+        data = _input_dict()
+        for stratum in data["strata"]:
+            for figures in stratum["per_arm"].values():
+                for stat in figures.values():
+                    stat["ci"] = [0.0, 1.0]
+        assert _level_at("r5", _anchor("r5"), "sections[1].chart", data) == ""
+
+
 # --- figure keys and D3 --------------------------------------------------------------------------------------------
 
 

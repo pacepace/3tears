@@ -39,7 +39,7 @@
       "plan": "r5/anchor.plan.json",
       "input": "r5",
       "expect": "pass",
-      "plan_digest": "5f743c3ff4036985e1ecf92d077ab214b4ad3c98db14008f44e28c64ea69fe38",
+      "plan_digest": "808cf96de10cf23bc1ee65bf418d2b96b14dbf6e0c13d2da2105ad8c0ff9b09c",
       "labeled_by": "pending_owner",
       "note": "references/r5-kairo-round2.plan.json: a two-sentence lede, no hedge above the fold, no quoted question, a Watch citing the weakest margin code found, and a Next naming the experiment that would change the answer and which way."
     },
@@ -55,7 +55,7 @@
           "the signals look up shape 'D'"
         ]
       ],
-      "plan_digest": "3660005de0d125c5d57d191fe5ba0d675df73a1fdd72028222f5ec803c2c0464",
+      "plan_digest": "74c9fab2ea1cebaa783e3aab8ef15951ece17651664ca4d673bf5724219a5a96",
       "labeled_by": "pending_owner",
       "note": "The shape is not the one code looks up from the signals."
     },
@@ -71,7 +71,7 @@
           "shape D's spine, code's fact, is a 'forest'"
         ]
       ],
-      "plan_digest": "b807597a2954903d03571760e86c9a18f9445a2f1a2e7bfc51d5027e097128df",
+      "plan_digest": "cb4530fa14b9d9941993d6518b102212627fe978db53b7a4b8c62a8633a28793",
       "labeled_by": "pending_owner",
       "note": "The strata section opens the evidence, ahead of the forest that is shape D's spine."
     },
@@ -87,7 +87,7 @@
           "a decide plan's headline is a 'decision'"
         ]
       ],
-      "plan_digest": "a05384ad1d65f3e50d5bf6a8f24fb68904400de5b6c0bbdbb40e92ab128c2069",
+      "plan_digest": "8c8773c1b860ada5819ee2068125ca6d5561989a01114ca67a2c3198c4961c13",
       "labeled_by": "pending_owner",
       "note": "A decide plan with a trade headline."
     },
@@ -103,7 +103,7 @@
           "in that order"
         ]
       ],
-      "plan_digest": "9fca885427bc17b7952ad3f97c06e24971302737eed06baac39c23f40b4b047b",
+      "plan_digest": "33d9943e0132039c952454f7cc1c5a64bffb965165abf047ad5f79e049c231e5",
       "labeled_by": "pending_owner",
       "note": "Watch and Next out of the mode's order."
     },
@@ -119,7 +119,7 @@
           "recommends exactly one option"
         ]
       ],
-      "plan_digest": "f24d3421b64e40d08a654df1780f2a16f60458073d03255acae2e2b3dd994920",
+      "plan_digest": "bc3001249cdecc79d848d41d2de5b4a3e09a20495b172b445b1f6e06489b7315",
       "labeled_by": "pending_owner",
       "note": "Two options marked recommended."
     },
@@ -135,7 +135,7 @@
           "code allows only ['decide']"
         ]
       ],
-      "plan_digest": "10aeb351716f20205959e0393362cb36ba4c809b16a0d87d6166396283486569",
+      "plan_digest": "2da34e8bdf0acfa7cc1d17bfbd5f7ed0a03eb236bc32ce519518f5dc63eb96f5",
       "labeled_by": "pending_owner",
       "note": "A no call where code allows only decide (one survivor dominates)."
     },
@@ -151,7 +151,7 @@
           "name the section id 'question' 2 times"
         ]
       ],
-      "plan_digest": "aad4fed3a75c238f3e7cd1ad3dbed3d8d8be6363afda01005efbd532f672224f",
+      "plan_digest": "d8c7ca5ba27665c2bbaea3285c6c27f39c2f8f4b644bd6fa2fb6e2acb3461c3b",
       "labeled_by": "pending_owner",
       "note": "Two sections share an id."
     },
@@ -167,7 +167,7 @@
           "which is no arm"
         ]
       ],
-      "plan_digest": "856ef076e16ab95308b7d2b02d5a043bc5ad52f970f3aee447aaa13b49c4846a",
+      "plan_digest": "7299dfc04250f978180404e1ae3f67986a6149aef53d3839d32dc4681fb5ef17",
       "labeled_by": "pending_owner",
       "note": "Recommends an option that is no arm."
     },
@@ -183,7 +183,7 @@
           "which code did not raise"
         ]
       ],
-      "plan_digest": "f72d4ba4d5dec50777cfaca25242250628d32c9c891f6c919e09ad877ed2a5cc",
+      "plan_digest": "4113710e3aa1886702132bb3938d2115e96e4af5a1b0be54576aad582cc068d2",
       "labeled_by": "pending_owner",
       "note": "Answers a warning code never raised."
     },
@@ -199,7 +199,7 @@
           "open caveats remain"
         ]
       ],
-      "plan_digest": "1b449e5adf04a479e637fe8e28620717acc4dad7623dbe4a76e003c12d5f3c8f",
+      "plan_digest": "05738ce61954ee4dc7de1c9c8c622c3733570456d8bab7242b009c70db650f1c",
       "labeled_by": "pending_owner",
       "note": "Plain high while report-wide caveats are open."
     },
@@ -215,7 +215,7 @@
           "holds 'no_rule'"
         ]
       ],
-      "plan_digest": "95b765f61e00ef28fb5a0ea753e261e4252a7e2b42e39d69c28e3c49edff07fe",
+      "plan_digest": "67764227daf32c54324c0c25c2f36f7ca7c6fcf994c080260b4c15fac62187f6",
       "labeled_by": "pending_owner",
       "note": "A decide plan disclosing no rule set in advance."
     },
@@ -247,7 +247,7 @@
           "drop the caveat 'latency'"
         ]
       ],
-      "plan_digest": "ca3d8c08ebc4b51b7f7d09f0f71ba9325b22fff1d756345233498365cf14e646",
+      "plan_digest": "0e43c58a37a8c36edd3640fe5e17d1a967c4dcf9bc86d90b895410d74622d3ea",
       "labeled_by": "pending_owner",
       "note": "The latency caveat lands nowhere."
     },
@@ -263,7 +263,7 @@
           "cannot draw 'contrasts'"
         ]
       ],
-      "plan_digest": "ac2ff5685976f24e164c0cce9ccb8cccaf45bf349b6021c9553695a0ee5e4a9c",
+      "plan_digest": "3be1d99b20ed304e0343a98659b54a6794a536ebe025783285ef412616c3c39b",
       "labeled_by": "pending_owner",
       "note": "A lines chart over contrasts, which it cannot draw."
     },
@@ -279,7 +279,7 @@
           "in its order"
         ]
       ],
-      "plan_digest": "1d55ec84a85062f99fa7a1a6dc7a17d880fe0c6ff1f990538ac8282e78f1045c",
+      "plan_digest": "529233a66b767cd8c6803a98d0fbada4fa2f634ab9f969d632d016f26bb702c2",
       "labeled_by": "pending_owner",
       "note": "A summary chart's arms out of the options table's order."
     },
@@ -295,7 +295,7 @@
           "reading.qwen3.8-flash.drop"
         ]
       ],
-      "plan_digest": "d358c131790a89454a9ec0ff76c76deac6424d3961c9e4ba65e3f0956cb14909",
+      "plan_digest": "ff833d8d389667754fc9089b82a0329369d66f1cfdb1ece7e25a72608f7ef53e",
       "labeled_by": "pending_owner",
       "note": "A figure key naming a statistic no reading has."
     },
@@ -311,7 +311,7 @@
           "types the number(s) ['3.4']"
         ]
       ],
-      "plan_digest": "8d9bc98ebdc397510f2855957271404a08d27bc591f274dff5a785f9d148713d",
+      "plan_digest": "7a3935bb1a03377c009e95056ea0d7824796f7b32fdf49205e984065ffc41795",
       "labeled_by": "pending_owner",
       "note": "A typed number in prose (D3)."
     },
@@ -327,7 +327,7 @@
           "names no weakest margin"
         ]
       ],
-      "plan_digest": "1126f6805b477f272e41bb6dae5109378e452db9ffb0e9b89055c37f7e5af450",
+      "plan_digest": "04986db0f8f7fd3365196a7cb928b7544d85e4b7681562768fa81e8367abe2e8",
       "labeled_by": "pending_owner",
       "note": "A decide plan's Watch citing no weakest-margin key."
     },
@@ -343,7 +343,7 @@
           "types the judged id 'persona.holds_character'"
         ]
       ],
-      "plan_digest": "dd777c257d6fa6ec78d294b0ef69b873648fab5e675fdaac345fc76352bbd674",
+      "plan_digest": "3cdbc3658a75d14c502d60400604269b23743b7c0f7b07f18acf2e3af3fcf1ba",
       "labeled_by": "pending_owner",
       "note": "An internal id typed above Full results where its reader name differs."
     },
@@ -359,7 +359,7 @@
           "quotes the campaign's question"
         ]
       ],
-      "plan_digest": "3d87fba063a7169d0311e160b7221c3bea7a3f7ce4b0570e6a79191749d700af",
+      "plan_digest": "00899319fe87800ba0c3c5a8f611d7e6ebdd3fceaf4b12a558e8c51dd5162082",
       "labeled_by": "pending_owner",
       "note": "The campaign's question quoted above Full results, in the campaign's own ids."
     },
@@ -391,7 +391,7 @@
           "under one cent"
         ]
       ],
-      "plan_digest": "bb660941191f2e79b76f86600ad5e2f3a8afd04ae4fb955212075d5c4b17aea6",
+      "plan_digest": "038d92c57022c2f798bb9e5eea23d1aac3f43d8ffa2be4c7c72fc732f6f9496f",
       "labeled_by": "pending_owner",
       "note": "A cost per reply under one cent, on a page that states its costs per 1,000 replies."
     },
@@ -407,7 +407,7 @@
           "is no column family code renders"
         ]
       ],
-      "plan_digest": "4f56952ba907c3f04b3877d61ac136ae9ca8082c569cfb72f169562f71284918",
+      "plan_digest": "7b009841b411057438da6c93f4f992bd374d7b14293a95aa898d2436459a01a1",
       "labeled_by": "pending_owner",
       "note": "An options column outside the column families code renders."
     },
@@ -423,7 +423,7 @@
           "draws no small multiples of a 'forest'"
         ]
       ],
-      "plan_digest": "f4ea7ee07da0093e79968e588f0777e1cbc382f734098ac1c609d472962b8e7a",
+      "plan_digest": "8caa40a9e9cf7b3b30a510f06e0c267a8acbc7941fce9c6016cf475e88c00b31",
       "labeled_by": "pending_owner",
       "note": "Small multiples asked of a forest, which the kit does not panel."
     },
@@ -433,7 +433,7 @@
       "from": "r5/anchor.plan.json",
       "expect": "fails_item",
       "item": "R2",
-      "plan_digest": "64cd316487172068a1c28986334431a78cea0fe3fb696eedc59109083d54d1bd",
+      "plan_digest": "c3a54d99098e5919b6b97b24c4161d9544b307569ba9c5166a69a3cc12dc354a",
       "labeled_by": "pending_owner",
       "note": "The headline names a topic, not the call."
     },
@@ -443,7 +443,7 @@
       "from": "r5/anchor.plan.json",
       "expect": "fails_item",
       "item": "R3",
-      "plan_digest": "6a8255216090e410cd6754407ff67204f2ab84ff061683380a048991dd553b4e",
+      "plan_digest": "4940b286d6c2718b79971a557700e45249e4ddfc257983bf70c705a043a5a5f7",
       "labeled_by": "pending_owner",
       "note": "The lede is background in three sentences, with no supporting fact and nothing on what would change the answer."
     },
@@ -453,7 +453,7 @@
       "from": "r5/anchor.plan.json",
       "expect": "fails_item",
       "item": "R4",
-      "plan_digest": "b16a7e9a68298e3ce0d77da9cece5a9b28f3bba2fcc6d7cdcf90f6365906beee",
+      "plan_digest": "829180116d8de70cf510dd5745360c8dbb782d8f7828d1a49fa2505dbdae6cac",
       "labeled_by": "pending_owner",
       "note": "The lede repeats caveats the confidence already carries."
     },
@@ -463,7 +463,7 @@
       "from": "r5/anchor.plan.json",
       "expect": "fails_item",
       "item": "R5",
-      "plan_digest": "2dfc8d9302d7f4ed766b5b0104b6d940d9b38d50bd5d7f745531bc80c3ca5838",
+      "plan_digest": "415ceb8c5955ad79442f25d24160da37bc903259c4ae972e7d0d084995c5dcfb",
       "labeled_by": "pending_owner",
       "note": "Every section headline is a topic label."
     },
@@ -473,7 +473,7 @@
       "from": "r5/anchor.plan.json",
       "expect": "fails_item",
       "item": "R6",
-      "plan_digest": "3a8c8fc7f6e094cd8f96fb7746db37ef1f157abb7331b848b90975c5713e580f",
+      "plan_digest": "9aa8e8368d350d34b4149b2ac3425b8b20df38d3a5de65f69dfbd06db215ae92",
       "labeled_by": "pending_owner",
       "note": "Why not the others names the judged measure by a fragment of its key, which no code check matches."
     },
@@ -483,7 +483,7 @@
       "from": "r5/anchor.plan.json",
       "expect": "fails_item",
       "item": "R7",
-      "plan_digest": "067d199719a2822423d819c165dc2b874c9470f3454f2659f953ec661a13fb56",
+      "plan_digest": "572234ef5f57f32f46b144b40318a06ea60dd307f13672614281f0d18b12ecd5",
       "labeled_by": "pending_owner",
       "note": "Watch cites the weakest margin's arm but is generic monitoring advice and names no margin."
     },
@@ -493,7 +493,7 @@
       "from": "r5/anchor.plan.json",
       "expect": "fails_item",
       "item": "R8",
-      "plan_digest": "518d48e268deac5e66873d980df281d3b16e216c3a05234acc05fdd9a962b1fc",
+      "plan_digest": "0cfd9ae768b692fc28af7d8300be4d1f73d985fc2eef9caaf58a2c6097c48c31",
       "labeled_by": "pending_owner",
       "note": "The lede is long, passive and hedged."
     },
@@ -503,7 +503,7 @@
       "from": "r5/anchor.plan.json",
       "expect": "fails_item",
       "item": "R9",
-      "plan_digest": "c6c3d0d54b889899293b83b4a35435d0c7854491d0fa55b4f33cb7b2cd3875fb",
+      "plan_digest": "13f810cc65d1e33a817b769315f6271bf4a08468c4eec1165a712cea03c4af85",
       "labeled_by": "pending_owner",
       "note": "The first screen says to keep the control but not why or what the main risk is."
     },
@@ -513,7 +513,7 @@
       "from": "r5/anchor.plan.json",
       "expect": "fails_item",
       "item": "R10",
-      "plan_digest": "304d5a5b4793aef20ec05ac2b9809091da72601070af776fcbc9a57109533168",
+      "plan_digest": "e337c46aa4aee2096659b99318613017a49354a6ffe79ce257ea5beffebbbff5",
       "labeled_by": "pending_owner",
       "note": "Next names no experiment that could change the answer."
     },
@@ -523,7 +523,7 @@
       "from": "r5/anchor.plan.json",
       "expect": "fails_item",
       "item": "R11",
-      "plan_digest": "cfb2f283cd4646eda2c24eba49a4eff5a457a80e5b102b7389b83611e83dd954",
+      "plan_digest": "c037872146faa5866eb396d45e4f83df17440a85b36f29419f435b1560d719c7",
       "labeled_by": "pending_owner",
       "note": "Each confidence clause restates its caveat without saying what would make it material."
     },
@@ -533,7 +533,7 @@
       "from": "r5/anchor.plan.json",
       "expect": "fails_item",
       "item": "R12",
-      "plan_digest": "37cb87d7f30d57dd280fd68963295350bba347280100215ed775b5cb5f64c8b3",
+      "plan_digest": "f6dc18d0973d60c05611ccb7e6b02dc52b467eedf25d7ab8ba5bf1b1d11d7468",
       "labeled_by": "pending_owner",
       "note": "Why not gives a candidate's own cost as what it costs more than the control."
     }

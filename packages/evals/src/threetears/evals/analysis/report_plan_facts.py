@@ -63,6 +63,12 @@ No such criterion, or several, is a fault at completion, naming why, and so is a
 What the chart reads is :mod:`~threetears.evals.analysis.report_rows`' selection (:func:`query_aspect`,
 :func:`query_rows`), the one the plan checks and the page read too.
 
+**A chart's interval level** is the one its rows carry: a reading's confidence, a contrast's family level, a measure's
+or judged dimension's declared level (a stratum's with "uncorrected"). A diverging chart over judged figures or strata
+whose figures carry a standard error and no interval is drawn at the descriptive level, "95% uncorrected"
+(:data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL`): a bar is separated from zero where its change exceeds
+1.96 times the two arms' standard errors combined (GENERATOR §5.2).
+
 **A chart's axis** is computed only where code holds a rule: a forest of readings spans every interval it draws, zero
 and the margin line, one point beyond each end. Every other chart leaves its domain empty, which lets the renderer fit
 it. A chart that would mix units or interval levels (§5.2: one unit and one interval system per chart) is refused at
@@ -77,6 +83,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.errors import PlanRefusal, SoundnessRefusal, UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import (
     DIRECTION_WORDS,
@@ -87,7 +94,7 @@ from threetears.evals.analysis.report.figure_keys import (
 )
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_decision import allowed_modes, caveat_materiality, report_caveats
-from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, Reading, ReportInput, Stratum, Task
+from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, Reading, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_margins import criterion_place, weakest_margin
 from threetears.evals.analysis.report_rows import query_aspect, query_rows
 from threetears.evals.analysis.report_plan_checks import (
@@ -727,11 +734,49 @@ def _level(chart: PlannedChart, report_input: ReportInput, path: str, faults: li
         table = report_input.measures if source == "measures" else report_input.judged
         measures = set(chart.query.measures)
         levels = [figures.level or "" for key, figures in table.items() if not measures or key in measures]
-        return _one(path, "interval level", levels, faults)
+        level = _one(path, "interval level", levels, faults)
+        return level or _descriptive_level(chart, report_input)
     if source == "strata":
         level = _one(path, "interval level", _figure_levels(chart, report_input), faults)
-        return f"{level} uncorrected" if level else ""
+        return f"{level} {_UNCORRECTED}" if level else _descriptive_level(chart, report_input)
     return ""
+
+
+def _descriptive_level(chart: PlannedChart, report_input: ReportInput) -> str:
+    """The descriptive level a diverging chart over judged figures or strata is drawn at where its figures carry a
+    standard error and no interval: a bar is separated from zero when its change exceeds the interval level's normal
+    multiple of the two arms' standard errors combined (GENERATOR §5.2: descriptive, uncorrected); empty otherwise."""
+    if chart.kind != "diverging_bars" or chart.query.source not in _DESCRIPTIVE_SOURCES:
+        return ""
+    stats = _selected_stats(chart, report_input)
+    if stats and all(stat.sem is not None and stat.ci is None and stat.half_width is None for stat in stats):
+        return f"{_percent(INTERVAL_LEVEL)} {_UNCORRECTED}"
+    return ""
+
+
+#: The sources a diverging chart may draw at the descriptive level, and the word that labels it.
+_DESCRIPTIVE_SOURCES = frozenset({"judged", "strata"})
+_UNCORRECTED = "uncorrected"
+
+
+def _selected_stats(chart: PlannedChart, report_input: ReportInput) -> list[Stat]:
+    """Every figure a chart of judged figures or strata reads: a judged row's, or each kept arm's on each measure the
+    query keeps in a stratum."""
+    measures = set(chart.query.measures)
+    arms = set(chart.query.arms) or {arm.id for arm in report_input.arms}
+    found: list[Stat] = []
+    for row in query_rows(chart.query, report_input):
+        if isinstance(row.item, Stat):
+            found.append(row.item)
+        elif isinstance(row.item, Stratum):
+            found += [
+                stat
+                for arm, figures in row.item.per_arm.items()
+                if arm in arms
+                for key, stat in figures.items()
+                if not measures or key in measures
+            ]
+    return found
 
 
 def _judged_unit(report_input: ReportInput, measures: Sequence[str]) -> list[str]:
