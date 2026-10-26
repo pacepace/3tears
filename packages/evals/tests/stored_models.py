@@ -38,7 +38,9 @@ from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
 from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileAgreement
 from threetears.evals.kernel.campaign import EvalReportPlan, ReportPlanProvenance, report_plan_id
-from packages.evals.tests.report_plan_support import r5_plan
+from packages.evals.tests.report_plan_support import r5_input, r5_plan
+from threetears.evals.analysis.analyst.snapshot import report_snapshot
+from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.run import EvalActionJob, EvalJudgeTemperatureCheck, EvalLaunch, EvalSecondJudgePass
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import (
@@ -287,6 +289,14 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     ),
     "EvalCassette": _cassette,
     "EvalInsight": make_insight,
+    # The r5 reference input, frozen bare, as a local analyst server seeds a fixture snapshot.
+    "EvalReportSnapshot": lambda: report_snapshot(
+        ReportInput.model_validate(r5_input()),
+        scope_id="uni-1",
+        campaign_id=None,
+        source="report_input",
+        created_by="agent:test",
+    ),
     # The reference Kairo plan, as a planned generation stores it beside its analysis.
     "EvalReportPlan": lambda: EvalReportPlan(
         id=report_plan_id("analysis-1"),
