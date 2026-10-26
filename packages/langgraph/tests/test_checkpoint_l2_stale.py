@@ -11,7 +11,6 @@ against a real NATS server and Postgres is ``integration/test_checkpoint_l2_over
 
 from __future__ import annotations
 
-import inspect
 import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -21,7 +20,6 @@ import pytest
 from prometheus_client import REGISTRY
 
 from threetears.langgraph.checkpoint import (
-    L2_WRITE_BYPASS_LIMIT,
     CheckpointPurgeIncompleteError,
     ThreeTierCheckpointSaver,
 )
@@ -645,10 +643,8 @@ class TestAWriteBypassLiftsWhenTheKeyIsWrittenAgain:
         l2 = _DictL2Cache()
         l2.fail_put = RuntimeError("nats: timeout")
         l2.fail_delete = RuntimeError("nats: timeout")
-        limit = 3
-        saver = ThreeTierCheckpointSaver(
-            executor=_make_executor(), l2_cache=l2, scope=_UNSCOPED, l2_write_bypass_limit=limit
-        )
+        limit = 4096  # the bound the saver documents; the full count runs, so the real bound is what is tested
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=l2, scope=_UNSCOPED)
 
         with caplog.at_level(logging.WARNING):
             for n in range(limit + 1):
@@ -659,11 +655,6 @@ class TestAWriteBypassLiftsWhenTheKeyIsWrittenAgain:
         await saver.aget_tuple({"configurable": {"thread_id": "t-0", "checkpoint_ns": ""}})
         await saver.aget_tuple({"configurable": {"thread_id": f"t-{limit}", "checkpoint_ns": ""}})
         assert l2.gets == ["t-0"], "the oldest key was dropped from the bypass; the newest is still on it"
-
-    def test_the_bypass_holds_the_published_limit_by_default(self) -> None:
-        default = inspect.signature(ThreeTierCheckpointSaver).parameters["l2_write_bypass_limit"].default
-
-        assert default == L2_WRITE_BYPASS_LIMIT
 
     async def test_a_reused_failure_does_not_grow_its_traceback(self) -> None:
         l2 = _DictL2Cache()

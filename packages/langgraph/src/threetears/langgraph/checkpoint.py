@@ -95,7 +95,6 @@ from threetears.langgraph.serde import UUIDSafeSerializer
 from threetears.observe import contain, get_logger
 
 __all__ = [
-    "L2_WRITE_BYPASS_LIMIT",
     "CheckpointCacheError",
     "CheckpointPurgeIncompleteError",
     "ThreeTierCheckpointSaver",
@@ -161,7 +160,7 @@ _DEFAULT_L2_BUCKET = "checkpoints"
 #: a key may still hold an older checkpoint, so the saver reads it from L3 until a later put or
 #: delete of it lands. During a long NATS outage every written key lands here; past this many the
 #: oldest is dropped with a WARNING naming it, and reads of it may again meet what L2 still holds.
-L2_WRITE_BYPASS_LIMIT: Final = 4096
+_L2_WRITE_BYPASS_LIMIT: Final = 4096
 
 #: separates the customer from the caller's own thread id inside a stored
 #: ``thread_id``. a UUID's text form contains no ``/``, so the split point is
@@ -441,7 +440,6 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         l2_cache: CheckpointL2Cache | None = None,
         l2_bucket: str = _DEFAULT_L2_BUCKET,
         flush_callback: FlushCallback | None = None,
-        l2_write_bypass_limit: int = L2_WRITE_BYPASS_LIMIT,
     ) -> None:
         """initialize checkpoint saver.
 
@@ -463,9 +461,6 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :ptype l2_bucket: str
         :param flush_callback: optional post-write flush callback
         :ptype flush_callback: FlushCallback | None
-        :param l2_write_bypass_limit: how many L2 keys the write bypass holds before it drops
-            the oldest
-        :ptype l2_write_bypass_limit: int
         :return: nothing
         :rtype: None
         """
@@ -484,9 +479,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         self._cache_bypassed_threads: set[str] = set()
         # write: L2 keys whose put and then delete both failed, so the key may still hold an older
         # checkpoint. lifted by the next put or delete of that key that lands; bounded by
-        # l2_write_bypass_limit, oldest first.
+        # _L2_WRITE_BYPASS_LIMIT, oldest first.
         self._l2_write_bypassed: OrderedDict[str, None] = OrderedDict()
-        self._l2_write_bypass_limit = l2_write_bypass_limit
         if l2_cache is not None and not isinstance(l2_cache, CheckpointL2RevisionCache):
             # said once per saver, not per read: such a cache is never refilled from an L3 read
             log.info(
@@ -757,7 +751,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         - any other put failure is contained and the key is deleted too;
         - only when that delete also fails is the key put on this saver's write
           bypass, so that thread and namespace read from L3 alone until a later put
-          or delete of the key lands (at most :data:`L2_WRITE_BYPASS_LIMIT` keys,
+          or delete of the key lands (at most 4096 keys,
           oldest dropped first). Other processes are not reached by it; for them the
           delete was the fix.
 
@@ -819,11 +813,11 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         """
         self._l2_write_bypassed[key] = None
         self._l2_write_bypassed.move_to_end(key)
-        if len(self._l2_write_bypassed) > self._l2_write_bypass_limit:
+        if len(self._l2_write_bypassed) > _L2_WRITE_BYPASS_LIMIT:
             dropped, _ = self._l2_write_bypassed.popitem(last=False)
             log.warning(
                 "L2 write bypass is full; the oldest key returns to the caches and may meet an older checkpoint",
-                extra={"l2_bucket": self._l2_bucket, "l2_key": dropped, "limit": self._l2_write_bypass_limit},
+                extra={"l2_bucket": self._l2_bucket, "l2_key": dropped, "limit": _L2_WRITE_BYPASS_LIMIT},
             )
 
     async def l2_delete(self, thread_id: str, checkpoint_ns: str, *, customer: UUID | None = None) -> None:

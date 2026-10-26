@@ -16,8 +16,7 @@ times for one turn). `l2_put` now deletes the key whenever the put does not land
 delete also fails puts the key on the saver's write bypass, so this process reads that thread and
 namespace from L3 until a later put or delete of the key lands. The write bypass is kept apart from
 the purge bypass (a thread whose purge could not clear a cache stays off the caches until a purge
-succeeds, whatever is written) and holds at most `threetears.langgraph.checkpoint.L2_WRITE_BYPASS_LIMIT`
-(4096) keys; past that the oldest is dropped with a WARNING naming it. A read pinned to a `checkpoint_id` no longer warms the caches: the keys are
+succeeds, whatever is written) and holds at most 4096 keys; past that the oldest is dropped with a WARNING naming it. A read pinned to a `checkpoint_id` no longer warms the caches: the keys are
 read as "latest", and warming them from an older checkpoint served it to every later unpinned read.
 
 **Added:** `threetears.langgraph.CheckpointL2ValueLimit`, an optional protocol beside
@@ -34,7 +33,10 @@ refuses the refill (and then L1 is not given the older checkpoint either). This 
 optional protocol `threetears.langgraph.CheckpointL2RevisionCache` (`get_latest(bucket, key)` and
 `update(bucket, key, value, revision)`, which `NatsCheckpointL2Cache` delegates to `NatsKvBucket`'s
 methods of the same names). **A cache without it is no longer refilled from a read at all**: only
-`aput` writes L2, and the next write refills it.
+`aput` writes L2, and the next write refills it. Reads stay correct (they reach Postgres); what such a host
+loses is the L2 hit for a thread no one has written since its last read. The saver says so once, at INFO,
+when it is built with such a cache. A host passing its own adapter should move to `NatsCheckpointL2Cache`;
+a host with no L2 cache is unaffected.
 
 **Added:** `threetears.langgraph.nats_l2.NatsCheckpointL2Cache(client)`, the saver's L2 cache over a
 `NatsClient`'s KV buckets. It implements `CheckpointL2Cache`, `CheckpointL2RevisionCache`,
