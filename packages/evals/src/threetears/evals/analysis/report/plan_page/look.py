@@ -25,6 +25,13 @@ score           a judged score                                               ``n
 (other)         the number, its unit beside it                               ``num``
 ==============  ===========================================================  ==================
 
+**A level's look** (:func:`series_token`): where a chart colours by a factor's levels (a factorial grid's paths and
+tiles), each level takes the kit's series colours in the factor's order, as candidates do in theirs.
+
+**A gate status's pill** (:data:`GATE_STATUS`): a pass is good, a borderline warns, a failure is bad (GENERATOR §3);
+its word is the page's (:data:`~threetears.evals.analysis.report.plan_page.words.GATE_WORDS`), so the pill never
+rests on its colour alone.
+
 **Notes are code's, by the package's number rule** (:func:`figure_text`), so a chart never prints its own rounding of
 a figure: the kit's would read a change of 0.04 points as "+0", and the rule reads it "+0.04".
 
@@ -41,7 +48,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, signed_with_unit, with_unit
-from threetears.evals.analysis.report.charts import ChartShape
+from threetears.evals.analysis.report.charts import ChartShape, ChartStatus
 from threetears.evals.analysis.style import humanize
 
 if TYPE_CHECKING:
@@ -50,6 +57,7 @@ if TYPE_CHECKING:
     from threetears.evals.analysis.report_plan_facts import FactArm
 
 __all__ = [
+    "GATE_STATUS",
     "ArmLook",
     "PageLook",
     "Quantity",
@@ -62,6 +70,7 @@ __all__ = [
     "magnitude_domain",
     "page_look",
     "quantity",
+    "series_token",
 ]
 
 #: Each candidate's identity colour, by its place after the control: the kit's series in fixed order (GENERATOR
@@ -116,6 +125,21 @@ def arm_shape(tag: str | None) -> ChartShape | None:
     if tag is None:
         return None
     return _CONTROL_SHAPE if tag == _CONTROL_TAG else _SHAPES[_tag_place(tag) % len(_SHAPES)]
+
+
+#: GENERATOR §3: each gate status's pill (this module's gate status).
+GATE_STATUS: dict[str, ChartStatus] = {"pass": "good", "borderline": "warn", "fail": "bad"}
+
+
+def series_token(place: int) -> str:
+    """The kit's series colour at a place in a fixed order (a factor's level by its place), repeating past the fifth.
+
+    :param place: The place, from 0.
+    :ptype place: int
+    :return: The kit colour token.
+    :rtype: str
+    """
+    return _SERIES[place % len(_SERIES)]
 
 
 def _slot_token(slot: int) -> str:

@@ -11,7 +11,7 @@ words, and the reference page's source, whose landmarks are parsed, never typed 
   caption naming each asked comparison the input holds none of; a figure from zero, a summary chart in the options
   table's order with what fails the gates faded and the recommendation bold; each arm less the control per stratum,
   bold by the descriptive 95% rule; a line per arm over the slices; a card per selected example; small multiples a
-  panel per arm or per slice, as the plan asks. No note prints a signed zero. A kind no resolver draws yet (P4-21, P4-22) is refused, naming its kind and source; a whole page here
+  panel per arm or per slice, as the plan asks. No note prints a signed zero. A kind no resolver draws yet (P4-22) is refused, naming its kind and source; a whole page here
   leaves those charts out by kind.
 - **Tables.** The options table is the plan's rows and code's column families, each cell what its figure key reads,
   the recommended (or leaned) row set apart; a column outside the families is refused. The arms key shows each arm
@@ -81,21 +81,11 @@ REFERENCE_PLAN = KIT / "references" / "r5-kairo-round2.plan.json"
 REFERENCE_SOURCE = KIT / "references" / "r5-kairo-round2.src.html"
 GENERATOR = KIT / "GENERATOR.md"
 
-#: The kinds whose resolvers are later chunks' (P4-21 and P4-22). A whole page built here leaves a chart of one out,
-#: by kind; the dispatcher refuses one, which a test below holds.
+#: The kinds whose resolvers are a later chunk's (P4-22). A whole page built here leaves a chart of one out, by kind;
+#: the dispatcher refuses one, which a test below holds. The gate family's charts (``test_plan_charts_gates.py``) are
+#: drawn on every page here.
 _LATER_KINDS = frozenset(
-    {
-        "gate_matrix",
-        "gate_scatter",
-        "lattice",
-        "dot_interval",
-        "range_bars",
-        "scatter_frontier",
-        "heatmap",
-        "diff_heatmap",
-        "confusion",
-        "table",
-    }
+    {"dot_interval", "range_bars", "scatter_frontier", "heatmap", "diff_heatmap", "confusion", "table"}
 )
 
 #: A signed zero, which the package's number rule never writes for a change it holds digits of.
@@ -195,10 +185,14 @@ def test_every_chart_of_this_chunks_kinds_resolves_to_its_own_kind_with_values_t
 
 
 def test_a_chart_kind_no_resolver_draws_is_refused_naming_its_kind_and_source() -> None:
-    plan = _plan(dataset.HERE / "r1" / "anchor.plan.json")
+    name, plan = next(
+        (name, _plan(path))
+        for name, _, path in _PLANS
+        if any(section.chart.kind in _LATER_KINDS for section in _plan(path).sections)
+    )
     later = next(section.chart for section in plan.sections if section.chart.kind in _LATER_KINDS)
     with pytest.raises(UnresolvableReference) as refused:
-        plan_page(plan, _input("r1"))
+        plan_page(plan, _input(name))
     assert repr(later.kind) in str(refused.value) and repr(later.query.source) in str(refused.value)
 
 
