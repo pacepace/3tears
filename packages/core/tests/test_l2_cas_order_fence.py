@@ -563,3 +563,50 @@ class TestASwapAnsweredLateLeavesNoOlderRowInL1:
         coll, _ = _replica(_Synchronous, nats, store)
         await coll.l2_cas_mutate(_ID, _add("x"))
         assert coll.exists_in_cache_sync(_ID), "an uncontended winner no longer caches its own row"
+
+
+class TestTheCreationTimeIsReadOncePerSwap:
+    """a swap reads the bucket's creation time from the server once (after it wins), not twice.
+
+    The read before the swap is remembered: it may only be too low (a recreated stream is younger),
+    which the won swap's fresh read corrects, and the regressed-epoch refusal re-reads before raising.
+    """
+
+    @pytest.mark.asyncio
+    async def test_each_swap_after_the_first_reads_it_once(self) -> None:
+        nats, store = _Nats(), _Store()
+        coll, _ = _replica(_Synchronous, nats, store)
+        bucket = await _bucket(nats)
+        real = bucket.date_created
+        reads = 0
+
+        async def counted() -> datetime:
+            nonlocal reads
+            reads += 1
+            return await real()
+
+        bucket.date_created = counted  # type: ignore[method-assign]
+        await coll.l2_cas_mutate(_ID, _increment)
+        reads = 0
+        for _ in range(3):
+            await coll.l2_cas_mutate(_ID, _increment)
+        assert reads == 3, f"{reads} STREAM.INFO reads for 3 swaps"
+        assert store.rows[_ID]["count"] == 4
+
+    @pytest.mark.asyncio
+    async def test_a_remembered_creation_time_does_not_refuse_a_row_a_recreated_bucket_ordered(self) -> None:
+        nats, store = _Nats(), _Store()
+        ours, _ = _replica(_Synchronous, nats, store)
+        peer, _ = _replica(_Synchronous, nats, store)
+        bucket = await _bucket(nats)
+        await ours.l2_cas_mutate(_ID, _add("a"))  # remembers the first stream's creation time
+        first = await bucket.date_created()
+        bucket.wipe(date_created=first + timedelta(seconds=1))
+        await peer.l2_cas_mutate(_ID, _add("b"))  # L3 now holds an order of the second stream
+        third = first + timedelta(seconds=2)
+        bucket.wipe(date_created=third)  # L2 empty again: our next swap seeds from L3
+
+        await ours.l2_cas_mutate(_ID, _add("c"))
+
+        assert _members(store.rows[_ID]) == ["a", "b", "c"]
+        assert l2_order_of(store.rows[_ID]) == L2Order(third, 1)

@@ -66,6 +66,7 @@ from threetears.core.collections.l2_order import (
 )
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
+from threetears.core.ddl.write_marks import WRITE_MARKS_TABLE
 from threetears.core.entities.base import BaseEntity, derive_addressing_id
 from threetears.core.exceptions import (
     ConcurrentModificationError,
@@ -76,6 +77,7 @@ from threetears.core.exceptions import (
     L2ScopeNotConfiguredError,
     L2WriteRefusedError,
 )
+from threetears.core.sql_fragments import quote_identifier
 from threetears.nats.errors import KvError
 from threetears.observe import contain, get_logger, set_span_attribute, traced
 
@@ -745,6 +747,11 @@ class BaseCollection(ABC, Generic[EntityT]):
         else:
             self._nats_client = nats_client
         self._kv: NatsKvBucket | None = None
+        # the bucket's creation time as last read from the server, with the handle it was read on:
+        # read before every ordered swap, where a stale value can only be too LOW (a recreated
+        # stream is younger) -- which the won swap's fresh re-read corrects and refreshes, and the
+        # regressed-epoch refusal re-reads before raising. Saves one STREAM.INFO per swap.
+        self._l2_epoch_read: tuple[NatsKvBucket, datetime] | None = None
         self._write_buffer = write_buffer
         self._flush_strategy = FlushStrategy(config.collection_flush)
         self._flush_tables = frozenset(t.strip() for t in config.collection_flush_tables.split(",") if t.strip())
@@ -1440,9 +1447,10 @@ class BaseCollection(ABC, Generic[EntityT]):
             cached, or (when ``expiring``) the row has expired
         :rtype: dict[str, Any] | None
         """
-        if self._l1 is None:
+        l1 = self._l1_holding_table()
+        if l1 is None:
             return None
-        row: dict[str, Any] | None = self._l1.select_by_id(
+        row: dict[str, Any] | None = l1.select_by_id(
             self.table_name,
             self.normalize_pk(entity_id),
             self.primary_key_columns,
@@ -1638,6 +1646,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         source = registry.generation_source
         assert source is not None  # narrow: _write_generation_on
+        # read before the advance, so every mark read was committed before it and the advance covers it
+        covered = await self._marks_before_advance(registry)
         try:
             token = await source.advance(self.table_name)
         except GenerationNotCommittedError as exc:
@@ -1666,9 +1676,61 @@ class BaseCollection(ABC, Generic[EntityT]):
                 )
                 return _Bump(failure=unadvanced)
             # a source that does not say what it wrote: advanced, but nothing to stamp or count.
+            await self._clear_marks(registry, covered)
             return _NO_BUMP
         registry.account_generation(self.table_name, token)
+        await self._clear_marks(registry, covered)
         return _Bump(token=token, rows=rows)
+
+    async def _marks_before_advance(self, registry: CollectionRegistry) -> list[int]:
+        """the ids of this table's write marks committed so far, which the advance about to run covers.
+
+        Read only where the registry names the queue's schema
+        (:meth:`CollectionRegistry.set_write_marks_schema`) and this collection has L3. A read that fails
+        clears nothing: the reconciler then advances once more from those marks, as it always did.
+
+        :param registry: this collection's registry
+        :ptype registry: CollectionRegistry
+        :return: the mark ids, empty when there are none or nothing is cleared here
+        :rtype: list[int]
+        """
+        schema = registry.write_marks_schema
+        if schema is None or self.l3_pool is None:
+            return []
+        marks = f"{quote_identifier(schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
+        try:
+            rows = await self.l3_pool.fetch(f"SELECT id FROM {marks} WHERE table_name = $1", self.table_name)  # noqa: S608 - the registry's schema, quoted
+        # prawduct:allow prawduct/broad-except -- the write committed; a mark left is drained by the reconciler
+        except Exception as exc:
+            contain(exc, log=log, what="could not read the write marks this advance covers; the reconciler drains them")
+            return []
+        return [int(row["id"]) for row in rows]
+
+    async def _clear_marks(self, registry: CollectionRegistry, covered: list[int]) -> None:
+        """delete exactly the marks this writer's advance covered, after it succeeded.
+
+        Each was committed before the advance, so the generation has moved past it, and the reconciler's
+        second advance of the table, which no follower would hear, is not made. A delete that fails, or a
+        writer that dies before it, leaves them to the reconciler, which advances once more.
+
+        :param registry: this collection's registry
+        :ptype registry: CollectionRegistry
+        :param covered: the mark ids read before the advance
+        :ptype covered: list[int]
+        :return: nothing
+        :rtype: None
+        """
+        schema = registry.write_marks_schema
+        if not covered or schema is None or self.l3_pool is None:
+            return
+        marks = f"{quote_identifier(schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
+        try:
+            await self.l3_pool.execute(f"DELETE FROM {marks} WHERE id = ANY($1::bigint[])", covered)  # noqa: S608 - the registry's schema, quoted
+        # prawduct:allow prawduct/broad-except -- the advance landed; a mark left only costs the reconciler one more advance
+        except Exception as exc:
+            contain(
+                exc, log=log, what="could not clear the write marks this advance covered; the reconciler drains them"
+            )
 
     @property
     def keeps_write_generation_in_l2(self) -> bool:
@@ -2080,6 +2142,32 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         return tuple(str(value) for value in self.normalize_pk(entity_id))
 
+    def _l1_holding_table(self) -> Any:
+        """this collection's L1, while it holds the collection's table; ``None`` until then.
+
+        A registry hands its L1 to every collection it builds, but only one that creates its table
+        there, or whose table its owner declared, has a table to read: a collection built under a
+        name of its own after the L1 was set up (a tile source's ``geo_tiles_<scope>``) had none, and
+        every read of it raised ``no such table``. Every row of this table enters, leaves and is read
+        from L1 through here, so until the table is there the collection reads and writes through to
+        L2 and L3, as one built with no L1, and from the moment it is there L1 is used. Said once.
+
+        :return: the backend, or ``None``
+        :rtype: Any
+        """
+        l1 = self._l1
+        has_table = getattr(l1, "has_table", None)
+        if l1 is None or has_table is None or has_table(self.table_name):
+            return l1
+        if not self.__dict__.get("_l1_table_absence_said"):
+            self.__dict__["_l1_table_absence_said"] = True
+            log.warning(
+                "this collection's L1 holds no table of it: it reads and writes through to L2 and L3 "
+                "until the table is created there",
+                extra={"extra_data": {"table": self.table_name, "collection": type(self).__name__}},
+            )
+        return None
+
     def _evict_l1(self, entity_id: Any) -> None:
         """drop ``entity_id``'s row from this process's L1, and stop any read or write in flight caching it.
 
@@ -2092,8 +2180,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: None
         """
         self._l1_fence.changed(self._fence_key(entity_id))
-        if self._l1 is not None:
-            self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+        l1 = self._l1_holding_table()
+        if l1 is not None:
+            l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
         self._l1_changed(entity_id)
 
     def _l1_upsert(self, row: dict[str, Any], primary_key: str | tuple[str, ...]) -> None:
@@ -2110,13 +2199,16 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: nothing
         :rtype: None
         """
+        l1 = self._l1_holding_table()
+        if l1 is None:
+            return
         columns = (primary_key,) if isinstance(primary_key, str) else tuple(primary_key)
         key = tuple(row.get(column) for column in columns)
         entity_id = key if len(key) > 1 else key[0]
         try:
-            self._l1.upsert(self.table_name, row, primary_key)
+            l1.upsert(self.table_name, row, primary_key)
         except NonFiniteNumericError as exc:
-            self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), primary_key)
+            l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), primary_key)
             if not self.__dict__.get("_logged_non_finite_numeric"):
                 self.__dict__["_logged_non_finite_numeric"] = True
                 log.warning(
@@ -4179,7 +4271,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         key = self.l2_key(entity_id)
         # read once, BEFORE any write: a bucket recreated after this read can only make the order
         # computed from it too low, never too high -- and the won write re-reads it to catch that.
-        epoch = await kv.date_created() if ordered else None
+        epoch = await self._l2_epoch(kv) if ordered else None
         for attempt in range(max_retries):
             entry = await kv.get_entry(key=key)
             if entry is None:
@@ -4220,7 +4312,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 row = None if seeded is None or self._row_is_expired(seeded) else seeded
                 if seeded is not None:
                     assert epoch is not None  # narrow: read above whenever ordered
-                    self._refuse_regressed_epoch(entity_id, seeded, epoch)
+                    epoch = await self._refuse_regressed_epoch(kv, entity_id, seeded, epoch)
 
             action, new_row = mutate(row)
             if action == "noop":
@@ -4354,22 +4446,59 @@ class BaseCollection(ABC, Generic[EntityT]):
                 f"(threetears.core.collections.l2_order.l2_order_migration_statements())"
             )
 
-    def _refuse_regressed_epoch(self, entity_id: Any, stored: dict[str, Any], epoch: datetime) -> None:
+    async def _l2_epoch(self, kv: NatsKvBucket) -> datetime:
+        """the bucket's creation time as this collection last read it on ``kv``, read fresh when it has none.
+
+        :param kv: the bucket the swap runs on
+        :ptype kv: NatsKvBucket
+        :return: the creation time; never later than the stream's, since a recreated stream is younger
+        :rtype: datetime
+        :raises KvError: when the bucket cannot be read
+        """
+        held = self._l2_epoch_read
+        epoch = held[1] if held is not None and held[0] is kv else await self._read_l2_epoch(kv)
+        return epoch
+
+    async def _read_l2_epoch(self, kv: NatsKvBucket) -> datetime:
+        """the bucket's creation time, read from the server and remembered for the next swap.
+
+        :param kv: the bucket
+        :ptype kv: NatsKvBucket
+        :return: the creation time
+        :rtype: datetime
+        :raises KvError: when the bucket cannot be read
+        """
+        epoch = await kv.date_created()
+        self._l2_epoch_read = (kv, epoch)
+        return epoch
+
+    async def _refuse_regressed_epoch(
+        self, kv: NatsKvBucket, entity_id: Any, stored: dict[str, Any], epoch: datetime
+    ) -> datetime:
         """refuse a swap whose every possible order is older than the one L3 already holds.
 
+        ``epoch`` may be a remembered read, too low when the bucket was recreated since: before
+        refusing, the creation time is read afresh, and only a stream truly older than the stored
+        order is refused.
+
+        :param kv: the bucket the swap runs on
+        :ptype kv: NatsKvBucket
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
         :param stored: the row L3 holds
         :ptype stored: dict[str, Any]
-        :param epoch: the current bucket's creation time
+        :param epoch: the bucket's creation time as read before the swap
         :ptype epoch: datetime
-        :return: nothing
-        :rtype: None
-        :raises L2EpochRegressedError: when the stored order's epoch is later than ``epoch``
+        :return: the creation time the swap runs under: ``epoch``, or the fresh read when one was made
+        :rtype: datetime
+        :raises L2EpochRegressedError: when the stored order's epoch is later than the bucket's
         """
         stored_order = l2_order_of(stored)
         if stored_order is not None and stored_order.epoch > epoch:
-            raise L2EpochRegressedError(self.table_name, entity_id, stored_order.epoch, epoch)
+            epoch = await self._read_l2_epoch(kv)
+            if stored_order.epoch > epoch:
+                raise L2EpochRegressedError(self.table_name, entity_id, stored_order.epoch, epoch)
+        return epoch
 
     async def _won_order(self, entity_id: Any, key: str, epoch: datetime, won_revision: int, payload: bytes) -> L2Order:
         """the order a won swap holds: its revision, and the creation time of the stream it landed in.
@@ -4399,7 +4528,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         kv = await self._ensure_kv()
         assert kv is not None  # narrow: only reached after a swap won on this bucket
-        current = await kv.date_created()
+        # always fresh: this read, not the one before the swap, is what catches a recreated stream
+        current = await self._read_l2_epoch(kv)
         chosen = epoch
         if current != epoch:
             entry = await kv.get_entry(key=key)

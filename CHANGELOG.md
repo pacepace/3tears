@@ -4,7 +4,153 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.79.0 -- 2026-10-26
+
+### search: a placeholder frame is not named as the article
+
+A thin page whose only frame was `about:blank` (an ad or an embed filled in later) was answered "only the
+page's menu was readable; the article is at about:blank", with "fetch about:blank directly" as the next step;
+an agent fetched one site six times in an hour for that (metallm, 2026-10-26). A frame whose address is not
+http or https is now neither the pointer nor counted among the frames, so such a page is answered as it is, and
+a placeholder beside the article's own frame no longer stops that frame being followed. A `citation_pdf_url`
+that is not a web address is passed over for the frames in the same way, and a frame address that will not
+split is dropped rather than hiding a readable frame beside it; only a page none of whose frame addresses split
+still reads as "its frames could not be looked for".
+
+### datasources, core: an export part read as Arrow, and staged as Arrow
+
+**Added:** a counted export's part can travel from the export's parquet files into a scoped
+snapshot's chunks without any row becoming a Python object.
+- `threetears.datasources.partitioned_export.read_counted_partition_arrow(store, export, part, *,
+  file_concurrency=8) -> pyarrow.Table`, beside `read_counted_partition`.
+  - It reads each file straight into Arrow, several at once and off the event loop, then
+    concatenates them.
+  - It holds the part to its count exactly as the row read does: a mismatch raises
+    `IncompleteExportError`, naming both counts.
+  - A part with no files is an empty table. Needs the `export` extra.
+- `ScopedSnapshot.stage` accepts one `pyarrow.Table` per table, in `rows` and in `added`, as
+  well as dict rows.
+  - The table is typed by the same L1 SQL and refused the same way: an unknown table, a null
+    key, a missing key column. A key given twice keeps its last row.
+  - It stages chunk bytes identical to the same rows given as dicts.
+- `DuckDBBackend.storage_arrow(table, rows, primary_key) -> (columns, pyarrow.Table)` puts an
+  Arrow table into a table's storage forms, as `export_rows` does with dict rows.
+  - `export_rows` now takes either form.
+  - A subclass that types rows itself (a retaining backend's `export_rows`) calls
+    `storage_arrow` to take Arrow too.
+  - Columns whose Arrow type an insert's cast stores exactly (integers, floats, booleans,
+    strings, dates, decimals at the column's scale, zoned timestamps into zoned columns) stay
+    Arrow. Any other column is stored value by value, as a dict row's is.
+
+### core: a compare-and-swap reads its bucket's creation time once, not twice
+
+**Changed:** every ordered `l2_cas_mutate` made two `STREAM.INFO` round trips for the bucket's
+creation time: one before the swap and one after it won.
+- The read before the swap is now remembered per collection and bucket handle. Every swap after
+  the first makes one round trip.
+- A remembered value can only be too low, since a recreated stream is younger. The fresh read
+  after the swap, which catches a stream recreated around it, also refreshes the remembered value.
+- The regressed-epoch refusal (`L2EpochRegressedError`) re-reads the creation time before it
+  raises. So a bucket recreated since the last swap is still detected, and is never mistaken for
+  a regression.
+- `NatsKvBucket.date_created()` itself is unchanged and still reads fresh.
+
+### registry: several replicas evict a dead pod as one registry does
+
+**Fixed:** with more than one registry replica, the heartbeat sweep went wrong in three ways.
+- A pod's missed sweeps were counted in its shared heartbeat row, so every replica's sweep added
+  one, and N replicas evicted a pod after 1/N of `THREETEARS_REGISTRY_HEARTBEAT_MAX_MISSES`.
+- A pod one replica evicted (its row deleted) left the other replicas' tracking but not their
+  catalogs, so they kept offering its copies, and could write them back to the bucket.
+- A replica swept only pods it had heard, so copies it loaded from the bucket for a pod that
+  died before it started stayed forever.
+
+Now:
+- Each replica counts missed sweeps itself, one per its own sweep; every replica hears every
+  heartbeat.
+- A pod whose row is gone is deregistered from the catalog, unless it registered or was heard
+  within the timeout.
+- Every sweep covers each pod the catalog holds a copy for.
+- A pod a replica quarantined is revived there when a peer records its heartbeat.
+
+### core: coordination redemptions keep no L1 copy
+
+**Fixed:** `coordination_redemptions` cached every row a `RedemptionLedger` or `CollectionReplayAnchor` wrote in
+the writer's L1, where nothing read it again or removed it before its expiry, so a process's memory grew by one
+row per redemption (identity-core: one per token refresh, held 400 days). `CoordinationRedemptionsCollection`
+now declares `caches_in_l1 = False`: L2's compare-and-swap decides a redemption and L3 records it, as before, and
+`was_redeemed` and the replay anchor's read go to L2.
+
+### core: a revocation's recorded absence stands for fifteen minutes
+
+**Behaviour change.** `CoordinationRevocationsCollection.negative_cache_max_age` is 15 minutes, not 60 seconds.
+An absence is correct only under the write generation it was recorded at, and every check reads the current one,
+so a revocation on any replica ends it at the next check; the age bounds only a revocation whose generation
+advance was lost, which the write-mark reconciler repairs within its pass. At 60 s, nearly every 15-minute
+refresh found its `sid` and `sub` absences gone and asked L3. A consumer that runs no reconciler shortens it on a
+subclass.
+
+### core: a scoped snapshot tells its listeners when it becomes ready
+
+**Fixed:** a listener (`on_change`) heard each commit, but not the copy becoming ready. A consumer that builds
+only from a ready copy skipped every commit of a rebuild; the last landed before ready, and with no later write
+it never built (the reports pod's "Preparing reports" on cobalt dev). Becoming ready, from L2 or L3, now calls
+every listener once.
+
+### core: a write that changes no row leaves no write mark
+
+**Fixed:** the write-mark trigger fired per statement, so a statement that changed no row marked too (the hub's
+idempotent `INSERT ... WHERE NOT EXISTS` of a namespace on every tool pod's handshake). Each mark is an advance
+of the table's generation that no follower heard, so every follower dropped the table: about twice a minute on
+cobalt dev, 1,017 times a day on prod's gateway. The trigger (same name, `threetears_collection_write_mark`) is
+now per row, and its function marks a table once per transaction, at the first changed row, behind a
+transaction-local setting; the rest of the rows pay one `current_setting` check. A statement that changes no row fires nothing.
+YugabyteDB has no transition tables, which a statement trigger would need to see whether it changed a row.
+Measured on YugabyteDB 2026.1: a 100,000-row `INSERT ... SELECT` takes 342 ms with the trigger, 282 ms without.
+
+**A writer clears the marks its own advance covers** (`CollectionRegistry.set_write_marks_schema`, unset by
+default, which keeps today's behaviour). A collection write on a switched-on table advances the generation
+itself and broadcasts, and its mark then made the reconciler advance a second time, unheard, so every follower
+dropped the table after every write. With the queue's schema set, the writer reads the table's marks after its
+commit, advances, and deletes exactly the marks it read: each was committed before the advance, which covers
+it. A writer that dies, or fails, between the advance and the delete leaves them, and the reconciler advances
+once more, as before; a read or delete that fails never fails the write. A process sets it only where its L3
+holds the queue (the hub, over its own database).
+
+**Upgrade.** The install backstop and the migration runner count a table whose trigger of that name is not per
+row as missing: under the DDL lock they replace the function, drop the statement trigger and create the row
+trigger, so the two never both fire.
+
+### core: a collection whose L1 holds no table of it reads through rather than raise
+
+**Fixed:** a registry hands its L1 to every collection it builds, but only a collection that creates its table
+there, or whose table its owner declared, has one. A collection built later under a name of its own (the hub's
+tile source, `geo_tiles_<scope>`, and its feature cache) read and wrote a table its L1 never had, and every tile
+answered 500 with `sqlite3.OperationalError: no such table`. Every row of a collection's table enters, leaves
+and is read from L1 through one place, which now uses L1 only while it holds the table: until then the
+collection reads and writes through to L2 and L3, as one built with no L1, and says so once.
+
+### core: a scoped snapshot's rebuild from L3 keeps its progress across waits
+
+**Fixed:** a rebuild from L3 publishes a scope only while no write is in progress or has committed since it
+read the epochs, and on each wait it dropped what it had published, so the next attempt read every scope again
+from the first. Under a loader whose writes leave only short gaps (an LSF pull holding a write open for twenty
+minutes, every five minutes), each gap got two or three scopes in before the next write stopped it, and the copy
+was never ready: readers were refused for hours after a column change. A replica now keeps, across its waits,
+the scopes any rebuild here (a full one or a catch-up) published, and the epoch it published each at; a later
+attempt reads only the scopes whose epoch moved since, or that this L1 or the scope's pointer no longer holds at
+it. What it kept is dropped when NATS lost the snapshot, or when a cold load finds a pointer's chunks gone. The
+index is still written whole, and the copy declared ready, only by an attempt no write outran.
+
+### core: a rebuild repoints a same-epoch pointer of other columns
+
+**Behaviour change.** A rebuild from L3 left a scope's pointer in place when another code version had written
+it at the same epoch under other columns, until a write moved the scope. After a column change, a scope no
+write touched since kept the old version's pointer, so every replica found the snapshot "written for other
+table columns" and rebuilt every scope from L3 at every start. A rebuild now moves such a pointer to its own
+columns, so the next start loads from L2. While two versions run together, a replica that starts repoints the
+other's same-epoch scopes; a ready replica never takes a same-epoch pointer of other columns, so it keeps
+serving its own L1 and is not made to rebuild.
 
 ## v0.78.0 -- 2026-10-24
 

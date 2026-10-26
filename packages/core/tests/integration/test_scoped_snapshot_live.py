@@ -1074,18 +1074,21 @@ async def _pointer_revisions(platform: _Platform) -> dict[str, int]:
     return revisions
 
 
-async def test_two_code_versions_with_other_columns_never_load_or_repoint_each_others_chunks(
+async def test_two_code_versions_with_other_columns_never_load_each_others_chunks_and_a_start_repoints(
     platform: _Platform,
 ) -> None:
     """a rolling deploy of a column change: the old version and the new one run together over the
-    same pointers. Neither ever holds the other's columns, neither repoints the other's scopes on a
-    rebuild, and a write either one publishes reaches the other, which rebuilds that scope from L3."""
+    same pointers. Neither ever holds the other's columns. The new version's start rebuilds from L3 and
+    repoints the scopes to its columns at the same epochs, so a later start loads them from L2 rather than
+    rebuilding every scope no write has touched; the ready old version keeps serving its own L1, not made
+    to rebuild. A write either one publishes reaches the other, which rebuilds that scope from L3."""
     await platform.pool.execute("ALTER TABLE counties ADD COLUMN note TEXT")
     await platform.pool.execute("UPDATE counties SET note = 'from L3'")
-    old, _ = await platform.replica()
+    old, old_l3 = await platform.replica()
     await old.start()
     await old.wait_ready(timeout=_WAIT)
     before = await _pointer_revisions(platform)
+    old_statements = old_l3.statements
 
     new, new_l3 = await platform.replica(backend=_new_backend_with_note())
     await new.start()
@@ -1096,9 +1099,12 @@ async def test_two_code_versions_with_other_columns_never_load_or_repoint_each_o
     assert new_l3.statements > 0
     with new.read() as cursor:
         assert cursor.execute("SELECT DISTINCT note FROM counties").fetchall() == [("from L3",)]
-    assert "other columns" in new.status().detail
-    assert await _pointer_revisions(platform) == before, "a rebuild repointed the other version's scopes"
+    after = await _pointer_revisions(platform)
+    assert all(after[state] > before[state] for state in _STATES), "the rebuild left scopes on the old columns"
+    assert new.status().detail == "ready"
     assert old.status().phase is SnapshotPhase.READY and "note" not in str(old.backend.column_types("counties"))
+    assert "other columns" in old.status().detail
+    assert old_l3.statements == old_statements, "the ready old version was made to rebuild"
 
     # the old version writes DE at epoch 2: the new one cannot load those chunks and rebuilds DE from L3
     await platform.pool.execute("UPDATE results SET votes = 11 WHERE state = 'DE'")

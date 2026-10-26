@@ -1080,6 +1080,9 @@ class _FramesAndPointers(HTMLParser):
             self.citation_pdf = self.citation_pdf or named["content"].strip()
 
 
+#: The schemes a frame or a pointer can be read at; any other is not an article's address.
+_WEB_SCHEMES: Final[tuple[str, ...]] = ("http", "https")
+
 #: what :func:`_pointer_of` raises on markup or an address it cannot read: the stdlib HTML parser's
 #: ``AssertionError`` on a declaration it cannot make sense of, and ``urljoin``'s ``ValueError``.
 #: Anything else is a bug in the frame scan and propagates.
@@ -1091,7 +1094,13 @@ def _pointer_of(markup: str, base: str) -> tuple[str | None, int, bool]:
 
     ``citation_pdf_url`` is the page saying outright where its article is, so
     it wins; otherwise the page's first ``iframe``, which is followed only
-    when it is the page's one frame.
+    when it is the page's one frame. An address that is not a web address
+    (``about:blank``, ``javascript:``, ``data:``) holds no article: a frame with
+    one is a placeholder an ad or an embed fills in later, so it is neither the
+    pointer nor counted among the frames, and a ``citation_pdf_url`` with one is
+    passed over for the frames. A frame address that will not split is dropped the
+    same way, so it cannot hide a readable frame beside it; only when no frame
+    address on the page splits is that an answer of its own.
 
     :param markup: the decoded page
     :ptype markup: str
@@ -1103,15 +1112,31 @@ def _pointer_of(markup: str, base: str) -> tuple[str | None, int, bool]:
     :raises AssertionError: from the stdlib HTML parser, which reports a declaration it cannot
         make sense of that way; the caller says the frames could not be looked for, since
         "points nowhere" is a different answer
-    :raises ValueError: from ``urljoin``, on an address that will not split (``http://[::1``)
+    :raises ValueError: from ``urljoin``, on a ``citation_pdf_url`` that will not split, or when
+        no frame address on the page splits (``http://[::1``)
     """
     parser = _FramesAndPointers()
     parser.feed(markup)
     parser.close()
-    if parser.citation_pdf:
-        return urljoin(base, parser.citation_pdf), len(parser.frames), True
-    if parser.frames:
-        return urljoin(base, parser.frames[0]), len(parser.frames), False
+    frames: list[str] = []
+    resolved = False
+    unsplit: ValueError | None = None
+    for src in parser.frames:
+        try:
+            url = urljoin(base, src)
+        except ValueError as exc:
+            unsplit = unsplit or exc
+            continue
+        resolved = True
+        if urlsplit(url).scheme in _WEB_SCHEMES:
+            frames.append(url)
+    if unsplit is not None and not resolved:
+        raise unsplit
+    cited = urljoin(base, parser.citation_pdf) if parser.citation_pdf else None
+    if cited is not None and urlsplit(cited).scheme in _WEB_SCHEMES:
+        return cited, len(frames), True
+    if frames:
+        return frames[0], len(frames), False
     return None, 0, False
 
 
@@ -1227,8 +1252,6 @@ async def _follow_a_thin_page(
 
     if frames > 1 and not outright:
         return menu_only(f"the page holds {frames} frames, and which one is the article is not guessed")
-    if urlsplit(target).scheme not in ("http", "https"):
-        return menu_only("the frame is not a web address")
     if not same_site(page, target):
         return menu_only("it is on another site, and a frame is followed only on the page's own site")
     used = len(response.body)

@@ -60,6 +60,7 @@ from threetears.datasources.export_read import (
     _manifest_entries,
     _ManifestFile,
     _parquet_rows,
+    _parquet_table,
     _presign_load_files,
     _read_object,
     export_select,
@@ -70,6 +71,13 @@ from threetears.datasources.query_client import (
     RelationFingerprintResult,
 )
 
+try:
+    import pyarrow as pa
+
+    _ARROW = True
+except ImportError:  # NOSILENT: the export extra is optional; an Arrow read says so without it
+    _ARROW = False
+
 __all__ = [
     "HIVE_NULL_PARTITION",
     "CountedFile",
@@ -79,6 +87,7 @@ __all__ = [
     "export_partitions",
     "presigned_counted_partition",
     "read_counted_partition",
+    "read_counted_partition_arrow",
 ]
 
 log = get_logger(__name__)
@@ -136,6 +145,28 @@ async def _read_part(store: ExportStore, keys: Sequence[str], concurrency: int) 
     for part in await asyncio.gather(*(one(key) for key in keys)):
         rows.extend(part)
     return rows
+
+
+async def _read_part_arrow(store: ExportStore, keys: Sequence[str], concurrency: int) -> pa.Table:
+    """every row of one part's files as one Arrow table, several files at once, no row made a Python object.
+
+    :return: the rows; an empty table (no columns) for no files
+    :rtype: pyarrow.Table
+    """
+    if not _ARROW:
+        raise ImportError(
+            "reading an export's parquet files as Arrow needs pyarrow: install 3tears-datasources[export]"
+        )
+    gate = asyncio.Semaphore(concurrency)
+
+    async def one(key: str) -> pa.Table:
+        async with gate:
+            data = await _read_object(store, key)
+        return await asyncio.to_thread(_parquet_table, data)
+
+    tables = list(await asyncio.gather(*(one(key) for key in keys)))
+    # files of one export share its columns; "default" also unifies a column one file holds as all-null
+    return pa.concat_tables(tables, promote_options="default") if tables else pa.table({})
 
 
 def _moved(
@@ -534,6 +565,42 @@ async def read_counted_partition(
             f"{export.partition_by}={part}: the export's files hold {len(rows)} rows, the caller counted {expected}"
         )
     return rows
+
+
+async def read_counted_partition_arrow(
+    store: ExportStore,
+    export: CountedPartitionedExport,
+    part: str,
+    *,
+    file_concurrency: int = _DEFAULT_FILE_CONCURRENCY,
+) -> pa.Table:
+    """one part's rows of a counted export as one Arrow table, held to its count as
+    :func:`read_counted_partition` holds its rows.
+
+    For a caller that hands the rows on as Arrow (a scoped snapshot's stage): each file is read
+    straight into Arrow, and no row is ever a Python object. Needs ``pyarrow`` (the ``export`` extra).
+
+    :param store: an object store over the export bucket
+    :ptype store: ExportStore
+    :param export: the proven export
+    :ptype export: CountedPartitionedExport
+    :param part: the part's value; one not counted, or counted with none, has no rows
+    :ptype part: str
+    :param file_concurrency: its files read at once
+    :ptype file_concurrency: int
+    :return: the rows, as the files hold them (the partition column among them); an empty table, with no
+        columns, for a part with no files
+    :rtype: pyarrow.Table
+    :raises IncompleteExportError: when the files do not hold exactly the part's count
+    """
+    files = export.files.get(part, ())
+    table = await _read_part_arrow(store, [file.path for file in files], file_concurrency)
+    expected = export.rows.get(part, 0)
+    if table.num_rows != expected:
+        raise IncompleteExportError(
+            f"{export.partition_by}={part}: the export's files hold {table.num_rows} rows, the caller counted {expected}"
+        )
+    return table
 
 
 async def presigned_counted_partition(

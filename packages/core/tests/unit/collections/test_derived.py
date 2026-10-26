@@ -26,6 +26,9 @@ from typing import Any
 
 import pytest
 
+from sqlalchemy import MetaData
+
+from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.derived import BuildLockHeld, DerivedCollection, LeaseBuildLock
 from threetears.core.coordination.lease import LeaseUnavailable
 from threetears.core.collections.registry import CollectionRegistry
@@ -136,6 +139,39 @@ class TestComputeOnMiss:
         collection.computable = False
         assert asyncio.run(collection.fetch_from_store((99,))) is None
         assert (99,) not in collection.store
+
+
+class TestAnL1WithoutTheTable:
+    """the registry's L1 never given this collection's table (the hub's, for a tile source built after start):
+    a read of it raised ``no such table`` on every tile; it goes to the durable tier instead."""
+
+    @staticmethod
+    def _over_an_l1_without_its_table() -> tuple[_BucketCollection, CollectionRegistry]:
+        l1 = SQLiteBackend(db_name=f"no-buckets-{id(object())}")
+        l1.initialize(MetaData())
+        registry = CollectionRegistry()
+        registry.configure(l1_backend=l1, l2_client=None, l3_pool=None)
+        return _BucketCollection(registry, DefaultCoreConfig(), None, None), registry
+
+    def test_a_read_derives_rather_than_raise(self) -> None:
+        collection, _ = self._over_an_l1_without_its_table()
+
+        async def twice() -> tuple[Any, Any]:
+            return await collection.get((4,)), await collection.get((4,))
+
+        first, again = asyncio.run(twice())
+        assert first is not None and again is not None
+        assert collection.store[(4,)]["value"] == "derived-4"
+        assert collection.compute_calls == [(4,)], "the second read did not find the derived value"
+
+    def test_a_dropped_table_reads_again_rather_than_raise(self) -> None:
+        collection, registry = self._over_an_l1_without_its_table()
+        collection.store[(4,)] = {"bucket": 4, "value": "preexisting"}
+        registry.drop_table("buckets", reason="missed")
+
+        entity = asyncio.run(collection.get((4,)))
+
+        assert entity is not None
 
 
 class TestWithoutTheNatsClient:
