@@ -22,7 +22,7 @@ A story form is a way of answering, not a category the eval belongs to. Choose i
 
 **Slots:** the_trade, where_it_flips (the price bands where the best option changes), our_lean (labelled yours, with the band it holds for), what_settles_it.
 
-**What it owes:** one axis priced in the other at real volume (`price_tradeoff()`), over the two to four options a decider would actually weigh. Too many variants make the bands too thin to act on. If the loss concentrates in one stratum, a mix that avoids it (route that stratum to the stronger option) may be the most useful option, but nobody ran it, so no figure states its cost or gain. Never price it. Recommend running it as a next step, say what its measurement would settle, and name the seam that suggests it. Show any evidence of what users notice. If there is none, say so in Watch. Say plainly that nothing was declared in advance, and name who makes the call.
+**What it owes:** one axis priced in the other at real volume (`price_tradeoff`), over the two to four options a decider would actually weigh. Too many variants make the bands too thin to act on. If the loss concentrates in one stratum, a mix that avoids it (route that stratum to the stronger option) may be the most useful option, but nobody ran it, so no figure states its cost or gain. Never price it. Recommend running it as a next step, say what its measurement would settle, and name the seam that suggests it. Show any evidence of what users notice. If there is none, say so in Watch. Say plainly that nothing was declared in advance, and name who makes the call.
 
 **Usual failure:** deciding anyway. A lean presented as a recommendation hides the fact that the call is a business choice.
 
@@ -34,7 +34,7 @@ A story form is a way of answering, not a category the eval belongs to. Choose i
 
 **Slots:** what_is_tangled, known_despite_it, what_settles_it, next.
 
-**Lead evidence:** the tangle itself, shown so a reader can see why it blocks the reading. For example, the confound's size beside the difference it could explain (`confound_check()`).
+**Lead evidence:** the tangle itself, shown so a reader can see why it blocks the reading. For example, the confound's size beside the difference it could explain (`confound_check` is not available: log a `capability_gap` and show the confound beside the difference from the figures you have).
 
 **Usual failure:** a hedged decision. If the tangle could reverse the call, the report is a diagnosis, and saying so is more useful than a recommendation with a long Watch.
 
