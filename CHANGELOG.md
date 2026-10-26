@@ -4,6 +4,72 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### langgraph: a checkpoint L2 entry that cannot be refreshed is deleted, not left holding an older checkpoint
+
+**Fixed:** `ThreeTierCheckpointSaver`'s L2 key is per thread and namespace, not per checkpoint, so a
+put that failed left the PREVIOUS checkpoint under it, and another worker whose L1 missed was served
+that older state from L2 without reaching Postgres. A production turn whose checkpoints were over the
+NATS server's `max_payload` did exactly that (`KvError: ... nats: maximum payload exceeded`, three
+times for one turn). `l2_put` now deletes the key whenever the put does not land, and only if that
+delete also fails puts the key on the saver's write bypass, so this process reads that thread and
+namespace from L3 until a later put or delete of the key lands. The write bypass is kept apart from
+the purge bypass (a thread whose purge could not clear a cache stays off the caches until a purge
+succeeds, whatever is written) and holds at most `threetears.langgraph.checkpoint.L2_WRITE_BYPASS_LIMIT`
+(4096) keys; past that the oldest is dropped with a WARNING naming it. A read pinned to a `checkpoint_id` no longer warms the caches: the keys are
+read as "latest", and warming them from an older checkpoint served it to every later unpinned read.
+
+**Added:** `threetears.langgraph.CheckpointL2ValueLimit`, an optional protocol beside
+`CheckpointL2PrefixCache`: an L2 cache with a `max_value_bytes` property (`int | None`). The saver
+does not attempt a put over it; it deletes the key and logs one WARNING with `size_bytes` and
+`max_value_bytes`. `NatsCheckpointL2Cache` (below) answers with `NatsClient.max_payload`. A separate protocol, not
+a member of `CheckpointL2Cache`, so adapters written against that one still satisfy it; without the
+limit the saver still deletes the key after the refused put.
+
+**Fixed:** the refill of L2 after a Postgres read could land after another worker's newer checkpoint
+and replace it, serving the older one to every worker whose L1 missed. The saver now reads the L2
+key's revision before the Postgres query and refills at that revision, so any write or deletion since
+refuses the refill (and then L1 is not given the older checkpoint either). This needs the new
+optional protocol `threetears.langgraph.CheckpointL2RevisionCache` (`get_latest(bucket, key)` and
+`update(bucket, key, value, revision)`, which `NatsCheckpointL2Cache` delegates to `NatsKvBucket`'s
+methods of the same names). **A cache without it is no longer refilled from a read at all**: only
+`aput` writes L2, and the next write refills it.
+
+**Added:** `threetears.langgraph.nats_l2.NatsCheckpointL2Cache(client)`, the saver's L2 cache over a
+`NatsClient`'s KV buckets. It implements `CheckpointL2Cache`, `CheckpointL2RevisionCache`,
+`CheckpointL2ValueLimit` (`max_value_bytes` is the client's `max_payload`) and
+`CheckpointL2PrefixCache` (`delete_prefix` lists the bucket's keys under the prefix and deletes each,
+so a purge clears a thread's namespaced bundles too). Install `3tears-langgraph[nats]`; the module is
+not imported by `threetears.langgraph`, so a saver without NATS does not need `3tears-nats`. A host
+with its own NATS adapter should switch to this one, or it keeps neither the fenced refill nor the
+size check.
+
+### core: the testing fixtures import testcontainers from `testcontainers.community`
+
+**Changed:** `threetears.core.testing.fixtures` (and the backup integration tests and
+`scripts/measure-coordination-latency.py`) import `PostgresContainer` / `NatsContainer` from
+`testcontainers.community.*`. The old paths are 4.15.0's deprecation shims, which warned on every run
+that started Postgres. The `3tears[testing]` extra and the workspace dev group now require
+`testcontainers>=4.15.0`, the first release with `testcontainers.community`; a consumer on an older
+testcontainers must move up with it. The workspace pytest config makes a shim's warning an error, so
+an import of an old path fails rather than warns.
+
+### geo: tile projection uses `shapely.transform`; requires shapely>=2.1
+
+**Changed:** `threetears.geo.mvt.project_to_tile` projects with `shapely.transform(...,
+include_z=False, interleaved=False)` instead of `shapely.ops.transform`, which shapely 2.2 deprecates.
+Each coordinate still goes through the same scalar projection, and a test pins the output to the
+exact WKB the old call produced (every geometry type, a dropped Z, an empty geometry, a latitude
+past the Mercator clamp). `interleaved=` arrived in shapely 2.1, so the floor moves from `>=2.0`.
+
+### nats: an oversized KV value is not retried through a bucket re-open
+
+**Fixed:** `NatsKvBucket` re-raises nats-py's `MaxPayloadError` instead of treating it as a transport
+failure, re-opening the bucket and retrying once. The refusal is client-side against the server's
+advertised `max_payload`, so the retry could only fail the same way. It still reaches the caller as a
+`KvError` naming the bucket and key.
+
 ## v0.79.0 -- 2026-10-26
 
 ### search: a placeholder frame is not named as the article
@@ -989,70 +1055,6 @@ tagged commit, with the repository secret `CLAUDE_CODE_OAUTH_TOKEN`, and `build`
 failing batch publishes nothing. Releasing no longer needs the batch run by hand or its evidence line
 pasted into the release PR; the line is on the run's summary page. The release's own `check` job runs
 the unit suite as the five sessions CI runs (`scripts/ci-unit-tests.sh`).
-
-### langgraph: a checkpoint L2 entry that cannot be refreshed is deleted, not left holding an older checkpoint
-
-**Fixed:** `ThreeTierCheckpointSaver`'s L2 key is per thread and namespace, not per checkpoint, so a
-put that failed left the PREVIOUS checkpoint under it, and another worker whose L1 missed was served
-that older state from L2 without reaching Postgres. A production turn whose checkpoints were over the
-NATS server's `max_payload` did exactly that (`KvError: ... nats: maximum payload exceeded`, three
-times for one turn). `l2_put` now deletes the key whenever the put does not land, and only if that
-delete also fails puts the key on the saver's write bypass, so this process reads that thread and
-namespace from L3 until a later put or delete of the key lands. The write bypass is kept apart from
-the purge bypass (a thread whose purge could not clear a cache stays off the caches until a purge
-succeeds, whatever is written) and holds at most `threetears.langgraph.checkpoint.L2_WRITE_BYPASS_LIMIT`
-(4096) keys; past that the oldest is dropped with a WARNING naming it. A read pinned to a `checkpoint_id` no longer warms the caches: the keys are
-read as "latest", and warming them from an older checkpoint served it to every later unpinned read.
-
-**Added:** `threetears.langgraph.CheckpointL2ValueLimit`, an optional protocol beside
-`CheckpointL2PrefixCache`: an L2 cache with a `max_value_bytes` property (`int | None`). The saver
-does not attempt a put over it; it deletes the key and logs one WARNING with `size_bytes` and
-`max_value_bytes`. `NatsCheckpointL2Cache` (below) answers with `NatsClient.max_payload`. A separate protocol, not
-a member of `CheckpointL2Cache`, so adapters written against that one still satisfy it; without the
-limit the saver still deletes the key after the refused put.
-
-**Fixed:** the refill of L2 after a Postgres read could land after another worker's newer checkpoint
-and replace it, serving the older one to every worker whose L1 missed. The saver now reads the L2
-key's revision before the Postgres query and refills at that revision, so any write or deletion since
-refuses the refill (and then L1 is not given the older checkpoint either). This needs the new
-optional protocol `threetears.langgraph.CheckpointL2RevisionCache` (`get_latest(bucket, key)` and
-`update(bucket, key, value, revision)`, which `NatsCheckpointL2Cache` delegates to `NatsKvBucket`'s
-methods of the same names). **A cache without it is no longer refilled from a read at all**: only
-`aput` writes L2, and the next write refills it.
-
-**Added:** `threetears.langgraph.nats_l2.NatsCheckpointL2Cache(client)`, the saver's L2 cache over a
-`NatsClient`'s KV buckets. It implements `CheckpointL2Cache`, `CheckpointL2RevisionCache`,
-`CheckpointL2ValueLimit` (`max_value_bytes` is the client's `max_payload`) and
-`CheckpointL2PrefixCache` (`delete_prefix` lists the bucket's keys under the prefix and deletes each,
-so a purge clears a thread's namespaced bundles too). Install `3tears-langgraph[nats]`; the module is
-not imported by `threetears.langgraph`, so a saver without NATS does not need `3tears-nats`. A host
-with its own NATS adapter should switch to this one, or it keeps neither the fenced refill nor the
-size check.
-
-### core: the testing fixtures import testcontainers from `testcontainers.community`
-
-**Changed:** `threetears.core.testing.fixtures` (and the backup integration tests and
-`scripts/measure-coordination-latency.py`) import `PostgresContainer` / `NatsContainer` from
-`testcontainers.community.*`. The old paths are 4.15.0's deprecation shims, which warned on every run
-that started Postgres. The `3tears[testing]` extra and the workspace dev group now require
-`testcontainers>=4.15.0`, the first release with `testcontainers.community`; a consumer on an older
-testcontainers must move up with it. The workspace pytest config makes a shim's warning an error, so
-an import of an old path fails rather than warns.
-
-### geo: tile projection uses `shapely.transform`; requires shapely>=2.1
-
-**Changed:** `threetears.geo.mvt.project_to_tile` projects with `shapely.transform(...,
-include_z=False, interleaved=False)` instead of `shapely.ops.transform`, which shapely 2.2 deprecates.
-Each coordinate still goes through the same scalar projection, and a test pins the output to the
-exact WKB the old call produced (every geometry type, a dropped Z, an empty geometry, a latitude
-past the Mercator clamp). `interleaved=` arrived in shapely 2.1, so the floor moves from `>=2.0`.
-
-### nats: an oversized KV value is not retried through a bucket re-open
-
-**Fixed:** `NatsKvBucket` re-raises nats-py's `MaxPayloadError` instead of treating it as a transport
-failure, re-opening the bucket and retrying once. The refusal is client-side against the server's
-advertised `max_payload`, so the retry could only fail the same way. It still reaches the caller as a
-`KvError` naming the bucket and key.
 
 ## v0.75.0 -- 2026-10-21
 
