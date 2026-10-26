@@ -593,11 +593,58 @@ def test_a_table_lays_out_the_rows_its_query_selects_for_any_source(source: str)
         for column in block.columns
         if column.key.startswith("measure:") and not column.key.endswith(":interval")
     }
-    if measured:
+    if measured and source in _SLICE_PLACES:
+        _assert_a_row_per_slice_and_arm(name, source, block, selected)
+    elif measured:
         assert measured >= {row.key for row in selected if row.key}, "every selected measure has its column"
-        assert len(block.rows) >= len({row.arm for row in selected}), "every selected arm has its row"
+        assert len(block.rows) == len({row.arm for row in selected}), "a row per selected arm"
+        for row in block.rows:
+            arm = next(arm for arm in _look(name).arms if _look(name).arm(arm).name == row["arm"].value)
+            for key in measured:
+                held = any(one.arm == arm and one.key == key and _holds_figure(one.item) for one in selected)
+                assert (row[f"measure:{key}"].value is not None) == held, (source, arm, key)
     else:
         assert len(block.rows) >= len(selected), "every selected row is laid out"
+
+
+#: The slice sources a wide table lays out a row per (slice, arm) of, by the column naming the slice.
+_SLICE_PLACES = {"strata": "slice", "tasks": "slice", "cells": "cell"}
+
+
+def _place_name(report_input: ReportInput, look: PageLook, item: Stratum | Task | Cell) -> str:
+    """A slice as its row names it, read from the input: a stratum's or task's name (else the look's reader name), a
+    cell's two levels by their names."""
+    if isinstance(item, Cell):
+        matrix = report_input.target_matrix
+        factors = [*report_input.factors, *((matrix.rows, matrix.columns) if matrix is not None else ())]
+        names = {level.id: level.name for factor in factors for level in factor.levels if level.name}
+        return f"{names.get(item.row, item.row)} × {names.get(item.column, item.column)}"
+    return item.name or look.reader("stratum" if isinstance(item, Stratum) else "task", item.id)
+
+
+def _holds_figure(stat: Any) -> bool:
+    return stat is not None and any(getattr(stat, field) is not None for field in ("mean", "p50", "p95"))
+
+
+def _assert_a_row_per_slice_and_arm(name: str, source: str, block: TableBlock, selected: list[Any]) -> None:
+    """A slice table's contract: exactly one row per (slice, arm) the query selects that holds figures, each
+    measure's figure in its own column, a dash where the input holds none."""
+    report_input, look = _input(name), _look(name)
+    expected: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in selected:
+        for arm, figures in row.item.per_arm.items():
+            if arm in look.arms and figures:
+                expected[(_place_name(report_input, look, row.item), look.arm(arm).name)] = figures
+    laid = [(row[_SLICE_PLACES[source]].value, row["arm"].value) for row in block.rows]
+    assert len(laid) == len(set(laid)), f"{source}: a (slice, arm) laid out twice"
+    assert set(laid) == set(expected), f"{source}: rows {sorted(set(laid) ^ set(expected))} differ from the input's"
+    for row, place in zip(block.rows, laid, strict=True):
+        for column in block.columns:
+            key = column.key.removeprefix("measure:")
+            if key == column.key or column.key.endswith(":interval"):
+                continue
+            held = _holds_figure(expected[place].get(key))
+            assert (row[column.key].value is not None) == held, f"{source}: {place} {key} is in the wrong column"
 
 
 # --- checks and renderer agree on a chart less the control ---------------------------------------------------------
