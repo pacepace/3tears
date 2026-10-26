@@ -59,11 +59,8 @@ from threetears.core.ddl.errors import DdlLockTimeoutError
 from threetears.core.ddl.session import ConnectionSession
 from threetears.core.ddl.write_marks import (
     MARK_FUNCTION,
-    STATEMENT_WRITE_MARK_TRIGGER,
     WRITE_MARK_TRIGGER,
     WRITE_MARKS_TABLE,
-    mark_function_sql,
-    replace_statement_trigger_sql,
     write_mark_trigger_sql,
     write_marks_ddl,
 )
@@ -72,7 +69,6 @@ from threetears.core.sql_fragments import quote_identifier
 __all__ = [
     "INSTALL_LOCK_POLICY",
     "MARK_FUNCTION",
-    "STATEMENT_WRITE_MARK_TRIGGER",
     "WRITE_MARKS_TABLE",
     "WRITE_MARK_TRIGGER",
     "MarkPass",
@@ -159,6 +155,7 @@ WHERE t.table_type = 'BASE TABLE' AND t.table_name::text = ANY($1::text[]) AND N
     JOIN pg_class c ON c.oid = g.tgrelid
     JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE g.tgname = $2 AND c.relname = t.table_name AND n.nspname = t.table_schema
+    AND (g.tgtype & 1) = 1
 )
 ORDER BY t.table_schema, t.table_name
 """
@@ -168,7 +165,7 @@ SELECT n.nspname AS table_schema, c.relname AS table_name
 FROM pg_trigger g
 JOIN pg_class c ON c.oid = g.tgrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE g.tgname = ANY($1::text[])
+WHERE g.tgname = $1
 ORDER BY n.nspname, c.relname
 """
 
@@ -227,11 +224,14 @@ async def install_write_mark_triggers(
                 missing = await tables_missing_the_trigger(conn, names)
                 if missing:
                     # the function the row trigger calls, replacing the one that marked every statement
-                    await conn.execute(mark_function_sql(marks_schema))
+                    await conn.execute(write_marks_ddl(marks_schema)[1])
                 for schema, table in missing:
                     try:
-                        # the statement trigger before the row one, so the two never both mark a write
-                        await conn.execute(replace_statement_trigger_sql(table_schema=schema, table=table))
+                        # 0.78.0's statement trigger of the same name goes first, so the two never both mark
+                        await conn.execute(
+                            f"DROP TRIGGER IF EXISTS {quote_identifier(WRITE_MARK_TRIGGER)} "
+                            f"ON {quote_identifier(schema)}.{quote_identifier(table)}"
+                        )
                         await conn.execute(
                             write_mark_trigger_sql(marks_schema=marks_schema, table_schema=schema, table=table)
                         )
@@ -277,13 +277,12 @@ async def drop_write_mark_triggers(pool: SqlPool, *, policy: DdlLockPolicy | Non
     """
     dropped: list[str] = []
     async with pool.acquire() as conn, database_ddl_lock(ConnectionSession(conn), policy):
-        for row in await conn.fetch(_PRESENT_SQL, [WRITE_MARK_TRIGGER, STATEMENT_WRITE_MARK_TRIGGER]):
+        for row in await conn.fetch(_PRESENT_SQL, WRITE_MARK_TRIGGER):
             schema, table = row["table_schema"], row["table_name"]
-            for trigger in (WRITE_MARK_TRIGGER, STATEMENT_WRITE_MARK_TRIGGER):
-                await conn.execute(
-                    f"DROP TRIGGER IF EXISTS {quote_identifier(trigger)} "
-                    f"ON {quote_identifier(schema)}.{quote_identifier(table)}"
-                )
+            await conn.execute(
+                f"DROP TRIGGER IF EXISTS {quote_identifier(WRITE_MARK_TRIGGER)} "
+                f"ON {quote_identifier(schema)}.{quote_identifier(table)}"
+            )
             dropped.append(f"{schema}.{table}")
     log.warning("write-mark triggers dropped", extra={"extra_data": {"tables": dropped}})
     return dropped

@@ -8,14 +8,21 @@ packages (bumped in lock-step).
 
 ## v0.78.1 -- 2026-10-26
 
+### core: a scoped snapshot tells its listeners when it becomes ready
+
+**Fixed:** a listener (`on_change`) heard each commit, but not the copy becoming ready. A consumer that builds
+only from a ready copy skipped every commit of a rebuild; the last landed before ready, and with no later write
+it never built (the reports pod's "Preparing reports" on cobalt dev). Becoming ready, from L2 or L3, now calls
+every listener once.
+
 ### core: a write that changes no row leaves no write mark
 
 **Fixed:** the write-mark trigger fired per statement, so a statement that changed no row marked too (the hub's
 idempotent `INSERT ... WHERE NOT EXISTS` of a namespace on every tool pod's handshake). Each mark is an advance
 of the table's generation that no follower heard, so every follower dropped the table: about twice a minute on
-cobalt dev, 1,017 times a day on prod's gateway. The trigger is now per row (`threetears_collection_row_write_mark`),
-and its function marks a table once per transaction, at the first changed row, behind a transaction-local
-setting; the rest of the rows pay one `current_setting` check. A statement that changes no row fires nothing.
+cobalt dev, 1,017 times a day on prod's gateway. The trigger (same name, `threetears_collection_write_mark`) is
+now per row, and its function marks a table once per transaction, at the first changed row, behind a
+transaction-local setting; the rest of the rows pay one `current_setting` check. A statement that changes no row fires nothing.
 YugabyteDB has no transition tables, which a statement trigger would need to see whether it changed a row.
 Measured on YugabyteDB 2026.1: a 100,000-row `INSERT ... SELECT` takes 342 ms with the trigger, 282 ms without.
 
@@ -28,9 +35,9 @@ it. A writer that dies, or fails, between the advance and the delete leaves them
 once more, as before; a read or delete that fails never fails the write. A process sets it only where its L3
 holds the queue (the hub, over its own database).
 
-**Upgrade.** The install backstop and the migration runner find every switched-on table missing the new trigger,
-replace the function, drop the old statement trigger (`threetears_collection_write_mark`) and create the row
-trigger, under the DDL lock, so the two never both fire. `drop_write_mark_triggers` drops either.
+**Upgrade.** The install backstop and the migration runner count a table whose trigger of that name is not per
+row as missing: under the DDL lock they replace the function, drop the statement trigger and create the row
+trigger, so the two never both fire.
 
 ### core: a collection whose L1 holds no table of it reads through rather than raise
 

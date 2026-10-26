@@ -58,6 +58,13 @@
 # callers.
 
 [[release]]
+version = "0.78.1"
+since = "v0.78.0"
+summary = """
+A core patch release: no 3tears-evals name has moved or been removed since 0.78.0, and no judge wording changed.
+"""
+
+[[release]]
 version = "0.78.0"
 since = "v0.77.0"
 summary = """

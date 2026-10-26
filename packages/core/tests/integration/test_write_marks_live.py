@@ -31,7 +31,6 @@ from threetears.core.data.migrations.ddl_lock import DdlLockPolicy, database_ddl
 from threetears.core.data.migrations.session import ConnectionSession
 from threetears.core.collections.write_marks import (
     MARK_FUNCTION,
-    STATEMENT_WRITE_MARK_TRIGGER,
     WRITE_MARK_TRIGGER,
     WRITE_MARKS_TABLE,
     WriteMarkReconciler,
@@ -202,19 +201,19 @@ async def test_an_install_over_the_statement_trigger_replaces_it_so_a_write_mark
         f"BEGIN INSERT INTO {platform}.{WRITE_MARKS_TABLE} (table_name) VALUES (TG_TABLE_NAME); RETURN NULL; END $m$"
     )
     await pool.execute(
-        f"CREATE TRIGGER {STATEMENT_WRITE_MARK_TRIGGER} AFTER INSERT OR UPDATE OR DELETE ON {agent}.{_TABLE} "
+        f"CREATE TRIGGER {WRITE_MARK_TRIGGER} AFTER INSERT OR UPDATE OR DELETE ON {agent}.{_TABLE} "
         f"FOR EACH STATEMENT EXECUTE FUNCTION {platform}.{MARK_FUNCTION}()"
     )
 
     await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
 
     triggers = await pool.fetch(
-        "SELECT g.tgname FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid "
+        "SELECT g.tgname, (g.tgtype & 1) = 1 AS per_row FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid "
         "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2 AND NOT g.tgisinternal",
         agent,
         _TABLE,
     )
-    assert [row["tgname"] for row in triggers] == [WRITE_MARK_TRIGGER]
+    assert [(row["tgname"], row["per_row"]) for row in triggers] == [(WRITE_MARK_TRIGGER, True)]
     await pool.execute(f"INSERT INTO {agent}.{_TABLE} VALUES ('a', 1), ('b', 2)")
     await pool.execute(f"UPDATE {agent}.{_TABLE} SET n = 5 WHERE false")
     assert await _marks(pool, platform) == [_TABLE]
@@ -307,13 +306,24 @@ class _SwitchedRows(collection_for_schema(_ROWS, entity_class=_Row)):  # type: i
     write_generation = WRITE_GENERATION
 
 
-async def _switched_writer(db_container: str, platform: str, agent: str) -> tuple[Any, asyncpg.Pool, _Generations]:
+class _DiesBeforeClearing(SqlL3Backend):
+    """L3 for a writer whose process ends between its advance and the delete of the marks it covered."""
+
+    async def execute(self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any) -> str:
+        if query.startswith("DELETE") and WRITE_MARKS_TABLE in query:
+            return "DELETE 0"
+        return await super().execute(query, *params, namespace=namespace, **kwargs)
+
+
+async def _switched_writer(
+    db_container: str, platform: str, agent: str, *, l3: type[SqlL3Backend] = SqlL3Backend
+) -> tuple[Any, asyncpg.Pool, _Generations]:
     """a switched-on collection over the agent schema's table, its registry naming the platform's queue."""
     pool = await asyncpg.create_pool(db_container, min_size=1, max_size=2, server_settings={"search_path": agent})
     assert pool is not None
     source = _Generations()
     registry = CollectionRegistry()
-    registry.configure(l2_client=FakeNatsClient(), kv_key_scope="marks-test", l3_pool=SqlL3Backend(pool))
+    registry.configure(l2_client=FakeNatsClient(), kv_key_scope="marks-test", l3_pool=l3(pool))
     registry.set_generation_source(source)
     registry.set_write_marks_schema(platform)
     return _SwitchedRows(registry, DefaultCoreConfig()), pool, source
@@ -337,16 +347,11 @@ async def test_a_collection_write_that_advanced_itself_leaves_no_mark(
 
 
 async def test_a_writer_that_dies_between_its_advance_and_the_delete_leaves_marks_one_pass_drains(
-    db_container: str, schemas: tuple[asyncpg.Pool, str, str], monkeypatch: pytest.MonkeyPatch
+    db_container: str, schemas: tuple[asyncpg.Pool, str, str]
 ) -> None:
     pool, platform, agent = schemas
     await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
-    rows, writer_pool, source = await _switched_writer(db_container, platform, agent)
-
-    async def dies(*_: Any) -> None:
-        return None  # the process ends here: the advance landed, the delete never ran
-
-    monkeypatch.setattr(rows, "_clear_marks", dies)
+    rows, writer_pool, source = await _switched_writer(db_container, platform, agent, l3=_DiesBeforeClearing)
     try:
         await rows.save_entity(rows.create({"id": "a", "n": 1}))
     finally:

@@ -13,11 +13,8 @@ from threetears.core.sql_fragments import quote_identifier
 
 __all__ = [
     "MARK_FUNCTION",
-    "STATEMENT_WRITE_MARK_TRIGGER",
     "WRITE_MARKS_TABLE",
     "WRITE_MARK_TRIGGER",
-    "mark_function_sql",
-    "replace_statement_trigger_sql",
     "write_mark_trigger_sql",
     "write_marks_ddl",
 ]
@@ -28,12 +25,10 @@ WRITE_MARKS_TABLE: Final[str] = "collection_write_marks"
 #: the trigger function every switched-on table's trigger calls
 MARK_FUNCTION: Final[str] = "threetears_mark_collection_write"
 
-#: the trigger's name on every switched-on table: a row trigger that marks a transaction's first changed row
-WRITE_MARK_TRIGGER: Final[str] = "threetears_collection_row_write_mark"
-
-#: the statement trigger 0.78.0 and before gave each table, which marked a statement that changed no row too;
-#: the install drops it as it creates :data:`WRITE_MARK_TRIGGER`, so the two never fire together
-STATEMENT_WRITE_MARK_TRIGGER: Final[str] = "threetears_collection_write_mark"
+#: the trigger's name on every switched-on table: a row trigger that marks a transaction's first changed row.
+#: 0.78.0 and before gave a statement trigger this name, which marked a statement that changed no row too; a
+#: trigger of this name that is not per row is missing to the installers, which replace it
+WRITE_MARK_TRIGGER: Final[str] = "threetears_collection_write_mark"
 
 #: the transaction-local setting a table's first marked row sets, so the rest of the transaction's rows of
 #: that table mark nothing; named by the table's oid, which is always a valid setting name
@@ -57,11 +52,11 @@ def write_marks_ddl(schema: str) -> tuple[str, ...]:
         "id BIGSERIAL PRIMARY KEY, "
         "table_name TEXT NOT NULL, "
         "date_created TIMESTAMPTZ NOT NULL DEFAULT now())",
-        mark_function_sql(schema),
+        _mark_function_sql(schema),
     )
 
 
-def mark_function_sql(schema: str) -> str:
+def _mark_function_sql(schema: str) -> str:
     """the statement that creates, or replaces, the trigger function in ``schema``.
 
     One mark per table per transaction that changed a row of it: the first changed row inserts the mark and
@@ -91,22 +86,6 @@ def mark_function_sql(schema: str) -> str:
         "  RETURN NULL;\n"
         "END\n"
         "$mark$"
-    )
-
-
-def replace_statement_trigger_sql(*, table_schema: str, table: str) -> str:
-    """the statement that drops the statement trigger 0.78.0 and before gave a table, if it is there.
-
-    :param table_schema: the table's schema
-    :ptype table_schema: str
-    :param table: the table
-    :ptype table: str
-    :return: the ``DROP TRIGGER IF EXISTS`` statement
-    :rtype: str
-    """
-    return (
-        f"DROP TRIGGER IF EXISTS {quote_identifier(STATEMENT_WRITE_MARK_TRIGGER)} "
-        f"ON {quote_identifier(table_schema)}.{quote_identifier(table)}"
     )
 
 
