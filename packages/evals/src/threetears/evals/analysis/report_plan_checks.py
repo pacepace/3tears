@@ -42,8 +42,8 @@ A     ``gate_matrix`` over the ``tasks`` where the input names tasks
 B     ``gate_scatter`` over the ``configs``, its two axes the measures the gates read where they read exactly two
 C     ``lattice`` over the ``configs``, its metric the measure of the first gate read over the whole comparison
 D     ``forest`` of the asked aspect's ``readings`` with a margin line where it declares one; on a measured question
-      (no candidate separated by an asked reading, one by a contrast on an asked aspect) of those ``contrasts``
-      and their measures; else of the ``contrasts``
+      (no surviving candidate separated by an asked reading, one by a contrast on an asked aspect) of those
+      ``contrasts``, on one aspect, unit and level; else of the ``contrasts``; no margin line on a contrasts forest
 E     ``lines`` over the ``tasks``, else the ``strata``
 ====  ==============================================================================================================
 
@@ -179,7 +179,7 @@ from threetears.evals.analysis.report_decision import (
     shown_better,
     surviving_options,
 )
-from threetears.evals.analysis.report_input import Aspect, Judged, Measure, ReportInput
+from threetears.evals.analysis.report_input import Aspect, Contrast, Judged, Measure, ReportInput
 from threetears.evals.analysis.report_margins import criterion_place, weakest_margin
 from threetears.evals.kernel.report_plan import ChartSpec, OptionRow, ReportPlan, Signals, WarningRef
 from threetears.evals.schema.prose import field_is_prose
@@ -189,6 +189,8 @@ __all__ = [
     "SPINE_KINDS",
     "Spine",
     "classify",
+    "contrast_level",
+    "contrast_unit",
     "implied_disclosures",
     "raised_warnings",
     "spine",
@@ -422,32 +424,76 @@ def spine(report_input: ReportInput) -> Spine:
     return Spine(shape=shape, kind=kind, source=source, aspect=aspect, measures=measures, reference=reference)
 
 
+def contrast_unit(report_input: ReportInput, contrast: Contrast) -> str:
+    """The unit a contrast's change is in: points for a judged dimension or a trial's outcome, else its measure's own
+    unit (empty where the input declares none). A chart of contrasts carries one (GENERATOR §5.2).
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param contrast: One of its contrasts.
+    :ptype contrast: Contrast
+    :return: The unit.
+    :rtype: str
+    """
+    kind = contrast.kind
+    if kind in ("judged", "trial") or (kind is None and contrast.measure in report_input.judged):
+        return "points"
+    figures = report_input.measures.get(contrast.measure)
+    return figures.unit or "" if figures is not None else ""
+
+
+def contrast_level(report_input: ReportInput, contrast: Contrast) -> str:
+    """The interval level a contrast is read at: its own, else its aspect's family's, else the one family's; empty
+    for none. A chart of contrasts carries one (GENERATOR §5.2).
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param contrast: One of its contrasts.
+    :ptype contrast: Contrast
+    :return: The level, as the input writes it.
+    :rtype: str
+    """
+    families = report_input.contrast_families
+    by_aspect = {family.aspect: family.level for family in families}
+    only = families[0].level if len(families) == 1 else None
+    return contrast.level or by_aspect.get(contrast.aspect) or only or ""
+
+
 def _forest_spine(report_input: ReportInput) -> tuple[str, str, tuple[str, ...] | None, tuple[str, ...]]:
     """Shape D's forest: what it reads, on which aspect, which measures, and its reference lines.
 
     The asked aspect's readings (the one asked aspect read with intervals, where several are asked), with the margin
-    line where it declares one; else, on a measured question, the
-    contrasts that decided it: where no candidate is separated by an asked reading and at least one is separated by a
-    contrast on an asked aspect (:func:`~threetears.evals.analysis.report_decision.separated_by`, the test the modes
-    read), the forest reads those contrasts, their measures, on their aspect where they share one, with no margin line
-    (the margin is the readings' own scale); else any contrasts; else nothing code names."""
+    line where it declares one. On a measured question, where no surviving candidate is separated by an asked reading
+    and at least one is separated by a contrast on an asked aspect
+    (:func:`~threetears.evals.analysis.report_decision.separated_by`, the separation the modes read over the same
+    survivors), the contrasts that decided it: the first deciding contrast's aspect, and the measures of the deciding
+    contrasts there that share its unit and interval level, so the spine's own query keeps one of each. Else any
+    contrasts, their measures the planner's. A forest of contrasts draws no margin line: the margin is the readings'
+    own scale, and a contrast's change may be in any unit."""
     control = control_arm(report_input)
-    candidates = [arm.id for arm in report_input.arms if arm.id != control]
+    candidates = [arm for arm in surviving_options(report_input) if arm != control]
     separation = [separated_by(report_input, arm) for arm in candidates]
     if not any("reading" in found for found in separation) and any("contrast" in found for found in separation):
         deciding = [contrast for arm in candidates for contrast in separating_contrasts(report_input, arm)]
-        aspects = {contrast.aspect or "" for contrast in deciding}
-        measures = tuple(dict.fromkeys(contrast.measure for contrast in deciding))
-        return "contrasts", aspects.pop() if len(aspects) == 1 else "", measures, ()
+        first = deciding[0]
+        group = (first.aspect, contrast_unit(report_input, first), contrast_level(report_input, first))
+        measures = tuple(
+            dict.fromkeys(
+                contrast.measure
+                for contrast in deciding
+                if (contrast.aspect, contrast_unit(report_input, contrast), contrast_level(report_input, contrast))
+                == group
+            )
+        )
+        return "contrasts", first.aspect or "", measures, ()
     read = [
         aspect for aspect in report_input.aspects if aspect.asked and any(r.within_interval for r in aspect.readings)
     ]
     asked = read[0] if len(read) == 1 else _aspect_of("", report_input)
-    margin = ("margin",) if asked is not None and asked.margin is not None else ()
     if asked is not None and any(reading.within_interval for reading in asked.readings):
-        return "readings", asked.id, (), margin
+        return "readings", asked.id, (), ("margin",) if asked.margin is not None else ()
     if any(contrast.interval is not None for contrast in report_input.contrasts):
-        return "contrasts", "", None, margin
+        return "contrasts", "", None, ()
     return "", "", None, ()
 
 

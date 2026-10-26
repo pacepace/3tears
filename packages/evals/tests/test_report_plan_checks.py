@@ -30,9 +30,11 @@ import pytest
 from packages.evals.tests.report_kit_support import KIT
 from threetears.evals.analysis.errors import PlanRefusal, SoundnessRefusal
 from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_decision import surviving_options
 from threetears.evals.analysis.report_plan_checks import (
     SPINE_KINDS,
     classify,
+    contrast_unit,
     implied_disclosures,
     raised_warnings,
     spine,
@@ -325,6 +327,44 @@ class TestTheSpine:
             "query": {"source": "contrasts", "aspect": "latency", "measures": ["research_p95_s"]},
             "reference": [],
         }
+
+    def test_a_measured_spine_keeps_one_aspect_unit_and_level_so_its_own_query_passes_the_unit_check(self):
+        """Two asked aspects decide the call in two units (a p95 in seconds, a judged rate in points): the spine reads
+        the first deciding contrast's aspect and the measures there in its unit, so the chart it fixes carries one."""
+        data = _latency_question()
+        data["aspects"].append({"id": "tone", "name": "tone", "asked": True, "readings": []})
+        data["contrasts"].append(
+            {**_P95_IMPROVED, "kind": "judged", "measure": "persona.holds_character", "aspect": "tone"}
+        )
+        report = _input(data=data)
+        found = spine(report)
+        assert (found.source, found.aspect, found.measures) == ("contrasts", "latency", ("research_p95_s",))
+        units = {contrast_unit(report, c) for c in report.contrasts if c.aspect == "latency"}
+        assert units == {"s"}
+
+    def test_the_measured_spine_reads_the_survivors_as_the_modes_do(self):
+        """A candidate a gate removes does not hold the spine on readings: qwen3.8-flash's reading separates it, and
+        it fails a cost guardrail (a guardrail keeps shape D, a gate would make it A); 1017 survives, separated only by
+        its p95 contrast."""
+        data = _latency_question()
+        data["aspects"][0]["readings"][0]["within_interval"] = [-10.79, -3.381]
+        data["contrasts"][-1] = {**_P95_IMPROVED, "arm": "1017"}
+        data["criteria"] = [
+            {"id": "cost", "kind": "guardrail", "measure": "production_replicating_cost",
+             "direction": "lower_is_better", "threshold": 0.00241}
+        ]  # fmt: skip
+        report = _input(data=data)
+        assert surviving_options(report) == ["September", "1017"]
+        found = spine(report)
+        assert (found.source, found.aspect, found.measures) == ("contrasts", "latency", ("research_p95_s",))
+
+    def test_a_contrasts_forest_draws_no_margin_line_though_the_aspect_declares_one(self):
+        data = _input_dict()
+        for reading in data["aspects"][0]["readings"]:
+            reading["within_interval"] = None
+        assert data["aspects"][0]["margin"] is not None
+        found = spine(_input(data=data))
+        assert (found.source, found.measures, found.reference) == ("contrasts", None, ())
 
     def test_readings_that_separate_keep_the_readings_spine_beside_a_separating_contrast(self):
         data = _input_dict()

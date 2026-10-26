@@ -75,6 +75,8 @@ from threetears.evals.analysis.report_margins import weakest_margin
 from threetears.evals.analysis.report_plan_checks import (
     Spine,
     classify,
+    contrast_level,
+    contrast_unit,
     implied_disclosures,
     raised_warnings,
     spine,
@@ -592,15 +594,12 @@ def _one(path: str, what: str, values: Iterable[str], faults: list[_Fault]) -> s
     return found[0] if found else ""
 
 
-def _selected_contrasts(chart: PlannedChart, report_input: ReportInput) -> list[tuple[str, str | None, str | None]]:
-    """The contrasts a chart reads: each one's measure, kind and level (its own, else its family's)."""
+def _selected_contrasts(chart: PlannedChart, report_input: ReportInput) -> list[tuple[str, str]]:
+    """The contrasts a chart reads: each one's unit and interval level (:func:`contrast_unit`, :func:`contrast_level`)."""
     query = chart.query
     arms = set(query.arms) or {arm.id for arm in report_input.arms}
-    families = report_input.contrast_families
-    family_level = {family.aspect: family.level for family in families}
-    only = families[0].level if len(families) == 1 else None
     return [
-        (contrast.measure, contrast.kind, contrast.level or family_level.get(contrast.aspect) or only)
+        (contrast_unit(report_input, contrast), contrast_level(report_input, contrast))
         for contrast in report_input.contrasts
         if contrast.arm in arms
         and (not query.measures or contrast.measure in query.measures)
@@ -625,9 +624,7 @@ def _level(chart: PlannedChart, report_input: ReportInput, path: str, faults: li
         levels = [_percent(r.gain_confidence) for r in readings if r.arm in arms and r.gain_confidence is not None]
         return _one(path, "interval level", levels, faults)
     if source == "contrasts":
-        return _one(
-            path, "interval level", (level or "" for _, _, level in _selected_contrasts(chart, report_input)), faults
-        )
+        return _one(path, "interval level", (level for _, level in _selected_contrasts(chart, report_input)), faults)
     if source in ("measures", "judged"):
         table = report_input.measures if source == "measures" else report_input.judged
         measures = set(chart.query.measures)
@@ -637,13 +634,6 @@ def _level(chart: PlannedChart, report_input: ReportInput, path: str, faults: li
         level = _one(path, "interval level", _figure_levels(chart, report_input), faults)
         return f"{level} uncorrected" if level else ""
     return ""
-
-
-def _measure_unit(report_input: ReportInput, measure: str, kind: str | None) -> str:
-    if kind in ("judged", "trial") or (kind is None and measure in report_input.judged):
-        return "points"
-    figures = report_input.measures.get(measure)
-    return figures.unit or "" if figures is not None else ""
 
 
 def _judged_unit(report_input: ReportInput, measures: Sequence[str]) -> list[str]:
@@ -658,8 +648,7 @@ def _unit(chart: PlannedChart, report_input: ReportInput, path: str, faults: lis
     if source in ("readings", "floors"):
         return "points"
     if source == "contrasts":
-        rows = _selected_contrasts(chart, report_input)
-        return _one(path, "unit", (_measure_unit(report_input, measure, kind) for measure, kind, _ in rows), faults)
+        return _one(path, "unit", (unit for unit, _ in _selected_contrasts(chart, report_input)), faults)
     if source == "measures":
         units = [
             m.unit or "" for key, m in report_input.measures.items() if not query.measures or key in query.measures
