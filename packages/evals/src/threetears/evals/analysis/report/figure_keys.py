@@ -17,9 +17,15 @@ from a fixed set. Every complete reading of the path is found. One is the figure
 naming both. None is refused naming the valid continuations at the point the path stopped matching. Each refusal is
 an :class:`~threetears.evals.analysis.errors.UnresolvableReference`, so the planner's repair round can correct it.
 
-**Derived values are descriptive.** ``cost.uplift.<arm>``, ``cost.uplift_range``, ``strata.<id>.loss_share`` and
-``flip_margin.<arm>`` are computed here from the input's point figures. They carry no interval and no test, and the
-grammar says so. Everything else is copied from the input.
+**Derived values are descriptive.** ``cost.uplift.<arm>``, ``cost.uplift_range``, every ``loss_share``, every
+``flip_margin``, ``weakest.*``, a slice's ``vs_control``, a floor's ``held_above`` and ``broken_at`` and a criterion
+figure's ``gap`` are computed here from the input's point figures. They carry no interval and no test, the grammar
+says so, and their :class:`Figure` is marked ``derived``. Everything else is copied from the input.
+
+**A figure held on more than one aspect is named by its aspect.** Every figure that sits on an aspect has an
+``aspects.<aspect>.`` form. Where the input holds a contrast's arm and measure, a stratum id or a contrast family on
+more than one aspect, the unqualified form is refused, naming the qualified key for each aspect, rather than reading
+one of them.
 
 **Digits only inside keys (D3).** :func:`literal_numbers` finds every digit that plan prose types outside a key,
 outside a name the input holds, outside a percentile's name (``p95``) and outside one of the package's own unit
@@ -34,7 +40,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal, get_args
 
 from threetears.evals.analysis.errors import UnresolvableReference
@@ -45,16 +51,26 @@ from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import (
     Arm,
     Aspect,
+    Cell,
+    Contrast,
+    ContrastFamily,
     Criterion,
     Judged,
     Measure,
     Reading,
     ReportInput,
+    ScoreboardRow,
     Stat,
     Stratum,
     Task,
 )
-from threetears.evals.analysis.report_margins import Margin, flip_margin, weakest_margin
+from threetears.evals.analysis.report_margins import (
+    CriterionFigure,
+    Margin,
+    criterion_figures,
+    flip_margin,
+    weakest_margin,
+)
 from threetears.evals.analysis.style import humanize, measure_name
 from threetears.evals.analysis.summary import dollars_text
 
@@ -137,7 +153,9 @@ class Figure:
 
     ``change`` marks a difference (a reading's change, a contrast's delta): it reads signed and in points, never as a
     percent. ``whole`` marks a descriptive ratio (a cost uplift, a reasoning share, a stratum's loss share), read in
-    whole percents because no interval stands behind a decimal.
+    whole percents because no interval stands behind a decimal. ``derived`` marks a figure computed here from the
+    input's point figures rather than copied (a derived family's, or a derived statistic's: ``vs_control``, a floor's
+    ``held_above``, a criterion figure's ``gap``): descriptive, with no interval and no test behind it.
     """
 
     path: str
@@ -147,6 +165,7 @@ class Figure:
     unit: str = ""
     change: bool = False
     whole: bool = False
+    derived: bool = False
 
 
 # --- the vocabulary a path is matched against -------------------------------------------------------------------
@@ -180,12 +199,19 @@ _Slot = _Word | _Ids | _Statistic
 
 @dataclass(frozen=True)
 class _Family:
-    """One path family: its slots in order, what it reads, and how its matched ids and statistic become a figure."""
+    """One path family: its slots in order, what it reads, and how its matched ids and statistic become a figure.
+
+    ``derived`` marks a family whose every figure is computed here; ``derived_statistics`` the statistics of an
+    otherwise copied family that are (a slice's ``vs_control``, a floor's ``held_above``). ``example`` is a key on the
+    grammar's made-up input, which the grammar renders.
+    """
 
     slots: tuple[_Slot, ...]
     what: str
     resolve: Callable[[ReportInput, tuple[str, ...], str], Figure]
     derived: bool = False
+    derived_statistics: tuple[str, ...] = ()
+    example: str = ""
 
     def form(self) -> str:
         return ".".join(slot.text if isinstance(slot, _Word) else slot.name for slot in self.slots)
@@ -230,6 +256,29 @@ def _asked_or_refuse(report_input: ReportInput, path: str) -> Aspect:
 
 def _aspect_by_id(report_input: ReportInput, aspect_id: str) -> Aspect:
     return next(aspect for aspect in report_input.aspects if aspect.id == aspect_id)
+
+
+def _is_lead(report_input: ReportInput, aspect_id: str) -> bool:
+    """Whether an aspect is the lead one, whose figures the input's by-arm maps hold: the first the campaign asks
+    about, else the first (:mod:`~threetears.evals.analysis.report_input`)."""
+    asked = [aspect.id for aspect in report_input.aspects if aspect.asked]
+    lead = asked[0] if asked else next((aspect.id for aspect in report_input.aspects), None)
+    return aspect_id == lead
+
+
+def _held_apart(
+    path: str, what: str, aspects: Sequence[str | None], qualified: Callable[[str], str]
+) -> UnresolvableReference:
+    """The refusal of an unqualified key whose figure the input holds more than once: it names the key per aspect.
+
+    :param path: The key refused.
+    :param what: What it names, in words.
+    :param aspects: The aspect each held copy sits on, None where one names none.
+    :param qualified: The qualified key for one aspect.
+    """
+    named = [f"`{qualified(aspect)}`" for aspect in dict.fromkeys(aspects) if aspect is not None]
+    choose = f"name its aspect: {', '.join(named)}" if named else "and no aspect tells them apart"
+    return _refuse(path, f"names {what}, which the input holds {len(aspects)} times; {choose}")
 
 
 def _reading(aspect: Aspect, arm_id: str) -> Reading:
@@ -431,17 +480,25 @@ def _named_reading(report_input: ReportInput, values: tuple[str, ...], path: str
     return _reading_figure(_reading(_aspect_by_id(report_input, aspect_id), arm_id), statistic, path)
 
 
-_CONTRAST_STATISTICS = ("delta", "interval", "low", "high", "verdict", "p_adjusted")
+_CONTRAST_STATISTICS = (
+    "delta",
+    "interval",
+    "low",
+    "high",
+    "verdict",
+    "p_adjusted",
+    "level",
+    "materiality",
+    "reason",
+)
 
 
 def _contrasted(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
     return list(dict.fromkeys(c.measure for c in report_input.contrasts if c.arm == prior[0]))
 
 
-def _contrast(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
-    arm_id, measure, statistic = values
-    contrast = next(c for c in report_input.contrasts if c.arm == arm_id and c.measure == measure)
-    scale, unit = _contrast_scale(report_input, measure, contrast.kind)
+def _contrast_figure(report_input: ReportInput, contrast: Contrast, statistic: str, path: str) -> Figure:
+    scale, unit = _contrast_scale(report_input, contrast.measure, contrast.kind)
     if statistic == "delta":
         return _number(path, contrast.delta, "the delta", scale, unit=unit, change=True)
     if statistic == "interval":
@@ -451,7 +508,41 @@ def _contrast(report_input: ReportInput, values: tuple[str, ...], path: str) -> 
         return _number(path, end, f"the interval's {statistic} end", scale, unit=unit, change=True)
     if statistic == "verdict":
         return _text(path, contrast.verdict, "the verdict")
-    return _number(path, contrast.p_adjusted, "the adjusted p", "plain")
+    if statistic == "p_adjusted":
+        return _number(path, contrast.p_adjusted, "the adjusted p", "plain")
+    if statistic == "level":
+        return _text(path, contrast.level, "the interval's level")
+    return _text(path, getattr(contrast, statistic), f"the contrast's {statistic}")
+
+
+def _contrast(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    arm_id, measure, statistic = values
+    held = [c for c in report_input.contrasts if c.arm == arm_id and c.measure == measure]
+    if len(held) > 1:
+        raise _held_apart(
+            path,
+            f"{arm_id}'s contrast on {measure}",
+            [c.aspect for c in held],
+            lambda aspect: f"aspects.{aspect}.contrast.{arm_id}.{measure}.{statistic}",
+        )
+    return _contrast_figure(report_input, held[0], statistic, path)
+
+
+def _aspect_contrast_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return list(dict.fromkeys(c.arm for c in report_input.contrasts if c.aspect == prior[0]))
+
+
+def _aspect_contrasted(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    aspect_id, arm_id = prior
+    return list(dict.fromkeys(c.measure for c in report_input.contrasts if c.aspect == aspect_id and c.arm == arm_id))
+
+
+def _aspect_contrast(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    aspect_id, arm_id, measure, statistic = values
+    held = [c for c in report_input.contrasts if (c.aspect, c.arm, c.measure) == (aspect_id, arm_id, measure)]
+    if len(held) > 1:
+        raise _refuse(path, f"names {arm_id}'s contrast on {measure}, which aspect {aspect_id} holds {len(held)} times")
+    return _contrast_figure(report_input, held[0], statistic, path)
 
 
 def _judged_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
@@ -462,6 +553,35 @@ def _judged(report_input: ReportInput, values: tuple[str, ...], path: str) -> Fi
     dimension, arm_id = values
     judged = report_input.judged[dimension]
     return _number(path, judged.per_arm[arm_id].mean, "the dimension's mean", _judged_scale(judged))
+
+
+def _judged_stat(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    dimension, arm_id, statistic = values
+    stat = report_input.judged[dimension].per_arm[arm_id]
+    scale, unit = _scale_of(report_input, dimension)
+    return _stat_figure(path, stat, statistic, scale, unit, f"the dimension's {statistic}")
+
+
+def _on_aspect(table: Measure | Judged, aspect_id: str, report_input: ReportInput) -> Mapping[str, Stat]:
+    """A measure's or judged dimension's figures on one aspect, by arm: ``per_arm`` on the lead aspect, else
+    ``by_aspect``'s entry for it."""
+    return table.per_arm if _is_lead(report_input, aspect_id) else table.by_aspect.get(aspect_id, {})
+
+
+def _aspect_judged_dimensions(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return [key for key, judged in report_input.judged.items() if _on_aspect(judged, prior[0], report_input)]
+
+
+def _aspect_judged_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    aspect_id, dimension = prior
+    return list(_on_aspect(report_input.judged[dimension], aspect_id, report_input))
+
+
+def _aspect_judged(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    aspect_id, dimension, arm_id, statistic = values
+    stat = _on_aspect(report_input.judged[dimension], aspect_id, report_input)[arm_id]
+    scale, unit = _scale_of(report_input, dimension)
+    return _stat_figure(path, stat, statistic, scale, unit, f"the dimension's {statistic} on the aspect")
 
 
 _JUDGE_FIELDS = ("model", "tier", "calibration", "calibration_ratings", "agreement")
@@ -618,12 +738,91 @@ def _measure(report_input: ReportInput, values: tuple[str, ...], path: str) -> F
     )
 
 
+def _stat_figure(path: str, stat: Stat, statistic: str, scale: Scale, unit: str, what: str) -> Figure:
+    """One statistic of one arm's figure (:data:`_MEASURE_STATISTICS`), on the scale its measure is on."""
+    if statistic in ("n", "n_cases"):
+        return _number(path, getattr(stat, statistic), what, "count")
+    if statistic == "ci":
+        return _interval(path, stat.ci, what, scale, unit=unit)
+    return _number(path, getattr(stat, statistic), what, scale, unit=unit, change=statistic == "change")
+
+
+def _aspect_measures(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return [key for key, measure in report_input.measures.items() if _on_aspect(measure, prior[0], report_input)]
+
+
+def _aspect_measure_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    aspect_id, key = prior
+    return list(_on_aspect(report_input.measures[key], aspect_id, report_input))
+
+
+def _aspect_measure(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    aspect_id, key, arm_id, statistic = values
+    measure = report_input.measures[key]
+    scale, unit = _measure_scale(measure)
+    stat = _on_aspect(measure, aspect_id, report_input)[arm_id]
+    return _stat_figure(path, stat, statistic, scale, unit, f"the measure's {statistic} on the aspect")
+
+
+#: A slice's statistics (a task's, a stratum's, a cell's): a figure's, and the arm's mean against the control's there.
+_SLICE_STATISTICS = (*_MEASURE_STATISTICS, "vs_control")
+#: The slice statistics computed here rather than copied.
+_SLICE_DERIVED = ("vs_control",)
+
+
+def _slice_figure(
+    report_input: ReportInput,
+    per_arm: Mapping[str, Mapping[str, Stat]],
+    values: tuple[str, str, str],
+    path: str,
+    where: str,
+) -> Figure:
+    """One arm's statistic on a measure or judged dimension within a slice (a task, a stratum, a cell), or its mean
+    minus the control's there (``vs_control``: derived, descriptive)."""
+    arm_id, key, statistic = values
+    scale, unit = _scale_of(report_input, key)
+    what = f"the {statistic} on {key} in {where}"
+    if statistic != "vs_control":
+        return _stat_figure(path, per_arm[arm_id][key], statistic, scale, unit, what)
+    control = _control(report_input)
+    if control is None:
+        raise _refuse(path, "compares an arm with the control, and this campaign has none")
+    if arm_id == control.id:
+        raise _refuse(path, "compares an arm with the control, and names the control itself")
+    mine, theirs = per_arm[arm_id][key].mean, per_arm.get(control.id, {}).get(key)
+    if mine is None or theirs is None or theirs.mean is None:
+        raise _refuse(
+            path, f"names the arm's and the control's mean on {key} in {where}, which the input does not state"
+        )
+    return _number(path, mine - theirs.mean, f"the change from the control in {where}", scale, unit=unit, change=True)
+
+
 _SCOREBOARD_STATISTICS = ("ran", "usable", "passed", "cases", "lost", "failed", "reply_cost_usd", "test_cost_usd")
 
 
 def _scoreboard(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     arm_id, statistic = values
-    row = report_input.scoreboard[arm_id]
+    return _board_figure(report_input.scoreboard[arm_id], statistic, path)
+
+
+def _aspect_board(report_input: ReportInput, aspect_id: str) -> Mapping[str, ScoreboardRow]:
+    """How each arm's trials came out on one aspect: its own scoreboard, else, on the lead aspect, the input's."""
+    board = _aspect_by_id(report_input, aspect_id).scoreboard
+    if board is not None:
+        return board
+    return report_input.scoreboard if _is_lead(report_input, aspect_id) else {}
+
+
+def _aspect_board_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return list(_aspect_board(report_input, prior[0]))
+
+
+def _aspect_scoreboard(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    aspect_id, arm_id, statistic = values
+    return _board_figure(_aspect_board(report_input, aspect_id)[arm_id], statistic, path)
+
+
+def _board_figure(row: ScoreboardRow, statistic: str, path: str) -> Figure:
     if statistic in ("lost", "failed"):
         return _number(path, sum(getattr(row, statistic).values()), f"trials {statistic}", "count")
     if statistic.endswith("_usd"):
@@ -683,10 +882,30 @@ _FAMILY_FIELDS = ("disclosure", "correction", "alpha", "family_size", "level")
 
 def _family(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     (field,) = values
-    if len(report_input.contrast_families) != 1:
-        held = len(report_input.contrast_families)
-        raise _refuse(path, f"reads the one contrast family, and the input holds {held}")
-    family = report_input.contrast_families[0]
+    families = report_input.contrast_families
+    if len(families) > 1:
+        raise _held_apart(
+            path,
+            "the one contrast family",
+            [family.aspect for family in families],
+            lambda aspect: f"aspects.{aspect}.family.{field}",
+        )
+    if not families:
+        raise _refuse(path, "reads the one contrast family, and the input holds 0")
+    return _family_figure(families[0], field, path)
+
+
+def _aspect_family(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    aspect_id, field = values
+    families = [family for family in report_input.contrast_families if family.aspect == aspect_id]
+    if not families:
+        raise _refuse(path, f"names aspect {aspect_id}'s contrast family, which the input does not state")
+    if len(families) > 1:
+        raise _refuse(path, f"names aspect {aspect_id}'s contrast family, and the input holds {len(families)} on it")
+    return _family_figure(families[0], field, path)
+
+
+def _family_figure(family: ContrastFamily, field: str, path: str) -> Figure:
     if field == "alpha":
         return _number(path, family.alpha, "the family's alpha", "plain")
     if field == "family_size":
@@ -699,14 +918,19 @@ def _latency(report_input: ReportInput, _: tuple[str, ...], path: str) -> Figure
 
 
 def _held_values(report_input: ReportInput, key: str) -> list[float | None]:
-    """Every mean the input holds for a measure or judged dimension: overall, in each task and in each cell."""
+    """Every mean the input holds for a measure or judged dimension: overall and on each other aspect, in each task,
+    each stratum and each cell."""
     stats: list[Stat] = []
     for table in (report_input.measures, report_input.judged):
         if key in table:
             stats.extend(table[key].per_arm.values())
-    for per_arm in [task.per_arm for task in report_input.tasks] + [
-        cell.per_arm for cell in report_input.cells.values()
-    ]:
+            stats.extend(stat for arms in table[key].by_aspect.values() for stat in arms.values())
+    slices = [
+        *(task.per_arm for task in report_input.tasks),
+        *(stratum.per_arm for stratum in report_input.strata),
+        *(cell.per_arm for cell in report_input.cells.values()),
+    ]
+    for per_arm in slices:
         stats.extend(figures[key] for figures in per_arm.values() if key in figures)
     return [stat.mean for stat in stats]
 
@@ -754,14 +978,8 @@ def _task_field(report_input: ReportInput, values: tuple[str, ...], path: str) -
 
 def _task_figure(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     task_id, arm_id, key, statistic = values
-    stat = _task(report_input, task_id).per_arm[arm_id][key]
-    scale, unit = _scale_of(report_input, key)
-    what = f"the task's {statistic} on {key}"
-    if statistic in ("n", "n_cases"):
-        return _number(path, getattr(stat, statistic), what, "count")
-    if statistic == "ci":
-        return _interval(path, stat.ci, what, scale, unit=unit)
-    return _number(path, getattr(stat, statistic), what, scale, unit=unit, change=statistic == "change")
+    per_arm = _task(report_input, task_id).per_arm
+    return _slice_figure(report_input, per_arm, (arm_id, key, statistic), path, f"task {task_id}")
 
 
 _CRITERION_FIELDS = ("threshold", "measure", "statistic", "direction")
@@ -783,6 +1001,79 @@ def _criterion_field(report_input: ReportInput, values: tuple[str, ...], path: s
     if field == "statistic":
         return _text(path, criterion.statistic, "the criterion's statistic")
     return _text(path, DIRECTION_WORDS[criterion.direction], "the criterion's direction")
+
+
+_CRITERION_FIGURE_FIELDS = ("value", "low", "high", "gap")
+#: The criterion figure's field computed here: how far the figure clears the threshold.
+_CRITERION_DERIVED = ("gap",)
+
+
+def _cell_spelling(cell: Cell) -> str:
+    """How a key names a target-matrix cell: its row and column level ids joined by a dot, since a cell's id joins
+    them with ``|``, which a key cannot hold."""
+    return f"{cell.row}.{cell.column}"
+
+
+def _place(report_input: ReportInput, figure: CriterionFigure) -> str | None:
+    """Where a criterion's figure sits, as a key names it: a task's id, a cell's spelling, None for the arm's overall
+    value."""
+    if figure.cell is not None:
+        return _cell_spelling(report_input.cells[figure.cell])
+    return figure.task
+
+
+def _criterion_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    criterion = _criterion(report_input, prior[0])
+    return [arm.id for arm in report_input.arms if criterion_figures(report_input, criterion, arm.id)]
+
+
+def _criterion_places(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    criterion_id, arm_id = prior
+    figures = criterion_figures(report_input, _criterion(report_input, criterion_id), arm_id)
+    return [place for figure in figures if (place := _place(report_input, figure)) is not None]
+
+
+def _gap_figure(report_input: ReportInput, path: str, measure: str, line: float, gap: float, what: str) -> Figure:
+    """A gap from a threshold on a measure, signed toward passing: in points for a rate, else in the measure's units."""
+    scale, unit = _scale_of(report_input, measure, (line,))
+    if scale in ("share", "percent"):
+        return _number(path, gap * 100 if scale == "share" else gap, what, "points")
+    return _number(path, gap, what, scale, unit=unit)
+
+
+def _criterion_figure_field(
+    report_input: ReportInput, criterion: Criterion, figure: CriterionFigure, field: str, path: str
+) -> Figure:
+    threshold = float(criterion.threshold)
+    scale, unit = _scale_of(report_input, criterion.measure, (threshold,))
+    if field == "value":
+        return _number(path, figure.value, "the criterion's figure", scale, unit=unit)
+    if field in ("low", "high"):
+        end = _end(path, figure.ci, field, "the figure's interval")
+        return _number(path, end, f"the figure's interval's {field} end", scale, unit=unit)
+    gap = figure.value - threshold if criterion.direction == "higher_is_better" else threshold - figure.value
+    return _gap_figure(report_input, path, criterion.measure, threshold, gap, "the figure's gap from the threshold")
+
+
+def _criterion_arm(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    criterion_id, arm_id, field = values
+    criterion = _criterion(report_input, criterion_id)
+    figures = criterion_figures(report_input, criterion, arm_id)
+    if len(figures) > 1:
+        places = [f"criteria.{criterion_id}.{arm_id}.{_place(report_input, figure)}.{field}" for figure in figures]
+        raise _refuse(
+            path, f"reads one figure, and the criterion reads {len(figures)}, one per place: {_listed(places)}"
+        )
+    return _criterion_figure_field(report_input, criterion, figures[0], field, path)
+
+
+def _criterion_arm_at(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    criterion_id, arm_id, place, field = values
+    criterion = _criterion(report_input, criterion_id)
+    figure = next(
+        figure for figure in criterion_figures(report_input, criterion, arm_id) if _place(report_input, figure) == place
+    )
+    return _criterion_figure_field(report_input, criterion, figure, field, path)
 
 
 # --- derived values: descriptive, computed here from the input's point figures ----------------------------------
@@ -816,14 +1107,99 @@ def _uplift_range(report_input: ReportInput, _: tuple[str, ...], path: str) -> F
 
 _STRATUM_FIELDS = ("name", "n_cases", "share")
 
+#: A strata family's resolver: what one stratum, and the slots after its id, read.
+_StratumRead = Callable[[ReportInput, Stratum, tuple[str, ...], str], Figure]
+
 
 def _stratum(report_input: ReportInput, stratum_id: str) -> Stratum:
     return next(stratum for stratum in report_input.strata if stratum.id == stratum_id)
 
 
-def _stratum_field(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
-    stratum_id, field = values
-    stratum = _stratum(report_input, stratum_id)
+def _scoped_strata(report_input: ReportInput, aspect_id: str | None) -> list[Stratum]:
+    """The strata a key reads from: every one, or, in an aspect's own strata keys, the ones slicing its cases."""
+    return [stratum for stratum in report_input.strata if aspect_id is None or stratum.aspect == aspect_id]
+
+
+def _strata(report_input: ReportInput, _: tuple[str, ...]) -> list[str]:
+    return list(dict.fromkeys(stratum.id for stratum in report_input.strata))
+
+
+def _aspect_strata(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return list(dict.fromkeys(stratum.id for stratum in _scoped_strata(report_input, prior[0])))
+
+
+def _named_strata(
+    report_input: ReportInput, prior: tuple[str, ...], qualified: bool
+) -> tuple[list[Stratum], tuple[str, ...]]:
+    """The strata a key's stratum id names (in its aspect, where the key names one), and the slots after the id."""
+    aspect_id, rest = (prior[0], prior[1:]) if qualified else (None, prior)
+    return [stratum for stratum in _scoped_strata(report_input, aspect_id) if stratum.id == rest[0]], rest[1:]
+
+
+def _one_stratum(report_input: ReportInput, aspect_id: str | None, stratum_id: str, path: str) -> Stratum:
+    """The one stratum a key names; a stratum id held on more than one aspect is refused naming each aspect's key."""
+    held = [stratum for stratum in _scoped_strata(report_input, aspect_id) if stratum.id == stratum_id]
+    if len(held) == 1:
+        return held[0]
+    if aspect_id is not None:
+        raise _refuse(path, f"names stratum {stratum_id}, which aspect {aspect_id} holds {len(held)} times")
+    tail = path.removeprefix(f"strata.{stratum_id}.")
+    raise _held_apart(
+        path,
+        f"stratum {stratum_id}",
+        [stratum.aspect for stratum in held],
+        lambda aspect: f"aspects.{aspect}.strata.{stratum_id}.{tail}",
+    )
+
+
+def _strata_resolver(read: _StratumRead, qualified: bool) -> Callable[[ReportInput, tuple[str, ...], str], Figure]:
+    """A strata family's resolver, reading the one stratum its key names, in the key's aspect when it names one."""
+
+    def resolve(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+        aspect_id, rest = (values[0], values[1:]) if qualified else (None, values)
+        return read(report_input, _one_stratum(report_input, aspect_id, rest[0], path), rest[1:], path)
+
+    return resolve
+
+
+def _stratum_arms(qualified: bool) -> Callable[[ReportInput, tuple[str, ...]], list[str]]:
+    def options(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+        held, _rest = _named_strata(report_input, prior, qualified)
+        return list(dict.fromkeys(arm for stratum in held for arm in stratum.per_arm))
+
+    return options
+
+
+def _stratum_keys(qualified: bool) -> Callable[[ReportInput, tuple[str, ...]], list[str]]:
+    def options(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+        held, (arm_id,) = _named_strata(report_input, prior, qualified)
+        return list(dict.fromkeys(key for stratum in held for key in stratum.per_arm.get(arm_id, {})))
+
+    return options
+
+
+def _loss_keys(qualified: bool) -> Callable[[ReportInput, tuple[str, ...]], list[str]]:
+    """The measures and dimensions a candidate's loss may be read on in a stratum: those it and the control hold."""
+
+    def options(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+        held, (arm_id,) = _named_strata(report_input, prior, qualified)
+        control = _control(report_input)
+        if control is None:
+            return []
+        return list(
+            dict.fromkeys(
+                key
+                for stratum in held
+                for key in stratum.per_arm.get(arm_id, {})
+                if key in stratum.per_arm.get(control.id, {})
+            )
+        )
+
+    return options
+
+
+def _stratum_field(report_input: ReportInput, stratum: Stratum, rest: tuple[str, ...], path: str) -> Figure:
+    (field,) = rest
     if field == "name":
         return _text(path, stratum.name or humanize("dimension", stratum.id), "the stratum's name")
     if field == "n_cases":
@@ -831,51 +1207,230 @@ def _stratum_field(report_input: ReportInput, values: tuple[str, ...], path: str
     return _number(path, stratum.share, "the stratum's share of traffic", "share", whole=True)
 
 
-def _loss_share_of(report_input: ReportInput, stratum_id: str, arm_id: str, path: str) -> float:
-    """The share of ``arm_id``'s loss against the control, on the primary judged dimension, that one stratum carries.
+def _stratum_figure(report_input: ReportInput, stratum: Stratum, rest: tuple[str, ...], path: str) -> Figure:
+    arm_id, key, statistic = rest
+    return _slice_figure(report_input, stratum.per_arm, (arm_id, key, statistic), path, f"stratum {stratum.id}")
 
-    Loss in a stratum is the control's rate minus the arm's, weighted by the stratum's cases (by its traffic share
-    where cases are not stated), over the strata of the same stratification.
+
+def _better_sign(report_input: ReportInput, key: str, path: str) -> float:
+    """Which way a loss runs on a measure or judged dimension: 1 where higher is better (the control's figure minus the
+    arm's), -1 where lower is. A judged dimension reads higher as better."""
+    if key in report_input.judged:
+        return 1.0
+    higher = report_input.measures[key].higher_is_better if key in report_input.measures else None
+    if higher is None:
+        raise _refuse(path, f"reads a loss on {key}, whose better direction the input does not state")
+    return 1.0 if higher else -1.0
+
+
+def _loss_share_of(report_input: ReportInput, target: Stratum, arm_id: str, key: str | None, path: str) -> float:
+    """The share of ``arm_id``'s loss against the control, on ``key`` (else the primary judged dimension), that one
+    stratum carries.
+
+    Loss in a stratum is the control's figure minus the arm's where higher is better (the arm's minus the control's
+    where lower is), weighted by the stratum's cases (by its traffic share where cases are not stated), over the strata
+    of the same stratification on the same aspect.
     """
-    dimension = report_input.primary_judged
+    dimension = key if key is not None else report_input.primary_judged
     control = _control(report_input)
     if dimension is None or control is None:
         raise _refuse(path, "reads loss on the primary judged dimension against the control; the input lacks one")
-    target = _stratum(report_input, stratum_id)
-    group = [s for s in report_input.strata if s.dimension == target.dimension]
+    sign = 1.0 if key is None else _better_sign(report_input, key, path)
+    group = [s for s in report_input.strata if (s.aspect, s.dimension) == (target.aspect, target.dimension)]
     weights: list[float | None] = [s.n_cases for s in group]
     if any(weight is None for weight in weights):
         weights = [s.share for s in group]
     if any(weight is None for weight in weights):
         raise _refuse(path, "weights each stratum by its cases or its share, and a stratum states neither")
-    losses: dict[str, float] = {}
+    losses: list[float] = []
     for stratum, weight in zip(group, weights, strict=True):
         figures = stratum.per_arm
         held = figures.get(control.id, {}).get(dimension), figures.get(arm_id, {}).get(dimension)
         if held[0] is None or held[1] is None or held[0].mean is None or held[1].mean is None:
             raise _refuse(path, f"needs both arms' {dimension} in stratum {stratum.id}, which the input lacks")
-        losses[stratum.id] = float(weight or 0) * (held[0].mean - held[1].mean)
-    total = sum(losses.values())
+        losses.append(float(weight or 0) * sign * (held[0].mean - held[1].mean))
+    total = sum(losses)
     if total <= 0:
         raise _refuse(path, f"divides by {arm_id}'s loss on {dimension}, and it lost nothing overall")
-    return losses[stratum_id] / total
+    return losses[next(at for at, stratum in enumerate(group) if stratum is target)] / total
 
 
-def _loss_share(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
-    stratum_id = values[0]
-    arms = values[1:] or tuple(_candidates(report_input))
+def _loss_share(report_input: ReportInput, stratum: Stratum, rest: tuple[str, ...], path: str) -> Figure:
+    arms = rest[:1] or tuple(_candidates(report_input))
+    key = rest[1] if len(rest) > 1 else None
     if not arms:
         raise _refuse(path, "reads each candidate's loss, and the campaign has no candidate")
-    share = min(_loss_share_of(report_input, stratum_id, arm, path) for arm in arms)
+    share = min(_loss_share_of(report_input, stratum, arm, key, path) for arm in arms)
     return Figure(path=path, kind="number", value=share, scale="share", whole=True)
 
 
 def _flip_margin(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
-    reading = _reading(_asked_or_refuse(report_input, path), values[0])
+    return _flip_figure(_reading(_asked_or_refuse(report_input, path), values[0]), path)
+
+
+def _aspect_flip_margin(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    aspect_id, arm_id = values
+    return _flip_figure(_reading(_aspect_by_id(report_input, aspect_id), arm_id), path)
+
+
+def _flip_figure(reading: Reading, path: str) -> Figure:
     flip = flip_margin(reading)
     if flip is None:
         raise _refuse(path, "names the interval a flip is read on, which the input does not state")
     return Figure(path=path, kind="number", value=flip, scale="points")
+
+
+# --- an aspect's pair readings, floors and bars ----------------------------------------------------------------------
+
+_PAIR_STATISTICS = ("change", "interval", "low", "high", "confidence", "p_holm", "ahead", "why")
+
+
+def _pair_firsts(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return list(dict.fromkeys(pair.arms[0] for pair in _aspect_by_id(report_input, prior[0]).pairs))
+
+
+def _pair_seconds(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    aspect_id, first = prior
+    pairs = _aspect_by_id(report_input, aspect_id).pairs
+    return list(dict.fromkeys(pair.arms[1] for pair in pairs if pair.arms[0] == first))
+
+
+def _pair(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    aspect_id, first, second, statistic = values
+    held = [pair for pair in _aspect_by_id(report_input, aspect_id).pairs if pair.arms == (first, second)]
+    if len(held) > 1:
+        raise _refuse(path, f"names the pair {first} and {second}, which aspect {aspect_id} holds {len(held)} times")
+    pair = held[0]
+    if statistic == "change":
+        return _number(path, pair.change, "the pair's change", "points", change=True)
+    if statistic == "interval":
+        return _interval(path, pair.interval, "the pair's interval", "points", change=True)
+    if statistic in ("low", "high"):
+        end = _end(path, pair.interval, statistic, "the pair's interval")
+        return _number(path, end, f"the interval's {statistic} end", "points", change=True)
+    if statistic == "confidence":
+        return _number(path, pair.confidence, "the interval's level", "share", whole=True)
+    if statistic == "p_holm":
+        return _number(path, pair.p_holm, "the Holm-adjusted p", "plain")
+    if statistic == "ahead":
+        if pair.ahead is None:
+            raise _refuse(path, "names the arm shown ahead, which the input does not state: neither is shown ahead")
+        return Figure(path=path, kind="arm", value=pair.ahead)
+    return _text(path, pair.why, "why the pair reads as it does")
+
+
+_FLOOR_FIELDS = (
+    "status",
+    "reading",
+    "speaks_for",
+    "interval",
+    "low",
+    "high",
+    "worst_drop",
+    "margin",
+    "short_by",
+    "reason",
+    "held_above",
+    "broken_at",
+)
+#: The floor fields computed here: the margin above which the floor holds (``-low``), and at or below which its
+#: interval's best end breaks it (``-high``).
+_FLOOR_DERIVED = ("held_above", "broken_at")
+
+
+def _floor_keys(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return list(dict.fromkeys(read.floor for read in report_input.floors if read.aspect == prior[0]))
+
+
+def _floor_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    aspect_id, floor = prior
+    return [read.arm for read in report_input.floors if (read.aspect, read.floor) == (aspect_id, floor)]
+
+
+def _floor(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    aspect_id, floor, arm_id, field = values
+    held = [read for read in report_input.floors if (read.aspect, read.floor, read.arm) == (aspect_id, floor, arm_id)]
+    if len(held) > 1:
+        raise _refuse(path, f"names floor {floor} on {arm_id}, which aspect {aspect_id} holds {len(held)} times")
+    read = held[0]
+    if field == "interval":
+        return _interval(path, read.interval, "the floor's interval", "points", change=True)
+    if field in ("low", "high"):
+        end = _end(path, read.interval, field, "the floor's interval")
+        return _number(path, end, f"the interval's {field} end", "points", change=True)
+    if field in ("held_above", "broken_at"):
+        end = _end(path, read.interval, "low" if field == "held_above" else "high", "the floor's interval")
+        return _number(path, -float(end), f"the floor's {field}", "points")
+    if field in ("worst_drop", "margin", "short_by"):
+        return _number(path, getattr(read, field), f"the floor's {field}", "points")
+    return _text(path, getattr(read, field), f"the floor's {field}")
+
+
+_BAR_FIELDS = ("status", "value", "bar", "interval", "low", "high", "why")
+
+
+def _bar_measures(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return list(dict.fromkeys(read.measure for read in report_input.bars if read.aspect == prior[0]))
+
+
+def _bar_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    aspect_id, measure = prior
+    return [read.arm for read in report_input.bars if (read.aspect, read.measure) == (aspect_id, measure)]
+
+
+def _bar(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    aspect_id, measure, arm_id, field = values
+    held = [read for read in report_input.bars if (read.aspect, read.measure, read.arm) == (aspect_id, measure, arm_id)]
+    if len(held) > 1:
+        raise _refuse(
+            path, f"names the bar on {measure} for {arm_id}, which aspect {aspect_id} holds {len(held)} times"
+        )
+    read = held[0]
+    scale, unit = _scale_of(report_input, measure, (float(read.bar),))
+    if field in ("value", "bar"):
+        return _number(path, getattr(read, field), f"the bar's {field}", scale, unit=unit)
+    if field == "interval":
+        return _interval(path, read.interval, "the bar's interval", scale, unit=unit)
+    if field in ("low", "high"):
+        end = _end(path, read.interval, field, "the bar's interval")
+        return _number(path, end, f"the interval's {field} end", scale, unit=unit)
+    return _text(path, getattr(read, field), f"the bar's {field}")
+
+
+# --- target-matrix cells -------------------------------------------------------------------------------------------
+
+_CELL_FIELDS = ("name", "n_cases")
+
+
+def _cell_spellings(report_input: ReportInput, _: tuple[str, ...]) -> list[str]:
+    return [_cell_spelling(cell) for cell in report_input.cells.values()]
+
+
+def _spelled_cell(report_input: ReportInput, spelled: str) -> str:
+    return next(cell_id for cell_id, cell in report_input.cells.items() if _cell_spelling(cell) == spelled)
+
+
+def _cell_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return list(report_input.cells[_spelled_cell(report_input, prior[0])].per_arm)
+
+
+def _cell_keys(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    spelled, arm_id = prior
+    return list(report_input.cells[_spelled_cell(report_input, spelled)].per_arm[arm_id])
+
+
+def _cell_field(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    spelled, field = values
+    cell_id = _spelled_cell(report_input, spelled)
+    if field == "name":
+        return _text(path, _cell_name(report_input, cell_id), "the cell's name")
+    return _number(path, report_input.cells[cell_id].n_cases, "the cell's cases", "count")
+
+
+def _cell_figure(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    spelled, arm_id, key, statistic = values
+    per_arm = report_input.cells[_spelled_cell(report_input, spelled)].per_arm
+    return _slice_figure(report_input, per_arm, (arm_id, key, statistic), path, f"cell {spelled}")
 
 
 # --- reader names: the one name a reader is shown for each id -----------------------------------------------------
@@ -1014,9 +1569,7 @@ def _weakest(report_input: ReportInput, values: tuple[str, ...], path: str) -> F
         return _number(path, found.value, "the weakest margin's figure", scale, unit=unit)
     if field == "threshold":
         return _number(path, found.line, "the weakest margin's threshold", scale, unit=unit)
-    if scale in ("share", "percent"):
-        return _number(path, found.gap * 100 if scale == "share" else found.gap, "the weakest margin", "points")
-    return _number(path, found.gap, "the weakest margin", scale, unit=unit)
+    return _gap_figure(report_input, path, found.measure or "", found.line, found.gap, "the weakest margin")
 
 
 # --- the families --------------------------------------------------------------------------------------------------
@@ -1038,16 +1591,19 @@ def _named_reading_arms(report_input: ReportInput, prior: tuple[str, ...]) -> li
     return _reading_arms(_aspect_by_id(report_input, prior[0]))
 
 
-def _strata(report_input: ReportInput, _: tuple[str, ...]) -> list[str]:
-    return [stratum.id for stratum in report_input.strata]
-
-
 def _keyed(name: str, read: Callable[[ReportInput], Iterable[str]]) -> _Ids:
     return _Ids(name, lambda report_input, _prior: read(report_input))
 
 
 _ARM = _Ids("<arm>", _arms)
 _CANDIDATE = _Ids("<candidate>", _costed_candidates)
+#: The slots every key on one aspect begins with.
+_ON_ASPECT = (_Word("aspects"), _Ids("<aspect>", _aspects))
+#: The slots a strata key begins with: unqualified, and on one aspect.
+_STRATUM = (_Word("strata"), _Ids("<stratum>", _strata))
+_ASPECT_STRATUM = (*_ON_ASPECT, _Word("strata"), _Ids("<stratum>", _aspect_strata))
+#: How a cell is named, and a criterion's place.
+_CELL = _Ids("<cell>", _cell_spellings)
 
 
 def _family_of(
@@ -1055,8 +1611,17 @@ def _family_of(
     what: str,
     resolve: Callable[[ReportInput, tuple[str, ...], str], Figure],
     derived: bool = False,
+    derived_statistics: tuple[str, ...] = (),
+    example: str = "",
 ) -> _Family:
-    return _Family(slots=slots, what=what, resolve=resolve, derived=derived)
+    return _Family(
+        slots=slots,
+        what=what,
+        resolve=resolve,
+        derived=derived,
+        derived_statistics=derived_statistics,
+        example=example,
+    )
 
 
 #: Every path family, in the order the grammar teaches them.
@@ -1168,9 +1733,11 @@ _FAMILIES: tuple[_Family, ...] = (
         _Ids("<task>", _tasks),
         _Ids("<arm>", _task_arms),
         _Ids("<measure>", _task_measures),
-        _Statistic(_MEASURE_STATISTICS),
-        what="an arm's figure on a measure or judged dimension within one task",
+        _Statistic(_SLICE_STATISTICS),
+        what="an arm's figure on a measure or judged dimension within one task; `vs_control` is its mean minus the "
+        "control's there",
         resolve=_task_figure,
+        derived_statistics=_SLICE_DERIVED,
     ),
     _family_of(
         _Word("criteria"),
@@ -1180,11 +1747,10 @@ _FAMILIES: tuple[_Family, ...] = (
         resolve=_criterion_field,
     ),
     _family_of(
-        _Word("strata"),
-        _Ids("<stratum>", _strata),
+        *_STRATUM,
         _Statistic(_STRATUM_FIELDS, "<field>"),
         what="a stratum",
-        resolve=_stratum_field,
+        resolve=_strata_resolver(_stratum_field, qualified=False),
     ),
     _family_of(
         _Word("cost.uplift"),
@@ -1200,20 +1766,18 @@ _FAMILIES: tuple[_Family, ...] = (
         derived=True,
     ),
     _family_of(
-        _Word("strata"),
-        _Ids("<stratum>", _strata),
+        *_STRATUM,
         _Word("loss_share"),
         what="the least share of any candidate's loss on the primary judged dimension that the stratum carries",
-        resolve=_loss_share,
+        resolve=_strata_resolver(_loss_share, qualified=False),
         derived=True,
     ),
     _family_of(
-        _Word("strata"),
-        _Ids("<stratum>", _strata),
+        *_STRATUM,
         _Word("loss_share"),
         _Ids("<candidate>", _candidates),
         what="the share of one candidate's loss the stratum carries",
-        resolve=_loss_share,
+        resolve=_strata_resolver(_loss_share, qualified=False),
         derived=True,
     ),
     _family_of(
@@ -1232,6 +1796,211 @@ _FAMILIES: tuple[_Family, ...] = (
         what="the margin above which a candidate's asked reading holds: its interval's worst drop",
         resolve=_flip_margin,
         derived=True,
+    ),
+    _family_of(
+        *_ON_ASPECT,
+        _Word("contrast"),
+        _Ids("<arm>", _aspect_contrast_arms),
+        _Ids("<measure>", _aspect_contrasted),
+        _Statistic(_CONTRAST_STATISTICS),
+        what="a corrected contrast on one aspect, where `contrast.` reads an arm and measure the input holds on more "
+        "than one",
+        resolve=_aspect_contrast,
+        example="aspects.answers.contrast.fast.v2.tone.kept.delta|pts",
+    ),
+    _family_of(
+        *_ON_ASPECT,
+        _Word("measure"),
+        _Ids("<measure>", _aspect_measures),
+        _Ids("<arm>", _aspect_measure_arms),
+        _Statistic(_MEASURE_STATISTICS),
+        what="an arm's figure on a measure on one aspect",
+        resolve=_aspect_measure,
+        example="aspects.speed.measure.latency_ms.fast.v2.mean",
+    ),
+    _family_of(
+        _Word("judged"),
+        _keyed("<dimension>", lambda ri: ri.judged),
+        _Ids("<arm>", _judged_arms),
+        _Statistic(_MEASURE_STATISTICS),
+        what="one statistic of an arm's figure on a judged dimension",
+        resolve=_judged_stat,
+        example="judged.tone.kept.base.n",
+    ),
+    _family_of(
+        *_ON_ASPECT,
+        _Word("judged"),
+        _Ids("<dimension>", _aspect_judged_dimensions),
+        _Ids("<arm>", _aspect_judged_arms),
+        _Statistic(_MEASURE_STATISTICS),
+        what="an arm's figure on a judged dimension on one aspect",
+        resolve=_aspect_judged,
+        example="aspects.answers.judged.tone.kept.fast.v2.mean|pct",
+    ),
+    _family_of(
+        *_ON_ASPECT,
+        _Word("scoreboard"),
+        _Ids("<arm>", _aspect_board_arms),
+        _Statistic(_SCOREBOARD_STATISTICS),
+        what="how an arm's trials came out on one aspect",
+        resolve=_aspect_scoreboard,
+        example="aspects.speed.scoreboard.fast.v2.passed",
+    ),
+    _family_of(
+        *_ON_ASPECT,
+        _Word("pair"),
+        _Ids("<arm>", _pair_firsts),
+        _Ids("<arm>", _pair_seconds),
+        _Statistic(_PAIR_STATISTICS),
+        what="a pair reading on one aspect: the first arm minus the second, in points, as the input orders them; "
+        "`ahead` is the arm shown ahead",
+        resolve=_pair,
+        example="aspects.speed.pair.base.fast.v2.change|pts",
+    ),
+    _family_of(
+        *_ON_ASPECT,
+        _Word("floor"),
+        _Ids("<floor>", _floor_keys),
+        _Ids("<arm>", _floor_arms),
+        _Statistic(_FLOOR_FIELDS, "<field>"),
+        what="a floor read on one candidate: `held_above` is the margin above which it holds (minus the interval's "
+        "low end), `broken_at` the margin at or below which it breaks (minus the high end)",
+        resolve=_floor,
+        derived_statistics=_FLOOR_DERIVED,
+        example="aspects.answers.floor.answers/rate_drop/*.fast.v2.held_above",
+    ),
+    _family_of(
+        *_ON_ASPECT,
+        _Word("bar"),
+        _Ids("<measure>", _bar_measures),
+        _Ids("<arm>", _bar_arms),
+        _Statistic(_BAR_FIELDS, "<field>"),
+        what="an arm against an absolute bar on one aspect, in the measure's units",
+        resolve=_bar,
+        example="aspects.speed.bar.latency_ms.fast.v2.value",
+    ),
+    _family_of(
+        *_ON_ASPECT,
+        _Word("family"),
+        _Statistic(_FAMILY_FIELDS, "<field>"),
+        what="the contrast family correcting one aspect's contrasts, where the input holds more than one",
+        resolve=_aspect_family,
+        example="aspects.answers.family.correction",
+    ),
+    _family_of(
+        *_ON_ASPECT,
+        _Word("flip_margin"),
+        _Ids("<candidate>", _named_reading_arms),
+        what="the margin above which a candidate's reading on one aspect holds: its interval's worst drop",
+        resolve=_aspect_flip_margin,
+        derived=True,
+        example="aspects.answers.flip_margin.fast.v2",
+    ),
+    _family_of(
+        *_STRATUM,
+        _Ids("<arm>", _stratum_arms(qualified=False)),
+        _Ids("<measure>", _stratum_keys(qualified=False)),
+        _Statistic(_SLICE_STATISTICS),
+        what="an arm's figure on a measure or judged dimension within one stratum; `vs_control` is its mean minus the "
+        "control's there",
+        resolve=_strata_resolver(_stratum_figure, qualified=False),
+        derived_statistics=_SLICE_DERIVED,
+        example="strata.off_topic.fast.v2.tone.kept.vs_control|pts",
+    ),
+    _family_of(
+        *_STRATUM,
+        _Word("loss_share"),
+        _Ids("<candidate>", _candidates),
+        _Ids("<measure>", _loss_keys(qualified=False)),
+        what="the share of one candidate's loss on any measure or judged dimension the stratum carries, a loss "
+        "running the way the measure is worse",
+        resolve=_strata_resolver(_loss_share, qualified=False),
+        derived=True,
+        example="strata.off_topic.loss_share.fast.v2.tone.kept|pct",
+    ),
+    _family_of(
+        *_ASPECT_STRATUM,
+        _Statistic(_STRATUM_FIELDS, "<field>"),
+        what="a stratum of one aspect's cases, where the input holds its id on more than one aspect",
+        resolve=_strata_resolver(_stratum_field, qualified=True),
+        example="aspects.answers.strata.off_topic.n_cases",
+    ),
+    _family_of(
+        *_ASPECT_STRATUM,
+        _Ids("<arm>", _stratum_arms(qualified=True)),
+        _Ids("<measure>", _stratum_keys(qualified=True)),
+        _Statistic(_SLICE_STATISTICS),
+        what="an arm's figure within a stratum of one aspect's cases",
+        resolve=_strata_resolver(_stratum_figure, qualified=True),
+        derived_statistics=_SLICE_DERIVED,
+        example="aspects.answers.strata.off_topic.fast.v2.tone.kept.mean|pct",
+    ),
+    _family_of(
+        *_ASPECT_STRATUM,
+        _Word("loss_share"),
+        what="the least share of any candidate's loss on the primary judged dimension that a stratum of one aspect "
+        "carries",
+        resolve=_strata_resolver(_loss_share, qualified=True),
+        derived=True,
+    ),
+    _family_of(
+        *_ASPECT_STRATUM,
+        _Word("loss_share"),
+        _Ids("<candidate>", _candidates),
+        what="the share of one candidate's loss a stratum of one aspect carries",
+        resolve=_strata_resolver(_loss_share, qualified=True),
+        derived=True,
+    ),
+    _family_of(
+        *_ASPECT_STRATUM,
+        _Word("loss_share"),
+        _Ids("<candidate>", _candidates),
+        _Ids("<measure>", _loss_keys(qualified=True)),
+        what="the share of one candidate's loss on any measure that a stratum of one aspect carries",
+        resolve=_strata_resolver(_loss_share, qualified=True),
+        derived=True,
+    ),
+    _family_of(
+        _Word("cells"),
+        _CELL,
+        _Statistic(_CELL_FIELDS, "<field>"),
+        what="a target-matrix cell, written by its row and column level ids joined by a dot (`<row>.<column>`)",
+        resolve=_cell_field,
+        example="cells.short.en.name",
+    ),
+    _family_of(
+        _Word("cells"),
+        _CELL,
+        _Ids("<arm>", _cell_arms),
+        _Ids("<measure>", _cell_keys),
+        _Statistic(_SLICE_STATISTICS),
+        what="an arm's figure on a measure or judged dimension within one cell; `vs_control` is its mean minus the "
+        "control's there",
+        resolve=_cell_figure,
+        derived_statistics=_SLICE_DERIVED,
+        example="cells.short.en.fast.v2.tone.kept.mean|pct",
+    ),
+    _family_of(
+        _Word("criteria"),
+        _keyed("<criterion>", lambda ri: [criterion.id for criterion in ri.criteria]),
+        _Ids("<arm>", _criterion_arms),
+        _Statistic(_CRITERION_FIGURE_FIELDS, "<field>"),
+        what="the one figure a criterion reads for an arm, in its measure's units; `gap` is how far it clears the "
+        "threshold, signed toward passing, in points for a rate",
+        resolve=_criterion_arm,
+        derived_statistics=_CRITERION_DERIVED,
+        example="criteria.p95.fast.v2.gap",
+    ),
+    _family_of(
+        _Word("criteria"),
+        _keyed("<criterion>", lambda ri: [criterion.id for criterion in ri.criteria]),
+        _Ids("<arm>", _criterion_arms),
+        _Ids("<place>", _criterion_places),
+        _Statistic(_CRITERION_FIGURE_FIELDS, "<field>"),
+        what="a criterion's figure for an arm at one place it reads: a task by id, a cell as `<row>.<column>`",
+        resolve=_criterion_arm_at,
+        derived_statistics=_CRITERION_DERIVED,
+        example="criteria.cell_floor.fast.v2.short.en.value|pct",
     ),
 )
 
@@ -1395,7 +2164,22 @@ def resolve(key: str, report_input: ReportInput) -> Figure:
             raise _refuse(key, f"names no figure; a key begins with {_listed(_beginnings())}")
         raise _refuse(key, f"names no figure: after `{key[: stop.at]}` comes {_listed(stop.expected)}")
     reading = found[0]
-    return reading.family.resolve(report_input, reading.values, key)
+    figure = reading.family.resolve(report_input, reading.values, key)
+    return replace(figure, derived=_is_derived(reading))
+
+
+def _is_derived(reading: _Reading) -> bool:
+    """Whether a reading's figure is computed here: its family is derived, or the statistic it names is."""
+    if reading.family.derived:
+        return True
+    values = iter(reading.values)
+    for slot in reading.family.slots:
+        if isinstance(slot, _Word):
+            continue
+        value = next(values)
+        if isinstance(slot, _Statistic) and value in reading.family.derived_statistics:
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -1405,7 +2189,8 @@ class KeySubjects:
     ``arms`` are the ids the path's arm or candidate slots matched (or the arm of ``{arm:<id>}``); ``aspects`` the
     aspect ids it named, or the asked aspect for a family that reads it without naming it (``reading``, ``aspect``,
     ``cases``, ``flip_margin``). ``against_control`` is True for a figure that is a difference from the control (a
-    reading, a contrast, a cost uplift, a flip margin, a stratum's loss share), whose evidence is the control's too.
+    reading, a contrast, a cost uplift, a flip margin, a stratum's loss share, a slice's ``vs_control``), whose
+    evidence is the control's too.
     """
 
     arms: tuple[str, ...]
@@ -1420,7 +2205,12 @@ _ARM_SLOTS = frozenset({"<arm>", "<candidate>"})
 _ASKED_FAMILIES = frozenset({"aspect", "reading", "cases", "flip_margin"})
 
 #: The words that make a figure a difference from the control.
-_AGAINST_CONTROL = frozenset({"reading", "contrast", "cost.uplift", "cost.uplift_range", "flip_margin", "loss_share"})
+_AGAINST_CONTROL = frozenset(
+    {"reading", "contrast", "cost.uplift", "cost.uplift_range", "flip_margin", "loss_share", *_SLICE_DERIVED}
+)
+
+#: The statistics that make a figure a difference from the control.
+_AGAINST_CONTROL_STATISTICS = frozenset(_SLICE_DERIVED)
 
 
 def key_subjects(key: str, report_input: ReportInput) -> KeySubjects:
@@ -1451,7 +2241,9 @@ def key_subjects(key: str, report_input: ReportInput) -> KeySubjects:
             words.append(slot.text)
             continue
         value = next(values)
-        if isinstance(slot, _Ids) and slot.name in _ARM_SLOTS:
+        if isinstance(slot, _Statistic) and value in _AGAINST_CONTROL_STATISTICS:
+            words.append(value)
+        elif isinstance(slot, _Ids) and slot.name in _ARM_SLOTS:
             arms.append(value)
         elif isinstance(slot, _Ids) and slot.name == "<aspect>":
             aspects.append(value)
@@ -1708,8 +2500,9 @@ GRAMMAR_HEADING = "Figure keys"
 
 
 def _example_input() -> ReportInput:
-    """A small made-up input the grammar's examples are rendered on, with a dotted arm id and a dotted dimension."""
-    rate = {"base": 0.912, "fast.v2": 0.874}
+    """A small made-up input the grammar's examples are rendered on, with a dotted arm id and a dotted dimension: one
+    asked aspect and one other, with a measure on both, a pair reading, a floor, a bar, strata, a cell and criteria."""
+    rate = {"base": (0.912, 897), "fast.v2": (0.874, 895)}
     return ReportInput.model_validate(
         {
             "schema": "report-input/1",
@@ -1739,17 +2532,84 @@ def _example_input() -> ReportInput:
                     "readings": [
                         {"arm": "fast.v2", "reading": "within_margin", "change": -4.26, "within_interval": [-7.1, -1.4]}
                     ],
+                },
+                {
+                    "id": "speed",
+                    "readings": [
+                        {"arm": "fast.v2", "reading": "improved", "change": 7.4, "within_interval": [3.6, 11.2]}
+                    ],
+                    "pairs": [
+                        {
+                            "arms": ["base", "fast.v2"],
+                            "change": -7.4,
+                            "interval": [-11.2, -3.6],
+                            "confidence": 0.95,
+                            "ahead": "fast.v2",
+                        }
+                    ],
+                    "scoreboard": {
+                        "base": {"ran": 300, "usable": 298, "passed": 240},
+                        "fast.v2": {"ran": 300, "usable": 299, "passed": 262},
+                    },
+                },
+            ],
+            "floors": [
+                {
+                    "floor": "answers/rate_drop/*",
+                    "aspect": "answers",
+                    "arm": "fast.v2",
+                    "status": "held",
+                    "interval": [-7.1, -1.4],
+                    "worst_drop": 7.1,
+                    "margin": 10,
                 }
+            ],
+            "bars": [
+                {
+                    "aspect": "speed",
+                    "arm": "fast.v2",
+                    "measure": "latency_ms",
+                    "bar": 900,
+                    "direction": "lower_is_better",
+                    "status": "met",
+                    "value": 640,
+                    "interval": [610, 672],
+                }
+            ],
+            "criteria": [
+                {
+                    "id": "p95",
+                    "kind": "gate",
+                    "measure": "latency_ms",
+                    "statistic": "p95",
+                    "direction": "lower_is_better",
+                    "threshold": 1500,
+                },
+                {
+                    "id": "cell_floor",
+                    "kind": "floor",
+                    "measure": "tone.kept",
+                    "direction": "higher_is_better",
+                    "scope": "each_cell",
+                    "threshold": 0.85,
+                },
             ],
             "scoreboard": {
                 "base": {"passed": 765, "usable": 897, "reply_cost_usd": 0.001892},
                 "fast.v2": {"passed": 731, "usable": 895, "reply_cost_usd": 0.002427},
             },
-            "measures": {},
+            "measures": {
+                "latency_ms": {
+                    "unit": "ms",
+                    "higher_is_better": False,
+                    "per_arm": {"base": {"mean": 820, "p95": 1310}, "fast.v2": {"mean": 655, "p95": 980}},
+                    "by_aspect": {"speed": {"base": {"mean": 790}, "fast.v2": {"mean": 640, "ci": [610, 672]}}},
+                }
+            },
             "judged": {
                 "tone.kept": {
                     "scale": "pass_fail",
-                    "per_arm": {arm: {"mean": mean} for arm, mean in rate.items()},
+                    "per_arm": {arm: {"mean": mean, "n": n} for arm, (mean, n) in rate.items()},
                 }
             },
             "primary_judged": "tone.kept",
@@ -1758,23 +2618,48 @@ def _example_input() -> ReportInput:
                     "arm": "fast.v2",
                     "measure": "tone.kept",
                     "kind": "judged",
+                    "aspect": "answers",
                     "verdict": "regressed",
                     "delta": -0.038,
                     "interval": [-0.061, -0.015],
-                }
+                },
+                {
+                    "arm": "fast.v2",
+                    "measure": "latency_ms",
+                    "kind": "measure",
+                    "aspect": "speed",
+                    "verdict": "improved",
+                    "delta": -165,
+                    "interval": [-190, -140],
+                },
             ],
+            "contrast_families": [{"aspect": "answers", "correction": "holm", "alpha": 0.05, "family_size": 1}],
             "strata": [
                 {
                     "id": "off_topic",
+                    "aspect": "answers",
                     "n_cases": 40,
                     "per_arm": {"base": {"tone.kept": {"mean": 0.70}}, "fast.v2": {"tone.kept": {"mean": 0.55}}},
                 },
                 {
                     "id": "greeting",
+                    "aspect": "answers",
                     "n_cases": 60,
                     "per_arm": {"base": {"tone.kept": {"mean": 0.95}}, "fast.v2": {"tone.kept": {"mean": 0.85}}},
                 },
             ],
+            "target_matrix": {
+                "rows": {"id": "length", "levels": [{"id": "short", "name": "Short"}]},
+                "columns": {"id": "lang", "levels": [{"id": "en", "name": "English"}]},
+            },
+            "cells": {
+                "short|en": {
+                    "row": "short",
+                    "column": "en",
+                    "n_cases": 50,
+                    "per_arm": {"base": {"tone.kept": {"mean": 0.94}}, "fast.v2": {"tone.kept": {"mean": 0.9}}},
+                }
+            },
             "caveats": {},
         }
     )
@@ -1791,6 +2676,21 @@ _FILTER_EXAMPLES: dict[str, str] = {
     "interval": "reading.fast.v2.interval|interval",
     "usd_per_1k": "scoreboard.base.reply_cost_usd|usd_per_1k",
 }
+
+
+def _family_line(family: _Family, example: ReportInput, names: Mapping[str, str]) -> str:
+    """One family's line in the grammar: its form, what it reads, its statistics, what of it is derived, and its
+    example rendered on the made-up input."""
+    statistic = family.statistic()
+    listed = f" ({statistic.name}: {', '.join(statistic.options)})" if statistic else ""
+    tag = " Derived: descriptive, no interval." if family.derived else ""
+    if family.derived_statistics:
+        derived = ", ".join(f"`{name}`" for name in family.derived_statistics)
+        tag += f" {derived} derived: descriptive, no interval."
+    if family.example:
+        shown = render(f"{{{family.example}}}", example, names)
+        tag += f' `{{{family.example}}}` reads "{shown}".'
+    return f"- `{family.form()}`: {family.what}{listed}.{tag}"  # one line: module constants
 
 
 def figure_key_grammar() -> str:
@@ -1816,14 +2716,13 @@ def figure_key_grammar() -> str:
         "names an arm: it prints the arm's short name and letter tag.",
         "A path is matched against the ids this input holds, never split at dots: write an id exactly as the input "
         "spells it, dots and spaces included (`reading.fast.v2.change` is arm `fast.v2`). A path that reads two ways, "
-        "or names nothing the input holds, is refused and sent back naming what could come next.",
+        "or names nothing the input holds, is refused and sent back naming what could come next. Where the input "
+        "holds a figure on more than one aspect (a contrast, a stratum, a contrast family), the form without "
+        "`aspects.<aspect>.` is refused and names the `aspects.<aspect>.` keys to write instead.",
         "Paths:",
     ]
     for family in _FAMILIES:
-        statistic = family.statistic()
-        listed = f" ({statistic.name}: {', '.join(statistic.options)})" if statistic else ""
-        tag = " Derived: descriptive, no interval." if family.derived else ""
-        lines.append(f"- `{family.form()}`: {family.what}{listed}.{tag}")  # one line: module constants
+        lines.append(_family_line(family, example, names))
     lines.append("Filters (one spelling at most, plus `abs` and `interval`):")
     for name in _FILTERS:
         key = parse_key(_FILTER_EXAMPLES[name])
