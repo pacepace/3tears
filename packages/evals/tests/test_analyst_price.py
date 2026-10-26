@@ -136,7 +136,7 @@ def test_r4s_switch_to_the_cheaper_option_reads_its_saving_per_point_lost_a_mont
     """The reference's own trade: the cheaper option saves the control's cost less its own, 12 million replies a
     month, for the 6.1 points of persona it loses."""
     held = _r4()
-    assert render("{price.f64.prod.persona.monthly_cost_gap}", held, {}) == "+$7560.00"
+    assert render("{price.f64.prod.persona.monthly_cost_gap}", held, {}) == "+$7,560.00"
     assert _value("price.f64.prod.persona.monthly_per_point", held) == pytest.approx((2.1 - 1.47) * 12_000 / 6.1)
     assert render("{price.f64.prod.persona.gain}", held, {}) == "+6.1"
     assert render("{price.f64.prod.persona.gain_interval}", held, {}) == "+4.9 to +7.3"
