@@ -19,6 +19,8 @@ confidence clauses and landing lists use:
 ``confound:<id>``                         a confound, by its key in ``caveats.confounds``
 ``apparatus:<dimension>``                 an apparatus confound; a confound of the same dimension is this caveat
 ``short_run:<run id>``                    a run short of usable measurements
+``unsettled:<aspect>``                    a surviving candidate's reading on an aspect declaring a margin is left
+                                          unsettled past it (:func:`unsettled_arms`)
 ``latency``                               latency is not compared
 ``unreported:<observation>``              an observation recorded but not reported
 ========================================  ==========================================================================
@@ -27,9 +29,21 @@ confidence clauses and landing lists use:
 judge, and a confound, apparatus confound or short run that touches every comparison the report makes (each
 candidate against the control in a change, every pair in a choice, the one arm in a measurement; a short run touches
 the comparisons its arm is in, every one when it names no arm; a confound touches the comparisons whose contrasts name
-it). Report-wide caveats are what the decision's confidence is conditional on. *Scoped*: a confound or short run
-touching only some comparisons, said beside the claim it qualifies. *Method-level*: latency, an unreported
-observation, and an apparatus confound that is not report-wide.
+it), and an unsettled aspect whose unsettled candidates include the option code's decision names (decide mode with
+one option dominating, which the plan must recommend). Report-wide caveats are what the decision's confidence is
+conditional on. *Scoped*: a confound or short run touching only some comparisons, and an unsettled aspect on no
+option code's decision names, said beside the claim it qualifies; where the plan itself recommends an unsettled
+candidate (a pick by a ranking rule, which code does not make), its confidence is conditional on that caveat too
+(:mod:`~threetears.evals.analysis.report_plan_checks`). *Method-level*: latency, an unreported observation, and an
+apparatus confound that is not report-wide.
+
+**Unsettled past the margin.** A reading is left unsettled past its margin when it is not within the margin (the one
+rule: its :func:`~threetears.evals.analysis.report_margins.flip_margin` at or above the margin), its interval reaches a
+loss (its low end below zero), and its high end sits above the margin's line (``-margin``): the evidence allows a loss
+past the margin and a change short of it. An interval wholly past the line is settled, not unsettled. Asked and
+unasked aspects alike: an asked one's reading decides a candidate's level only where nothing else shows it better, so
+a candidate shown better on one asked aspect, or left the best of the survivors when the control fails a gate, can be
+the call while another asked reading stays unsettled; an unasked one's the decision never reads.
 
 **Immateriality** (:func:`caveat_materiality`). A late criterion is immaterial when the decision, the allowed modes
 and the one option that dominates, is the same across the criterion's whole plausible range. Code checks each piece
@@ -46,7 +60,10 @@ the check covers the range exactly:
   control is another campaign, and a guardrail's reading carries no interval here.
 
 Every other caveat is open: an uncalibrated judge, a confound, a short run, latency and an unreported observation are
-not a criterion with a range.
+not a criterion with a range. An unsettled aspect is open too: the sweep varies a margin, not the change a reading's
+interval leaves open, and the decision reads a reading only as within its margin or not, so a call that holds at
+every margin would show only that code's rule does not weigh the reading (it never reads an unasked aspect), which is
+what the caveat says. Whether a loss past the margin would change the call is the plan's ``material_if`` to state.
 
 **Survivors** (:func:`surviving_options`, GENERATOR §3). An option survives when the gate check
 (:func:`~threetears.evals.analysis.report_gates.gate_check`) does not fail it, and no guardrail the pipeline read on it
@@ -122,6 +139,7 @@ __all__ = [
     "separating_contrasts",
     "shown_better",
     "surviving_options",
+    "unsettled_arms",
 ]
 
 #: Judge tiers and calibration states that mean no human calibration stands behind the judge.
@@ -146,7 +164,7 @@ class Caveat:
 
     :ivar id: The caveat's id (this module's id table).
     :ivar kind: The id's kind: ``late``, ``judge_uncalibrated``, ``confound``, ``apparatus``, ``short_run``,
-        ``latency`` or ``unreported``.
+        ``unsettled``, ``latency`` or ``unreported``.
     :ivar reach: ``report`` (the confidence is conditional on it), ``scoped`` (said beside a claim) or ``method``.
     """
 
@@ -259,8 +277,8 @@ def report_caveats(report_input: ReportInput) -> list[Caveat]:
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
-    :return: Late criteria, the judge, confounds, apparatus confounds, short runs, latency, then unreported
-        observations, each in the input's order.
+    :return: Late criteria, the judge, confounds, apparatus confounds, short runs, unsettled aspects, latency, then
+        unreported observations, each in the input's order.
     :rtype: list[Caveat]
     """
     caveats = report_input.caveats
@@ -284,6 +302,11 @@ def report_caveats(report_input: ReportInput) -> list[Caveat]:
     for run in caveats.short_runs:
         wide = _touches_every_comparison(report_input, None if run.arm is None else {run.arm})
         add(Caveat(f"short_run:{run.run}", "short_run", "report" if wide else "scoped"))
+    unsettled = unsettled_arms(report_input)
+    if unsettled:
+        called = set(_outcome(report_input, _Overrides())[1])
+        for caveat_id, arms in unsettled.items():
+            add(Caveat(caveat_id, "unsettled", "report" if called & set(arms) else "scoped"))
     if caveats.latency:
         add(Caveat("latency", "latency", "method"))
     for observation in caveats.unreported:
@@ -405,6 +428,40 @@ def _within(aspect: Aspect, reading: Reading, overrides: _Overrides) -> bool:
     margin = _margin(aspect, reading, overrides)
     flip = flip_margin(reading)
     return margin is not None and flip is not None and flip < margin
+
+
+def _unsettled(aspect: Aspect, reading: Reading) -> bool:
+    """Whether a reading is left unsettled past its declared margin (this module's Unsettled past the margin)."""
+    margin = _margin(aspect, reading, _Overrides())
+    if margin is None or reading.within_interval is None or _within(aspect, reading, _Overrides()):
+        return False
+    low, high = (float(end) for end in reading.within_interval)
+    return low < 0 and high > -margin
+
+
+def unsettled_arms(report_input: ReportInput) -> dict[str, tuple[str, ...]]:
+    """Each aspect on which a surviving candidate's reading is left unsettled past its declared margin (this module's
+    Unsettled past the margin), by its caveat id ``unsettled:<aspect>``, with those candidates.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The candidates left unsettled, in the readings' order, by caveat id in the aspects' order; empty for none.
+    :rtype: dict[str, tuple[str, ...]]
+    """
+    survivors = set(surviving_options(report_input))
+    control = control_arm(report_input)
+    found: dict[str, tuple[str, ...]] = {}
+    for aspect in report_input.aspects:
+        arms = tuple(
+            dict.fromkeys(
+                reading.arm
+                for reading in aspect.readings
+                if reading.arm in survivors and reading.arm != control and _unsettled(aspect, reading)
+            )
+        )
+        if arms:
+            found[f"unsettled:{aspect.id}"] = arms
+    return found
 
 
 def _shown_no_worse(report_input: ReportInput, arm: str, overrides: _Overrides) -> bool:

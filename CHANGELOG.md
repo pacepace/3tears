@@ -47,6 +47,13 @@ refused there, at its field path with the page's reason, for the planner's repai
 plan passed the checks and was stored, and its page then refused with "generate the analysis again", which wrote the
 same plan again. Stored plans are read as before.
 
+**Added:** a caveat kind, `unsettled:<aspect>` (#980): a surviving candidate's reading on an aspect declaring a margin,
+asked or not, whose interval allows both a loss past the margin and a change short of it. It is report-wide when the
+option code's decision names is among those candidates, and scoped otherwise; a plan recommending such a candidate
+(a ranking rule's pick included) may not state a plain `high` while it is open, and states `high_if_immaterial` with
+its `material_if` clause, or `low`. Code never proves it immaterial. `report_decision.unsettled_arms` is public, and
+the plan's caveat and flag id patterns accept the new kind, so every stored plan still reads.
+
 ### evals: a static report page, for a host whose policy runs and loads nothing
 
 **Added:** `report_html` and `campaign_report_html` take `static: bool = False`. So do `serialize_report` and

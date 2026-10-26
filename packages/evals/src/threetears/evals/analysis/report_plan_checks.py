@@ -87,7 +87,9 @@ added later refuses no plan already stored:
   answer names a warning not raised.
 - *Confidence* (GENERATOR §2.5): plain ``high`` only while no open report-wide caveat remains, and listing none;
   ``high_if_immaterial`` lists at least one caveat and every open report-wide one, none of them stated elsewhere;
-  ``low`` is allowed whatever the caveats. Every listed caveat has a non-empty clause (``material_if``).
+  ``low`` is allowed whatever the caveats. Every listed caveat has a non-empty clause (``material_if``). An open
+  unsettled caveat on the arm the plan recommends counts as report-wide here, whatever its scope: code scopes it by
+  the pick code makes, and a ranking rule's pick is the plan's.
 - *Flag*: holds ``no_rule`` exactly when it applies; otherwise only report-wide caveats, each once; a flag on an input
   with no report-wide disclosure is refused.
 - *Coverage*: every caveat :func:`~threetears.evals.analysis.report_decision.report_caveats` lists lands exactly
@@ -200,6 +202,7 @@ from threetears.evals.analysis.report_decision import (
     separating_contrasts,
     shown_better,
     surviving_options,
+    unsettled_arms,
 )
 from threetears.evals.analysis.report_input import Contrast, ReportInput
 from threetears.evals.analysis.report_margins import criterion_place, weakest_margin
@@ -921,6 +924,7 @@ def _confidence_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[
                 f"is empty: the open caveat {clause.id!r} needs the condition that would make it material",
             )
     wide = [disclosure for disclosure in implied_disclosures(report_input, plan.mode) if disclosure != "no_rule"]
+    wide += [item for item in _unsettled_on_the_pick(plan, report_input) if item not in wide]
     listed = {clause.id for clause in confidence.caveats}
     if confidence.form == "high":
         if wide:
@@ -947,9 +951,23 @@ def _confidence_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[
             "decision.confidence.caveats",
             (
                 f"leave out {elsewhere}, stated elsewhere ({', '.join(landed[elsewhere[0]])}): a 'high_if_immaterial' "
-                "confidence lists every open report-wide caveat, each with what would make it material"
+                "confidence lists every open caveat the call is conditional on, each with what would make it material"
             ),
         )
+
+
+def _unsettled_on_the_pick(plan: ReportPlan, report_input: ReportInput) -> list[str]:
+    """The open unsettled caveats on the arm the plan recommends: the confidence is conditional on each, report-wide or
+    not, since code's scope knows only the pick code makes (one dominant option), not a ranking rule's."""
+    row = _recommended(plan)
+    if row is None:
+        return []
+    materiality = caveat_materiality(report_input)
+    return [
+        item
+        for item, arms in unsettled_arms(report_input).items()
+        if row.option in arms and not materiality[item].immaterial
+    ]
 
 
 def _flag_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:

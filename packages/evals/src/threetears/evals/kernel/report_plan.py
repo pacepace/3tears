@@ -132,23 +132,33 @@ _WarningKind = Literal["floor_broken", "floor_unclear", "behind_on", "bar_missed
 #: (:func:`threetears.evals.analysis.report_decision.report_caveats`): ``late:<criterion>`` or
 #: ``late:<criterion>:<name>`` for each criterion set after the results (``late:margin``,
 #: ``late:floor:<floor key>``), ``judge_uncalibrated``, ``confound:<id>`` for each confound,
-#: ``apparatus:<dimension>`` for each apparatus confound, ``short_run:<run id>`` for each short run, ``latency`` and
-#: ``unreported:<observation>`` for each observation recorded but not reported.
+#: ``apparatus:<dimension>`` for each apparatus confound, ``short_run:<run id>`` for each short run,
+#: ``unsettled:<aspect>`` for each aspect a surviving candidate's reading leaves unsettled past its margin, ``latency``
+#: and ``unreported:<observation>`` for each observation recorded but not reported.
 _CAVEAT_KINDS: tuple[str, ...] = (
     "late",
     "judge_uncalibrated",
     "confound",
     "apparatus",
     "short_run",
+    "unsettled",
     "latency",
     "unreported",
 )
 #: The caveat kinds that name one thing after a colon.
-_NAMED_CAVEATS = ("late", "confound", "apparatus", "short_run", "unreported")
+_NAMED_CAVEATS = ("late", "confound", "apparatus", "short_run", "unsettled", "unreported")
 #: What a flag may disclose: the report-wide caveat kinds, plus ``no_rule``, a tradeoff the campaign declared no rule
 #: to rank (GENERATOR §4.2: the flag names who makes the call). ``latency`` and ``unreported`` are method-level and
 #: never the flag's.
-_FLAG_KINDS: tuple[str, ...] = ("no_rule", "late", "judge_uncalibrated", "confound", "apparatus", "short_run")
+_FLAG_KINDS: tuple[str, ...] = (
+    "no_rule",
+    "late",
+    "judge_uncalibrated",
+    "confound",
+    "apparatus",
+    "short_run",
+    "unsettled",
+)
 
 
 def _id_pattern(kinds: Sequence[str]) -> str:

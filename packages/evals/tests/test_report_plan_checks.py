@@ -994,6 +994,101 @@ class TestTheConfidence:
         assert "'late:margin'" in _why(plan, "decision.confidence.caveats", _flash_data())
 
 
+# --- an aspect unsettled past its margin --------------------------------------------------------------------------
+
+
+def _nothing_open(data: dict[str, Any]) -> dict[str, Any]:
+    """The input with no late criterion and a calibrated judge: no report-wide caveat of its own stays open."""
+    data["caveats"]["late_criteria"] = []
+    data["caveats"]["judge_tiers"] = {}
+    for judged in data["judged"].values():
+        judged.update(tier="calibrated", calibration="calibrated")
+    return data
+
+
+def _voice(data: dict[str, Any], arm: str | None = None) -> dict[str, Any]:
+    """The input with an unasked ``voice`` aspect read like the asked one, against the same declared margin, and
+    ``arm``'s reading there moved so its interval, its width kept, straddles the margin's line (``-margin``)."""
+    voice = json.loads(json.dumps(data["aspects"][0]))
+    voice.update(id="voice", name="voice", asked=False)
+    for reading in voice["readings"]:
+        if reading["arm"] == arm:
+            low, high = reading["within_interval"]
+            width, line = high - low, -reading["margin"]
+            reading["within_interval"] = [line - width / 2, line + width / 2]
+    data["aspects"].append(voice)
+    return data
+
+
+_UNSETTLED = {"id": "unsettled:voice", "material_if": "Voice is unsettled. Material only if a loss that large would "
+              "change the call."}  # fmt: skip
+
+
+def _confident(plan: dict[str, Any], form: str, *clauses: dict[str, str]) -> dict[str, Any]:
+    return _set(plan, "decision.confidence", {"form": form, "caveats": list(clauses)})
+
+
+def _ranked_flash() -> dict[str, Any]:
+    """Nothing open; qwen3.8-flash shown better on an asked latency aspect and dearer than September, so nothing
+    dominates and the declared priority (latency, then cost) decides: the pick is the plan's, not code's."""
+    data = _nothing_open(_input_dict())
+    data["aspects"].append({"id": "latency", "name": "latency", "asked": True, "readings": []})
+    data["measures"]["research_p95_s"] = {"unit": "s", "higher_is_better": False, "per_arm": {}}
+    data["contrasts"].append(_P95_IMPROVED)
+    data["contrast_families"][0]["merit_axes"] = ["latency", "cost"]
+    return data
+
+
+def _confidence_and_coverage(plan: dict[str, Any], data: dict[str, Any]) -> list[tuple[str, str]]:
+    """The faults the confidence and coverage checks find, apart from any the plan's r5 prose keys meet elsewhere."""
+    try:
+        validate_plan(ReportPlan.model_validate(plan), _input(data=data))
+    except PlanRefusal as refused:
+        return [(at, why) for at, why in refused.faults if at.startswith("decision.confidence") or "unsettled:" in why]
+    return []
+
+
+class TestUnsettledPastTheMargin:
+    """GENERATOR §2.5 on the issue's state: the asked aspect decides the call for qwen3.8-flash, and its unasked voice
+    reading allows a loss past the declared margin."""
+
+    def test_inside_its_margin_plain_high_passes(self):
+        data = _voice(_nothing_open(_flash_data()))
+        assert "unsettled:voice" not in implied_disclosures(_input(data=data), "decide")
+        _passes(_confident(_recommending_flash(_plan()), "high"), data)
+
+    def test_plain_high_is_refused_naming_it(self):
+        data = _voice(_nothing_open(_flash_data()), "qwen3.8-flash")
+        assert implied_disclosures(_input(data=data), "decide") == ["unsettled:voice"]
+        why = _why(_confident(_recommending_flash(_plan()), "high"), "decision.confidence.form", data)
+        assert "open caveats remain: ['unsettled:voice']" in why
+
+    def test_high_if_immaterial_carrying_it_passes(self):
+        data = _voice(_nothing_open(_flash_data()), "qwen3.8-flash")
+        _passes(_confident(_recommending_flash(_plan()), "high_if_immaterial", _UNSETTLED), data)
+
+    def test_low_still_passes_listing_it_or_flagging_it(self):
+        data = _voice(_nothing_open(_flash_data()), "qwen3.8-flash")
+        _passes(_confident(_recommending_flash(_plan()), "low", _UNSETTLED), data)
+        plan = _confident(_recommending_flash(_plan()), "low")
+        plan["flag"] = [{**_NO_RULE_FLAG, "title": "Voice is unsettled.", "discloses": ["unsettled:voice"]}]
+        _passes(plan, data)
+
+    def test_on_a_candidate_not_picked_it_sits_beside_a_claim_under_plain_high(self):
+        data = _voice(_nothing_open(_flash_data()), "1017")
+        plan = _confident(_recommending_flash(_plan()), "high")
+        plan["decision"]["slots"][2]["caveats"].append("unsettled:voice")
+        _passes(plan, data)
+
+    def test_a_pick_by_the_ranking_rule_is_conditional_on_it_though_code_scopes_it(self):
+        data = _voice(_ranked_flash(), "qwen3.8-flash")
+        assert "unsettled:voice" not in implied_disclosures(_input(data=data), "decide")
+        high = dict(_confidence_and_coverage(_confident(_recommending_flash(_plan()), "high"), data))
+        assert "open caveats remain: ['unsettled:voice']" in high["decision.confidence.form"]
+        carried = _confident(_recommending_flash(_plan()), "high_if_immaterial", _UNSETTLED)
+        assert _confidence_and_coverage(carried, data) == []
+
+
 # --- coverage ------------------------------------------------------------------------------------------------------
 
 
