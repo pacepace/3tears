@@ -5,7 +5,8 @@ adapter is. The rest pin what only a router can get wrong: typed calls reach one
 store; one id is held by one store, and a read never picks between two; a store that does not hold an id answers
 "not here", never a refusal; a rule that leaves a fact unmapped, names a store that is not there, or keeps a
 tombstone apart from what it suppresses is refused at construction; a conditional write reaches the owning store
-unchanged; and a changed rule refuses to start until ``relocate`` has moved every document to its new store.
+unchanged; a changed rule refuses to start until ``relocate`` has moved every document to its new store; and a
+type new to the stores starts wherever the rule places it, with no relocation.
 """
 
 from __future__ import annotations
@@ -453,20 +454,82 @@ def test_a_type_new_to_the_record_is_read_where_unregistered_types_were() -> Non
     assert "eval_run" in stores["scratch"].get("placements", _ROUTING)["placements"]  # type: ignore[index]
 
 
-def test_a_type_new_to_the_record_placed_elsewhere_than_unknowns_were_refuses_to_start() -> None:
-    _, stores = _router()
-    for name, store in stores.items():
+def _record_written_without(stores: dict[str, InMemoryDocumentStore], doc_type: str) -> None:
+    """Rewrite every store's record as a build that did not register ``doc_type`` wrote it: the type left out."""
+    for store in stores.values():
         record = store.get("placements", _ROUTING)
-        assert record is not None
+        assert record is not None and doc_type in record["placements"]
         store.upsert(
             {
                 **record,
-                "placements": {k: v for k, v in record["placements"].items() if k != "eval_analysis"},
+                "placements": {k: v for k, v in record["placements"].items() if k != doc_type},
                 "fingerprint": "older",
             }
         )
 
-    with pytest.raises(RouteChanged, match="eval_analysis"):
+
+def test_a_type_new_to_the_record_placed_elsewhere_than_unknowns_were_starts_and_is_recorded() -> None:
+    """A release adding a type starts without a relocation wherever the rule places it.
+
+    The record lists every type registered when it was written and the engine writes only registered types, so a
+    type the record does not name was never written to these stores: there is nothing to move. ``eval_report_plan``
+    (derived, regenerable) is the case that forced a relocation: this rule keeps it in ``scratch``, and unknowns in
+    ``evidence``.
+    """
+    _, stores = _router()
+    _record_written_without(stores, "eval_report_plan")
+    assert _BY_LIFECYCLE.placements(DOC_TYPE_FACTS)["eval_report_plan"] != _BY_LIFECYCLE.unregistered
+
+    router = RoutedDocumentStore(stores, _BY_LIFECYCLE, routing_scope=_ROUTING)
+
+    for store in stores.values():
+        assert store.get("placements", _ROUTING)["placements"]["eval_report_plan"] == "scratch"  # type: ignore[index]
+    router.upsert(_doc("p1", "eval_report_plan", v=1))
+    assert _held(stores["scratch"]) == {"p1"} and _held(stores["evidence"]) == set()
+    assert [d["id"] for d in router.by_doc_type("eval_report_plan", _SCOPE)] == ["p1"]
+    assert router.get("p1", _SCOPE) == _doc("p1", "eval_report_plan", v=1)
+    # The rewritten record names the type, so the next start finds nothing new and nothing moved.
+    again = RoutedDocumentStore(stores, _BY_LIFECYCLE, routing_scope=_ROUTING)
+    assert [d["id"] for d in again.by_doc_type("eval_report_plan", _SCOPE)] == ["p1"]
+
+
+def test_after_a_rollback_a_type_the_record_lost_is_read_where_its_documents_already_are() -> None:
+    """A newer build wrote the type where it is placed; an older one rewrote the record without it; this one starts.
+
+    The documents sit where the rule places the type now, so reading them there is right, and a refusal would have
+    sent the operator to stop every process for a relocation that moves nothing.
+    """
+    router, stores = _router()
+    router.upsert(_doc("p1", "eval_report_plan", v=1))
+    router.upsert(_doc("p2", "eval_report_plan", v=2))
+    _record_written_without(stores, "eval_report_plan")
+
+    started = RoutedDocumentStore(stores, _BY_LIFECYCLE, routing_scope=_ROUTING)
+
+    assert sorted(d["id"] for d in started.by_doc_type("eval_report_plan", _SCOPE)) == ["p1", "p2"]
+    assert started.get("p2", _SCOPE) == _doc("p2", "eval_report_plan", v=2)
+
+
+def test_a_type_new_to_the_record_does_not_hide_a_named_type_that_moved() -> None:
+    """Only the type the record names and that moved is refused; the new one is not counted as moved."""
+    _, stores = _router(route=_BY_LIFECYCLE)
+    _record_written_without(stores, "eval_report_plan")
+
+    with pytest.raises(RouteChanged, match=r"keeps \['eval_cassette'\] in another store"):
+        RoutedDocumentStore(stores, _BY_ORIGIN, routing_scope=_ROUTING)
+
+
+def test_a_type_the_record_names_and_this_build_does_not_register_is_read_where_unregistered_types_are() -> None:
+    """A type a newer build registered and this one does not is read from the unregistered store, so it moved."""
+    _, stores = _router()
+    for store in stores.values():
+        record = store.get("placements", _ROUTING)
+        assert record is not None
+        store.upsert(
+            {**record, "placements": {**record["placements"], "eval_retired": "scratch"}, "fingerprint": "newer"}
+        )
+
+    with pytest.raises(RouteChanged, match=r"keeps \['eval_retired'\] in another store"):
         RoutedDocumentStore(stores, _BY_LIFECYCLE, routing_scope=_ROUTING)
 
 

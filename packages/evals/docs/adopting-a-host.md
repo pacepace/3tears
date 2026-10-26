@@ -988,8 +988,12 @@ The router refuses to start (`RouteChanged`) when a type would be read from a st
 two stores are passed under each other's names, and when no store has a record yet. `RoutedDocumentStore.relocate`
 moves every document of the scopes and host types you name to its new store, then writes the records. Run it
 once when you adopt the router and again whenever you change the route, with the engine stopped. If it is
-interrupted, run it again. A release that adds a type needs no relocation unless your route places the new type
-somewhere other than your `unregistered` store. A release that adds a fact value needs your route to map it: a
+interrupted, run it again. A release that adds a type needs no relocation, wherever your route places it: the
+records list every type registered when they were written, so a type they do not name has no documents yet, and the
+router places it by the route and records it. This assumes you never keep your own documents under an `eval_*` name;
+one the engine later registers is read from that type's placement, and you relocate to move them. If you roll back
+and run an older build's `relocate`, it moves the newer types' documents to your `unregistered` store; relocate again
+once the newer build is back. A release that adds a fact value needs your route to map it: a
 lifecycle route must map `durable` (from `.26`), or it is refused when built. Giving `durable` a store other than
 the one `kept` types were written to moves the nine durable types, so the first start raises `RouteChanged` for
 them until you relocate (or run `RoutedDocumentStore.reset_core`, which relocates).
