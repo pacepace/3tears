@@ -78,6 +78,7 @@ from threetears.evals.analysis.report_input import (
     Reading,
     ReportInput,
     ScoreboardRow,
+    SettingValue,
     Stat,
     Stratum,
     Task,
@@ -2520,6 +2521,232 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
     ),
 )
 
+# --- lever effects: one setting moved between two arms that differ in it alone ------------------------------------
+
+#: A lever effect's fields: the second arm's mean on the measure minus the first's (``effect``), and the interval on it
+#: from the two arms' own intervals.
+_LEVER_FIELDS = ("effect", "interval", "low", "high")
+
+#: An interaction's fields: the second move's effect minus the first's (``difference``), and the interval on it.
+_INTERACTION_FIELDS = ("difference", "interval", "low", "high")
+
+
+def arm_settings(report_input: ReportInput) -> dict[str, dict[str, SettingValue]]:
+    """Every arm's settings, each setting any arm states: a setting an arm leaves out has the control's value, as the
+    input's own rule says; with no control it is unstated (None), which agrees only with another unstated one.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: Each arm's settings, by arm id then setting, in the input's orders.
+    :rtype: dict[str, dict[str, SettingValue]]
+    """
+    control = _control(report_input)
+    base: Mapping[str, SettingValue] = control.settings if control is not None else {}
+    names = list(dict.fromkeys(name for arm in report_input.arms for name in arm.settings))
+    return {arm.id: {name: arm.settings.get(name, base.get(name)) for name in names} for arm in report_input.arms}
+
+
+def lever_of(settings: Mapping[str, Mapping[str, SettingValue]], first: str, second: str) -> str | None:
+    """The one setting two arms differ in, by :func:`arm_settings`; None where they differ in none or in several.
+
+    :param settings: Every arm's settings, as :func:`arm_settings` reads them.
+    :ptype settings: Mapping[str, Mapping[str, SettingValue]]
+    :param first: One arm's id.
+    :ptype first: str
+    :param second: The other's.
+    :ptype second: str
+    :return: The setting, or None.
+    :rtype: str | None
+    """
+    differ = [name for name, value in settings[first].items() if settings[second].get(name) != value]
+    return differ[0] if len(differ) == 1 else None
+
+
+def _lever_settings(report_input: ReportInput, _: tuple[str, ...] = ()) -> list[str]:
+    """Every setting some two arms differ in alone, in the order the arms state settings."""
+    settings = arm_settings(report_input)
+    arms = list(settings)
+    held = {lever_of(settings, first, second) for first in arms for second in arms if first != second}
+    return [name for name in dict.fromkeys(n for values in settings.values() for n in values) if name in held]
+
+
+def _lever_partners(settings: Mapping[str, Mapping[str, SettingValue]], setting: str, arm: str) -> list[str]:
+    """The arms whose settings differ from one arm's in ``setting`` alone."""
+    return [other for other in settings if other != arm and lever_of(settings, arm, other) == setting]
+
+
+def _lever_froms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    settings = arm_settings(report_input)
+    return [arm for arm in settings if _lever_partners(settings, prior[0], arm)]
+
+
+def _lever_tos(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return _lever_partners(arm_settings(report_input), prior[0], prior[1])
+
+
+def _lever_measures(report_input: ReportInput, _: tuple[str, ...]) -> list[str]:
+    return list(dict.fromkeys([*report_input.measures, *report_input.judged]))
+
+
+def _lever_places(report_input: ReportInput, _: tuple[str, ...]) -> list[str]:
+    """Every place a lever's effect can be read within: a task, a stratum the input holds on one aspect, a cell."""
+    strata = [stratum.id for stratum in report_input.strata]
+    return list(
+        dict.fromkeys(
+            [
+                *(task.id for task in report_input.tasks),
+                *(held for held in strata if strata.count(held) == 1),
+                *(_cell_spelling(cell) for cell in report_input.cells.values()),
+            ]
+        )
+    )
+
+
+def _place_figures(report_input: ReportInput, place: str, path: str) -> Mapping[str, Mapping[str, Stat]]:
+    """Each arm's figures within one place, by arm then measure."""
+    held = [
+        *(task.per_arm for task in report_input.tasks if task.id == place),
+        *(stratum.per_arm for stratum in report_input.strata if stratum.id == place),
+        *(cell.per_arm for cell in report_input.cells.values() if _cell_spelling(cell) == place),
+    ]
+    if len(held) > 1:
+        raise _refuse(path, f"names place {place!r}, which the input holds {len(held)} times (a task, stratum or cell)")
+    return held[0]
+
+
+def _lever_mean(
+    report_input: ReportInput, key: str, arm: str, place: str | None, path: str
+) -> tuple[float, tuple[float, float] | None]:
+    """One arm's mean on a measure, overall or within a place, and the interval its figure states on it (``ci``, or
+    the mean give or take ``half_width``); None for no interval."""
+    if place is None:
+        table = report_input.measures.get(key) or report_input.judged.get(key)
+        stat = table.per_arm.get(arm) if table is not None else None
+    else:
+        stat = _place_figures(report_input, place, path).get(arm, {}).get(key)
+    where = "" if place is None else f" in {place}"
+    if stat is None or stat.mean is None:
+        raise _unstated(path, f"names {arm}'s mean on {key}{where}, which the input does not state")
+    mean = float(stat.mean)
+    if stat.ci is not None:
+        return mean, (float(stat.ci[0]), float(stat.ci[1]))
+    if stat.half_width is not None:
+        return mean, (mean - float(stat.half_width), mean + float(stat.half_width))
+    return mean, None
+
+
+def _recovered(first: tuple[float, float, float], second: tuple[float, float, float]) -> tuple[float, float]:
+    """The interval on ``second``'s estimate minus ``first``'s, each ``(estimate, low, high)``, from their own
+    intervals by the method of variance estimates recovery, the two read as independent."""
+    (one, one_low, one_high), (two, two_low, two_high) = first, second
+    change = two - one
+    return change - math.hypot(two - two_low, one_high - one), change + math.hypot(two_high - two, one - one_low)
+
+
+def _lever_effect(
+    report_input: ReportInput, values: tuple[str, ...], path: str
+) -> tuple[float, tuple[float, float] | None, str]:
+    """A move's effect, the interval on it, and why there is none: from ``values`` = (from, to, measure, place)."""
+    first, second, key, place = values
+    one, one_interval = _lever_mean(report_input, key, first, place or None, path)
+    two, two_interval = _lever_mean(report_input, key, second, place or None, path)
+    if one_interval is None or two_interval is None:
+        missing = first if one_interval is None else second
+        return two - one, None, f"{missing}'s figure on {key} states no interval"
+    return two - one, _recovered((one, *one_interval), (two, *two_interval)), ""
+
+
+def _lever_figure(
+    report_input: ReportInput,
+    key: str,
+    change: float,
+    interval: tuple[float, float] | None,
+    why: str,
+    field: str,
+    path: str,
+) -> Figure:
+    scale, unit = _scale_of(report_input, key)
+    if field in ("effect", "difference"):
+        return Figure(path=path, kind="number", value=change, scale=scale, unit=unit, change=True)
+    if interval is None:
+        raise _unstated(path, f"names an interval, which the input does not state: {why}")
+    if field == "interval":
+        return Figure(path=path, kind="interval", value=interval, scale=scale, unit=unit, change=True)
+    end = interval[0] if field == "low" else interval[1]
+    return Figure(path=path, kind="number", value=end, scale=scale, unit=unit, change=True)
+
+
+def _lever(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    """``lever.<setting>.<from>.<to>.<measure>[.<place>].<field>``."""
+    _setting_id, first, second, key, *place, field = values
+    change, interval, why = _lever_effect(report_input, (first, second, key, place[0] if place else ""), path)
+    return _lever_figure(report_input, key, change, interval, why, field, path)
+
+
+def _interaction_froms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    """The arms a second move can start from: the first's setting value, in a context one other setting away."""
+    setting, first, second = prior[:3]
+    settings = arm_settings(report_input)
+    return [
+        arm
+        for arm in settings
+        if arm not in (first, second)
+        and settings[arm][setting] == settings[first][setting]
+        and lever_of(settings, first, arm) not in (None, setting)
+        and _lever_partners(settings, setting, arm)
+    ]
+
+
+def _interaction_tos(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    """The arms a second move can end at: the first move's value, its context the second start's."""
+    setting, first, second = prior[:3]
+    start = prior[-1]
+    settings = arm_settings(report_input)
+    across = lever_of(settings, first, start)
+    return [
+        arm
+        for arm in _lever_partners(settings, setting, start)
+        if settings[arm][setting] == settings[second][setting] and lever_of(settings, second, arm) == across
+    ]
+
+
+def _interaction(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    """``lever.<setting>.<from>.<to>.<measure>[.<place>].vs.<from>.<to>.<field>``: the second move's effect minus the
+    first's, and the interval on it from theirs."""
+    _setting_id, first, second, key, *place, start, end, field = values
+    where = place[0] if place else ""
+    one, one_interval, one_why = _lever_effect(report_input, (first, second, key, where), path)
+    two, two_interval, two_why = _lever_effect(report_input, (start, end, key, where), path)
+    if one_interval is None or two_interval is None:
+        return _lever_figure(report_input, key, two - one, None, one_why or two_why, field, path)
+    interval = _recovered((one, *one_interval), (two, *two_interval))
+    return _lever_figure(report_input, key, two - one, interval, "", field, path)
+
+
+#: The slots every lever key begins with: the setting moved, the arm it moves from and the one it moves to (differing
+#: in it alone), and the measure read.
+_LEVER = (
+    _Word("lever"),
+    _Ids("<setting>", _lever_settings),
+    _Ids("<from>", _lever_froms),
+    _Ids("<to>", _lever_tos),
+    _Ids("<measure>", _lever_measures),
+)
+#: The slots an interaction's second move is named by.
+_SECOND_MOVE = (_Word("vs"), _Ids("<from>", _interaction_froms), _Ids("<to>", _interaction_tos))
+#: Where a lever's effect is read within.
+_PLACE = _Ids("<place>", _lever_places)
+
+#: What the grammar says of a lever figure, in place of "descriptive, no interval".
+_LEVER_NOTE = "Derived: computed here from two arms' stated figures and their intervals, never a test the pipeline ran."
+
+#: What every lever key's figures are: computed here, from two arms' figures the input states.
+_LEVER_BASIS = (
+    "Computed here: `interval` (its ends `low`, `high`) is recovered from the two figures' own intervals as if "
+    "independent (MOVER), so it is conservative where they share cases; with either figure stating none there is "
+    "no interval. levers_effects lists them"
+)
+
 
 #: Every path family, in the order the grammar teaches them.
 _FAMILIES: tuple[_Family, ...] = (
@@ -2977,6 +3204,44 @@ _FAMILIES: tuple[_Family, ...] = (
         example="cost_per_month.base",
     ),
     *_SEPARATION_FAMILIES,
+    _family_of(
+        *_LEVER,
+        _Statistic(_LEVER_FIELDS, "<field>"),
+        what="a lever's effect: one setting moved between two arms whose settings differ in it alone, `<to>`'s mean "
+        "on a measure or judged dimension minus `<from>`'s (`effect`), overall. " + _LEVER_BASIS,
+        resolve=_lever,
+        derived=True,
+        derived_note=_LEVER_NOTE,
+    ),
+    _family_of(
+        *_LEVER,
+        _PLACE,
+        _Statistic(_LEVER_FIELDS, "<field>"),
+        what="a lever's effect within one task, stratum or cell (`<row>.<column>`). " + _LEVER_BASIS,
+        resolve=_lever,
+        derived=True,
+        derived_note=_LEVER_NOTE,
+    ),
+    _family_of(
+        *_LEVER,
+        *_SECOND_MOVE,
+        _Statistic(_INTERACTION_FIELDS, "<field>"),
+        what="an interaction: the same move made where one other setting differs, its effect minus the first move's "
+        "(`difference`), overall. " + _LEVER_BASIS,
+        resolve=_interaction,
+        derived=True,
+        derived_note=_LEVER_NOTE,
+    ),
+    _family_of(
+        *_LEVER,
+        _PLACE,
+        *_SECOND_MOVE,
+        _Statistic(_INTERACTION_FIELDS, "<field>"),
+        what="an interaction within one task, stratum or cell. " + _LEVER_BASIS,
+        resolve=_interaction,
+        derived=True,
+        derived_note=_LEVER_NOTE,
+    ),
 )
 
 
@@ -3807,6 +4072,11 @@ _FAMILY_GROUPS: tuple[tuple[str, str, frozenset[str]], ...] = (
         "reading against a line or two arms apart",
         frozenset({"spread", "compare", "settle"}),
     ),
+    (
+        "levers",
+        "the effect of one setting moved between arms that differ in it alone, and how it changes with another setting",
+        frozenset({"lever"}),
+    ),
 )
 
 
@@ -3887,6 +4157,7 @@ __all__ = [
     "GainAxis",
     "KeySubjects",
     "NamedKind",
+    "arm_settings",
     "criterion_wheres",
     "figure_key_grammar",
     "figure_key_index",
@@ -3896,6 +4167,7 @@ __all__ = [
     "gain_axis",
     "key_subjects",
     "keys_in",
+    "lever_of",
     "literal_numbers",
     "parse_key",
     "reader_name",

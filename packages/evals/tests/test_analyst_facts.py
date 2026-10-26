@@ -53,7 +53,14 @@ from threetears.evals.analysis.analyst.facts import (
 from threetears.evals.analysis.analyst.snapshot import frozen_input, report_snapshot
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.report.figure_keys import reader_names, resolve
-from threetears.evals.analysis.report_decision import caveat_materiality, report_caveats, unsettled_arms
+from threetears.evals.analysis.report_decision import (
+    caveat_materiality,
+    implied_caveats,
+    report_caveats,
+    surviving_options,
+    unsettled_arms,
+)
+from threetears.evals.analysis.report_margins import criterion_figures
 from threetears.evals.analysis.report_input import Aspect, ReportInput, Stat
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel import EvalReportSnapshot
@@ -240,8 +247,9 @@ def test_the_overview_lists_the_inputs_own_arms_aspects_measures_criteria_and_ca
     assert [(row.id, row.measure, row.threshold.value) for row in overview.criteria] == [
         (criterion.id, criterion.measure, float(criterion.threshold)) for criterion in held.criteria
     ]
-    assert [(ref.id, ref.kind, ref.reach) for ref in overview.caveats] == [
-        (caveat.id, caveat.kind, caveat.reach) for caveat in report_caveats(held)
+    assert [(ref.id, ref.kind, ref.reach, ref.source) for ref in overview.caveats] == [
+        *((caveat.id, caveat.kind, caveat.reach, "stated") for caveat in report_caveats(held)),
+        *((caveat.id, caveat.kind, caveat.reach, "implied") for caveat in implied_caveats(held)),
     ]
     assert [(row.criterion, row.name, row.set_at.value) for row in overview.late_criteria] == [
         (late.criterion, late.name, late.set_at) for late in held.caveats.late_criteria
@@ -609,6 +617,125 @@ def test_measure_read_keeps_only_the_arm_named() -> None:
     assert read.total == len(held.tasks)
 
 
+#: The statistics a figure stores, in the grammar's order: what a read naming none reads, each where stated.
+STORED = ("mean", "ci", "half_width", "sem", "n", "n_cases", "p50", "p95", "change")
+
+#: The statistics that are an interval on a mean.
+INTERVALS = frozenset({"ci", "half_width"})
+
+
+def _stored(stat: Stat) -> dict[str, Any]:
+    """Every statistic one figure states, as a cited figure reads it."""
+    values = {statistic: getattr(stat, statistic) for statistic in STORED}
+    return {
+        statistic: (_pair(value) if statistic == "ci" else value)
+        for statistic, value in values.items()
+        if value is not None
+    }
+
+
+def _slice_stats(held: ReportInput, key: str) -> dict[str, list[Stat]]:
+    """Every figure the input holds on one measure, by the way it is read, each way holding one."""
+    table = held.measures.get(key) or held.judged[key]
+    by = {
+        "arm": [*table.per_arm.values(), *(stat for arms in table.by_aspect.values() for stat in arms.values())],
+        "stratum": [figures[key] for s in held.strata for figures in s.per_arm.values() if key in figures],
+        "task": [figures[key] for t in held.tasks for figures in t.per_arm.values() if key in figures],
+        "cell": [figures[key] for c in held.cells.values() for figures in c.per_arm.values() if key in figures],
+    }
+    return {way: stats for way, stats in by.items() if stats}
+
+
+def _named_stats(stats: Sequence[Stat]) -> list[str]:
+    return [statistic for statistic in STORED if any(getattr(stat, statistic) is not None for stat in stats)]
+
+
+@pytest.mark.parametrize(("name", "key", "by"), _all_measure_reads())
+def test_a_read_naming_no_statistics_reads_every_one_held_its_interval_among_them(name: str, key: str, by: str) -> None:
+    _snapshot, held = _held(name)
+    read = measure_read(held, key, by=by, limit=200)  # type: ignore[arg-type]
+    expected = _expected_rows(held, key, by)
+    assert [(row.slice, row.arm.value) for row in read.rows] == [(at, arm) for at, arm, _stat in expected]
+    for row, (_at, _arm, stat) in zip(read.rows, expected, strict=True):
+        assert _by_stat(row.figures) == _stored(stat)
+    assert read.held == _named_stats(_slice_stats(held, key)[by])
+    assert read.not_shown == []
+    table = held.measures.get(key) or held.judged[key]
+    assert read.level == table.level
+
+
+def _interval_reads() -> list[tuple[str, str, str]]:
+    """Every fixture read whose figures hold an interval on the mean."""
+    found: list[tuple[str, str, str]] = []
+    for name in FIXTURES:
+        _snapshot, held = _held(name)
+        for key in [*held.measures, *held.judged]:
+            for by, stats in _slice_stats(held, key).items():
+                if INTERVALS & set(_named_stats(stats)):
+                    found.append((name, key, by))
+    return found
+
+
+def test_an_interval_on_a_slice_is_read_without_asking_and_a_narrower_read_names_it_as_not_shown() -> None:
+    reads = _interval_reads()
+    assert {name for name, _key, _by in reads} >= {"r1", "r3", "r4", "r5"}, "the control: intervals held by slice"
+    for name, key, by in reads:
+        _snapshot, held = _held(name)
+        whole = measure_read(held, key, by=by, limit=200)  # type: ignore[arg-type]
+        intervals = INTERVALS & set(whole.held)
+        assert intervals and any(intervals & set(_by_stat(row.figures)) for row in whole.rows), (name, key, by)
+        narrow = measure_read(held, key, by=by, statistics=["mean"], limit=200)  # type: ignore[arg-type]
+        assert set(narrow.not_shown) == set(whole.held) - {"mean"} and intervals <= set(narrow.not_shown)
+        assert all(set(_by_stat(row.figures)) <= {"mean"} for row in narrow.rows)
+
+
+def test_a_measure_held_only_within_slices_is_refused_by_arm_naming_where_it_is_held() -> None:
+    refused = 0
+    for name in FIXTURES:
+        _snapshot, held = _held(name)
+        for key in [*held.measures, *held.judged]:
+            ways = _slice_stats(held, key)
+            if "arm" in ways or not ways:
+                continue
+            with pytest.raises(RefusedInput, match="holds no figure read by arm") as caught:
+                measure_read(held, key)
+            assert list(caught.value.valid_values or ()) == list(ways)
+            refused += 1
+    assert refused, "the control: a fixture holds a measure only within its slices"
+
+
+@pytest.mark.parametrize("name", FIXTURES)
+def test_the_overview_says_which_statistics_each_measure_holds_and_no_arm_lacks_one_held_per_slice(name: str) -> None:
+    _snapshot, held = _held(name)
+    for row in campaign_overview(held, "s").measures:
+        ways = _slice_stats(held, row.key)
+        assert row.statistics == [f"{way}: {', '.join(_named_stats(stats))}" for way, stats in ways.items()]
+        assert row.slices == list(ways)
+        slices = [
+            *(s.per_arm for s in held.strata),
+            *(t.per_arm for t in held.tasks),
+            *(c.per_arm for c in held.cells.values()),
+        ]
+        table = held.measures.get(row.key) or held.judged[row.key]
+        holding = set(table.per_arm) | {arm for arms in table.by_aspect.values() for arm in arms}
+        holding |= {arm for per_arm in slices for arm, figures in per_arm.items() if row.key in figures}
+        assert row.arms_without == [arm.id for arm in held.arms if arm.id not in holding]
+
+
+def test_a_measure_held_per_cell_lists_no_arm_without_it() -> None:
+    """The r3 discoverability fault: accuracy held per cell read as missing on every arm."""
+    held = next(held for _, held in map(_held, FIXTURES) if held.cells)
+    per_cell = [
+        row
+        for row in campaign_overview(held, "s").measures
+        if row.slices == ["cell"] and INTERVALS & set(_named_stats(_slice_stats(held, row.key)["cell"]))
+    ]
+    assert per_cell, "the control: a measure held only per cell, with an interval"
+    for row in per_cell:
+        assert row.arms_without == []
+        assert any(interval in row.statistics[0] for interval in INTERVALS)
+
+
 # =============================================================================
 # examples_list
 # =============================================================================
@@ -643,6 +770,26 @@ def test_kairos_examples_name_their_stored_results_and_filter_by_arm_stratum_and
     assert by_outcome.total == sum(e.outcome == example.outcome for e in held.examples)
 
 
+def test_kairos_pool_holds_more_than_one_failure_of_a_slice_and_a_filter_pages_them() -> None:
+    snapshot, held = _held(KAIRO)
+    slices: dict[tuple[str | None, str | None], list[str | None]] = {}
+    for example in held.examples:
+        slices.setdefault((example.arm, example.stratum), []).append(example.trial)
+    (arm, stratum), trials = max(slices.items(), key=lambda item: len(item[1]))
+    assert len(trials) > 1, "the pool holds more than one failure of some arm and stratum"
+    assert arm is not None and stratum is not None
+    pages: list[str | None] = []
+    offset: int | None = 0
+    while offset is not None:
+        page = examples_list(
+            held, snapshot.example_result_ids, arm_filter=arm, stratum_filter=stratum, limit=1, offset=offset
+        )
+        pages += [row.trial for row in page.examples]
+        offset = page.next_offset
+    assert pages == [e.trial for e in held.examples if e.arm in (None, arm) and e.stratum == stratum]
+    assert set(trials) <= set(pages)
+
+
 # =============================================================================
 # caveats_list
 # =============================================================================
@@ -651,11 +798,15 @@ def test_kairos_examples_name_their_stored_results_and_filter_by_arm_stratum_and
 @pytest.mark.parametrize("name", FIXTURES)
 def test_caveats_list_every_caveat_its_materiality_and_what_it_touches(name: str) -> None:
     _snapshot, held = _held(name)
-    rows = caveats_list(held).caveats
+    listed = caveats_list(held).caveats
     materiality = caveat_materiality(held)
-    assert [(row.id, row.kind, row.reach) for row in rows] == [
-        (caveat.id, caveat.kind, caveat.reach) for caveat in report_caveats(held)
+    stated = report_caveats(held)
+    rows = listed[: len(stated)]
+    assert [(row.id, row.kind, row.reach, row.source) for row in listed] == [
+        *((caveat.id, caveat.kind, caveat.reach, "stated") for caveat in stated),
+        *((caveat.id, caveat.kind, caveat.reach, "implied") for caveat in implied_caveats(held)),
     ]
+    assert all(row.matters_if is None for row in rows)
     for row in rows:
         assert (row.immaterial, row.checked) == (materiality[row.id].immaterial, materiality[row.id].checked)
         head, _, rest = row.id.partition(":")
@@ -694,6 +845,117 @@ def test_a_late_floor_touches_the_candidates_it_was_read_on_and_a_late_control_t
     assert late_floor.touches_aspects == list(dict.fromkeys(read.aspect for read in reads))
     assert rows["late:control"].touches_arms == [_control(held)]
     assert rows["late:aspect"].touches_aspects == [aspect.id for aspect in held.aspects if aspect.asked]
+
+
+#: The fewest candidates a pick among is the best of many (``best_of_n``): the rule the caveat states.
+MANY = 3
+
+
+def _undescribed(held: ReportInput) -> list[str]:
+    """The judged dimensions whose judge the input does not describe: no model, tier or calibration."""
+    tiers = held.caveats.judge_tiers
+    dimensions = [*held.judged, *(name for name in tiers if name not in held.judged)]
+    return [
+        dimension
+        for dimension in dimensions
+        if tiers.get(dimension) is None
+        and (
+            (judged := held.judged.get(dimension)) is None
+            or (judged.tier, judged.calibration, judged.judge_model) == (None, None, None)
+        )
+    ]
+
+
+def _expected_implied(held: ReportInput) -> dict[str, tuple[list[str], list[str]]]:
+    """The implied caveats an input's holdings raise, by id, each with the arms and measures it touches, read off the
+    input (the judge's partial calibration is held by its own test below)."""
+    expected: dict[str, tuple[list[str], list[str]]] = {}
+    undescribed = _undescribed(held)
+    if undescribed:
+        expected["judge_unstated"] = ([], undescribed)
+    if len(held.arms) > 1 and _control(held) is None:
+        expected["no_control"] = ([], [])
+    margins = any(a.margin is not None or any(r.margin is not None for r in a.readings) for a in held.aspects)
+    deciding = any(criterion.kind in ("gate", "guardrail", "floor") for criterion in held.criteria)
+    if not deciding and not margins and not held.floors:
+        expected["nothing_declared"] = ([], [])
+    survivors = surviving_options(held)
+    for criterion in held.criteria:
+        if criterion.kind not in ("gate", "guardrail"):
+            continue
+        higher = criterion.direction == "higher_is_better"
+        cleared = [
+            arm
+            for arm in survivors
+            for figure in criterion_figures(held, criterion, arm)
+            if figure.ci is None
+            and figure.half_width is None
+            and (figure.value >= criterion.threshold if higher else figure.value <= criterion.threshold)
+        ]
+        if cleared:
+            expected[f"point_estimate:{criterion.id}"] = (list(dict.fromkeys(cleared)), [criterion.measure])
+    candidates = [arm.id for arm in held.arms if arm.role == "challenger"]
+    if len(candidates) >= MANY:
+        expected["best_of_n"] = (candidates, [])
+    return expected
+
+
+@pytest.mark.parametrize("name", FIXTURES)
+def test_caveats_list_raises_what_the_snapshot_implies_each_with_when_it_matters(name: str) -> None:
+    _snapshot, held = _held(name)
+    implied = [row for row in caveats_list(held).caveats if row.source == "implied"]
+    assert {row.id: (row.touches_arms, row.touches_measures) for row in implied} == _expected_implied(held)
+    stated = {caveat.id for caveat in report_caveats(held)}
+    for row in implied:
+        assert row.id not in stated and row.matters_if and not row.immaterial and row.checked is None
+        assert row.reach in ("report", "scoped")
+
+
+def test_every_implied_kind_is_raised_by_some_fixture() -> None:
+    """The control for the walk above: each implied kind but a partly calibrated judge is raised on the fixtures."""
+    kinds = {row.kind for _, held in map(_held, FIXTURES) for row in caveats_list(held).caveats}
+    assert {"judge_unstated", "no_control", "nothing_declared", "point_estimate", "best_of_n"} <= kinds
+
+
+def test_a_gate_cleared_on_a_point_estimate_cites_its_threshold_and_each_clearance() -> None:
+    raised = 0
+    for _, held in map(_held, FIXTURES):
+        for row in caveats_list(held).caveats:
+            if row.kind != "point_estimate":
+                continue
+            criterion = row.id.partition(":")[2]
+            keys = [figure.key for figure in row.figures]
+            assert keys[0] == f"criteria.{criterion}.threshold"
+            assert keys[1:] and all(
+                key.startswith(f"criteria.{criterion}.") and key.endswith(".gap") for key in keys[1:]
+            )
+            assert all(figure.value >= 0 for figure in row.figures[1:]), "a clearance is signed toward passing"
+            assert all(any(key.startswith(f"criteria.{criterion}.{arm}.") for key in keys) for arm in row.touches_arms)
+            assert all(
+                any(key.startswith(f"criteria.{criterion}.{arm}.") for arm in row.touches_arms) for key in keys[1:]
+            )
+            raised += 1
+    assert raised, "the control: a fixture's survivor clears a gate on a point estimate"
+
+
+def test_a_judge_stated_uncalibrated_on_some_dimensions_is_raised_where_the_whole_judge_is_not() -> None:
+    _snapshot, held = _held(KAIRO)
+    assert "judge_uncalibrated" in {caveat.id for caveat in report_caveats(held)}, "the control: every one is"
+    calibrated = next(iter(held.judged))
+    judged = {**held.judged, calibrated: held.judged[calibrated].model_copy(update={"calibration": "calibrated"})}
+    tiers = {**held.caveats.judge_tiers, calibrated: "calibrated"}
+    partly = held.model_copy(
+        update={"judged": judged, "caveats": held.caveats.model_copy(update={"judge_tiers": tiers})}
+    )
+    assert "judge_uncalibrated" not in {caveat.id for caveat in report_caveats(partly)}
+    rows = {row.id: row for row in caveats_list(partly).caveats}
+    row = rows["judge_partly_uncalibrated"]
+    assert row.touches_measures == [dimension for dimension in held.judged if dimension != calibrated]
+    assert row.source == "implied" and row.matters_if
+    assert {figure.key for figure in row.figures} <= {
+        f"judged.{dimension}.{field}" for dimension in row.touches_measures for field, _ in JUDGE_FIELDS
+    }
+    assert "judge_partly_uncalibrated" not in {row.id for row in caveats_list(held).caveats}
 
 
 # =============================================================================

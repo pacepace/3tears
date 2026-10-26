@@ -12,7 +12,19 @@ parameters:
   target-matrix cell;
 - :func:`examples_list`: the failed trials frozen with the snapshot, with their stored results where the bundle names
   them;
-- :func:`caveats_list`: every caveat, where it may land, whether code proved it immaterial, and what it touches.
+- :func:`caveats_list`: every caveat, where it may land, whether code proved it immaterial, and what it touches: the
+  ones the input states, then the ones what it holds implies
+  (:func:`~threetears.evals.analysis.report_decision.implied_caveats`).
+
+**Intervals are read wherever they are held.** A measure read with no statistics named reads every statistic the
+input holds on it read that way, its interval (``ci`` or ``half_width``) among them, and names what it holds and the
+intervals' level; the overview says, for each measure, which statistics each way of reading it holds, so a measure
+held only per cell or stratum is held per slice, not missing. **No interval is derived.** Where an overall figure
+holds no interval but its slices do (a balanced accuracy beside its cells' accuracies), an interval could follow from
+the slices' only under assumptions the input does not state: that the figure is the plain mean of those slices and
+that they are independent. Code does not assume how the pipeline computed a figure, so it states none: the overall
+figure reads as a point estimate (``point_estimate:<criterion>`` where a gate reads it), its slices' intervals stay
+citable, and the missing overall interval is the input's to carry (an upstream gap).
 
 **Every number is a figure key's.** A tool builds the key that names a figure and :func:`~.cited.cite` (or
 :func:`~.cited.cite_if`, where the input may leave it unstated) resolves it; no number here is computed. A figure the
@@ -39,7 +51,10 @@ from threetears.evals.analysis.report.figure_keys import NamedKind, reader_names
 from threetears.evals.analysis.report_decision import (
     Caveat,
     CaveatReach,
+    ImpliedCaveat,
+    Materiality,
     caveat_materiality,
+    implied_caveats,
     report_caveats,
     unsettled_arms,
 )
@@ -149,6 +164,10 @@ _FAMILY = ("disclosure", "correction", "alpha", "family_size", "level")
 #: The statistics :func:`measure_read` reads: an arm's figure's, and, within a slice, its mean minus the control's.
 MeasureStatistic = Literal["mean", "ci", "half_width", "sem", "n", "n_cases", "p50", "p95", "change", "vs_control"]
 
+#: The statistics a figure may hold, as the input stores them, in the grammar's order: what a read with no statistics
+#: named reads, each where the input states it.
+_STORED: tuple[MeasureStatistic, ...] = ("mean", "ci", "half_width", "sem", "n", "n_cases", "p50", "p95", "change")
+
 #: What :func:`measure_read` reads one measure by: each arm, or each arm within each stratum, task or cell.
 MeasureBy = Literal["arm", "stratum", "task", "cell"]
 
@@ -158,10 +177,11 @@ _SLICE_WORDS: dict[MeasureBy, str] = {"arm": "arms", "stratum": "strata", "task"
 #: The statistic that reads an arm against the control within a slice, which an arm's overall figure has no key for.
 _VS_CONTROL = "vs_control"
 
-#: What the examples a snapshot holds are: the frozen pool an analyst pages.
+#: What the examples a snapshot holds are: the frozen pool an analyst pages (three per slice: ``snapshot.ANALYST_PER_SLICE``).
 _POOL = (
-    "the failed trials frozen with the snapshot: at most one per aspect, arm and stratum, each reply's end and the "
-    "judge's or the check's reason"
+    "the failed trials frozen with the snapshot: up to three per aspect, arm and stratum, every slice's first before "
+    "any slice's second and its other cases before a repeat; each excerpt cut around the failure (centred on the "
+    "passage the judge's reason quotes, else the reply's end), with the judge's or the check's reason"
 )
 
 
@@ -268,10 +288,15 @@ class MeasureRow(_Fact):
     grade: str | None = Field(description="A measure's grade, or a judged dimension's scale.")
     level: str | None = Field(description="The confidence level of its intervals.")
     arms_without: list[str] = Field(
-        description="The arms holding no figure on it, by id; empty where every arm holds one."
+        description="The arms holding no figure on it overall or in any slice, by id; empty where every arm holds one "
+        "somewhere. A measure held only within slices is held per slice, not missing: statistics says where."
     )
     aspects: list[str] = Field(description="The aspects it is read on, where it is read on more than the lead one.")
     slices: list[str] = Field(description="Where measure_read can read it: arm, stratum, task, cell.")
+    statistics: list[str] = Field(
+        description="The statistics it holds, per way it can be read (`cell: mean, half_width`): ci or half_width is "
+        "an interval, at its level. measure_read with no statistics named reads every one."
+    )
     key_form: str = Field(description="The figure key that reads one arm's statistic on it.")
     judge: list[CitedFigure] = Field(
         description="For a judged dimension, its judge as the input states it: its evidence tier, model, calibration "
@@ -301,14 +326,26 @@ class LateRow(_Fact):
     set_at: CitedFigure = Field(description="When it was set (`late_criteria.<late>.set_at`).")
 
 
+#: What a caveat's kind is, as a row's field describes it: the kinds the input states, then the kinds its figures imply.
+_CAVEAT_KINDS = (
+    "stated: late, judge_uncalibrated, confound, apparatus, short_run, unsettled, latency or unreported; implied: "
+    "judge_unstated, judge_partly_uncalibrated, no_control, nothing_declared, point_estimate or best_of_n."
+)
+
+#: Where a caveat comes from, as a row's field describes it.
+_CAVEAT_SOURCE = (
+    "stated: the input states it as a caveat; implied: what the input holds implies it (a judge it does not describe, "
+    "no control, nothing declared, a gate cleared on a point estimate, a pick among many)."
+)
+
+
 class CaveatRef(_Fact):
     """One caveat by its id, and where it may land; caveats_list says what it touches."""
 
     id: str = Field(description="The caveat's id.")
-    kind: str = Field(
-        description="late, judge_uncalibrated, confound, apparatus, short_run, unsettled, latency or unreported."
-    )
+    kind: str = Field(description=_CAVEAT_KINDS)
     reach: CaveatReach = Field(description="report (the confidence rests on it), scoped (beside a claim) or method.")
+    source: Literal["stated", "implied"] = Field(description=_CAVEAT_SOURCE)
 
 
 class CampaignOverview(_Fact):
@@ -387,14 +424,37 @@ def _on_aspects(report_input: ReportInput, table: Measure | Judged) -> list[str]
     ]
 
 
-def _slices_of(report_input: ReportInput, key: str, table: Measure | Judged) -> list[str]:
-    held = {
-        "arm": bool(table.per_arm) or any(table.by_aspect.values()),
-        "stratum": any(key in figures for s in report_input.strata for figures in s.per_arm.values()),
-        "task": any(key in figures for t in report_input.tasks for figures in t.per_arm.values()),
-        "cell": any(key in figures for c in report_input.cells.values() for figures in c.per_arm.values()),
+def _stats_by_slice(report_input: ReportInput, key: str, table: Measure | Judged) -> dict[MeasureBy, list[Stat]]:
+    """Every figure the input holds on one measure, by the way it is read: by arm (overall and on each aspect), and
+    within each stratum, task and cell; a way holding none is left out."""
+    held: dict[MeasureBy, list[Stat]] = {
+        "arm": [*table.per_arm.values(), *(stat for arms in table.by_aspect.values() for stat in arms.values())],
+        "stratum": [f[key] for s in report_input.strata for f in s.per_arm.values() if key in f],
+        "task": [f[key] for t in report_input.tasks for f in t.per_arm.values() if key in f],
+        "cell": [f[key] for c in report_input.cells.values() for f in c.per_arm.values() if key in f],
     }
-    return [by for by, holds in held.items() if holds]
+    return {by: stats for by, stats in held.items() if stats}
+
+
+def _stated(stats: Iterable[Stat]) -> list[MeasureStatistic]:
+    """The statistics any of the figures states, in the grammar's order."""
+    held = list(stats)
+    return [statistic for statistic in _STORED if any(getattr(stat, statistic) is not None for stat in held)]
+
+
+def _slices_of(report_input: ReportInput, key: str, table: Measure | Judged) -> list[str]:
+    return list(_stats_by_slice(report_input, key, table))
+
+
+def _arms_holding(report_input: ReportInput, key: str, table: Measure | Judged) -> set[str]:
+    """The arms holding a figure on one measure anywhere: overall, on an aspect, or within any slice."""
+    slices = [
+        *(s.per_arm for s in report_input.strata),
+        *(t.per_arm for t in report_input.tasks),
+        *(c.per_arm for c in report_input.cells.values()),
+    ]
+    held = set(table.per_arm) | {arm for figures in table.by_aspect.values() for arm in figures}
+    return held | {arm for per_arm in slices for arm, figures in per_arm.items() if key in figures}
 
 
 def _measure_row(
@@ -402,7 +462,8 @@ def _measure_row(
 ) -> MeasureRow:
     aspects = _on_aspects(report_input, table)
     form = f"aspects.<aspect>.{source}.{key}.<arm>.<statistic>" if aspects else f"{source}.{key}.<arm>.<statistic>"
-    held = set(table.per_arm) | {arm for figures in table.by_aspect.values() for arm in figures}
+    held = _arms_holding(report_input, key, table)
+    by_slice = _stats_by_slice(report_input, key, table)
     if isinstance(table, Measure):
         unit, higher, axis, grade = table.unit, table.higher_is_better, table.merit_axis, table.grade
     else:
@@ -417,7 +478,8 @@ def _measure_row(
         level=table.level,
         arms_without=[arm for arm in _arm_ids(report_input) if arm not in held],
         aspects=aspects,
-        slices=_slices_of(report_input, key, table),
+        slices=list(by_slice),
+        statistics=[f"{by}: {', '.join(_stated(stats))}" for by, stats in by_slice.items()],
         key_form=form,
         judge=[] if source == "measure" else _figures(_judge_keys(key), report_input),
     )
@@ -500,7 +562,11 @@ def campaign_overview(
     named = [(kind, held, name) for kind, by_id in names.items() for held, name in by_id.items()]
     measures = [_measure_row(report_input, *table) for table in _tables(report_input)]
     cells = [cite(f"cells.{cell.row}.{cell.column}.name", report_input) for cell in report_input.cells.values()]
-    caveats = [CaveatRef(id=caveat.id, kind=caveat.kind, reach=caveat.reach) for caveat in reaches]
+    caveats = [CaveatRef(id=caveat.id, kind=caveat.kind, reach=caveat.reach, source="stated") for caveat in reaches]
+    caveats += [
+        CaveatRef(id=caveat.id, kind=caveat.kind, reach=caveat.reach, source="implied")
+        for caveat in implied_caveats(report_input)
+    ]
     late_rows = [
         LateRow(
             criterion=criterion.criterion,
@@ -901,6 +967,14 @@ class MeasureFigures(_Fact):
 
     measure: str = Field(description="The measure or judged dimension read, by key.")
     by: MeasureBy = Field(description="What it is read by.")
+    level: str | None = Field(description="The confidence level of every interval (ci, half_width) it holds.")
+    held: list[str] = Field(
+        description="Every statistic the snapshot holds on it read this way, whichever were asked: ci or half_width "
+        "is an interval on the mean."
+    )
+    not_shown: list[str] = Field(
+        description="The statistics it holds that this read did not ask for; omit statistics to read every one."
+    )
     slices: list[SliceRow] = Field(description="The slices this page's rows are read within; none by arm.")
     rows: list[FigureRow] = Field(description="The page's rows: by slice, then arm, in the input's order.")
     total: int = Field(description="Rows in every page.")
@@ -1009,13 +1083,18 @@ def measure_read(
     measure_key: str,
     *,
     by: MeasureBy = "arm",
-    statistics: Sequence[MeasureStatistic] = ("mean", "ci", "n"),
+    statistics: Sequence[MeasureStatistic] | None = None,
     aspect_filter: str | None = None,
     arm_filter: str | None = None,
     limit: int = MEASURE_LIMIT,
     offset: int = 0,
 ) -> MeasureFigures:
     """A page of one measure's or judged dimension's statistics, by arm or within each stratum, task or cell.
+
+    With no statistics named, every statistic the snapshot holds on the measure read this way is read: the mean, its
+    interval (``ci`` or ``half_width``) wherever one is held, the counts, the percentiles. The result names every
+    statistic held (``held``), the ones a narrower read left out (``not_shown``) and the intervals' level, so an
+    interval is never hidden behind a read that did not ask for it.
 
     By arm, a measure read on more than the lead aspect is read on each, by its aspect's key. Within a slice,
     ``vs_control`` is each candidate's mean minus the control's there (derived, descriptive); the control has none.
@@ -1026,8 +1105,8 @@ def measure_read(
     :ptype measure_key: str
     :param by: What to read it by.
     :ptype by: MeasureBy
-    :param statistics: The statistics to read, each where the input states it.
-    :ptype statistics: Sequence[MeasureStatistic]
+    :param statistics: The statistics to read, each where the input states it; None for every one it holds.
+    :ptype statistics: Sequence[MeasureStatistic] | None
     :param aspect_filter: Only this aspect: its figures by arm, or its strata.
     :ptype aspect_filter: str | None
     :param arm_filter: Only this arm.
@@ -1039,8 +1118,8 @@ def measure_read(
     :return: The page.
     :rtype: MeasureFigures
     :raises RefusedInput: The key names no measure; a filter names an arm or aspect the snapshot does not hold; the
-        snapshot holds no slice of that kind; ``vs_control`` is asked by arm, or with no control; an aspect is named
-        for tasks or cells, which no aspect holds.
+        snapshot holds no slice of that kind, or holds the measure in none; ``vs_control`` is asked by arm, or with no
+        control; an aspect is named for tasks or cells, which no aspect holds.
     """
     source, table = _table(report_input, measure_key)
     _known(arm_filter, _arm_ids(report_input), "arm_filter")
@@ -1052,7 +1131,18 @@ def measure_read(
             parameters=("by",),
             valid_values=[held for held in _SLICE_WORDS if _slices_held(report_input, held)],
         )
-    if _VS_CONTROL in statistics and (by == "arm" or _control(report_input) is None):
+    by_slice = _stats_by_slice(report_input, measure_key, table)
+    if by not in by_slice:
+        where = ", ".join(_SLICE_WORDS[held] for held in by_slice) or "nowhere"
+        raise RefusedInput(
+            f"{measure_key!r} holds no figure read by {by}: it is held per {where}",
+            remedy=f"read it by {' or '.join(by_slice)}" if by_slice else "campaign_overview lists every measure key",
+            parameters=("by",),
+            valid_values=list(by_slice),
+        )
+    held = _stated(by_slice[by])
+    asked = held if statistics is None else list(dict.fromkeys(statistics))
+    if _VS_CONTROL in asked and (by == "arm" or _control(report_input) is None):
         raise RefusedInput(
             "vs_control reads a candidate's mean against the control's within a slice, "
             + ("and this snapshot has no control" if by != "arm" else "and by arm there is no slice"),
@@ -1082,11 +1172,7 @@ def measure_read(
             aspect=aspect,
             slice=slice_id,
             figures=_figures(
-                (
-                    f"{prefix}.{statistic}"
-                    for statistic in dict.fromkeys(statistics)
-                    if statistic != _VS_CONTROL or arm != control
-                ),
+                (f"{prefix}.{statistic}" for statistic in asked if statistic != _VS_CONTROL or arm != control),
                 report_input,
             ),
         )
@@ -1103,7 +1189,16 @@ def measure_read(
         for (slice_id, aspect), stem in stems.items()
     ]
     return MeasureFigures(
-        measure=measure_key, by=by, slices=slices, rows=rows, total=len(kept), offset=offset, next_offset=next_offset
+        measure=measure_key,
+        by=by,
+        level=table.level,
+        held=list(held),
+        not_shown=[statistic for statistic in held if statistic not in asked],
+        slices=slices,
+        rows=rows,
+        total=len(kept),
+        offset=offset,
+        next_offset=next_offset,
     )
 
 
@@ -1120,8 +1215,10 @@ class ExampleRow(_Fact):
     arm: CitedFigure | None = Field(description="The arm that ran it.")
     repeat: str | None = Field(description="Which repeat of the case it was, as a label.")
     outcome: str | None = Field(description="The failure class.")
-    reason: str | None = Field(description="Why it failed: the judge's reason or a note.")
-    excerpt: str | None = Field(description="The end of the reply, or what the arm produced.")
+    reason: str | None = Field(description="Why it failed: the judge's reason or a note, whole.")
+    excerpt: str | None = Field(
+        description="What the judge read, cut around the failure where the snapshot was frozen so; each cut end marked."
+    )
     input: str | None = Field(description="The input the case gave.")
     expected: str | None = Field(description="What the case expected.")
     result_id: str | None = Field(description="The stored result the trial records, where the bundle named it.")
@@ -1153,7 +1250,7 @@ def _example_row(report_input: ReportInput, example: Example, results: Mapping[s
         arm=_arm_figure(report_input, example.arm),
         repeat=str(example.repeat) if example.repeat is not None else None,
         outcome=example.outcome,
-        reason=_clipped(example.reason),
+        reason=example.reason,
         excerpt=_clipped(example.excerpt),
         input=_clipped(example.input),
         expected=_clipped(example.expected),
@@ -1235,10 +1332,13 @@ class CaveatRow(_Fact):
     """One caveat: where it may land, whether code proved it immaterial, and what it touches."""
 
     id: str = Field(description="The caveat's id, as a report's flag and confidence clauses name it.")
-    kind: str = Field(
-        description="late, judge_uncalibrated, confound, apparatus, short_run, unsettled, latency or unreported."
-    )
+    kind: str = Field(description=_CAVEAT_KINDS)
     reach: CaveatReach = Field(description="report (the confidence rests on it), scoped (beside a claim) or method.")
+    source: Literal["stated", "implied"] = Field(description=_CAVEAT_SOURCE)
+    matters_if: str | None = Field(
+        description="For an implied caveat, when it matters: what a report's material_if clause weighs. None for a "
+        "stated one."
+    )
     immaterial: bool = Field(description="Whether code proved the decision holds across its whole range.")
     checked: str | None = Field(
         description="The line code renders for an immaterial caveat, which a report never restates."
@@ -1253,8 +1353,8 @@ class CaveatRow(_Fact):
 class CaveatListing(_Fact):
     """Every caveat the snapshot carries, in the order a report lands them."""
 
-    caveats: list[CaveatRow] = Field(description="Each caveat on this page.")
-    total: int = Field(description="The caveats the snapshot carries.")
+    caveats: list[CaveatRow] = Field(description="Each caveat on this page: the stated ones, then the implied.")
+    total: int = Field(description="The caveats the snapshot carries, stated and implied.")
     offset: int = Field(description="The first caveat this page holds.")
     next_offset: int | None = Field(description="The offset of the next page of caveats; None when this is the last.")
 
@@ -1347,10 +1447,29 @@ def _touch(report_input: ReportInput, caveat: Caveat, unsettled: Mapping[str, tu
     return _Touch()
 
 
+def _implied_touch(report_input: ReportInput, caveat: ImpliedCaveat) -> _Touch:
+    """What an implied caveat touches, and the keys of the figures it rests on: a judge's stated figures, the
+    candidates counted, a gate's threshold and each surviving option's clearance with no interval."""
+    keys: list[str] = []
+    if caveat.kind == "judge_partly_uncalibrated":
+        keys = [key for dimension in caveat.measures for key in _judge_keys(dimension)]
+    elif caveat.kind in ("no_control", "best_of_n"):
+        keys = ["n_candidates"]
+    elif caveat.kind == "point_estimate":
+        criterion = caveat.id.partition(":")[2]
+        keys = [f"criteria.{criterion}.threshold"]
+        for arm, task, cell in caveat.at:
+            place = task if cell is None else f"{report_input.cells[cell].row}.{report_input.cells[cell].column}"
+            single = sum(held == arm for held, _task, _cell in caveat.at) == 1 and place is None
+            keys.append(f"criteria.{criterion}.{arm}.gap" if single else f"criteria.{criterion}.{arm}.{place}.gap")
+    return _Touch(arms=list(caveat.arms), measures=list(caveat.measures), keys=keys)
+
+
 def caveats_list(report_input: ReportInput, *, limit: int | None = None, offset: int = 0) -> CaveatListing:
     """Every caveat the snapshot carries: where it may land, whether code proved it immaterial, and what it touches,
     each read from the input (a confound: the contrasts naming it; a short run: its arm; a late criterion: what it
-    set; an unsettled aspect: its candidates).
+    set; an unsettled aspect: its candidates). The caveats the input states come first, then the ones what it holds
+    implies (:func:`~threetears.evals.analysis.report_decision.implied_caveats`), each with when it matters.
 
     :param report_input: The snapshot's frozen report input.
     :ptype report_input: ReportInput
@@ -1363,25 +1482,29 @@ def caveats_list(report_input: ReportInput, *, limit: int | None = None, offset:
     """
     materiality = caveat_materiality(report_input)
     unsettled = unsettled_arms(report_input)
-    every = report_caveats(report_input)
+    every: list[Caveat | ImpliedCaveat] = [*report_caveats(report_input), *implied_caveats(report_input)]
     shown, next_offset = _page(every, len(every) if limit is None else limit, offset)
     rows: list[CaveatRow] = []
     for caveat in shown:
-        touch = _touch(report_input, caveat, unsettled)
-        figures = _figures(touch.keys, report_input)
-        held = materiality[caveat.id]
+        if isinstance(caveat, ImpliedCaveat):
+            touch, held = _implied_touch(report_input, caveat), Materiality(caveat.id, False, None)
+        else:
+            touch, held = _touch(report_input, caveat, unsettled), materiality[caveat.id]
+        implied = isinstance(caveat, ImpliedCaveat)
         rows.append(
             CaveatRow(
                 id=caveat.id,
                 kind=caveat.kind,
                 reach=caveat.reach,
+                source="implied" if implied else "stated",
+                matters_if=caveat.matters_if if isinstance(caveat, ImpliedCaveat) else None,
                 immaterial=held.immaterial,
                 checked=held.checked,
                 touches_arms=touch.arms,
                 touches_aspects=touch.aspects,
                 touches_measures=touch.measures,
                 says=touch.says,
-                figures=figures,
+                figures=_figures(touch.keys, report_input),
             )
         )
     return CaveatListing(caveats=rows, total=len(every), offset=offset, next_offset=next_offset)

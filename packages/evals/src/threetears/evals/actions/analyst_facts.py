@@ -73,11 +73,6 @@ OutcomeFilter = Annotated[
 ]
 
 
-def _default_statistics() -> list[MeasureStatistic]:
-    """The statistics a measure is read with when none are named: the mean, its interval and its observations."""
-    return ["mean", "ci", "n"]
-
-
 class SnapshotParams(EvalBaseModel):
     """``campaign_overview``, ``caveats_list``: the snapshot to read, and the page."""
 
@@ -116,11 +111,12 @@ class MeasureReadParams(EvalBaseModel):
         default="arm",
         description="Read each arm's figure (arm), or each arm's within each stratum, task or target-matrix cell.",
     )
-    statistics: list[MeasureStatistic] = Field(
-        default_factory=_default_statistics,
+    statistics: list[MeasureStatistic] | None = Field(
+        default=None,
         min_length=1,
-        description="The statistics to read, each where the snapshot states it; vs_control (a candidate's mean minus "
-        "the control's within a slice) needs a slice and a control.",
+        description="The statistics to read, each where the snapshot states it; omitted, every one it holds on the "
+        "measure read this way, its interval (ci or half_width) among them. vs_control (a candidate's mean minus the "
+        "control's within a slice) needs a slice and a control, and is read only when named.",
     )
     aspect_filter: AspectFilter = None
     arm_filter: ArmFilter = None
@@ -238,7 +234,9 @@ def analyst_facts_actions() -> tuple[Action, ...]:
             detail=(
                 "Every id another tool takes is listed here: each arm (cited arm:<id>), each aspect and what rows it "
                 "holds, each measure and judged dimension by its key with the key form that reads it, what it can "
-                "be read by and, for a judged one, its judge's tier, calibration and agreement, each criterion and its "
+                "be read by and the statistics it holds there (an interval is ci or half_width; arms_without lists "
+                "only arms holding it nowhere, so a measure held per cell or stratum is not missing) and, for a judged "
+                "one, its judge's tier, calibration and agreement, each criterion and its "
                 "threshold, each caveat with its reach, the late criteria, prior insights, and the name a reader is "
                 "shown for each id. Every figure is written key = reads: cite the key, never the number. Its rows are "
                 "paged in that order, the campaign's own figures on every page; without a limit a page holds as many "
@@ -293,10 +291,14 @@ def analyst_facts_actions() -> tuple[Action, ...]:
             paged=True,
             example={**snapshot, "measure_key": "resolves", "by": "stratum"},
             detail=(
-                "campaign_overview lists each measure key and the slices it can be read by. By arm, a measure read on "
-                "more than one aspect is read on each, by its aspect's key. Within a slice, vs_control is a candidate's "
-                "mean minus the control's there: derived and descriptive, with no interval and no test. Without a "
-                f"limit a page holds as many rows as fit one result, up to {MEASURE_LIMIT}."
+                "campaign_overview lists each measure key, the slices it can be read by and the statistics it holds "
+                "in each. Without statistics, every statistic held is read, the interval (ci or half_width) among "
+                "them; the result names every one held, the ones a narrower read left out (not_shown) and the "
+                "intervals' level. A measure held only within slices is refused by arm, naming where it is held. By "
+                "arm, a measure read on more than one aspect is read on each, by its aspect's key. Within a slice, "
+                "vs_control is a candidate's mean minus the control's there: derived and descriptive, with no "
+                f"interval and no test. Without a limit a page holds as many rows as fit one result, up to "
+                f"{MEASURE_LIMIT}."
             ),
         ),
         Action(
@@ -311,14 +313,19 @@ def analyst_facts_actions() -> tuple[Action, ...]:
             paged=True,
             example=snapshot,
             detail=(
-                "The pool holds at most one failed trial per aspect, arm and stratum. A report names an example by its "
-                "trial id. An arm or aspect filter keeps an example naming none. Long texts are cut to an excerpt's "
-                f"length, the cut marked. Without a limit a page holds as many as fit one result, up to {EXAMPLES_LIMIT}."
+                "The pool holds up to three failed trials per aspect, arm and stratum (every slice's first before any "
+                "slice's second, its other cases before a repeat), so arm_filter with stratum_filter shows whether a "
+                "failure is typical of its slice. Each excerpt is cut around the failure: centred on the passage the "
+                "judge's reason quotes, else the reply's end, each cut end marked. A report names an example by its "
+                "trial id. The judge's reason is whole; a long input or expected answer is cut to an excerpt's length, "
+                "the cut marked. An arm or aspect filter keeps an example naming none. Without a limit a page holds "
+                "as many "
+                f"as fit one result, up to {EXAMPLES_LIMIT}."
             ),
         ),
         Action(
             name="caveats_list",
-            summary="List every caveat: where it may land, whether code proved it immaterial, and what it touches.",
+            summary="List every caveat, stated or implied: where it may land, whether it matters, and what it touches.",
             workflow=FACTS_WORKFLOW,
             permission="read",
             params=SnapshotParams,
@@ -329,9 +336,15 @@ def analyst_facts_actions() -> tuple[Action, ...]:
             example=snapshot,
             detail=(
                 "Read from the snapshot: a confound touches the contrasts naming it, a short run its arm, a late "
-                "criterion what it set, an unsettled aspect its candidates. A report's confidence rests on every "
-                "report-reach caveat; an immaterial one is never restated, since code renders its checked line. "
-                f"Without a limit a page holds as many caveats as fit one result, up to {CAVEATS_LIMIT}."
+                "criterion what it set, an unsettled aspect its candidates. The caveats the snapshot states come "
+                "first (source stated); then the ones what it holds implies (source implied), each with matters_if: "
+                "a judge it does not describe (judge_unstated), judges stated uncalibrated on some dimensions "
+                "(judge_partly_uncalibrated), no control (no_control), no gate, floor or margin declared "
+                "(nothing_declared), a gate a surviving option clears with no interval on its figure "
+                "(point_estimate:<criterion>), a pick among three candidates or more (best_of_n). Cite each by its id. "
+                "A report's confidence rests on every report-reach caveat; an immaterial one is never restated, since "
+                f"code renders its checked line. Without a limit a page holds as many caveats as fit one result, up to "
+                f"{CAVEATS_LIMIT}."
             ),
         ),
     )

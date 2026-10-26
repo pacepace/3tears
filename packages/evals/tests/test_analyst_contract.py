@@ -61,13 +61,12 @@ from threetears.evals.analysis.analyst.analyses import dominance, sensitivity
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
 from threetears.evals.analysis.analyst.facts import campaign_overview
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.analysis.analyst.snapshot import ANALYST_EXAMPLES, frozen_input, report_snapshot
+from threetears.evals.analysis.analyst.snapshot import analyst_input, frozen_input, report_snapshot
 from threetears.evals.analysis.planned_analysis import report_input_digest, report_input_document_digest
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, reader_names, render, resolve
 from threetears.evals.analysis.report.figures import PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel import EvalReportSnapshot, report_snapshot_id
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.ops import analysis_generate
@@ -155,7 +154,7 @@ async def test_a_campaign_freezes_to_the_report_input_its_evidence_builds_and_ag
     snapshot = _stored(fixture, first.structured["snapshot_id"])
 
     bundle = off_loop(assemble_campaign_bundle, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE)
-    built = report_input(bundle, examples=ANALYST_EXAMPLES)
+    built = analyst_input(bundle)
     assert frozen_input(snapshot) == built
     assert snapshot.id == report_snapshot_id(fixture.campaign.id, report_input_digest(built))
     assert (snapshot.campaign_id, snapshot.analysis_id, snapshot.created_by) == (
@@ -187,7 +186,7 @@ async def test_a_stored_analysis_freezes_to_the_report_input_its_frozen_bundle_b
     snapshot = _stored(fixture, outcome.structured["snapshot_id"])
 
     bundle = analysis_campaign_bundle(analysis)
-    built = report_input(bundle, examples=ANALYST_EXAMPLES)
+    built = analyst_input(bundle)
     assert frozen_input(snapshot) == built
     assert snapshot.id == report_snapshot_id(analysis.campaign_id, report_input_digest(built))
     assert snapshot.bundle_assembled_at == analysis.generation.bundle_assembled_at
@@ -215,7 +214,7 @@ async def test_a_freeze_reusing_a_snapshot_frozen_another_way_reports_the_stored
     fixture = off_loop(ops_fixture)
     bundle = off_loop(assemble_campaign_bundle, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE)
     earlier = report_snapshot(
-        report_input(bundle, examples=ANALYST_EXAMPLES),
+        analyst_input(bundle),
         scope_id=TOYHOST_SCOPE,
         campaign_id=fixture.campaign.id,
         source="analysis",
@@ -427,10 +426,12 @@ _TYPED_NUMBER = re.compile(
 )
 
 #: The text fields that hold the input's own words verbatim rather than text code composes: an example's trial (what
-#: the case asked, what the arm replied, the judge's reason, its repeat's label), a measure's stated interval level,
-#: and the note a caveat carries in the input. A number there is the input's, quoted, not a figure code wrote.
+#: the case asked, what the arm replied, the judge's reason, its repeat's label), a measure's stated interval level
+#: (in the overview's rows, and atop a measure's read), and the note a caveat carries in the input. A number there is
+#: the input's, quoted, not a figure code wrote.
 _VERBATIM = re.compile(
-    r"\.examples\[\d+\]\.(?:excerpt|input|expected|reason|repeat)$|\.measures\[\d+\]\.level$|\.caveats\[\d+\]\.says$"
+    r"\.examples\[\d+\]\.(?:excerpt|input|expected|reason|repeat)$|\.measures\[\d+\]\.level$|^\.level$"
+    r"|\.caveats\[\d+\]\.says$"
 )
 
 
@@ -838,6 +839,7 @@ _PAGED_CALLS: dict[str, tuple[str, dict[str, Any]]] = {
     "block_render": (KAIRO, {"block_kind": "table", "query": {"source": "contrasts"}, "limit": 2}),
     "arms_compare": ("r1", {"arm_ids": ["atlas-l", "atlas-m"], "measure_key": "overall", "limit": 2}),
     "settle_cases": ("r1", {"arm_ids": ["atlas-m"], "limit": 3}),
+    "levers_effects": ("r2", {"measure_key": "pass_rate", "setting_filter": "retry", "limit": 4}),
 }
 
 
@@ -922,6 +924,11 @@ def _page_rows(action: str, structured: dict[str, Any]) -> list[Any]:
         sections = ("arms", "aspects", "measures", "criteria", "cells", "caveats", "late_criteria", "prior_insights")
         named = [(kind, held, name) for kind, names in structured["names"].items() for held, name in names.items()]
         return [(section, row) for section in sections for row in structured[section]] + [("names", n) for n in named]
+    if action == "levers_effects":
+        # A page holds effects, then interactions once every effect is read: tagged by which.
+        return [("effect", row) for row in structured["effects"]] + [
+            ("interaction", row) for row in structured["interactions"]
+        ]
     if action == "price_tradeoff":
         # A page covers options in arm order, each priced against one or listed off the frontier: tagged by which.
         return sorted(
