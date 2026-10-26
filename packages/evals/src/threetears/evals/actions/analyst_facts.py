@@ -8,13 +8,19 @@ lists their names.
 
 ``campaign_overview`` comes first: it lists every id the others take (arms, aspects, measure keys, strata, tasks,
 cells), and a filter naming anything else is refused with that remedy.
+
+**A page is sized to one result.** A paged tool called without a ``limit`` returns as many rows as its text holds
+within 12,000 characters (what one tool result may take of an analyst's context), up to its default count;
+``next_offset`` reads on. Rows are never shortened or left out, only carried to the next page. A ``limit`` the caller
+names is the page's size, as named.
 """
 
 from __future__ import annotations
 
-from typing import Annotated
+from collections.abc import Callable
+from typing import Annotated, get_args
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from threetears.evals.actions.catalogue import Action, Caller
 from threetears.evals.actions.params import ArmFilter, AspectFilter, Limit, MeasureKey, Offset, SnapshotId
@@ -45,8 +51,15 @@ from threetears.evals.schema.base import EvalBaseModel
 #: The help index's group for these actions, which the toolsets are read off.
 FACTS_WORKFLOW = "Investigate: facts"
 
+#: The most characters a page a caller does not size runs to: what one tool result may take of an analyst's context.
+_PAGE_TEXT = 12_000
+
 #: An example snapshot id, as a freeze returns one.
 _EXAMPLE_SNAPSHOT = "report-snapshot:0193a1b2c3d4e5f60718293a4b5c6d7e"
+
+#: A page's size, as :data:`~threetears.evals.actions.params.Limit` declares it, which a caller may leave out to have
+#: the page sized to one result.
+_SizedLimit = Annotated[int | None, get_args(Limit)[1]]
 
 MeasureFilter = Annotated[
     str | None,
@@ -66,6 +79,17 @@ OutcomeFilter = Annotated[
 ]
 
 
+def _fits(page: BaseModel) -> bool:
+    """Whether a page's text, as the tool renders it, is within :data:`_PAGE_TEXT`."""
+    return len(render_cited(page)) <= _PAGE_TEXT
+
+
+def _sizing[T: BaseModel](limit: int | None, default: int) -> tuple[int, Callable[[T], bool] | None]:
+    """The page size an operation takes, and the test of length it sizes a page by: the caller's ``limit`` as named,
+    else up to ``default`` rows, as many as fit."""
+    return (limit, None) if limit is not None else (default, _fits)
+
+
 def _default_statistics() -> list[MeasureStatistic]:
     """The statistics a measure is read with when none are named: the mean, its interval and its observations."""
     return ["mean", "ci", "n"]
@@ -83,7 +107,7 @@ class ReadingsListParams(EvalBaseModel):
     snapshot_id: SnapshotId
     aspect_filter: AspectFilter = None
     arm_filter: ArmFilter = None
-    limit: Limit = READINGS_LIMIT
+    limit: _SizedLimit = None
     offset: Offset = 0
 
 
@@ -94,7 +118,7 @@ class ContrastsListParams(EvalBaseModel):
     arm_filter: ArmFilter = None
     measure_filter: MeasureFilter = None
     aspect_filter: AspectFilter = None
-    limit: Limit = CONTRASTS_LIMIT
+    limit: _SizedLimit = None
     offset: Offset = 0
 
 
@@ -115,7 +139,7 @@ class MeasureReadParams(EvalBaseModel):
     )
     aspect_filter: AspectFilter = None
     arm_filter: ArmFilter = None
-    limit: Limit = MEASURE_LIMIT
+    limit: _SizedLimit = None
     offset: Offset = 0
 
 
@@ -127,7 +151,7 @@ class ExamplesListParams(EvalBaseModel):
     stratum_filter: StratumFilter = None
     aspect_filter: AspectFilter = None
     outcome_filter: OutcomeFilter = None
-    limit: Limit = EXAMPLES_LIMIT
+    limit: _SizedLimit = None
     offset: Offset = 0
 
 
@@ -136,18 +160,21 @@ async def _campaign_overview(host: OpsHost, caller: Caller, params: SnapshotPara
 
 
 async def _readings_list(host: OpsHost, caller: Caller, params: ReadingsListParams) -> ReadingsListing:
+    limit, fits = _sizing(params.limit, READINGS_LIMIT)
     return await readings_list(
         host,
         caller.scope_id,
         snapshot_id=params.snapshot_id,
         aspect_filter=params.aspect_filter,
         arm_filter=params.arm_filter,
-        limit=params.limit,
+        limit=limit,
         offset=params.offset,
+        fits=fits,
     )
 
 
 async def _contrasts_list(host: OpsHost, caller: Caller, params: ContrastsListParams) -> ContrastListing:
+    limit, fits = _sizing(params.limit, CONTRASTS_LIMIT)
     return await contrasts_list(
         host,
         caller.scope_id,
@@ -155,12 +182,14 @@ async def _contrasts_list(host: OpsHost, caller: Caller, params: ContrastsListPa
         arm_filter=params.arm_filter,
         measure_filter=params.measure_filter,
         aspect_filter=params.aspect_filter,
-        limit=params.limit,
+        limit=limit,
         offset=params.offset,
+        fits=fits,
     )
 
 
 async def _measure_read(host: OpsHost, caller: Caller, params: MeasureReadParams) -> MeasureFigures:
+    limit, fits = _sizing(params.limit, MEASURE_LIMIT)
     return await measure_read(
         host,
         caller.scope_id,
@@ -170,12 +199,14 @@ async def _measure_read(host: OpsHost, caller: Caller, params: MeasureReadParams
         statistics=params.statistics,
         aspect_filter=params.aspect_filter,
         arm_filter=params.arm_filter,
-        limit=params.limit,
+        limit=limit,
         offset=params.offset,
+        fits=fits,
     )
 
 
 async def _examples_list(host: OpsHost, caller: Caller, params: ExamplesListParams) -> ExampleListing:
+    limit, fits = _sizing(params.limit, EXAMPLES_LIMIT)
     return await examples_list(
         host,
         caller.scope_id,
@@ -184,8 +215,9 @@ async def _examples_list(host: OpsHost, caller: Caller, params: ExamplesListPara
         stratum_filter=params.stratum_filter,
         aspect_filter=params.aspect_filter,
         outcome_filter=params.outcome_filter,
-        limit=params.limit,
+        limit=limit,
         offset=params.offset,
+        fits=fits,
     )
 
 
@@ -233,7 +265,7 @@ def analyst_facts_actions() -> tuple[Action, ...]:
                 "Rows are grouped by aspect, each with its margin and the contrast family correcting it. A reading "
                 "carries its change, interval, margin, level, verdict and flip margin (derived: the margin above which "
                 "it holds); a floor its status and held_above and broken_at margins (derived). Pages count every row "
-                "of every kind."
+                f"of every kind; without a limit a page holds as many as fit one result, up to {READINGS_LIMIT}."
             ),
         ),
         Action(
@@ -249,7 +281,8 @@ def analyst_facts_actions() -> tuple[Action, ...]:
             detail=(
                 "Each contrast carries its delta, interval, verdict, adjusted p, level and materiality, and its "
                 "confounds by caveat id (caveats_list says what each touches). A contrast whose arm and measure the "
-                "snapshot holds on more than one aspect is keyed by its aspect."
+                "snapshot holds on more than one aspect is keyed by its aspect. Without a limit a page holds as many "
+                f"contrasts as fit one result, up to {CONTRASTS_LIMIT}."
             ),
         ),
         Action(
@@ -265,7 +298,8 @@ def analyst_facts_actions() -> tuple[Action, ...]:
             detail=(
                 "campaign_overview lists each measure key and the slices it can be read by. By arm, a measure read on "
                 "more than one aspect is read on each, by its aspect's key. Within a slice, vs_control is a candidate's "
-                "mean minus the control's there: derived and descriptive, with no interval and no test."
+                "mean minus the control's there: derived and descriptive, with no interval and no test. Without a "
+                f"limit a page holds as many rows as fit one result, up to {MEASURE_LIMIT}."
             ),
         ),
         Action(
@@ -281,7 +315,7 @@ def analyst_facts_actions() -> tuple[Action, ...]:
             detail=(
                 "The pool holds at most one failed trial per aspect, arm and stratum. A report names an example by its "
                 "trial id. An arm or aspect filter keeps an example naming none. Long texts are cut to an excerpt's "
-                "length, the cut marked."
+                f"length, the cut marked. Without a limit a page holds as many as fit one result, up to {EXAMPLES_LIMIT}."
             ),
         ),
         Action(
