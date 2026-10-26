@@ -38,7 +38,7 @@ from threetears.evals.analysis.report.blocks import TableBlock, TableCell, Table
 from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.report.figure_keys import Figure, format_figure, resolve
 from threetears.evals.analysis.report.plan_page.charting import figure_stat, measure_words, stat_value
-from threetears.evals.analysis.report.plan_page.look import ArmLook, PageLook
+from threetears.evals.analysis.report.plan_page.look import GATE_STATUS, ArmLook, PageLook
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION, PageArmsKey, PageOptions
 from threetears.evals.analysis.report.plan_page.words import (
     ARM_HEADERS,
@@ -63,8 +63,6 @@ __all__ = ["arms_key", "options_table"]
 #: The roles whose row the options table sets apart: the recommendation, or the lean.
 _SET_APART = ("recommended", "lean")
 
-#: Each gate status's pill.
-_GATE_STATUS: dict[str, ChartStatus] = {"pass": "good", "borderline": "warn", "fail": "bad"}
 
 #: Each reading direction's pill (GENERATOR §3: by the direction of the change, never by the margin).
 _READING_STATUS: dict[str, ChartStatus] = {"worse": "bad", "better": "good", "": "neutral"}
@@ -129,7 +127,7 @@ def _gate(column: str, arm: str, report_input: ReportInput, look: PageLook) -> T
     checked = gate_check(report_input, arm)
     reasons = (*checked.fails, *checked.borders)
     return TableCell(
-        value=GATE_WORDS[checked.status], status=_GATE_STATUS[checked.status], flag=reasons[0] if reasons else None
+        value=GATE_WORDS[checked.status], status=GATE_STATUS[checked.status], flag=reasons[0] if reasons else None
     )
 
 

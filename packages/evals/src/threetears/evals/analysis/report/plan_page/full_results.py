@@ -49,7 +49,7 @@ from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import format_figure, resolve
 from threetears.evals.analysis.report.figures import PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report.plan_page.charting import figure_unit, measure_words, stat_value
-from threetears.evals.analysis.report.plan_page.look import PageLook, figure_text, quantity
+from threetears.evals.analysis.report.plan_page.look import GATE_STATUS, PageLook, figure_text, quantity
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
 from threetears.evals.analysis.report.plan_page.words import (
     CONTRAST_VERDICT_WORDS,
@@ -69,8 +69,6 @@ from threetears.evals.kernel.report_plan import ReportPlan
 
 __all__ = ["full_results"]
 
-#: Each gate status's pill.
-_GATE_STATUS: dict[str, ChartStatus] = {"pass": "good", "borderline": "warn", "fail": "bad"}
 
 #: Each corrected comparison's verdict's pill: a separated gain or equivalence good, a regression bad, the rest
 #: neutral.
@@ -359,7 +357,7 @@ def _gate_cell(
     )
     line = resolve(f"criteria.{criterion.id}.threshold", report_input)
     said = format_figure(replace(line, value=figure.value)) if figure is not None else NO_FIGURE
-    return TableCell(value=GATE_WORDS[checked.status], status=_GATE_STATUS[checked.status], flag=said)
+    return TableCell(value=GATE_WORDS[checked.status], status=GATE_STATUS[checked.status], flag=said)
 
 
 def _gate_matrix_full(report_input: ReportInput, look: PageLook) -> list[TableBlock]:
