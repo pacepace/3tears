@@ -29,8 +29,7 @@ def serialize_report(report: Report | CampaignReport, format: ReportFormat, *, s
         aspect's bundle by its fingerprint and shape (:meth:`CampaignReport.json_document`).
     :ptype format: ReportFormat
     :param static: For ``html``, the static page (:func:`~threetears.evals.analysis.report.serialize_html.report_html`):
-        no script, no link, every chart its table. Markdown and JSON carry no script either way, so it changes
-        neither.
+        no script, no link, every chart its table. It changes neither Markdown nor JSON.
     :ptype static: bool
     :return: The serialized report.
     :rtype: str
