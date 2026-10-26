@@ -159,7 +159,7 @@
           "additionalProperties": false,
           "required": ["source", "aspect", "measures", "arms", "strata", "limit", "transform", "small_multiples_by"],
           "properties": {
-            "source": {"enum": ["readings", "contrasts", "measures", "judged", "scoreboard", "floors", "strata", "examples", "tasks", "configs", "cells", "confusion", "human_pref"]},
+            "source": {"enum": ["readings", "contrasts", "measures", "judged", "scoreboard", "floors", "strata", "examples", "tasks", "configs", "cells", "confusion", "human_pref", "prices"]},
             "aspect": {"type": "string"},
             "measures": {"type": "array", "items": {"type": "string"}},
             "arms": {"type": "array", "items": {"type": "string"}},
