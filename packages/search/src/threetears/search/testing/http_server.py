@@ -26,6 +26,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from types import TracebackType
 
+from threetears.observe import cancel_and_wait
+
 __all__ = ["LocalHttpServer", "Reply"]
 
 
@@ -47,6 +49,18 @@ class Reply:
     #: read until EOF -- the path where a byte cap has to count chunks
     #: rather than trust a header.
     undeclared_length: bool = False
+    #: send the body as these chunks, in chunked transfer encoding, instead of
+    #: ``body`` -- the shape of a stream nobody states the length of. The
+    #: connection closes after the last one.
+    chunks: tuple[bytes, ...] = ()
+    #: when set, each chunk waits for one release of this semaphore before it
+    #: is sent, so a test decides when the next chunk exists. That is what
+    #: lets a pin prove a chunk reached the client *before* the next was sent,
+    #: rather than inferring it from timing.
+    gate: asyncio.Semaphore | None = None
+    #: close the connection after the chunks without the terminating
+    #: zero-length chunk -- a stream broken after its body began.
+    truncate: bool = False
 
 
 class LocalHttpServer:
@@ -72,6 +86,10 @@ class LocalHttpServer:
         #: makes this the only observable that can tell a shared client from
         #: a fresh one per call.
         self.connections = 0
+        #: connections the client closed while a gated reply was still waiting
+        #: to send a chunk -- the observable that a reader which stopped early
+        #: released its connection rather than holding it.
+        self.hangups = 0
 
     @property
     def base_url(self) -> str:
@@ -143,6 +161,9 @@ class LocalHttpServer:
                     await asyncio.sleep(reply.delay)
                 if reply.close_early:
                     return
+                if reply.chunks:
+                    await self._send_chunks(reader, writer, reply)
+                    return
                 headers = {"Content-Type": "application/json", **reply.headers}
                 if reply.undeclared_length:
                     headers["Connection"] = "close"
@@ -161,3 +182,68 @@ class LocalHttpServer:
                     return
         finally:
             writer.close()
+
+    async def _send_chunks(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, reply: Reply) -> None:
+        """Answer with ``reply``'s chunks in chunked transfer encoding, each when its gate opens.
+
+        :param reader: the connection's reader, watched for the client hanging up
+        :ptype reader: asyncio.StreamReader
+        :param writer: the connection's writer
+        :ptype writer: asyncio.StreamWriter
+        :param reply: the reply whose chunks to send
+        :ptype reply: Reply
+        """
+        headers = {
+            "Content-Type": "text/event-stream",
+            **reply.headers,
+            "Transfer-Encoding": "chunked",
+            "Connection": "close",
+        }
+        rendered = "".join(f"{name}: {value}\r\n" for name, value in headers.items())
+        writer.write(f"HTTP/1.1 {reply.status} SCRIPTED\r\n{rendered}\r\n".encode("latin-1"))
+        try:
+            await writer.drain()
+            for chunk in reply.chunks:
+                if reply.gate is not None and not await self._gate_opens(reply.gate, reader):
+                    self.hangups += 1
+                    return
+                writer.write(f"{len(chunk):x}\r\n".encode("ascii") + chunk + b"\r\n")
+                await writer.drain()
+            if not reply.truncate:
+                writer.write(b"0\r\n\r\n")
+                await writer.drain()
+        # NOSILENT: a client that stopped reading closed this socket, which is what a cap pin does
+        except ConnectionError:
+            return
+
+    async def _gate_opens(self, gate: asyncio.Semaphore, reader: asyncio.StreamReader) -> bool:
+        """Wait for ``gate`` to release one chunk, or for the client to hang up first.
+
+        The reader is watched for end of file. Bytes that arrive instead -- a
+        request body this server never parses -- are discarded and the watch
+        goes on, since only a close means the client left.
+
+        :param gate: the semaphore a test releases once per chunk
+        :ptype gate: asyncio.Semaphore
+        :param reader: the connection's reader; end of file means the client closed
+        :ptype reader: asyncio.StreamReader
+        :return: whether the gate opened (``False``: the client hung up)
+        :rtype: bool
+        """
+        opened = asyncio.ensure_future(gate.acquire())
+        try:
+            while True:
+                watching = asyncio.ensure_future(reader.read(1024))
+                try:
+                    await asyncio.wait((opened, watching), return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    if not watching.done():
+                        await cancel_and_wait(watching)
+                if opened.done():
+                    return True
+                if watching.exception() is not None or watching.result() == b"":
+                    # a reset or a clean close: either way the client left.
+                    return False
+        finally:
+            if not opened.done():
+                await cancel_and_wait(opened)
