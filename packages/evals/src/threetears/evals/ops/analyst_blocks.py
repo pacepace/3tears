@@ -46,7 +46,7 @@ def _refused[T](compute: Callable[[], T]) -> T:
     try:
         return compute()
     except RefusedInput as refused:
-        raise ValidationFailedError(refused.fault, remedy=refused.remedy) from refused
+        raise ValidationFailedError.refusing(refused) from refused
 
 
 async def _read[T](host: OpsHost, scope_id: str, snapshot_id: str, compute: Callable[[ReportInput], T]) -> T:

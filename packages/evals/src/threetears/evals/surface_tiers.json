@@ -1641,6 +1641,7 @@
 "threetears.evals.actions.PermissionClass": "provisional",
 "threetears.evals.actions.PRIMER_BUDGET": "provisional",
 "threetears.evals.actions.read_only_tools": "provisional",
+"threetears.evals.actions.Recovery": "provisional",
 "threetears.evals.actions.Refusal": "stable",
 "threetears.evals.actions.REFUSAL_KINDS": "provisional",
 "threetears.evals.actions.RefusalKind": "provisional",

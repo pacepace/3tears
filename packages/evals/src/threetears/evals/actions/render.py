@@ -130,7 +130,10 @@ def render_primer(tools: Sequence[MountedTool]) -> str:
         lines.append(f"Reference topics, as action='help', topic='<topic>': {', '.join(topics)}.")
     lines.append("Tools:")
     lines += [f"- {tool.name}: {one_line(tool.spec.description)} Call action='help' first." for tool in tools]
-    rules: list[str] = []
+    rules = [
+        "A refused call ends with recovery: {...}, the corrected call's fields (parameters at fault, accepted, "
+        "example, valid_values or valid_values_from, see); the structured result carries them as recovery."
+    ]
     if any(action.long_running for tool in tools for action in tool.actions):
         rules.append("Long work starts a job: poll it with action='job_poll' until it reads done.")
     for tool in tools:
@@ -261,6 +264,11 @@ def refuse_by_resolver(tool: MountedTool, action: Action | None, refused: EvalSe
     refused before its ``action`` was ever checked, so it may name none.
     """
     return _refused_with_remedy(tool, action.name if action is not None else tool.name, refused)
+
+
+def recovery_line(recovery: Mapping[str, Any]) -> str:
+    """A refusal's recovery fields as its text's last line, compact JSON (a client may forward only the text)."""
+    return "recovery: " + json.dumps(dict(recovery), separators=(",", ":"), ensure_ascii=False, default=str)
 
 
 #: The lowest status at which an error is the engine or host failing to carry a call out rather than turning the
@@ -722,6 +730,7 @@ __all__ = [
     "next_page_line",
     "parameter_lines",
     "raised",
+    "recovery_line",
     "refuse_by_engine",
     "refuse_by_resolver",
     "refuse_help_parameters",

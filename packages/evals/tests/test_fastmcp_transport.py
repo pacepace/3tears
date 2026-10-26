@@ -11,6 +11,7 @@ own prefix), and the caller resolved per call — sync or async.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import subprocess
 import sys
@@ -187,11 +188,23 @@ async def test_an_undeclared_parameter_is_refused_with_the_valid_set() -> None:
         text, structured, is_error = await _text(
             client, "evals", {"action": "job_poll", "job_id": "run:r", "analysis_id": "a"}
         )
-    assert is_error and structured == {"ending": "refused", "refusal": {"kind": "validation_failed", "status": 422}}
+    recovery = {
+        "parameters": ["analysis_id"],
+        "accepted": ["job_id"],
+        "example": {"action": "job_poll", "job_id": "run:0193a1b2-run"},
+        "see": {"action": "help", "topic": "job_poll"},
+    }
+    assert is_error and structured == {
+        "ending": "refused",
+        "refusal": {"kind": "validation_failed", "status": 422},
+        "recovery": recovery,
+    }
     assert text.startswith(
         "refused: job_poll does not take analysis_id.\njob_poll accepts:\n- job_id (string, required)"
     )
     assert 'Example: {"action": "job_poll", "job_id": "run:' in text
+    # A client may forward only the text, so the fields ride its last line too, as compact JSON.
+    assert text.splitlines()[-1] == "recovery: " + json.dumps(recovery, separators=(",", ":"))
 
 
 async def test_an_engine_refusal_reaches_the_client_with_its_kind_and_status() -> None:

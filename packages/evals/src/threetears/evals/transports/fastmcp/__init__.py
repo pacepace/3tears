@@ -51,7 +51,9 @@ These hooks are what a multi-tenant host needs, so no host rebuilds :meth:`Catal
 - **A refusal as data.** A refused call is an MCP error result (``isError``) carrying the refusal's
   teaching text, and its :class:`~threetears.evals.actions.Refusal` as structured content —
   ``{"ending": "refused", "refusal": {"kind": ..., "status": ...}}``, ``"raised"`` where the engine or host failed
-  the call (a 5xx status) — so a client branches on the kind, never on the text. A
+  the call (a 5xx status) — so a client branches on the kind, never on the text — and, where the call has a corrected
+  form, ``"recovery"``: the parameters at fault, the ones accepted, an example, the valid values or the action that
+  lists them, and the help call that explains (:class:`~threetears.evals.actions.Recovery`). A
   result carries its text and the result model's JSON as structured content, less the one field an action declares
   its text is (``Action.text_field``): ``report_read``'s body is its text, so the body is sent once.
 
@@ -98,6 +100,8 @@ from threetears.evals.actions import (
     ActionOutcome,
     Caller,
     MountedTool,
+    Recovery,
+    Refusal,
     ToolSpec,
     catalogue_primer,
     eval_catalogue,
@@ -724,8 +728,9 @@ class CatalogueTool(Tool):
         :return: The result: text always; as structured content, the result model's JSON when the call
             succeeded, less the field its action declares its text is (``report_read``'s ``body``), so a long body is
             sent once,
-            or ``{"ending": "refused" | "raised", "refusal": {"kind": ..., "status": ...}}`` with the
-            error flag when it was refused or raised (:attr:`~threetears.evals.actions.ActionOutcome.ending`); and the
+            or ``{"ending": "refused" | "raised", "refusal": {"kind": ..., "status": ...}}``, with ``recovery``
+            (the corrected call's fields) where the refusal carries one, and the error flag when it was refused or
+            raised (:attr:`~threetears.evals.actions.ActionOutcome.ending`); and the
             error flag alone, with text saying so and to read what it may have done before calling it again, when it
             outlived the call timeout. A note the ``annotate`` hook answered follows the outcome's text as a text block
             of its own, and changes nothing else (:data:`CallAnnotator`).
@@ -746,9 +751,7 @@ class CatalogueTool(Tool):
                 is_error=True,
             )
         structured = (
-            {"ending": outcome.ending, "refusal": asdict(outcome.refusal)}
-            if outcome.refusal is not None
-            else _beside(outcome)
+            _beside(outcome) if outcome.refusal is None else _refusal(outcome.ending, outcome.refusal, outcome.recovery)
         )
         note = (
             await _note(binding.annotate, call, outcome) if binding.annotate is not None and call is not None else None
@@ -757,6 +760,16 @@ class CatalogueTool(Tool):
         # block after the outcome's and never joined into it — without this adapter importing the SDK beneath it.
         content = [block for text in (outcome.text, note) if text is not None for block in ToolResult(text).content]
         return ToolResult(content=content, structured_content=structured, is_error=outcome.is_error)
+
+
+def _refusal(ending: str, refusal: Refusal, recovery: Recovery | None) -> dict[str, Any]:
+    """A refused call's structured content: how it ended, the refusal's kind and status, and, where the call has a
+    corrected form, its recovery fields (:class:`~threetears.evals.actions.Recovery`), each present only where it
+    applies."""
+    structured: dict[str, Any] = {"ending": ending, "refusal": asdict(refusal)}
+    if recovery is not None:
+        structured["recovery"] = recovery.as_data()
+    return structured
 
 
 def _beside(outcome: ActionOutcome) -> dict[str, Any] | None:

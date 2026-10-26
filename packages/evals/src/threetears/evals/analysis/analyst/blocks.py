@@ -226,7 +226,9 @@ def block_render(
             }
         )
     except ValidationError as invalid:
-        raise RefusedInput(f"the block is not one a page draws: {invalid}", remedy=_BLOCK_REMEDY) from invalid
+        raise RefusedInput(
+            f"the block is not one a page draws: {invalid}", remedy=_BLOCK_REMEDY, valid_values_from="block_catalog"
+        ) from invalid
     spec, faults = complete_chart(planned, report_input, _BLOCK)
     faults += chart_faults(_BLOCK, spec, report_input)
     faults += small_multiple_faults(_BLOCK, spec)
@@ -244,8 +246,12 @@ def block_render(
             faults.append((_BLOCK, f"is refused by the page, which draws it from this input: {refused}"))
     if drawn is None:
         said = "; ".join(f"{_parameter(path)} {why}" for path, why in faults)
+        at_fault = dict.fromkeys(_parameter(path) for path, _why in faults if path != _BLOCK)
         raise RefusedInput(
-            f"the {block_kind!r} block over {query.source!r} cannot be drawn: {said}", remedy=_BLOCK_REMEDY
+            f"the {block_kind!r} block over {query.source!r} cannot be drawn: {said}",
+            remedy=_BLOCK_REMEDY,
+            parameters=list(at_fault),
+            valid_values_from="block_catalog",
         )
     columns, rows = _values_table(drawn.chart)
     page = _page(rows[offset : offset + limit])

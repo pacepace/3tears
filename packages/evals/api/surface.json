@@ -3023,7 +3023,7 @@
     },
     "threetears.evals.kernel.ValidationFailedError": {
       "kind": "exception",
-      "signature": "ValidationFailedError(message: str, details: dict[str, Any] | None = None, *, remedy: str)",
+      "signature": "ValidationFailedError(message: str, details: dict[str, Any] | None = None, *, remedy: str, parameters: Sequence[str] = (), valid_values: Sequence[str] | None = None, valid_values_from: str | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.VariantConfig": {
@@ -8108,7 +8108,7 @@
     },
     "threetears.evals.actions.ActionOutcome": {
       "kind": "dataclass",
-      "signature": "ActionOutcome(text: str, structured: dict[str, Any] | None = None, refusal: Refusal | None = None, action: str | None = None, text_field: str | None = None)",
+      "signature": "ActionOutcome(text: str, structured: dict[str, Any] | None = None, refusal: Refusal | None = None, action: str | None = None, text_field: str | None = None, recovery: Recovery | None = None)",
       "tier": "stable"
     },
     "threetears.evals.actions.analyst_actions": {
@@ -8198,6 +8198,11 @@
     },
     "threetears.evals.actions.read_only_tools": {
       "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.actions.Recovery": {
+      "kind": "dataclass",
       "signature": "",
       "tier": "provisional"
     },

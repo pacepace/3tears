@@ -368,6 +368,8 @@ def dominance(report_input: ReportInput, axes: Sequence[str] = ()) -> Dominance:
         raise RefusedInput(
             f"axes name {_listed(unknown)}, which the snapshot holds as no measure or judged dimension",
             remedy=f"name measures or judged dimensions by key: {_listed(known)}",
+            parameters=("axes",),
+            valid_values=known,
         )
     survivors = surviving_options(report_input)
     standing = asked_standing(report_input)
@@ -709,6 +711,8 @@ def _refuse_parameter(report_input: ReportInput, parameter: str, fault: str) -> 
     return RefusedInput(
         f"parameter {parameter!r} {fault}",
         remedy=f"sweep one of this snapshot's criteria: {_listed(_parameters(report_input))}",
+        parameters=("parameter",),
+        valid_values=_parameters(report_input),
     )
 
 
@@ -716,18 +720,22 @@ def _sweep_of(report_input: ReportInput, parameter: str, range_low: float | None
     kind, _colon, name = parameter.partition(":")
     if range_low is not None and range_high is not None and range_low > range_high:
         raise RefusedInput(
-            "range_low is above range_high", remedy="give a range_low at or below range_high, or omit either"
+            "range_low is above range_high",
+            remedy="give a range_low at or below range_high, or omit either",
+            parameters=("range_low", "range_high"),
         )
     if kind in ("margin", "floor"):
         if range_low is not None and range_low < 0:
             raise RefusedInput(
                 f"a {kind} is swept from zero up, and range_low is below zero",
                 remedy="give a range_low of zero or more",
+                parameters=("range_low",),
             )
         if range_high is not None and range_high < 0:
             raise RefusedInput(
                 f"a {kind} is swept from zero up, and range_high is below zero",
                 remedy="give a range_high of zero or more",
+                parameters=("range_high",),
             )
         low = 0.0 if range_low is None else range_low
         words = _range_words(kind, low, range_high, range_low is not None, range_high is not None)
@@ -932,6 +940,7 @@ def _slices(report_input: ReportInput, slice_by: SliceBy, aspect: str | None, no
         raise RefusedInput(
             f"aspect_filter narrows strata, and a {slice_by} is not held on an aspect",
             remedy="omit aspect_filter, or slice by stratum",
+            parameters=("aspect_filter",),
         )
     if slice_by == "task":
         return [
@@ -945,6 +954,21 @@ def _slices(report_input: ReportInput, slice_by: SliceBy, aspect: str | None, no
             continue
         found.append(_SliceKey(spelled, f"cells.{spelled}", None, None, False, False, cell.per_arm))
     return found
+
+
+def _sliced(report_input: ReportInput, slice_by: SliceBy, aspect: str | None, arms: Sequence[str]) -> list[str]:
+    """The measures and judged dimensions a breakdown can read this way: those a slice holds for one of ``arms``.
+
+    Empty where the slicing itself is refused (an aspect named for tasks or cells), whose own refusal says so.
+    """
+    known = {*report_input.measures, *report_input.judged}
+    try:
+        every = _slices(report_input, slice_by, aspect, [])
+    except RefusedInput:
+        # The slicing's own refusal is raised where the breakdown slices; here it only means no measure reads this way.
+        return []
+    held = (key for found in every for name in arms for key in found.per_arm.get(name, {}))
+    return [key for key in dict.fromkeys(held) if key in known]
 
 
 def _loss_share(
@@ -1045,15 +1069,22 @@ def breakdown(
             remedy=_NO_CONTROL_REMEDY,
         )
     known = [*report_input.measures, *report_input.judged]
+    candidates = list(dict.fromkeys(held.id for held in report_input.arms if held.id != control))
     if measure not in known:
         raise RefusedInput(
             f"measure_key {measure!r} names no measure or judged dimension this snapshot holds",
             remedy=f"name one by key: {_listed(known)}",
+            parameters=("measure_key",),
+            valid_values=_sliced(report_input, slice_by, aspect, (control, *candidates)) or known,
         )
-    candidates = list(dict.fromkeys(held.id for held in report_input.arms if held.id != control))
     if arm is not None and arm not in candidates:
         fault = "is the control every slice is read against" if arm == control else "names no candidate"
-        raise RefusedInput(f"arm_filter {arm!r} {fault}", remedy=f"name a candidate: {_listed(candidates)}")
+        raise RefusedInput(
+            f"arm_filter {arm!r} {fault}",
+            remedy=f"name a candidate: {_listed(candidates)}",
+            parameters=("arm_filter",),
+            valid_values=candidates,
+        )
     arms = [arm] if arm is not None else candidates
     notes: list[str] = []
     every = _slices(report_input, slice_by, aspect, notes)
@@ -1063,6 +1094,8 @@ def breakdown(
         raise RefusedInput(
             f"no {slice_by} in this snapshot holds {measure!r}" + ("" if every else f": it holds no {slice_by}"),
             remedy=f"name a measure the slices hold ({_listed(keys)}), or slice another way",
+            parameters=("measure_key",),
+            valid_values=_sliced(report_input, slice_by, aspect, (control, *arms)),
         )
     loss_notes: dict[str, str] = {}
     rows = [(held, _slice_row(report_input, held, control, arms, measure, loss_notes)) for held in holding]

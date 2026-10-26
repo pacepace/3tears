@@ -533,7 +533,8 @@ async def test_help_serves_a_reference_topic_beside_the_actions_and_lists_it() -
     page = await _call(tool, {"action": "help", "topic": "glossary"})
     assert (page.text, page.is_error, written) == ("a note is what note_echo echoes", False, ["written"])
     unknown = await _call(tool, {"action": "help", "topic": "glosary"})
-    assert unknown.is_error and unknown.text.endswith("Reference topics: glossary.")
+    assert unknown.is_error and unknown.text.splitlines()[0].endswith("Reference topics: glossary.")
+    assert unknown.recovery is not None and unknown.recovery.valid_values == ("note_echo", "glossary")
 
 
 async def test_a_tool_with_no_topics_keeps_its_help_as_it_was(tools: dict[str, Any]) -> None:
@@ -582,6 +583,7 @@ def test_the_primer_names_help_first_every_tool_and_its_rules_within_its_budget(
             assert f"{topic.name} ({tool.name})" in lines[1], "a reference topic is named in the opening lines"
         for rule in tool.spec.constraints:
             assert f"- {tool.name}: {rule}" in lines
+    assert any(line.startswith("- A refused call ends with recovery: {...}") for line in lines)
     launches = any(action.long_running for tool in tools for action in tool.actions)
     assert ("- Long work starts a job: poll it with action='job_poll' until it reads done." in lines) == launches
     deletes = any(tool.hints.destructive for tool in tools)

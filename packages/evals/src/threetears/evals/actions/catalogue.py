@@ -26,7 +26,13 @@ naming the ones it accepts and an example, rather than ignored.
 mount, an undeclared parameter, a value that does not validate, a refusal from the engine — says what
 was wrong and what would be right: the valid actions, the accepted parameters, an example call. Each
 also carries a :class:`Refusal` — its kind and status — so a host's code branches on data, never on
-the teaching text.
+the teaching text; and, where the call has a corrected form, a :class:`Recovery` — the parameters at fault, the
+ones accepted, an example, the valid values or the action listing them, the help call that explains — mirrored as
+the text's last line, so a caller builds the next call from fields alone.
+
+**A page names the next call** (:attr:`Action.paged`), and **help serves reference topics** beside the actions
+(:class:`HelpTopic`). :func:`catalogue_primer` is what a server's instructions say of its tools, within the budget a
+client is known to deliver whole.
 
 **Long work is a job, and no call waits on a model.** An action whose work outlives a call (``long_running``)
 returns :class:`~threetears.evals.ops.JobsStarted`, and the caller polls with ``job_poll``. A ``spend`` action is
@@ -489,6 +495,51 @@ _CALL_REFUSAL = Refusal.of(
 )
 
 
+@dataclass(frozen=True, kw_only=True)
+class Recovery:
+    """How to correct a refused call, as fields: what a caller needs to build the next call without reading the text.
+
+    Each field is present only where it applies (:meth:`as_data` leaves the rest out), so its absence says something:
+    a refusal with no ``valid_values`` lists none because none can be listed. A refusal carries one where the call
+    itself was at fault: no action, an unknown one or help topic, an undeclared parameter, a value that does not
+    validate, and an engine refusal whose raiser named the parameters at fault
+    (:class:`~threetears.evals.kernel.ValidationFailedError`). A not-found, a conflict or a call the engine failed to
+    carry out carries none: its remedy is a next step, not a corrected call.
+
+    :ivar parameters: The parameters at fault, by name (``action`` and ``topic`` among them; a field of one written
+        ``parameter.field``). Changing these is what makes the call valid; a name not in ``accepted`` is dropped.
+    :ivar accepted: Every parameter the action (or ``help``) takes, where the refusal names an action.
+    :ivar example: A call that validates, ``action`` first: the form, where the form was what was wrong.
+    :ivar valid_values: Every value the one parameter at fault accepts here.
+    :ivar valid_values_from: The action that lists them, where they are data rather than a set this tool holds.
+    :ivar see: The help call that explains the whole rule: ``{"action": "help", "topic": …}``.
+    """
+
+    parameters: tuple[str, ...] = ()
+    accepted: tuple[str, ...] | None = None
+    example: Mapping[str, Any] | None = None
+    valid_values: tuple[Any, ...] | None = None
+    valid_values_from: str | None = None
+    see: Mapping[str, Any] | None = None
+
+    def as_data(self) -> dict[str, Any]:
+        """The fields that apply, as JSON: what a transport sends as ``recovery`` and the text mirrors."""
+        data: dict[str, Any] = {}
+        if self.parameters:
+            data["parameters"] = list(self.parameters)
+        if self.accepted is not None:
+            data["accepted"] = list(self.accepted)
+        if self.example is not None:
+            data["example"] = dict(self.example)
+        if self.valid_values is not None:
+            data["valid_values"] = list(self.valid_values)
+        if self.valid_values_from is not None:
+            data["valid_values_from"] = self.valid_values_from
+        if self.see is not None:
+            data["see"] = dict(self.see)
+        return data
+
+
 @dataclass(frozen=True)
 class ActionOutcome:
     """What one call came to: the text an agent reads, the typed result as data, and why it was refused.
@@ -506,6 +557,9 @@ class ActionOutcome:
     :ivar action: The action called, when the call named one the tool has.
     :ivar text_field: The field of :attr:`structured` that :attr:`text` is verbatim, as the action declares it
         (:attr:`Action.text_field`); ``None`` when the text is composed.
+    :ivar recovery: How to correct the refused call, as fields (:class:`Recovery`), which the text's last line
+        mirrors as compact JSON (``recovery: {…}``), since a client may forward only the text; ``None`` for a result,
+        help, and a refusal with no corrected call to build.
     """
 
     text: str
@@ -513,14 +567,17 @@ class ActionOutcome:
     refusal: Refusal | None = None
     action: str | None = None
     text_field: str | None = None
+    recovery: Recovery | None = None
 
     def __post_init__(self) -> None:
-        """Refuse an outcome that is both a result and a refusal.
+        """Refuse an outcome that is both a result and a refusal, or carries a recovery and no refusal.
 
-        :raises ValueError: ``structured`` and ``refusal`` are both set.
+        :raises ValueError: ``structured`` and ``refusal`` are both set, or ``recovery`` is set without ``refusal``.
         """
         if self.structured is not None and self.refusal is not None:
             raise ValueError("an outcome carries a result or a refusal, never both")
+        if self.recovery is not None and self.refusal is None:
+            raise ValueError("a recovery corrects a refused call; this outcome was not refused")
 
     @property
     def is_error(self) -> bool:
@@ -697,42 +754,59 @@ class MountedTool:
         given = dict(arguments)
         name = given.pop("action", None)
         if not isinstance(name, str) or not name:
-            return ActionOutcome(render.refuse_no_action(self), refusal=_CALL_REFUSAL)
+            return _refused(render.refuse_no_action(self), _CALL_REFUSAL, self._pick("action", self._names()))
         if name == HELP_ACTION:
             return self._help(given)
         action = self.action(name)
         if action is None:
-            return ActionOutcome(render.refuse_unknown_action(self, name), refusal=_CALL_REFUSAL)
+            recovery = self._pick("action", self._names())
+            return _refused(render.refuse_unknown_action(self, name), _CALL_REFUSAL, recovery)
         undeclared = sorted(set(given) - set(action.params.model_fields))
         if undeclared:
-            return ActionOutcome(
-                render.refuse_undeclared(self, action, undeclared),
-                refusal=_CALL_REFUSAL,
-                action=name,
-            )
+            recovery = self._form(action, undeclared)
+            return _refused(render.refuse_undeclared(self, action, undeclared), _CALL_REFUSAL, recovery, name)
         try:
             params = action.params.model_validate(given)
         except ValidationError as invalid:
-            return ActionOutcome(render.refuse_invalid(self, action, invalid), refusal=_CALL_REFUSAL, action=name)
+            at_fault = list(dict.fromkeys(str(error["loc"][0]) for error in invalid.errors() if error["loc"]))
+            recovery = self._form(action, at_fault, valid_values=_enum(action, at_fault))
+            return _refused(render.refuse_invalid(self, action, invalid), _CALL_REFUSAL, recovery, name)
         try:
             result = await action.handler(host, caller, params)
         except EvalServiceError as refused:
-            return ActionOutcome(
-                render.refuse_by_engine(self, action, refused),
-                refusal=Refusal.of(refused),
-                action=name,
+            return _refused(
+                render.refuse_by_engine(self, action, refused), Refusal.of(refused), _named(action, refused), name
             )
         text, structured = action.render(result), result.model_dump(mode="json")
         if action.paged:
             text, structured = render.render_page(name, params, text, structured)
         return ActionOutcome(text, structured=structured, action=name, text_field=action.text_field)
 
+    def _names(self) -> tuple[str, ...]:
+        """Every value ``action`` takes on this tool: ``help``, then its actions."""
+        return (HELP_ACTION, *(action.name for action in self.actions))
+
+    def _pick(self, parameter: str, values: Sequence[str]) -> Recovery:
+        """The recovery of a call whose ``action`` or ``topic`` names nothing here: the values it takes, and help."""
+        return Recovery(parameters=(parameter,), valid_values=tuple(values), see={"action": HELP_ACTION})
+
+    def _form(
+        self, action: Action, at_fault: Sequence[str], *, valid_values: tuple[Any, ...] | None = None
+    ) -> Recovery:
+        """The recovery of a call whose parameters do not fit its action: which, what it takes and an example."""
+        return Recovery(
+            parameters=tuple(at_fault),
+            accepted=tuple(action.params.model_fields),
+            example={"action": action.name, **dict(action.example)},
+            valid_values=valid_values,
+            see={"action": HELP_ACTION, "topic": action.name},
+        )
+
     def _help(self, given: Mapping[str, Any]) -> ActionOutcome:
         undeclared = sorted(set(given) - {"topic"})
         if undeclared:
-            return ActionOutcome(
-                render.refuse_help_parameters(self, undeclared), refusal=_CALL_REFUSAL, action=HELP_ACTION
-            )
+            recovery = Recovery(parameters=tuple(undeclared), accepted=("topic",), see={"action": HELP_ACTION})
+            return _refused(render.refuse_help_parameters(self, undeclared), _CALL_REFUSAL, recovery, HELP_ACTION)
         topic = given.get("topic")
         if topic is None:
             return ActionOutcome(self.help_index(), action=HELP_ACTION)
@@ -740,10 +814,47 @@ class MountedTool:
         if reference is not None:
             return ActionOutcome(reference.text(), action=HELP_ACTION)
         if not isinstance(topic, str) or self.action(topic) is None:
-            return ActionOutcome(
-                render.refuse_unknown_topic(self, str(topic)), refusal=_CALL_REFUSAL, action=HELP_ACTION
-            )
+            topics = (*(action.name for action in self.actions), *(item.name for item in self.spec.topics))
+            recovery = self._pick("topic", topics)
+            return _refused(render.refuse_unknown_topic(self, str(topic)), _CALL_REFUSAL, recovery, HELP_ACTION)
         return ActionOutcome(self.help_page(topic), action=HELP_ACTION)
+
+
+def _refused(text: str, refusal: Refusal, recovery: Recovery | None, action: str | None = None) -> ActionOutcome:
+    """A refused outcome, its recovery's fields mirrored as the text's last line where it carries one."""
+    if recovery is None:
+        return ActionOutcome(text, refusal=refusal, action=action)
+    return ActionOutcome(
+        f"{text}\n{render.recovery_line(recovery.as_data())}", refusal=refusal, action=action, recovery=recovery
+    )
+
+
+def _enum(action: Action, at_fault: Sequence[str]) -> tuple[Any, ...] | None:
+    """Every value the one parameter at fault takes, where its schema closes the set (an enum, or a list of one)."""
+    if len(at_fault) != 1:
+        return None
+    schema = action.params.model_json_schema().get("properties", {}).get(at_fault[0], {})
+    branches = [schema, *schema.get("anyOf", [])]
+    for branch in branches:
+        for where in (branch, branch.get("items", {})):
+            if "enum" in where:
+                return tuple(where["enum"])
+    return None
+
+
+def _named(action: Action, refused: EvalServiceError) -> Recovery | None:
+    """The recovery of an engine refusal whose raiser named the parameters at fault; ``None`` for any other."""
+    if not isinstance(refused, ValidationFailedError):
+        return None
+    if not refused.parameters and refused.valid_values is None and refused.valid_values_from is None:
+        return None
+    return Recovery(
+        parameters=refused.parameters,
+        accepted=tuple(action.params.model_fields),
+        valid_values=refused.valid_values,
+        valid_values_from=refused.valid_values_from,
+        see={"action": HELP_ACTION, "topic": action.name},
+    )
 
 
 #: The most characters the primer may run to: one client was measured handing a model the first 2,045 characters of
@@ -902,6 +1013,7 @@ __all__ = [
     "HelpTopic",
     "MountedTool",
     "PermissionClass",
+    "Recovery",
     "Refusal",
     "RefusalKind",
     "ToolHints",
