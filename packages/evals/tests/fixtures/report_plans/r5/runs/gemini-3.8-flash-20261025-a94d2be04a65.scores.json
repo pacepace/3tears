@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261025-a94d2be04a65",
+  "input": "r5",
+  "input_digest": "e369ab25f05eaf9a7f83d11329dc7ce4a5ffba9d557633b18ee33b82a2f59a96",
+  "plan_digest": "4595f2334a35b8272471d9412fe3a885025fb98c4cf9a08d2df9e21583b496b3",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "f22320aad5cf7deb7d6e65c1fbdfd9bf3532240ce3a71df688126db1bd8bad60",
+    "contract_digest": "d633628a4bf781225146719e712eb941c001887b44ee7208a08a282fc8c5ff0d"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "The headline is a decision with instruction and reason, it keeps the options table's recommended row, and the first chart's negative within-margin readings agree with 'fail to improve'.",
+      "quote": "Keep September (P): both candidates increase reply spend and fail to improve character adherence.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "fail",
+      "reason": "The first sentence restates the headline (no improvement, higher spend) instead of giving the strongest supporting fact, and the second names a generic switch requirement rather than a specific result that would change the answer.",
+      "quote": "Neither challenger outperforms September (P) on character adherence (v2), while both raise production spend per reply.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "There is no flag, the report-wide disclosures each appear once in the confidence, and the judge's calibration in Method is a required definition, not a second statement.",
+      "quote": "The evaluation judge lacks calibration data, material only if judge bias systematically favors September (P).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "pass",
+      "reason": "Each section headline is a finding with subject and direction that its chart shows: negative readings within margin, higher spend for both challengers, the largest strata loss in off lane, and examples of off-lane and machinery failures.",
+      "quote": "Character adherence losses concentrate heavily in off-lane prompts.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Arms, the aspect, strata and measures carry reader words in the prose; the only raw key is execution_mode inside code's verbatim latency disclosure in Method.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "fail",
+      "reason": "Watch never names the weakest margin under the call (qwen3.8-flash at -10.8 against -15); it talks about a prior insight and a reasoning-ratio spread instead.",
+      "quote": "Prior insight claimed qwen3.8-flash (A) reduces cost, but production cost increased by +$0.000616 here. Reasoning ratio varied from 55% to 76%.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One measure goes by several names: character adherence is also 'persona adherence' and 'character pass rate', and production cost is also 'reply spend' and 'production spend'.",
+      "quote": "A switch would require showing clear cost savings or superior persona adherence.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The headline and decision say to keep September, why (both candidates lose pass rate and cost 27-28% more), and the confidence names the risk that an uncalibrated judge could favor September.",
+      "quote": "1017 (B) drops pass rate by 3 points and increases cost by 27%. qwen3.8-flash (A) drops pass rate by 7.6 points and costs 28% more.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "Next is a vague to-do about unnamed 'lower-parameter candidates' and production directives, not a concrete experiment on these arms, and it states no result that would overturn keeping September.",
+      "quote": "Evaluate lower-parameter candidates under calibrated judge scoring before altering production directives.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "Each clause names the condition under which its caveat would matter to the call: another aspect being ignored, another variant being the true reference, or judge bias toward September.",
+      "quote": "The evaluation judge lacks calibration data, material only if judge bias systematically favors September (P).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "fail",
+      "reason": "The strata caption says its differences cover 299 evaluation cases, but the chart draws seven strata holding 153 cases, so the figure does not measure what the chart shows.",
+      "quote": "Uncorrected differences shown across 299 evaluation cases.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-26T00:00:00Z"
+}
