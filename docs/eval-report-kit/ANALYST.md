@@ -115,12 +115,16 @@ One domain tool, `evals_analyst`, with one action per capability (owner, 2026-10
 | | `readings_list`, `contrasts_list` | The pipeline's readings and contrasts, with their levels and families |
 | | `measure_read` | Per-arm or per-slice figures with intervals |
 | | `examples_list` | Trials with judge reasons and excerpts |
-| | `caveats_list` | Every open caveat, with what it touches |
+| | `caveats_list` | Every open caveat, stated or implied by what the snapshot holds, with what it touches |
+| | `figure_keys_check` | What each key a draft cites reads, as the page prints it, or why it reads nothing (analyst and editor) |
 | Analyses | `decision_sensitivity` | Where the call or a reading flips (margin, floor, threshold) |
 | | `measure_breakdown` | Where a difference is concentrated, labeled exploratory |
 | | `options_dominance` | Options surviving gates and guardrails, and which dominate on which axes |
 | | `price_tradeoff` | Price per point and the steps along the cost frontier. Modeled hybrids are out (owner, 2026-10-26: backlog #657) |
-| | settle, two-arm comparison, lever effects | Being built in the W2 fix wave; `confound_check` stays deferred until a prototype run needs it |
+| | `arms_compare` | Any two arms, control or not: the difference and its interval, paired where a contrast holds one |
+| | `settle_cases` | The cases that would settle an arm against its line, or two arms apart, and how often today's design reads the wrong way |
+| | `levers_effects` | What one setting buys between arms that differ in it alone, and whether it reverses across another setting |
+| | `confound_check` | Deferred until a prototype run needs it |
 | Rendering | `block_render` | Values table and warnings for a block; no pixels |
 | | `render_report(doc)` | Not in MVP (owner, 2026-10-26): no browser at storage time; check.py runs in integration tests |
 | Reference | `block_catalog` | The block kinds, their sources and usage notes |

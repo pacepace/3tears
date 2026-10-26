@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
+from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots, shape_snapshots
 from packages.evals.tests.fixtures.report_plans.analyst_cli import main
 from packages.evals.tests.ops_support import CALLER, ops_fixture
 from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, catalogue_primer, eval_catalogue
@@ -55,7 +55,8 @@ def test_list_snapshots_names_each_fixture_by_its_snapshot_id_the_same_every_tim
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     ids = _ids(capsys)
-    expected = {("kairo" if name == KAIRO else name): s.id for name, s in fixture_snapshots(CALLER.scope_id).items()}
+    held = fixture_snapshots(CALLER.scope_id) | shape_snapshots(CALLER.scope_id)
+    expected = {("kairo" if name == KAIRO else name): s.id for name, s in held.items()}
     assert ids == expected
     assert _ids(capsys) == ids, "a second invocation names the same ids"
 

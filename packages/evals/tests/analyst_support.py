@@ -19,7 +19,7 @@ from typing import Any
 from packages.evals.tests.fixtures.report_plans.dataset import kairo_bundle
 from packages.evals.tests.fixtures.report_plans.misfits import MISFITS, NAMES, reference_data
 from packages.evals.tests.report_shapes_support import SHAPES
-from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
+from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
 from threetears.evals.actions import Action, analyst_actions
 from threetears.evals.analysis.analyst.blocks import block_catalog, block_render
 from threetears.evals.analysis.analyst.compare import ArmsComparison, arms_compare
@@ -202,6 +202,39 @@ def fixture_snapshots(scope_id: str) -> dict[str, EvalReportSnapshot]:
     return snapshots
 
 
+#: The shape campaigns a held-out prototype run reads, built from their bundles: s1 (three aspects), s2 (a choice) and
+#: s3 (a measurement).
+SHAPE_NAMES = ("s1", "s2", "s3")
+
+
+@cache
+def _shape_bundle(name: str) -> CampaignBundle:
+    shape = SHAPES[name]()
+    return build_campaign_bundle(shape.campaign, list(shape.bundles.values()), arms=shape.arms, readings=shape.readings)
+
+
+def shape_snapshots(scope_id: str) -> dict[str, EvalReportSnapshot]:
+    """A snapshot of each shape campaign (:data:`SHAPE_NAMES`) in one scope, by name, frozen with its bundle.
+
+    :param scope_id: The scope they live in.
+    :ptype scope_id: str
+    :return: The snapshots, unsaved.
+    :rtype: dict[str, EvalReportSnapshot]
+    """
+    return {
+        name: report_snapshot(
+            analyst_input(_shape_bundle(name)),
+            scope_id=scope_id,
+            campaign_id=_shape_bundle(name).campaign_id,
+            source="campaign",
+            created_by=_FROZEN_BY,
+            bundle=_shape_bundle(name),
+            assembled_at=_KAIRO_ASSEMBLED_AT,
+        )
+        for name in SHAPE_NAMES
+    }
+
+
 #: The wide input's name among the budget inputs.
 WIDE = "wide"
 
@@ -284,12 +317,8 @@ def budget_inputs() -> Mapping[str, ReportInput]:
     :rtype: Mapping[str, ReportInput]
     """
     built: dict[str, ReportInput] = {}
-    for name in ("s1", "s2", "s3"):
-        shape = SHAPES[name]()
-        bundle = build_campaign_bundle(
-            shape.campaign, list(shape.bundles.values()), arms=shape.arms, readings=shape.readings
-        )
-        built[name] = analyst_input(bundle)
+    for name in SHAPE_NAMES:
+        built[name] = analyst_input(_shape_bundle(name))
     built[WIDE] = widened(fixture_inputs()[_GATES_IN_EACH_TASK], arms=1, tasks=1)
     built[f"{WIDE} choice"] = widened(fixture_inputs()["r1"], arms=3, tasks=1)
     built[f"{WIDE} {KAIRO}"] = widened(ReportInput.model_validate(_kairo_snapshot("s").report_input), arms=3, tasks=0)

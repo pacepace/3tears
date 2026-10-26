@@ -2,7 +2,7 @@
 
 A prototype analyst run as an agent that reaches tools through a shell, not MCP, calls the analyst tool here. Each
 call builds the toy operations host over an in-memory store, seeds it with every fixture snapshot (r1 to r5, the
-misfit inputs and Kairo round 2, :mod:`packages.evals.tests.analyst_support`), mounts ``evals_analyst`` on a FastMCP
+misfit inputs, Kairo round 2 and the shape campaigns s1 to s3, :mod:`packages.evals.tests.analyst_support`), mounts ``evals_analyst`` on a FastMCP
 server as a host does (:func:`~threetears.evals.transports.fastmcp.mount_fastmcp`, its primer as the server's
 instructions), calls it once through an in-memory MCP client, and prints the text the client got. Run from the
 repository root, as a file or as ``python -m packages.evals.tests.fixtures.report_plans.analyst_cli``::
@@ -50,7 +50,7 @@ if __name__ == "__main__" and not __package__:
 
 from fastmcp import Client, FastMCP
 
-from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
+from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots, shape_snapshots
 from packages.evals.tests.ops_support import CALLER, ops_fixture
 from threetears.evals.actions import analyst_tools
 from threetears.evals.kernel import EvalReportSnapshot
@@ -70,8 +70,9 @@ _KAIRO_NAME = "kairo"
 
 @functools.cache
 def _snapshots() -> dict[str, EvalReportSnapshot]:
-    """Every fixture snapshot in the caller's scope, frozen at :data:`_FROZEN_AT`, by its command-line name."""
-    frozen = fixture_snapshots(CALLER.scope_id)
+    """Every fixture snapshot in the caller's scope, then the shape campaigns s1 to s3, frozen at :data:`_FROZEN_AT`,
+    by its command-line name."""
+    frozen = fixture_snapshots(CALLER.scope_id) | shape_snapshots(CALLER.scope_id)
     return {
         _KAIRO_NAME if name == KAIRO else name: snapshot.model_copy(update={"created_at": _FROZEN_AT})
         for name, snapshot in frozen.items()
@@ -79,7 +80,8 @@ def _snapshots() -> dict[str, EvalReportSnapshot]:
 
 
 def _snapshot_ids() -> dict[str, str]:
-    """Each fixture's ``snapshot_id``, by the name ``--snapshot-of`` takes: r1 to r5, the misfits, then ``kairo``."""
+    """Each fixture's ``snapshot_id``, by the name ``--snapshot-of`` takes: r1 to r5, the misfits, ``kairo``, then s1 to
+    s3."""
     return {name: snapshot.id for name, snapshot in _snapshots().items()}
 
 
