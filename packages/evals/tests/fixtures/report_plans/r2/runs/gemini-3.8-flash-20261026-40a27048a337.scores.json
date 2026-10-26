@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261026-40a27048a337",
+  "input": "r2",
+  "input_digest": "3b825233f6120f9deb81f63c4a9c2849c6ba2d388a1db0be780cbe5395add19d",
+  "plan_digest": "2cc29f7228c5c6117c5d5b08704aa2c60a17523eced4a260de1868a2b2b9712d",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "6bba1ddb689d701e14692afd45d9fe36f6004d86b031fb4a14209a94fe900416",
+    "contract_digest": "d633628a4bf781225146719e712eb941c001887b44ee7208a08a282fc8c5ff0d"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision with instruction and reason, naming the options table's recommended arm and consistent with the gate scatter, where J is the only configuration inside both gates.",
+      "quote": "Adopt Brisk-S · reasoning low · 1 retry (J): it is the cheapest configuration that passes both accuracy and latency gates.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: J's pass rate, latency and cost, then the threshold change that would remove it.",
+      "quote": "Tightening the accuracy threshold above 97.1% would require switching to Brisk-S · reasoning high · 1 retry (L) or Atlas-M · reasoning high · 1 retry (F) at higher cost.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "No flag is raised and the input carries no caveats, so no caveat is stated twice or at the wrong level.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The gate scatter shows only one configuration (J) clearing both the 97% pass rate and the 600 ms p95 gates, not three.",
+      "quote": "Only three configurations satisfy both accuracy and latency criteria",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Configurations, measures and tasks appear under reader names above Full results; case ids appear only on the example cards.",
+      "quote": "1200 cases tested per arm across four task strata.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the weakest margin under the call (J's +0.1 on Pass rate), then a scoped unmeasured risk (drift in query ambiguity).",
+      "quote": "Watch Brisk-S · reasoning low · 1 retry (J): its Pass rate of 97.1% clears the 97% threshold with a narrow buffer of +0.1.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "Pass rate is also called 'accuracy' above the fold, giving one measure two names, and units render doubled ('513 ms ms').",
+      "quote": "Brisk-S · reasoning low · 1 retry (J) achieves 97.1% accuracy at 513 ms ms p95 latency",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "From the headline to the options table, the first screen says what to do (adopt J), why (it passes both gates at low cost) and the main risk (the +0.1 margin).",
+      "quote": "Adopt Brisk-S · reasoning low · 1 retry (J): it is the cheapest configuration that passes both accuracy and latency gates.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "Under the plan's own rule (the cheapest configuration that passes), bringing L under 600 ms leaves J the cheapest passing option, so the result could not change the call, and no decisive direction is stated.",
+      "quote": "Evaluate whether caching or prompt compression can lower Brisk-S · reasoning high · 1 retry (L) p95 latency below 600 ms ms to unlock higher accuracy.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The confidence is high with no clauses, so this item passes by default.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "fail",
+      "reason": "The figure 'three' does not measure what the sentence claims: in the data, exactly one configuration passes both gates.",
+      "quote": "Only three configurations satisfy both accuracy and latency criteria",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-26T00:35:54+00:00"
+}

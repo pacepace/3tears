@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261026-40a27048a337",
+  "input": "r4",
+  "input_digest": "96d0986057f2da9a09c4bccebf74c51e8c2731a2aab3e4e833b09505ff1fd5a8",
+  "plan_digest": "8c209fa35482ba12862601ea535656dac20b77449d37b475b834baaec8c694c2",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "6bba1ddb689d701e14692afd45d9fe36f6004d86b031fb4a14209a94fe900416",
+    "contract_digest": "d633628a4bf781225146719e712eb941c001887b44ee7208a08a282fc8c5ff0d"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A trade naming both sides (cost saving with f64 versus persona fidelity with Production) and where the loss sits, matching headline_kind trade, the lean row in the options table, and the forest of persona drops.",
+      "quote": "Trade lower persona consistency for reduced serving costs with f64 (A), or retain Production (P) to preserve character fidelity.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: the cost and persona figures for f64, then the condition (accepting degradation in deeper conversations) that would change the answer.",
+      "quote": "Adopting it depends on whether the team accepts fidelity degradation in conversations beyond turn 3–5.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "fail",
+      "reason": "The flag says no exchange rate was set and who must decide, but is silent on what it weakens and on what survives (the measured cost and persona differences stand).",
+      "quote": "No exchange rate between reply cost and persona adherence was set ahead of time. Product leadership must determine whether unit savings justify character loss.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "pass",
+      "reason": "Each section headline is a finding with subject and direction its chart shows: all three challengers regress in the forest, f64 and f16 fall steeply at deeper turns in the lines, and corrections and banter carry the largest drops in the diverging bars.",
+      "quote": "All challenger models regress on character consistency relative to production",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results the plan uses reader names for arms, strata and measures, with no internal id, hash, run id or measure key.",
+      "quote": "In the deepest conversations of turns 11+, persona consistency drops most severely for f64 (A) and f16 (B) compared to Production (P).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "In tradeoff mode, Where the answer flips names the flip point: about ten cents per persona point per thousand replies, consistent with $0.63 saved for 6.1 points.",
+      "quote": "Choose f64 (A) if saving ten cents per thousand replies justifies losing one point of persona adherence. Retain Production (P) if persona degradation must remain below five points.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One measure carries many names across the page: persona consistency, character fidelity, Stays in character, persona adherence, character consistency and persona compliance.",
+      "quote": "Trade lower persona consistency for reduced serving costs with f64 (A), or retain Production (P) to preserve character fidelity.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "Headline, lede, decision slots and options table together say what to do (trade cost for persona with f64, or keep Production), why (the $2.10 to $1.47 cost against 91.7% to 85.6%), and the main risk (persona loss in deeper conversations).",
+      "quote": "f64 (A) reduces reply expense from $2.10 to $1.47 per thousand while 91.7% degrades to 85.6% on Stays in character.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "What would settle it offers two alternatives joined by 'or', one of which (setting a threshold) is a policy choice, not an experiment, and the human preference trial states no decisive result that would move the call either way.",
+      "quote": "Human preference trials on extended conversations or setting an explicit minimum threshold for Stays in character at depth 6–10.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The confidence form is high and the plan carries no confidence clauses.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Each figure measures what its sentence claims: thirty percent is the cost reduction from $2.10 to $1.47, 6.1 points and its interval are the f64 persona contrast, ten cents is the per-point exchange rate, and -2.2 and -7.4 are the cor and f16 contrasts.",
+      "quote": "Switching to f64 (A) trims costs by thirty percent but drops Stays in character by 6.1 points (-7.3 to -4.9), while keeping guardrails intact.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-26T00:34:57Z"
+}
