@@ -84,6 +84,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
     Drawn,
     KindResolver,
     chart_block,
+    count_text,
     factor_legend,
     factor_token,
     figure_stat,
@@ -232,7 +233,7 @@ def _check_lines(check: GateCheck) -> list[str]:
 def _task_detail(task: Task) -> str | None:
     parts = []
     if task.n_cases is not None:
-        parts.append(TASK_DETAIL_TEMPLATE.format(cases=with_unit(float(task.n_cases), "")))
+        parts.append(TASK_DETAIL_TEMPLATE.format(cases=count_text(task.n_cases)))
     if task.share:
         parts.append(TASK_SHARE_TEMPLATE.format(share=with_unit(float(task.share) * 100, PERCENT)))
     return " · ".join(parts) or None
@@ -823,6 +824,8 @@ def _cost(report_input: ReportInput, arm: str) -> float | None:
     try:
         figure = resolve(f"cost_per_1k.{arm}", report_input)
     except UnresolvableReference:
+        # NOSILENT: a config whose cost no source states is an expected absence, not a failure: its tile prints no
+        # cost, and the lattice's cost format reads the configs that state one.
         return None
     return figure.value if isinstance(figure.value, float) else None
 

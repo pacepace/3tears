@@ -43,11 +43,12 @@ from typing import Literal
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import ChartReference, KitChart, LegendItem
-from threetears.evals.analysis.report.figure_keys import Figure, NamedKind, resolve
+from threetears.evals.analysis.report.figure_keys import Figure, NamedKind, format_figure, resolve
 from threetears.evals.analysis.report.plan_page.look import PageLook, Quantity, figure_text, quantity, series_token
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
 from threetears.evals.analysis.report.plan_page.words import MISSING_TEMPLATE, REFERENCE_TEMPLATE
 from threetears.evals.analysis.report_input import Cell, Criterion, ReportInput, Stat, Stratum, Task
+from threetears.evals.analysis.report_margins import criterion_place
 from threetears.evals.analysis.report_rows import SourceRow, query_rows
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.report_plan import ChartQuery, ChartSpec
@@ -58,6 +59,7 @@ __all__ = [
     "Drawn",
     "KindResolver",
     "chart_block",
+    "count_text",
     "criterion_line",
     "factor_legend",
     "factor_token",
@@ -396,14 +398,19 @@ CriterionWhere = Literal["overall", "tasks", "cells"] | tuple[Literal["task"], s
 
 
 def _reads_there(criterion: Criterion, where: CriterionWhere) -> bool:
+    """Whether a criterion reads its figure where the chart does, by where it reads
+    (:func:`~threetears.evals.analysis.report_margins.criterion_place`, the one reading of its scope)."""
+    place = criterion_place(criterion)
     if where == "overall":
-        return criterion.scope == "overall" and criterion.task is None
-    if where == "tasks":
-        return criterion.scope == "each_task" and criterion.task is None
+        return place == "overall"
     if where == "cells":
-        return criterion.scope == "each_cell"
+        return place == "cell"
+    if place != "task":
+        return False
+    if where == "tasks":
+        return criterion.task is None
     _, task = where
-    return criterion.task == task or (criterion.scope == "each_task" and criterion.task is None)
+    return criterion.task in (None, task)
 
 
 def criterion_line(
@@ -574,3 +581,15 @@ def point_labels(context: ChartContext, arm: str, name: str, count: int) -> tupl
         return None, None
     tag = context.look.arm(arm).tag if arm in context.look.arms else None
     return name, tag
+
+
+def count_text(count: float) -> str:
+    """A count as a chart's words print it: the figure keys' whole-number spelling, thousands separated
+    (``1,234``), so a count reads alike on a chart and in the prose beside it.
+
+    :param count: The count.
+    :ptype count: float
+    :return: The text.
+    :rtype: str
+    """
+    return format_figure(Figure(path="count", kind="number", value=float(count), scale="count"), ("int",))
