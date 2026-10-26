@@ -19,6 +19,7 @@ from packages.evals.tests.fixtures.report_plans.dataset import kairo_bundle
 from packages.evals.tests.fixtures.report_plans.misfits import MISFITS, NAMES, reference_data
 from threetears.evals.actions import Action, analyst_actions
 from threetears.evals.analysis.analyst.blocks import block_catalog, block_render
+from threetears.evals.analysis.analyst.price import PriceTradeoff, price_tradeoff
 from threetears.evals.analysis.analyst.snapshot import ANALYST_EXAMPLES, report_snapshot
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
@@ -241,3 +242,23 @@ _WHOLE: dict[str, Any] = {
 }
 
 ANALYST_CALLS["block_render"] = _block_calls
+
+
+def _price_calls(held: ReportInput) -> list[dict[str, Any]]:
+    """On the first gain axis whose frontier has a step (else the first one priced): the trade, its options from the
+    second two at a time, and the trade priced against a frontier option other than the one it was priced against."""
+    priced: list[tuple[str, PriceTradeoff]] = []
+    for key in dict.fromkeys([*held.judged, *held.measures]):
+        try:
+            priced.append((key, price_tradeoff(held, key)))
+        except RefusedInput:
+            continue
+    if not priced:
+        return []
+    key, trade = next(((key, trade) for key, trade in priced if trade.steps), priced[0])
+    calls: list[dict[str, Any]] = [{"gain_key": key}, {"gain_key": key, "offset": 1, "limit": 2}]
+    other = _first(row.arm.removeprefix("arm:") for row in trade.frontier if row.arm != trade.against_arm)
+    return calls + ([{"gain_key": key, "arm_filter": other}] if other is not None else [])
+
+
+ANALYST_CALLS["price_tradeoff"] = _price_calls
