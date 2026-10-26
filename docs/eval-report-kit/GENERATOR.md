@@ -73,7 +73,17 @@ Top to bottom. The renderer enforces the order; the planner fills the slots and 
    **Code removes the caveats it can prove immaterial** and renders one muted checked line for each, which counts as nothing open: a late margin, floor or bar is immaterial when the decision (the allowed modes and the dominant option) is the same across its whole plausible range. A margin's range is every margin from zero up, cut at each reading's flip margin (`-lo`, §3); a floor's, every margin it could take, cut where each read flips between held, unclear and broken; a bar only warns, so the call holds at any bar. "The late margin was checked: the call holds at every margin." A late aspect, control or guardrail margin can't be checked this way and stays open. Nobody attests a caveat away: there are no acceptance records.
 
    Code enforces the form: plain "High" is refused while an open report-wide caveat remains, and "High, if…" is refused unless it lists every open report-wide caveat, each with its clause. "Low" is always allowed. Kairo round 2: "Keep September. Confidence: high, if the caveats below aren't material." · the judge · the aspect, chosen after the results · the control, chosen after the results · "The late margin was checked: the call holds at every margin." (and the same for its late floor).
-6. **Options table.** 3–5 rows: the recommendation first, then the near-miss, the most accurate, and the cheapest (skip duplicates). Columns are the criteria plus cost, at real volume when the volume is known.
+6. **Options table.** 3–5 rows: the recommendation first, then the near-miss, the most accurate, and the cheapest (skip duplicates). Columns are the criteria plus cost, at real volume when the volume is known. Code writes the columns, each where the input holds its figure, from one closed list of families (`report_plan_checks.OPTION_COLUMN_FAMILIES`); a plan holding any other column is refused when it is generated:
+
+   | Column | When code writes it | Cell |
+   |---|---|---|
+   | `pass_rate` | a pass rate resolves for some arm | the percent, with "(k of n)" from the scoreboard |
+   | `reading.change` | an aspect is asked and read | the change in points, with its interval |
+   | `reading.verdict` | the same | the reading's pill ("Control"; "Worse, within margin"), by the §3 status rule |
+   | `judged:<dim>` | the primary judged dimension, and a bar's or guardrail's judged dimension | the percent or score |
+   | `gate` | a gate is declared | the gate status (§3) with its first binding reason |
+   | `measure:<key>` | a bar's or guardrail's measure | the mean, in its unit |
+   | `cost_per_1k` | a cost per 1,000 replies resolves for some arm | dollars, with "(+28%)" against the control |
 7. **Summary charts.** One or two (at most three), beside or under the options table, in the same row order and colors (§5.3).
 8. **Arms key** whenever any arm's full configuration is longer than about 24 characters, or any setting other than the model varied (§6.1).
 9. **Evidence sections.** One per question the decision raises: eyebrow · headline stating the finding · one line on how to read the chart · the chart. The first draws the shape's spine, which code gives (§1); add supporting sections only if they change or qualify the decision.
@@ -115,6 +125,7 @@ check(arm, stratum, criteria) -> {status, fails[], borders[]}
 - **Gate the asked aspect on its readings** (`aspects[].readings`). If a floor `speaks_for` a different measure than its reading (a judged dimension instead of the pass rate), show that floor separately and name the mismatch in Method. Never merge the two.
 - **"Pass" is whatever the bundle defines.** If the input doesn't say which checks and judged dimensions make a trial pass, Method says so plainly ("a trial passes when its checks and judged dimensions pass; the bundle doesn't list which") instead of guessing.
 - **Routing.** For each routable task, the cheapest passing candidate (among those that also pass every cross-cutting aspect). Blended cost uses declared traffic shares only.
+- **A chart's floor or budget line is a criterion's own threshold** (§5.2): the one criterion that reads the chart's measure, so the line a chart draws and the status the gate function gives come from the same declared rule.
 
 ---
 
@@ -157,6 +168,12 @@ Use it when §1.1 says so. The page prices the trade; it doesn't pretend to deci
 
 - **One unit per chart, one interval system per chart, and the level is printed on it** ("95% intervals", "99.69% intervals"). Don't mix confirmatory 95% readings and family-corrected contrasts in one chart.
 - **Log axes** when a measure spans more than 10×; the caption says so.
+- **A reference line sits at a declared line, and code fills its value.** The planner asks for the kind; code fills the figure key at completion:
+  - a **margin** on a forest, at the chart's aspect's margin (`aspect.margin`, or `aspects.<id>.margin`);
+  - a **floor** or a **budget**, at `criteria.<id>.threshold`, the threshold of the one criterion that reads the chart's one measure (the measure its query names, else the one its rows read). A floor's criterion is higher-is-better and a budget's lower-is-better, as the kit draws them (pass at or above a floor, at or below a budget). Its statistic is one the chart draws (range bars draw p50 to p95, every other kind the mean). It reads where the chart does: over the whole comparison or each task, within the one task the chart keeps, or each cell on a chart of cells.
+
+  A line no criterion gives, or that several give, is refused naming why; the planner draws no line or the line a declared criterion gives. Never a line at a value the input does not declare.
+- **Small multiples** (`small_multiples_by`) only on a kind the kit draws as panels: bars and diverging bars, the two scatters, dot intervals, heatmaps and confusion matrices. On any other kind they are refused when the plan is generated.
 - **Identity.** One color per arm for the whole page, plus a shape or letter tag, so color is never the only cue. The control is ink-gray; candidates take series colors in fixed order.
 - **Status colors** (good / borderline / fail) always come with ✓ ! ✕ and a word, and never reuse a series color.
 - **Labels.** Use `placeLabels()`, which avoids other labels, markers and reference text. On phone widths, label only the recommended point and the extremes, and use letter tags.
