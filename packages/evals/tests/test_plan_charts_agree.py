@@ -10,9 +10,8 @@ accept draws, each figure its key's in that key's unit.
   plan holds on it) or without the one it has, every chart over the vocabulary (each kind, each source it reads; no
   measure, each measure, and a pair of measures for each pair of units; unpanelled, or in panels by arm or by task)
   that the plan checks accept on that input draws on that input. Each figure a chart of figures draws is its key's,
-  read through the figure keys, in that key's unit, and every axis's format is that key's. A (input, kind, source)
-  the checks accept and the page refuses for a reason outside units is listed below with that reason, strictly: it
-  fails as soon as the checks and the page agree on it.
+  read through the figure keys, in that key's unit, and every axis's format is that key's. The checks include the
+  page's own drawing (:mod:`~threetears.evals.analysis.report.plan_page.drawable`), so none is refused at render.
 
 The expected side is read from the input: the figure keys (:func:`~threetears.evals.analysis.report.figure_keys.resolve`)
 and each figure's unit as the page states it, never typed in.
@@ -533,139 +532,6 @@ def _sweep(input_key: str) -> _Swept:
     return _Swept(accepted=accepted, refused_by_page=refused_by_page, misdrawn=misdrawn)
 
 
-#: The charts the plan checks accept and the page refuses, for a reason outside units, by (input, kind, source): the
-#: reasons the page gives, each the opening of its refusal. Each is a chart the checks have no rule for yet: a gate
-#: scatter without the one gate on each axis it draws, a scatter or a line chart over other than the measures it
-#: draws, a scoreboard chart naming no figure, a chart selecting nothing it can draw (no p95, no change, no arm whole
-#: at every point), which a check that the page can draw the chart at generation refuses. Strict both ways: a reason
-#: the page gives that is not listed fails, and so does a listed one it no longer gives.
-_REFUSED_OUTSIDE_UNITS: dict[tuple[str, str, str], tuple[str, ...]] = {
-    ("r1", "bars", "scoreboard"): ("a scoreboard chart names the scoreboard figures it draws",),
-    ("r1", "gate_scatter", "tasks"): ("a gate scatter draws the one gate on each axis",),
-    ("r1", "lines", "tasks"): ("a line chart reads one measure", "no arm holds a figure at every point of its x"),
-    ("r1", "range_bars", "tasks"): ("it selects no figure with a p95",),
-    ("r1", "scatter_frontier", "scoreboard"): ("a scatter reads two measures",),
-    ("r1", "scatter_frontier", "tasks"): ("a scatter reads two measures",),
-    ("r1+control", "bars", "scoreboard"): ("a scoreboard chart names the scoreboard figures it draws",),
-    ("r1+control", "diff_heatmap", "tasks"): ("holds no figure at",),
-    ("r1+control", "gate_scatter", "tasks"): ("a gate scatter draws the one gate on each axis",),
-    ("r1+control", "lines", "tasks"): (
-        "a line chart reads one measure",
-        "no arm holds a figure at every point of its x",
-    ),
-    ("r1+control", "range_bars", "tasks"): ("it selects no figure with a p95",),
-    ("r1+control", "scatter_frontier", "scoreboard"): ("a scatter reads two measures",),
-    ("r1+control", "scatter_frontier", "tasks"): ("a scatter reads two measures",),
-    ("r2", "bars", "configs"): ("it selects no figure to draw",),
-    ("r2", "bars", "measures"): ("it selects no figure to draw",),
-    ("r2", "bars", "scoreboard"): ("a scoreboard chart names the scoreboard figures it draws",),
-    ("r2", "diverging_bars", "configs"): ("it selects no change to draw", "lever effects read one measure"),
-    ("r2", "dot_interval", "measures"): ("it selects no figure to draw",),
-    ("r2", "gate_scatter", "configs"): ("a gate scatter draws the one gate on each axis",),
-    ("r2", "gate_scatter", "measures"): ("a gate scatter draws the one gate on each axis",),
-    ("r2", "gate_scatter", "tasks"): ("a gate scatter draws two measures",),
-    ("r2", "lattice", "configs"): ("the config",),
-    ("r2", "lines", "measures"): ("a line chart reads one measure", "lines over the aspects read a measure"),
-    ("r2", "range_bars", "measures"): ("it selects no figure with a p95",),
-    ("r2", "range_bars", "tasks"): ("it selects no figure with a p95",),
-    ("r2", "scatter_frontier", "configs"): ("a scatter reads two measures", "no arm holds both of its figures"),
-    ("r2", "scatter_frontier", "measures"): ("a scatter reads two measures", "no arm holds both of its figures"),
-    ("r2", "scatter_frontier", "scoreboard"): ("a scatter reads two measures",),
-    ("r2", "scatter_frontier", "tasks"): ("a scatter reads two measures",),
-    ("r2+control", "bars", "configs"): ("it selects no figure to draw",),
-    ("r2+control", "bars", "measures"): ("it selects no figure to draw",),
-    ("r2+control", "bars", "scoreboard"): ("a scoreboard chart names the scoreboard figures it draws",),
-    ("r2+control", "diverging_bars", "configs"): ("it selects no change to draw", "lever effects read one measure"),
-    ("r2+control", "diverging_bars", "measures"): ("it selects no change to draw",),
-    ("r2+control", "dot_interval", "measures"): ("it selects no figure to draw",),
-    ("r2+control", "gate_scatter", "configs"): ("a gate scatter draws the one gate on each axis",),
-    ("r2+control", "gate_scatter", "measures"): ("a gate scatter draws the one gate on each axis",),
-    ("r2+control", "gate_scatter", "tasks"): ("a gate scatter draws two measures",),
-    ("r2+control", "lattice", "configs"): ("the config",),
-    ("r2+control", "lines", "measures"): ("a line chart reads one measure", "lines over the aspects read a measure"),
-    ("r2+control", "range_bars", "measures"): ("it selects no figure with a p95",),
-    ("r2+control", "range_bars", "tasks"): ("it selects no figure with a p95",),
-    ("r2+control", "scatter_frontier", "configs"): ("a scatter reads two measures", "no arm holds both of its figures"),
-    ("r2+control", "scatter_frontier", "measures"): (
-        "a scatter reads two measures",
-        "no arm holds both of its figures",
-    ),
-    ("r2+control", "scatter_frontier", "scoreboard"): ("a scatter reads two measures",),
-    ("r2+control", "scatter_frontier", "tasks"): ("a scatter reads two measures",),
-    ("r3", "bars", "scoreboard"): ("a scoreboard chart names the scoreboard figures it draws",),
-    ("r3", "diverging_bars", "configs"): ("lever effects read one measure",),
-    ("r3", "gate_scatter", "configs"): ("a gate scatter draws the one gate on each axis",),
-    ("r3", "gate_scatter", "measures"): ("a gate scatter draws the one gate on each axis",),
-    ("r3", "lines", "measures"): ("a line chart reads one measure", "lines over the aspects read a measure"),
-    ("r3", "range_bars", "measures"): ("it selects no figure with a p95",),
-    ("r3", "scatter_frontier", "configs"): ("a scatter reads two measures",),
-    ("r3", "scatter_frontier", "measures"): ("a scatter reads two measures",),
-    ("r3", "scatter_frontier", "scoreboard"): ("a scatter reads two measures",),
-    ("r3+control", "bars", "scoreboard"): ("a scoreboard chart names the scoreboard figures it draws",),
-    ("r3+control", "diverging_bars", "configs"): ("lever effects read one measure",),
-    ("r3+control", "gate_scatter", "configs"): ("a gate scatter draws the one gate on each axis",),
-    ("r3+control", "gate_scatter", "measures"): ("a gate scatter draws the one gate on each axis",),
-    ("r3+control", "lines", "measures"): ("a line chart reads one measure", "lines over the aspects read a measure"),
-    ("r3+control", "range_bars", "measures"): ("it selects no figure with a p95",),
-    ("r3+control", "scatter_frontier", "configs"): ("a scatter reads two measures",),
-    ("r3+control", "scatter_frontier", "measures"): ("a scatter reads two measures",),
-    ("r3+control", "scatter_frontier", "scoreboard"): ("a scatter reads two measures",),
-    ("r4", "bars", "scoreboard"): ("a scoreboard chart names the scoreboard figures it draws",),
-    ("r4", "diff_heatmap", "strata"): ("holds no figure at",),
-    ("r4", "gate_scatter", "judged"): ("a gate scatter draws the one gate on each axis",),
-    ("r4", "gate_scatter", "measures"): ("a gate scatter draws the one gate on each axis",),
-    ("r4", "lines", "judged"): ("a line chart reads one measure",),
-    ("r4", "lines", "measures"): ("a line chart reads one measure",),
-    ("r4", "lines", "strata"): ("no arm holds a figure at every point of its x",),
-    ("r4", "range_bars", "measures"): ("it selects no figure with a p95",),
-    ("r4", "scatter_frontier", "judged"): ("a scatter reads two measures",),
-    ("r4", "scatter_frontier", "measures"): ("a scatter reads two measures",),
-    ("r4", "scatter_frontier", "scoreboard"): ("a scatter reads two measures",),
-    ("r4-control", "bars", "scoreboard"): ("a scoreboard chart names the scoreboard figures it draws",),
-    ("r4-control", "gate_scatter", "judged"): ("a gate scatter draws the one gate on each axis",),
-    ("r4-control", "gate_scatter", "measures"): ("a gate scatter draws the one gate on each axis",),
-    ("r4-control", "lines", "judged"): ("a line chart reads one measure",),
-    ("r4-control", "lines", "measures"): ("a line chart reads one measure",),
-    ("r4-control", "lines", "strata"): ("no arm holds a figure at every point of its x",),
-    ("r4-control", "range_bars", "measures"): ("it selects no figure with a p95",),
-    ("r4-control", "scatter_frontier", "judged"): ("a scatter reads two measures",),
-    ("r4-control", "scatter_frontier", "measures"): ("a scatter reads two measures",),
-    ("r4-control", "scatter_frontier", "scoreboard"): ("a scatter reads two measures",),
-    ("r5", "bars", "scoreboard"): ("a scoreboard chart names the scoreboard figures it draws",),
-    ("r5", "gate_scatter", "judged"): (
-        "a gate scatter draws the one gate on each axis",
-        "a gate scatter draws two measures",
-    ),
-    ("r5", "gate_scatter", "measures"): (
-        "a gate scatter draws the one gate on each axis",
-        "a gate scatter draws two measures",
-    ),
-    ("r5", "lines", "judged"): ("a line chart reads one measure",),
-    ("r5", "lines", "measures"): ("a line chart reads one measure",),
-    ("r5", "lines", "strata"): ("a line chart reads one measure",),
-    ("r5", "range_bars", "measures"): ("it selects no figure with a p95",),
-    ("r5", "scatter_frontier", "judged"): ("a scatter reads two measures",),
-    ("r5", "scatter_frontier", "measures"): ("a scatter reads two measures",),
-    ("r5", "scatter_frontier", "scoreboard"): ("a scatter reads two measures",),
-    ("r5-control", "bars", "scoreboard"): ("a scoreboard chart names the scoreboard figures it draws",),
-    ("r5-control", "gate_scatter", "judged"): (
-        "a gate scatter draws the one gate on each axis",
-        "a gate scatter draws two measures",
-    ),
-    ("r5-control", "gate_scatter", "measures"): (
-        "a gate scatter draws the one gate on each axis",
-        "a gate scatter draws two measures",
-    ),
-    ("r5-control", "lines", "judged"): ("a line chart reads one measure",),
-    ("r5-control", "lines", "measures"): ("a line chart reads one measure",),
-    ("r5-control", "lines", "strata"): ("a line chart reads one measure",),
-    ("r5-control", "range_bars", "measures"): ("it selects no figure with a p95",),
-    ("r5-control", "scatter_frontier", "judged"): ("a scatter reads two measures",),
-    ("r5-control", "scatter_frontier", "measures"): ("a scatter reads two measures",),
-    ("r5-control", "scatter_frontier", "scoreboard"): ("a scatter reads two measures",),
-}
-
-
 def _sweep_params() -> Iterator[Any]:
     for input_key in _VARIANTS:
         for kind, source in itertools.product(_KINDS, _SOURCES):
@@ -680,13 +546,7 @@ def test_every_chart_the_plan_checks_accept_draws_each_figure_in_its_keys_unit(
     misdrawn = swept.misdrawn.get((kind, source), [])
     assert not misdrawn, misdrawn
     refused = swept.refused_by_page.get((kind, source), [])
-    known = _REFUSED_OUTSIDE_UNITS.get((input_key, kind, source), ())
-    unknown = [why for why in refused if not any(reason in why for reason in known)]
-    assert not unknown, unknown
-    gone = [reason for reason in known if not any(reason in why for why in refused)]
-    assert not gone, f"checks and page now agree on {gone} for a {kind} over {source} on {input_key}: drop them"
-    if known:
-        pytest.xfail("; ".join(known))
+    assert not refused, refused
 
 
 def test_the_sweep_reaches_charts_in_several_units_on_every_input_and_the_cases_it_names() -> None:
@@ -698,6 +558,3 @@ def test_the_sweep_reaches_charts_in_several_units_on_every_input_and_the_cases_
         if (kind, source) == ("heatmap", "tasks") and not spec.query.measures
     ]
     assert mixed, "r1's every-measure heatmap of tasks, in several units, is among the charts drawn"
-    assert set(_REFUSED_OUTSIDE_UNITS) <= {
-        (input_key, kind, source) for input_key in _VARIANTS for kind in _KINDS for source in _SOURCES
-    }
