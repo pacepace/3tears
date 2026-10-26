@@ -163,7 +163,8 @@ async def test_a_campaign_freezes_to_the_report_input_its_evidence_builds_and_ag
     again = await _call(tool, fixture, {"action": "report_snapshot_freeze", "campaign_id": fixture.campaign.id})
     once_more = await _call(tool, fixture, {"action": "report_snapshot_freeze", "campaign_id": fixture.campaign.id})
     assert again.structured is not None and again.structured["reused"] is True
-    assert {**again.structured, "reused": False} == first.structured
+    assert first.structured["note"] == "" and "frozen before" in again.structured["note"]
+    assert {**again.structured, "reused": False, "note": ""} == first.structured
     assert (again.text, again.structured) == (once_more.text, once_more.structured)
     assert len(first.text) <= TEXT_BUDGET
     _held_to_figures(again.structured, frozen_input(snapshot))
@@ -201,6 +202,32 @@ async def test_a_bare_report_input_is_a_snapshot_every_analyst_tool_reads() -> N
         {"action": "capability_gap", "snapshot_id": snapshot.id, "need": "n", "why": "w", "workaround": "x"},
     )
     assert outcome.structured is not None, outcome.text
+
+
+async def test_a_freeze_reusing_a_snapshot_frozen_another_way_reports_the_stored_freezes_source_and_says_so() -> None:
+    fixture = off_loop(ops_fixture)
+    bundle = off_loop(assemble_campaign_bundle, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE)
+    earlier = report_snapshot(
+        report_input(bundle, examples=ANALYST_EXAMPLES),
+        scope_id=TOYHOST_SCOPE,
+        campaign_id=fixture.campaign.id,
+        source="analysis",
+        created_by="agent:earlier",
+        bundle=bundle,
+        analysis_id="analysis-frozen-earlier",
+        assembled_at="2026-01-01T00:00:00+00:00",
+    )
+    off_loop(fixture.host.eval_host.storage.save_report_snapshot, earlier)
+
+    outcome = await _call(
+        _analyst_tool(), fixture, {"action": "report_snapshot_freeze", "campaign_id": fixture.campaign.id}
+    )
+    assert outcome.structured is not None, outcome.text
+    assert outcome.structured["snapshot_id"] == earlier.id, "the control: the same evidence, frozen another way first"
+    assert outcome.structured["reused"] is True
+    assert (outcome.structured["source"], outcome.structured["analysis_id"]) == ("analysis", earlier.analysis_id)
+    assert outcome.structured["frozen_at"] == earlier.created_at
+    assert outcome.structured["note"] and outcome.structured["note"] in outcome.text
 
 
 def test_a_snapshot_id_is_its_campaign_and_digest_and_a_document_disagreeing_is_refused() -> None:
@@ -269,6 +296,49 @@ async def test_a_snapshot_whose_input_moved_or_no_longer_reads_is_refused_with_t
         refusal in outcome.text
         and "remedy: freeze the campaign or the analysis again with report_snapshot_freeze" in (outcome.text)
     )
+
+
+def _broken(store: InMemoryDocumentStore, snapshot: EvalReportSnapshot, how: str) -> None:
+    """Break a stored snapshot the ways a read refuses one: its input moved, its document no longer reads (its id
+    disagrees with its content), or an older build's schema version."""
+    if how in ("figure", "unread"):
+        _tampered(store, snapshot, redigest=how == "unread", change=how)
+        return
+    document = store.get(snapshot.id, snapshot.scope_id)
+    assert document is not None
+    store.upsert({**document, "schema_version": document["schema_version"] - 1})
+
+
+@pytest.mark.parametrize(
+    "how", ["figure", "unread", "schema"], ids=["its input moved", "it no longer reads", "an older schema"]
+)
+async def test_following_the_freeze_again_remedy_replaces_a_snapshot_a_read_refuses_and_its_id_reads_again(
+    how: str,
+) -> None:
+    store = InMemoryDocumentStore()
+    fixture = off_loop(ops_fixture, store=store)
+    tool = _analyst_tool()
+    freeze = {"action": "report_snapshot_freeze", "campaign_id": fixture.campaign.id}
+    first = await _call(tool, fixture, freeze)
+    assert first.structured is not None and first.structured["replaced"] is False, first.text
+    snapshot_id = first.structured["snapshot_id"]
+    overview = {"action": "campaign_overview", "snapshot_id": snapshot_id}
+    sound = await _call(tool, fixture, overview)
+    assert sound.ending == "ok", sound.text
+
+    off_loop(_broken, store, _stored(fixture, snapshot_id), how)
+    refused = await _call(tool, fixture, overview)
+    assert refused.ending == "refused" and "remedy: freeze the campaign or the analysis again" in refused.text
+
+    again = await _call(tool, fixture, freeze)
+    assert again.structured is not None, again.text
+    assert again.structured["snapshot_id"] == snapshot_id, "the same evidence names the same snapshot"
+    assert (again.structured["replaced"], again.structured["reused"]) == (True, False)
+    read = await _call(tool, fixture, overview)
+    assert (read.text, read.structured) == (sound.text, sound.structured)
+    once_more = await _call(tool, fixture, freeze)
+    assert once_more.structured is not None
+    assert (once_more.structured["replaced"], once_more.structured["reused"]) == (False, True)
 
 
 async def test_an_unknown_snapshot_is_refused_naming_how_to_get_one() -> None:

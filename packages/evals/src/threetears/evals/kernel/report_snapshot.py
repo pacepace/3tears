@@ -13,7 +13,8 @@ digest alone.
 **Held as JSON.** The kernel cannot read the report input's model, which is the analysis package's, so the input is
 kept as its JSON by alias, and the bundle it was built from as ``CampaignBundle.to_dict()``. The analysis side
 validates the input and re-checks its digest on every read, as a reporter plan case does, and refuses a snapshot
-whose input no longer reads: the remedy is to freeze again (:data:`FREEZE_AGAIN_REMEDY`).
+whose input no longer reads: the remedy is to freeze again (:data:`FREEZE_AGAIN_REMEDY`), and a freeze writes the
+fresh snapshot in place of a stored one of the same id that a read refuses.
 
 **Derived and regenerable**, like an analysis: freezing the campaign again makes it again, ``EvalStorage.drop_derived``
 sweeps it, and a regenerable schema bump refuses it on read.
@@ -49,7 +50,8 @@ FIND_SNAPSHOT = (
 #: What a caller does about a snapshot whose report input no longer reads, or no longer matches its digest.
 FREEZE_AGAIN_REMEDY = (
     "freeze the campaign or the analysis again with report_snapshot_freeze, which builds its report input as this "
-    "build reads it, and use the snapshot id it returns"
+    "build reads it and writes it in place of a stored snapshot that no longer reads or matches its digest, and use "
+    "the snapshot id it returns"
 )
 
 
@@ -70,8 +72,8 @@ def report_snapshot_id(campaign_id: str | None, report_input_digest: str) -> str
 class EvalReportSnapshot(EvalDocumentModel):
     """One campaign's report input, frozen whole, which every analyst tool reads by the snapshot's id.
 
-    Immutable once stored: a freeze writes it only when its id is not stored yet, and the id is derived from its
-    content (:func:`report_snapshot_id`). ``bundle`` is the campaign bundle the input was built from, kept so a
+    Immutable once stored: a freeze writes it only when its id is not stored yet, or when the one stored under it no
+    longer reads or matches its digest, and the id is derived from its content (:func:`report_snapshot_id`). ``bundle`` is the campaign bundle the input was built from, kept so a
     stored report can be traced to its evidence without assembling it again; no tool reads it.
     """
 

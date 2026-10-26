@@ -48,6 +48,12 @@ log = get_logger(_ANALYST_LOGGER)
 #: The hex digits of the digest a gap id keeps.
 _GAP_DIGITS = 16
 
+#: What a reused snapshot's fields report: the first freeze's evidence, not this call's.
+_REUSED_NOTE = (
+    "the same report input was frozen before: the snapshot named is that one, and its source, analysis, bundle "
+    "fingerprint and freeze time are that freeze's, which may differ from what this call named"
+)
+
 #: What a freeze named neither or both of.
 _ONE_SOURCE_REMEDY = "name a campaign_id (campaigns_list) or an analysis_id (analyses_list), and not both"
 
@@ -57,14 +63,24 @@ class SnapshotFrozen(EvalBaseModel):
 
     snapshot_id: str = Field(description="The snapshot's id, which every analyst tool takes as snapshot_id.")
     campaign_id: str | None = Field(description="The campaign frozen; None for a bare report input.")
-    source: SnapshotSource = Field(description="campaign, analysis or report_input: where its report input came from.")
-    analysis_id: str | None = Field(description="The analysis frozen, for source analysis.")
+    source: SnapshotSource = Field(
+        description="campaign, analysis or report_input: where the stored snapshot's report input came from."
+    )
+    analysis_id: str | None = Field(
+        description="The analysis the stored snapshot was frozen from, for source analysis."
+    )
     report_input_digest: str = Field(description="sha256 of the frozen report input, re-checked on every read.")
     bundle_fingerprint: str | None = Field(description="The fingerprint of the bundle it was built from.")
     frozen_at: str = Field(description="When the stored snapshot was frozen (ISO-8601).")
     reused: bool = Field(
-        description="True when the same evidence was already frozen: the snapshot stored then is the one named."
+        description="True when the same evidence was already frozen: the snapshot stored then is the one named, and "
+        "its source, analysis, bundle and freeze time are that freeze's, which may differ from this call's."
     )
+    replaced: bool = Field(
+        description="True when a snapshot stored for the same evidence no longer read, or no longer matched its "
+        "digest, and this freeze wrote it again in its place."
+    )
+    note: str = Field(description="What a reused snapshot's fields are of; empty for a snapshot this call stored.")
 
 
 class GapNoted(EvalBaseModel):
@@ -147,9 +163,39 @@ def _frozen(
     )
 
 
+def _sound(storage: EvalStorage, snapshot_id: str, scope_id: str) -> tuple[EvalReportSnapshot | None, str | None]:
+    """The snapshot stored under an id, when it is sound, and why it is not when one is stored and is not. Blocking.
+
+    A stored snapshot is sound when it reads under this build's model and its report input digests to the digest
+    recorded beside it and reads as this build's report input: exactly what every analyst tool's read checks.
+
+    :return: ``(snapshot, None)`` for a sound one, ``(None, None)`` for none stored, ``(None, why)`` for one stored
+        that a read would refuse.
+    """
+    try:
+        stored = storage.load_report_snapshot(snapshot_id, scope_id)
+    except ValidationError as unread:
+        return None, f"it does not read under this build's snapshot model ({unread.error_count()} fault(s))"
+    if stored is None:
+        return None, None
+    try:
+        frozen_input(stored)
+    except RefusedInput as refused:
+        return None, refused.fault
+    return stored, None
+
+
 def _kept(storage: EvalStorage, snapshot: EvalReportSnapshot) -> SnapshotFrozen:
-    """Store the snapshot unless the same evidence is already frozen, and say which is stored. Blocking."""
-    stored = storage.load_report_snapshot(snapshot.id, snapshot.scope_id)
+    """Store the snapshot unless the same evidence is already frozen soundly, and say which is stored. Blocking.
+
+    A snapshot stored under the same id that a read would refuse (it no longer reads, or its input no longer matches
+    its digest) is deleted and this one written in its place: the id is derived from the evidence, so the fresh
+    snapshot is the one the id has always named, and a broken one would otherwise be returned to every freeze.
+    """
+    stored, broken = _sound(storage, snapshot.id, snapshot.scope_id)
+    if broken is not None:
+        log.warning("report snapshot %s is replaced: %s", snapshot.id, broken)
+        storage.delete_report_snapshot(snapshot.id, snapshot.scope_id)
     reused = stored is not None
     if stored is None:
         try:
@@ -168,6 +214,8 @@ def _kept(storage: EvalStorage, snapshot: EvalReportSnapshot) -> SnapshotFrozen:
         bundle_fingerprint=stored.bundle_fingerprint,
         frozen_at=stored.created_at,
         reused=reused,
+        replaced=broken is not None,
+        note=_REUSED_NOTE if reused else "",
     )
 
 
@@ -184,7 +232,9 @@ async def report_snapshot_freeze(
     From a campaign, its evidence is assembled as it stands, the instant stamped before the assembly reads the insight
     ledger; from an analysis, its frozen bundle is put back together. Either way the report input is built with the
     analyst's example pool (:data:`~threetears.evals.analysis.analyst.snapshot.ANALYST_EXAMPLES`) and stored only
-    when its id is not: the same evidence frozen twice names one snapshot (``reused``).
+    when its id is not: the same evidence frozen twice names one snapshot (``reused``). A snapshot stored under the
+    id that a read would refuse, because it no longer reads or no longer matches its digest, is written again in its
+    place (``replaced``), so freezing again is the remedy every such refusal names.
 
     :param host: The host whose store holds the campaign and the snapshot.
     :ptype host: OpsHost
