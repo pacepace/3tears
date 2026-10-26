@@ -46,6 +46,8 @@ _BARS: dict[str, Any] = {"rows": [{"label": "a", "value": 2}], "domain": [0, 4],
         ("bars", {**_BARS, "fmt": "percent"}, "should match pattern"),
         ("bars", {**_BARS, "rows": [{"label": "a", "value": 2, "lo": 1, "hi": 3}]}, '"level" is required'),
         ("bars", {**_BARS, "rows": [{"label": "a"}]}, "needs a value or segments"),
+        ("bars", {**_BARS, "level": "95%", "rows": [{"label": "a", "value": 2, "hi": 3}]}, "high end with no low end"),
+        ("bars", {**_BARS, "rows": [{"label": "a", "value": 2, "lo": 1}]}, '"level" is required'),
         ("bars", {**_BARS, "domain": [0, float("inf")]}, "finite number"),
         ("forest", {"rows": [{"label": "a", "value": 1, "lo": 0, "hi": 2}], "domain": [-3, 3], "fmt": "num"}, "level"),
         (
@@ -207,6 +209,20 @@ def test_a_table_spells_each_value_by_the_number_rule_not_the_axis_s_rounding() 
         }
     )
     assert stacked.values_table() == (["Row", "Value", "Parts"], [["arm", "$4", "calls $3 · retries $1"]])
+
+
+def test_a_bar_with_a_low_end_and_no_high_end_reads_as_an_interval_open_above() -> None:
+    """A price whose gain's interval reaches zero has no upper bound: its bar carries the low end alone, which the
+    kit draws as a whisker open above and the values table writes in words, never as a bare value or a dash."""
+    data = {
+        **_BARS,
+        "fmt": "usd",
+        "level": "95%",
+        "rows": [{"label": "open", "value": 2, "lo": 1.5}, {"label": "bounded", "value": 3, "lo": 2.5, "hi": 3.5}],
+    }
+    headers, rows = _block("bars", data).values_table()
+    assert headers == ["Row", "Value", "95% interval"]
+    assert rows == [["open", "$2", "from $1.5 up, no upper bound"], ["bounded", "$3", "$2.5 to $3.5"]]
 
 
 def test_markdown_prints_every_chart_s_values_table() -> None:

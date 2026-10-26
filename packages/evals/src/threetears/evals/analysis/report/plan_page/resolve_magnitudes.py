@@ -35,7 +35,15 @@ import dataclasses
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
-from threetears.evals.analysis.report.charts import BarRow, BarsChart, BarsPanel, ChartReference, LineSeries, LinesChart
+from threetears.evals.analysis.report.charts import (
+    OPEN_ABOVE,
+    BarRow,
+    BarsChart,
+    BarsPanel,
+    ChartReference,
+    LineSeries,
+    LinesChart,
+)
 from threetears.evals.analysis.report.plan_page.charting import (
     ChartContext,
     Drawn,
@@ -70,6 +78,7 @@ from threetears.evals.analysis.report.plan_page.look import (
 )
 from threetears.evals.analysis.report.plan_page.words import (
     LOG_BARS_NOTE,
+    PRICE_OPEN_NOTE,
     PRICE_STEP_NOTES,
     PRICE_STEP_TEMPLATE,
     STATISTIC_NOTE,
@@ -95,13 +104,14 @@ _BY_CAUSE = frozenset({"lost", "failed"})
 
 @dataclass(frozen=True)
 class _Bar:
-    """One drawn bar: its row's id, label, colour, tag and group, its value and interval, how it reads, and the
-    quantity it is drawn as where that is its measure's own (None for the chart's)."""
+    """One drawn bar: its row's id, label, colour, tag and group, its value and interval (or the low end of one open
+    above), how it reads, and the quantity it is drawn as where that is its measure's own (None for the chart's)."""
 
     id: str
     label: str
     value: float
     interval: tuple[float, float] | None = None
+    open_from: float | None = None
     color: str | None = None
     tag: str | None = None
     group: str | None = None
@@ -270,7 +280,7 @@ def _preference_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[s
 
 def _price_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[str]]:
     """prices: a bar per step along the frontier, its price per point from zero, named by the options it moves
-    between."""
+    between; a step whose interval is open above carries its low end, drawn as a whisker open above."""
     steps = [(row.item, row.interval) for row in context.rows() if isinstance(row.item, PriceStep)]
     monthly = any(step.monthly for step, _ in steps)
     drawn = quantity("dollars" if monthly else "usd_per_1k", [step.value for step, _ in steps])
@@ -284,18 +294,50 @@ def _price_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[str]]:
             label=PRICE_STEP_TEMPLATE.format(first=name(step.first), second=name(step.second)),
             value=step.value * drawn.factor,
             interval=(interval[0] * drawn.factor, interval[1] * drawn.factor) if interval is not None else None,
+            open_from=step.open_from * drawn.factor if step.open_from is not None else None,
         )
         for step, interval in steps
     ]
     return bars, drawn, {"mean"}
 
 
+def _open_steps(context: ChartContext) -> list[str]:
+    """The steps a prices chart or table draws whose interval is open above, each named by its options."""
+
+    def name(arm: str) -> str:
+        return context.look.arm(arm).name if arm in context.look.arms else arm
+
+    return [
+        PRICE_STEP_TEMPLATE.format(first=name(row.item.first), second=name(row.item.second))
+        for row in context.rows()
+        if isinstance(row.item, PriceStep) and row.item.open_from is not None
+    ]
+
+
+def price_notes(context: ChartContext) -> tuple[str, ...]:
+    """What a prices chart or table says of its intervals: each step open above named, where its gain's interval
+    reaches zero and no price bounds it, so the reader never takes it for the firmest.
+
+    :param context: The chart being resolved, over the prices source.
+    :ptype context: ChartContext
+    :return: The note, or none where every step's interval is bounded or none is drawn.
+    :rtype: tuple[str, ...]
+    """
+    named = _open_steps(context)
+    if not named or not context.level:
+        return ()
+    return (PRICE_OPEN_NOTE.format(steps="; ".join(named)),)
+
+
 def _bar_row(context: ChartContext, bar: _Bar, drawn: Quantity) -> BarRow:
     drawn = bar.drawn or drawn
     interval = bar.interval if context.level else None
+    open_from = bar.open_from if context.level else None
     tip = [bar.label, figure_text(bar.value, drawn)]
     if interval is not None:
         tip[1] += f", {interval_words(*interval, drawn)}"
+    elif open_from is not None:
+        tip[1] += f", {OPEN_ABOVE.format(low=figure_text(open_from, drawn))}"
     strong = muted = None
     if context.summary and bar.arm:
         strong = True if bar.arm == context.look.recommended else None
@@ -305,7 +347,7 @@ def _bar_row(context: ChartContext, bar: _Bar, drawn: Quantity) -> BarRow:
         label=bar.label,
         tag=bar.tag,
         value=bar.value,
-        lo=interval[0] if interval is not None else None,
+        lo=interval[0] if interval is not None else open_from,
         hi=interval[1] if interval is not None else None,
         color=bar.color,
         strong=strong,
@@ -321,6 +363,8 @@ def _ends(bars: Sequence[_Bar], level: str) -> Iterator[float]:
         yield bar.value
         if level and bar.interval is not None:
             yield from bar.interval
+        if level and bar.open_from is not None:
+            yield bar.open_from
 
 
 def _panels(
@@ -446,6 +490,7 @@ def _bars(context: ChartContext) -> Drawn:
             PRICE_STEP_NOTES[
                 any(isinstance(row.item, PriceStep) and row.item.monthly for row in context.rows())
             ].format(per=per_count(cost_basis(context.report_input).noun)),
+            *price_notes(context),
         )
     return Drawn(chart_block(context, data), notes)
 

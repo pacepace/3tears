@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import functools
 import json
+import re
 from copy import deepcopy
 from typing import Any, get_args
 
@@ -40,6 +41,7 @@ from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, 
 from threetears.evals.analysis.analyst.blocks import RenderedBlock, block_catalog, block_render
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import PlanRefusal
+from threetears.evals.analysis.numbers import WHOLE_FROM, format_number
 from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES, complete_chart
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import KIT_CHARTS, even_precision
@@ -549,6 +551,48 @@ def test_cells_that_read_alike_print_their_numbers_at_one_precision_and_lose_no_
     ]
     assert even_precision([["p95 latency", "Few-shot (12 ex.)"]]) == [["p95 latency", "Few-shot (12 ex.)"]]
     assert even_precision([["$0.000616"], ["$1"]]) == [["$0.000616"], ["$1"]], "past three decimals, nothing is padded"
+
+
+#: Values across magnitudes, as a latency or cost column holds them: each reaches even_precision as format_number
+#: spells it, rounded to its own significant figures (whole from WHOLE_FROM up).
+_MIXED_MAGNITUDES = (1239.7, 980.53, 12.3549, 1.23456, 0.5, 94.0)
+
+
+def _significant(text: str) -> int:
+    """How many significant figures a number's text states: its digits less the leading zeros; a whole number's
+    trailing zeros count, since format_number writes a value it rounded to the units digit whole."""
+    digits = re.sub(r"\D", "", text).lstrip("0")
+    return len(digits)
+
+
+def test_padding_never_states_a_digit_past_the_precision_a_number_was_rounded_to() -> None:
+    """The Critic's case: ``1240`` beside ``1.655`` read ``$1,240.000`` for a true 1239.7. A padded number states no
+    more significant figures than format_number rounded every number to (its most, read off the spelling of a
+    number below WHOLE_FROM), and a number at or above WHOLE_FROM, which the rule printed whole, gains no decimals."""
+    spelled = [format_number(value) for value in _MIXED_MAGNITUDES]
+    most = max(
+        _significant(text) for text, value in zip(spelled, _MIXED_MAGNITUDES, strict=True) if value != int(value)
+    )
+    for prefix, suffix in (("$", ""), ("", " ms"), ("", "%")):
+        rows = [[f"{prefix}{text}{suffix}"] for text in spelled]
+        padded = [row[0] for row in even_precision(rows)]
+        for value, before, after in zip(_MIXED_MAGNITUDES, spelled, padded, strict=True):
+            number = after.removeprefix(prefix).removesuffix(suffix).replace(",", "")
+            assert float(number) == pytest.approx(float(before)), (before, after)
+            assert number.startswith(before), f"padding only appends zeros: {before} -> {after}"
+            if abs(value) >= WHOLE_FROM:
+                assert "." not in number, f"a number printed whole gains no decimals: {after}"
+            else:
+                assert _significant(number) <= max(most, _significant(before)), (
+                    f"{before} padded past its figures: {after}"
+                )
+    assert (
+        "$1,240" in even_precision([["$1240"], ["$1.655"]])[0][0]
+        and "." not in even_precision([["$1240"], ["$1.655"]])[0][0]
+    )
+    assert even_precision([["12.35"], ["1.235"]]) == [["12.35"], ["1.235"]], (
+        "12.35 holds every figure it was rounded to"
+    )
 
 
 def test_a_tables_paired_figures_read_at_one_precision() -> None:

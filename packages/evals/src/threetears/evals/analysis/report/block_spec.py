@@ -458,11 +458,12 @@ def _level(chart: PlannedChart, report_input: ReportInput, path: str, faults: li
 
 def _price_level(chart: PlannedChart, report_input: ReportInput, path: str, faults: list[_Fault]) -> str:
     """The level a chart of price steps prints: its gain's contrasts' where its ends are read off the paired
-    interval, else its gain's own level marked unpaired; empty where no step carries an interval."""
+    interval, else its gain's own level marked unpaired; empty where no step carries an interval (bounded, or open
+    above from its low end)."""
     steps = [
         row.item
         for row in query_rows(chart.query, report_input)
-        if isinstance(row.item, PriceStep) and row.interval is not None
+        if isinstance(row.item, PriceStep) and (row.interval is not None or row.item.open_from is not None)
     ]
     if not steps:
         return ""

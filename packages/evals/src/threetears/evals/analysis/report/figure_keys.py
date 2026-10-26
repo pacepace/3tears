@@ -1958,9 +1958,11 @@ def _priced(basis: _PriceBasis, report_input: ReportInput, first: str, second: s
     monthly = field.startswith(_MONTHLY_PREFIX)
     factor = _monthly_factor(report_input, path) if monthly else 1.0
     money: Scale = "usd" if monthly else "usd_per_1k"
+    # Money read off a slice's own cost measure is per what that measure counts, not the page's cost basis.
+    per = per_noun(report_input.measures[basis.cost_key]) if basis.cost_key and not monthly else ""
     field = field.removeprefix(_MONTHLY_PREFIX)
     if field == "cost_gap":
-        return Figure(path=path, kind="number", value=gap * factor, scale=money, change=True)
+        return Figure(path=path, kind="number", value=gap * factor, scale=money, change=True, per=per)
     points = 100.0 if scale == "share" else 1.0
     if gain == 0 or gap * gain <= 0:
         raise _refuse(
@@ -1969,11 +1971,11 @@ def _priced(basis: _PriceBasis, report_input: ReportInput, first: str, second: s
             "more, so one is at least as good on both and the move has no price per point",
         )
     if field == "per_point":
-        return Figure(path=path, kind="number", value=gap / (gain * points) * factor, scale=money)
+        return Figure(path=path, kind="number", value=gap / (gain * points) * factor, scale=money, per=per)
     if interval is None:
         raise _unstated(path, f"names an end of the price's interval, which the input does not state: {unstated}")
     bound = _price_bounds(path, gap, gain * points, (interval[0] * points, interval[1] * points), field)
-    return Figure(path=path, kind="number", value=bound * factor, scale=money)
+    return Figure(path=path, kind="number", value=bound * factor, scale=money, per=per)
 
 
 def _price(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:

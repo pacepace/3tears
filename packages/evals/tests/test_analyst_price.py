@@ -52,7 +52,8 @@ from threetears.evals.analysis.report_gates import gate_findings
 from threetears.evals.analysis.summary import dollars_text
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.analysis.report.cost_unit import per_count
+from threetears.evals.analysis.numbers import WHOLE_FROM, format_number
+from threetears.evals.analysis.report.cost_unit import REPLIES, per_count, per_noun
 from threetears.evals.analysis.report.figure_keys import (
     cost_basis,
     figure_key_grammar,
@@ -952,8 +953,10 @@ def _monthly_steps(held: ReportInput) -> Iterator[tuple[str, list[Price]]]:
 
 def test_a_prices_tables_money_reads_with_its_thousands_grouped_and_a_months_to_the_whole_dollar() -> None:
     """A step's price a month reads as its key reads under ``usd_whole`` (``$1,239``, never ``$1239``) where every step
-    on the axis is $10 or more, which whole dollars do not round away; under that, every price keeps its cents. Either
-    way no dollar amount prints four digits ungrouped, in the table or in the bars' values."""
+    on the axis is $10 or more, which whole dollars do not round away; under that, no price is rounded to the whole
+    dollar: each keeps every digit the number rule spells its value with, so its cents wherever it holds any (a price
+    of $1,000 or more the rule writes whole, and padding states no cent it was never rounded to). Either way no dollar
+    amount prints four digits ungrouped, in the table or in the bars' values."""
     whole_seen = cents_seen = False
     for name, held in fixture_inputs().items():
         for key, steps in _monthly_steps(held):
@@ -971,7 +974,11 @@ def test_a_prices_tables_money_reads_with_its_thousands_grouped_and_a_months_to_
                 assert cells == whole, (name, key)
                 whole_seen |= any(abs(value) >= 1000 for value in values)
             else:
-                assert all("." in cell for cell in cells), (name, key, cells)
+                for cell, value in zip(cells, values, strict=True):
+                    spelled = format_number(abs(value))
+                    assert cell.lstrip("-").removeprefix("$").replace(",", "").startswith(spelled), (name, key, cell)
+                    if abs(value) < WHOLE_FROM and value != int(value):
+                        assert "." in cell, (name, key, cells)
                 cents_seen = True
     assert whole_seen, "the control: some fixture prices a step a month at $1,000 or more"
     assert cents_seen, "the control: some fixture prices a step a month under $10"
@@ -1042,3 +1049,98 @@ def test_a_prices_chart_says_its_prices_are_per_1000_of_what_the_snapshots_cost_
     bars = block_render(held, block_kind="bars", query=_prices_query(["overall"]))
     assert any(f"price per point {per}:" in note for note in bars.notes), bars.notes
     assert not any("replies" in note for note in bars.notes), bars.notes
+
+
+def _reads(key: str, held: ReportInput) -> float | None:
+    """The number a key reads, or None where it refuses (an end the interval leaves open, or one unstated)."""
+    try:
+        value = resolve(key, held).value
+    except UnresolvableReference:
+        return None
+    return float(value) if isinstance(value, int | float) else None
+
+
+def _drawn_ends(held: ReportInput, key: str, steps: list[Price]) -> list[tuple[float | None, float | None]]:
+    """Each step's interval ends as a prices block draws them, read off its keys: the paired interval where every
+    step states its low end, else the unpaired one; a high end None where it is unbounded (open above)."""
+    field = "monthly_per_point" if held.meta.volume_per_month is not None else "per_point"
+    moves = [(step.from_arm.removeprefix("arm:"), step.to_arm.removeprefix("arm:")) for step in steps]
+
+    def ends(first: str, second: str, suffix: str) -> tuple[float | None, float | None]:
+        prefix = f"price.{first}.{second}.{key}.{field}"
+        return _reads(f"{prefix}_low{suffix}", held), _reads(f"{prefix}_high{suffix}", held)
+
+    paired = all(ends(first, second, "")[0] is not None for first, second in moves)
+    return [ends(first, second, "" if paired else "_unpaired") for first, second in moves]
+
+
+def test_a_step_whose_gain_interval_reaches_zero_is_drawn_open_above_never_as_a_bare_price() -> None:
+    """The Critic's W4: a step whose price is unbounded above was drawn with no interval at all, beside steps with
+    one, so the least certain price read as the firmest. Every step whose low end is stated is drawn with it: both ends
+    where its high end is bounded, else open above, in the values table and the tooltip's words and named in a note."""
+    seen_open = seen_bounded_beside = 0
+    for name, held in fixture_inputs().items():
+        if not _costed(held):
+            continue
+        names = {arm.id: arm.name for arm in fact_arms(held)}
+        for key in _axes(held):
+            steps = price_tradeoff(held, key, limit=len(held.arms)).steps
+            if not steps:
+                continue
+            drawn = _drawn_ends(held, key, steps)
+            opened = [
+                f"{names[s.from_arm[4:]]} → {names[s.to_arm[4:]]}"
+                for s, (low, high) in zip(steps, drawn, strict=True)
+                if low is not None and high is None
+            ]
+            bars = block_render(held, block_kind="bars", query=_prices_query([key]))
+            table = block_render(held, block_kind="table", query=_prices_query([key]))
+            for block in (bars, table):
+                for row, (low, high) in zip(block.rows, drawn, strict=True):
+                    text = " | ".join(row.cells)
+                    if low is not None and high is None:
+                        assert "no upper bound" in text, (name, key, block.block_kind, text)
+                    else:
+                        assert "no upper bound" not in text, (name, key, block.block_kind, text)
+                    if low is not None and high is not None and block.block_kind == "bars":
+                        assert " to " in text, (name, key, text)
+                said = [note for note in block.notes if "No upper bound on" in note]
+                if opened:
+                    assert block.level, (name, key, block.block_kind, "an open interval is drawn at its level")
+                    assert len(said) == 1 and all(step in said[0] for step in opened), (name, key, block.notes)
+                else:
+                    assert not said, (name, key, block.notes)
+            seen_open += bool(opened)
+            seen_bounded_beside += bool(opened) and any(high is not None for _, high in drawn)
+    assert seen_open, "the control: some fixture's frontier takes a step whose gain's interval reaches zero"
+    assert seen_bounded_beside, "the control: some axis draws an open step beside a bounded one"
+
+
+def test_a_price_within_a_slice_is_per_what_the_slices_own_cost_measure_counts() -> None:
+    """The Critic's N2: a price within a task reads the task's own cost measure, so its money is per what that measure
+    counts, even where the page's cost is the scoreboard's per reply. r1 prices its tasks on a per-1k-conversations
+    measure; given scoreboard reply costs, the page's cost basis turns to replies and the task's prices must not."""
+    data = fixture_inputs()["r1 reading only bars"].model_dump(by_alias=True, exclude_none=True)
+    for row in data["scoreboard"].values():
+        row["reply_cost_usd"] = 0.001
+    held = ReportInput.model_validate(data)
+    assert cost_basis(held).noun == REPLIES, "the control: the page's cost is the scoreboard's, per reply"
+    task = next(task for task in held.tasks if _task_costs(held, task.id))
+    noun = per_noun(held.measures["cost_per_1k"])
+    assert noun and noun != REPLIES, "the control: the task's cost measure counts something else"
+    priced = 0
+    for key in _axes(held):
+        try:
+            trade = price_tradeoff(held, key, slice_filter=task.id, limit=len(held.arms))
+        except RefusedInput:
+            continue
+        for step in trade.steps:
+            assert "own cost in this slice" in str(_value(step.cost_gap.key.replace(".cost_gap", ".cost_basis"), held))
+            for figure in (step.cost_gap, step.per_point, step.per_point_low, step.per_point_high):
+                if figure is None:
+                    continue
+                assert resolve(figure.key, held).per == noun, (key, figure.key)
+                spelled = format_figure(resolve(figure.key, held), ("usd_per_1k",))
+                assert per_count(noun) in spelled and REPLIES not in spelled, spelled
+                priced += 1
+    assert priced, "the control: some move within the task is priced"

@@ -27,7 +27,7 @@ from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler, model_serializer, model_validator
 
-from threetears.evals.analysis.numbers import format_number, group_thousands
+from threetears.evals.analysis.numbers import WHOLE_FROM, format_number, group_thousands
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, signed_with_unit, with_unit
 from threetears.evals.schema.base import EvalDocumentModel
 
@@ -236,6 +236,10 @@ _CELL_NUMBER = re.compile(r"(?<![\w.,])([+\-−]?)(\d[\d,]*)(?:\.(\d+))?(?![\w])
 #: The most decimals a column is padded to: past it the figures are small amounts whose precision is their own.
 _MOST_PADDED = 3
 
+#: The significant figures format_number rounds a number to: as many as reach the units digit at
+#: :data:`~threetears.evals.analysis.numbers.WHOLE_FROM`, where it starts writing numbers whole.
+_SIGNIFICANT = len(str(int(WHOLE_FROM)))
+
 #: A dollar amount's whole dollars in a table cell, written without their thousands grouped: ``$1239``.
 _UNGROUPED_DOLLARS = re.compile(r"(?<=\$)\d{4,}(?![\d,])")
 
@@ -248,8 +252,12 @@ def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
     ``$1,239``), as the figure keys write money, so a table and the prose citing it print one amount alike.
 
     Padding never rounds: a cell keeps every digit it had, so a table still never rounds away what a value holds,
-    and two figures a reader compares read at one precision. A cell no other reads like (a label, words) is left as it
-    is.
+    and two figures a reader compares read at one precision. Nor does it state a digit the number was never rounded
+    to: a number reaches a table as :func:`~threetears.evals.analysis.numbers.format_number` spells it, to
+    :data:`_SIGNIFICANT` figures with its trailing zeros dropped (whole from
+    :data:`~threetears.evals.analysis.numbers.WHOLE_FROM` up), so its zeros are padded back only up to its own
+    figures: ``94`` beside ``96.4`` reads ``94.0``, but ``1240`` beside ``1.655`` stays ``1,240`` and ``12.35`` beside
+    ``1.235`` stays ``12.35``. A cell no other reads like (a label, words) is left as it is.
 
     :param rows: The table's rows of cells.
     :ptype rows: Sequence[Sequence[str]]
@@ -273,14 +281,26 @@ def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
     ]
 
 
+def _own_decimals(whole: str) -> int:
+    """The most decimals a number with these whole digits holds at :data:`_SIGNIFICANT` figures: none past them, so
+    none at all from :data:`~threetears.evals.analysis.numbers.WHOLE_FROM` up; below one, its figures start after the
+    point, which holds at least as many decimals as :data:`_MOST_PADDED`."""
+    digits = whole.replace(",", "").lstrip("0")
+    return max(0, _SIGNIFICANT - len(digits)) if digits else _MOST_PADDED
+
+
 def _padded_cell(cell: str, most: Sequence[int]) -> str:
-    """One cell, its n-th number padded to ``most[n]`` decimals where that is three or fewer."""
+    """One cell, its n-th number padded to ``most[n]`` decimals where that is three or fewer, and no further than its
+    own significant figures reach."""
     place = iter(range(len(most)))
 
     def pad(found: re.Match[str]) -> str:
         wanted = most[next(place)]
         decimals = found.group(3) or ""
-        if wanted > _MOST_PADDED or len(decimals) >= wanted:
+        if wanted > _MOST_PADDED:
+            return found.group(0)
+        wanted = min(wanted, _own_decimals(found.group(2)))
+        if len(decimals) >= wanted:
             return found.group(0)
         return f"{found.group(1)}{found.group(2)}.{decimals.ljust(wanted, '0')}"
 
@@ -292,6 +312,17 @@ def _interval(spec: str, low: float | None, high: float | None) -> str:
     if low is None or high is None:
         return ""
     return f"{_formatted(spec, low)} to {_formatted(spec, high)}"
+
+
+#: An interval open above, as a table cell or a tooltip writes it: its low end, and no upper bound.
+OPEN_ABOVE = "from {low} up, no upper bound"
+
+
+def _bar_interval(spec: str, low: float | None, high: float | None) -> str:
+    """A bar's interval as a table cell: :func:`_interval`'s, or one open above (a low end alone) in words."""
+    if low is not None and high is None:
+        return OPEN_ABOVE.format(low=_formatted(spec, low))
+    return _interval(spec, low, high)
 
 
 def _reference_row(reference: ChartReference | None, spec: str, width: int) -> list[list[str]]:
@@ -333,7 +364,11 @@ class BarRow(_KitModel):
         "label fits.",
     )
     lo: float | None = Field(default=None, description="The interval's low end.")
-    hi: float | None = Field(default=None, description="The interval's high end.")
+    hi: float | None = Field(
+        default=None,
+        description="The interval's high end; none with a `lo` where the interval is open above (no upper bound): its "
+        "whisker runs on to the axis's end, opening into a chevron.",
+    )
     color: Token | None = Field(default=None, description="The bar's colour token.")
     strong: bool | None = Field(default=None, description="Bold label and note.")
     muted: bool | None = Field(default=None, description="Faded bar.")
@@ -343,12 +378,16 @@ class BarRow(_KitModel):
 
     @model_validator(mode="after")
     def _one_measure(self) -> Self:
-        """Refuse a bar with neither a value nor segments, or with both.
+        """Refuse a bar with neither a value nor segments, or with both, and a high end with no low end.
 
-        :raises ValueError: Both or neither of ``value`` and ``segments``.
+        :raises ValueError: Both or neither of ``value`` and ``segments``; ``hi`` without ``lo``.
         """
         if (self.value is None) == (self.segments is None):
             raise ValueError(f"bar {self.label!r} needs a value or segments, not both")
+        if self.hi is not None and self.lo is None:
+            raise ValueError(
+                f"bar {self.label!r} sets a high end with no low end; only an interval open above has one end"
+            )
         return self
 
     @property
@@ -409,7 +448,7 @@ class _BarsFields(_Kind):
                     row.label,
                     _formatted(self._format, row.total),
                     *([parts] if stacked else []),
-                    *([_interval(self._format, row.lo, row.hi)] if intervals else []),
+                    *([_bar_interval(self._format, row.lo, row.hi)] if intervals else []),
                     *([row.note or ""] if notes else []),
                 ]
             )
@@ -1252,6 +1291,7 @@ __all__ = [
     "LegendItem",
     "LineSeries",
     "LinesChart",
+    "OPEN_ABOVE",
     "PriceLine",
     "RangeBarsChart",
     "RangeGroup",

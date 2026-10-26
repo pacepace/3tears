@@ -43,6 +43,7 @@ from collections.abc import Callable, Iterator
 
 from threetears.evals.analysis.quantities import MONEY, with_unit
 from threetears.evals.analysis.report.blocks import CellValue, TableBlock, TableCell, TableColumn
+from threetears.evals.analysis.report.charts import OPEN_ABOVE
 from threetears.evals.analysis.report.cost_unit import per_count, per_noun
 from threetears.evals.analysis.report.plan_page.charting import (
     ChartContext,
@@ -56,6 +57,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
 )
 from threetears.evals.analysis.report.plan_page.look import quantity
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
+from threetears.evals.analysis.report.plan_page.resolve_magnitudes import price_notes
 from threetears.evals.analysis.report_input import (
     Cell,
     ConfusionTable,
@@ -322,7 +324,11 @@ def _prices(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
     steps = [(row.item, row.interval) for row in context.rows() if isinstance(row.item, PriceStep)]
     monthly = any(step.monthly for step, _ in steps)
     drawn = quantity("dollars" if monthly else "usd_per_1k", [step.value for step, _ in steps])
-    amounts = [abs(value) for step, interval in steps for value in (step.value, *(interval or ()))]
+    amounts = [
+        abs(value)
+        for step, interval in steps
+        for value in (step.value, *(interval or ()), *((step.open_from,) if step.open_from is not None else ()))
+    ]
     whole = monthly and min(amounts, default=0.0) * drawn.factor >= _WHOLE_DOLLARS_FROM
 
     def dollars(value: float) -> float:
@@ -332,7 +338,7 @@ def _prices(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
         return context.look.arm(arm).name if arm in context.look.arms else arm
 
     for step, interval in steps:
-        yield {
+        row = {
             "step": _words(PRICE_STEP_TEMPLATE.format(first=name(step.first), second=name(step.second))),
             "per_point": _number(
                 dollars(step.value),
@@ -340,6 +346,11 @@ def _prices(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
                 (dollars(interval[0]), dollars(interval[1])) if interval is not None else None,
             ),
         }
+        if step.open_from is not None and context.level:
+            # An interval open above has one end, which no cell's two ends hold: its interval cell is laid out here.
+            low = with_unit(dollars(step.open_from), drawn.unit)
+            row[f"per_point{_INTERVAL_COLUMN}"] = _words(OPEN_ABOVE.format(low=low))
+        yield row
 
 
 #: Each source's rows, and its columns in order: its fixed ones, with the measure columns its reader lays out (a wide
@@ -370,12 +381,15 @@ def _interval_text(cell: TableCell) -> TableCell:
 
 
 def _with_intervals(columns: list[TableColumn], rows: list[_Row], level: str) -> tuple[list[TableColumn], list[_Row]]:
-    """The columns, each one whose figures carry an interval followed by its interval column, and the rows with it."""
+    """The columns, each one whose figures carry an interval followed by its interval column, and the rows with it: a
+    row's own interval cell where its reader laid one out (an interval open above, which no cell's two ends hold),
+    else its figure's two ends."""
     laid: list[TableColumn] = []
     spelled: list[str] = []
     for column in columns:
         laid.append(column)
-        if any(row[column.key].low is not None for row in rows if column.key in row):
+        own = f"{column.key}{_INTERVAL_COLUMN}"
+        if any(row[column.key].low is not None or own in row for row in rows if column.key in row):
             key = f"{column.key}{_INTERVAL_COLUMN}"
             laid.append(TableColumn(key=key, header=INTERVAL_HEADER.format(level=level).strip().capitalize()))
             spelled.append(column.key)
@@ -383,7 +397,8 @@ def _with_intervals(columns: list[TableColumn], rows: list[_Row], level: str) ->
         {
             **row,
             **{
-                f"{key}{_INTERVAL_COLUMN}": _interval_text(row[key]) if key in row else TableCell(value=None)
+                f"{key}{_INTERVAL_COLUMN}": row.get(f"{key}{_INTERVAL_COLUMN}")
+                or (_interval_text(row[key]) if key in row else TableCell(value=None))
                 for key in spelled
             },
         }
@@ -405,6 +420,7 @@ def _table(context: ChartContext) -> Drawn:
         else:
             columns.append(TableColumn(key=key, header=TABLE_HEADERS[key]))
     columns, rows = _with_intervals(columns, rows, context.spec.level)
+    notes = price_notes(context) if context.query.source == "prices" else ()
     table = TableBlock(
         section=PLANNED_SECTION,
         name=context.query.source,
@@ -414,7 +430,7 @@ def _table(context: ChartContext) -> Drawn:
         order=TABLE_ORDER,
         total_rows=len(rows),
     )
-    return Drawn(table)
+    return Drawn(table, notes)
 
 
 #: The kinds this module resolves.
