@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the analyst's texts say what the snapshot's cost counts, and a prices block reads its money and its refusals plainly
+
+**Fixed:** no analyst-tool text says a cost is per reply where the snapshot's cost counts something else. Static
+texts (action details, result field descriptions, the figure-key families and grammar) say per 1,000 of what the cost
+counts; `price_tradeoff`'s notes and a prices chart's note use the snapshot's own phrase (`per 1,000 conversations`).
+The scoreboard's per-reply cost still reads per 1,000 replies. The planner's grammar section changes with it.
+
+**Changed:** a block's values table groups money's thousands (`$1,239`), and a prices table states a month's prices in
+whole dollars where every one on the axis is $10 or more. A prices block on a gain axis whose frontier holds one option
+or none is refused saying so, with `price_tradeoff` on that axis and the axes whose frontier takes a step as the remedy;
+one keeping no two neighbouring frontier options in `query.arms` says that. The report-plan schema copy lists the
+`prices` source.
+
 ### evals: the analyst compares any two arms, sizes the run that would settle a reading, and stops reading cost alone as dominance
 
 **Added:** two actions on the analyst tool's analyses (the editor's cut carries both). `arms_compare` reads the first
