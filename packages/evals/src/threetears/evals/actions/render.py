@@ -51,7 +51,7 @@ from threetears.evals.ops import (
 from threetears.evals.ops.analyst import CitedFigure
 
 if TYPE_CHECKING:
-    from threetears.evals.actions.catalogue import Action, MountedTool
+    from threetears.evals.actions.catalogue import Action, HelpTopic, MountedTool
 
 
 # --- help --------------------------------------------------------------------------------------------
@@ -108,7 +108,7 @@ def render_help_index(tool: MountedTool) -> str:
         lines.append("")
     if tool.spec.topics:
         lines.append("## Reference")
-        lines += [f"- {topic.name}: {one_line(topic.summary)}" for topic in tool.spec.topics]
+        lines += [f"- {topic.name}: {one_line(topic.summary)}{_paged(topic)}" for topic in tool.spec.topics]
         lines.append("")
         lines.append(
             "For one action's parameters and an example, or a reference page: action='help', topic='<action or topic>'."
@@ -116,6 +116,11 @@ def render_help_index(tool: MountedTool) -> str:
     else:
         lines.append("For one action's parameters and an example: action='help', topic='<action>'.")
     return "\n".join(lines)
+
+
+def _paged(topic: HelpTopic) -> str:
+    """What the help index adds to a paged reference topic's line: that it is an index, and how a page is named."""
+    return "" if topic.pages is None else f" An index: its pages are topic='{topic.name}.<page>'."
 
 
 def render_primer(tools: Sequence[MountedTool]) -> str:
@@ -206,6 +211,14 @@ def refuse_unknown_topic(tool: MountedTool, topic: str) -> str:
     if not tool.spec.topics:
         return refused
     return f"{refused} Reference topics: {', '.join(item.name for item in tool.spec.topics)}."
+
+
+def refuse_unknown_page(topic: HelpTopic, page: str, named: Sequence[str]) -> str:
+    """A help call naming a page a paged reference topic does not have: its pages, and its index."""
+    return (
+        f"refused: reference topic {topic.name} has no page {page!r}. Its pages: {', '.join(named)}; "
+        f"topic='{topic.name}' is its index."
+    )
 
 
 def _cut_of(action: Action) -> str:
@@ -405,7 +418,7 @@ def _cited_body(model: BaseModel, indent: str) -> list[str]:
 _NEXT_OFFSET: Final = "next_offset"
 
 
-def next_page_call(action: str, params: BaseModel, next_offset: int) -> dict[str, Any]:
+def _next_page_call(action: str, params: BaseModel, next_offset: int) -> dict[str, Any]:
     """The call that reads the page after this one: the arguments the caller sent, ``offset`` advanced.
 
     :param action: The paged action.
@@ -425,7 +438,7 @@ def next_page_call(action: str, params: BaseModel, next_offset: int) -> dict[str
     }
 
 
-def next_page_line(call: Mapping[str, Any]) -> str:
+def _next_page_line(call: Mapping[str, Any]) -> str:
     """The next page's call as a page's last line: ``next: action='readings_list', snapshot_id='…', offset=40``."""
     spelled = (
         f"{name}='{value}'" if isinstance(value, str) else f"{name}={_compact(value)}" for name, value in call.items()
@@ -451,8 +464,8 @@ def render_page(action: str, params: BaseModel, text: str, structured: dict[str,
     offset = structured.get(_NEXT_OFFSET)
     if offset is None:
         return text, {key: value for key, value in structured.items() if key != _NEXT_OFFSET}
-    call = next_page_call(action, params, offset)
-    return f"{text}\n{next_page_line(call)}", {**structured, "next": call}
+    call = _next_page_call(action, params, offset)
+    return f"{text}\n{_next_page_line(call)}", {**structured, "next": call}
 
 
 def _cited_field(name: str, value: Any, indent: str) -> list[str]:
@@ -726,8 +739,6 @@ def _render_result(status: JobStatus) -> str:
 
 __all__ = [
     "example_call",
-    "next_page_call",
-    "next_page_line",
     "parameter_lines",
     "raised",
     "recovery_line",
@@ -738,6 +749,7 @@ __all__ = [
     "refuse_no_action",
     "refuse_undeclared",
     "refuse_unknown_action",
+    "refuse_unknown_page",
     "refuse_unknown_topic",
     "render_cited",
     "render_help_index",

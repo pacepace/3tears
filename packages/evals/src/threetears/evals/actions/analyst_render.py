@@ -26,7 +26,7 @@ from threetears.evals.ops.host import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
 
 #: The help index's group for these actions, which the editor's cut is read off.
-BLOCKS_WORKFLOW = "Investigate: blocks"
+_BLOCKS_WORKFLOW = "Investigate: blocks"
 
 #: An example snapshot id, as a freeze returns one.
 _EXAMPLE_SNAPSHOT = "report-snapshot:0193a1b2c3d4e5f60718293a4b5c6d7e"
@@ -132,7 +132,7 @@ def analyst_render_actions() -> tuple[Action, ...]:
         Action(
             name="block_catalog",
             summary="List every kind of evidence block, the sources each draws, and the sources this snapshot holds.",
-            workflow=BLOCKS_WORKFLOW,
+            workflow=_BLOCKS_WORKFLOW,
             permission="read",
             params=BlockCatalogParams,
             result=BlockCatalog,
@@ -143,14 +143,15 @@ def analyst_render_actions() -> tuple[Action, ...]:
                 "Each kind says what it draws, the sources it reads, whether every row needs an interval, whether it "
                 "draws panels, and the reference lines code can key on it. Each source says what a row is, the query "
                 "fields that narrow its rows, and whether this snapshot holds any. The figure key forms are the paths "
-                "a claim cites a figure by; the whole grammar, with its filters and "
-                "examples, is help topic='figure_keys'."
+                "a claim cites a figure by; help topic='figure_keys' gives the grammar's "
+                "rules and filters and names a page per group of paths, topic='figure_keys.<group>', with each form's "
+                "statistics and an example."
             ),
         ),
         Action(
             name="block_render",
             summary="Draw one evidence block as a page would, and read its values table, level, unit and line.",
-            workflow=BLOCKS_WORKFLOW,
+            workflow=_BLOCKS_WORKFLOW,
             permission="read",
             params=BlockRenderParams,
             result=RenderedBlock,
@@ -170,4 +171,4 @@ def analyst_render_actions() -> tuple[Action, ...]:
     )
 
 
-__all__ = ["BLOCKS_WORKFLOW", "analyst_render_actions"]
+__all__ = ["analyst_render_actions"]

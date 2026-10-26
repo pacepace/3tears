@@ -26,7 +26,6 @@ import pytest
 from pydantic import BaseModel, Field
 
 from threetears.evals.actions import (
-    PRIMER_BUDGET,
     Action,
     ActionCatalogue,
     Caller,
@@ -45,6 +44,10 @@ from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.ops import JobHandle, JobsStarted, OpsHost, RunLine
 from packages.evals.tests.ops_support import CALLER, ops_fixture
 from packages.evals.tests.off_loop import off_loop
+
+#: The most characters a primer may run to: one client was measured cutting a server's instructions at 2,045
+#: characters without a mark, and the catalogue holds a primer to 1,800 so it reaches a model whole.
+PRIMER_BUDGET = 1_800
 
 
 class _Echo(EvalBaseModel):
@@ -535,6 +538,40 @@ async def test_help_serves_a_reference_topic_beside_the_actions_and_lists_it() -
     unknown = await _call(tool, {"action": "help", "topic": "glosary"})
     assert unknown.is_error and unknown.text.splitlines()[0].endswith("Reference topics: glossary.")
     assert unknown.recovery is not None and unknown.recovery.valid_values == ("note_echo", "glossary")
+
+
+async def test_a_paged_topic_serves_its_index_and_each_page_and_refuses_a_page_it_lacks() -> None:
+    written: list[str] = []
+
+    def pages() -> dict[str, str]:
+        written.append("pages")
+        return {"nouns": "a note is a noun", "verbs": "echo is a verb"}
+
+    topic = HelpTopic(name="glossary", summary="What the words mean.", text=lambda: "nouns and verbs", pages=pages)
+    spec = ToolSpec(name="notes", description="d", permissions=frozenset({"read"}), topics=(topic,))
+    tool = ActionCatalogue([_action()]).mount(spec)
+    assert written == [], "a topic's pages are written only when one is asked for"
+    assert "- glossary: What the words mean. An index: its pages are topic='glossary.<page>'." in tool.help_index()
+    index = await _call(tool, {"action": "help", "topic": "glossary"})
+    assert (index.text, index.is_error, written) == ("nouns and verbs", False, [])
+    page = await _call(tool, {"action": "help", "topic": "glossary.verbs"})
+    assert (page.text, page.is_error, written) == ("echo is a verb", False, ["pages"])
+    missing = await _call(tool, {"action": "help", "topic": "glossary.adverbs"})
+    assert missing.is_error and missing.refusal is not None and missing.refusal.kind == "validation_failed"
+    assert missing.text.splitlines()[0] == (
+        "refused: reference topic glossary has no page 'adverbs'. Its pages: glossary.nouns, glossary.verbs; "
+        "topic='glossary' is its index."
+    )
+    assert missing.recovery is not None and missing.recovery.valid_values == ("glossary.nouns", "glossary.verbs")
+    assert missing.text.splitlines()[-1].startswith("recovery: ")
+    unpaged = HelpTopic(name="terms", summary="s", text=lambda: "t")
+    plain = ActionCatalogue([_action()]).mount(
+        ToolSpec(name="notes", description="d", permissions=frozenset({"read"}), topics=(unpaged,))
+    )
+    dotted = await _call(plain, {"action": "help", "topic": "terms.nouns"})
+    assert dotted.is_error and dotted.text.splitlines()[0].endswith("Reference topics: terms."), (
+        "a topic of one page has no pages: a dotted name is an unknown topic"
+    )
 
 
 async def test_a_tool_with_no_topics_keeps_its_help_as_it_was(tools: dict[str, Any]) -> None:
