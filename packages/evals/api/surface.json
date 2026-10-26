@@ -1891,6 +1891,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.EvalReportSnapshot": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.EvalRunScan": {
       "kind": "class",
       "signature": "",
@@ -2606,6 +2611,11 @@
       "signature": "ReplayedDelivery(outcome: DeliveryOutcome, payload: P | None = None, error: str | None = None)",
       "tier": "stable"
     },
+    "threetears.evals.kernel.report_snapshot_id": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.ReportPlanProvenance": {
       "kind": "model",
       "signature": "",
@@ -2798,6 +2808,11 @@
     },
     "threetears.evals.kernel.SHUTDOWN_CAUSE": {
       "kind": "constant (str)",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.SnapshotSource": {
+      "kind": "literal",
       "signature": "",
       "tier": "provisional"
     },
@@ -8073,7 +8088,7 @@
     },
     "threetears.evals.actions.Action": {
       "kind": "dataclass",
-      "signature": "Action(name: str, summary: str, workflow: str, permission: PermissionClass, params: type[BaseModel], result: type[BaseModel], handler: ActionHandler, example: Mapping[str, Any], render: Callable[[Any], str] = …, long_running: bool = False, detail: str = '', happy_path: HappyPath | None = None, text_field: str | None = None)",
+      "signature": "Action(name: str, summary: str, workflow: str, permission: PermissionClass, params: type[BaseModel], result: type[BaseModel], handler: ActionHandler, example: Mapping[str, Any], render: Callable[[Any], str] = …, long_running: bool = False, detail: str = '', happy_path: HappyPath | None = None, text_field: str | None = None, cut: str | None = None)",
       "tier": "stable"
     },
     "threetears.evals.actions.ACTION_NAME": {
@@ -8095,6 +8110,21 @@
       "kind": "dataclass",
       "signature": "ActionOutcome(text: str, structured: dict[str, Any] | None = None, refusal: Refusal | None = None, action: str | None = None, text_field: str | None = None)",
       "tier": "stable"
+    },
+    "threetears.evals.actions.analyst_actions": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.actions.analyst_tools": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.actions.analyst_toolset": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.actions.Caller": {
       "kind": "dataclass",
@@ -8120,6 +8150,11 @@
       "kind": "function",
       "signature": "definition_drift_actions(corpus: Callable[[str], SeedCorpus], *, seeded_digests: Callable[[str], Mapping[str, str]] | None = None) -> tuple[Action, Action]",
       "tier": "host-contract"
+    },
+    "threetears.evals.actions.editor_toolset": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.actions.engine_actions": {
       "kind": "function",

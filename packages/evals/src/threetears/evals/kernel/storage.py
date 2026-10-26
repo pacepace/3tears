@@ -54,6 +54,7 @@ from threetears.evals.kernel.campaign import (
     EvalSweep,
     generation_slot_id,
 )
+from threetears.evals.kernel.report_snapshot import EvalReportSnapshot
 from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import (
     ConflictError,
@@ -1475,6 +1476,24 @@ class EvalStorage:
     def delete_report_plan(self, plan_id: str, scope_id: str) -> bool:
         """Delete a report plan by id within a scope, reporting whether there was one."""
         return self._store.delete(plan_id, scope_id)
+
+    def save_report_snapshot(self, snapshot: EvalReportSnapshot) -> None:
+        """Persist a report snapshot in the scope it names, only where none is stored under its id.
+
+        A snapshot is immutable and its id is its content's (``report_snapshot_id``), so one already stored under the
+        id holds the same report input and is never written over.
+
+        :raises ConflictError: A snapshot is already stored under its id.
+        :raises StorageError: Any other write failure.
+        """
+        self._save(snapshot.to_dict(), create_only=True)
+
+    def load_report_snapshot(self, snapshot_id: str, scope_id: str) -> EvalReportSnapshot | None:
+        """Load a report snapshot by id within a scope, or ``None`` when none resolves.
+
+        :raises ValidationError: The stored snapshot does not read under this build's model (a regenerable bump).
+        """
+        return self._load(EvalReportSnapshot, snapshot_id, scope_id)
 
     def save_analysis_attempt(self, attempt: EvalAnalysisAttempt, *, if_match: str | None = None) -> None:
         """Persist one generation attempt's record in the scope it names; conditionally when ``if_match`` is given.

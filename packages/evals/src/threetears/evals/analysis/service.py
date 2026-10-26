@@ -437,6 +437,42 @@ class _Assembled(NamedTuple):
     first_call: PlannedCall
 
 
+def require_evidence(bundle: CampaignBundle, campaign_id: str, scope_id: str) -> None:
+    """Refuse a campaign bundle that resolves no runs: there is nothing to analyse, report on or freeze.
+
+    The zero-evidence case, distinct from the thin-but-real data a generation or a report degrades gracefully over:
+    every attached run failed to resolve (destroyed outside the delete cascade), was archived, or none is attached
+    yet. Refused rather than spent on, or frozen as a snapshot no figure could come from. The two empty causes are
+    named separately: "archived them all" is a curation the operator can undo in one call, while "unresolved" is
+    data that is gone, and one message for both would send them looking in the wrong place.
+
+    :param bundle: The campaign's assembled bundle.
+    :ptype bundle: CampaignBundle
+    :param campaign_id: The campaign, as the refusal names it.
+    :ptype campaign_id: str
+    :param scope_id: The scope it was assembled in.
+    :ptype scope_id: str
+    :raises ValidationFailedError: The bundle holds no run: every one is archived, or none resolves.
+    """
+    if bundle.run_ids:
+        return
+    archived_run_ids = [run for aspect in bundle.aspects for run in aspect.archived_run_ids]
+    unresolved_run_ids = [run for aspect in bundle.aspects for run in aspect.unresolved_run_ids]
+    if archived_run_ids and not unresolved_run_ids:
+        raise ValidationFailedError(
+            f"campaign '{campaign_id}' has {len(archived_run_ids)} run(s) in scope "
+            f"'{scope_id}' and every one is archived — nothing to analyse",
+            remedy="un-archive a run (run_archive with archived=false) to include it",
+        )
+    raise ValidationFailedError(
+        f"campaign '{campaign_id}' has no runs resolvable in scope '{scope_id}' — nothing to "
+        f"analyse (unresolved run ids: {unresolved_run_ids or 'none attached'}"
+        + (f"; archived and excluded: {len(archived_run_ids)}" if archived_run_ids else "")
+        + ")",
+        remedy=f"create a campaign over runs this scope holds ({FIND_RUN})",
+    )
+
+
 async def _assemble(
     host: EvalHost,
     campaign_id: str,
@@ -467,32 +503,7 @@ async def _assemble(
     # Assembly reads every member run, its results and the insight ledger — the heaviest read the engine
     # makes — so it runs on the host's blocking executor, never on the loop a transport serves calls on.
     bundle = await run_blocking(executor, _assembled_campaign_bundle, campaign, storage=storage, profile=host.profile)
-    archived_run_ids = [run for aspect in bundle.aspects for run in aspect.archived_run_ids]
-    unresolved_run_ids = [run for aspect in bundle.aspects for run in aspect.unresolved_run_ids]
-    if not bundle.run_ids:
-        # No evidence to analyse: every attached run failed to resolve (destroyed
-        # outside the delete cascade), was archived, or none is attached yet. Refuse rather than burn a paid generator call on an empty
-        # bundle (Visible Costs — the very principle this action centres on).
-        # This is the zero-evidence case, distinct from the thin-but-real data
-        # generation is meant to degrade gracefully over.
-        #
-        # The two empty causes are named separately: "archived them all" is a
-        # curation the operator can undo in one call, while "unresolved" is
-        # data that is gone. One message for both would send them looking in
-        # the wrong place.
-        if archived_run_ids and not unresolved_run_ids:
-            raise ValidationFailedError(
-                f"campaign '{campaign_id}' has {len(archived_run_ids)} run(s) in scope "
-                f"'{scope_id}' and every one is archived — nothing to analyse",
-                remedy="un-archive a run (run_archive with archived=false) to include it",
-            )
-        raise ValidationFailedError(
-            f"campaign '{campaign_id}' has no runs resolvable in scope '{scope_id}' — nothing to "
-            f"analyse (unresolved run ids: {unresolved_run_ids or 'none attached'}"
-            + (f"; archived and excluded: {len(archived_run_ids)}" if archived_run_ids else "")
-            + ")",
-            remedy=f"create a campaign over runs this scope holds ({FIND_RUN})",
-        )
+    require_evidence(bundle, campaign_id, scope_id)
 
     # A requested writer the host does not allow is refused before the prompt is resolved or a client
     # built; the host's default is checked once the client says which model it resolved to.
@@ -2839,6 +2850,7 @@ __all__ = [
     "freeze_reporter_case",
     "get_analysis",
     "assemble_campaign_bundle",
+    "require_evidence",
     "inspect_analysis_bundle",
     "campaign_report",
     "campaign_verdicts",

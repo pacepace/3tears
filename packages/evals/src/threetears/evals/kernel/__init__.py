@@ -332,6 +332,7 @@ from threetears.evals.kernel.remedies import (
     SEED_REMEDY,
     WRITER_REMEDY,
 )
+from threetears.evals.kernel.report_snapshot import EvalReportSnapshot, SnapshotSource, report_snapshot_id
 from threetears.evals.kernel.result_condition import (
     DIFFERENTIAL_EXCLUSION_SHARE,
     CandidateFailureCause,
@@ -578,6 +579,9 @@ __all__ = [
     "EvalCampaign",
     "EvalInsight",
     "EvalReportPlan",
+    "EvalReportSnapshot",
+    "SnapshotSource",
+    "report_snapshot_id",
     "ReportPlanProvenance",
     "EvalSweep",
     "SweepArmArguments",

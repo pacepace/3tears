@@ -932,7 +932,7 @@ The action catalogue: every eval action, declared once, for any transport to mou
 
 - **`definition_drift_actions`** · *host contract* · function · `definitions_drift` and `definitions_reset`, for the host's catalogue.
   <br>`definition_drift_actions(corpus: Callable[[str], SeedCorpus], *, seeded_digests: Callable[[str], Mapping[str, str]] | None = None) -> tuple[Action, Action]`
-- **`eval_catalogue`** · function · The engine's catalogue, with the host's own actions after the engine's.
+- **`eval_catalogue`** · function · The engine's catalogue, the analyst's actions after the engine's, and the host's own after both.
   <br>`eval_catalogue(host_actions: tuple[Action, ...] = ()) -> ActionCatalogue`
 - **`render_jobs_started`** · *host contract* · function · What a start returned: each job, and how to poll it.
   <br>`render_jobs_started(started: JobsStarted) -> str`

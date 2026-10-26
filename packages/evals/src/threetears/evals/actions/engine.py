@@ -19,7 +19,9 @@ from pydantic import Field, ValidationError
 
 from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, SCHEMA_REMEDY
 from threetears.evals.actions import render
+from threetears.evals.actions.analyst import analyst_actions
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller, ConformanceStage
+from threetears.evals.actions.params import AnalysisId, CampaignId, Limit, Offset
 from threetears.evals.schema import EvalRunStatus
 from threetears.evals.kernel import EvalStorage, ResultOutcome, ValidationFailedError
 from threetears.evals.schema.base import EvalBaseModel
@@ -173,8 +175,6 @@ RunId = Annotated[str, Field(min_length=1, description="A run's id, as runs_list
 TemplateId = Annotated[str, LaunchArguments.model_fields["template_id"]]
 SubjectId = Annotated[str, LaunchArguments.model_fields["subject_id"]]
 ResultId = Annotated[str, Field(min_length=1, description="A result's id, as results_list names it.")]
-CampaignId = Annotated[str, Field(min_length=1, description="A campaign's id, as campaigns_list names it.")]
-AnalysisId = Annotated[str, Field(min_length=1, description="A stored analysis's id, as analyses_list names it.")]
 InsightId = Annotated[str, Field(min_length=1, description="An insight's id, as insights_list names it.")]
 JobId = Annotated[
     str, Field(min_length=1, description="A job's id, exactly as the action that started it returned it.")
@@ -300,14 +300,9 @@ ConditionFilter = Annotated[
         "fail) or infra_exclude (a harness fault, in no aggregate)."
     ),
 ]
-#: The rows one ``results_list`` page holds unless the caller asks for fewer, and the most it may ask for: a
-#: page is read into an agent's context, and a run of a few hundred cases at k=3 is a thousand rows.
+#: The rows one ``results_list`` page holds unless the caller asks for fewer (the most it may ask for is ``Limit``'s):
+#: a page is read into an agent's context, and a run of a few hundred cases at k=3 is a thousand rows.
 _RESULTS_PAGE_DEFAULT = 50
-_RESULTS_PAGE_MAX = 200
-Offset = Annotated[int, Field(ge=0, description="Skip this many rows; the previous page's next_offset.")]
-Limit = Annotated[
-    int, Field(ge=1, le=_RESULTS_PAGE_MAX, description=f"The most rows to return, up to {_RESULTS_PAGE_MAX}.")
-]
 CaseCount = Annotated[
     int | None,
     Field(ge=1, description="A case count to price each planned arm at in place of its plan's, for a what-if grid."),
@@ -2792,7 +2787,11 @@ def engine_actions() -> tuple[Action, ...]:
 
 
 def eval_catalogue(host_actions: tuple[Action, ...] = ()) -> ActionCatalogue:
-    """The engine's catalogue, with the host's own actions after the engine's.
+    """The engine's catalogue, the analyst's actions after the engine's, and the host's own after both.
+
+    The analyst's actions (:func:`~threetears.evals.actions.analyst.analyst_actions`) mount only on the analyst's
+    tools (:func:`~threetears.evals.actions.analyst.analyst_tools`), never on :func:`standard_tools` or
+    :func:`read_only_tools`, so the ``evals`` tool an MCP client sees is the engine's alone.
 
     :param host_actions: Actions the host contributes — its kinds' own, its curation — each named, classed and
         rendered like the engine's.
@@ -2801,7 +2800,7 @@ def eval_catalogue(host_actions: tuple[Action, ...] = ()) -> ActionCatalogue:
     :rtype: ActionCatalogue
     :raises ValueError: A host action takes a name the engine's catalogue already has.
     """
-    return ActionCatalogue(engine_actions()).extended(host_actions)
+    return ActionCatalogue((*engine_actions(), *analyst_actions())).extended(host_actions)
 
 
 __all__ = ["ANALYSE", "CURATE", "DISCOVER", "RUN", "engine_actions", "eval_catalogue"]

@@ -158,6 +158,7 @@ def test_the_placements_the_registry_records() -> None:
         "eval_analysis": ("derived", "regenerable"),
         "eval_insight": ("derived", "regenerable"),
         "eval_report_plan": ("derived", "regenerable"),
+        "eval_report_snapshot": ("derived", "regenerable"),
         "eval_judge_profile": ("derived", "regenerable"),
     }
 
