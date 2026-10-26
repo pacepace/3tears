@@ -8,6 +8,37 @@ packages (bumped in lock-step).
 
 ## v0.79.0 -- 2026-10-26
 
+### core: a compare-and-swap reads its bucket's creation time once, not twice
+
+**Changed:** every ordered `l2_cas_mutate` made two `STREAM.INFO` round trips for the bucket's
+creation time: one before the swap and one after it won.
+- The read before the swap is now remembered per collection and bucket handle. Every swap after
+  the first makes one round trip.
+- A remembered value can only be too low, since a recreated stream is younger. The fresh read
+  after the swap, which catches a stream recreated around it, also refreshes the remembered value.
+- The regressed-epoch refusal (`L2EpochRegressedError`) re-reads the creation time before it
+  raises. So a bucket recreated since the last swap is still detected, and is never mistaken for
+  a regression.
+- `NatsKvBucket.date_created()` itself is unchanged and still reads fresh.
+
+### registry: several replicas evict a dead pod as one registry does
+
+**Fixed:** with more than one registry replica, the heartbeat sweep went wrong in three ways.
+- A pod's missed sweeps were counted in its shared heartbeat row, so every replica's sweep added
+  one, and N replicas evicted a pod after 1/N of `THREETEARS_REGISTRY_HEARTBEAT_MAX_MISSES`.
+- A pod one replica evicted (its row deleted) left the other replicas' tracking but not their
+  catalogs, so they kept offering its copies, and could write them back to the bucket.
+- A replica swept only pods it had heard, so copies it loaded from the bucket for a pod that
+  died before it started stayed forever.
+
+Now:
+- Each replica counts missed sweeps itself, one per its own sweep; every replica hears every
+  heartbeat.
+- A pod whose row is gone is deregistered from the catalog, unless it registered or was heard
+  within the timeout.
+- Every sweep covers each pod the catalog holds a copy for.
+- A pod a replica quarantined is revived there when a peer records its heartbeat.
+
 ### core: coordination redemptions keep no L1 copy
 
 **Fixed:** `coordination_redemptions` cached every row a `RedemptionLedger` or `CollectionReplayAnchor` wrote in
