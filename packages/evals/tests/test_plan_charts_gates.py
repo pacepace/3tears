@@ -45,7 +45,8 @@ from threetears.evals.analysis import (
     planned_page_html,
     planned_page_markdown,
 )
-from threetears.evals.analysis.report.figure_keys import format_figure, resolve
+from threetears.evals.analysis.report.cost_unit import REPLIES, per_count, per_noun
+from threetears.evals.analysis.report.figure_keys import cost_basis, format_figure, resolve
 from threetears.evals.analysis.report.plan_page.build import plan_page
 from threetears.evals.analysis.report.plan_page.drawable import plan_look
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
@@ -247,6 +248,30 @@ def test_a_task_matrix_is_each_tasks_gate_check_with_its_cost_and_the_routing_pi
             assert bool(cell.pick) == (picks.get(task.id) == arm)
 
 
+def test_a_task_matrix_prices_its_costs_per_what_the_task_cost_measure_counts() -> None:
+    """A task matrix's costs are each task's own figures on a cost measure, so they are per what that measure counts,
+    even where the page's cost is the scoreboard's per reply. r1 states its task costs on a per-1k measure of
+    conversations; given scoreboard reply costs, the page's cost basis turns to replies and the matrix's must not."""
+    data = _input("r1").model_dump(by_alias=True, exclude_none=True)
+    for row in data["scoreboard"].values():
+        row["reply_cost_usd"] = 0.001
+    held = ReportInput.model_validate(data)
+    assert cost_basis(held).noun == REPLIES, "the control: the page's cost is the scoreboard's, per reply"
+    (key,) = [key for key, measure in held.measures.items() if measure.unit == "usd_per_1k"]
+    noun = per_noun(held.measures[key])
+    assert noun and noun != REPLIES, "the control: the task cost measure counts something else"
+    costed = [task.id for task in held.tasks if task_costs(held, task.id)]
+    assert costed, "the control: some task states a cost"
+    assert all(task_costs(held, task).measure == key for task in costed)
+    plan = _plan(dataset.HERE / "r1" / "anchor.plan.json")
+    section = plan.sections[0].model_copy(update={"chart": _spec("gate_matrix", "tasks")})
+    page = plan_page(plan.model_copy(update={"summary": [], "sections": [section]}), held)
+    block = page.sections[0].chart.chart
+    assert isinstance(block, ChartBlock) and isinstance(block.data, GateMatrixChart)
+    assert block.data.cost_unit == per_count(noun)
+    assert any(f" {per_count(noun)}" in cell for row in block.values_table()[1] for cell in row)
+
+
 def test_r1s_matrix_marks_a_pick_on_every_routable_task_some_arm_can_take() -> None:
     """The fixture reaches the pick: r1's routable tasks each have one, the cross-cutting one none."""
     (param,) = [param for param in _stored("gate_matrix", "tasks") if param.id.startswith("r1-anchor")]
@@ -432,6 +457,24 @@ def test_a_gate_scatter_over_tasks_panels_each_task_at_its_own_gates(measures: l
 
 
 # --- lattice ------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("name", "spec", "block", "summary"), _stored("lattice", "configs"))
+def test_a_lattices_costs_are_the_pages_cost_and_per_what_it_counts(
+    name: str, spec: ChartSpec, block: ChartBlock, summary: bool
+) -> None:
+    """A lattice tile's cost is the arm's cost by the page's one rule (``cost_per_1k.<arm>``), so its unit is what that
+    key's figure is per: the page's cost basis, read from the measure the cost is read on."""
+    report_input = _input(name)
+    data = block.data
+    assert isinstance(data, LatticeChart)
+    costs = [cell for row in data.rows for cell in row.cells if cell.cost is not None]
+    assert costs, "the control: the lattice draws costs"
+    for cell in costs:
+        figure = resolve(f"cost_per_1k.{cell.id}", report_input)
+        assert cell.cost == figure.value
+        assert data.cost_unit == per_count(figure.per)
+    assert per_noun(report_input.measures[cost_basis(report_input).source]) == cost_basis(report_input).noun
 
 
 @pytest.mark.parametrize(("name", "spec", "block", "summary"), _stored("lattice", "configs"))
