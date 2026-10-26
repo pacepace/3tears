@@ -51,6 +51,7 @@ One tool, `evals_analyst`; each call is `{"action": "<name>", ...}` and, but for
 | | `measure_read` | `measure_key`, `by` (arm, stratum, task, cell), `statistics` | One measure's figures |
 | | `examples_list` | `arm_filter`, `stratum_filter`, `outcome_filter` | Failed trials, reasons, excerpts |
 | | `caveats_list` | | Every caveat and what it touches |
+| | `figure_keys_check` | `keys` | Read each key a draft cites, as the page prints it through its filters, or why it reads nothing; check a whole draft before you submit |
 | analyses | `options_dominance` | `axes` | Which options survive the gates, which dominate, and each gate figure an option fails or borders, by its keys |
 | | `decision_sensitivity` | `parameter` (`margin:<aspect>`, `floor:<aspect>/<floor>`, `threshold:<criterion>`), `range_low`, `range_high` | Where the call flips |
 | | `measure_breakdown` | `measure_key`, `slice_by` | Where a difference concentrates; exploratory |

@@ -835,6 +835,7 @@ _PAGED_CALLS: dict[str, tuple[str, dict[str, Any]]] = {
     "decision_sensitivity": ("r2", {"parameter": "threshold:pass_rate", "limit": 1}),
     "measure_breakdown": (KAIRO, {"measure_key": "persona.holds_character", "limit": 2}),
     "price_tradeoff": (KAIRO, {"gain_key": "persona.holds_character", "limit": 1}),
+    "figure_keys_check": (KAIRO, {"keys": ["arm:September", "arm:1017", "n_candidates", "judge.tier"], "limit": 1}),
     "block_render": (KAIRO, {"block_kind": "table", "query": {"source": "contrasts"}, "limit": 2}),
 }
 
@@ -896,6 +897,7 @@ _ROWS = {
     "examples_list": "examples",
     "measure_breakdown": "slices",
     "block_render": "rows",
+    "figure_keys_check": "keys",
 }
 
 

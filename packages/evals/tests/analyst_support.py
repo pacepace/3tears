@@ -362,3 +362,18 @@ def _price_calls(held: ReportInput) -> list[dict[str, Any]]:
 
 
 ANALYST_CALLS["price_tradeoff"] = _price_calls
+
+
+def _keys_calls(held: ReportInput) -> list[dict[str, Any]]:
+    """Keys read off the input as a report would cite them: each arm, the candidates' count, the first measure's mean
+    for the first arm holding it, written through a filter; a path naming nothing; then the same keys, a page of two
+    from the second."""
+    keys = [f"arm:{arm.id}" for arm in held.arms] + ["{n_candidates|int}"]
+    measure = _first((key, stat) for key, table in held.measures.items() for stat in table.per_arm.items())
+    if measure is not None:
+        keys.append(f"measure.{measure[0]}.{measure[1][0]}.mean")
+    keys.append("reading.no-such-arm.change|pts")
+    return [{"keys": keys}, {"keys": keys, "offset": 1, "limit": 2}]
+
+
+ANALYST_CALLS["figure_keys_check"] = _keys_calls

@@ -101,6 +101,8 @@ _PER_THOUSAND_FACTORS: dict[str, float] = {"usd": 1000.0, "usd_per_1k": 1.0, "us
 Filter = Literal["pct", "pts", "abs", "usd", "int", "pct10", "interval", "usd_per_1k"]
 _FILTERS: tuple[str, ...] = get_args(Filter)
 _SPELLINGS: frozenset[str] = frozenset({"pct", "pts", "usd", "usd_per_1k", "int", "pct10"})
+#: The filters that choose a key's spelling, at most one to a key, in the grammar's order.
+FILTER_SPELLINGS: tuple[str, ...] = tuple(name for name in _FILTERS if name in _SPELLINGS)
 
 #: How each filter reads, as the grammar teaches it.
 _FILTER_MEANS: dict[str, str] = {
@@ -2579,6 +2581,14 @@ def resolve(key: str, report_input: ReportInput) -> Figure:
         if arm_id not in {arm.id for arm in report_input.arms}:
             raise _refuse(key, f"names no arm; the arms are {_listed(_arms(report_input, ()))}")
         return Figure(path=key, kind="arm", value=arm_id)
+    reading = _one_reading(key, report_input)
+    figure = reading.family.resolve(report_input, reading.values, key)
+    return replace(figure, derived=_is_derived(reading))
+
+
+def _one_reading(key: str, report_input: ReportInput) -> _Reading:
+    """The one reading of a path; a path reading two ways, or none, is refused naming the readings or what could
+    come next where it stopped matching."""
     found, stop = _readings(key, report_input)
     if len(found) > 1:
         readings = "; ".join(_named(reading) for reading in found)
@@ -2587,9 +2597,7 @@ def resolve(key: str, report_input: ReportInput) -> Figure:
         if stop.at <= 0:
             raise _refuse(key, f"names no figure; a key begins with {_listed(_beginnings())}")
         raise _refuse(key, f"names no figure: after `{key[: stop.at]}` comes {_listed(stop.expected)}")
-    reading = found[0]
-    figure = reading.family.resolve(report_input, reading.values, key)
-    return replace(figure, derived=_is_derived(reading))
+    return found[0]
 
 
 def _is_derived(reading: _Reading) -> bool:
@@ -2676,6 +2684,69 @@ def key_subjects(key: str, report_input: ReportInput) -> KeySubjects:
     return KeySubjects(
         arms=tuple(arms), aspects=tuple(aspects), against_control=any(word in _AGAINST_CONTROL for word in words)
     )
+
+
+@dataclass(frozen=True)
+class KeyForm:
+    """What one key's path is, as the grammar teaches it: the form of the family it reads, what that family reads,
+    and the help page the form is listed on.
+
+    :ivar form: The family's form, its ids as slot names (``price.<from>.<to>.<measure>.<field>``); ``arm:<id>`` for
+        an arm.
+    :ivar what: What the family reads, as the grammar says it.
+    :ivar group: The group of the grammar's paths the form is listed in (``figure_keys.<group>``).
+    """
+
+    form: str
+    what: str
+    group: str
+
+
+#: An arm key's form, as a key check names it.
+_ARM_FORM = KeyForm(form="arm:<id>", what="an arm, printed by its short name and letter tag", group="campaign")
+
+
+def key_form(key: str, report_input: ReportInput) -> KeyForm:
+    """The form one key's path reads by: its family, what the family reads and the grammar's page listing it.
+
+    A path is matched as :func:`resolve` matches it, so a path that names nothing, or reads two ways, is refused
+    alike; one naming a figure the input leaves unstated still has a form.
+
+    :param key: The path, without braces or filters.
+    :ptype key: str
+    :param report_input: The report input the key is read against.
+    :ptype report_input: ReportInput
+    :return: The form.
+    :rtype: KeyForm
+    :raises UnresolvableReference: The path names nothing the input holds, or reads two ways.
+    """
+    if key.startswith(_ARM_PREFIX):
+        return _ARM_FORM
+    family = _one_reading(key, report_input).family
+    group = next(name for name, families in _grouped().items() if family in families)
+    return KeyForm(form=family.form(), what=family.what, group=group)
+
+
+def figure_filters(figure: Figure) -> tuple[str, ...]:
+    """The filters a figure takes: each filter :func:`format_figure` spells it with, alone, in the grammar's order.
+
+    :param figure: What a key resolved to.
+    :ptype figure: Figure
+    :return: The filters; none for an arm or a piece of text.
+    :rtype: tuple[str, ...]
+    """
+    if figure.kind in ("arm", "text"):
+        return ()
+    taken: list[str] = []
+    for name in _FILTERS:
+        try:
+            format_figure(figure, (name,))
+        except UnresolvableReference:
+            # NOSILENT: a filter the figure does not suit is refused by format_figure; that refusal is the answer
+            # sought here, and the filter is left off the list it returns.
+            continue
+        taken.append(name)
+    return tuple(taken)
 
 
 def _beginnings() -> list[str]:
@@ -3316,19 +3387,23 @@ def figure_key_pages() -> dict[str, str]:
 
 
 __all__ = [
+    "FILTER_SPELLINGS",
     "PERCENTILE_NAMES",
     "WEAKEST_PREFIX",
     "Figure",
     "FigureKey",
     "GainAxis",
+    "KeyForm",
     "KeySubjects",
     "NamedKind",
     "figure_key_grammar",
     "figure_key_index",
+    "figure_filters",
     "figure_key_pages",
     "flip_margin",
     "format_figure",
     "gain_axis",
+    "key_form",
     "key_subjects",
     "keys_in",
     "literal_numbers",
