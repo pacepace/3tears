@@ -229,6 +229,58 @@ class _Drawable(_Kind):
         return headers, body
 
 
+#: A number in a table cell: its sign, its digits with any thousands separators, and its decimals; never inside a
+#: word (``p95``) or a longer number.
+_CELL_NUMBER = re.compile(r"(?<![\w.,])([+\-−]?)(\d[\d,]*)(?:\.(\d+))?(?![\w])")
+
+#: The most decimals a column is padded to: past it the figures are small amounts whose precision is their own.
+_MOST_PADDED = 3
+
+
+def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
+    """A values table's cells, every number at one precision among the cells that read alike: cells that read the
+    same but for their numbers (``94% · $1 per 1,000 calls``, ``96.4% · $1.06 per 1,000 calls``), wherever they sit in
+    the table, have each number in the same place padded with zeros to the most decimals that place holds among them
+    (``94.0%``, ``$1.00``), up to three.
+
+    Padding never rounds: a cell keeps every digit it had, so a table still never rounds away what a value holds,
+    and two figures a reader compares read at one precision. A cell no other reads like (a label, words) is left as it
+    is.
+
+    :param rows: The table's rows of cells.
+    :ptype rows: Sequence[Sequence[str]]
+    :return: The rows, each number padded among the cells that read like its own.
+    :rtype: list[list[str]]
+    """
+    table = [list(row) for row in rows]
+    shaped: dict[str, list[tuple[int, int]]] = {}
+    for at, row in enumerate(table):
+        for column, cell in enumerate(row):
+            shape = _CELL_NUMBER.sub("#", cell)
+            if "#" in shape:
+                shaped.setdefault(shape, []).append((at, column))
+    for places in shaped.values():
+        found = [list(_CELL_NUMBER.finditer(table[at][column])) for at, column in places]
+        most = [max(len(numbers[place].group(3) or "") for numbers in found) for place in range(len(found[0]))]
+        for at, column in places:
+            table[at][column] = _padded_cell(table[at][column], most)
+    return table
+
+
+def _padded_cell(cell: str, most: Sequence[int]) -> str:
+    """One cell, its n-th number padded to ``most[n]`` decimals where that is three or fewer."""
+    place = iter(range(len(most)))
+
+    def pad(found: re.Match[str]) -> str:
+        wanted = most[next(place)]
+        decimals = found.group(3) or ""
+        if wanted > _MOST_PADDED or len(decimals) >= wanted:
+            return found.group(0)
+        return f"{found.group(1)}{found.group(2)}.{decimals.ljust(wanted, '0')}"
+
+    return _CELL_NUMBER.sub(pad, cell)
+
+
 def _interval(spec: str, low: float | None, high: float | None) -> str:
     """An interval as a table cell: its two ends under the chart's format, empty without one."""
     if low is None or high is None:
@@ -1152,16 +1204,15 @@ def _drawn(chart: _Kind) -> list[tuple[_PanelText | None, _Kind | None]]:
 
 
 __all__ = [
-    "KIT_CHARTS",
     "BarRow",
     "BarSegment",
     "BarsChart",
     "BarsPanel",
     "ChartColumn",
     "ChartPattern",
+    "ChartReference",
     "ChartShape",
     "ChartStatus",
-    "ChartReference",
     "ConfusionChart",
     "ConfusionPanel",
     "DiffHeatmapCell",
@@ -1187,6 +1238,7 @@ __all__ = [
     "HeatmapChart",
     "HeatmapPanel",
     "HeatmapRow",
+    "KIT_CHARTS",
     "KitChart",
     "LatticeCell",
     "LatticeChart",
@@ -1202,4 +1254,5 @@ __all__ = [
     "ScatterPanel",
     "ScatterPath",
     "ScatterPoint",
+    "even_precision",
 ]

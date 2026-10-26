@@ -42,7 +42,7 @@ from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import PlanRefusal
 from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES, complete_chart
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
-from threetears.evals.analysis.report.charts import KIT_CHARTS
+from threetears.evals.analysis.report.charts import KIT_CHARTS, even_precision
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, resolve
 from threetears.evals.analysis.report.plan_page.build import plan_page
 from threetears.evals.analysis.report_input import Cell, ReportInput, Stratum, Task
@@ -132,13 +132,15 @@ def test_the_sweep_meets_refusals_as_well_as_blocks() -> None:
 
 
 def _values(block: ChartBlock | TableBlock) -> tuple[list[str], list[list[str]]]:
-    """A page's block as its values table: a chart's own, a table's cells as its Markdown prints them."""
+    """A page's block as its values table: a chart's own, a table's cells as its Markdown prints them, each number at
+    one precision among the cells that read alike, as block_render reads them."""
     if isinstance(block, ChartBlock):
-        return block.values_table()
+        headers, body = block.values_table()
+        return headers, even_precision(body)
     cells = [[row[c.key] for c in block.columns] for row in block.rows]
-    return [c.header for c in block.columns], [
-        [cell.text if cell.tag is None else f"{cell.tag} · {cell.text}" for cell in row] for row in cells
-    ]
+    return [c.header for c in block.columns], even_precision(
+        [[cell.text if cell.tag is None else f"{cell.tag} · {cell.text}" for cell in row] for row in cells]
+    )
 
 
 def _completed_now(spec: ChartSpec, held: ReportInput) -> ChartSpec:
@@ -537,6 +539,30 @@ def test_no_scatter_names_a_point_by_an_id_the_input_names_otherwise() -> None:
                 assert not points & named, f"{name}: {kind} over {source} names points by id: {points & named}"
                 seen += 1
     assert seen, "the control: some fixture draws a scatter"
+
+
+def test_cells_that_read_alike_print_their_numbers_at_one_precision_and_lose_no_digit() -> None:
+    rows = [["A", "94% · $1 per 1,000 calls", "-7.6 to +1.1"], ["B", "96.4% · $1.655 per 1,000 calls", "-3 to +0.25"]]
+    assert even_precision(rows) == [
+        ["A", "94.0% · $1.000 per 1,000 calls", "-7.6 to +1.10"],
+        ["B", "96.4% · $1.655 per 1,000 calls", "-3.0 to +0.25"],
+    ]
+    assert even_precision([["p95 latency", "Few-shot (12 ex.)"]]) == [["p95 latency", "Few-shot (12 ex.)"]]
+    assert even_precision([["$0.000616"], ["$1"]]) == [["$0.000616"], ["$1"]], "past three decimals, nothing is padded"
+
+
+def test_a_tables_paired_figures_read_at_one_precision() -> None:
+    """The prototype's complaint: 98% beside 98.6% in one table reads as a different precision, not a rounder figure."""
+    name, held, keys = next(
+        (name, held, keys)
+        for name, held in _inputs().items()
+        if len(keys := [key for key, measure in held.measures.items() if measure.per_arm]) >= 2
+    )
+    drawn = block_render(held, block_kind="table", query=_query("measures", measures=keys), limit=200)
+    for column in range(1, len(drawn.columns)):
+        cells = [row.cells[column] for row in drawn.rows if row.cells[column] not in ("", "—")]
+        decimals = {len(cell.split(" ")[0].split(".")[1]) if "." in cell.split(" ")[0] else 0 for cell in cells}
+        assert len(decimals) <= 1 or max(decimals) > 3, (name, drawn.columns[column], cells)
 
 
 def _spread(values: list[float]) -> bool:

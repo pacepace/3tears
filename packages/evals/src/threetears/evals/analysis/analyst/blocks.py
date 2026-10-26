@@ -43,7 +43,7 @@ from threetears.evals.analysis.report.block_spec import (
     small_multiple_faults,
 )
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
-from threetears.evals.analysis.report.charts import KIT_CHARTS
+from threetears.evals.analysis.report.charts import KIT_CHARTS, even_precision
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, render
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report_input import ReportInput
@@ -315,15 +315,18 @@ def _parameter(path: str) -> str:
 
 def _values_table(block: ChartBlock | TableBlock) -> tuple[list[str], list[list[str]]]:
     """A drawn block's values: a chart's table of every value it draws, or a table's own columns and cells, each cell
-    after its arm's tag where it names an arm, as the page's Markdown prints it."""
+    after its arm's tag where it names an arm, as the page's Markdown prints it; and in either, every number at one
+    precision among the cells that read alike (:func:`~threetears.evals.analysis.report.charts.even_precision`), so
+    two figures compared read at one precision."""
     if isinstance(block, ChartBlock):
-        return block.values_table()
+        headers, body = block.values_table()
+        return headers, even_precision(body)
     columns = [column.header for column in block.columns]
     rows = [
         [cell.text if cell.tag is None else f"{cell.tag} · {cell.text}" for cell in (row[c.key] for c in block.columns)]
         for row in block.rows
     ]
-    return columns, rows
+    return columns, even_precision(rows)
 
 
 def block_catalog(report_input: ReportInput, snapshot_id: str) -> BlockCatalog:
