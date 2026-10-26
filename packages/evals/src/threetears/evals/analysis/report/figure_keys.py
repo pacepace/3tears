@@ -2820,8 +2820,8 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
                 f"is {_money(value, signed)}, under ${format_number(_WHOLE_DOLLARS_FROM)}, which whole dollars would "
                 "round away: write it with `usd`",
             )
-        whole = "$" + group_thousands(format_number(float(round(abs(value)))))
-        return _Spelled(f"-{whole}" if value < 0 else _plus(whole, value) if signed else whole)
+        dollars = "$" + group_thousands(format_number(float(round(abs(value)))))
+        return _Spelled(f"-{dollars}" if value < 0 else _plus(dollars, value) if signed else dollars)
     if spelling == _PER_MILLION:
         # The package's money spelling (the scoreboard's): a price per million replies is whole dollars or near it,
         # and two decimals on it are noise.
