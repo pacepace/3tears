@@ -166,7 +166,7 @@ class TestTheKairoPlanResolves:
     def test_next_rounds_the_off_lane_loss_share_to_ten(self):
         """The share rides in Next, where the experiment it sizes is said; the strata section's headline claims only
         what its chart of changes shows (owner-approved anchor fix, 2026-10-26)."""
-        assert "since they carry about 50% of each candidate's loss" in _rendered(_slot("next"))
+        assert "since they carry about 50% of each candidate's in-character loss" in _rendered(_slot("next"))
 
     def test_the_masthead_counts(self):
         counts = _rendered(_plan()["masthead"]["counts"])

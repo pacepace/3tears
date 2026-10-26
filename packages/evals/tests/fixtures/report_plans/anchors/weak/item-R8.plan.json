@@ -27,7 +27,7 @@
       },
       {
         "key": "next",
-        "text": "Run a candidate priced at or below {control.name} on the same cases, with off-lane asks oversampled, since they carry about {strata.off_lane.loss_share|pct10} of each candidate's loss: if it holds character within the margin, it replaces {control.name}; if not, {control.name} stays.",
+        "text": "Run a candidate priced at or below {control.name} on the same cases, with off-lane asks oversampled, since they carry about {strata.off_lane.loss_share|pct10} of each candidate's in-character loss: if its pass rate stays within the margin, it replaces {control.name}; if not, {control.name} stays.",
         "caveats": []
       }
     ],

@@ -2,7 +2,7 @@
   "mode": "decide",
   "headline_kind": "decision",
   "headline": "Keep {control.name}. Both candidates cost {cost.uplift_range|pct} more per reply and stay in character less often.",
-  "lede": "{arm:qwen3.8-flash} has a lower pass rate, by {reading.qwen3.8-flash.high|abs|pts} to {reading.qwen3.8-flash.low|abs|pts} points, and neither candidate beats {control.name} on anything this campaign measured. A candidate priced at or below {control.name} that holds character as well would change the answer.",
+  "lede": "{arm:qwen3.8-flash} has a lower pass rate, by {reading.qwen3.8-flash.high|abs|pts} to {reading.qwen3.8-flash.low|abs|pts} points, and neither candidate beats {control.name} on anything this campaign measured. A candidate priced at or below {control.name} whose pass rate stays within the margin would change the answer.",
   "decision": {
     "slots": [
       {
@@ -17,7 +17,7 @@
       },
       {
         "key": "next",
-        "text": "Run a candidate priced at or below {control.name} on the same cases, with off-lane asks oversampled, since they carry about {strata.off_lane.loss_share|pct10} of each candidate's loss: if it holds character within the margin, it replaces {control.name}; if not, {control.name} stays.",
+        "text": "Run a candidate priced at or below {control.name} on the same cases, with off-lane asks oversampled, since they carry about {strata.off_lane.loss_share|pct10} of each candidate's in-character loss: if its pass rate stays within the margin, it replaces {control.name}; if not, {control.name} stays.",
         "caveats": []
       },
       {
