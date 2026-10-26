@@ -46,7 +46,8 @@ at that task's gates. An x axis whose values span more than ten times is drawn o
 
 **lattice** tiles a factorial grid: rows the first factor's levels, columns the second's (every combination of the
 rest, where there are more), each tile the config's figure on the query's first measure, its cost per 1,000 replies,
-its latency's p95 and its gate status.
+its latency's p95 and its gate status; where no gate or guardrail is declared, no gate reads a config, and its tile
+has no status ("Not gated here"), as the gate matrix's ungated rows have none.
 
 Dot strips, range bars and the frontier scatter, which draw rates against the same lines, are
 :mod:`~threetears.evals.analysis.report.plan_page.resolve_rates`'.
@@ -134,7 +135,7 @@ from threetears.evals.analysis.report_input import (
     Stat,
     Task,
 )
-from threetears.evals.analysis.report_margins import criterion_place
+from threetears.evals.analysis.report_margins import criterion_place, flip_margin
 from threetears.evals.analysis.report_rows import query_aspect, query_rows
 
 __all__ = ["RESOLVERS"]
@@ -317,9 +318,9 @@ def _reading_cell(context: ChartContext, aspect: Aspect, reading: Reading | None
         return GateCell(status="neutral", label=NO_READING)
     direction = _direction(reading)
     margin = reading.margin if reading.margin is not None else aspect.margin
-    within = None
-    if margin is not None and reading.within_interval is not None:
-        within = -float(reading.within_interval[0]) < float(margin)
+    flip = flip_margin(reading)
+    # Within the margin by the decision's own rule: the reading flips at its worst drop, never below zero.
+    within = flip < float(margin) if margin is not None and flip is not None else None
     points = quantity("points", change=True)
     said = figure_text(float(reading.change), points)
     if reading.within_interval is not None:
@@ -781,11 +782,14 @@ def _lattice(context: ChartContext) -> Drawn:
     drawn = quantity(unit, [value * quantity(unit).factor for value in values])  # the format follows the drawn sizes
     priced = quantity("usd_per_1k", costs)
     timed = quantity(latency_unit) if latency_key is not None else None
+    # A config no gate reads has no status (as a gate matrix's ungated row has none): its tile is neutral, never a
+    # pass where nothing was gated.
+    gated = bool(_gating(report_input))
     lattice_rows = []
     for place, (level, row) in enumerate(zip(rows_factor.levels, tiles, strict=True)):
         cells = []
         for arm, value, cost, latency in row:
-            check = gate_check(report_input, arm)
+            check = gate_check(report_input, arm) if gated else None
             shown = value * drawn.factor
             tip = [_config_name(report_input, arm), f"{measure_words(report_input, key)} {figure_text(shown, drawn)}"]
             if cost is not None:
@@ -798,9 +802,9 @@ def _lattice(context: ChartContext) -> Drawn:
                     value=shown,
                     cost=cost,
                     latency=latency * timed.factor if latency is not None and timed is not None else None,
-                    status=GATE_STATUS[check.status],
-                    status_label=GATE_WORDS[check.status],
-                    tip=[*tip, *_check_lines(check)],
+                    status=GATE_STATUS[check.status] if check is not None else "neutral",
+                    status_label=GATE_WORDS[check.status] if check is not None else NOT_GATED,
+                    tip=[*tip, *_check_lines(check)] if check is not None else tip,
                 )
             )
         lattice_rows.append(LatticeRow(label=level.name or level.id, color=series_token(place), cells=cells))
