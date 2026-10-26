@@ -43,6 +43,27 @@ def _input(name: str = "r5", data: dict[str, Any] | None = None) -> ReportInput:
     return ReportInput.model_validate(data if data is not None else _data(name))
 
 
+def _unclear_readings(data: dict[str, Any]) -> dict[str, Any]:
+    """r5 with no margin and every candidate's asked reading crossing zero, and no floor read: nothing separates."""
+    data["aspects"][0]["margin"] = None
+    for reading in data["aspects"][0]["readings"]:
+        reading["within_interval"] = [-6.0, 2.0]
+        reading["margin"] = None
+    data["floors"] = []
+    return data
+
+
+def _p95_improved(data: dict[str, Any]) -> dict[str, Any]:
+    """An asked latency aspect with no readings, on which a corrected contrast shows qwen3.8-flash's p95 improved."""
+    data["aspects"].append({"id": "latency", "name": "latency", "asked": True, "readings": []})
+    data["measures"]["research_p95_s"] = {"unit": "s", "higher_is_better": False, "per_arm": {}}
+    data["contrasts"].append(
+        {"arm": "qwen3.8-flash", "control": "September", "kind": "measure", "measure": "research_p95_s",
+         "aspect": "latency", "verdict": "improved", "delta": -0.8, "interval": [-1.2, -0.4], "p_adjusted": 0.001}
+    )  # fmt: skip
+    return data
+
+
 def _cost(data: dict[str, Any], arm: str, usd: float) -> dict[str, Any]:
     data["measures"]["production_replicating_cost"]["per_arm"][arm]["mean"] = usd
     return data
@@ -204,6 +225,52 @@ class TestAllowedModes:
         data = _data()
         for reading in data["aspects"][0]["readings"]:
             reading["within_interval"] = [-16.0, 1.0]
+        assert allowed_modes(_input(data=data)) == {"no_call"}
+
+    def test_a_separated_contrast_on_an_asked_latency_aspect_separates_its_candidate(self):
+        """A question a measure answers: the pass-rate readings are unclear with no margin, and a corrected contrast on
+        the asked latency aspect shows qwen3.8-flash improved, so it is separated and (cheapest too) decides."""
+        data = _p95_improved(_unclear_readings(_data()))
+        _cost(data, "qwen3.8-flash", 0.0015)
+        assert allowed_modes(_input(data=data)) == {"decide"}
+        assert dominant_options(_input(data=data)) == ["qwen3.8-flash"]
+
+    def test_a_latency_question_ranked_by_its_merit_priority_decides_by_the_rule(self):
+        """Discodon's shape (reproduced at eea04a131, where every decide plan was refused on `mode`): the candidate is
+        shown better on p95 and costs more, so nothing dominates, and the declared priority (latency, then cost)
+        picks."""
+        data = _p95_improved(_unclear_readings(_data()))
+        data["contrast_families"][0]["merit_axes"] = ["latency", "cost"]
+        assert (allowed_modes(_input(data=data)), dominant_options(_input(data=data))) == ({"decide"}, [])
+
+    def test_a_regressed_candidate_counts_as_separated(self):
+        by_reading = _unclear_readings(_data())
+        by_reading["aspects"][0]["readings"][0]["within_interval"] = [-8.0, -2.0]
+        assert allowed_modes(_input(data=by_reading)) == {"decide"}
+        by_contrast = _unclear_readings(_data())
+        by_contrast["contrasts"].append(
+            {"arm": "qwen3.8-flash", "control": "September", "kind": "judged", "measure": "persona.holds_character",
+             "aspect": "character adherence (v2)", "verdict": "regressed", "delta": -5.0, "interval": [-8.0, -2.0],
+             "p_adjusted": 0.01}
+        )  # fmt: skip
+        assert allowed_modes(_input(data=by_contrast)) == {"decide"}
+
+    @pytest.mark.parametrize(("change", "ahead"), [(3.0, "September"), (0.4, None)])
+    def test_a_choices_pass_rate_pair_is_read_as_before(self, change: float, ahead: str | None):
+        """A choice has no control, so separability, which reads a change from one, never forces it to no call."""
+        data = _data()
+        data["arms"][0]["role"] = "challenger"
+        data["aspects"][0]["pairs"] = [{"arms": ["September", "1017"], "change": change, "ahead": ahead}]
+        assert (allowed_modes(_input(data=data)), dominant_options(_input(data=data))) == ({"decide"}, ["September"])
+
+    @pytest.mark.parametrize("verdict", ["not_separated", "untested"])
+    def test_an_unclear_reading_with_no_separated_contrast_is_still_a_no_call(self, verdict: str):
+        data = _unclear_readings(_data())
+        data["contrasts"] = [
+            {**contrast, "aspect": "character adherence (v2)", "verdict": verdict}
+            for contrast in data["contrasts"]
+            if contrast["arm"] != "September"
+        ]
         assert allowed_modes(_input(data=data)) == {"no_call"}
 
     def test_one_arm_measured_is_a_no_call(self):

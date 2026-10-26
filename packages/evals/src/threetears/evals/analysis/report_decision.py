@@ -72,8 +72,10 @@ survivor on every axis that matters:
 **Modes** (:func:`allowed_modes`, GENERATOR §1.1), read in this order:
 
 1. *No call* when the report measures one arm (there is nothing to choose), when no option survives, or, in a change,
-   when every surviving candidate's asked reading is not separable: its interval crosses zero and it is outside the
-   margin (or no margin is declared).
+   when no surviving candidate is separated: its asked readings' intervals cross zero and sit outside the margin (or
+   no margin is declared), and no contrast on an asked aspect separated it (``improved``, ``regressed`` or
+   ``equivalent``, corrected within its family). A candidate with neither an asked reading nor a contrast on an asked
+   aspect forces nothing.
 2. *Decide* when exactly one survivor dominates; the plan recommends that one.
 3. *Decide* when two or more survive, none dominates alone, and the campaign declared a rule that ranks the axes (a
    contrast family's merit priority): the rule picks, among the survivors.
@@ -422,9 +424,21 @@ def _level(report_input: ReportInput, arm: str, control: str, overrides: _Overri
     return 1 if _shown_no_worse(report_input, arm, overrides) else 0
 
 
+#: The verdicts of a contrast that separates its arm from the control, corrected within its family.
+_SEPARATED = frozenset({"improved", "regressed", "equivalent"})
+
+
 def _separable(report_input: ReportInput, arm: str, overrides: _Overrides) -> bool | None:
-    """Whether a candidate's asked readings separate it: an interval clear of zero, or within the margin, on any one.
-    None where it has no asked reading with an interval."""
+    """Whether a candidate's asked evidence separates it: an asked reading's interval clear of zero, or within the
+    margin; or a contrast on an asked aspect that separated it (``improved``, ``regressed`` or ``equivalent``, corrected
+    within its family), which is how a question a measure answers (a latency aspect's p95) is read. None where it has
+    neither an asked reading with an interval nor a separated contrast on an asked aspect."""
+    asked = {aspect.id for aspect in _asked(report_input)}
+    if any(
+        contrast.arm == arm and contrast.aspect in asked and contrast.verdict in _SEPARATED
+        for contrast in report_input.contrasts
+    ):
+        return True
     seen = False
     for aspect in _asked(report_input):
         for reading in aspect.readings:
