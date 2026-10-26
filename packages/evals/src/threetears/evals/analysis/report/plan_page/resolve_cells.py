@@ -9,14 +9,18 @@
   task chart's floor is the one criterion read in every task. Where no arm holds a figure in every slice, the
   matrix keeps the slices every arm holding the measure has one in.
 
-An arm (or a slice) lacking a figure anywhere in its matrix is left out, and a caption names it; cells below the floor are
-outlined by the kit. The count format follows the largest count: thousands where one reaches ten thousand.
+Each matrix is drawn in its own measure's unit (the one-unit rule,
+:func:`~threetears.evals.analysis.report.plan_page.charting.unit_refusal`): where the measures it reads are in several
+units, each panel carries its unit's format and span, the panels of one unit sharing one span. An arm (or a slice) lacking a figure anywhere in its matrix is left out, and a caption names it;
+cells below the floor are outlined by the kit. The count format follows the largest count: thousands where one
+reaches ten thousand.
 
 **diff_heatmap** shades one arm less another over the same matrix (the target matrix's cells by one measure, else
 the slices by each measure): the query's second arm less its first where it names two or more, else its one arm less
 the control, else the recommended arm (or the page's first candidate) less the control. Each cell prints the compared
 arm's own figure under the difference (``detail``), and a caption says which arm is less which. A rate's difference
-is in points, grayed within the kit's half a point; another unit's is shaded to its largest difference.
+is in points, grayed within the kit's half a point; another unit's is shaded to its largest difference. Its
+matrix is one scale, so measures in more than one unit are refused.
 
 **confusion** draws one matrix per label axis the query keeps and per arm (the query's, else every arm the axis holds),
 in panels where there is more than one: titled by the arm, with its chip, where there are several arms, else by the
@@ -43,6 +47,7 @@ from threetears.evals.analysis.report.charts import (
     HeatmapRow,
 )
 from threetears.evals.analysis.report.plan_page.charting import (
+    STORED_SPAN_REFUSAL,
     ChartContext,
     CriterionWhere,
     Drawn,
@@ -50,12 +55,15 @@ from threetears.evals.analysis.report.plan_page.charting import (
     chart_block,
     count_text,
     criterion_line,
+    drawn_keys,
     figure_unit,
     measure_words,
     missing_note,
     reference_line,
     slice_name,
     stat_value,
+    unit_quantities,
+    unit_refusal,
 )
 from threetears.evals.analysis.report.plan_page.look import Quantity, band_domain, figure_text, quantity
 from threetears.evals.analysis.report_input import Cell, ConfusionTable, Stat, Stratum, Task
@@ -85,7 +93,8 @@ _NEUTRAL_SHARE = 1 / 16
 
 @dataclass(frozen=True)
 class _Matrix:
-    """One matrix as drawn: its title (an arm's or a measure's), its arm (for a chip), its rows, columns and cells."""
+    """One matrix as drawn: its title (an arm's or a measure's), its arm (for a chip), its rows, columns and cells, its
+    line, and the quantity its measure is drawn as."""
 
     title: str
     arm: str
@@ -93,6 +102,7 @@ class _Matrix:
     columns: list[str]
     rows: list[tuple[str, list[tuple[float, float | None, list[str]]]]]
     reference: ChartReference | None
+    drawn: Quantity
 
 
 def _matrix_axes(context: ChartContext, cells: Sequence[Cell]) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
@@ -106,13 +116,6 @@ def _matrix_axes(context: ChartContext, cells: Sequence[Cell]) -> tuple[list[tup
         [(level.id, level.name or level.id) for level in matrix.rows.levels if level.id in rows],
         [(level.id, level.name or level.id) for level in matrix.columns.levels if level.id in columns],
     )
-
-
-def _cell_keys(context: ChartContext, held: Sequence[dict[str, dict[str, Stat]]]) -> list[str]:
-    """The measures a matrix chart reads: the ones its query names, else every one its cells or slices hold."""
-    if context.query.measures:
-        return list(context.query.measures)
-    return list(dict.fromkeys(key for per_arm in held for figures in per_arm.values() for key in figures))
 
 
 def _value(context: ChartContext, key: str, stat: Stat | None) -> float | None:
@@ -142,27 +145,30 @@ def _line(context: ChartContext, key: str, drawn: Quantity, where: CriterionWher
 # --- heatmap ------------------------------------------------------------------------------------------------------
 
 
-def _cell_matrices(context: ChartContext) -> tuple[list[_Matrix], Quantity, list[str], list[float]]:
+def _cell_matrices(context: ChartContext) -> tuple[list[_Matrix], list[str], list[float]]:
     cells = [row.item for row in context.rows() if isinstance(row.item, Cell)]
     if not cells:
         raise context.refuse("it selects no cell")
     row_levels, column_levels = _matrix_axes(context, cells)
     by_place = {(cell.row, cell.column): cell for cell in cells}
-    keys = _cell_keys(context, [cell.per_arm for cell in cells])
+    keys = drawn_keys(context.spec.kind, context.query, context.report_input)
     held_arms = dict.fromkeys(arm for cell in cells for arm in cell.per_arm)
     arms = context.arm_order(context.query.arms or held_arms)
-    values = [
-        value
-        for cell in cells
-        for arm in arms
+    values = {
+        key: [
+            value
+            for cell in cells
+            for arm in arms
+            if (value := _value(context, key, cell.per_arm.get(arm, {}).get(key))) is not None
+        ]
         for key in keys
-        if (value := _value(context, key, cell.per_arm.get(arm, {}).get(key))) is not None
-    ]
-    drawn = quantity(figure_unit(context.report_input, keys[0]) if keys else "", values)
+    }
+    quantities = unit_quantities(context.report_input, values)
     matrices: list[_Matrix] = []
     missing: list[str] = []
     counts: list[float] = []
     for key in keys:
+        drawn = quantities[key]
         line = _line(context, key, drawn, "cells")
         for arm in arms:
             rows: list[tuple[str, list[tuple[float, float | None, list[str]]]]] = []
@@ -191,30 +197,34 @@ def _cell_matrices(context: ChartContext) -> tuple[list[_Matrix], Quantity, list
                     columns=[name for _, name in column_levels],
                     rows=rows,
                     reference=line,
+                    drawn=drawn,
                 )
             )
-    return matrices, drawn, missing, counts
+    return matrices, missing, counts
 
 
-def _slice_matrices(context: ChartContext) -> tuple[list[_Matrix], Quantity, list[str], list[float]]:
+def _slice_matrices(context: ChartContext) -> tuple[list[_Matrix], list[str], list[float]]:
     """strata or tasks: the slices by the arms, a matrix per measure."""
     slices = [row.item for row in context.rows() if isinstance(row.item, Stratum | Task)]
-    keys = _cell_keys(context, [item.per_arm for item in slices])
+    keys = drawn_keys(context.spec.kind, context.query, context.report_input)
     allowed = list(context.query.arms) or list(context.look.arms)
     arms_held = [arm for arm in context.arm_order(allowed) if any(arm in item.per_arm for item in slices)]
-    values = [
-        value
-        for item in slices
-        for arm in arms_held
+    values = {
+        key: [
+            value
+            for item in slices
+            for arm in arms_held
+            if (value := _value(context, key, item.per_arm.get(arm, {}).get(key))) is not None
+        ]
         for key in keys
-        if (value := _value(context, key, item.per_arm.get(arm, {}).get(key))) is not None
-    ]
-    drawn = quantity(figure_unit(context.report_input, keys[0]) if keys else "", values)
+    }
+    quantities = unit_quantities(context.report_input, values)
     where: CriterionWhere | None = "tasks" if context.query.source == "tasks" else None
     matrices: list[_Matrix] = []
     missing: list[str] = []
     counts: list[float] = []
     for key in keys:
+        drawn = quantities[key]
         line = _line(context, key, drawn, where)
 
         def held(arm: str, item: Stratum | Task, key: str = key) -> bool:
@@ -252,9 +262,10 @@ def _slice_matrices(context: ChartContext) -> tuple[list[_Matrix], Quantity, lis
                 columns=[_arm_name(context, arm) for arm in whole],
                 rows=rows,
                 reference=line,
+                drawn=drawn,
             )
         )
-    return matrices, drawn, missing, counts
+    return matrices, missing, counts
 
 
 def _heat_rows(matrix: _Matrix) -> list[HeatmapRow]:
@@ -264,27 +275,44 @@ def _heat_rows(matrix: _Matrix) -> list[HeatmapRow]:
     ]
 
 
+def _spans(context: ChartContext, matrices: Sequence[_Matrix]) -> dict[Quantity, tuple[float, float]]:
+    """Each quantity's span: the stored one, else one fitted to every value and line its matrices draw."""
+    spans: dict[Quantity, tuple[float, float]] = {}
+    for drawn in dict.fromkeys(matrix.drawn for matrix in matrices):
+        mine = [matrix for matrix in matrices if matrix.drawn == drawn]
+        ends = [value for matrix in mine for _, cells in matrix.rows for value, _, _ in cells]
+        ends += [matrix.reference.value for matrix in mine if matrix.reference is not None]
+        domain = context.spec.domain or band_domain(ends, drawn)
+        spans[drawn] = (domain[0], domain[1])
+    return spans
+
+
 def _heatmap(context: ChartContext) -> Drawn:
     source = context.query.source
+    refusal = unit_refusal(context.spec.kind, context.query, context.report_input)
+    if refusal:
+        raise context.refuse(refusal)
     if source == "cells":
-        matrices, drawn, missing, counts = _cell_matrices(context)
+        matrices, missing, counts = _cell_matrices(context)
     elif source in ("strata", "tasks"):
-        matrices, drawn, missing, counts = _slice_matrices(context)
+        matrices, missing, counts = _slice_matrices(context)
     else:
         raise context.refuse("a heatmap draws cells, strata or tasks")
     if not matrices:
         raise context.refuse("no arm holds a figure in every place of its matrix")
-    ends = [value for matrix in matrices for _, cells in matrix.rows for value, _, _ in cells]
-    ends += [matrix.reference.value for matrix in matrices if matrix.reference is not None]
-    domain = context.spec.domain or band_domain(ends, drawn)
+    spans = _spans(context, matrices)
+    several = len(spans) > 1
+    if several and context.spec.domain:
+        raise context.refuse(STORED_SPAN_REFUSAL)
     n_fmt = ("k:1" if max(counts) >= _THOUSANDS_FROM else "int") if counts else None
     panelled = len(matrices) > 1 or (context.query.small_multiples_by == "arm" and bool(matrices[0].arm))
     first = matrices[0]
+    domain = spans[first.drawn]
     shared_line = first.reference if all(matrix.reference == first.reference for matrix in matrices) else None
     if panelled:
         data = HeatmapChart(
-            domain=(domain[0], domain[1]),
-            fmt=drawn.fmt,
+            domain=domain,
+            fmt=first.drawn.fmt,
             n_fmt=n_fmt,
             reference=shared_line,
             columns=[ChartColumn(label=label) for label in first.columns],
@@ -297,6 +325,8 @@ def _heatmap(context: ChartContext) -> Drawn:
                     columns=[ChartColumn(label=label) for label in matrix.columns],
                     rows=_heat_rows(matrix),
                     reference=matrix.reference if shared_line is None else None,
+                    domain=spans[matrix.drawn] if several else None,
+                    fmt=matrix.drawn.fmt if several else None,
                 )
                 for matrix in matrices
             ],
@@ -305,8 +335,8 @@ def _heatmap(context: ChartContext) -> Drawn:
         data = HeatmapChart(
             columns=[ChartColumn(label=label) for label in first.columns],
             rows=_heat_rows(first),
-            domain=(domain[0], domain[1]),
-            fmt=drawn.fmt,
+            domain=domain,
+            fmt=first.drawn.fmt,
             n_fmt=n_fmt,
             reference=first.reference,
         )
@@ -344,12 +374,15 @@ def _diff_heatmap(context: ChartContext) -> Drawn:
     base, compared = _compared(context)
     source = context.query.source
     report_input = context.report_input
+    refusal = unit_refusal(context.spec.kind, context.query, report_input)
+    if refusal:
+        raise context.refuse(refusal)
+    keys = drawn_keys(context.spec.kind, context.query, report_input)
     places: list[tuple[str, list[tuple[str, Stat | None, Stat | None, str]]]] = []
     if source == "cells":
         cells = [row.item for row in context.rows() if isinstance(row.item, Cell)]
         if not cells:
             raise context.refuse("it selects no cell")
-        keys = _cell_keys(context, [cell.per_arm for cell in cells])
         if len(keys) != 1:
             raise context.refuse(f"a difference heatmap of cells reads one measure, and it reads {keys}")
         (key,) = keys
@@ -365,7 +398,6 @@ def _diff_heatmap(context: ChartContext) -> Drawn:
             places.append((row_name, line))
     elif source in ("strata", "tasks"):
         slices = [row.item for row in context.rows() if isinstance(row.item, Stratum | Task)]
-        keys = _cell_keys(context, [item.per_arm for item in slices])
         columns = [measure_words(report_input, key) for key in keys]
         for item in slices:
             places.append(
@@ -379,11 +411,18 @@ def _diff_heatmap(context: ChartContext) -> Drawn:
             )
     else:
         raise context.refuse("a difference heatmap draws cells, strata or tasks")
-    units = {figure_unit(report_input, key) for _, line in places for key, *_ in line}
-    if len(units) != 1:
-        raise context.refuse(f"its measures are in more than one unit ({sorted(units)})")
-    unit = units.pop()
-    level = quantity(unit)
+    if not keys or not places:
+        raise context.refuse("it selects no figure to draw")
+    unit = figure_unit(report_input, keys[0])
+    # The figures' own format follows their magnitude, as every other chart's does (dollars past ten drop their cents).
+    figures = [
+        value
+        for _, line in places
+        for key, theirs, ours, _ in line
+        for stat in (theirs, ours)
+        if (value := _value(context, key, stat)) is not None
+    ]
+    level = quantity(unit, [value * quantity(unit).factor for value in figures])
     change = quantity(unit, change=True)
     base_name, compared_name = _arm_name(context, base), _arm_name(context, compared)
     rows: list[DiffHeatmapRow] = []

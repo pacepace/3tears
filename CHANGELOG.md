@@ -20,7 +20,11 @@ only on a planned analysis's page, which then holds no blocks of its own). A sto
 longer resolves against its frozen evidence refuses the page with the existing "generate the analysis again
 (`analysis_generate`)" remedy. `report_decision.margin_sensitivity` (with `MarginSensitivity` and `CandidateMargin`)
 is public: each reading's flip margin, and whether the call holds at every margin. The interim first-screen blocks
-(`analysis.report.campaign.plan_blocks`) are removed. No stored shape moves.
+(`analysis.report.campaign.plan_blocks`) are removed. A chart over measures in more than one unit draws each in its
+own panel, in its own unit and format, where its kind panels by measure (a heatmap's matrix, a dot strip's strip, bars
+in panels by slice); any other such chart, and a chart of strata or tasks naming no measure where its kind draws one,
+is refused when the plan is generated, by the rule the page draws by, so no page draws one measure on another's
+scale. No stored shape moves.
 
 ### evals: a static report page, for a host whose policy runs and loads nothing
 

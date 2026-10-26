@@ -14,12 +14,16 @@
 The line is the stored one, else the one criterion on the measure read where the chart reads it (overall, in every
 task, or in the one task a panel draws). A dot that misses its line is hollow. A strip always states a level (the
 kit's contract): the stored one, else the one level the figures it reads declare, else none, when no interval is
-drawn. A rate's interval is drawn within 0 to 100, where a rate lies.
+drawn. A rate's interval is drawn within 0 to 100, where a rate lies. Each strip is drawn in its own measure's unit
+(the one-unit rule, :func:`~threetears.evals.analysis.report.plan_page.charting.unit_refusal`): where the measures
+it reads are in several, each panel carries its unit's format and span, the panels of one unit sharing one span; a
+strip per arm holds every measure, so its measures must share one unit.
 
 **range_bars** draw each latency from its p50 to its p95: a group per task (or per measure, over measures), a row per
 arm; a figure holding only its p95 is drawn as its end mark alone, which a caption names. The line is the stored one,
 else the one p95 criterion read where the chart reads it, and a bar ending past its budget is hollow, its tooltip
-saying so. A legend names the arms, in the page's order.
+saying so. A legend names the arms, in the page's order. Measures in more than one unit are refused: the bars share
+one axis.
 
 **scatter_frontier** plots two measures that trade off, an arm (or config) per point, with the Pareto line: the
 query's two measures, else the two its rows hold; up is the one where higher is better, across the other. Over tasks,
@@ -56,12 +60,14 @@ from threetears.evals.analysis.report.charts import (
 )
 from threetears.evals.analysis.report.plan_page import resolve_changes
 from threetears.evals.analysis.report.plan_page.charting import (
+    STORED_SPAN_REFUSAL,
     ChartContext,
     CriterionWhere,
     Drawn,
     KindResolver,
     chart_block,
     criterion_line,
+    drawn_keys,
     factor_legend,
     factor_token,
     figure_unit,
@@ -75,6 +81,8 @@ from threetears.evals.analysis.report.plan_page.charting import (
     slice_name,
     stat_interval,
     stat_value,
+    unit_quantities,
+    unit_refusal,
 )
 from threetears.evals.analysis.report.plan_page.look import (
     Quantity,
@@ -145,12 +153,14 @@ class _Dot:
 
 @dataclass(frozen=True)
 class _Strip:
-    """One strip (a panel, or the whole chart): its title, the arm it stands for (for a chip), its dots and line."""
+    """One strip (a panel, or the whole chart): its title, the arm it stands for (for a chip), its dots and line, and
+    the quantity its dots are drawn as."""
 
     title: str
     arm: str
     dots: list[_Dot]
     line: ChartReference | None
+    drawn: Quantity
 
 
 def _declared_level(context: ChartContext, keys: Iterable[str]) -> str:
@@ -185,7 +195,7 @@ def _dot(
     return _Dot(id=row_id, label=label, arm=arm, value=value, interval=interval, tip=tip, strong=strong)
 
 
-def _change_strips(context: ChartContext) -> tuple[list[_Strip], Quantity, str, tuple[str, ...], bool]:
+def _change_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, ...], bool]:
     """readings or contrasts: the diverging chart's rows as dots, a strip per group (a measure, where several)."""
     as_bars = dataclasses.replace(context, spec=context.spec.model_copy(update={"kind": "diverging_bars"}))
     drawn = resolve_changes.RESOLVERS["diverging_bars"](as_bars)
@@ -211,23 +221,26 @@ def _change_strips(context: ChartContext) -> tuple[list[_Strip], Quantity, str, 
         )
     fmt_unit = Quantity(1.0, data.fmt or unit.fmt, unit.unit, change=True)
     line = data.reference
-    strips = [_Strip(title=title, arm="", dots=dots, line=line) for title, dots in grouped.items()]
-    return strips, fmt_unit, context.level, drawn.notes, True
+    strips = [_Strip(title=title, arm="", dots=dots, line=line, drawn=fmt_unit) for title, dots in grouped.items()]
+    return strips, context.level, drawn.notes, True
 
 
-def _figure_strips(context: ChartContext) -> tuple[list[_Strip], Quantity, str, tuple[str, ...], bool]:
-    """measures or judged: an arm per row, a strip per measure."""
+def _figure_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, ...], bool]:
+    """measures or judged: an arm per row, a strip per measure, each in its measure's unit."""
     report_input = context.report_input
     rows = context.rows()
-    keys = list(dict.fromkeys(row.key for row in rows))
+    keys = drawn_keys(context.spec.kind, context.query, report_input)
     level = context.level or _declared_level(context, keys)
     figures = {(row.key, row.arm): row.item for row in rows if isinstance(row.item, Stat)}
     reads = {
         place: read for place, stat in figures.items() if (read := stat_value(report_input, place[0], stat)) is not None
     }
-    drawn = quantity(figure_unit(report_input, keys[0]) if keys else "", [read[0] for read in reads.values()])
+    quantities = unit_quantities(
+        report_input, {key: [r[0] for (on, _), r in reads.items() if on == key] for key in keys}
+    )
     strips = []
     for key in keys:
+        drawn = quantities[key]
         statistics = {read[1] for (on, _), read in reads.items() if on == key}
         line = reference_line(context, drawn) or (
             criterion_line(context, key, drawn, where="overall", statistic=statistics.pop())
@@ -249,12 +262,13 @@ def _figure_strips(context: ChartContext) -> tuple[list[_Strip], Quantity, str, 
                 drawn=drawn,
             )
             dots.append(dataclasses.replace(dot, tip=_with_line(dot.tip, dot.value, line)))
-        strips.append(_Strip(title=measure_words(report_input, key), arm="", dots=dots, line=line))
-    return strips, drawn, level, (), False
+        strips.append(_Strip(title=measure_words(report_input, key), arm="", dots=dots, line=line, drawn=drawn))
+    return strips, level, (), False
 
 
-def _slice_strips(context: ChartContext) -> tuple[list[_Strip], Quantity, str, tuple[str, ...], bool]:
-    """tasks or strata: an arm per row and a strip per slice and measure, or a strip per arm (a row per slice)."""
+def _slice_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, ...], bool]:
+    """tasks or strata: an arm per row and a strip per slice and measure, each in its measure's unit, or a strip per
+    arm (a row per slice), in the one unit its measures share."""
     report_input = context.report_input
     slices = [row.item for row in context.rows() if isinstance(row.item, Stratum | Task)]
     keys = slice_keys(context, slices)
@@ -271,10 +285,11 @@ def _slice_strips(context: ChartContext) -> tuple[list[_Strip], Quantity, str, t
                     continue
                 interval = stat_interval(stat) if level and read[1] == "mean" else None
                 found.append((item, key, arm, read[0], read[1], interval))
-    drawn = quantity(figure_unit(report_input, keys[0]), [value for *_, value, _, _ in found])
+    quantities = unit_quantities(report_input, {key: [entry[3] for entry in found if entry[1] == key] for key in keys})
     tasks = context.query.source == "tasks"
 
     def line_of(key: str, item: Stratum | Task | None, statistics: set[str]) -> ChartReference | None:
+        drawn = quantities[key]
         stored = reference_line(context, drawn)
         if stored is not None or len(statistics) != 1:
             return stored
@@ -289,6 +304,8 @@ def _slice_strips(context: ChartContext) -> tuple[list[_Strip], Quantity, str, t
 
     strips: list[_Strip] = []
     if context.query.small_multiples_by == "arm":
+        # A strip per arm holds every measure: the one-unit rule has refused measures in more than one.
+        drawn = quantities[keys[0]]
         line = line_of(keys[0], None, {statistic for *_, statistic, _ in found}) if len(keys) == 1 else None
         for arm in arms:
             dots = []
@@ -306,13 +323,14 @@ def _slice_strips(context: ChartContext) -> tuple[list[_Strip], Quantity, str, t
                     drawn=drawn,
                 )
                 dots.append(dataclasses.replace(dot, tip=_with_line(dot.tip, dot.value, line)))
-            strips.append(_Strip(title=_arm_name(context, arm), arm=arm, dots=dots, line=line))
-        return strips, drawn, level, (), False
+            strips.append(_Strip(title=_arm_name(context, arm), arm=arm, dots=dots, line=line, drawn=drawn))
+        return strips, level, (), False
     for item in slices:
         for key in keys:
             here = [entry for entry in found if entry[0] is item and entry[1] == key]
             if not here:
                 continue
+            drawn = quantities[key]
             line = line_of(key, item, {entry[4] for entry in here})
             dots = []
             for _, _, arm, value, _, interval in here:
@@ -327,11 +345,11 @@ def _slice_strips(context: ChartContext) -> tuple[list[_Strip], Quantity, str, t
                     drawn=drawn,
                 )
                 dots.append(dataclasses.replace(dot, tip=_with_line(dot.tip, dot.value, line)))
-            strips.append(_Strip(title=place(item, key), arm="", dots=dots, line=line))
-    return strips, drawn, level, (), False
+            strips.append(_Strip(title=place(item, key), arm="", dots=dots, line=line, drawn=drawn))
+    return strips, level, (), False
 
 
-def _floor_strips(context: ChartContext) -> tuple[list[_Strip], Quantity, str, tuple[str, ...], bool]:
+def _floor_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, ...], bool]:
     """floors: an arm per row at the largest drop its interval allows, a strip per floor against its margin."""
     drawn = quantity("points", change=True)
     level = context.level
@@ -370,8 +388,8 @@ def _floor_strips(context: ChartContext) -> tuple[list[_Strip], Quantity, str, t
                 context, row_id=arm, label=_arm_label(context, arm), arm=arm, value=low, interval=interval, drawn=drawn
             )
             dots.append(dataclasses.replace(dot, tip=[*dot.tip, read.status], hollow=read.status == "broken"))
-        strips.append(_Strip(title=humanize("dimension", floor), arm="", dots=dots, line=line))
-    return strips, drawn, level, (_FLOOR_NOTE, *missing_note(missing)), True
+        strips.append(_Strip(title=humanize("dimension", floor), arm="", dots=dots, line=line, drawn=drawn))
+    return strips, level, (_FLOOR_NOTE, *missing_note(missing)), True
 
 
 def _dot_row(context: ChartContext, dot: _Dot, line: ChartReference | None) -> DotIntervalRow:
@@ -391,30 +409,47 @@ def _dot_row(context: ChartContext, dot: _Dot, line: ChartReference | None) -> D
     )
 
 
+def _strip_spans(context: ChartContext, strips: Sequence[_Strip], centred: bool) -> dict[Quantity, tuple[float, float]]:
+    """Each quantity's span: the stored one, else one fitted to every dot, interval and line its strips draw."""
+    spans: dict[Quantity, tuple[float, float]] = {}
+    for drawn in dict.fromkeys(strip.drawn for strip in strips):
+        mine = [strip for strip in strips if strip.drawn == drawn]
+        ends = [end for strip in mine for dot in strip.dots for end in (dot.value, *(dot.interval or ()))]
+        ends += [strip.line.value for strip in mine if strip.line is not None]
+        domain = context.spec.domain or (centred_domain(ends, drawn) if centred else band_domain(ends, drawn))
+        spans[drawn] = (domain[0], domain[1])
+    return spans
+
+
 def _dot_interval(context: ChartContext) -> Drawn:
     source = context.query.source
+    refusal = unit_refusal(context.spec.kind, context.query, context.report_input)
+    if refusal:
+        raise context.refuse(refusal)
     if source in ("readings", "contrasts"):
-        strips, drawn, level, notes, centred = _change_strips(context)
+        strips, level, notes, centred = _change_strips(context)
     elif source in ("measures", "judged"):
-        strips, drawn, level, notes, centred = _figure_strips(context)
+        strips, level, notes, centred = _figure_strips(context)
     elif source in ("tasks", "strata"):
-        strips, drawn, level, notes, centred = _slice_strips(context)
+        strips, level, notes, centred = _slice_strips(context)
     elif source == "floors":
-        strips, drawn, level, notes, centred = _floor_strips(context)
+        strips, level, notes, centred = _floor_strips(context)
     else:
         raise context.refuse("a dot strip draws readings, contrasts, measures, judged, floors, tasks or strata")
     strips = [strip for strip in strips if strip.dots]
     if not strips:
         raise context.refuse("it selects no figure to draw")
-    ends = [end for strip in strips for dot in strip.dots for end in (dot.value, *(dot.interval or ()))]
-    ends += [strip.line.value for strip in strips if strip.line is not None]
-    domain = context.spec.domain or (centred_domain(ends, drawn) if centred else band_domain(ends, drawn))
+    spans = _strip_spans(context, strips, centred)
+    several = len(spans) > 1
+    if several and context.spec.domain:
+        raise context.refuse(STORED_SPAN_REFUSAL)
+    first = strips[0].drawn
     if len(strips) == 1:
         (strip,) = strips
         data = DotIntervalChart(
             rows=[_dot_row(context, dot, strip.line) for dot in strip.dots],
-            domain=(domain[0], domain[1]),
-            fmt=drawn.fmt,
+            domain=spans[first],
+            fmt=first.fmt,
             level=level,
             reference=strip.line,
             emphasis=context.emphasis,
@@ -430,11 +465,11 @@ def _dot_interval(context: ChartContext) -> Drawn:
                 color=look.token if look is not None else None,
                 rows=[_dot_row(context, dot, strip.line) for dot in strip.dots],
                 reference=strip.line,
+                domain=spans[strip.drawn] if several else None,
+                fmt=strip.drawn.fmt if several else None,
             )
         )
-    data = DotIntervalChart(
-        domain=(domain[0], domain[1]), fmt=drawn.fmt, level=level, emphasis=context.emphasis, panels=panels
-    )
+    data = DotIntervalChart(domain=spans[first], fmt=first.fmt, level=level, emphasis=context.emphasis, panels=panels)
     return Drawn(chart_block(context, data), notes)
 
 
@@ -451,6 +486,9 @@ def _spread_stat(stat: Stat | None) -> tuple[float | None, float] | None:
 def _range_bars(context: ChartContext) -> Drawn:
     report_input = context.report_input
     source = context.query.source
+    refusal = unit_refusal(context.spec.kind, context.query, report_input)
+    if refusal:
+        raise context.refuse(refusal)
     groups: list[tuple[str, CriterionWhere, str, list[tuple[str, tuple[float | None, float]]]]] = []
     if source == "measures":
         rows = context.rows()
@@ -471,12 +509,7 @@ def _range_bars(context: ChartContext) -> Drawn:
             )
     elif source == "tasks":
         slices = [row.item for row in context.rows() if isinstance(row.item, Task)]
-        held = [
-            key
-            for key in dict.fromkeys(key for item in slices for figures in item.per_arm.values() for key in figures)
-            if any(_spread_stat(figures.get(key)) for item in slices for figures in item.per_arm.values())
-        ]
-        keys = list(context.query.measures) or held
+        keys = drawn_keys(context.spec.kind, context.query, report_input)
         allowed = list(context.query.arms) or list(context.look.arms)
         for item in slices:
             for key in keys:
@@ -495,11 +528,9 @@ def _range_bars(context: ChartContext) -> Drawn:
         raise context.refuse("range bars draw measures or tasks")
     if not groups:
         raise context.refuse("it selects no figure with a p95")
-    units = {figure_unit(report_input, key) for _, _, key, _ in groups}
-    if len(units) != 1:
-        raise context.refuse(f"its measures are in more than one unit ({sorted(units)})")
     values = [end for *_, bars in groups for _, spread in bars for end in spread if end is not None]
-    drawn = quantity(units.pop(), values)
+    # One unit: the one-unit rule has refused range bars whose measures are in more than one.
+    drawn = quantity(figure_unit(report_input, groups[0][2]), values)
     keys_drawn = {key for _, _, key, _ in groups}
     line = reference_line(context, drawn)
     if line is None and len(keys_drawn) == 1:
