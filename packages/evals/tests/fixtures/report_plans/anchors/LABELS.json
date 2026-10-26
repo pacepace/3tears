@@ -6,7 +6,8 @@
       "input": "r1",
       "expect": "pass",
       "plan_digest": "fc4ecada6e2af4d3e72de0996a44cf05fff9b26f55a046c3d4dd54cf2596e9cb",
-      "labeled_by": "pending_owner",
+      "labeled_by": "owner",
+      "labeled_at": "2026-10-26",
       "note": "Hand-written from references/r1-model-selection.html."
     },
     {
@@ -23,7 +24,8 @@
       "input": "r3",
       "expect": "pass",
       "plan_digest": "1198e95aab5bc83edc4cdd1aa79ad1da1399de6afae57796251b3b69317d9fb6",
-      "labeled_by": "pending_owner",
+      "labeled_by": "owner",
+      "labeled_at": "2026-10-26",
       "note": "Hand-written from references/r3-classifier.html."
     },
     {
@@ -40,7 +42,8 @@
       "input": "r5",
       "expect": "pass",
       "plan_digest": "808cf96de10cf23bc1ee65bf418d2b96b14dbf6e0c13d2da2105ad8c0ff9b09c",
-      "labeled_by": "pending_owner",
+      "labeled_by": "owner",
+      "labeled_at": "2026-10-26",
       "note": "references/r5-kairo-round2.plan.json: a two-sentence lede, no hedge above the fold, no quoted question, a Watch citing the weakest margin code found, and a Next naming the experiment that would change the answer and which way."
     },
     {
