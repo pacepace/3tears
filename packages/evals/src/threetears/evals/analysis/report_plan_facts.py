@@ -11,8 +11,8 @@ as :class:`PlanFacts`, so the planner's user message and the plan code completes
 - **The masthead** (§2.1): the campaign's kind, the system under test, the counts and the run date, counts and date
   as figure keys where the input holds the figure.
 - **The arms** (§5.2, §6.1): each arm's colour slot (-1 for the control, then series colours in the input's order),
-  its letter tag, and whether the arms key shows (§2.8: any arm's full configuration is longer than
-  :data:`ARMS_KEY_CHARS` characters, or a setting other than the model varied).
+  its letter tag, and whether the arms key shows (§2.8: any arm's full configuration is longer than 24 characters,
+  or a setting other than the model varied).
 - **The options table's columns** (§2.6: "the criteria plus cost"), each one of
   :data:`~threetears.evals.analysis.report_plan_checks.OPTION_COLUMN_FAMILIES`, the vocabulary the plan checks hold
   a stored plan's columns to: the pass rate where one resolves; the asked reading's change and verdict where an
@@ -46,7 +46,7 @@ them all.
 contrast reads; a criterion set after the results weakens the readings those criteria decide (every contrast that is
 not a measure's, which the margin and the floors are read on, and a named late criterion's own measure); a confound or
 an apparatus confound weakens the measures whose contrasts name it; a short run of the whole comparison weakens every
-measure. What survives is
+measure; an aspect left unsettled past its margin weakens the measures its contrasts read. What survives is
 every other measure a contrast reads. Judged dimensions are written ``judged:<dim>``, as the options columns write
 them.
 
@@ -73,12 +73,13 @@ whose figures carry a standard error and no interval is drawn at the descriptive
 
 **A chart's axis** is computed only where code holds a rule: a forest of readings spans every interval it draws, zero
 and the margin line, one point beyond each end. Every other chart leaves its domain empty, which lets the renderer fit
-it. A chart that would mix units or interval levels (§5.2: one unit and one interval system per chart) is refused at
-its query. Which measures a chart draws, and whether it can draw them in their units, is the page's own rule
-(:func:`~threetears.evals.analysis.report.plan_page.charting.unit_refusal`): a chart of strata or tasks naming no
-measure where its slices hold several (a heatmap reads every one), or measures in more than one unit on one axis,
-is refused here by the same function the page refuses it by; a kind that draws each measure in its own panel (a
-heatmap's matrix, a dot strip's strip, bars in panels by slice or measure) may read several units.
+it. A chart that would mix interval levels (§5.2: one interval system per chart) is refused at its query. Which
+measures a chart draws, and whether it can draw them in their units, is the page's own rule and the only unit rule
+here (:func:`~threetears.evals.analysis.report.plan_page.charting.unit_refusal`, §5.2: one unit per axis): a chart of
+strata or tasks naming no measure where its slices hold several (a heatmap reads every one), or measures or contrasts
+in more than one unit on one axis, is refused here by the same function the page refuses it by; a kind that draws each
+measure in its own panel (a heatmap's matrix, a dot strip's strip, bars in panels by slice or measure) may read
+several units, and its stored unit is then empty.
 """
 
 from __future__ import annotations
@@ -133,11 +134,9 @@ from threetears.evals.kernel.report_plan import (
 )
 
 __all__ = [
-    "ARMS_KEY_CHARS",
     "PLAN_MODES",
     "FactArm",
     "FactCaveat",
-    "FactWeakest",
     "PlanFacts",
     "complete_plan",
     "flag_disclosures",
@@ -145,7 +144,7 @@ __all__ = [
 ]
 
 #: GENERATOR §2.8: the arms key shows when any arm's full configuration is longer than this.
-ARMS_KEY_CHARS = 24
+_ARMS_KEY_CHARS = 24
 
 #: The modes a plan may take, in the order the facts list what each implies.
 PLAN_MODES: tuple[str, ...] = ("decide", "tradeoff", "no_call")
@@ -183,7 +182,7 @@ class FactCaveat(BaseModel):
     checked: str = Field(description="The line code renders for a caveat it proved immaterial; empty for an open one.")
 
 
-class FactWeakest(BaseModel):
+class _FactWeakest(BaseModel):
     """The weakest margin as the planner is told of it: what it is, rendered, and the keys that name it."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -223,7 +222,7 @@ class PlanFacts(BaseModel):
     )
     allowed_modes: tuple[str, ...] = Field(description="The modes the evidence allows, in PLAN_MODES' order.")
     caveats: tuple[FactCaveat, ...] = Field(description="Every caveat the input carries, by id.")
-    weakest: FactWeakest | None = Field(
+    weakest: _FactWeakest | None = Field(
         description="The weakest margin under the call; None where the input reads no figure against a line."
     )
     names: Mapping[str, Mapping[str, str]] = Field(
@@ -275,10 +274,10 @@ def plan_facts(report_input: ReportInput) -> PlanFacts:
     )
 
 
-def _weakest(report_input: ReportInput) -> FactWeakest | None:
+def _weakest(report_input: ReportInput) -> _FactWeakest | None:
     if weakest_margin(report_input) is None:
         return None
-    return FactWeakest(said=render(_WEAKEST_SAID, report_input, {}), keys=_WEAKEST_KEYS)
+    return _FactWeakest(said=render(_WEAKEST_SAID, report_input, {}), keys=_WEAKEST_KEYS)
 
 
 def flag_disclosures(facts: PlanFacts, mode: str, listed: Iterable[str]) -> tuple[str, ...]:
@@ -344,13 +343,13 @@ def _masthead(report_input: ReportInput, control: str | None) -> Masthead:
 
 
 def _shows_arms_key(report_input: ReportInput) -> bool:
-    """GENERATOR §2.8: a full configuration over :data:`ARMS_KEY_CHARS` characters, or a setting beside the model
-    that varied."""
+    """GENERATOR §2.8: a full configuration over ``_ARMS_KEY_CHARS`` characters, or a setting beside the model that
+    varied."""
     for arm in report_input.arms:
         shown = " · ".join(
             str(value) if setting == "model" else f"{setting} {value}" for setting, value in arm.settings.items()
         )
-        if len(shown or arm.served_model or "") > ARMS_KEY_CHARS:
+        if len(shown or arm.served_model or "") > _ARMS_KEY_CHARS:
             return True
     others = {setting for arm in report_input.arms for setting in arm.settings if setting != "model"}
     return any(len({repr(arm.settings.get(setting)) for arm in report_input.arms}) > 1 for setting in others)
@@ -528,6 +527,9 @@ def _weakened(report_input: ReportInput, discloses: Sequence[str]) -> list[str]:
             weak |= named(confound in c.confounds for c in contrasts)
         elif disclosure.startswith("short_run:"):
             weak |= set(_contrasted(report_input))
+        elif disclosure.startswith("unsettled:"):
+            aspect = disclosure.removeprefix("unsettled:")
+            weak |= named(c.aspect == aspect for c in contrasts)
     ordered = _contrasted(report_input)
     return [measure for measure in ordered if measure in weak] + sorted(weak - set(ordered))
 
@@ -797,27 +799,38 @@ def _judged_unit(report_input: ReportInput, measures: Sequence[str]) -> list[str
 
 
 def _unit(chart: PlannedChart, report_input: ReportInput, path: str, faults: list[_Fault]) -> str:
-    """The chart's one unit, from what it reads: a change from the control in points, else the rows' own unit. A
-    chart the page cannot draw in its units is refused by the rule the page draws by (this module's account)."""
+    """The unit the chart's rows are in: a change from the control in points, else the rows' own unit, empty where
+    they are in several (each drawn in its own panel) or none. Whether the page can draw the chart in its units is the
+    page's one rule, refused here by the same function and by no other (this module's account)."""
     query = chart.query
     source = query.source
     refusal = unit_refusal(chart.kind, query, report_input)
     if refusal:
-        faults.append((f"{path}.query", f"{_UNDRAWABLE} {refusal} (GENERATOR §5.2: one unit per axis)"))
+        faults.append(
+            (
+                f"{path}.query",
+                f"{_UNDRAWABLE} {refusal} (GENERATOR §5.2: one unit per axis, a panel each where the kind panels by measure)",
+            )
+        )
     if source in ("readings", "floors"):
         return "points"
     if source == "contrasts":
-        return _one(path, "unit", (unit for unit, _ in _selected_contrasts(chart, report_input)), faults)
+        return _only(unit for unit, _ in _selected_contrasts(chart, report_input))
     if source == "measures":
-        units = [
+        return _only(
             m.unit or "" for key, m in report_input.measures.items() if not query.measures or key in query.measures
-        ]
-        return _one(path, "unit", units, faults)
+        )
     if source in ("judged", "strata"):
         if query.transform == "arm_minus_control":
             return "points"
-        return _one(path, "unit", _judged_unit(report_input, query.measures), faults)
+        return _only(_judged_unit(report_input, query.measures))
     return ""
+
+
+def _only(values: Iterable[str]) -> str:
+    """The one value the rows agree on; empty for none, or for several."""
+    found = list(dict.fromkeys(value for value in values if value))
+    return found[0] if len(found) == 1 else ""
 
 
 def _domain(chart: PlannedChart, report_input: ReportInput, references: Sequence[ChartReference]) -> list[float]:

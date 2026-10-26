@@ -1,8 +1,9 @@
 """The report-planner prompt stays inside its declared budget, and every rule has its ledger row.
 
-:mod:`threetears.evals.analysis.plan_prompt` declares a ceiling of :data:`PLAN_PROMPT_CHAR_BUDGET` characters and
-:data:`PLAN_PROMPT_RULE_BUDGET` rules, and says the budget only falls. This measures the seed prompt as the module
-builds it and fails the moment either ceiling is crossed, as ``test_gen_prompt_budget.py`` does for the writer's.
+**The budget is declared here:** a ceiling of :data:`CHAR_BUDGET` characters and :data:`RULE_BUDGET` rules, which only
+falls (:mod:`threetears.evals.analysis.plan_prompt` and ``PLAN_PROMPT_RULES.md`` cite it). This measures the seed
+prompt as the module builds it and fails the moment either ceiling is crossed, as ``test_gen_prompt_budget.py`` does
+for the writer's.
 
 **What is measured.** The seed, :data:`EVAL_REPORT_PLAN_DEFAULT`, has no placeholders, so the text measured here is,
 byte for byte, the head of both calls' system prompts, as a generation sends them
@@ -27,11 +28,7 @@ import threetears.evals.analysis as analysis_package
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.report_plan_support import prose_reply, r5_input, r5_plan, structure_reply
 from packages.evals.tests.toyhost_memo import MODEL, FixturedClient, FixturedCompletion
-from threetears.evals.analysis.plan_prompt import (
-    EVAL_REPORT_PLAN_DEFAULT,
-    PLAN_PROMPT_CHAR_BUDGET,
-    PLAN_PROMPT_RULE_BUDGET,
-)
+from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
 from threetears.evals.analysis.planner import (
     FACTS_HEADING,
     PROSE_CALL,
@@ -41,6 +38,13 @@ from threetears.evals.analysis.planner import (
 )
 from threetears.evals.analysis.report.figure_keys import GRAMMAR_HEADING
 from threetears.evals.analysis.report_input import ReportInput
+
+#: The prompt's character ceiling, set just above the prompt as written. It only falls; making the prompt shorter is a
+#: measured change (an eval of the planner), not a cut by eye.
+CHAR_BUDGET = 15_500
+
+#: The most rules the prompt carries, not its numbered headings. It only falls.
+RULE_BUDGET = 13
 
 #: Where the rules start. Everything before it is preamble, not rules.
 _RULES_HEADING = "\nRULES — "
@@ -97,15 +101,15 @@ class _TwoReplies(FixturedClient):
 class TestThePromptIsWithinItsBudget:
     def test_it_is_within_the_character_budget(self) -> None:
         length = len(EVAL_REPORT_PLAN_DEFAULT)
-        assert length <= PLAN_PROMPT_CHAR_BUDGET, (
-            f"the planner prompt is {length} characters, over its budget of {PLAN_PROMPT_CHAR_BUDGET}: tighten "
+        assert length <= CHAR_BUDGET, (
+            f"the planner prompt is {length} characters, over its budget of {CHAR_BUDGET}: tighten "
             "existing wording, or retire a rule, rather than raise the budget (it only falls)"
         )
 
     def test_it_is_within_the_rule_budget(self) -> None:
         count = len(_rule_numbers(EVAL_REPORT_PLAN_DEFAULT))
-        assert count <= PLAN_PROMPT_RULE_BUDGET, (
-            f"the planner prompt carries {count} rules, over its budget of {PLAN_PROMPT_RULE_BUDGET}: a new rule names "
+        assert count <= RULE_BUDGET, (
+            f"the planner prompt carries {count} rules, over its budget of {RULE_BUDGET}: a new rule names "
             "the one it replaces, in the ledger analysis/PLAN_PROMPT_RULES.md"
         )
 
@@ -139,8 +143,8 @@ class TestThePromptIsWithinItsBudget:
 class TestTheRuleCountBites:
     def test_a_rule_added_past_the_ceiling_is_counted(self) -> None:
         numbers = _rule_numbers(EVAL_REPORT_PLAN_DEFAULT)
-        extra = "".join(f"\n\n{n}. AN ADDED RULE. Text." for n in range(len(numbers) + 1, PLAN_PROMPT_RULE_BUDGET + 2))
-        assert len(_rule_numbers(EVAL_REPORT_PLAN_DEFAULT + extra)) == PLAN_PROMPT_RULE_BUDGET + 1
+        extra = "".join(f"\n\n{n}. AN ADDED RULE. Text." for n in range(len(numbers) + 1, RULE_BUDGET + 2))
+        assert len(_rule_numbers(EVAL_REPORT_PLAN_DEFAULT + extra)) == RULE_BUDGET + 1
 
 
 class TestEveryRuleHasItsLedgerRow:

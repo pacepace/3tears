@@ -9,11 +9,14 @@ selects (:func:`~threetears.evals.analysis.report_rows.query_rows`, the one owne
   rate's scale read from every figure the input holds for it (a share where each lies in 0 to 1, a percent
   otherwise), as the figure keys read it; an ordinal judged dimension a ``score``; a contrast of how each trial ended,
   the pass rate, a share. :func:`~threetears.evals.analysis.report.plan_page.look.quantity` says how it is drawn.
-- **One unit per axis** (:func:`unit_refusal`, over the measures a chart draws, :func:`drawn_keys`): an axis draws
-  measures of one unit, each at its own scale. A kind that draws each measure in its own panel (a heatmap's matrix, a
-  dot strip's strip, bars in panels by slice or measure) gives each panel its measure's unit and format, panels of one
-  unit sharing an axis's span; any other chart reading measures in several units is refused. The plan checks refuse
-  the same charts, by the same function, so a plan they accept draws.
+- **One unit per axis** (:func:`unit_refusal`, over the measures a chart draws, :func:`drawn_keys`, or the contrasts
+  it draws): an axis draws measures of one unit, each at its own scale, two units being one where they are drawn
+  alike (a share and a percent both as a percent; any rate's change in points). A kind that draws each measure in its
+  own panel (a heatmap's matrix, a dot strip's strip, bars in panels by slice or measure) gives each panel its
+  measure's unit and format, panels of one unit sharing an axis's span; any other chart reading measures in several
+  units is refused, and so is a chart of contrasts in several, whose groups share one axis. The plan checks refuse
+  the same charts, by the same function and by no other unit rule, so a plan they accept draws and a chart the page
+  draws is accepted.
 - **A figure's value** (:func:`stat_value`): its mean; else the statistic a criterion on the measure reads; else its
   p95, else its p50. **Its interval** (:func:`stat_interval`): its ``ci``, else its mean plus or minus its half-width.
   **Intervals are drawn only where the chart states a level** (``ChartSpec.level``): the kit refuses intervals
@@ -52,7 +55,7 @@ from threetears.evals.analysis.report.figure_keys import Figure, NamedKind, form
 from threetears.evals.analysis.report.plan_page.look import PageLook, Quantity, figure_text, quantity, series_token
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
 from threetears.evals.analysis.report.plan_page.words import MISSING_TEMPLATE, REFERENCE_TEMPLATE
-from threetears.evals.analysis.report_input import Cell, Criterion, ReportInput, Stat, Stratum, Task
+from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_margins import criterion_place
 from threetears.evals.analysis.report_rows import SourceRow, query_rows
 from threetears.evals.analysis.style import measure_name
@@ -530,13 +533,17 @@ _SLICE_SOURCES = frozenset({"strata", "tasks", "cells"})
 #: The kinds the one-unit rule holds (:func:`unit_refusal`), each over the sources it draws figures by measure from.
 _UNIT_RULED: dict[str, frozenset[str]] = {
     "bars": frozenset({"measures", "judged", "configs", "strata", "tasks"}),
-    "dot_interval": frozenset({"measures", "judged", "strata", "tasks"}),
+    "dot_interval": frozenset({"contrasts", "measures", "judged", "strata", "tasks"}),
     "heatmap": frozenset({"cells", "strata", "tasks"}),
     "diff_heatmap": frozenset({"cells", "strata", "tasks"}),
     "range_bars": frozenset({"measures", "tasks"}),
-    "diverging_bars": frozenset({"measures", "judged", "strata", "tasks"}),
+    "diverging_bars": frozenset({"contrasts", "measures", "judged", "strata", "tasks"}),
     "lines": frozenset({"strata", "tasks"}),
+    "forest": frozenset({"contrasts"}),
 }
+
+#: The kinds that draw what they read as each arm less the control: a change, on a change axis.
+_CHANGE_KINDS = frozenset({"forest", "diverging_bars"})
 
 
 def _has_p95(stat: Stat | None) -> bool:
@@ -644,10 +651,26 @@ def unit_refusal(kind: str, query: ChartQuery, report_input: ReportInput) -> str
         held = _held_keys(row.item for row in query_rows(query, report_input) if isinstance(row.item, Stratum | Task))
         if len(held) != 1:
             return _ONE_HELD_TEMPLATE.format(found=held)
-    units = sorted({figure_unit(report_input, key) for key in drawn_keys(kind, query, report_input)})
-    if len(units) > 1 and not _a_panel_per_measure(kind, query):
-        return _UNITS_TEMPLATE.format(units=units)
+    if source == "contrasts":
+        units = _contrast_units(query, report_input)
+        change = True
+    else:
+        units = {figure_unit(report_input, key) for key in drawn_keys(kind, query, report_input)}
+        change = kind in _CHANGE_KINDS
+    drawn_as = {quantity(unit, change=change) for unit in units}
+    if len(drawn_as) > 1 and (source == "contrasts" or not _a_panel_per_measure(kind, query)):
+        return _UNITS_TEMPLATE.format(units=sorted(units))
     return ""
+
+
+def _contrast_units(query: ChartQuery, report_input: ReportInput) -> set[str]:
+    """The units of the contrasts a chart of contrasts draws: each one with a change, at its measure's unit as the
+    page reads a contrast of its kind. The rows of every group share one axis, so they share one unit drawn."""
+    return {
+        figure_unit(report_input, row.item.measure, kind=row.item.kind)
+        for row in query_rows(query, report_input)
+        if isinstance(row.item, Contrast) and row.item.delta is not None
+    }
 
 
 def missing_note(missing: Sequence[str]) -> tuple[str, ...]:

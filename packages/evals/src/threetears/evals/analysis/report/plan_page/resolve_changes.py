@@ -432,6 +432,9 @@ def _ends(changes: Sequence[_Change], reference: ChartReference | None, *, inter
 
 def _forest(context: ChartContext) -> Drawn:
     source = context.query.source
+    refusal = unit_refusal(context.spec.kind, context.query, context.report_input)
+    if refusal:
+        raise context.refuse(refusal)
     notes: tuple[str, ...] = ()
     if source == "readings":
         changes, drawn = _reading_changes(context)

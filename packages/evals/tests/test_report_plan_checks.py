@@ -28,9 +28,10 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
+from pydantic import BaseModel
 
 from packages.evals.tests.report_kit_support import KIT
 from packages.evals.tests.report_plan_support import planned_reply, structure_reply
@@ -41,7 +42,6 @@ from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_decision import surviving_options
 from threetears.evals.analysis.report_plan_checks import (
     OPTION_COLUMN_FAMILIES,
-    SPINE_KINDS,
     classify,
     implied_disclosures,
     raised_warnings,
@@ -70,6 +70,21 @@ def _input(name: str = "r5", data: dict[str, Any] | None = None) -> ReportInput:
 def _plan() -> dict[str, Any]:
     loaded: dict[str, Any] = json.loads(R5_PLAN.read_text(encoding="utf-8"))
     return loaded
+
+
+def _ordered_versions() -> ReportInput:
+    """Kairo read as ordered versions: shape E."""
+    data = _input_dict()
+    data["meta"]["design_shape"] = "ordered_versions"
+    return _input(data=data)
+
+
+#: Each shape's spine chart kind, read through :func:`spine` off one input per shape: r1 to r4, then Kairo as ordered
+#: versions.
+_SPINES: dict[str, str] = {
+    classify(given)[1]: spine(given).kind
+    for given in (*(_input(name) for name in ("r1", "r2", "r3", "r4")), _ordered_versions())
+}
 
 
 def _faults(plan: dict[str, Any], data: dict[str, Any] | None = None) -> list[tuple[str, str]]:
@@ -212,9 +227,7 @@ class TestClassify:
         assert (signals, shape) == (plan.signals, plan.shape)
 
     def test_ordered_versions_look_up_shape_e(self):
-        data = _input_dict()
-        data["meta"]["design_shape"] = "ordered_versions"
-        signals, shape = classify(_input(data=data))
+        signals, shape = classify(_ordered_versions())
         assert (signals.candidate_structure, shape) == ("ordered_versions", "E")
 
     def test_the_criteria_signal_wins_a_control_under_hard_gates(self):
@@ -447,8 +460,9 @@ class TestTheSpine:
         _passes(plan)
 
     def test_every_shapes_spine_is_the_rubrics(self):
+        """Every shape's spine kind, read off an input of that shape, is the rubric's."""
         rubric: dict[str, Any] = json.loads((FIXTURES / "rubric" / "v2.json").read_text(encoding="utf-8"))
-        assert {shape: [kind] for shape, kind in SPINE_KINDS.items()} == rubric["spine"]
+        assert _SPINES == {shape: kind for shape, [kind] in rubric["spine"].items()}
 
 
 # --- mode, slots and roles -----------------------------------------------------------------------------------------
@@ -1088,6 +1102,21 @@ class TestUnsettledPastTheMargin:
         carried = _confident(_recommending_flash(_plan()), "high_if_immaterial", _UNSETTLED)
         assert _confidence_and_coverage(carried, data) == []
 
+    def test_a_flag_disclosing_it_weakens_the_measures_its_aspects_contrasts_read(self):
+        """A low plan leaves the open unsettled aspect to the flag, which weakens the measures read on that aspect and
+        leaves the others standing."""
+        data = _voice(_nothing_open(_flash_data()), "qwen3.8-flash")
+        on_voice = {**data["contrasts"][1], "arm": "1017", "aspect": "voice"}
+        data["contrasts"].append(on_voice)
+        plan = _confident(_recommending_flash(_plan()), "low")
+        plan["flag"] = [{**_NO_RULE_FLAG, "title": "Voice is unsettled.", "discloses": ["unsettled:voice"]}]
+        completed, faults = _completed("r5", plan, data)
+        assert faults == [] and completed is not None
+        (flag,) = completed.flag
+        assert flag.discloses == ["unsettled:voice"]
+        assert flag.weakens == [f"judged:{on_voice['measure']}"]
+        assert flag.weakens[0] not in flag.survives and flag.survives
+
 
 # --- coverage ------------------------------------------------------------------------------------------------------
 
@@ -1254,7 +1283,7 @@ class TestSmallMultiples:
         why = _why(plan, "summary[0].query.small_multiples_by")
         assert "no small multiples of a 'forest'" in why and "'none'" in why
 
-    @pytest.mark.parametrize("kind", sorted(set(SPINE_KINDS.values()) | PANELLED | {"range_bars", "examples", "table"}))
+    @pytest.mark.parametrize("kind", sorted(set(_SPINES.values()) | PANELLED | {"range_bars", "examples", "table"}))
     def test_only_a_kind_the_kit_panels_repeats_its_panel(self, kind: str):
         plan = _set(_plan(), "summary[1].kind", kind)
         _set(plan, "summary[1].query.small_multiples_by", "arm")
@@ -1636,33 +1665,47 @@ PROSE_FIELDS = {
     ("CaveatClause", "material_if"),
     ("WarningAnswer", "text"),
     ("DurableClaim", "text"),
-    ("PlannedSection", "eyebrow"),
-    ("PlannedSection", "headline"),
-    ("PlannedSection", "takeaway"),
-    ("PlannedSection", "caption"),
+    ("_PlannedSection", "eyebrow"),
+    ("_PlannedSection", "headline"),
+    ("_PlannedSection", "takeaway"),
+    ("_PlannedSection", "caption"),
     ("PlannedChart", "title"),
     ("Explore", "title"),
     ("Explore", "recomputes"),
     ("ExploreControl", "title"),
     ("MethodItem", "term"),
     ("MethodItem", "text"),
-    # The planner's own models of the same prose: the flag's words, an answer by its warning's position, and a prose
-    # call's text, which assembles into one of the fields above.
-    ("PlannedFlag", "title"),
-    ("PlannedFlag", "text"),
-    ("PlannedAnswer", "text"),
-    ("ProseItem", "text"),
+    # The planner's own models of the same prose, which the module keeps private and the walk reaches through the
+    # models holding them: the flag's words, an answer by its warning's position, and a prose call's text, which
+    # assembles into one of the fields above.
+    ("_PlannedFlag", "title"),
+    ("_PlannedFlag", "text"),
+    ("_PlannedAnswer", "text"),
+    ("_ProseItem", "text"),
 }
 
 
 class TestD3:
     def test_the_prose_fields_are_the_documented_set(self):
-        """D3 walks every field typed prose; this holds that set to the one the module documents."""
-        models = [
-            getattr(report_plan, name)
-            for name in report_plan.__all__
-            if isinstance(getattr(report_plan, name), type) and name not in ("ReportPlan", "ChartSpec", "Section")
+        """D3 walks every field typed prose; this holds that set to the one the module documents. The models walked
+        are every one the module exports and every one their fields hold, the stored plan's completions of the
+        planner's parts aside (their prose is the parts')."""
+        stored = (report_plan.ReportPlan, report_plan.ChartSpec, report_plan.Section)
+        models: list[type[BaseModel]] = []
+        unread = [
+            getattr(report_plan, name) for name in report_plan.__all__ if isinstance(getattr(report_plan, name), type)
         ]
+        while unread:
+            model = unread.pop()
+            if model in models or model in stored:
+                continue
+            models.append(model)
+            for field in model.model_fields.values():
+                unread += [
+                    arg
+                    for arg in (field.annotation, *get_args(field.annotation))
+                    if isinstance(arg, type) and issubclass(arg, BaseModel)
+                ]
         prose = {
             (model.__name__, name)
             for model in models

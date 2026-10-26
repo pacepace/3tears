@@ -40,7 +40,8 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis import planned_analysis as planned_analysis_module
 from threetears.evals.analysis.errors import SoundnessRefusal, UnresolvableReference
-from threetears.evals.analysis.planned_analysis import plan_recommended_arm, report_input_digest, report_plan_of
+from threetears.evals.analysis.planned_analysis import report_input_digest, report_plan_of
+from threetears.evals.kernel.report_plan import plan_recommended_arm
 from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
 from threetears.evals.analysis.report.figure_keys import key_subjects
 from threetears.evals.analysis.report.plan_page.build import plan_page

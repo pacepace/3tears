@@ -11,7 +11,7 @@ the planner writes the campaign's report plan from its report input
   recommends nothing (a trade-off, a no-call, a lean);
 - **the plan** (:class:`~threetears.evals.kernel.campaign.EvalReportPlan`), with how it was generated and the digest
   of the report input it was written against;
-- **the insights** (:func:`planned_insights`): one per durable claim the plan states.
+- **the insights**: one per durable claim the plan states, citing the runs behind its figure keys.
 
 **Closed dependency set.** It reads the bundle, the report input built from it, the resolved prompt, the host's profile
 and an injected client, and stores nothing: storing is the service's, which holds the attempt.
@@ -28,7 +28,7 @@ from threetears.evals.analysis.bundle.insights import insight_restatement_key
 from threetears.evals.analysis.errors import SoundnessRefusal
 from threetears.evals.analysis.generator import CallAdmission, GenerationTally, aspect_analysis
 from threetears.evals.analysis.planner import PlanGeneration, generate_report_plan
-from threetears.evals.analysis.report.figure_keys import key_subjects, render
+from threetears.evals.analysis.report.figure_keys import KeySubjects, key_subjects, render
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.campaign import (
     EvalAnalysis,
@@ -39,7 +39,7 @@ from threetears.evals.kernel.campaign import (
     report_plan_id,
 )
 from threetears.evals.kernel.evidence_tiers import JUDGED_TIER_RULE
-from threetears.evals.kernel.report_plan import ReportPlan
+from threetears.evals.kernel.report_plan import DurableClaim, ReportPlan, plan_recommended_arm
 from threetears.evals.schema.hashing import bytes_digest
 from threetears.evals.schema.models import utc_now_iso
 
@@ -49,18 +49,14 @@ if TYPE_CHECKING:
     from threetears.evals.schema.completion import CompletionGenerator
 
 __all__ = [
-    "PlannedAnalysis",
     "generate_planned_analysis",
-    "planned_insights",
-    "plan_recommended_arm",
-    "planned_analysis",
     "report_input_digest",
     "report_input_document_digest",
     "report_plan_of",
 ]
 
 
-class PlannedAnalysis(NamedTuple):
+class _PlannedAnalysis(NamedTuple):
     """What one planned generation stores: the analysis, its plan, and the insights it mints."""
 
     analysis: EvalAnalysis
@@ -105,17 +101,6 @@ def report_plan_of(stored: EvalReportPlan) -> ReportPlan:
     return ReportPlan.model_validate(stored.plan)
 
 
-def plan_recommended_arm(plan: ReportPlan) -> str | None:
-    """The arm id of the plan's ``recommended`` option, or None when the plan recommends nothing.
-
-    :param plan: The plan.
-    :ptype plan: ReportPlan
-    :return: The arm id, or None.
-    :rtype: str | None
-    """
-    return next((row.option for row in plan.options.rows if row.role == "recommended"), None)
-
-
 class _UnstorableRecommendation(ValueError):
     """The accepted plan recommends an option the input holds no variant key for: the planner's to answer for.
 
@@ -139,7 +124,7 @@ def _recommended_variant_key(plan: ReportPlan, report_input: ReportInput) -> str
     return arm.variant_key
 
 
-def planned_insights(
+def _planned_insights(
     analysis: EvalAnalysis, plan: ReportPlan, bundle: CampaignBundle, report_input: ReportInput
 ) -> list[EvalInsight]:
     """Mint one durable insight per claim the plan states, citing the runs behind its figure keys.
@@ -166,14 +151,6 @@ def planned_insights(
     :rtype: list[EvalInsight]
     :raises UnresolvableReference: A claim's key does not resolve (a checked plan's always do).
     """
-    variant_of = {arm.id: arm.variant_key for arm in report_input.arms if arm.variant_key is not None}
-    control = next((arm.id for arm in report_input.arms if arm.role == "control"), None)
-    every_aspect = [aspect.aspect for aspect in bundle.aspects]
-    runs_by = {
-        (aspect.aspect, cell.variant_key): set(cell.run_ids)
-        for aspect in bundle.aspects
-        for cell in aspect.cell_measures
-    }
     trigger = (
         f"Retracted if analysis {analysis.id} is archived; replaced in place when a later analysis of this "
         "subject states the same claim."
@@ -186,15 +163,7 @@ def planned_insights(
         if not statement.strip() or key in stated:
             continue
         stated.add(key)
-        runs: set[str] = set()
-        for path in claim.keys:
-            subjects = key_subjects(path, report_input)
-            arms: Sequence[str] = subjects.arms or list(variant_of)
-            if subjects.against_control and control is not None:
-                arms = [*arms, control]
-            for aspect in subjects.aspects or every_aspect:
-                for arm in arms:
-                    runs |= runs_by.get((aspect, variant_of.get(arm, "")), set())
+        runs = _claim_runs(claim, bundle, report_input)
         insights.append(
             EvalInsight(
                 scope_id=analysis.scope_id,
@@ -212,7 +181,33 @@ def planned_insights(
     return insights
 
 
-def planned_analysis(
+def _claim_runs(claim: DurableClaim, bundle: CampaignBundle, report_input: ReportInput) -> set[str]:
+    """The runs one claim rests on: every run of each arm its keys name, on each aspect they name (every aspect when
+    a key names none), and the control's where a figure is a difference from it.
+
+    :raises UnresolvableReference: A key does not resolve.
+    """
+    variant_of = {arm.id: arm.variant_key for arm in report_input.arms if arm.variant_key is not None}
+    control = next((arm.id for arm in report_input.arms if arm.role == "control"), None)
+    every_aspect = [aspect.aspect for aspect in bundle.aspects]
+    runs_by = {
+        (aspect.aspect, cell.variant_key): set(cell.run_ids)
+        for aspect in bundle.aspects
+        for cell in aspect.cell_measures
+    }
+    runs: set[str] = set()
+    for path in claim.keys:
+        subjects: KeySubjects = key_subjects(path, report_input)
+        arms: Sequence[str] = subjects.arms or list(variant_of)
+        if subjects.against_control and control is not None:
+            arms = [*arms, control]
+        for aspect in subjects.aspects or every_aspect:
+            for arm in arms:
+                runs |= runs_by.get((aspect, variant_of.get(arm, "")), set())
+    return runs
+
+
+def _planned_analysis(
     bundle: CampaignBundle,
     report_input: ReportInput,
     generation: PlanGeneration,
@@ -220,7 +215,7 @@ def planned_analysis(
     prompt_id: str,
     calls: int,
     bundle_assembled_at: str,
-) -> PlannedAnalysis:
+) -> _PlannedAnalysis:
     """Build what a planned generation stores from the plan it accepted (this module's account).
 
     :param bundle: The campaign bundle the plan was written over, frozen with the analysis.
@@ -237,7 +232,7 @@ def planned_analysis(
         ledger as of.
     :ptype bundle_assembled_at: str
     :return: The analysis, its plan and its insights.
-    :rtype: PlannedAnalysis
+    :rtype: _PlannedAnalysis
     :raises ValueError: The plan recommends an arm the input holds no variant key for; or (a ``ValidationError``) an
         analysis, plan or insight built from it does not validate, which is a bug, not the planner's.
     """
@@ -281,10 +276,10 @@ def planned_analysis(
         aspects=[aspect_analysis(aspect, surfaces[aspect.aspect]) for aspect in bundle.aspects],
         campaign_bundle=bundle.frame(),
     )
-    return PlannedAnalysis(
+    return _PlannedAnalysis(
         analysis,
         _plan_doc(analysis, report_input, generation, prompt_id, calls),
-        planned_insights(analysis, generation.plan, bundle, report_input),
+        _planned_insights(analysis, generation.plan, bundle, report_input),
     )
 
 
@@ -300,7 +295,7 @@ async def generate_planned_analysis(
     profile: HostProfile,
     tally: GenerationTally | None = None,
     admit: CallAdmission | None = None,
-) -> PlannedAnalysis:
+) -> _PlannedAnalysis:
     """Plan one campaign's report and build what is stored from it: the analysis, its plan and its insights.
 
     The planner's account holds (:mod:`~threetears.evals.analysis.planner`): two calls, each repaired at most once, a
@@ -327,7 +322,7 @@ async def generate_planned_analysis(
     :param admit: Asked with each call's exact request before it is sent; it raises to refuse the call.
     :ptype admit: CallAdmission | None
     :return: What the generation stores.
-    :rtype: PlannedAnalysis
+    :rtype: _PlannedAnalysis
     :raises GenerationError: The model is not one the host allows, or the provider cut a call short.
     :raises SoundnessRefusal: A call's reply was refused twice; or the accepted plan recommends an arm the input holds
         no variant key for (never repaired: the plan checks refuse an unknown arm first).
@@ -339,7 +334,7 @@ async def generate_planned_analysis(
         report_input, prompt=prompt, model=model, client=client, profile=profile, tally=tally, admit=admit
     )
     try:
-        return planned_analysis(
+        return _planned_analysis(
             bundle,
             report_input,
             generation,

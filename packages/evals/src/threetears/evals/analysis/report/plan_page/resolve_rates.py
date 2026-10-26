@@ -92,25 +92,21 @@ from threetears.evals.analysis.report.plan_page.look import (
     magnitude_domain,
     quantity,
 )
-from threetears.evals.analysis.report.plan_page.words import REFERENCE_TEMPLATE
+from threetears.evals.analysis.report.plan_page.words import (
+    FLOOR_STRIP_NOTE,
+    LOG_X_NOTE,
+    MISSES_TEMPLATE,
+    NO_MEDIAN_TEMPLATE,
+    P95_TEMPLATE,
+    RANGE_TEMPLATE,
+    REFERENCE_TEMPLATE,
+)
 from threetears.evals.analysis.report_gates import gate_check
 from threetears.evals.analysis.report_input import FloorRead, ScoreboardRow, Stat, Stratum, Task
 from threetears.evals.analysis.style import humanize
 
 __all__ = ["RESOLVERS"]
 
-#: The caption under a dot strip of floors.
-_FLOOR_NOTE = "Each dot is the largest drop its interval allows; a floor holds where the dot stays above its line."
-#: A dot's tooltip line where it misses its line.
-_MISSES_TEMPLATE = "Misses the {line}"
-#: The caption under a scatter whose x axis is logarithmic.
-_LOG_NOTE = "The horizontal axis is logarithmic: each step is a multiple."
-#: A range bar's tooltip line: its two ends.
-_RANGE_TEMPLATE = "p50 {p50} · p95 {p95}"
-#: A range bar's tooltip line where the input holds only its p95, which is drawn as its end mark alone.
-_P95_TEMPLATE = "p95 {p95}; no p50 in the evidence"
-#: The caption naming the range bars drawn as their p95 alone.
-_NO_MEDIAN_TEMPLATE = "Drawn at the p95 alone, with no p50 in the evidence: {missing}."
 
 #: The spread of an x axis past which it is drawn logarithmic.
 _LOG_SPREAD = 10.0
@@ -131,7 +127,7 @@ def _arm_name(context: ChartContext, arm: str) -> str:
 
 
 def _with_line(tip: list[str], value: float, line: ChartReference | None) -> list[str]:
-    return [*tip, _MISSES_TEMPLATE.format(line=line.label or line.kind)] if line and misses_line(value, line) else tip
+    return [*tip, MISSES_TEMPLATE.format(line=line.label or line.kind)] if line and misses_line(value, line) else tip
 
 
 # --- dot_interval -------------------------------------------------------------------------------------------------
@@ -389,7 +385,7 @@ def _floor_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, 
             )
             dots.append(dataclasses.replace(dot, tip=[*dot.tip, read.status], hollow=read.status == "broken"))
         strips.append(_Strip(title=humanize("dimension", floor), arm="", dots=dots, line=line, drawn=drawn))
-    return strips, level, (_FLOOR_NOTE, *missing_note(missing)), True
+    return strips, level, (FLOOR_STRIP_NOTE, *missing_note(missing)), True
 
 
 def _dot_row(context: ChartContext, dot: _Dot, line: ChartReference | None) -> DotIntervalRow:
@@ -546,9 +542,9 @@ def _range_bars(context: ChartContext) -> Drawn:
             low = p50 * drawn.factor if p50 is not None else high
             look = context.look.arm(arm) if arm in context.look.arms else None
             said = (
-                _RANGE_TEMPLATE.format(p50=figure_text(low, drawn), p95=figure_text(high, drawn))
+                RANGE_TEMPLATE.format(p50=figure_text(low, drawn), p95=figure_text(high, drawn))
                 if p50 is not None
-                else _P95_TEMPLATE.format(p95=figure_text(high, drawn))
+                else P95_TEMPLATE.format(p95=figure_text(high, drawn))
             )
             if p50 is None:
                 no_median.append(f"{_arm_name(context, arm)}, {label}")
@@ -577,7 +573,7 @@ def _range_bars(context: ChartContext) -> Drawn:
     data = RangeBarsChart(
         groups=drawn_groups, domain=(domain[0], domain[1]), fmt=drawn.fmt, reference=line, legend=legend or None
     )
-    notes = (_NO_MEDIAN_TEMPLATE.format(missing="; ".join(no_median)),) if no_median else ()
+    notes = (NO_MEDIAN_TEMPLATE.format(missing="; ".join(no_median)),) if no_median else ()
     return Drawn(chart_block(context, data), notes)
 
 
@@ -761,7 +757,7 @@ def _scatter(context: ChartContext) -> Drawn:
             }
         )
 
-    notes = (_LOG_NOTE,) if x_log else ()
+    notes = (LOG_X_NOTE,) if x_log else ()
     if len(tasks) == 1:
         y_line, x_line = lines(tasks[0])
         data = chart(points=drawn_points(tasks[0]), reference=y_line, x_reference=x_line)

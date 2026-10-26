@@ -35,9 +35,8 @@ recommendation the campaign's kind and readings allow, an answer to every warnin
 chart names, every figure key and no typed digit. Whether the words are right is a model judge's to measure, on a
 rubric people calibrate, in whatever language the plan is written (owner, 2026-10-24).
 
-**It is budgeted:** at most :data:`PLAN_PROMPT_CHAR_BUDGET` characters and :data:`PLAN_PROMPT_RULE_BUDGET` rules,
-and the budget only falls (unless the owner rules a fix needs the room); ``tests/test_plan_prompt_budget.py`` fails
-the build past either. A new rule names the one it replaces, in the rule ledger ``PLAN_PROMPT_RULES.md`` beside this
+**It is budgeted:** at most 15,500 characters and 13 rules, a contract ``tests/test_plan_prompt_budget.py`` declares
+and holds, failing the build past either; the budget only falls (unless the owner rules a fix needs the room). A new rule names the one it replaces, in the rule ledger ``PLAN_PROMPT_RULES.md`` beside this
 module, which records what each rule prevents and where it came from; the same test holds the ledger to the prompt.
 
 **Worked examples are synthetic and few.** A model reproduces a prompt's canonical answer with its nouns swapped, so
@@ -54,13 +53,6 @@ from __future__ import annotations
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.prompts.catalogue import ANALYSIS_GEN_PROMPT, REPORT_PLAN_PROMPT
-
-#: The prompt's character ceiling, set just above the prompt as written. It only falls; making the prompt shorter is a
-#: measured change (an eval of the planner), not a cut by eye.
-PLAN_PROMPT_CHAR_BUDGET = 15_500
-
-#: The most rules the prompt carries, not its numbered headings. It only falls.
-PLAN_PROMPT_RULE_BUDGET = 13
 
 #: The report planner's default system prompt.
 #:
@@ -131,7 +123,5 @@ def refuse_a_memo_prompt(prompt: str) -> None:
 
 __all__ = [
     "EVAL_REPORT_PLAN_DEFAULT",
-    "PLAN_PROMPT_CHAR_BUDGET",
-    "PLAN_PROMPT_RULE_BUDGET",
     "refuse_a_memo_prompt",
 ]

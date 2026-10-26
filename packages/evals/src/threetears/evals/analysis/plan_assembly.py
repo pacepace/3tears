@@ -50,9 +50,9 @@ from threetears.evals.analysis.errors import PlanRefusal
 from threetears.evals.analysis.report_plan_checks import MODE_SLOTS
 from threetears.evals.analysis.report_plan_facts import PlanFacts, complete_plan, flag_disclosures
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.kernel.report_plan import PlannedReport, PlanProse, PlanStructure, WarningRef
+from threetears.evals.kernel.report_plan import PlannedReport, PlanProse, PlanStructure, StructureChart, WarningRef
 
-__all__ = ["ProseSlot", "check_structure", "planned_report", "prose_slots", "read_prose"]
+__all__ = ["check_structure", "planned_report", "prose_slots", "read_prose"]
 
 #: What every prose slot holds while a structure is checked: no figure key and no digit, so no prose check can fault it.
 _PROSE_PLACEHOLDER = "To be written."
@@ -70,7 +70,7 @@ _SLOT_HOLDS = {
 _Fault = tuple[str, str]
 
 
-class ProseSlot(BaseModel):
+class _ProseSlot(BaseModel):
     """One prose slot a structure creates: the key the prose call writes it under, what it holds, and whether it may be
     left empty."""
 
@@ -96,7 +96,7 @@ def _flagged(structure: PlanStructure, facts: PlanFacts) -> tuple[str, ...]:
     return flag_disclosures(facts, structure.mode, _confidence_ids(structure))
 
 
-def prose_slots(structure: PlanStructure, facts: PlanFacts) -> tuple[ProseSlot, ...]:
+def prose_slots(structure: PlanStructure, facts: PlanFacts) -> tuple[_ProseSlot, ...]:
     """The prose slots a structure creates, in the order the prose call is asked for them (this module's keys).
 
     :param structure: The checked structure.
@@ -104,14 +104,14 @@ def prose_slots(structure: PlanStructure, facts: PlanFacts) -> tuple[ProseSlot, 
     :param facts: Code's facts about the input.
     :ptype facts: PlanFacts
     :return: Each slot, once.
-    :rtype: tuple[ProseSlot, ...]
+    :rtype: tuple[_ProseSlot, ...]
     """
     return tuple(_slots(structure, facts))
 
 
-def _slots(structure: PlanStructure, facts: PlanFacts) -> Iterator[ProseSlot]:
-    def slot(key: str, holds: str, *, optional: bool = False) -> ProseSlot:
-        return ProseSlot(key=key, holds=holds, optional=optional)
+def _slots(structure: PlanStructure, facts: PlanFacts) -> Iterator[_ProseSlot]:
+    def slot(key: str, holds: str, *, optional: bool = False) -> _ProseSlot:
+        return _ProseSlot(key=key, holds=holds, optional=optional)
 
     yield slot("headline", "the decision as an instruction with its reason; in tradeoff mode the trade")
     yield slot("lede", "at most two sentences: the strongest supporting fact, then what would change the answer")
@@ -151,13 +151,13 @@ def _slots(structure: PlanStructure, facts: PlanFacts) -> Iterator[ProseSlot]:
             yield slot(f"explore.controls.{control.id}.title", f"control {control.id!r}'s label")
 
 
-def read_prose(reply: PlanProse, slots: Sequence[ProseSlot]) -> dict[str, str]:
+def read_prose(reply: PlanProse, slots: Sequence[_ProseSlot]) -> dict[str, str]:
     """The prose reply as text by key, or the refusal of every key it got wrong.
 
     :param reply: The validated prose reply.
     :ptype reply: PlanProse
     :param slots: The slots it was asked for (:func:`prose_slots`).
-    :ptype slots: Sequence[ProseSlot]
+    :ptype slots: Sequence[_ProseSlot]
     :return: Each slot's text, by key.
     :rtype: dict[str, str]
     :raises PlanRefusal: A key appears twice, names no slot, or a slot is missing or empty where it must be written.
@@ -196,7 +196,7 @@ def planned_report(structure: PlanStructure, prose: Mapping[str, str], facts: Pl
     :raises PlanRefusal: The assembled text breaks a field's bounds (a lede over its length, an empty required text).
     """
 
-    def chart(planned: BaseModel, title: str) -> dict[str, object]:
+    def chart(planned: StructureChart, title: str) -> dict[str, object]:
         return {**planned.model_dump(), "title": title}
 
     warnings = _recommended_warnings(structure, facts)
