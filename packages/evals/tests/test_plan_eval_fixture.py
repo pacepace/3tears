@@ -18,7 +18,6 @@ Contracts held here:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -95,7 +94,9 @@ async def test_each_replayed_plan_passes_the_checks_and_is_the_kept_run_plan(
 
 
 async def test_every_current_run_passes_rubric_r1(generations: dict[str, PlanGeneration]) -> None:
-    scored = {run: dataset.code_score(generated.plan, plan_eval.report_input(run)) for run, generated in generations.items()}
+    scored = {
+        run: dataset.code_score(generated.plan, plan_eval.report_input(run)) for run, generated in generations.items()
+    }
     assert {run: verdict for run, (verdict, _) in scored.items()} == dict.fromkeys(plan_eval.RUNS, "pass"), scored
 
 

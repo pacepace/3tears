@@ -379,7 +379,9 @@ class Spine(BaseModel):
             parts.append(f"on aspect {self.aspect!r}")
         if self.measures:
             parts.append(f"over the measures {list(self.measures)}")
-        parts.append("with a " + " and a ".join(self.reference) + " line" if self.reference else "with no reference line")
+        parts.append(
+            "with a " + " and a ".join(self.reference) + " line" if self.reference else "with no reference line"
+        )
         return " ".join(parts)
 
 

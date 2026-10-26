@@ -494,7 +494,9 @@ class TestOnlySurvivorsArePicked:
         _passes(plan, _input_dict("r4"))
         rows = plan["options"]["rows"]
         rows[1]["role"], rows[2]["role"] = "cheapest", "lean"
-        assert "'f16', marked 'lean', and it does not survive" in _why(plan, "options.rows[2].option", _input_dict("r4"))
+        assert "'f16', marked 'lean', and it does not survive" in _why(
+            plan, "options.rows[2].option", _input_dict("r4")
+        )
 
     def test_a_changes_candidate_shown_better_that_failed_a_gate_is_refused(self):
         data = _input_dict()
@@ -511,7 +513,9 @@ class TestOnlySurvivorsArePicked:
         data["arms"][0]["role"] = "challenger"
         data["criteria"] = [_cost_gate(0.002, "higher_is_better")]
         plan = _set(_plan(), "decision.confidence.form", "low")
-        assert "'September', marked 'recommended', and it does not survive" in _why(plan, "options.rows[0].option", data)
+        assert "'September', marked 'recommended', and it does not survive" in _why(
+            plan, "options.rows[0].option", data
+        )
 
 
 class TestTheRecommendation:
