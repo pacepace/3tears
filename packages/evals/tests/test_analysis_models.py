@@ -39,6 +39,8 @@ from threetears.evals.kernel.campaign import (
     LeverCoverage,
     RunIndexEntry,
 )
+from threetears.evals.analysis.analyst.snapshot import report_snapshot
+from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.declaration import Aspect
 from threetears.evals.kernel.storage import DroppedJudgeProfile
 from threetears.evals.schema.versioning import REGENERABLE_SCHEMA_VERSION
@@ -51,6 +53,7 @@ from packages.evals.tests.factories import (
     make_campaign,
     memory_storage,
 )
+from packages.evals.tests.fixtures.report_plans.misfits import reference_data
 
 
 def _finding(title: str = "v", *, invalidates: list[int] | None = None, **overrides: Any) -> Finding:
@@ -709,21 +712,39 @@ def test_a_stored_analysis_carrying_an_unknown_key_is_refused_at_either_level(le
         EvalAnalysis.from_dict(stored)
 
 
-def test_drop_derived_clears_analyses_and_insights_and_keeps_the_campaign():
-    """The operator step after a regenerable bump: every derived document goes, every kept and durable one stays."""
+def test_drop_derived_clears_analyses_insights_and_report_snapshots_and_keeps_the_campaign():
+    """The operator step after a regenerable bump: every derived document goes, every kept and durable one stays.
+
+    A report snapshot is derived: it freezes a report input built from evidence that stays, so it is frozen again.
+    """
     storage, _ = memory_storage()
     analysis, insight = _make_analysis(), _make_insight()
     storage.save_analysis(analysis)
     storage.save_insight(insight)
+    snapshot = report_snapshot(
+        ReportInput.model_validate(reference_data("r1")),
+        scope_id="uni-1",
+        campaign_id=None,
+        source="report_input",
+        created_by="agent:test",
+    )
+    storage.save_report_snapshot(snapshot)
     campaign = make_campaign(scope_id="uni-1")
     storage.save_campaign(campaign)
 
     dropped = storage.drop_derived(["uni-1"])
 
-    assert dropped.counts == {"eval_analysis": 1, "eval_insight": 1, "eval_judge_profile": 0, "eval_report_plan": 0}
+    assert dropped.counts == {
+        "eval_analysis": 1,
+        "eval_insight": 1,
+        "eval_judge_profile": 0,
+        "eval_report_plan": 0,
+        "eval_report_snapshot": 1,
+    }
     assert dropped.judge_profiles == []
     assert storage.load_analysis(analysis.id, "uni-1") is None
     assert storage.query_insights("uni-1") == []
+    assert storage.load_report_snapshot(snapshot.id, "uni-1") is None
     assert storage.load_campaign(campaign.id, "uni-1") is not None
 
 

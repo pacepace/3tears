@@ -20,6 +20,7 @@ around (``capability_gap``, which stores nothing).
 
 from __future__ import annotations
 
+import functools
 from dataclasses import replace
 from typing import Annotated, Literal, get_args
 
@@ -32,7 +33,7 @@ from threetears.evals.actions.analyst_render import analyst_render_actions
 from threetears.evals.actions.catalogue import DEFAULT_PREFIX, Action, Caller, HelpTopic, PermissionClass, ToolSpec
 from threetears.evals.actions.params import AnalysisId, CampaignId, SnapshotId
 from threetears.evals.actions.render import render_cited
-from threetears.evals.ops.analyst_blocks import figure_key_grammar
+from threetears.evals.ops.analyst_blocks import figure_key_index, figure_key_pages
 from threetears.evals.ops.analyst import GapNoted, SnapshotFrozen, capability_gap, report_snapshot_freeze
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
@@ -49,12 +50,18 @@ GAPS_WORKFLOW = "Investigate: gaps"
 #: The workflows whose actions the editor tests a report with: no blocks, since it reads the page it is given.
 _EDITOR_WORKFLOWS = frozenset({FACTS_WORKFLOW, ANALYSES_WORKFLOW, GAPS_WORKFLOW})
 
+#: What the figure-key grammar is served as: its index, and each group of its paths a page, ``figure_keys.<group>``.
+_FIGURE_KEYS = "figure_keys"
+
 #: The figure-key grammar as a help topic: what every figure an analyst tool returns is keyed by, and what a claim cites.
-FIGURE_KEYS_TOPIC = HelpTopic(
-    name="figure_keys",
-    summary="The figure-key grammar: every path a figure is cited by, its filters and examples (block_catalog lists the "
-    "paths alone).",
-    text=figure_key_grammar,
+#: The whole grammar runs past what one result may take of a reader's context, so the topic is its rules, filters and
+#: a line per group of paths, and each group's forms, statistics and examples are a page of it.
+_FIGURE_KEYS_TOPIC = HelpTopic(
+    name=_FIGURE_KEYS,
+    summary="The figure-key grammar: how a figure is cited, its filters, and every path by group (block_catalog lists "
+    "the paths alone).",
+    text=functools.partial(figure_key_index, _FIGURE_KEYS),
+    pages=figure_key_pages,
 )
 
 #: The rules every call to the analyst tool is held to, whichever role it is cut for.
@@ -207,7 +214,7 @@ def analyst_tools(
         no blocks (the editor reads the page it is given) and no freeze, whatever ``writes`` says.
     :ptype role: Literal["analyst", "editor"]
     :return: ``<prefix>_analyst``, read actions and, with ``writes``, the freeze; its help serves the figure-key grammar
-        as ``topic='figure_keys'`` (:data:`FIGURE_KEYS_TOPIC`).
+        as ``topic='figure_keys'``, an index whose pages are ``topic='figure_keys.<group>'``.
     :rtype: tuple[ToolSpec]
     """
     classes: frozenset[PermissionClass] = frozenset({"read", "write"} if writes else {"read"})
@@ -218,14 +225,13 @@ def analyst_tools(
             permissions=classes,
             cut=ANALYST_CUT,
             workflows=_EDITOR_WORKFLOWS if role == "editor" else None,
-            topics=(FIGURE_KEYS_TOPIC,),
+            topics=(_FIGURE_KEYS_TOPIC,),
             constraints=_CONSTRAINTS,
         ),
     )
 
 
 __all__ = [
-    "FIGURE_KEYS_TOPIC",
     "analyst_actions",
     "analyst_tools",
 ]

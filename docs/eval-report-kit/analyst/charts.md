@@ -1,6 +1,6 @@
 # The block catalog
 
-Each claim carries one block. Choose the one that answers the claim's question most directly. Then test it: if the values flipped, would the claim have to change? If not, the block isn't evidence for the claim. `block_catalog()` returns the current kinds with their query fields. `render_block()` lets you try one before committing to it.
+Each claim carries one block. Choose the one that answers the claim's question most directly. Then test it: if the values flipped, would the claim have to change? If not, the block isn't evidence for the claim. `block_catalog` returns the current kinds with their query fields. `block_render` lets you try one before committing to it.
 
 **A table and prose are always available.** When no chart kind fits the data, a table states the figures and a sentence states the finding. That is never a failure, and it is often the clearest choice for few numbers.
 

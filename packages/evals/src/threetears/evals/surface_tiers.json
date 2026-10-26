@@ -1639,7 +1639,6 @@
 "threetears.evals.actions.MountedTool": "provisional",
 "threetears.evals.actions.PERMISSION_CLASSES": "provisional",
 "threetears.evals.actions.PermissionClass": "provisional",
-"threetears.evals.actions.PRIMER_BUDGET": "provisional",
 "threetears.evals.actions.read_only_tools": "provisional",
 "threetears.evals.actions.Recovery": "provisional",
 "threetears.evals.actions.Refusal": "stable",

@@ -11,7 +11,7 @@ A report is not a tour of the data. Each claim earns its place by changing or qu
 - **Lead with the size of a change before its verdict against a line.** A candidate whose interval sits wholly below zero is worse, even when the margin allows that much loss. "Within the margin" said first makes a regression read as a pass. Say how much worse, then whether the margin allows it.
 - **Show the recommended option's weak axes.** A recommendation whose weak side is hidden reads as stronger than the evidence. The weakest margin, meaning the figure nearest the line it is read against, belongs in Watch.
 - **Status follows the direction of the change, not the margin.** A worse result stays marked as worse even when it is within the margin. Approval colors on a regression read as approval.
-- **Frame nothing stronger than its interval supports.** A point estimate that clears a gate while its interval crosses it is *borderline*. It counts as passing for the call, but it goes in Watch with the sample needed to settle it (`settle()`).
+- **Frame nothing stronger than its interval supports.** A point estimate that clears a gate while its interval crosses it is *borderline*. It counts as passing for the call, but it goes in Watch with what would settle it, in words: no tool computes the sample yet (`settle` is not available; log a `capability_gap`).
 - **State findings in the direction the evidence supports.** A refuted claim at low confidence is still a refutation. Don't let a weak tier blur which way the evidence points.
 
 ## Elision
@@ -24,13 +24,13 @@ Leaving things out is most of the craft, and it has to be accountable. Everythin
 
 ## Decisions: survivors and dominance
 
-A call usually comes from two questions. Which options survive every gate and guardrail declared for them? Among those, does one dominate, at least as good as every other on every axis that matters? `dominance()` computes both. You read the result and decide what it means for this campaign.
+A call usually comes from two questions. Which options survive every gate and guardrail declared for them? Among those, does one dominate, at least as good as every other on every axis that matters? `options_dominance` computes both. You read the result and decide what it means for this campaign.
 
 - **One survivor dominates:** a decision. The story says why it wins and what it gives up.
 - **Several survive and none dominates:** if the campaign declared a rule that ranks the axes, the rule decides. If not, the honest report is a tradeoff. Price it and let the owner choose. You may state a lean, labelled as yours.
 - **Nothing survives, one arm was measured, or nothing separates the options:** the report says what is missing and what would settle it.
 
-If your call disagrees with `dominance()`, the editor will see that. Disagree only for a reason the page states, such as an axis the computation can't weigh.
+If your call disagrees with `options_dominance`, the editor will see that. Disagree only for a reason the page states, such as an axis the computation can't weigh.
 
 Gate reasoning that recurs:
 
@@ -43,7 +43,7 @@ Gate reasoning that recurs:
 
 ## Confounds
 
-A confound qualifies a claim. It never names a cause by itself. Check apparatus confounds (a shared machine, a changed simulator, a short run) before model ones, because they touch everything. For each confound, either show that it doesn't matter (`confound_check()`) or carry it into the story and the next steps.
+A confound qualifies a claim. It never names a cause by itself. Check apparatus confounds (a shared machine, a changed simulator, a short run) before model ones, because they touch everything. For each confound, either show that it doesn't matter from the figures you have (`confound_check` is not available; log a `capability_gap`) or carry it into the story and the next steps.
 
 Say a caveat once, at the level it applies to. A caveat that touches the whole comparison (late criteria, an uncalibrated judge, a shared-machine latency) belongs in the confidence. One that touches one arm or one finding (that arm's reasoning budget, one short run) sits beside that claim, usually in Watch.
 

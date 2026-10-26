@@ -8191,11 +8191,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.actions.PRIMER_BUDGET": {
-      "kind": "constant (int)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.actions.read_only_tools": {
       "kind": "function",
       "signature": "",

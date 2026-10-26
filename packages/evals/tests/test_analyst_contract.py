@@ -51,7 +51,7 @@ from threetears.evals.actions import (
     read_only_tools,
     standard_tools,
 )
-from threetears.evals.actions.render import next_page_line, render_cited
+from threetears.evals.actions.render import render_cited
 from threetears.evals.analysis import assemble_campaign_bundle
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
 from threetears.evals.analysis.errors import UnresolvableReference
@@ -83,6 +83,18 @@ PAGING = frozenset({"total", "offset", "next_offset", "limit", "next"})
 
 #: The fields every cited figure carries, by which one is found in a result's JSON.
 FIGURE_FIELDS = frozenset({"key", "reads", "value", "kind", "scale", "unit"})
+
+
+def _next_line(call: dict[str, Any]) -> str:
+    """The next page's call as a page spells it on its last line: each argument in order, a string quoted, any other
+    value as compact JSON with its keys sorted."""
+    spelled = (
+        f"{name}='{value}'"
+        if isinstance(value, str)
+        else f"{name}={json.dumps(value, sort_keys=True, ensure_ascii=False)}"
+        for name, value in call.items()
+    )
+    return "next: " + ", ".join(spelled)
 
 
 def _analyst_tool() -> MountedTool:
@@ -586,7 +598,7 @@ async def test_following_next_reads_every_row_once_and_the_last_page_names_no_ne
                 {**sent, "offset": page.structured["next_offset"]}
             )
             assert following["action"] == action
-            assert page.text.splitlines()[-1] == next_page_line(following)
+            assert page.text.splitlines()[-1] == _next_line(following)
             assert page.text.splitlines()[-1].startswith(f"next: action='{action}', snapshot_id='{snapshot.id}'")
         else:
             assert "next_offset" not in page.structured and not page.text.splitlines()[-1].startswith("next: ")
@@ -626,15 +638,42 @@ def _page_rows(action: str, structured: dict[str, Any]) -> list[Any]:
     return [row for group in structured["aspects"] for kind in kinds for row in group[kind]]
 
 
-async def test_help_topic_figure_keys_is_the_whole_grammar_and_block_catalog_lists_its_paths() -> None:
+def _grammar_parts(grammar: str) -> tuple[list[str], list[str]]:
+    """The grammar's path lines (its families, between ``Paths:`` and the filters), and every other line of it."""
+    lines = grammar.splitlines()
+    start = lines.index("Paths:") + 1
+    end = next(at for at, line in enumerate(lines) if line.startswith("Filters"))
+    return lines[start:end], [*lines[: start - 1], *lines[end:]]
+
+
+async def test_help_topic_figure_keys_is_an_index_and_its_pages_hold_the_whole_grammar_each_within_budget() -> None:
     fixture, snapshots = off_loop(_seeded)
     grammar = figure_key_grammar()
+    paths, rest = _grammar_parts(grammar)
+    assert len(grammar) > TEXT_BUDGET, "the control: the whole grammar is past one result's budget"
     for role in ("analyst", "editor"):
         (spec,) = analyst_tools(role=role)
         tool = eval_catalogue().mount(spec)
-        page = await _call(tool, fixture, {"action": "help", "topic": "figure_keys"})
-        assert (page.ending, page.text) == ("ok", grammar), role
-        assert "- figure_keys: " in tool.help_index() and "block_catalog" in tool.help_index(), role
+        index = await _call(tool, fixture, {"action": "help", "topic": "figure_keys"})
+        assert index.ending == "ok" and len(index.text) <= TEXT_BUDGET, (role, len(index.text))
+        index_lines = index.text.splitlines()
+        assert all(line in index_lines for line in rest), "the index holds the grammar's rules and filters whole"
+        named = [line.split(":")[0].removeprefix("- ") for line in index_lines if line.startswith("- figure_keys.")]
+        assert named, "the index names a page per group"
+        held: list[str] = []
+        for topic in named:
+            page = await _call(tool, fixture, {"action": "help", "topic": topic})
+            assert page.ending == "ok" and len(page.text) <= TEXT_BUDGET, (role, topic, len(page.text))
+            lines = [line for line in page.text.splitlines() if line.startswith("- `")]
+            held += lines
+            group = next(line for line in index_lines if line.startswith(f"- {topic}: "))
+            assert all(line.split("`")[1] in group.split(". ", 1)[1] for line in lines), "the index names its forms"
+        assert sorted(held) == sorted(paths), "every path line of the grammar is on exactly one page"
+        missing = await _call(tool, fixture, {"action": "help", "topic": "figure_keys.nothing"})
+        assert missing.is_error and missing.recovery is not None
+        assert missing.recovery.valid_values == tuple(named)
+        assert missing.text.splitlines()[-1].startswith("recovery: ")
+        assert "- figure_keys: " in tool.help_index() and "topic='figure_keys.<page>'" in tool.help_index(), role
     catalog = await _call(_analyst_tool(), fixture, {"action": "block_catalog", "snapshot_id": snapshots["r1"].id})
     assert catalog.structured is not None
     forms = catalog.structured["figure_key_forms"]

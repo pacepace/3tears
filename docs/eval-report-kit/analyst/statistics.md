@@ -15,17 +15,17 @@ A margin says how much worse a candidate may be and still count as acceptable (n
 - `hi < 0`: **worse**. Lead with the size, then whether the margin allows it.
 - `lo > 0`: **better**.
 - otherwise: **not separated**.
-- It is within the margin when `-lo < M`. The **flip margin** is `-lo`: the margin at which the verdict changes. `sensitivity()` returns it.
+- It is within the margin when `-lo < M`. The **flip margin** is `-lo`: the margin at which the verdict changes. `decision_sensitivity` returns where the call flips, and the figure key `flip_margin.<candidate>` names it.
 
 Why size first: "within the margin" is true of a candidate that is clearly worse by an amount the margin happens to allow. If that clause leads, a regression reads as a pass.
 
-A margin larger than any plausible result could fail is uninformative. If the margin is more than about twice the worst observed drop, say so. When the margin was set after the results, check whether the call holds across every margin (`sensitivity()`). If it does, that caveat is checked, not open.
+A margin larger than any plausible result could fail is uninformative. If the margin is more than about twice the worst observed drop, say so. When the margin was set after the results, check whether the call holds across every margin (`decision_sensitivity`, `parameter='margin:<aspect>'`). If it does, that caveat is checked, not open.
 
 **An aspect left unsettled past its declared margin is an open caveat**, asked or not. If the interval reaches past the margin, a forbidden loss is still possible. Carry it in the confidence with its `material_if`.
 
 ## Gates and borderline results
 
-A point estimate on the right side of a gate whose interval crosses the line is borderline. It passes for the call. Watch names it, with the sample `settle()` says would decide it. Decide which kind of "not settled" you have:
+A point estimate on the right side of a gate whose interval crosses the line is borderline. It passes for the call. Watch names it, with what would decide it in words (`settle` is not available; log a `capability_gap`). Decide which kind of "not settled" you have:
 
 - **The interval crosses the line:** more cases can settle it. Name how many.
 - **The interval is clear of the line on the wrong side:** more cases won't help. The candidate has to change.
@@ -34,7 +34,7 @@ When you pick the one option out of many that clears a line, its estimate is opt
 
 ## Corrected versus uncorrected
 
-Contrasts across many arms and measures are corrected for multiplicity, which widens their intervals. That is what lets you call one *improved* or *regressed* without being fooled by the number of comparisons. Breakdowns you request by stratum or lever (`breakdown()`) are uncorrected and exploratory. A separated stratum is a lead to follow up, not a finding. Phrase it that way once, then don't hedge every sentence.
+Contrasts across many arms and measures are corrected for multiplicity, which widens their intervals. That is what lets you call one *improved* or *regressed* without being fooled by the number of comparisons. Breakdowns you request by stratum, task or cell (`measure_breakdown`) are uncorrected and exploratory. A separated stratum is a lead to follow up, not a finding. Phrase it that way once, then don't hedge every sentence.
 
 Average effects over a crossed grid (what a retry buys, what more reasoning buys) are meaningful only when the factors don't interact. Check the grid before averaging. An interaction is a finding in itself, often the most important one.
 
@@ -55,7 +55,7 @@ A judged figure is only as good as the judge. Read its calibration tier and agre
 - An **uncalibrated** judge is a report-wide caveat. Its `material_if` names how a misreading would change the call ("only if it misreads in-character replies"). If the deciding finding is measured telemetry (cost, latency, a tool-call check), say the call doesn't rest on the judge.
 - **Relative** comparisons on one judge are sturdier than **absolute** claims. "Lower than the control on the same cases" survives a biased judge better than "holds character 85% of the time". An absolute judged claim needs a calibrated judge.
 - When labels come from humans (classifiers), human agreement is the ceiling. Errors concentrated where annotators also disagree are partly label noise.
-- `settle()` can say how many human ratings would turn a judge caveat into evidence.
+- How many human ratings would turn a judge caveat into evidence is `settle`'s, which is not available: log a `capability_gap` and say it in words.
 
 ## Derived figures
 

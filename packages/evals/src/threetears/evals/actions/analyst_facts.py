@@ -302,7 +302,7 @@ def analyst_facts_actions() -> tuple[Action, ...]:
             handler=_measure_read,
             render=render_cited,
             paged=True,
-            example={**snapshot, "measure_key": "persona.holds_character", "by": "stratum"},
+            example={**snapshot, "measure_key": "resolves", "by": "stratum"},
             detail=(
                 "campaign_overview lists each measure key and the slices it can be read by. By arm, a measure read on "
                 "more than one aspect is read on each, by its aspect's key. Within a slice, vs_control is a candidate's "

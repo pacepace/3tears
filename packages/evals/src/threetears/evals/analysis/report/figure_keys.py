@@ -39,7 +39,9 @@ phrases (``per 1,000 replies``). A number a reader sees is code's.
 
 **The grammar is taught by this module.** :func:`figure_key_grammar` writes the planner prompt's section from the
 module's own families, statistics and filters, with examples rendered on a synthetic input, so the prompt can never
-teach a form this parser refuses.
+teach a form this parser refuses. A reader that takes the grammar a page at a time reads the same lines:
+:func:`figure_key_index` (the rules and filters, and a line per group of families) and :func:`figure_key_pages` (each
+group's forms).
 """
 
 from __future__ import annotations
@@ -845,9 +847,22 @@ def _reasoning_ratio(report_input: ReportInput, values: tuple[str, ...], path: s
 
 
 def _depth_figure(report_input: ReportInput, path: str, read: Callable[[ReportInput, Aspect], float | None]) -> Figure:
-    value = read(report_input, _asked_or_refuse(report_input, path))
+    """The asked aspect's depth as one figure; refused as a figure the input does not state where it has no single
+    asked aspect, or the aspect's arms ran it to different depths: the input's shape, never a key spelled wrong."""
+    aspect = _asked(report_input)
+    if aspect is None:
+        ids = ", ".join(f"`aspects.{a.id}.`" for a in report_input.aspects) or "none: the input holds no aspect"
+        raise _refuse(
+            path,
+            f"reads the one asked aspect's depth, which the input does not state: it has no single one; name it: {ids}",
+        )
+    value = read(report_input, aspect)
     if value is None:
-        raise _refuse(path, "reads the asked aspect's depth, and its arms ran it to different depths or none is stated")
+        raise _refuse(
+            path,
+            "reads the asked aspect's depth as one figure, which the input does not state: its arms ran it to "
+            "different depths or none is stated",
+        )
     return Figure(path=path, kind="number", value=float(value), scale="count")
 
 
@@ -916,7 +931,9 @@ def _late_set_at(report_input: ReportInput, _: tuple[str, ...], path: str) -> Fi
     if len(when) > 1:
         per = ", ".join(f"`late_criteria.{late}.set_at`" for late in _late_names(report_input, ()))
         raise _refuse(
-            path, f"names one date, and the late criteria were set at {len(when)} different times; name one: {per}"
+            path,
+            f"names one date, which the input does not state: the late criteria were set at {len(when)} different "
+            f"times; name one: {per}",
         )
     return Figure(path=path, kind="text", value=when[0])
 
@@ -3097,22 +3114,9 @@ def _family_line(family: _Family, example: ReportInput, names: Mapping[str, str]
     return f"- `{family.form()}`: {family.what}{listed}.{tag}"  # one line: module constants
 
 
-def figure_key_grammar() -> str:
-    """Write the planner prompt's section that teaches figure keys, from this module's own families and filters.
-
-    Each family's form and statistics, each filter and every example come from the code that parses and renders
-    them; the examples are rendered on a made-up input, so a change to a family, a filter or a spelling reaches the
-    planner with the code.
-
-    :return: The section, heading first.
-    :rtype: str
-    :raises UnresolvableReference: An example no longer resolves: the grammar changed under this function, and every
-        plan would share the break, so it fails here.
-    """
-    example = _example_input()
-    names = {"base": "Baseline", "fast.v2": "fast.v2"}
-    lines = [
-        f"## {GRAMMAR_HEADING}",
+def _grammar_rules() -> list[str]:
+    """The grammar's rules, after its heading and before its paths: how a key is written and how a path is matched."""
+    return [
         "This section is written by the code that reads your keys, so it is current: where anything above describes "
         "figure keys differently, follow this section.",
         "Never type a number into prose. Where a sentence needs one, write a figure key: `{path|filter|filter}`, "
@@ -3123,11 +3127,12 @@ def figure_key_grammar() -> str:
         "or names nothing the input holds, is refused and sent back naming what could come next. Where the input "
         "holds a figure on more than one aspect (a contrast, a stratum, a contrast family), the form without "
         "`aspects.<aspect>.` is refused and names the `aspects.<aspect>.` keys to write instead.",
-        "Paths:",
     ]
-    for family in _FAMILIES:
-        lines.append(_family_line(family, example, names))
-    lines.append("Filters (one spelling at most, plus `abs` and `interval`):")
+
+
+def _grammar_filters(example: ReportInput, names: Mapping[str, str]) -> list[str]:
+    """The grammar's filters, each with its example rendered, and what a key prints: everything after its paths."""
+    lines = ["Filters (one spelling at most, plus `abs` and `interval`):"]
     for name in _FILTERS:
         key = parse_key(_FILTER_EXAMPLES[name])
         shown = format_figure(resolve(key.path, example), key.filters)
@@ -3152,7 +3157,154 @@ def figure_key_grammar() -> str:
         f"({', '.join(f'`{phrase}`' for phrase in _UNIT_PHRASES)}, whole) are written as they are; any other number "
         "is a key."
     )
+    return lines
+
+
+#: The names the grammar's examples print each arm by.
+_EXAMPLE_NAMES: Mapping[str, str] = {"base": "Baseline", "fast.v2": "fast.v2"}
+
+
+def figure_key_grammar() -> str:
+    """Write the planner prompt's section that teaches figure keys, from this module's own families and filters.
+
+    Each family's form and statistics, each filter and every example come from the code that parses and renders
+    them; the examples are rendered on a made-up input, so a change to a family, a filter or a spelling reaches the
+    planner with the code.
+
+    :return: The section, heading first.
+    :rtype: str
+    :raises UnresolvableReference: An example no longer resolves: the grammar changed under this function, and every
+        plan would share the break, so it fails here.
+    """
+    example = _example_input()
+    lines = [f"## {GRAMMAR_HEADING}", *_grammar_rules(), "Paths:"]
+    lines += [_family_line(family, example, _EXAMPLE_NAMES) for family in _FAMILIES]
+    lines += _grammar_filters(example, _EXAMPLE_NAMES)
     return "\n".join(lines)
+
+
+# --- the grammar, as a reference read a page at a time -------------------------------------------------------------
+
+#: The groups the grammar's path families are paged in, in the order the index lists them: each group's name, what its
+#: figures are of, and the subjects of the families it holds (:func:`_subject`). Every family's subject is in one.
+_FAMILY_GROUPS: tuple[tuple[str, str, frozenset[str]], ...] = (
+    (
+        "campaign",
+        "the campaign, its arms, aspects and settings, and how deeply each arm ran",
+        frozenset(
+            {
+                "meta",
+                "control",
+                "n_candidates",
+                "aspect",
+                "aspects",
+                "settings",
+                "cases",
+                "repeats",
+                "depth",
+                "late_criteria",
+                "caveats",
+            }
+        ),
+    ),
+    (
+        "readings",
+        "an arm's reading against the control on an aspect, pair readings and flip margins",
+        frozenset({"reading", "pair", "flip_margin"}),
+    ),
+    (
+        "contrasts",
+        "corrected contrasts against the control, and the families correcting them",
+        frozenset({"contrast", "family", "families"}),
+    ),
+    (
+        "measures",
+        "an arm's figures on a measure or judged dimension, its pass rate and scoreboard, and the judge",
+        frozenset({"measure", "judged", "judge", "pass_rate", "scoreboard", "reasoning_ratio"}),
+    ),
+    (
+        "slices",
+        "figures within one task, stratum or target-matrix cell, and the share of a loss each carries",
+        frozenset({"task", "strata", "cells"}),
+    ),
+    (
+        "gates",
+        "declared criteria, floors and bars, and the weakest margin",
+        frozenset({"criteria", "floor", "bar", "weakest"}),
+    ),
+    (
+        "cost",
+        "cost per reply and per month, cost uplift, and a move between options priced per point",
+        frozenset({"cost_per_1k", "cost", "price", "cost_per_month"}),
+    ),
+)
+
+
+def _subject(family: _Family) -> str:
+    """What a family's figures are of: its first word, or the word after ``aspects.<aspect>.`` in a qualified form, up
+    to any dot a word is written with (``cost.uplift`` is of ``cost``)."""
+    (first, *rest) = family.slots
+    qualified = isinstance(first, _Word) and first.text == "aspects" and len(rest) > 1 and isinstance(rest[1], _Word)
+    word = rest[1] if qualified else first
+    return word.text.split(".")[0] if isinstance(word, _Word) else word.name
+
+
+def _grouped() -> dict[str, list[_Family]]:
+    """Every family, by the group it is paged in, groups and families each in the grammar's order.
+
+    :raises ValueError: A family's subject is in no group: a family was added without a page to be read on.
+    """
+    grouped: dict[str, list[_Family]] = {name: [] for name, _, _ in _FAMILY_GROUPS}
+    for family in _FAMILIES:
+        group = next((name for name, _, subjects in _FAMILY_GROUPS if _subject(family) in subjects), None)
+        if group is None:
+            raise ValueError(f"figure key family `{family.form()}` is in no group of _FAMILY_GROUPS: place it in one")
+        grouped[group].append(family)
+    return grouped
+
+
+def figure_key_index(topic: str) -> str:
+    """The grammar as a reference's index: its rules and filters whole, and one line per group of path families, naming
+    the page each group is read on and its forms.
+
+    The grammar (:func:`figure_key_grammar`) runs past what one tool result may take of a reader's context, so a
+    reference serves it in pages (:func:`figure_key_pages`); the index and the pages together hold every line of it.
+
+    :param topic: What the reference is served as: each group's page is ``<topic>.<group>``.
+    :ptype topic: str
+    :return: The index, heading first.
+    :rtype: str
+    :raises UnresolvableReference: An example no longer resolves, as :func:`figure_key_grammar` raises it.
+    :raises ValueError: A family is in no group.
+    """
+    lines = [f"## {GRAMMAR_HEADING}", *_grammar_rules()]
+    lines.append(
+        f"Paths, by group: each group's forms, their statistics and an example are its page, topic='{topic}.<group>'."
+    )
+    summaries = {name: what for name, what, _ in _FAMILY_GROUPS}
+    for group, families in _grouped().items():
+        forms = ", ".join(f"`{family.form()}`" for family in families)
+        lines.append(f"- {topic}.{group}: {summaries[group]}. {forms}.")
+    lines += _grammar_filters(_example_input(), _EXAMPLE_NAMES)
+    return "\n".join(lines)
+
+
+def figure_key_pages() -> dict[str, str]:
+    """Each group of the grammar's path families as a page: its forms, what each reads, its statistics and an example,
+    written as the grammar writes them (:func:`figure_key_grammar`).
+
+    :return: Each page, by its group's name, in the order the index lists them (:func:`figure_key_index`).
+    :rtype: dict[str, str]
+    :raises UnresolvableReference: An example no longer resolves, as :func:`figure_key_grammar` raises it.
+    :raises ValueError: A family is in no group.
+    """
+    example = _example_input()
+    pages: dict[str, str] = {}
+    for (group, families), (_, what, _) in zip(_grouped().items(), _FAMILY_GROUPS, strict=True):
+        lines = [f"## {GRAMMAR_HEADING}: {group}", f"Paths of {what}:"]
+        lines += [_family_line(family, example, _EXAMPLE_NAMES) for family in families]
+        pages[group] = "\n".join(lines)
+    return pages
 
 
 __all__ = [
@@ -3164,6 +3316,8 @@ __all__ = [
     "KeySubjects",
     "NamedKind",
     "figure_key_grammar",
+    "figure_key_index",
+    "figure_key_pages",
     "flip_margin",
     "format_figure",
     "gain_axis",

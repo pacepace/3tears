@@ -35,7 +35,6 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
-from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import reader_names
 from threetears.evals.analysis.report_decision import (
     Caveat,
@@ -155,11 +154,6 @@ _SLICE_WORDS: dict[MeasureBy, str] = {"arm": "arms", "stratum": "strata", "task"
 #: The statistic that reads an arm against the control within a slice, which an arm's overall figure has no key for.
 _VS_CONTROL = "vs_control"
 
-#: The id-free keys that read one figure where the input holds a single one, and are refused where it holds none or
-#: several (an input with no single asked aspect, depths that differ, late criteria set at different times): their
-#: refusal is the input's shape, never a key spelled wrong, since they name no id.
-_ONE_OF = frozenset({"cases", "repeats", "late_criteria.set_at"})
-
 #: What the examples a snapshot holds are: the frozen pool an analyst pages.
 _POOL = (
     "the failed trials frozen with the snapshot: at most one per aspect, arm and stratum, each reply's end and the "
@@ -179,20 +173,6 @@ class _Fact(BaseModel):
 def _figures(keys: Iterable[str], report_input: ReportInput) -> list[CitedFigure]:
     """The figures the keys name that the input states, in the keys' order."""
     return [figure for key in keys if (figure := cite_if(key, report_input)) is not None]
-
-
-def _one_of(key: str, report_input: ReportInput) -> CitedFigure | None:
-    """One of the id-free :data:`_ONE_OF` keys' figures, or ``None`` where the input holds no single one.
-
-    :raises ValueError: The key is not one of them, so a refusal could be the key's own fault.
-    """
-    if key not in _ONE_OF:
-        raise ValueError(f"{key!r} names an id or is no key of one figure; cite it with cite or cite_if")
-    try:
-        return cite(key, report_input)
-    except UnresolvableReference:
-        # The key names no id, so its only refusals are the input holding no single figure for it.
-        return None
 
 
 def _page[T](rows: Sequence[T], limit: int, offset: int) -> tuple[list[T], int | None]:
@@ -484,8 +464,8 @@ def campaign_overview(report_input: ReportInput, snapshot_id: str) -> CampaignOv
         snapshot=snapshot_id,
         meta=_figures((f"meta.{field}" for field in _META_FIELDS), report_input),
         n_candidates=cite("n_candidates", report_input),
-        cases=_one_of("cases", report_input),
-        repeats=_one_of("repeats", report_input),
+        cases=cite_if("cases", report_input),
+        repeats=cite_if("repeats", report_input),
         arms=arms,
         aspects=aspects,
         measures=[_measure_row(report_input, *table) for table in _tables(report_input)],
@@ -500,7 +480,7 @@ def campaign_overview(report_input: ReportInput, snapshot_id: str) -> CampaignOv
             )
             for criterion in late
         ],
-        late_set_at=_one_of("late_criteria.set_at", report_input) if late else None,
+        late_set_at=cite_if("late_criteria.set_at", report_input) if late else None,
         prior_insights=list(report_input.prior_insights),
         names={kind: dict(names) for kind, names in reader_names(report_input).items()},
     )

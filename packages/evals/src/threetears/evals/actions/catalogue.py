@@ -325,14 +325,20 @@ class Action:
 class HelpTopic:
     """A reference page a tool's ``help`` serves beside its actions' pages: text code writes, never a hand copy.
 
+    A reference too long for one result is an index and its pages: ``text`` writes the index, and ``pages`` the pages
+    it names, each served as ``help topic='<name>.<page>'``.
+
     :ivar name: What ``help topic='<name>'`` names it by: a lowercase identifier, no action's name on its tool.
     :ivar summary: One line, shown in the help index.
     :ivar text: Writes the page when it is asked for, so a tool built with it reads nothing until then.
+    :ivar pages: Writes the topic's pages, by name, when one is asked for; ``None``, the default, for a topic that is
+        one page.
     """
 
     name: str
     summary: str
     text: Callable[[], str] = field(compare=False)
+    pages: Callable[[], Mapping[str, str]] | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         """Refuse a malformed name or a summary that is blank or more than one line.
@@ -813,11 +819,28 @@ class MountedTool:
         reference = self.topic(topic) if isinstance(topic, str) else None
         if reference is not None:
             return ActionOutcome(reference.text(), action=HELP_ACTION)
+        paged = self._topic_page(topic) if isinstance(topic, str) else None
+        if paged is not None:
+            return paged
         if not isinstance(topic, str) or self.action(topic) is None:
             topics = (*(action.name for action in self.actions), *(item.name for item in self.spec.topics))
             recovery = self._pick("topic", topics)
             return _refused(render.refuse_unknown_topic(self, str(topic)), _CALL_REFUSAL, recovery, HELP_ACTION)
         return ActionOutcome(self.help_page(topic), action=HELP_ACTION)
+
+    def _topic_page(self, topic: str) -> ActionOutcome | None:
+        """One page of a reference topic's (``<topic>.<page>``), or the refusal of a page it does not have; ``None``
+        where ``topic`` names no paged topic of this tool."""
+        (head, dot, page) = topic.partition(".")
+        reference = self.topic(head) if dot else None
+        if reference is None or reference.pages is None:
+            return None
+        pages = reference.pages()
+        if page in pages:
+            return ActionOutcome(pages[page], action=HELP_ACTION)
+        named = tuple(f"{head}.{name}" for name in pages)
+        recovery = self._pick("topic", named)
+        return _refused(render.refuse_unknown_page(reference, page, named), _CALL_REFUSAL, recovery, HELP_ACTION)
 
 
 def _refused(text: str, refusal: Refusal, recovery: Recovery | None, action: str | None = None) -> ActionOutcome:
@@ -859,7 +882,7 @@ def _named(action: Action, refused: EvalServiceError) -> Recovery | None:
 
 #: The most characters the primer may run to: one client was measured handing a model the first 2,045 characters of
 #: a server's instructions and cutting the rest without a mark, so a primer within this reaches a model whole.
-PRIMER_BUDGET: Final = 1_800
+_PRIMER_BUDGET: Final = 1_800
 
 
 def catalogue_primer(tools: Sequence[MountedTool]) -> str:
@@ -868,23 +891,23 @@ def catalogue_primer(tools: Sequence[MountedTool]) -> str:
     The opening lines say how to get help and name every reference topic; then each tool, its domain and to call
     ``help`` first; then the rules every call is held to, derived from the tools' actions (long work is a job to poll,
     a destructive action echoes what it destroys, a refusal carries its recovery as data) and each tool's own
-    (:attr:`ToolSpec.constraints`). Everything else is served by ``help``, so the primer stays within
-    :data:`PRIMER_BUDGET`. :func:`~threetears.evals.transports.fastmcp.mount_fastmcp` passes it as the instructions
+    (:attr:`ToolSpec.constraints`). Everything else is served by ``help``, so the primer stays within 1,800
+    characters, which a client is known to deliver whole. :func:`~threetears.evals.transports.fastmcp.mount_fastmcp` passes it as the instructions
     of a server it builds; a host building its own server passes it there.
 
     :param tools: The tools the server mounts.
     :ptype tools: Sequence[MountedTool]
     :return: The primer.
     :rtype: str
-    :raises ValueError: No tool is given, or the primer runs past :data:`PRIMER_BUDGET`: a client would cut it, so
+    :raises ValueError: No tool is given, or the primer runs past 1,800 characters: a client would cut it, so
         shorten a tool's description or constraints.
     """
     if not tools:
         raise ValueError("a primer names the tools a server mounts; none were given")
     text = render.render_primer(tools)
-    if len(text) > PRIMER_BUDGET:
+    if len(text) > _PRIMER_BUDGET:
         raise ValueError(
-            f"the primer runs to {len(text)} characters, past the {PRIMER_BUDGET} a client is known to deliver whole; "
+            f"the primer runs to {len(text)} characters, past the {_PRIMER_BUDGET} a client is known to deliver whole; "
             "shorten a tool's description or constraints"
         )
     return text
@@ -998,7 +1021,6 @@ __all__ = [
     "DEFAULT_PREFIX",
     "HELP_ACTION",
     "PERMISSION_CLASSES",
-    "PRIMER_BUDGET",
     "REFUSAL_KINDS",
     "RESERVED_PARAMETERS",
     "TOOL_NAME",
