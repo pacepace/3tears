@@ -7,10 +7,16 @@ Contracts held here (``threetears.evals.analysis.analyst.analyses``, ``ops.analy
   (``dominant_options``), each survivor's gate status and asked standing as the gate check and ``asked_standing``
   read them, and code's call as ``decision_at`` reads it, labelled as code's reading; with one option dominant, every
   other survivor names it among those dominating it; extra axes are descriptive and only narrow who dominates;
+  where cost is the only axis the snapshot declares (``weighed_axes``), no option is dominant or dominated, the call
+  is a tradeoff and says why, and the extra axes named are weighed beside cost (the undominated set the test
+  computes from the figures);
 - **sensitivity**: every flip is the figure its key states (a reading's ``flip_margin``, a floor read's interval end,
   a criterion's figure for the arm) inside the range; every segment's call equals ``decision_at`` at its midpoint,
-  and the call at each flip is the segment it falls in by ``boundary_belongs_to``; ``holds`` is whether every
-  segment's call is the declared one, and agrees with the late-margin check;
+  and its picks each routable task's ``routing_picks`` there; the call at each flip is the segment it falls in by
+  ``boundary_belongs_to``; ``holds`` is whether every segment's call is the declared one, and agrees with the
+  late-margin check, and ``picks_hold`` whether every segment's picks are the declared ones; a gate that moves a
+  routed plan without moving the one-option call says so; a **hypothetical line** sweeps a gate the snapshot does not
+  declare, its flips the arms' own figures and its call ``decision_at`` with that gate added;
 - **breakdown**: each candidate's ``vs_control`` is its mean minus the control's in that slice, its loss shares over
   one stratification sum to 1 where every stratum states one, and ``concentrated_in`` is the largest; with no control
   it is refused, pointing to ``measure_read`` by stratum; tasks and cells slice where the input holds them;
@@ -47,9 +53,10 @@ from threetears.evals.analysis.report_decision import (
     dominant_options,
     margin_sensitivity,
     surviving_options,
+    weighed_axes,
 )
-from threetears.evals.analysis.report_gates import gate_check, gate_findings
-from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_gates import gate_check, gate_findings, routing_picks
+from threetears.evals.analysis.report_input import Criterion, ReportInput
 from threetears.evals.analysis.report_margins import criterion_figures, flip_margin
 from threetears.evals.kernel import EvalReportSnapshot
 from threetears.evals.kernel.errors import RefusedInput
@@ -80,6 +87,11 @@ def _parameters(held: ReportInput) -> list[str]:
 def _arm_id(named: str) -> str:
     assert named.startswith("arm:"), named
     return named.removeprefix("arm:")
+
+
+def _number(value: object) -> float:
+    assert isinstance(value, int | float), value
+    return float(value)
 
 
 def _call(decision: DecisionAt) -> tuple[list[str], list[str]]:
@@ -148,6 +160,11 @@ def test_the_asked_standing_of_a_change_and_a_choice() -> None:
 # =============================================================================
 
 
+def _cost_alone(held: ReportInput) -> bool:
+    """Whether cost is the only axis the snapshot declares, with more than one option to rank by it."""
+    return set(weighed_axes(held)) <= {"cost"} and len(surviving_options(held)) > 1
+
+
 @pytest.mark.parametrize("name", sorted(_all_inputs()))
 def test_dominance_names_the_decisions_survivors_dominant_options_and_call(name: str) -> None:
     held = _all_inputs()[name]
@@ -155,8 +172,10 @@ def test_dominance_names_the_decisions_survivors_dominant_options_and_call(name:
     survivors = surviving_options(held)
     assert [_arm_id(row["arm"]) for row in result["survivors"]] == survivors
     assert [_arm_id(row["arm"]) for row in result["out"]] == [arm.id for arm in held.arms if arm.id not in survivors]
-    dominant = dominant_options(held)
+    alone = _cost_alone(held)
+    dominant = [] if alone else dominant_options(held)
     assert [_arm_id(arm) for arm in result["dominant"]] == dominant
+    assert result["weighs"] == list(weighed_axes(held))
     assert result["dominant_with_axes"] == result["dominant"] and result["axes"] == []
     standing = asked_standing(held)
     for row in result["survivors"]:
@@ -173,9 +192,66 @@ def test_dominance_names_the_decisions_survivors_dominant_options_and_call(name:
     for row in result["out"]:
         assert row["gates"] or row["breached"], f"{name}: {row['arm']} was removed with no reason"
     code = result["code_call"]
-    assert (code["modes"], code["dominant"]) == _call(decision_at(held))
+    if alone:
+        assert (code["modes"], code["dominant"]) == (["tradeoff"], [])
+        assert "cost is the only axis" in code["withheld"]
+        assert all(row["dominated_by"] == [] for row in result["survivors"])
+    else:
+        assert (code["modes"], code["dominant"]) == _call(decision_at(held))
+        assert code["withheld"] == ""
     assert "never a constraint" in code["reads_as"]
     _each_figure_resolves(result, held)
+
+
+def test_the_fixtures_hold_inputs_declaring_nothing_but_cost_and_the_rule_alone_would_name_the_cheapest() -> None:
+    """The control for the cost-alone path: misfits declare nothing but cost, and there the planner's rule names one
+    dominant option, the cheapest, which the analysis withholds."""
+    alone = [name for name, held in _all_inputs().items() if _cost_alone(held)]
+    assert "r2 without its gates" in alone and "r1 reading only bars" in alone
+    for name in alone:
+        held = _all_inputs()[name]
+        (cheapest,) = dominant_options(held)
+        costs = {arm: resolve(f"cost_per_1k.{arm}", held).value for arm in surviving_options(held)}
+        assert costs[cheapest] == min(costs.values()), name
+        assert dominance(held).dominant == [], name
+
+
+@pytest.mark.parametrize("name", ["r2 without its gates", "r1 reading only bars"])
+def test_with_nothing_but_cost_declared_the_axes_named_are_weighed_beside_cost(name: str) -> None:
+    held = _all_inputs()[name]
+    axes = [key for key in [*held.judged, *held.measures] if key not in ("cost_per_1k",)]
+    result = dominance(held, axes, limit=WHOLE)
+    survivors = surviving_options(held)
+    costs = {arm: _number(resolve(f"cost_per_1k.{arm}", held).value) for arm in survivors}
+    compared: list[tuple[dict[str, float], bool]] = []
+    for row in result.axes:
+        if row.direction == "unstated":
+            continue
+        values = {_arm_id(item.arm): _number(item.figure.value) for item in row.arms if item.figure is not None}
+        compared.append((values, row.direction == "higher_is_better"))
+    assert compared, "the control: an axis with a direction is compared"
+
+    def at_least(first: str, second: str) -> bool:
+        if costs[first] > costs[second]:
+            return False
+        for values, higher in compared:
+            if first in values and second in values:
+                if (values[first] < values[second]) if higher else (values[first] > values[second]):
+                    return False
+            elif first not in values and second in values:
+                return False
+            elif first in values and second not in values:
+                return False
+        return True
+
+    expected = [arm for arm in survivors if all(at_least(arm, other) for other in survivors if other != arm)]
+    assert [_arm_id(arm) for arm in result.dominant_with_axes] == expected
+    for row in result.survivors:
+        arm = _arm_id(row.arm)
+        ahead = [other for other in survivors if other != arm and at_least(other, arm) and not at_least(arm, other)]
+        assert [_arm_id(other) for other in row.dominated_with_axes] == ahead, arm
+        assert row.dominated_by == []
+    assert any(row.dominated_with_axes for row in result.survivors), "the control: the axes rank some options"
 
 
 def _gate_figures_as_found(held: ReportInput, arm: str, gates: Sequence[GateRead], status: str) -> None:
@@ -267,6 +343,18 @@ def _expected_flips(held: ReportInput, parameter: str) -> dict[tuple[str, str | 
     return {flip: value for flip, value in found.items() if value >= 0}
 
 
+def _moved_input(held: ReportInput, parameter: str, value: float) -> ReportInput:
+    """The input with a swept threshold at ``value``; a margin or floor sweep moves no criterion of the input."""
+    kind, _colon, name = parameter.partition(":")
+    if kind != "threshold":
+        return held
+    criteria = [
+        criterion.model_copy(update={"threshold": value}) if criterion.id == name else criterion
+        for criterion in held.criteria
+    ]
+    return held.model_copy(update={"criteria": criteria})
+
+
 def _decision_at(held: ReportInput, parameter: str, value: float) -> tuple[list[str], list[str]]:
     """Code's call with the swept criterion at ``value``, read independently of the sweep."""
     kind, _colon, name = parameter.partition(":")
@@ -275,11 +363,17 @@ def _decision_at(held: ReportInput, parameter: str, value: float) -> tuple[list[
     if kind == "floor":
         floor = next(read.floor for read in held.floors if f"{read.aspect}/{read.floor}" == name)
         return _call(decision_at(held, floors={floor: value}))
-    criteria = [
-        criterion.model_copy(update={"threshold": value}) if criterion.id == name else criterion
-        for criterion in held.criteria
+    return _call(decision_at(_moved_input(held, parameter, value)))
+
+
+def _picks(held: ReportInput) -> list[dict[str, Any]]:
+    """Each routable task's pick on an input, as a segment lists it: the gate matrix's routing, read independently."""
+    picks = routing_picks(held, [arm.id for arm in held.arms])
+    return [
+        {"task": task.id, "arm": f"arm:{picks[task.id]}" if task.id in picks else None}
+        for task in held.tasks
+        if task.routable
     ]
-    return _call(decision_at(held.model_copy(update={"criteria": criteria})))
 
 
 def _end(segment: dict[str, Any], side: str) -> float | None:
@@ -338,8 +432,13 @@ def test_each_flip_is_its_figure_and_the_call_at_every_probe_is_its_segments(nam
     for point in _probes(list(expected.values()), low):
         (segment,) = _holding(segments, point, result["boundary_belongs_to"])
         assert (segment["modes"], segment["dominant"]) == _decision_at(held, parameter, point), (name, point)
+        assert segment["picks"] == _picks(_moved_input(held, parameter, point)), (name, point)
     for left, right in zip(segments, segments[1:], strict=False):
-        assert (left["modes"], left["dominant"]) != (right["modes"], right["dominant"]), "adjacent segments differ"
+        assert (left["modes"], left["dominant"], left["picks"]) != (
+            right["modes"],
+            right["dominant"],
+            right["picks"],
+        ), "adjacent segments differ in the call or a pick"
         assert left["high"] == right["low"], "segments meet at a flip"
     for value in {flip["at"]["value"] for flip in result["flips"]}:
         (segment,) = _holding(segments, value, result["boundary_belongs_to"])
@@ -347,6 +446,86 @@ def test_each_flip_is_its_figure_and_the_call_at_every_probe_is_its_segments(nam
     declared = _call(decision_at(held))
     assert (result["declared_call"]["modes"], result["declared_call"]["dominant"]) == declared
     assert result["holds"] == all((segment["modes"], segment["dominant"]) == declared for segment in segments)
+    assert result["declared_picks"] == _picks(held)
+    assert result["picks_hold"] == all(segment["picks"] == _picks(held) for segment in segments)
+    assert result["hypothetical"] is False
+
+
+def test_a_gate_sweep_says_where_a_routed_plan_moves_though_the_one_option_call_does_not() -> None:
+    """The W2 r1 finding: a cross-cutting gate's sweep read only the one-option call. Where the snapshot holds routable
+    tasks, some flip moves a task's pick without moving the call, and the sweep says so."""
+    held = _all_inputs()["r1"]
+    assert any(task.routable for task in held.tasks) and any(task.cross_cutting for task in held.tasks)
+    gates = [criterion.id for criterion in held.criteria if criterion.kind == "gate"]
+    flips = [flip for gate in gates for flip in sensitivity(held, f"threshold:{gate}", limit=WHOLE).flips]
+    assert any(flip.picks_change and not flip.call_changes for flip in flips)
+    assert not all(sensitivity(held, f"threshold:{gate}", limit=WHOLE).picks_hold for gate in gates)
+    no_routing = _all_inputs()["r5"]
+    assert not any(task.routable for task in no_routing.tasks)
+    result = sensitivity(no_routing, f"margin:{no_routing.aspects[0].id}")
+    assert result.declared_picks == [] and result.picks_hold and all(segment.picks == [] for segment in result.segments)
+
+
+def _line_scope(held: ReportInput, key: str, statistic: str) -> str:
+    """Where a hypothetical line reads, as the contract says: overall where an arm states the statistic overall, else in
+    each task, else in each cell."""
+    table = held.measures.get(key) or held.judged[key]
+    if any(getattr(stat, statistic) is not None for stat in table.per_arm.values()):
+        return "overall"
+    if any(key in figures for task in held.tasks for figures in task.per_arm.values()):
+        return "each_task"
+    return "each_cell"
+
+
+def _with_gate(held: ReportInput, key: str, statistic: str, value: float) -> ReportInput:
+    higher = True if key in held.judged else held.measures[key].higher_is_better
+    gate = Criterion.model_validate(
+        {
+            "id": "line under test",
+            "kind": "gate",
+            "measure": key,
+            "statistic": statistic,
+            "direction": "higher_is_better" if higher else "lower_is_better",
+            "threshold": value,
+            "scope": _line_scope(held, key, statistic),
+        }
+    )
+    return held.model_copy(update={"criteria": [*held.criteria, gate]})
+
+
+@pytest.mark.parametrize(
+    ("name", "parameter"),
+    [
+        ("r2 without its gates", "hypothetical:pass_rate"),
+        ("r2 without its gates", "hypothetical:latency_ms/p95"),
+        ("r1 reading only bars", "hypothetical:overall"),
+        ("r3", "hypothetical:accuracy"),
+        ("kairo round 2", "hypothetical:persona.holds_character"),
+    ],
+)
+def test_a_hypothetical_line_sweeps_a_gate_the_snapshot_does_not_declare(name: str, parameter: str) -> None:
+    held = _all_inputs()[name]
+    spec = parameter.removeprefix("hypothetical:")
+    key, _slash, statistic = spec.partition("/")
+    statistic = statistic or "mean"
+    result = sensitivity(held, parameter, limit=WHOLE)
+    assert result.hypothetical and result.declared is None
+    assert "does not declare" in result.swept and any("hypothetical line" in note for note in result.notes)
+    _each_figure_resolves(result.model_dump(mode="json"), held)
+    gate = _with_gate(held, key, statistic, 0.0).criteria[-1]
+    expected = sorted(
+        figure.value
+        for arm in held.arms
+        for figure in criterion_figures(held, gate, arm.id)
+        if math.isfinite(figure.value)
+    )
+    assert sorted(_number(flip.at.value) for flip in result.flips) == pytest.approx(expected)
+    assert all(not flip.at.key.startswith("settle.") for flip in result.flips), "a flip is the arm's own figure"
+    segments = [segment.model_dump(mode="json") for segment in result.segments]
+    for point in _probes(expected, None):
+        (segment,) = _holding(segments, point, result.boundary_belongs_to)
+        assert (segment["modes"], segment["dominant"]) == _call(decision_at(_with_gate(held, key, statistic, point)))
+    assert any(segment.dominant for segment in result.segments), "the control: some line names one option"
 
 
 @pytest.mark.parametrize("name", ["r5", "kairo round 2"])
