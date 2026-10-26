@@ -8,6 +8,19 @@ packages (bumped in lock-step).
 
 ## v0.79.0 -- 2026-10-26
 
+### core: a compare-and-swap reads its bucket's creation time once, not twice
+
+**Changed:** every ordered `l2_cas_mutate` made two `STREAM.INFO` round trips for the bucket's
+creation time: one before the swap and one after it won.
+- The read before the swap is now remembered per collection and bucket handle. Every swap after
+  the first makes one round trip.
+- A remembered value can only be too low, since a recreated stream is younger. The fresh read
+  after the swap, which catches a stream recreated around it, also refreshes the remembered value.
+- The regressed-epoch refusal (`L2EpochRegressedError`) re-reads the creation time before it
+  raises. So a bucket recreated since the last swap is still detected, and is never mistaken for
+  a regression.
+- `NatsKvBucket.date_created()` itself is unchanged and still reads fresh.
+
 ### registry: several replicas evict a dead pod as one registry does
 
 **Fixed:** with more than one registry replica, the heartbeat sweep went wrong in three ways.
