@@ -51,7 +51,7 @@ from threetears.evals.actions import (
     read_only_tools,
     standard_tools,
 )
-from threetears.evals.actions.render import render_cited
+from threetears.evals.actions.render import next_page_line, render_cited
 from threetears.evals.analysis import assemble_campaign_bundle
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
 from threetears.evals.analysis.errors import UnresolvableReference
@@ -77,8 +77,9 @@ ANALYST_MODULES = sorted(
     ]
 )
 
-#: The fields of a listing that page it, which are counts of rows and never figures.
-PAGING = frozenset({"total", "offset", "next_offset", "limit"})
+#: The fields of a listing that page it, which are counts of rows and never figures, and the next page's call, whose
+#: arguments are the caller's own.
+PAGING = frozenset({"total", "offset", "next_offset", "limit", "next"})
 
 #: The fields every cited figure carries, by which one is found in a result's JSON.
 FIGURE_FIELDS = frozenset({"key", "reads", "value", "kind", "scale", "unit"})
@@ -419,7 +420,8 @@ def test_a_result_reads_back_as_each_figures_key_and_reading_under_its_row() -> 
     first = held.arms[0].id
     reads = render(f"{{pass_rate.{first}}}", held, {})
     assert f"  - arm: arm:{first}\n    pass_rate.{first} = {reads}\n" in text
-    assert text.splitlines()[0] == "_listing" and "total: 3" in text and "next_offset: none" in text
+    assert text.splitlines()[0] == "_listing" and "total: 3" in text
+    assert "next_offset" not in text, "a page's next call is the tool's to write"
     _held_to_figures(listing.model_dump(mode="json"), held)
 
 
@@ -530,6 +532,86 @@ def test_the_editors_cut_is_the_analyst_tool_read_off_the_workflows_with_no_bloc
     editor_params, analyst_params = editor.input_schema()["properties"], analyst.input_schema()["properties"]
     assert all(editor_params[name] == analyst_params[name] for name in editor_params if name != "action")
     assert set(editor_params) < set(analyst_params), "the block parameters are the analyst's alone"
+
+
+#: Every analyst listing, the fixture snapshot it is read on, and a call whose rows run to more than one small page.
+_PAGED_CALLS: dict[str, tuple[str, dict[str, Any]]] = {
+    "readings_list": (KAIRO, {"limit": 2}),
+    "contrasts_list": (KAIRO, {"limit": 3}),
+    "measure_read": (KAIRO, {"measure_key": "persona.holds_character", "by": "stratum", "limit": 3}),
+    "examples_list": (KAIRO, {"limit": 2}),
+    "decision_sensitivity": ("r2", {"parameter": "threshold:pass_rate", "limit": 1}),
+    "measure_breakdown": (KAIRO, {"measure_key": "persona.holds_character", "limit": 2}),
+    "block_render": (KAIRO, {"block_kind": "table", "query": {"source": "contrasts"}, "limit": 2}),
+}
+
+
+def test_every_analyst_listing_is_paged() -> None:
+    paged = {action.name for action in analyst_actions() if action.paged}
+    assert paged == set(_PAGED_CALLS)
+    assert paged == {action.name for action in analyst_actions() if "next_offset" in action.result.model_fields}
+
+
+@pytest.mark.parametrize("action", sorted(_PAGED_CALLS))
+async def test_following_next_reads_every_row_once_and_the_last_page_names_no_next(action: str) -> None:
+    fixture, snapshots = off_loop(_seeded)
+    name, call = _PAGED_CALLS[action]
+    snapshot = snapshots[name]
+    tool = _analyst_tool()
+    first = {"action": action, "snapshot_id": snapshot.id, **call}
+    whole = await _call(tool, fixture, {**first, "limit": 200})
+    assert whole.structured is not None, whole.text
+    assert "next_offset" not in whole.structured and "next" not in whole.structured
+    assert "next_offset" not in whole.text and "\nnext: " not in whole.text
+
+    seen: list[Any] = []
+    arguments: dict[str, Any] | None = first
+    pages = 0
+    while arguments is not None:
+        page = await _call(tool, fixture, arguments)
+        assert page.ending == "ok" and page.structured is not None, page.text
+        seen += _page_rows(action, page.structured)
+        following = page.structured.get("next")
+        if following is not None:
+            # The call is the arguments sent, as validated, the offset advanced: as data and as the text's last line.
+            held = tool.action(action)
+            assert held is not None
+            params = held.params
+            assert set(following) == {*arguments, "offset"}
+            assert list(following)[0] == "action" and list(following)[-1] == "offset"
+            sent = {key: value for key, value in arguments.items() if key != "action"}
+            asked = {key: value for key, value in following.items() if key != "action"}
+            assert params.model_validate(asked) == params.model_validate(
+                {**sent, "offset": page.structured["next_offset"]}
+            )
+            assert following["action"] == action
+            assert page.text.splitlines()[-1] == next_page_line(following)
+            assert page.text.splitlines()[-1].startswith(f"next: action='{action}', snapshot_id='{snapshot.id}'")
+        else:
+            assert "next_offset" not in page.structured and not page.text.splitlines()[-1].startswith("next: ")
+        arguments = following
+        pages += 1
+    assert pages > 1, "the control: more than one page"
+    assert seen == _page_rows(action, whole.structured)
+
+
+#: The field each listing's rows are in; the readings are grouped by aspect, each group's rows by kind.
+_ROWS = {
+    "contrasts_list": "contrasts",
+    "measure_read": "rows",
+    "examples_list": "examples",
+    "decision_sensitivity": "flips",
+    "measure_breakdown": "slices",
+    "block_render": "rows",
+}
+
+
+def _page_rows(action: str, structured: dict[str, Any]) -> list[Any]:
+    """A page's rows, in order."""
+    if action in _ROWS:
+        return list(structured[_ROWS[action]])
+    kinds = ("readings", "pairs", "floors", "bars")
+    return [row for group in structured["aspects"] for kind in kinds for row in group[kind]]
 
 
 # =============================================================================

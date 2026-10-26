@@ -36,6 +36,7 @@ from threetears.evals.actions import (
     render_jobs_started,
     standard_tools,
 )
+from threetears.evals.actions.render import render_cited
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.ops import JobHandle, JobsStarted, OpsHost, RunLine
 from packages.evals.tests.ops_support import CALLER, ops_fixture
@@ -356,6 +357,13 @@ class _OptionalConfirm(EvalBaseModel):
     confirm: str | None = Field(default=None, description="Optional, which a destructive action may not be.")
 
 
+class _Page(EvalBaseModel):
+    """A page of notes."""
+
+    notes: list[str]
+    next_offset: int | None
+
+
 class _OtherMeaning(EvalBaseModel):
     note: int = Field(description="A note, but a number.")
 
@@ -382,6 +390,9 @@ async def _no_path(stage: Any) -> dict[str, Any]:
         ({"result": JobsStarted}, "long work returns JobsStarted"),
         ({"example": {"note": "x", "extra": 1}}, "its example is not a valid call"),
         ({"example": {}}, "its example is not a valid call"),
+        ({"paged": True}, "a paged action takes an `offset` and returns a `next_offset`"),
+        ({"paged": True, "result": _Page}, "_Echo or _Page does not"),
+        ({"result": _Page, "render": render_cited}, "_Page is a page .next_offset.: declare paged=True"),
         ({"idempotent": True}, "a read is idempotent by its class"),
         ({"idempotent": True, "permission": "spend", "happy_path": _no_path}, "idempotent is declared by a write"),
         (

@@ -210,6 +210,11 @@ class Action:
         send it twice; ``None``, the default, for a render that composes its text, whose result is sent whole.
     :ivar cut: The cut whose tools alone mount it (:attr:`ToolSpec.cut`); ``None``, the default, for an action the
         standard tools mount.
+    :ivar paged: Its result is one page of a listing: its parameters declare ``offset`` and its result ``next_offset``
+        (the next page's offset, ``None`` on the last). The tool writes the next page's call
+        (:func:`~threetears.evals.actions.render.render_page`): the arguments the caller sent with ``offset`` advanced,
+        as the text's last line and as ``next`` in the structured result, and leaves ``next_offset`` out of both on
+        the last page. Every analyst listing is paged; ``False``, the default.
     :ivar idempotent: A ``write`` or ``destructive`` action a caller may repeat with the same parameters to no further
         effect (``report_snapshot_freeze`` names the snapshot it stored); a ``read`` is idempotent by its class, and
         neither a ``spend`` nor long work can be, since each call spends or starts work again. ``False``, the default.
@@ -229,6 +234,7 @@ class Action:
     happy_path: HappyPath | None = None
     text_field: str | None = None
     cut: str | None = None
+    paged: bool = False
     idempotent: bool = False
 
     def __post_init__(self) -> None:
@@ -239,7 +245,9 @@ class Action:
             nested model; a destructive action declares no required ``confirm``; ``long_running``
             disagrees with whether the result is ``JobsStarted``; an action whose result is anything else
             declares no ``render`` of its own; a spend action declares no ``happy_path``; the cut is not a
-            lowercase identifier; an action that is not a ``write`` or ``destructive`` one, or is long work, is
+            lowercase identifier; a paged action declares no ``offset`` or its result no ``next_offset``, or an
+            action rendered by :func:`~threetears.evals.actions.render.render_cited` returns a ``next_offset`` and is
+            not paged; an action that is not a ``write`` or ``destructive`` one, or is long work, is
             declared idempotent; or the example does not validate.
         """
         where = f"action {self.name!r}"
@@ -279,6 +287,17 @@ class Action:
             raise ValueError(
                 f"{where}: a spend action declares a happy_path — the parameters that reach its work — so the jobs "
                 "conformance kit can show its call makes no completion request and its job makes some"
+            )
+        pages = "next_offset" in self.result.model_fields
+        if self.paged and not (pages and "offset" in self.params.model_fields):
+            raise ValueError(
+                f"{where}: a paged action takes an `offset` and returns a `next_offset`, the call to the next page; "
+                f"{self.params.__name__} or {self.result.__name__} does not"
+            )
+        if pages and not self.paged and self.render is render.render_cited:
+            raise ValueError(
+                f"{where}: {self.result.__name__} is a page (next_offset): declare paged=True, so the tool writes the "
+                "next page's call, which render_cited leaves to it"
             )
         if self.idempotent and (self.permission not in ("write", "destructive") or self.long_running):
             raise ValueError(
@@ -662,9 +681,10 @@ class MountedTool:
                 refusal=Refusal.of(refused),
                 action=name,
             )
-        return ActionOutcome(
-            action.render(result), structured=result.model_dump(mode="json"), action=name, text_field=action.text_field
-        )
+        text, structured = action.render(result), result.model_dump(mode="json")
+        if action.paged:
+            text, structured = render.render_page(name, params, text, structured)
+        return ActionOutcome(text, structured=structured, action=name, text_field=action.text_field)
 
     def _help(self, given: Mapping[str, Any]) -> ActionOutcome:
         undeclared = sorted(set(given) - {"topic"})

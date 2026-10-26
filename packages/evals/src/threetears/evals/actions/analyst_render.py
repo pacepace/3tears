@@ -155,14 +155,15 @@ def analyst_render_actions() -> tuple[Action, ...]:
             result=RenderedBlock,
             handler=_block_render,
             render=render_cited,
+            paged=True,
             example={**snapshot, "block_kind": "forest", "query": {"source": "readings"}},
             detail=(
                 "The block is completed and checked by the planner's own rules and drawn by the page's own code, so a "
                 "block drawn here is one a report may show. It returns every value the block draws as a table of "
                 "text, the interval level, unit and axis code fixed, and the reference line's figure by its key: never "
                 "the picture. A block the page cannot draw on this snapshot is refused naming every fault at the "
-                "parameter it sits at. A page of rows stops at limit, or sooner where cells run long; next_offset "
-                "names the next."
+                "parameter it sits at. A page of rows stops at limit, or sooner where cells run long; its last "
+                "line names the call that reads the next."
             ),
         ),
     )

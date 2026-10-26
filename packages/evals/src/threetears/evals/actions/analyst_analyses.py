@@ -166,6 +166,7 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
             result=Sensitivity,
             handler=_decision_sensitivity,
             render=render_cited,
+            paged=True,
             example={"snapshot_id": _EXAMPLE_SNAPSHOT, "parameter": "margin:answers"},
             detail=(
                 "parameter names one criterion: margin:<aspect> (every reading on the aspect read against that "
@@ -186,6 +187,7 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
             result=Breakdown,
             handler=_measure_breakdown,
             render=render_cited,
+            paged=True,
             example={"snapshot_id": _EXAMPLE_SNAPSHOT, "measure_key": "tone.kept", "slice_by": "stratum"},
             detail=(
                 "Each slice gives its size, the control's mean on the measure, and each candidate's mean, its "

@@ -8088,7 +8088,7 @@
     },
     "threetears.evals.actions.Action": {
       "kind": "dataclass",
-      "signature": "Action(name: str, summary: str, workflow: str, permission: PermissionClass, params: type[BaseModel], result: type[BaseModel], handler: ActionHandler, example: Mapping[str, Any], render: Callable[[Any], str] = …, long_running: bool = False, detail: str = '', happy_path: HappyPath | None = None, text_field: str | None = None, cut: str | None = None, idempotent: bool = False)",
+      "signature": "Action(name: str, summary: str, workflow: str, permission: PermissionClass, params: type[BaseModel], result: type[BaseModel], handler: ActionHandler, example: Mapping[str, Any], render: Callable[[Any], str] = …, long_running: bool = False, detail: str = '', happy_path: HappyPath | None = None, text_field: str | None = None, cut: str | None = None, paged: bool = False, idempotent: bool = False)",
       "tier": "stable"
     },
     "threetears.evals.actions.ACTION_NAME": {

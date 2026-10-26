@@ -869,17 +869,17 @@ async def test_a_page_sized_to_one_result_carries_the_rest_to_the_next_and_every
     fixture = off_loop(_seeded_shapes)
     snapshot = _shape_snapshots()["s1"]
     whole = await _call(fixture, {"action": action, "snapshot_id": snapshot.id, "limit": 200})
-    assert whole.structured is not None and whole.structured["next_offset"] is None
+    assert whole.structured is not None and "next_offset" not in whole.structured and "next" not in whole.structured
     assert len(whole.text) > TEXT_BUDGET, "the control: every s1 row at once runs past one result"
     rows: list[Any] = []
-    offset: int | None = 0
+    arguments: dict[str, Any] | None = {"action": action, "snapshot_id": snapshot.id}
     pages = 0
-    while offset is not None:
-        page = await _call(fixture, {"action": action, "snapshot_id": snapshot.id, "offset": offset})
+    while arguments is not None:
+        page = await _call(fixture, arguments)
         assert page.structured is not None, page.text
         assert len(page.text) <= TEXT_BUDGET and page.structured["total"] == whole.structured["total"]
         rows += _listed_rows(action, page.structured)
-        offset = page.structured["next_offset"]
+        arguments = page.structured.get("next")
         pages += 1
     assert pages > 1
     assert rows == _listed_rows(action, whole.structured)
@@ -891,6 +891,6 @@ async def test_a_limit_the_caller_names_is_the_pages_size_as_named() -> None:
     held = frozen_input(snapshot)
     named = await _call(fixture, {"action": "contrasts_list", "snapshot_id": snapshot.id, "limit": 50})
     assert named.structured is not None
-    assert len(named.structured["contrasts"]) == len(held.contrasts) and named.structured["next_offset"] is None
+    assert len(named.structured["contrasts"]) == len(held.contrasts) and "next_offset" not in named.structured
     small = await _call(fixture, {"action": "contrasts_list", "snapshot_id": snapshot.id, "limit": 2})
     assert small.structured is not None and len(small.structured["contrasts"]) == 2

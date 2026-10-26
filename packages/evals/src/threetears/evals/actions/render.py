@@ -9,6 +9,10 @@ Every string a mounted tool returns is made here, so the conventions hold in one
   action accepts with what each means, and an example call that validates. A call the engine or host
   failed to carry out (a store that failed, a provider that refused the account: a 5xx status,
   :func:`raised`) reads ``raised:``, never ``refused:``, since the call itself was not turned away.
+- **A page names the call to the next.** A paged action's result (:attr:`~threetears.evals.actions.Action.paged`)
+  ends with ``next: action='…', …, offset=N`` — the arguments the caller sent, ``offset`` advanced — and carries the
+  same call as ``next`` in its structured result; its last page carries neither, and no ``next_offset``
+  (:func:`render_page`).
 - **A result reads as every fact it carries.** One generic renderer prints any result model field by field
   (:func:`render_model`); a few results keep their own: a started job says how to poll it and a finished one
   what to read next, a page of results how to read the next, one result its counted goal verdicts, and a report
@@ -321,17 +325,75 @@ def render_cited(result: BaseModel) -> str:
     What the result is comes first, then its fields in the model's own order. A figure
     (:class:`~threetears.evals.ops.analyst.CitedFigure`) is one line, its key and the figure as the page writes it, so
     an analyst cites the key it read; the value, kind and scale stay in the structured result. A row of a list is one
-    bullet of its plain fields, its figures and nested rows indented beneath it. Nothing is summarised or left out.
+    bullet of its plain fields, its figures and nested rows indented beneath it. Nothing is summarised or left out,
+    but a page's ``next_offset``: the tool writes the next page's whole call in its place (:func:`render_page`).
     """
     return "\n".join([_RESULT_WORDS.sub(r" \1", type(result).__name__).strip().lower(), *_cited_body(result, "")])
 
 
 def _cited_body(model: BaseModel, indent: str) -> list[str]:
-    """Every field of one model, each as :func:`_cited_field` writes it."""
+    """Every field of one model, each as :func:`_cited_field` writes it; a page's ``next_offset`` at the top is the
+    tool's to write, as the next page's call."""
     lines: list[str] = []
     for name in type(model).model_fields:
+        if name == _NEXT_OFFSET and not indent:
+            continue
         lines += _cited_field(name, getattr(model, name), indent)
     return lines
+
+
+#: The field a page names the next page's offset by (:attr:`~threetears.evals.actions.Action.paged`).
+_NEXT_OFFSET: Final = "next_offset"
+
+
+def next_page_call(action: str, params: BaseModel, next_offset: int) -> dict[str, Any]:
+    """The call that reads the page after this one: the arguments the caller sent, ``offset`` advanced.
+
+    :param action: The paged action.
+    :ptype action: str
+    :param params: The call's validated parameters; the ones the caller set are sent again, as validated.
+    :ptype params: BaseModel
+    :param next_offset: Where the next page starts.
+    :ptype next_offset: int
+    :return: The next call's arguments, ``action`` first and ``offset`` last.
+    :rtype: dict[str, Any]
+    """
+    sent = params.model_dump(mode="json", include=set(params.model_fields_set) - {"offset"})
+    return {
+        "action": action,
+        **{name: sent[name] for name in type(params).model_fields if name in sent},
+        "offset": next_offset,
+    }
+
+
+def next_page_line(call: Mapping[str, Any]) -> str:
+    """The next page's call as a page's last line: ``next: action='readings_list', snapshot_id='…', offset=40``."""
+    spelled = (
+        f"{name}='{value}'" if isinstance(value, str) else f"{name}={_compact(value)}" for name, value in call.items()
+    )
+    return "next: " + ", ".join(spelled)
+
+
+def render_page(action: str, params: BaseModel, text: str, structured: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """A paged action's text and structured result, each naming the next page's call, or ending on the last page.
+
+    :param action: The paged action.
+    :ptype action: str
+    :param params: The call's validated parameters.
+    :ptype params: BaseModel
+    :param text: The result as its render writes it.
+    :ptype text: str
+    :param structured: The result's JSON.
+    :ptype structured: dict[str, Any]
+    :return: The text, with ``next: …`` as its last line while a page follows; the JSON, with ``next`` (the next
+        call's arguments) beside ``next_offset`` while a page follows, and neither on the last page.
+    :rtype: tuple[str, dict[str, Any]]
+    """
+    offset = structured.get(_NEXT_OFFSET)
+    if offset is None:
+        return text, {key: value for key, value in structured.items() if key != _NEXT_OFFSET}
+    call = next_page_call(action, params, offset)
+    return f"{text}\n{next_page_line(call)}", {**structured, "next": call}
 
 
 def _cited_field(name: str, value: Any, indent: str) -> list[str]:
@@ -605,6 +667,8 @@ def _render_result(status: JobStatus) -> str:
 
 __all__ = [
     "example_call",
+    "next_page_call",
+    "next_page_line",
     "parameter_lines",
     "raised",
     "refuse_by_engine",
@@ -620,6 +684,7 @@ __all__ = [
     "render_job_status",
     "render_jobs_started",
     "render_model",
+    "render_page",
     "render_report",
     "render_result",
     "render_results",
