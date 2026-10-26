@@ -26,9 +26,13 @@ import pytest
 from pydantic import BaseModel, Field
 
 from threetears.evals.actions import (
+    PRIMER_BUDGET,
     Action,
     ActionCatalogue,
     Caller,
+    HelpTopic,
+    analyst_tools,
+    catalogue_primer,
     ToolSpec,
     engine_actions,
     eval_catalogue,
@@ -36,6 +40,7 @@ from threetears.evals.actions import (
     render_jobs_started,
     standard_tools,
 )
+from threetears.evals.actions.render import render_cited
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.ops import JobHandle, JobsStarted, OpsHost, RunLine
 from packages.evals.tests.ops_support import CALLER, ops_fixture
@@ -173,11 +178,13 @@ def test_the_standard_tools_split_on_class_and_take_the_hosts_prefix() -> None:
     assert [action.name for action in admin.actions] == ["run_delete", "analysis_delete", "insight_delete"]
     assert evals.hints.open_world and not evals.hints.destructive and not evals.hints.read_only
     assert admin.hints.destructive
+    assert not evals.hints.idempotent, "a spend starts work again on every call"
+    assert not admin.hints.idempotent, "no engine delete declares itself idempotent"
 
 
 def test_a_read_only_tool_carries_only_reads() -> None:
     (tool,) = eval_catalogue().mount_all(read_only_tools())
-    assert tool.hints.read_only
+    assert tool.hints.read_only and tool.hints.idempotent
     assert {action.permission for action in tool.actions} == {"read"}
     assert tool.action("run_launch") is None and tool.action("job_poll") is not None
 
@@ -354,8 +361,20 @@ class _OptionalConfirm(EvalBaseModel):
     confirm: str | None = Field(default=None, description="Optional, which a destructive action may not be.")
 
 
+class _Page(EvalBaseModel):
+    """A page of notes."""
+
+    notes: list[str]
+    next_offset: int | None
+
+
 class _OtherMeaning(EvalBaseModel):
     note: int = Field(description="A note, but a number.")
+
+
+async def _no_path(stage: Any) -> dict[str, Any]:
+    del stage
+    return {"note": "x"}
 
 
 @pytest.mark.parametrize(
@@ -375,6 +394,15 @@ class _OtherMeaning(EvalBaseModel):
         ({"result": JobsStarted}, "long work returns JobsStarted"),
         ({"example": {"note": "x", "extra": 1}}, "its example is not a valid call"),
         ({"example": {}}, "its example is not a valid call"),
+        ({"paged": True}, "a paged action takes an `offset` and returns a `next_offset`"),
+        ({"paged": True, "result": _Page}, "_Echo or _Page does not"),
+        ({"result": _Page, "render": render_cited}, "_Page is a page .next_offset.: declare paged=True"),
+        ({"idempotent": True}, "a read is idempotent by its class"),
+        ({"idempotent": True, "permission": "spend", "happy_path": _no_path}, "idempotent is declared by a write"),
+        (
+            {"idempotent": True, "permission": "write", "result": JobsStarted, "long_running": True},
+            "idempotent is declared by a write or destructive action that starts no long work",
+        ),
     ],
 )
 def test_an_action_no_transport_could_mount_honestly_is_refused(overrides: dict[str, Any], message: str) -> None:
@@ -448,6 +476,14 @@ def test_the_valid_action_the_refusals_start_from_is_accepted() -> None:
     assert _action().name == "note_echo"
 
 
+def test_a_tool_is_idempotent_when_every_action_is_a_read_or_a_write_declared_so() -> None:
+    reads = ToolSpec(name="notes", description="d", permissions=frozenset({"read", "write"}))
+    declared = _action(name="note_keep", permission="write", idempotent=True)
+    undeclared = _action(name="note_add", permission="write")
+    assert ActionCatalogue([_action(), declared]).mount(reads).hints.idempotent
+    assert not ActionCatalogue([_action(), declared, undeclared]).mount(reads).hints.idempotent
+
+
 def test_one_parameter_name_meaning_two_things_on_a_tool_is_refused() -> None:
     catalogue = ActionCatalogue([_action(), _action(name="note_count", params=_OtherMeaning, example={"note": 1})])
     with pytest.raises(ValueError, match="parameter 'note' means two things — note_echo declares"):
@@ -467,6 +503,109 @@ def test_a_tool_with_no_action_of_its_classes_is_refused() -> None:
         ActionCatalogue([_action()]).mount(ToolSpec(name="t", description="d", permissions=frozenset({"spend"})))
 
 
+def test_a_tool_cut_to_workflows_mounts_their_actions_alone() -> None:
+    catalogue = ActionCatalogue(
+        [_action(), _action(name="note_count", workflow="Count", params=_OtherMeaning, example={"note": 1})]
+    )
+    counts = catalogue.mount(
+        ToolSpec(name="t", description="d", permissions=frozenset({"read"}), workflows=frozenset({"Count"}))
+    )
+    assert [action.name for action in counts.actions] == ["note_count"], "and 'note' means one thing on it"
+    with pytest.raises(ValueError, match=r"no action has those classes in workflows \['Elsewhere'\]"):
+        catalogue.mount(
+            ToolSpec(name="t", description="d", permissions=frozenset({"read"}), workflows=frozenset({"Elsewhere"}))
+        )
+
+
+async def test_help_serves_a_reference_topic_beside_the_actions_and_lists_it() -> None:
+    written: list[str] = []
+
+    def glossary() -> str:
+        written.append("written")
+        return "a note is what note_echo echoes"
+
+    topic = HelpTopic(name="glossary", summary="What the words mean.", text=glossary)
+    spec = ToolSpec(name="notes", description="d", permissions=frozenset({"read"}), topics=(topic,))
+    tool = ActionCatalogue([_action()]).mount(spec)
+    assert written == [], "a topic's page is written only when asked for"
+    assert "## Reference\n- glossary: What the words mean." in tool.help_index()
+    assert "a reference topic" in tool.input_schema()["properties"]["topic"]["description"]
+    page = await _call(tool, {"action": "help", "topic": "glossary"})
+    assert (page.text, page.is_error, written) == ("a note is what note_echo echoes", False, ["written"])
+    unknown = await _call(tool, {"action": "help", "topic": "glosary"})
+    assert unknown.is_error and unknown.text.splitlines()[0].endswith("Reference topics: glossary.")
+    assert unknown.recovery is not None and unknown.recovery.valid_values == ("note_echo", "glossary")
+
+
+async def test_a_tool_with_no_topics_keeps_its_help_as_it_was(tools: dict[str, Any]) -> None:
+    index = tools["evals"].help_index()
+    assert "## Reference" not in index
+    assert index.endswith("For one action's parameters and an example: action='help', topic='<action>'.")
+    assert tools["evals"].input_schema()["properties"]["topic"]["description"] == (
+        "help only: the action to explain, by name."
+    )
+    unknown = await _call(tools["evals"], {"action": "help", "topic": "nothing_here"})
+    assert "Reference topics" not in unknown.text
+
+
+def test_a_malformed_or_colliding_help_topic_is_refused() -> None:
+    with pytest.raises(ValueError, match="is not a lowercase identifier other than 'help'"):
+        HelpTopic(name="help", summary="s", text=str)
+    with pytest.raises(ValueError, match="the summary is one non-blank line"):
+        HelpTopic(name="glossary", summary="two\nlines", text=str)
+    topic = HelpTopic(name="glossary", summary="s", text=str)
+    with pytest.raises(ValueError, match="two help topics share a name"):
+        ToolSpec(name="t", description="d", permissions=frozenset({"read"}), topics=(topic, topic))
+    named = HelpTopic(name="note_echo", summary="s", text=str)
+    with pytest.raises(ValueError, match="help topic note_echo is named as one of its actions"):
+        ActionCatalogue([_action()]).mount(
+            ToolSpec(name="t", description="d", permissions=frozenset({"read"}), topics=(named,))
+        )
+
+
+@pytest.mark.parametrize(
+    "specs",
+    [
+        pytest.param((*standard_tools(), *analyst_tools()), id="every tool a host mounts"),
+        pytest.param((*standard_tools(), *analyst_tools(role="editor")), id="with the editor's cut"),
+        pytest.param(read_only_tools(), id="read-only"),
+    ],
+)
+def test_the_primer_names_help_first_every_tool_and_its_rules_within_its_budget(specs: tuple[ToolSpec, ...]) -> None:
+    tools = eval_catalogue().mount_all(specs)
+    primer = catalogue_primer(tools)
+    lines = primer.splitlines()
+    assert len(primer) <= PRIMER_BUDGET, f"{len(primer)} characters"
+    assert "action='help'" in lines[0], "how to get help opens the primer"
+    for tool in tools:
+        assert f"- {tool.name}: {tool.spec.description} Call action='help' first." in lines
+        for topic in tool.spec.topics:
+            assert f"{topic.name} ({tool.name})" in lines[1], "a reference topic is named in the opening lines"
+        for rule in tool.spec.constraints:
+            assert f"- {tool.name}: {rule}" in lines
+    assert any(line.startswith("- A refused call ends with recovery: {...}") for line in lines)
+    launches = any(action.long_running for tool in tools for action in tool.actions)
+    assert ("- Long work starts a job: poll it with action='job_poll' until it reads done." in lines) == launches
+    deletes = any(tool.hints.destructive for tool in tools)
+    assert any("needs `confirm` echoing the id it destroys" in line for line in lines) == deletes
+
+
+def test_the_analyst_tools_rules_are_in_its_help_index() -> None:
+    (spec,) = analyst_tools()
+    index = eval_catalogue().mount(spec).help_index()
+    assert spec.constraints and "## Rules\n" + "\n".join(f"- {rule}" for rule in spec.constraints) in index
+
+
+def test_a_primer_past_its_budget_or_naming_no_tool_is_refused() -> None:
+    wordy = ToolSpec(name="notes", description="A note. " * 300, permissions=frozenset({"read"}))
+    with pytest.raises(ValueError, match="past the 1800 a client is known to deliver whole"):
+        catalogue_primer([ActionCatalogue([_action()]).mount(wordy)])
+    with pytest.raises(ValueError, match="none were given"):
+        catalogue_primer([])
+    with pytest.raises(ValueError, match="each constraint is one non-blank line"):
+        ToolSpec(name="t", description="d", permissions=frozenset({"read"}), constraints=("two\nlines",))
+
+
 def test_two_tools_with_one_name_are_refused() -> None:
     with pytest.raises(ValueError, match="two tools share a name"):
         eval_catalogue().mount_all([*read_only_tools(), *read_only_tools()])
@@ -479,6 +618,14 @@ def test_two_tools_with_one_name_are_refused() -> None:
         ({"name": "evals", "description": " ", "permissions": frozenset({"read"})}, "the description is blank"),
         ({"name": "evals", "description": "d", "permissions": frozenset()}, "it mounts one or more of"),
         ({"name": "evals", "description": "d", "permissions": frozenset({"admin"})}, "it mounts one or more of"),
+        (
+            {"name": "evals", "description": "d", "permissions": frozenset({"read"}), "workflows": frozenset()},
+            "workflows",
+        ),
+        (
+            {"name": "evals", "description": "d", "permissions": frozenset({"read"}), "workflows": frozenset({" "})},
+            "workflows names one or more workflows, none blank",
+        ),
     ],
 )
 def test_a_malformed_tool_is_refused(fields: dict[str, Any], message: str) -> None:

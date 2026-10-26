@@ -9,9 +9,9 @@ figures. Every figure comes back as the key that names it, written ``key = reads
 
 **A cut of their own.** :func:`analyst_actions` puts every one on the analyst's cut, which the standard tools do not
 mount: :func:`analyst_tools` is the tool that does, so the ``evals`` tool an MCP client sees, and its flat parameters,
-stay the engine's. The in-process loop presents the actions one tool each, by name, from the toolsets:
-:func:`analyst_toolset` for the analyst and :func:`editor_toolset` for the editor, both read off the workflows below,
-so no file lists the tools' names.
+stay the engine's. The in-process loop mounts the same tool an MCP client does: the analyst's role carries every
+workflow below, and the editor's (``role="editor"``) the facts, the analyses and the gap note, read off the workflows,
+so no file lists the actions' names.
 
 **The workflows.** ``Investigate: snapshot`` freezes the evidence; ``facts`` reads what it holds; ``analyses``
 computes over it; ``blocks`` shows the evidence a claim would carry; ``gaps`` notes a capability the analyst reasoned
@@ -21,16 +21,18 @@ around (``capability_gap``, which stores nothing).
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Annotated, get_args
+from typing import Annotated, Literal, get_args
 
 from pydantic import Field, model_validator
 
 from threetears.evals.actions.analyst_analyses import ANALYSES_WORKFLOW, analyst_analyses_actions
 from threetears.evals.actions.analyst_facts import FACTS_WORKFLOW, analyst_facts_actions
-from threetears.evals.actions.analyst_render import BLOCKS_WORKFLOW, analyst_render_actions
-from threetears.evals.actions.catalogue import DEFAULT_PREFIX, Action, Caller, PermissionClass, ToolSpec
+from threetears.evals.actions.analyst_price import analyst_price_actions
+from threetears.evals.actions.analyst_render import analyst_render_actions
+from threetears.evals.actions.catalogue import DEFAULT_PREFIX, Action, Caller, HelpTopic, PermissionClass, ToolSpec
 from threetears.evals.actions.params import AnalysisId, CampaignId, SnapshotId
 from threetears.evals.actions.render import render_cited
+from threetears.evals.ops.analyst_blocks import figure_key_grammar
 from threetears.evals.ops.analyst import GapNoted, SnapshotFrozen, capability_gap, report_snapshot_freeze
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
@@ -44,11 +46,34 @@ SNAPSHOT_WORKFLOW = "Investigate: snapshot"
 #: The help index's group for a noted capability gap.
 GAPS_WORKFLOW = "Investigate: gaps"
 
-#: The workflows whose tools the analyst investigates and builds its report with.
-_ANALYST_WORKFLOWS = (FACTS_WORKFLOW, ANALYSES_WORKFLOW, BLOCKS_WORKFLOW, GAPS_WORKFLOW)
+#: The workflows whose actions the editor tests a report with: no blocks, since it reads the page it is given.
+_EDITOR_WORKFLOWS = frozenset({FACTS_WORKFLOW, ANALYSES_WORKFLOW, GAPS_WORKFLOW})
 
-#: The workflows whose tools the editor tests a report with: no blocks, since it reads the page it is given.
-_EDITOR_WORKFLOWS = (FACTS_WORKFLOW, ANALYSES_WORKFLOW, GAPS_WORKFLOW)
+#: The figure-key grammar as a help topic: what every figure an analyst tool returns is keyed by, and what a claim cites.
+FIGURE_KEYS_TOPIC = HelpTopic(
+    name="figure_keys",
+    summary="The figure-key grammar: every path a figure is cited by, its filters and examples (block_catalog lists the "
+    "paths alone).",
+    text=figure_key_grammar,
+)
+
+#: The rules every call to the analyst tool is held to, whichever role it is cut for.
+_CONSTRAINTS = (
+    "every call but the freeze names snapshot_id, the snapshot report_snapshot_freeze returned; the same id throughout.",
+    "every figure reads key = reads: cite its key in a report, never the number typed.",
+)
+
+#: Each role's tool description.
+_DESCRIPTIONS = {
+    "analyst": (
+        "Investigate a campaign for its report: freeze its evidence as a snapshot, then read every figure from it by "
+        "the key that names it."
+    ),
+    "editor": (
+        "Test a campaign report against the snapshot it was written from: read every figure by the key that names it, "
+        "and compute what no single figure states."
+    ),
+}
 
 #: An example snapshot id, as a freeze returns one.
 _EXAMPLE_SNAPSHOT = "report-snapshot:0193a1b2c3d4e5f60718293a4b5c6d7e"
@@ -118,6 +143,7 @@ def _snapshot_actions() -> tuple[Action, ...]:
             handler=_report_snapshot_freeze,
             render=render_cited,
             example={"campaign_id": "0193a1b2-campaign"},
+            idempotent=True,
             detail=(
                 "A campaign's evidence is assembled as it stands; an analysis's is the bundle frozen with it. The "
                 "report input built from it is stored whole, and every analyst tool takes the snapshot_id returned "
@@ -156,66 +182,50 @@ def analyst_actions() -> tuple[Action, ...]:
     :rtype: tuple[Action, ...]
     """
     (freeze, gap) = _snapshot_actions()
-    built = (freeze, *analyst_facts_actions(), *analyst_analyses_actions(), *analyst_render_actions(), gap)
+    built = (
+        freeze,
+        *analyst_facts_actions(),
+        *analyst_analyses_actions(),
+        *analyst_price_actions(),
+        *analyst_render_actions(),
+        gap,
+    )
     return tuple(replace(action, cut=ANALYST_CUT) for action in built)
 
 
-def _named(workflows: tuple[str, ...]) -> tuple[str, ...]:
-    """The analyst actions of those workflows, by name, in catalogue order."""
-    return tuple(action.name for action in analyst_actions() if action.workflow in workflows)
-
-
-def analyst_toolset() -> tuple[str, ...]:
-    """The tools the analyst works with, by action name: the facts, analyses, blocks and the gap note.
-
-    Not the freeze: the loop running the analyst freezes once and hands the snapshot id to the analyst and the editor.
-
-    :return: The action names, in catalogue order.
-    :rtype: tuple[str, ...]
-    """
-    return _named(_ANALYST_WORKFLOWS)
-
-
-def editor_toolset() -> tuple[str, ...]:
-    """The tools the report editor tests a report with, by action name: the facts, analyses and the gap note.
-
-    No block tools: the editor reads the rendered page it is given, and tests an omission or a counterfactual with
-    the facts and analyses.
-
-    :return: The action names, in catalogue order.
-    :rtype: tuple[str, ...]
-    """
-    return _named(_EDITOR_WORKFLOWS)
-
-
-def analyst_tools(prefix: str = DEFAULT_PREFIX, *, writes: bool = True) -> tuple[ToolSpec]:
-    """The one tool carrying the analyst's actions: ``<prefix>_analyst``.
+def analyst_tools(
+    prefix: str = DEFAULT_PREFIX, *, writes: bool = True, role: Literal["analyst", "editor"] = "analyst"
+) -> tuple[ToolSpec]:
+    """The one tool carrying the analyst's actions: ``<prefix>_analyst``, cut for the analyst or for its editor.
 
     :param prefix: The host's prefix for its eval tools.
     :ptype prefix: str
     :param writes: Whether it carries the freeze, the analyst's one write; ``False`` for a host whose agent may only
-        read, which then reads snapshots frozen another way.
+        read, which then reads snapshots frozen another way, and for a loop that froze the snapshot itself.
     :ptype writes: bool
-    :return: ``<prefix>_analyst``, read actions and, with ``writes``, the freeze.
+    :param role: ``analyst``, every workflow of the cut; or ``editor``, the facts, the analyses and the gap note, with
+        no blocks (the editor reads the page it is given) and no freeze, whatever ``writes`` says.
+    :ptype role: Literal["analyst", "editor"]
+    :return: ``<prefix>_analyst``, read actions and, with ``writes``, the freeze; its help serves the figure-key grammar
+        as ``topic='figure_keys'`` (:data:`FIGURE_KEYS_TOPIC`).
     :rtype: tuple[ToolSpec]
     """
     classes: frozenset[PermissionClass] = frozenset({"read", "write"} if writes else {"read"})
     return (
         ToolSpec(
             name=f"{prefix}_analyst",
-            description=(
-                "Investigate a campaign for its report: freeze its evidence as a snapshot, then read every figure from "
-                "it by the key that names it."
-            ),
+            description=_DESCRIPTIONS[role],
             permissions=classes,
             cut=ANALYST_CUT,
+            workflows=_EDITOR_WORKFLOWS if role == "editor" else None,
+            topics=(FIGURE_KEYS_TOPIC,),
+            constraints=_CONSTRAINTS,
         ),
     )
 
 
 __all__ = [
+    "FIGURE_KEYS_TOPIC",
     "analyst_actions",
-    "analyst_toolset",
     "analyst_tools",
-    "editor_toolset",
 ]

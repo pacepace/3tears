@@ -3023,7 +3023,7 @@
     },
     "threetears.evals.kernel.ValidationFailedError": {
       "kind": "exception",
-      "signature": "ValidationFailedError(message: str, details: dict[str, Any] | None = None, *, remedy: str)",
+      "signature": "ValidationFailedError(message: str, details: dict[str, Any] | None = None, *, remedy: str, parameters: Sequence[str] = (), valid_values: Sequence[str] | None = None, valid_values_from: str | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.VariantConfig": {
@@ -8088,16 +8088,11 @@
     },
     "threetears.evals.actions.Action": {
       "kind": "dataclass",
-      "signature": "Action(name: str, summary: str, workflow: str, permission: PermissionClass, params: type[BaseModel], result: type[BaseModel], handler: ActionHandler, example: Mapping[str, Any], render: Callable[[Any], str] = …, long_running: bool = False, detail: str = '', happy_path: HappyPath | None = None, text_field: str | None = None, cut: str | None = None)",
+      "signature": "Action(name: str, summary: str, workflow: str, permission: PermissionClass, params: type[BaseModel], result: type[BaseModel], handler: ActionHandler, example: Mapping[str, Any], render: Callable[[Any], str] = …, long_running: bool = False, detail: str = '', happy_path: HappyPath | None = None, text_field: str | None = None, cut: str | None = None, paged: bool = False, idempotent: bool = False)",
       "tier": "stable"
     },
     "threetears.evals.actions.ACTION_NAME": {
       "kind": "constant (Pattern)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.actions.action_tools": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -8113,13 +8108,8 @@
     },
     "threetears.evals.actions.ActionOutcome": {
       "kind": "dataclass",
-      "signature": "ActionOutcome(text: str, structured: dict[str, Any] | None = None, refusal: Refusal | None = None, action: str | None = None, text_field: str | None = None)",
+      "signature": "ActionOutcome(text: str, structured: dict[str, Any] | None = None, refusal: Refusal | None = None, action: str | None = None, text_field: str | None = None, recovery: Recovery | None = None)",
       "tier": "stable"
-    },
-    "threetears.evals.actions.ActionTool": {
-      "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.actions.analyst_actions": {
       "kind": "function",
@@ -8131,15 +8121,15 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.actions.analyst_toolset": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.actions.Caller": {
       "kind": "dataclass",
       "signature": "Caller(scope_id: str, identity: str)",
       "tier": "stable"
+    },
+    "threetears.evals.actions.catalogue_primer": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.actions.ConformanceSample": {
       "kind": "dataclass",
@@ -8161,11 +8151,6 @@
       "signature": "definition_drift_actions(corpus: Callable[[str], SeedCorpus], *, seeded_digests: Callable[[str], Mapping[str, str]] | None = None) -> tuple[Action, Action]",
       "tier": "host-contract"
     },
-    "threetears.evals.actions.editor_toolset": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.actions.engine_actions": {
       "kind": "function",
       "signature": "",
@@ -8186,6 +8171,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.actions.HelpTopic": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.actions.MountedTool": {
       "kind": "dataclass",
       "signature": "",
@@ -8201,8 +8191,18 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.actions.PRIMER_BUDGET": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.actions.read_only_tools": {
       "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.actions.Recovery": {
+      "kind": "dataclass",
       "signature": "",
       "tier": "provisional"
     },

@@ -9,10 +9,10 @@ Every string a mounted tool returns is made here, so the conventions hold in one
   action accepts with what each means, and an example call that validates. A call the engine or host
   failed to carry out (a store that failed, a provider that refused the account: a 5xx status,
   :func:`raised`) reads ``raised:``, never ``refused:``, since the call itself was not turned away.
-- **A standalone call reads as its own tool.** An action presented as a tool of its own
-  (:class:`~threetears.evals.actions.action_tools.ActionTool`) has no ``action`` key and no ``help`` to call, so a
-  refusal of one (``standalone=True``) shows its example as the tool's arguments alone, and a remedy naming another
-  action names it as the tool of that name. Without ``standalone`` every text is the mounted tool's, unchanged.
+- **A page names the call to the next.** A paged action's result (:attr:`~threetears.evals.actions.Action.paged`)
+  ends with ``next: action='…', …, offset=N`` — the arguments the caller sent, ``offset`` advanced — and carries the
+  same call as ``next`` in its structured result; its last page carries neither, and no ``next_offset``
+  (:func:`render_page`).
 - **A result reads as every fact it carries.** One generic renderer prints any result model field by field
   (:func:`render_model`); a few results keep their own: a started job says how to poll it and a finished one
   what to read next, a page of results how to read the next, one result its counted goal verdicts, and a report
@@ -85,11 +85,8 @@ def parameter_lines(action: Action) -> list[str]:
     return lines
 
 
-def example_call(action: Action, *, standalone: bool = False) -> str:
-    """The action's example, as the JSON arguments of a call: of the mounted tool, ``action`` first, or, standalone,
-    of the action's own tool, which takes no ``action``."""
-    if standalone:
-        return json.dumps(dict(action.example), sort_keys=False)
+def example_call(action: Action) -> str:
+    """The action's example, as the JSON arguments of a call to its tool: ``action`` first."""
     return json.dumps({"action": action.name, **dict(action.example)}, sort_keys=False)
 
 
@@ -105,8 +102,54 @@ def render_help_index(tool: MountedTool) -> str:
             job = ", starts a job" if action.long_running else ""
             lines.append(f"- {action.name} ({action.permission}{job}): {one_line(action.summary)}")
         lines.append("")
-    lines.append("For one action's parameters and an example: action='help', topic='<action>'.")
+    if tool.spec.constraints:
+        lines.append("## Rules")
+        lines += [f"- {rule}" for rule in tool.spec.constraints]
+        lines.append("")
+    if tool.spec.topics:
+        lines.append("## Reference")
+        lines += [f"- {topic.name}: {one_line(topic.summary)}" for topic in tool.spec.topics]
+        lines.append("")
+        lines.append(
+            "For one action's parameters and an example, or a reference page: action='help', topic='<action or topic>'."
+        )
+    else:
+        lines.append("For one action's parameters and an example: action='help', topic='<action>'.")
     return "\n".join(lines)
+
+
+def render_primer(tools: Sequence[MountedTool]) -> str:
+    """The primer :func:`~threetears.evals.actions.catalogue_primer` holds to its budget: help first, then the tools,
+    then the rules."""
+    lines = [
+        "Eval tools. Each takes `action`: action='help' lists a tool's actions by workflow, and action='help', "
+        "topic='<action>' gives one action's parameters and an example."
+    ]
+    topics = [f"{topic.name} ({tool.name})" for tool in tools for topic in tool.spec.topics]
+    if topics:
+        lines.append(f"Reference topics, as action='help', topic='<topic>': {', '.join(topics)}.")
+    lines.append("Tools:")
+    lines += [f"- {tool.name}: {one_line(tool.spec.description)} Call action='help' first." for tool in tools]
+    rules = [
+        "A refused call ends with recovery: {...}, the corrected call's fields (parameters at fault, accepted, "
+        "example, valid_values or valid_values_from, see); the structured result carries them as recovery."
+    ]
+    if any(action.long_running for tool in tools for action in tool.actions):
+        rules.append("Long work starts a job: poll it with action='job_poll' until it reads done.")
+    for tool in tools:
+        if any(action.permission == "destructive" for action in tool.actions):
+            rules.append(f"{tool.name}: a destructive action needs `confirm` echoing the id it destroys.")
+        rules += [f"{tool.name}: {rule}" for rule in tool.spec.constraints]
+    lines.append("Rules:")
+    lines += [f"- {rule}" for rule in rules]
+    return "\n".join(lines)
+
+
+def topic_description(tool: MountedTool) -> str:
+    """What the tool's ``topic`` parameter says it takes: an action's name, and a reference topic where it has one."""
+    if not tool.spec.topics:
+        return "help only: the action to explain, by name."
+    return "help only: the action to explain, or a reference topic the help index lists, by name."
 
 
 def render_help_page(tool: MountedTool, action: Action) -> str:
@@ -133,9 +176,9 @@ def _valid_actions(tool: MountedTool) -> str:
     return "valid actions: help, " + ", ".join(action.name for action in tool.actions)
 
 
-def _accepted(action: Action, *, standalone: bool = False) -> str:
+def _accepted(action: Action) -> str:
     lines = parameter_lines(action) or ["- none"]
-    return "\n".join([f"{action.name} accepts:", *lines, f"Example: {example_call(action, standalone=standalone)}"])
+    return "\n".join([f"{action.name} accepts:", *lines, f"Example: {example_call(action)}"])
 
 
 def refuse_no_action(tool: MountedTool) -> str:
@@ -157,6 +200,14 @@ def refuse_unknown_action(tool: MountedTool, name: str) -> str:
     return f"refused: there is no action {name!r}. {_valid_actions(tool)}."
 
 
+def refuse_unknown_topic(tool: MountedTool, topic: str) -> str:
+    """A help call naming a topic this tool has no page for: as an unknown action, with its reference topics named."""
+    refused = refuse_unknown_action(tool, topic)
+    if not tool.spec.topics:
+        return refused
+    return f"{refused} Reference topics: {', '.join(item.name for item in tool.spec.topics)}."
+
+
 def _cut_of(action: Action) -> str:
     """Which tools mount an action of another cut than the calling tool's, as a refusal says it."""
     if action.cut is None:
@@ -172,20 +223,14 @@ def refuse_help_parameters(tool: MountedTool, undeclared: Sequence[str]) -> str:
     )
 
 
-def refuse_undeclared(tool: MountedTool, action: Action, undeclared: Sequence[str], *, standalone: bool = False) -> str:
-    """A call carrying parameters its action does not declare — refused rather than ignored.
-
-    ``standalone``: the action is a tool of its own, so its example is its arguments alone.
-    """
+def refuse_undeclared(tool: MountedTool, action: Action, undeclared: Sequence[str]) -> str:
+    """A call carrying parameters its action does not declare — refused rather than ignored."""
     del tool
-    return f"refused: {action.name} does not take {', '.join(undeclared)}.\n{_accepted(action, standalone=standalone)}"
+    return f"refused: {action.name} does not take {', '.join(undeclared)}.\n{_accepted(action)}"
 
 
-def refuse_invalid(tool: MountedTool, action: Action, invalid: ValidationError, *, standalone: bool = False) -> str:
-    """A call whose values do not validate against the action's parameters.
-
-    ``standalone``: the action is a tool of its own, so its example is its arguments alone.
-    """
+def refuse_invalid(tool: MountedTool, action: Action, invalid: ValidationError) -> str:
+    """A call whose values do not validate against the action's parameters."""
     del tool
     problems = []
     for error in invalid.errors():
@@ -195,20 +240,19 @@ def refuse_invalid(tool: MountedTool, action: Action, invalid: ValidationError, 
         [
             f"refused: {action.name} was called with values it cannot take:",
             *problems,
-            _accepted(action, standalone=standalone),
+            _accepted(action),
         ]
     )
 
 
-def refuse_by_engine(tool: MountedTool, action: Action, refused: EvalServiceError, *, standalone: bool = False) -> str:
+def refuse_by_engine(tool: MountedTool, action: Action, refused: EvalServiceError) -> str:
     """A call the engine refused: the engine's own reason, then what to do next where the refusal names it.
 
     A remedy naming an action this tool does not carry says which tool does — the remedy is the engine's and
     names the catalogue's actions, while which of them a caller can reach here is this tool's — so an agent is
-    never sent to a call its tool would refuse as unknown. ``standalone``: every action is a tool of its own, so a
-    remedy naming another action says that it is the tool of that name.
+    never sent to a call its tool would refuse as unknown.
     """
-    return _refused_with_remedy(tool, action.name, refused, standalone=standalone)
+    return _refused_with_remedy(tool, action.name, refused)
 
 
 def refuse_by_resolver(tool: MountedTool, action: Action | None, refused: EvalServiceError) -> str:
@@ -220,6 +264,11 @@ def refuse_by_resolver(tool: MountedTool, action: Action | None, refused: EvalSe
     refused before its ``action`` was ever checked, so it may name none.
     """
     return _refused_with_remedy(tool, action.name if action is not None else tool.name, refused)
+
+
+def recovery_line(recovery: Mapping[str, Any]) -> str:
+    """A refusal's recovery fields as its text's last line, compact JSON (a client may forward only the text)."""
+    return "recovery: " + json.dumps(dict(recovery), separators=(",", ":"), ensure_ascii=False, default=str)
 
 
 #: The lowest status at which an error is the engine or host failing to carry a call out rather than turning the
@@ -244,13 +293,10 @@ def raised(status: int) -> bool:
     return status >= _RAISED_FROM
 
 
-def _refused_with_remedy(
-    tool: MountedTool, subject: str, refused: EvalServiceError, *, standalone: bool = False
-) -> str:
+def _refused_with_remedy(tool: MountedTool, subject: str, refused: EvalServiceError) -> str:
     """A refusal's reason under ``subject``, then its remedy, then where any action the remedy names is carried.
 
     Headed ``raised:`` when the error is the engine or host failing the call (:func:`raised`), ``refused:`` otherwise.
-    ``standalone``: each other action the remedy names is the tool of that name, whatever tool mounts it.
     """
     head = "raised" if raised(refused.status_code) else "refused"
     lines = [f"{head}: {subject}: {refused.message}"]
@@ -259,10 +305,7 @@ def _refused_with_remedy(
         named = sorted(set(_ACTION_TOKEN.findall(refused.remedy)))
         for name in named:
             elsewhere = tool.catalogue.get(name)
-            if standalone:
-                if elsewhere is not None and name != subject:
-                    lines.append(f"{name} is a tool of its own: call {name} with its own parameters")
-            elif elsewhere is not None and tool.action(name) is None and elsewhere.cut != tool.spec.cut:
+            if elsewhere is not None and tool.action(name) is None and elsewhere.cut != tool.spec.cut:
                 lines.append(f"{name} is not an action of tool {tool.name}: {_cut_of(elsewhere)}")
             elif elsewhere is not None and tool.action(name) is None:
                 lines.append(
@@ -341,17 +384,75 @@ def render_cited(result: BaseModel) -> str:
     What the result is comes first, then its fields in the model's own order. A figure
     (:class:`~threetears.evals.ops.analyst.CitedFigure`) is one line, its key and the figure as the page writes it, so
     an analyst cites the key it read; the value, kind and scale stay in the structured result. A row of a list is one
-    bullet of its plain fields, its figures and nested rows indented beneath it. Nothing is summarised or left out.
+    bullet of its plain fields, its figures and nested rows indented beneath it. Nothing is summarised or left out,
+    but a page's ``next_offset``: the tool writes the next page's whole call in its place (:func:`render_page`).
     """
     return "\n".join([_RESULT_WORDS.sub(r" \1", type(result).__name__).strip().lower(), *_cited_body(result, "")])
 
 
 def _cited_body(model: BaseModel, indent: str) -> list[str]:
-    """Every field of one model, each as :func:`_cited_field` writes it."""
+    """Every field of one model, each as :func:`_cited_field` writes it; a page's ``next_offset`` at the top is the
+    tool's to write, as the next page's call."""
     lines: list[str] = []
     for name in type(model).model_fields:
+        if name == _NEXT_OFFSET and not indent:
+            continue
         lines += _cited_field(name, getattr(model, name), indent)
     return lines
+
+
+#: The field a page names the next page's offset by (:attr:`~threetears.evals.actions.Action.paged`).
+_NEXT_OFFSET: Final = "next_offset"
+
+
+def next_page_call(action: str, params: BaseModel, next_offset: int) -> dict[str, Any]:
+    """The call that reads the page after this one: the arguments the caller sent, ``offset`` advanced.
+
+    :param action: The paged action.
+    :ptype action: str
+    :param params: The call's validated parameters; the ones the caller set are sent again, as validated.
+    :ptype params: BaseModel
+    :param next_offset: Where the next page starts.
+    :ptype next_offset: int
+    :return: The next call's arguments, ``action`` first and ``offset`` last.
+    :rtype: dict[str, Any]
+    """
+    sent = params.model_dump(mode="json", include=set(params.model_fields_set) - {"offset"})
+    return {
+        "action": action,
+        **{name: sent[name] for name in type(params).model_fields if name in sent},
+        "offset": next_offset,
+    }
+
+
+def next_page_line(call: Mapping[str, Any]) -> str:
+    """The next page's call as a page's last line: ``next: action='readings_list', snapshot_id='…', offset=40``."""
+    spelled = (
+        f"{name}='{value}'" if isinstance(value, str) else f"{name}={_compact(value)}" for name, value in call.items()
+    )
+    return "next: " + ", ".join(spelled)
+
+
+def render_page(action: str, params: BaseModel, text: str, structured: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """A paged action's text and structured result, each naming the next page's call, or ending on the last page.
+
+    :param action: The paged action.
+    :ptype action: str
+    :param params: The call's validated parameters.
+    :ptype params: BaseModel
+    :param text: The result as its render writes it.
+    :ptype text: str
+    :param structured: The result's JSON.
+    :ptype structured: dict[str, Any]
+    :return: The text, with ``next: …`` as its last line while a page follows; the JSON, with ``next`` (the next
+        call's arguments) beside ``next_offset`` while a page follows, and neither on the last page.
+    :rtype: tuple[str, dict[str, Any]]
+    """
+    offset = structured.get(_NEXT_OFFSET)
+    if offset is None:
+        return text, {key: value for key, value in structured.items() if key != _NEXT_OFFSET}
+    call = next_page_call(action, params, offset)
+    return f"{text}\n{next_page_line(call)}", {**structured, "next": call}
 
 
 def _cited_field(name: str, value: Any, indent: str) -> list[str]:
@@ -625,8 +726,11 @@ def _render_result(status: JobStatus) -> str:
 
 __all__ = [
     "example_call",
+    "next_page_call",
+    "next_page_line",
     "parameter_lines",
     "raised",
+    "recovery_line",
     "refuse_by_engine",
     "refuse_by_resolver",
     "refuse_help_parameters",
@@ -634,13 +738,17 @@ __all__ = [
     "refuse_no_action",
     "refuse_undeclared",
     "refuse_unknown_action",
+    "refuse_unknown_topic",
     "render_cited",
     "render_help_index",
     "render_help_page",
     "render_job_status",
     "render_jobs_started",
     "render_model",
+    "render_page",
+    "render_primer",
     "render_report",
     "render_result",
     "render_results",
+    "topic_description",
 ]

@@ -225,8 +225,14 @@ def _known(value: str | None, held: Iterable[str], what: str) -> None:
 
     :raises RefusedInput: ``value`` is given and is none of ``held``.
     """
-    if value is not None and value not in set(held):
-        raise RefusedInput(f"{what} {value!r} names nothing this snapshot holds", remedy=_OVERVIEW_REMEDY)
+    known = list(dict.fromkeys(held))
+    if value is not None and value not in known:
+        raise RefusedInput(
+            f"{what} {value!r} names nothing this snapshot holds",
+            remedy=_OVERVIEW_REMEDY,
+            parameters=(what,),
+            valid_values=known,
+        )
 
 
 # --- campaign_overview ----------------------------------------------------------------------------------------------
@@ -868,6 +874,8 @@ def _table(report_input: ReportInput, measure_key: str) -> tuple[Literal["measur
     raise RefusedInput(
         f"measure_key {measure_key!r} names no measure or judged dimension this snapshot holds",
         remedy="campaign_overview lists every measure key, under measures",
+        parameters=("measure_key",),
+        valid_values=[*report_input.measures, *report_input.judged],
     )
 
 
@@ -990,16 +998,21 @@ def measure_read(
         raise RefusedInput(
             f"this snapshot holds no {_SLICE_WORDS[by]} to read {measure_key!r} by",
             remedy="campaign_overview lists, under each measure's slices, what it can be read by",
+            parameters=("by",),
+            valid_values=[held for held in _SLICE_WORDS if _slices_held(report_input, held)],
         )
     if _VS_CONTROL in statistics and (by == "arm" or _control(report_input) is None):
         raise RefusedInput(
             "vs_control reads a candidate's mean against the control's within a slice, "
             + ("and this snapshot has no control" if by != "arm" else "and by arm there is no slice"),
             remedy="contrasts_list holds each candidate against the control; drop vs_control, or read by a slice",
+            parameters=("statistics",),
         )
     if aspect_filter is not None and by in ("task", "cell"):
         raise RefusedInput(
-            f"{by}s are not held per aspect, so aspect_filter cannot narrow them", remedy="omit aspect_filter"
+            f"{by}s are not held per aspect, so aspect_filter cannot narrow them",
+            remedy="omit aspect_filter",
+            parameters=("aspect_filter",),
         )
     if by == "arm":
         spots = _on_arm(report_input, measure_key, source, table, aspect_filter)
@@ -1143,6 +1156,8 @@ def examples_list(
         raise RefusedInput(
             f"outcome_filter {outcome_filter!r} is no failure class this snapshot's examples hold",
             remedy=f"name one of {', '.join(outcomes)}" if outcomes else "omit outcome_filter: no example names one",
+            parameters=("outcome_filter",),
+            valid_values=outcomes,
         )
     kept = [
         example

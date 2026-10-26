@@ -8,8 +8,9 @@ cut, :func:`analyst_tools` — and a mounted tool's
 :meth:`MountedTool.call` carries a call out: ``help`` generated from the catalogue, undeclared parameters
 refused, errors that teach and carry their :class:`Refusal` as data, long work as a job to poll. A
 transport adapter is a thin binding of :class:`MountedTool` to its server's tool shape
-(:mod:`threetears.evals.transports.fastmcp`). A loop running a model in process presents actions one tool each
-instead: :func:`action_tools` cuts them by name, each an :class:`ActionTool` whose call is its mounted tool's.
+(:mod:`threetears.evals.transports.fastmcp`). A loop running a model in process hands it the same mounted tools: each
+one's :attr:`MountedTool.name`, :attr:`MountedTool.description` and :meth:`MountedTool.input_schema` are a provider's
+tool definition, and :meth:`MountedTool.call` answers its calls.
 
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``.
@@ -22,6 +23,7 @@ from threetears.evals.actions.catalogue import (
     DEFAULT_PREFIX,
     HELP_ACTION,
     PERMISSION_CLASSES,
+    PRIMER_BUDGET,
     REFUSAL_KINDS,
     RESERVED_PARAMETERS,
     TOOL_NAME,
@@ -33,17 +35,19 @@ from threetears.evals.actions.catalogue import (
     ConformanceSample,
     ConformanceStage,
     HappyPath,
+    HelpTopic,
     MountedTool,
     PermissionClass,
+    Recovery,
     Refusal,
     RefusalKind,
     ToolHints,
     ToolSpec,
+    catalogue_primer,
     read_only_tools,
     standard_tools,
 )
-from threetears.evals.actions.action_tools import ActionTool, action_tools
-from threetears.evals.actions.analyst import analyst_actions, analyst_toolset, analyst_tools, editor_toolset
+from threetears.evals.actions.analyst import analyst_actions, analyst_tools
 from threetears.evals.actions.definitions import definition_drift_actions
 from threetears.evals.actions.engine import engine_actions, eval_catalogue
 from threetears.evals.actions.render import render_jobs_started
@@ -53,6 +57,7 @@ __all__ = [
     "DEFAULT_PREFIX",
     "HELP_ACTION",
     "PERMISSION_CLASSES",
+    "PRIMER_BUDGET",
     "REFUSAL_KINDS",
     "RESERVED_PARAMETERS",
     "TOOL_NAME",
@@ -60,23 +65,22 @@ __all__ = [
     "ActionCatalogue",
     "ActionHandler",
     "ActionOutcome",
-    "ActionTool",
     "Caller",
     "ConformanceSample",
     "ConformanceStage",
     "HappyPath",
+    "HelpTopic",
     "MountedTool",
     "PermissionClass",
+    "Recovery",
     "Refusal",
     "RefusalKind",
     "ToolHints",
     "ToolSpec",
-    "action_tools",
     "analyst_actions",
     "analyst_tools",
-    "analyst_toolset",
+    "catalogue_primer",
     "definition_drift_actions",
-    "editor_toolset",
     "engine_actions",
     "eval_catalogue",
     "read_only_tools",

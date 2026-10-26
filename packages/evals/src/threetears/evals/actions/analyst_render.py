@@ -3,7 +3,7 @@
 The actions of the ``Investigate: blocks`` workflow, each an
 :class:`~threetears.evals.actions.catalogue.Action` over its operation in :mod:`threetears.evals.ops` and rendered by
 :func:`~threetears.evals.actions.render.render_cited`. :func:`~threetears.evals.actions.analyst.analyst_actions`
-gathers them onto the analyst's cut, and the analyst's and editor's toolsets are read off this workflow, so no file
+gathers them onto the analyst's cut, and the editor's cut of the analyst tool is read off the workflows, so no file
 lists their names.
 
 ``block_catalog`` comes first: it lists every kind ``block_render`` draws, the sources each reads, and the query
@@ -25,7 +25,7 @@ from threetears.evals.ops.analyst_blocks import BLOCK_ROWS, BlockCatalog, Render
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
 
-#: The help index's group for these actions, which the toolsets are read off.
+#: The help index's group for these actions, which the editor's cut is read off.
 BLOCKS_WORKFLOW = "Investigate: blocks"
 
 #: An example snapshot id, as a freeze returns one.
@@ -143,7 +143,8 @@ def analyst_render_actions() -> tuple[Action, ...]:
                 "Each kind says what it draws, the sources it reads, whether every row needs an interval, whether it "
                 "draws panels, and the reference lines code can key on it. Each source says what a row is, the query "
                 "fields that narrow its rows, and whether this snapshot holds any. The figure key forms are the paths "
-                "a claim cites a figure by."
+                "a claim cites a figure by; the whole grammar, with its filters and "
+                "examples, is help topic='figure_keys'."
             ),
         ),
         Action(
@@ -155,14 +156,15 @@ def analyst_render_actions() -> tuple[Action, ...]:
             result=RenderedBlock,
             handler=_block_render,
             render=render_cited,
+            paged=True,
             example={**snapshot, "block_kind": "forest", "query": {"source": "readings"}},
             detail=(
                 "The block is completed and checked by the planner's own rules and drawn by the page's own code, so a "
                 "block drawn here is one a report may show. It returns every value the block draws as a table of "
                 "text, the interval level, unit and axis code fixed, and the reference line's figure by its key: never "
                 "the picture. A block the page cannot draw on this snapshot is refused naming every fault at the "
-                "parameter it sits at. A page of rows stops at limit, or sooner where cells run long; next_offset "
-                "names the next."
+                "parameter it sits at. A page of rows stops at limit, or sooner where cells run long; its last "
+                "line names the call that reads the next."
             ),
         ),
     )

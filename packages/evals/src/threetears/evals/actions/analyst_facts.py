@@ -3,15 +3,15 @@
 The actions of the ``Investigate: facts`` workflow, each an
 :class:`~threetears.evals.actions.catalogue.Action` over its operation in :mod:`threetears.evals.ops` and rendered by
 :func:`~threetears.evals.actions.render.render_cited`. :func:`~threetears.evals.actions.analyst.analyst_actions`
-gathers them onto the analyst's cut, and the analyst's and editor's toolsets are read off this workflow, so no file
+gathers them onto the analyst's cut, and the editor's cut of the analyst tool is read off the workflows, so no file
 lists their names.
 
 ``campaign_overview`` comes first: it lists every id the others take (arms, aspects, measure keys, strata, tasks,
 cells), and a filter naming anything else is refused with that remedy.
 
 **A page is sized to one result.** A paged tool called without a ``limit`` returns as many rows as its text holds
-within 12,000 characters (what one tool result may take of an analyst's context), up to its default count;
-``next_offset`` reads on. Rows are never shortened or left out, only carried to the next page. A ``limit`` the caller
+within 12,000 characters (what one tool result may take of an analyst's context), up to its default count; its last
+line names the call that reads on. Rows are never shortened or left out, only carried to the next page. A ``limit`` the caller
 names is the page's size, as named.
 """
 
@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from threetears.evals.actions.catalogue import Action, Caller
 from threetears.evals.actions.params import ArmFilter, AspectFilter, Limit, MeasureKey, Offset, SnapshotId
-from threetears.evals.actions.render import render_cited
+from threetears.evals.actions.render import render_cited, render_page
 from threetears.evals.ops.analyst_facts import (
     CONTRASTS_LIMIT,
     EXAMPLES_LIMIT,
@@ -48,7 +48,7 @@ from threetears.evals.ops.analyst_facts import (
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
 
-#: The help index's group for these actions, which the toolsets are read off.
+#: The help index's group for these actions, which the editor's cut is read off.
 FACTS_WORKFLOW = "Investigate: facts"
 
 #: The most characters a page a caller does not size runs to: what one tool result may take of an analyst's context.
@@ -79,15 +79,20 @@ OutcomeFilter = Annotated[
 ]
 
 
-def _fits(page: BaseModel) -> bool:
-    """Whether a page's text, as the tool renders it, is within :data:`_PAGE_TEXT`."""
-    return len(render_cited(page)) <= _PAGE_TEXT
-
-
-def _sizing[T: BaseModel](limit: int | None, default: int) -> tuple[int, Callable[[T], bool] | None]:
+def _sizing[T: BaseModel](
+    action: str, params: ReadingsListParams | ContrastsListParams | MeasureReadParams | ExamplesListParams, default: int
+) -> tuple[int, Callable[[T], bool] | None]:
     """The page size an operation takes, and the test of length it sizes a page by: the caller's ``limit`` as named,
-    else up to ``default`` rows, as many as fit."""
-    return (limit, None) if limit is not None else (default, _fits)
+    else up to ``default`` rows, as many as fit within :data:`_PAGE_TEXT` as the tool writes the page, the next
+    page's call included."""
+    if params.limit is not None:
+        return params.limit, None
+
+    def fits(page: T) -> bool:
+        text, _structured = render_page(action, params, render_cited(page), page.model_dump(mode="json"))
+        return len(text) <= _PAGE_TEXT
+
+    return default, fits
 
 
 def _default_statistics() -> list[MeasureStatistic]:
@@ -160,7 +165,7 @@ async def _campaign_overview(host: OpsHost, caller: Caller, params: SnapshotPara
 
 
 async def _readings_list(host: OpsHost, caller: Caller, params: ReadingsListParams) -> ReadingsListing:
-    limit, fits = _sizing(params.limit, READINGS_LIMIT)
+    limit, fits = _sizing("readings_list", params, READINGS_LIMIT)
     return await readings_list(
         host,
         caller.scope_id,
@@ -174,7 +179,7 @@ async def _readings_list(host: OpsHost, caller: Caller, params: ReadingsListPara
 
 
 async def _contrasts_list(host: OpsHost, caller: Caller, params: ContrastsListParams) -> ContrastListing:
-    limit, fits = _sizing(params.limit, CONTRASTS_LIMIT)
+    limit, fits = _sizing("contrasts_list", params, CONTRASTS_LIMIT)
     return await contrasts_list(
         host,
         caller.scope_id,
@@ -189,7 +194,7 @@ async def _contrasts_list(host: OpsHost, caller: Caller, params: ContrastsListPa
 
 
 async def _measure_read(host: OpsHost, caller: Caller, params: MeasureReadParams) -> MeasureFigures:
-    limit, fits = _sizing(params.limit, MEASURE_LIMIT)
+    limit, fits = _sizing("measure_read", params, MEASURE_LIMIT)
     return await measure_read(
         host,
         caller.scope_id,
@@ -206,7 +211,7 @@ async def _measure_read(host: OpsHost, caller: Caller, params: MeasureReadParams
 
 
 async def _examples_list(host: OpsHost, caller: Caller, params: ExamplesListParams) -> ExampleListing:
-    limit, fits = _sizing(params.limit, EXAMPLES_LIMIT)
+    limit, fits = _sizing("examples_list", params, EXAMPLES_LIMIT)
     return await examples_list(
         host,
         caller.scope_id,
@@ -260,6 +265,7 @@ def analyst_facts_actions() -> tuple[Action, ...]:
             result=ReadingsListing,
             handler=_readings_list,
             render=render_cited,
+            paged=True,
             example=snapshot,
             detail=(
                 "Rows are grouped by aspect, each with its margin and the contrast family correcting it. A reading "
@@ -277,6 +283,7 @@ def analyst_facts_actions() -> tuple[Action, ...]:
             result=ContrastListing,
             handler=_contrasts_list,
             render=render_cited,
+            paged=True,
             example=snapshot,
             detail=(
                 "Each contrast carries its delta, interval, verdict, adjusted p, level and materiality, and its "
@@ -294,6 +301,7 @@ def analyst_facts_actions() -> tuple[Action, ...]:
             result=MeasureFigures,
             handler=_measure_read,
             render=render_cited,
+            paged=True,
             example={**snapshot, "measure_key": "persona.holds_character", "by": "stratum"},
             detail=(
                 "campaign_overview lists each measure key and the slices it can be read by. By arm, a measure read on "
@@ -311,6 +319,7 @@ def analyst_facts_actions() -> tuple[Action, ...]:
             result=ExampleListing,
             handler=_examples_list,
             render=render_cited,
+            paged=True,
             example=snapshot,
             detail=(
                 "The pool holds at most one failed trial per aspect, arm and stratum. A report names an example by its "

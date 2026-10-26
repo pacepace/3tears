@@ -35,7 +35,7 @@ async def _computed[T](host: OpsHost, scope_id: str, snapshot_id: str, compute: 
     try:
         return await run_blocking(host.eval_host.blocking_executor, compute, held)
     except RefusedInput as refused:
-        raise ValidationFailedError(refused.fault, remedy=refused.remedy) from refused
+        raise ValidationFailedError.refusing(refused) from refused
 
 
 async def options_dominance(host: OpsHost, scope_id: str, *, snapshot_id: str, axes: Sequence[str]) -> Dominance:

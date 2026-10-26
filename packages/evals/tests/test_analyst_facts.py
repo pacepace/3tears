@@ -40,7 +40,7 @@ from packages.evals.tests.fixtures.report_plans.misfits import MISFITS, NAMES
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
 from packages.evals.tests.report_shapes_support import SHAPES
-from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, analyst_toolset, eval_catalogue
+from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, eval_catalogue
 from threetears.evals.analysis.analyst.cited import CitedFigure
 from threetears.evals.analysis.analyst.facts import (
     campaign_overview,
@@ -708,9 +708,11 @@ async def _call(fixture: OpsFixture, arguments: dict[str, Any]) -> ActionOutcome
     return await _analyst_tool().call(arguments, host=fixture.host, caller=CALLER)
 
 
-def test_the_fact_tools_are_in_the_analysts_and_the_editors_toolsets() -> None:
+def test_the_fact_tools_are_on_the_analysts_and_the_editors_cuts() -> None:
     names = {"campaign_overview", "readings_list", "contrasts_list", "measure_read", "examples_list", "caveats_list"}
-    assert names <= set(analyst_toolset())
+    for role in ("analyst", "editor"):
+        (spec,) = analyst_tools(writes=False, role=role)
+        assert names <= {action.name for action in eval_catalogue().mount(spec).actions}, role
     tool = _analyst_tool()
     assert {action.workflow for action in tool.actions if action.name in names} == {"Investigate: facts"}
     assert {action.permission for action in tool.actions if action.name in names} == {"read"}
@@ -867,17 +869,17 @@ async def test_a_page_sized_to_one_result_carries_the_rest_to_the_next_and_every
     fixture = off_loop(_seeded_shapes)
     snapshot = _shape_snapshots()["s1"]
     whole = await _call(fixture, {"action": action, "snapshot_id": snapshot.id, "limit": 200})
-    assert whole.structured is not None and whole.structured["next_offset"] is None
+    assert whole.structured is not None and "next_offset" not in whole.structured and "next" not in whole.structured
     assert len(whole.text) > TEXT_BUDGET, "the control: every s1 row at once runs past one result"
     rows: list[Any] = []
-    offset: int | None = 0
+    arguments: dict[str, Any] | None = {"action": action, "snapshot_id": snapshot.id}
     pages = 0
-    while offset is not None:
-        page = await _call(fixture, {"action": action, "snapshot_id": snapshot.id, "offset": offset})
+    while arguments is not None:
+        page = await _call(fixture, arguments)
         assert page.structured is not None, page.text
         assert len(page.text) <= TEXT_BUDGET and page.structured["total"] == whole.structured["total"]
         rows += _listed_rows(action, page.structured)
-        offset = page.structured["next_offset"]
+        arguments = page.structured.get("next")
         pages += 1
     assert pages > 1
     assert rows == _listed_rows(action, whole.structured)
@@ -889,6 +891,6 @@ async def test_a_limit_the_caller_names_is_the_pages_size_as_named() -> None:
     held = frozen_input(snapshot)
     named = await _call(fixture, {"action": "contrasts_list", "snapshot_id": snapshot.id, "limit": 50})
     assert named.structured is not None
-    assert len(named.structured["contrasts"]) == len(held.contrasts) and named.structured["next_offset"] is None
+    assert len(named.structured["contrasts"]) == len(held.contrasts) and "next_offset" not in named.structured
     small = await _call(fixture, {"action": "contrasts_list", "snapshot_id": snapshot.id, "limit": 2})
     assert small.structured is not None and len(small.structured["contrasts"]) == 2

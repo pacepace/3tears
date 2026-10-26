@@ -46,21 +46,19 @@ from threetears.evals.actions import (
     MountedTool,
     analyst_actions,
     analyst_tools,
-    analyst_toolset,
-    editor_toolset,
     engine_actions,
     eval_catalogue,
     read_only_tools,
     standard_tools,
 )
-from threetears.evals.actions.render import render_cited
+from threetears.evals.actions.render import next_page_line, render_cited
 from threetears.evals.analysis import assemble_campaign_bundle
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.analyst.snapshot import ANALYST_EXAMPLES, frozen_input, report_snapshot
 from threetears.evals.analysis.planned_analysis import report_input_digest, report_input_document_digest
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
-from threetears.evals.analysis.report.figure_keys import render, resolve
+from threetears.evals.analysis.report.figure_keys import figure_key_grammar, render, resolve
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel import EvalReportSnapshot, report_snapshot_id
@@ -79,8 +77,9 @@ ANALYST_MODULES = sorted(
     ]
 )
 
-#: The fields of a listing that page it, which are counts of rows and never figures.
-PAGING = frozenset({"total", "offset", "next_offset", "limit"})
+#: The fields of a listing that page it, which are counts of rows and never figures, and the next page's call, whose
+#: arguments are the caller's own.
+PAGING = frozenset({"total", "offset", "next_offset", "limit", "next"})
 
 #: The fields every cited figure carries, by which one is found in a result's JSON.
 FIGURE_FIELDS = frozenset({"key", "reads", "value", "kind", "scale", "unit"})
@@ -421,7 +420,8 @@ def test_a_result_reads_back_as_each_figures_key_and_reading_under_its_row() -> 
     first = held.arms[0].id
     reads = render(f"{{pass_rate.{first}}}", held, {})
     assert f"  - arm: arm:{first}\n    pass_rate.{first} = {reads}\n" in text
-    assert text.splitlines()[0] == "_listing" and "total: 3" in text and "next_offset: none" in text
+    assert text.splitlines()[0] == "_listing" and "total: 3" in text
+    assert "next_offset" not in text, "a page's next call is the tool's to write"
     _held_to_figures(listing.model_dump(mode="json"), held)
 
 
@@ -495,9 +495,11 @@ def test_the_evals_and_read_only_tools_carry_the_engines_actions_and_parameters_
 def test_the_analyst_tool_carries_every_analyst_action_and_read_only_it_carries_no_freeze() -> None:
     names = [action.name for action in analyst_actions()]
     assert [action.name for action in _analyst_tool().actions] == names
+    assert _analyst_tool().hints.idempotent, "the freeze, its one write, names the snapshot it stored on a repeat"
     (reading,) = analyst_tools(writes=False)
     read_only = eval_catalogue().mount(reading)
     assert read_only.hints.read_only and "report_snapshot_freeze" not in {a.name for a in read_only.actions}
+    assert read_only.hints.idempotent
     assert {action.permission for action in analyst_actions()} <= {"read", "write"}
     assert [action.name for action in analyst_actions() if action.permission == "write"] == ["report_snapshot_freeze"]
 
@@ -509,18 +511,136 @@ async def test_an_analyst_action_called_on_evals_is_refused_naming_the_analyst_t
     assert "capability_gap is not an action of tool evals: it is a read action of the analyst tools" in outcome.text
 
 
-def test_the_toolsets_are_read_off_the_workflows() -> None:
+def test_the_editors_cut_is_the_analyst_tool_read_off_the_workflows_with_no_blocks_and_no_freeze() -> None:
+    (analyst_spec,) = analyst_tools()
+    (editor_spec,) = analyst_tools(role="editor")
+    analyst, editor = eval_catalogue().mount(analyst_spec), eval_catalogue().mount(editor_spec)
+    assert editor.name == analyst.name == "evals_analyst" and editor.spec.description != analyst.spec.description
     by_name = {action.name: action for action in analyst_actions()}
-    assert set(editor_toolset()) <= set(analyst_toolset()) <= set(by_name)
-    assert "report_snapshot_freeze" not in analyst_toolset()
-    assert all(by_name[name].workflow != "Investigate: blocks" for name in editor_toolset())
-    assert {by_name[name].workflow for name in analyst_toolset()} <= {
+    blocks = {name for name, action in by_name.items() if action.workflow == "Investigate: blocks"}
+    assert blocks, "the control: the analyst's cut holds block actions for the editor's to leave out"
+    enum = editor.input_schema()["properties"]["action"]["enum"]
+    assert enum == ["help", *(a.name for a in analyst_actions() if a.name not in blocks | {"report_snapshot_freeze"})]
+    assert not blocks & set(enum) and "capability_gap" in enum
+    assert {by_name[name].workflow for name in enum[1:]} == {
         "Investigate: facts",
         "Investigate: analyses",
-        "Investigate: blocks",
         "Investigate: gaps",
     }
-    assert "capability_gap" in editor_toolset()
+    assert editor.hints.read_only and editor.hints.idempotent
+    # One meaning per parameter: every parameter the editor's cut carries reads exactly as the analyst's tool says it.
+    editor_params, analyst_params = editor.input_schema()["properties"], analyst.input_schema()["properties"]
+    assert all(editor_params[name] == analyst_params[name] for name in editor_params if name != "action")
+    assert set(editor_params) < set(analyst_params), "the block parameters are the analyst's alone"
+
+
+#: Every analyst listing, the fixture snapshot it is read on, and a call whose rows run to more than one small page.
+_PAGED_CALLS: dict[str, tuple[str, dict[str, Any]]] = {
+    "readings_list": (KAIRO, {"limit": 2}),
+    "contrasts_list": (KAIRO, {"limit": 3}),
+    "measure_read": (KAIRO, {"measure_key": "persona.holds_character", "by": "stratum", "limit": 3}),
+    "examples_list": (KAIRO, {"limit": 2}),
+    "decision_sensitivity": ("r2", {"parameter": "threshold:pass_rate", "limit": 1}),
+    "measure_breakdown": (KAIRO, {"measure_key": "persona.holds_character", "limit": 2}),
+    "price_tradeoff": (KAIRO, {"gain_key": "persona.holds_character", "limit": 1}),
+    "block_render": (KAIRO, {"block_kind": "table", "query": {"source": "contrasts"}, "limit": 2}),
+}
+
+
+def test_every_analyst_listing_is_paged() -> None:
+    paged = {action.name for action in analyst_actions() if action.paged}
+    assert paged == set(_PAGED_CALLS)
+    assert paged == {action.name for action in analyst_actions() if "next_offset" in action.result.model_fields}
+
+
+@pytest.mark.parametrize("action", sorted(_PAGED_CALLS))
+async def test_following_next_reads_every_row_once_and_the_last_page_names_no_next(action: str) -> None:
+    fixture, snapshots = off_loop(_seeded)
+    name, call = _PAGED_CALLS[action]
+    snapshot = snapshots[name]
+    tool = _analyst_tool()
+    first = {"action": action, "snapshot_id": snapshot.id, **call}
+    whole = await _call(tool, fixture, {**first, "limit": 200})
+    assert whole.structured is not None, whole.text
+    assert "next_offset" not in whole.structured and "next" not in whole.structured
+    assert "next_offset" not in whole.text and "\nnext: " not in whole.text
+
+    seen: list[Any] = []
+    arguments: dict[str, Any] | None = first
+    pages = 0
+    while arguments is not None:
+        page = await _call(tool, fixture, arguments)
+        assert page.ending == "ok" and page.structured is not None, page.text
+        seen += _page_rows(action, page.structured)
+        following = page.structured.get("next")
+        if following is not None:
+            # The call is the arguments sent, as validated, the offset advanced: as data and as the text's last line.
+            held = tool.action(action)
+            assert held is not None
+            params = held.params
+            assert set(following) == {*arguments, "offset"}
+            assert list(following)[0] == "action" and list(following)[-1] == "offset"
+            sent = {key: value for key, value in arguments.items() if key != "action"}
+            asked = {key: value for key, value in following.items() if key != "action"}
+            assert params.model_validate(asked) == params.model_validate(
+                {**sent, "offset": page.structured["next_offset"]}
+            )
+            assert following["action"] == action
+            assert page.text.splitlines()[-1] == next_page_line(following)
+            assert page.text.splitlines()[-1].startswith(f"next: action='{action}', snapshot_id='{snapshot.id}'")
+        else:
+            assert "next_offset" not in page.structured and not page.text.splitlines()[-1].startswith("next: ")
+        arguments = following
+        pages += 1
+    assert pages > 1, "the control: more than one page"
+    assert sorted(seen, key=_tag) == sorted(_page_rows(action, whole.structured), key=_tag)
+
+
+#: The field each listing's rows are in; the readings are grouped by aspect, each group's rows by kind.
+_ROWS = {
+    "contrasts_list": "contrasts",
+    "measure_read": "rows",
+    "examples_list": "examples",
+    "decision_sensitivity": "flips",
+    "measure_breakdown": "slices",
+    "block_render": "rows",
+}
+
+
+def _tag(row: Any) -> str:
+    """A price row's tag, so the pages' rows compare by kind and each kind in order; every other row has none."""
+    return row[0] if isinstance(row, tuple) else ""
+
+
+def _page_rows(action: str, structured: dict[str, Any]) -> list[Any]:
+    """A page's rows, in order."""
+    if action in _ROWS:
+        return list(structured[_ROWS[action]])
+    if action == "price_tradeoff":
+        # A page covers options in arm order, each priced against one or listed off the frontier: tagged by which.
+        return sorted(
+            [("against", row) for row in structured["against"]] + [("off", row) for row in structured["off_frontier"]],
+            key=lambda tagged: tagged[0],
+        )
+    kinds = ("readings", "pairs", "floors", "bars")
+    return [row for group in structured["aspects"] for kind in kinds for row in group[kind]]
+
+
+async def test_help_topic_figure_keys_is_the_whole_grammar_and_block_catalog_lists_its_paths() -> None:
+    fixture, snapshots = off_loop(_seeded)
+    grammar = figure_key_grammar()
+    for role in ("analyst", "editor"):
+        (spec,) = analyst_tools(role=role)
+        tool = eval_catalogue().mount(spec)
+        page = await _call(tool, fixture, {"action": "help", "topic": "figure_keys"})
+        assert (page.ending, page.text) == ("ok", grammar), role
+        assert "- figure_keys: " in tool.help_index() and "block_catalog" in tool.help_index(), role
+    catalog = await _call(_analyst_tool(), fixture, {"action": "block_catalog", "snapshot_id": snapshots["r1"].id})
+    assert catalog.structured is not None
+    forms = catalog.structured["figure_key_forms"]
+    assert forms and all(f"- `{form}`" in grammar for form in forms), "the catalog's paths are the grammar's"
+    detail = next(action.detail for action in analyst_actions() if action.name == "block_catalog")
+    assert "help topic='figure_keys'" in detail
 
 
 # =============================================================================

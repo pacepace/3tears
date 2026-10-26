@@ -6,7 +6,8 @@ host's blocking executor. A block the page cannot draw on the snapshot reaches t
 :class:`~threetears.evals.kernel.errors.ValidationFailedError` naming every fault, with its remedy. Every operation is
 a pure read: the same snapshot and parameters always return the same result.
 
-The result models are the computation's, re-exported here for the actions layer, which reads no analysis module.
+The result models are the computation's, and the figure-key grammar the catalog's key forms are read from
+(:func:`figure_key_grammar`), re-exported here for the actions layer, which reads no analysis module.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from threetears.evals.analysis.analyst.blocks import (
     BlockCatalog,
     RenderedBlock,
 )
+from threetears.evals.analysis.report.figure_keys import figure_key_grammar
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import RefusedInput, ValidationFailedError
 from threetears.evals.kernel.offload import run_blocking
@@ -32,6 +34,7 @@ __all__ = [
     "RenderedBlock",
     "block_catalog",
     "block_render",
+    "figure_key_grammar",
 ]
 
 
@@ -43,7 +46,7 @@ def _refused[T](compute: Callable[[], T]) -> T:
     try:
         return compute()
     except RefusedInput as refused:
-        raise ValidationFailedError(refused.fault, remedy=refused.remedy) from refused
+        raise ValidationFailedError.refusing(refused) from refused
 
 
 async def _read[T](host: OpsHost, scope_id: str, snapshot_id: str, compute: Callable[[ReportInput], T]) -> T:
