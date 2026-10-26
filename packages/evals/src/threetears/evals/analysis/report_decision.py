@@ -93,6 +93,7 @@ from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report_input import (
     Aspect,
+    Contrast,
     Criterion,
     FloorRead,
     LateCriterion,
@@ -111,6 +112,8 @@ __all__ = [
     "floors_not_held",
     "report_caveats",
     "report_kind",
+    "separated_by",
+    "separating_contrasts",
     "shown_better",
     "surviving_options",
 ]
@@ -428,17 +431,29 @@ def _level(report_input: ReportInput, arm: str, control: str, overrides: _Overri
 _SEPARATED = frozenset({"improved", "regressed", "equivalent"})
 
 
-def _separable(report_input: ReportInput, arm: str, overrides: _Overrides) -> bool | None:
-    """Whether a candidate's asked evidence separates it: an asked reading's interval clear of zero, or within the
-    margin; or a contrast on an asked aspect that separated it (``improved``, ``regressed`` or ``equivalent``, corrected
-    within its family), which is how a question a measure answers (a latency aspect's p95) is read. None where it has
-    neither an asked reading with an interval nor a separated contrast on an asked aspect."""
+def separating_contrasts(report_input: ReportInput, arm: str) -> list[Contrast]:
+    """The contrasts on an asked aspect that separate a candidate from the control: verdict ``improved``,
+    ``regressed`` or ``equivalent``, corrected within their family, in the input's order. How a question a measure
+    answers (a latency aspect's p95) separates a candidate.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param arm: The candidate's id.
+    :ptype arm: str
+    :return: The separating contrasts; empty for none.
+    :rtype: list[Contrast]
+    """
     asked = {aspect.id for aspect in _asked(report_input)}
-    if any(
-        contrast.arm == arm and contrast.aspect in asked and contrast.verdict in _SEPARATED
+    return [
+        contrast
         for contrast in report_input.contrasts
-    ):
-        return True
+        if contrast.arm == arm and contrast.aspect in asked and contrast.verdict in _SEPARATED
+    ]
+
+
+def _reading_separates(report_input: ReportInput, arm: str, overrides: _Overrides) -> bool | None:
+    """Whether a candidate's asked readings separate it: an interval clear of zero, or within the margin, on any one.
+    None where it has no asked reading with an interval."""
     seen = False
     for aspect in _asked(report_input):
         for reading in aspect.readings:
@@ -449,6 +464,34 @@ def _separable(report_input: ReportInput, arm: str, overrides: _Overrides) -> bo
             if low > 0 or high < 0 or _within(aspect, reading, overrides):
                 return True
     return False if seen else None
+
+
+def separated_by(report_input: ReportInput, arm: str) -> frozenset[str]:
+    """What separates a candidate from the control on the asked aspects, as declared: ``reading`` where an asked
+    reading does (its interval clear of zero, or within the margin), ``contrast`` where a contrast on an asked aspect
+    does (:func:`separating_contrasts`). Empty where nothing does. The one test :func:`allowed_modes` reads a change's
+    separation by, and the report plan's spine too.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param arm: The candidate's id.
+    :ptype arm: str
+    :return: ``reading``, ``contrast``, both or neither.
+    :rtype: frozenset[str]
+    """
+    found = {"contrast"} if separating_contrasts(report_input, arm) else set()
+    if _reading_separates(report_input, arm, _Overrides()):
+        found.add("reading")
+    return frozenset(found)
+
+
+def _separable(report_input: ReportInput, arm: str, overrides: _Overrides) -> bool | None:
+    """Whether a candidate's asked evidence separates it: a separating contrast on an asked aspect
+    (:func:`separating_contrasts`), or its asked readings (at the margins ``overrides`` sets). None where it has
+    neither an asked reading with an interval nor a separating contrast."""
+    if separating_contrasts(report_input, arm):
+        return True
+    return _reading_separates(report_input, arm, overrides)
 
 
 # --- cost ----------------------------------------------------------------------------------------------------------

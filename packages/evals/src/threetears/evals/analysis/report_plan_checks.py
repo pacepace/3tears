@@ -41,8 +41,9 @@ the planner copies:
 A     ``gate_matrix`` over the ``tasks`` where the input names tasks
 B     ``gate_scatter`` over the ``configs``, its two axes the measures the gates read where they read exactly two
 C     ``lattice`` over the ``configs``, its metric the measure of the first gate read over the whole comparison
-D     ``forest`` of the asked aspect's ``readings``, else of the ``contrasts``, with a margin line where the asked
-      aspect declares a margin
+D     ``forest`` of the asked aspect's ``readings`` with a margin line where it declares one; on a measured question
+      (no candidate separated by an asked reading, one by a contrast on an asked aspect) of those ``contrasts``
+      and their measures; else of the ``contrasts``
 E     ``lines`` over the ``tasks``, else the ``strata``
 ====  ==============================================================================================================
 
@@ -173,6 +174,8 @@ from threetears.evals.analysis.report_decision import (
     floors_not_held,
     report_caveats,
     report_kind,
+    separated_by,
+    separating_contrasts,
     shown_better,
     surviving_options,
 )
@@ -411,18 +414,41 @@ def spine(report_input: ReportInput) -> Spine:
         overall = [gate.measure for gate in gates if gate.scope == "overall" and gate.task is None]
         measures = (overall[0],) if overall and overall[0] in figures else None
     elif shape == "D":
-        asked = _aspect_of("", report_input)
-        if asked is not None and any(reading.within_interval for reading in asked.readings):
-            source, aspect = "readings", asked.id
-        elif any(contrast.interval is not None for contrast in report_input.contrasts):
-            source = "contrasts"
-        if source and asked is not None and asked.margin is not None:
-            reference = ("margin",)
+        source, aspect, measures, reference = _forest_spine(report_input)
     else:
         source = "tasks" if report_input.tasks else ("strata" if report_input.strata else "")
     if source == "readings":
         measures = ()
     return Spine(shape=shape, kind=kind, source=source, aspect=aspect, measures=measures, reference=reference)
+
+
+def _forest_spine(report_input: ReportInput) -> tuple[str, str, tuple[str, ...] | None, tuple[str, ...]]:
+    """Shape D's forest: what it reads, on which aspect, which measures, and its reference lines.
+
+    The asked aspect's readings (the one asked aspect read with intervals, where several are asked), with the margin
+    line where it declares one; else, on a measured question, the
+    contrasts that decided it: where no candidate is separated by an asked reading and at least one is separated by a
+    contrast on an asked aspect (:func:`~threetears.evals.analysis.report_decision.separated_by`, the test the modes
+    read), the forest reads those contrasts, their measures, on their aspect where they share one, with no margin line
+    (the margin is the readings' own scale); else any contrasts; else nothing code names."""
+    control = control_arm(report_input)
+    candidates = [arm.id for arm in report_input.arms if arm.id != control]
+    separation = [separated_by(report_input, arm) for arm in candidates]
+    if not any("reading" in found for found in separation) and any("contrast" in found for found in separation):
+        deciding = [contrast for arm in candidates for contrast in separating_contrasts(report_input, arm)]
+        aspects = {contrast.aspect or "" for contrast in deciding}
+        measures = tuple(dict.fromkeys(contrast.measure for contrast in deciding))
+        return "contrasts", aspects.pop() if len(aspects) == 1 else "", measures, ()
+    read = [
+        aspect for aspect in report_input.aspects if aspect.asked and any(r.within_interval for r in aspect.readings)
+    ]
+    asked = read[0] if len(read) == 1 else _aspect_of("", report_input)
+    margin = ("margin",) if asked is not None and asked.margin is not None else ()
+    if asked is not None and any(reading.within_interval for reading in asked.readings):
+        return "readings", asked.id, (), margin
+    if any(contrast.interval is not None for contrast in report_input.contrasts):
+        return "contrasts", "", None, margin
+    return "", "", None, ()
 
 
 def _spine_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:

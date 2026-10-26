@@ -252,6 +252,35 @@ class TestCodesFacts:
 # --- the spine -----------------------------------------------------------------------------------------------------
 
 
+#: A corrected contrast showing qwen3.8-flash's p95 improved on an asked latency aspect.
+_P95_IMPROVED: dict[str, Any] = {
+    "arm": "qwen3.8-flash",
+    "control": "September",
+    "kind": "measure",
+    "measure": "research_p95_s",
+    "aspect": "latency",
+    "verdict": "improved",
+    "delta": -0.8,
+    "interval": [-1.2, -0.4],
+    "p_adjusted": 0.001,
+}
+
+
+def _latency_question() -> dict[str, Any]:
+    """r5 as a measured question: its pass-rate readings unclear with no margin and no floor read, and an asked latency
+    aspect on which a corrected contrast separates qwen3.8-flash."""
+    data = _input_dict()
+    data["aspects"][0]["margin"] = None
+    for reading in data["aspects"][0]["readings"]:
+        reading["within_interval"] = [-6.0, 2.0]
+        reading["margin"] = None
+    data["floors"] = []
+    data["aspects"].append({"id": "latency", "name": "latency", "asked": True, "readings": []})
+    data["measures"]["research_p95_s"] = {"unit": "s", "higher_is_better": False, "per_arm": {}}
+    data["contrasts"].append(_P95_IMPROVED)
+    return data
+
+
 class TestTheSpine:
     @pytest.mark.parametrize(
         ("name", "fact"),
@@ -286,6 +315,24 @@ class TestTheSpine:
     )
     def test_each_fixture_reads_its_shapes_spine(self, name: str, fact: dict[str, Any]):
         assert spine(_input(name)).as_fact() == fact
+
+    def test_a_measured_question_opens_on_the_contrasts_that_decided_it(self):
+        """No candidate separated by an asked reading (unclear, no margin), one separated by a corrected p95 contrast on
+        the asked latency aspect: the forest reads that contrast, the evidence the call rests on."""
+        data = _latency_question()
+        assert spine(_input(data=data)).as_fact() == {
+            "kind": "forest",
+            "query": {"source": "contrasts", "aspect": "latency", "measures": ["research_p95_s"]},
+            "reference": [],
+        }
+
+    def test_readings_that_separate_keep_the_readings_spine_beside_a_separating_contrast(self):
+        data = _input_dict()
+        data["aspects"].append({"id": "latency", "name": "latency", "asked": True, "readings": []})
+        data["measures"]["research_p95_s"] = {"unit": "s", "higher_is_better": False, "per_arm": {}}
+        data["contrasts"].append(_P95_IMPROVED)
+        found = spine(_input(data=data))
+        assert (found.source, found.aspect, found.reference) == ("readings", ASPECT, ("margin",))
 
     def test_a_spine_the_input_settles_no_source_for_leaves_it_to_the_planner(self):
         data = _input_dict("r1")
