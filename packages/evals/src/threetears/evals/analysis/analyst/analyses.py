@@ -959,14 +959,13 @@ def _slices(report_input: ReportInput, slice_by: SliceBy, aspect: str | None, no
 def _sliced(report_input: ReportInput, slice_by: SliceBy, aspect: str | None, arms: Sequence[str]) -> list[str]:
     """The measures and judged dimensions a breakdown can read this way: those a slice holds for one of ``arms``.
 
-    Empty where the slicing itself is refused (an aspect named for tasks or cells), whose own refusal says so.
+    Empty where the slicing itself is refused (an aspect named for tasks or cells, :func:`_slices`), whose own refusal
+    says so.
     """
-    known = {*report_input.measures, *report_input.judged}
-    try:
-        every = _slices(report_input, slice_by, aspect, [])
-    except RefusedInput:
-        # The slicing's own refusal is raised where the breakdown slices; here it only means no measure reads this way.
+    if aspect is not None and slice_by != "stratum":
         return []
+    known = {*report_input.measures, *report_input.judged}
+    every = _slices(report_input, slice_by, aspect, [])
     held = (key for found in every for name in arms for key in found.per_arm.get(name, {}))
     return [key for key in dict.fromkeys(held) if key in known]
 
