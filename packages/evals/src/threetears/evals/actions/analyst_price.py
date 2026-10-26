@@ -2,7 +2,7 @@
 
 ``price_tradeoff`` is an :class:`~threetears.evals.actions.catalogue.Action` over its operation in
 :mod:`threetears.evals.ops.analyst_price`, rendered by :func:`~threetears.evals.actions.render.render_cited`. It
-belongs to the analyses workflow, so the analyst's and editor's toolsets, read off that workflow, carry it once
+belongs to the analyses workflow, so the analyst's tool and the editor's cut of it, read off the workflows, carry it:
 :func:`~threetears.evals.actions.analyst.analyst_actions` gathers :func:`analyst_price_actions` beside the other
 analyses.
 """
@@ -71,6 +71,7 @@ def analyst_price_actions() -> tuple[Action, ...]:
             result=PriceTradeoff,
             handler=_price_tradeoff,
             render=render_cited,
+            paged=True,
             example={"snapshot_id": _EXAMPLE_SNAPSHOT, "gain_key": "persona"},
             detail=(
                 "Only options that survive the gates are priced; each other option is listed off the frontier with "

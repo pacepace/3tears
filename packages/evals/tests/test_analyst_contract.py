@@ -542,6 +542,7 @@ _PAGED_CALLS: dict[str, tuple[str, dict[str, Any]]] = {
     "examples_list": (KAIRO, {"limit": 2}),
     "decision_sensitivity": ("r2", {"parameter": "threshold:pass_rate", "limit": 1}),
     "measure_breakdown": (KAIRO, {"measure_key": "persona.holds_character", "limit": 2}),
+    "price_tradeoff": (KAIRO, {"gain_key": "persona.holds_character", "limit": 1}),
     "block_render": (KAIRO, {"block_kind": "table", "query": {"source": "contrasts"}, "limit": 2}),
 }
 
@@ -592,7 +593,7 @@ async def test_following_next_reads_every_row_once_and_the_last_page_names_no_ne
         arguments = following
         pages += 1
     assert pages > 1, "the control: more than one page"
-    assert seen == _page_rows(action, whole.structured)
+    assert sorted(seen, key=_tag) == sorted(_page_rows(action, whole.structured), key=_tag)
 
 
 #: The field each listing's rows are in; the readings are grouped by aspect, each group's rows by kind.
@@ -606,10 +607,21 @@ _ROWS = {
 }
 
 
+def _tag(row: Any) -> str:
+    """A price row's tag, so the pages' rows compare by kind and each kind in order; every other row has none."""
+    return row[0] if isinstance(row, tuple) else ""
+
+
 def _page_rows(action: str, structured: dict[str, Any]) -> list[Any]:
     """A page's rows, in order."""
     if action in _ROWS:
         return list(structured[_ROWS[action]])
+    if action == "price_tradeoff":
+        # A page covers options in arm order, each priced against one or listed off the frontier: tagged by which.
+        return sorted(
+            [("against", row) for row in structured["against"]] + [("off", row) for row in structured["off_frontier"]],
+            key=lambda tagged: tagged[0],
+        )
     kinds = ("readings", "pairs", "floors", "bars")
     return [row for group in structured["aspects"] for kind in kinds for row in group[kind]]
 

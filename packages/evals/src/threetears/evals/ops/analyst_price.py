@@ -56,7 +56,7 @@ async def price_tradeoff(
             host.eval_host.blocking_executor, priced, held, gain_key, arm=arm, limit=limit, offset=offset
         )
     except RefusedInput as refused:
-        raise ValidationFailedError(refused.fault, remedy=refused.remedy) from refused
+        raise ValidationFailedError.refusing(refused) from refused
 
 
 __all__ = ["PRICE_PAGE", "PriceTradeoff", "price_tradeoff"]

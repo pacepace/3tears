@@ -27,6 +27,7 @@ from pydantic import Field, model_validator
 
 from threetears.evals.actions.analyst_analyses import ANALYSES_WORKFLOW, analyst_analyses_actions
 from threetears.evals.actions.analyst_facts import FACTS_WORKFLOW, analyst_facts_actions
+from threetears.evals.actions.analyst_price import analyst_price_actions
 from threetears.evals.actions.analyst_render import analyst_render_actions
 from threetears.evals.actions.catalogue import DEFAULT_PREFIX, Action, Caller, HelpTopic, PermissionClass, ToolSpec
 from threetears.evals.actions.params import AnalysisId, CampaignId, SnapshotId
@@ -181,7 +182,14 @@ def analyst_actions() -> tuple[Action, ...]:
     :rtype: tuple[Action, ...]
     """
     (freeze, gap) = _snapshot_actions()
-    built = (freeze, *analyst_facts_actions(), *analyst_analyses_actions(), *analyst_render_actions(), gap)
+    built = (
+        freeze,
+        *analyst_facts_actions(),
+        *analyst_analyses_actions(),
+        *analyst_price_actions(),
+        *analyst_render_actions(),
+        gap,
+    )
     return tuple(replace(action, cut=ANALYST_CUT) for action in built)
 
 

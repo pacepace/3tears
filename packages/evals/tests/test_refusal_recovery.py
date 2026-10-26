@@ -146,6 +146,7 @@ _ANALYST_CASES = [
     pytest.param(KAIRO, {"action": "examples_list", "outcome_filter": "none such"}, ["outcome_filter"], id="a class"),
     pytest.param(KAIRO, {"action": "options_dominance", "axes": ["no.such"]}, ["axes"], id="an axis"),
     pytest.param("r2", {"action": "decision_sensitivity", "parameter": "margin:nowhere"}, ["parameter"], id="a sweep"),
+    pytest.param(KAIRO, {"action": "price_tradeoff", "gain_key": "no.such"}, ["gain_key"], id="a gain axis"),
     pytest.param(
         KAIRO,
         {"action": "measure_breakdown", "measure_key": "no.such"},

@@ -361,6 +361,8 @@ def _refuse_unknown(report_input: ReportInput, gain_key: str) -> GainAxis:
         raise RefusedInput(
             f"gain_key {gain_key!r} names no measure or judged dimension this snapshot holds",
             remedy=f"name one by the key campaign_overview lists: {_listed(known)}",
+            parameters=("gain_key",),
+            valid_values=known,
         )
     try:
         return gain_axis(report_input, gain_key)
@@ -373,6 +375,8 @@ def _refuse_unknown(report_input: ReportInput, gain_key: str) -> GainAxis:
         raise RefusedInput(
             f"gain_key {gain_key!r} states no direction (higher or lower is better), so no gain is read on it",
             remedy=f"name a measure with a direction, or a judged dimension: {_listed(directed)}",
+            parameters=("gain_key",),
+            valid_values=directed,
         ) from refused
 
 
@@ -440,6 +444,8 @@ def price_tradeoff(
             f"arm_filter {arm!r} names no option this tool prices: it must survive the gates, hold a cost and hold a "
             f"figure on {gain_key}",
             remedy=f"name a priced option: {_listed(priced)}, or omit arm_filter to price against the control",
+            parameters=("arm_filter",),
+            valid_values=priced,
         )
     if not survivors:
         notes.append("no option survives the gates: there is nothing to price")
