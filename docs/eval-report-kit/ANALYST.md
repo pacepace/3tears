@@ -2,6 +2,8 @@
 
 **Status:** agreed with the owner, 2026-10-26. It supersedes the shape table as a rule (GENERATOR §1), the mandatory spine check, and two review items from the deviations page: "mode from code" and "the two-call planner". Everything else in GENERATOR remains as guidance the analyst reads.
 
+**Terminology** (owner, 2026-10-26): the role this document calls the *critic* is named the **report editor** (`report_editor`) in code and in every plan. In this repository "Critic" means only the prawduct review of code changes.
+
 ## 1. The decision
 
 A campaign report is written by an **expert analyst**: an Opus agent with tools, a skill and a feedback loop. It reads the whole campaign, works out what it means, and writes the report as one story.
