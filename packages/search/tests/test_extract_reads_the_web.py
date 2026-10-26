@@ -412,6 +412,31 @@ async def test_a_thin_page_follows_its_one_frame_on_its_own_site() -> None:
     assert frame_call["max_bytes"] == 100_000 - len(_MENU_WITH_FRAME), "the frame reads what the page left of the cap"
 
 
+@pytest.mark.parametrize("blank", ["about:blank", "javascript:void(0)", "data:text/html,"])
+async def test_a_placeholder_frame_is_not_named_as_the_article(blank: str) -> None:
+    """A frame an ad or an embed fills in later is no article: the page is answered as it is."""
+    page = f"<html><body><nav><a href='/'>Home</a></nav><iframe src='{blank}'></iframe></body></html>".encode()
+    transport = RecordedFetchTransport({_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=page)})
+
+    result = await extract(_candidate(), transport=transport, thin_page_chars=1000)
+
+    assert blank.split(":")[0] not in str(result.facets.get(EXTRACTION_REASON_FACET))
+    assert blank.split(":")[0] not in str(result.facets.get(EXTRACTION_NEXT_STEP_FACET))
+    assert transport.fetched == [_ROBOTS, _PAGE]
+
+
+async def test_a_placeholder_frame_beside_the_article_s_frame_leaves_it_the_one_followed() -> None:
+    page = _MENU_WITH_FRAME.replace(b"<iframe", b"<iframe src='about:blank'></iframe><iframe", 1)
+    transport = RecordedFetchTransport(
+        {_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=page), f"{_SITE}/viewer/42.html": RecordedPage(body=_ARTICLE)}
+    )
+
+    result = await extract(_candidate(), transport=transport, thin_page_chars=1000, max_bytes=100_000)
+
+    assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_COMPLETE
+    assert result.facets[EXTRACTION_FINAL_URL_FACET] == f"{_SITE}/viewer/42.html"
+
+
 async def test_a_long_page_with_a_frame_is_read_as_it_is() -> None:
     """Good traffic: a page with real text and an embedded video is not a menu."""
     page = _ARTICLE.replace(b"</article>", b"</article><iframe src='https://video.example.net/embed/1'></iframe>")

@@ -1080,6 +1080,9 @@ class _FramesAndPointers(HTMLParser):
             self.citation_pdf = self.citation_pdf or named["content"].strip()
 
 
+#: The schemes a frame or a pointer can be read at; any other is not an article's address.
+_WEB_SCHEMES: Final[tuple[str, ...]] = ("http", "https")
+
 #: what :func:`_pointer_of` raises on markup or an address it cannot read: the stdlib HTML parser's
 #: ``AssertionError`` on a declaration it cannot make sense of, and ``urljoin``'s ``ValueError``.
 #: Anything else is a bug in the frame scan and propagates.
@@ -1091,7 +1094,10 @@ def _pointer_of(markup: str, base: str) -> tuple[str | None, int, bool]:
 
     ``citation_pdf_url`` is the page saying outright where its article is, so
     it wins; otherwise the page's first ``iframe``, which is followed only
-    when it is the page's one frame.
+    when it is the page's one frame. A frame whose address is not a web address
+    (``about:blank``, ``javascript:``, ``data:``) holds no article: it is a
+    placeholder an ad or an embed fills in later, so it is neither the pointer
+    nor counted among the frames.
 
     :param markup: the decoded page
     :ptype markup: str
@@ -1108,10 +1114,11 @@ def _pointer_of(markup: str, base: str) -> tuple[str | None, int, bool]:
     parser = _FramesAndPointers()
     parser.feed(markup)
     parser.close()
+    frames = [url for url in (urljoin(base, src) for src in parser.frames) if urlsplit(url).scheme in _WEB_SCHEMES]
     if parser.citation_pdf:
-        return urljoin(base, parser.citation_pdf), len(parser.frames), True
-    if parser.frames:
-        return urljoin(base, parser.frames[0]), len(parser.frames), False
+        return urljoin(base, parser.citation_pdf), len(frames), True
+    if frames:
+        return frames[0], len(frames), False
     return None, 0, False
 
 
@@ -1227,7 +1234,7 @@ async def _follow_a_thin_page(
 
     if frames > 1 and not outright:
         return menu_only(f"the page holds {frames} frames, and which one is the article is not guessed")
-    if urlsplit(target).scheme not in ("http", "https"):
+    if urlsplit(target).scheme not in _WEB_SCHEMES:
         return menu_only("the frame is not a web address")
     if not same_site(page, target):
         return menu_only("it is on another site, and a frame is followed only on the page's own site")
