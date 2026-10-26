@@ -43,10 +43,13 @@ __all__ = [
     "CriterionPlace",
     "Margin",
     "criterion_figures",
+    "criterion_misses",
+    "criterion_passes",
     "criterion_places",
     "criterion_place",
     "flip_margin",
     "margins",
+    "surviving_arms",
     "weakest_margin",
 ]
 
@@ -226,6 +229,51 @@ def _missed_gates(report_input: ReportInput, arm: str) -> int | None:
             return None
         missed += sum(_gap(criterion, figure.value) < 0 for figure in figures)
     return missed
+
+
+def criterion_misses(report_input: ReportInput, criterion: Criterion, arm: str) -> int:
+    """How many of the places a criterion reads an arm's figure at it misses: each figure on the wrong side of the
+    threshold, and each place with no figure (GENERATOR §1.1: a figure the input does not hold is not shown passed).
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param criterion: The declared criterion.
+    :ptype criterion: Criterion
+    :param arm: The arm's id.
+    :ptype arm: str
+    :return: The places missed, 0 where it clears every one (a borderline figure clears its line).
+    :rtype: int
+    """
+    figures = criterion_figures(report_input, criterion, arm)
+    unread = len(criterion_places(report_input, criterion)) - len(figures)
+    return unread + sum(_gap(criterion, figure.value) < 0 for figure in figures)
+
+
+def criterion_passes(report_input: ReportInput, criterion: Criterion, arm: str) -> bool:
+    """Whether an arm clears a criterion everywhere it reads: it reads somewhere, and no place is missed.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param criterion: The declared criterion.
+    :ptype criterion: Criterion
+    :param arm: The arm's id.
+    :ptype arm: str
+    :return: True where every place the criterion reads holds a figure clearing it.
+    :rtype: bool
+    """
+    return bool(criterion_places(report_input, criterion)) and criterion_misses(report_input, criterion, arm) == 0
+
+
+def surviving_arms(report_input: ReportInput) -> list[str]:
+    """The arms that clear every gate and guardrail figure at every place it reads, and breach no guardrail the
+    pipeline read: the options that survive (this module's account, GENERATOR §3).
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: Their ids, in the input's arm order.
+    :rtype: list[str]
+    """
+    return [arm.id for arm in report_input.arms if _missed_gates(report_input, arm.id) == 0]
 
 
 def _criterion_margins(report_input: ReportInput, surviving: set[str]) -> Iterator[Margin]:

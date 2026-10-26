@@ -78,7 +78,11 @@ from threetears.evals.analysis.report_margins import (
     CriterionFigure,
     Margin,
     criterion_figures,
+    criterion_misses,
+    criterion_passes,
+    criterion_places,
     flip_margin,
+    surviving_arms,
     weakest_margin,
 )
 from threetears.evals.analysis.style import humanize, measure_name
@@ -98,9 +102,9 @@ _PER_THOUSAND_FACTORS: dict[str, float] = {"usd": 1000.0, "usd_per_1k": 1.0, "us
 
 #: The filters a key may carry. One spelling at most (``pct``, ``pts``, ``usd``, ``usd_per_1k``, ``int``,
 #: ``pct10``), plus ``abs`` and ``interval``, in any order.
-Filter = Literal["pct", "pts", "abs", "usd", "int", "pct10", "interval", "usd_per_1k"]
+Filter = Literal["pct", "pts", "abs", "usd", "int", "pct10", "interval", "usd_per_1k", "words"]
 _FILTERS: tuple[str, ...] = get_args(Filter)
-_SPELLINGS: frozenset[str] = frozenset({"pct", "pts", "usd", "usd_per_1k", "int", "pct10"})
+_SPELLINGS: frozenset[str] = frozenset({"pct", "pts", "usd", "usd_per_1k", "int", "pct10", "words"})
 #: The filters that choose a key's spelling, at most one to a key, in the grammar's order.
 FILTER_SPELLINGS: tuple[str, ...] = tuple(name for name in _FILTERS if name in _SPELLINGS)
 
@@ -114,6 +118,7 @@ _FILTER_MEANS: dict[str, str] = {
     "pct10": "a rate rounded to the nearest 10%",
     "interval": "an interval's two ends, joined by 'to'",
     "usd_per_1k": "dollars per 1,000 replies, with the words",
+    "words": "a count spelled as a word up to twenty, in grouped digits above",
 }
 
 #: The unit phrases a rendered figure is joined with, one template each, so a translation replaces them here.
@@ -122,6 +127,30 @@ RANGE_TEMPLATE = "{low}–{high}"
 PER_THOUSAND_TEMPLATE = "{amount} " + PER_THOUSAND_REPLIES
 _PER_MILLION_TEMPLATE = "{amount} " + PER_MILLION_REPLIES
 ARM_TEMPLATE = "{name} ({tag})"
+#: How a count from zero to twenty reads as a word (the ``words`` filter), in order; a translation replaces them here.
+COUNT_WORDS: tuple[str, ...] = (
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+    "twenty",
+)
 #: How a criterion's direction reads.
 DIRECTION_WORDS = {"higher_is_better": "higher is better", "lower_is_better": "lower is better"}
 
@@ -1619,6 +1648,79 @@ def _cost_per_month(report_input: ReportInput, values: tuple[str, ...], path: st
     return Figure(path=path, kind="number", value=_costs_per_thousand(report_input)[values[0]] * factor, scale="usd")
 
 
+# --- counts: what a sentence counts, keyed so prose never types one ------------------------------------------------
+
+#: What ``count.<what>`` counts in the campaign: its arms (every option, the control among them), aspects, tasks,
+#: strata, target-matrix cells, configs of a factorial grid, gates and guardrails, every declared criterion, and the
+#: options surviving every gate and guardrail.
+_COUNTED = ("arms", "aspects", "tasks", "strata", "cells", "configs", "gates", "criteria", "surviving")
+
+#: The criterion kinds that remove an option that misses them, as the gates count them.
+_GATE_KINDS = frozenset({"gate", "guardrail"})
+
+
+def _count(path: str, value: int) -> Figure:
+    return Figure(path=path, kind="number", value=float(value), scale="count")
+
+
+def _gates(report_input: ReportInput) -> list[Criterion]:
+    return [criterion for criterion in report_input.criteria if criterion.kind in _GATE_KINDS]
+
+
+def _campaign_count(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    (what,) = values
+    counted: dict[str, int] = {
+        "arms": len(report_input.arms),
+        "aspects": len(report_input.aspects),
+        "tasks": len(report_input.tasks),
+        "strata": len(report_input.strata),
+        "cells": len(report_input.cells),
+        "configs": len(report_input.configs),
+        "gates": len(_gates(report_input)),
+        "criteria": len(report_input.criteria),
+    }
+    if what == "surviving":
+        return _count(path, len(surviving_arms(report_input)))
+    return _count(path, counted[what])
+
+
+def _gate_ids(report_input: ReportInput, _: tuple[str, ...] = ()) -> list[str]:
+    return [criterion.id for criterion in _gates(report_input)]
+
+
+def _criterion_ids(report_input: ReportInput, _: tuple[str, ...] = ()) -> list[str]:
+    return [criterion.id for criterion in report_input.criteria]
+
+
+def _passing_count(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    criterion = _criterion(report_input, values[0])
+    return _count(path, sum(criterion_passes(report_input, criterion, arm.id) for arm in report_input.arms))
+
+
+def _places_count(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    return _count(path, len(criterion_places(report_input, _criterion(report_input, values[0]))))
+
+
+def _failing_count(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    criterion_id, arm_id = values
+    return _count(path, criterion_misses(report_input, _criterion(report_input, criterion_id), arm_id))
+
+
+def _failed_count(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    (arm_id,) = values
+    missed = [criterion for criterion in _gates(report_input) if not criterion_passes(report_input, criterion, arm_id)]
+    return _count(path, len(missed))
+
+
+def _factor_ids(report_input: ReportInput, _: tuple[str, ...] = ()) -> list[str]:
+    return [factor.id for factor in report_input.factors]
+
+
+def _levels_count(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    factor = next(factor for factor in report_input.factors if factor.id == values[0])
+    return _count(path, len(factor.levels))
+
+
 # --- an aspect's pair readings, floors and bars ----------------------------------------------------------------------
 
 _PAIR_STATISTICS = ("change", "interval", "low", "high", "confidence", "p_holm", "ahead", "why")
@@ -2428,6 +2530,54 @@ _FAMILIES: tuple[_Family, ...] = (
         derived=True,
         example="cost_per_month.base",
     ),
+    _family_of(
+        _Word("count"),
+        _Statistic(_COUNTED, "<what>"),
+        what="how many the campaign holds: arms (every option, the control among them), aspects, tasks, strata, "
+        "cells, configs, gates (gates and guardrails), criteria; `surviving` is how many options survive every gate "
+        "and guardrail, borderline counting as passing",
+        resolve=_campaign_count,
+        derived_statistics=("surviving",),
+        example="count.arms|words",
+    ),
+    _family_of(
+        _Word("count.passing"),
+        _keyed("<criterion>", _gate_ids),
+        what="how many options clear one gate or guardrail at every place it reads (a borderline figure clears it)",
+        resolve=_passing_count,
+        derived=True,
+        example="count.passing.p95",
+    ),
+    _family_of(
+        _Word("count.places"),
+        _keyed("<criterion>", _criterion_ids),
+        what="how many places a criterion reads an arm's figure at: one overall, else each task or cell it reads in",
+        resolve=_places_count,
+        example="count.places.cell_floor",
+    ),
+    _family_of(
+        _Word("count.failing"),
+        _keyed("<criterion>", _criterion_ids),
+        _ARM,
+        what="how many of a criterion's places an arm misses: a figure on the wrong side of the threshold, or none",
+        resolve=_failing_count,
+        derived=True,
+        example="count.failing.cell_floor.fast.v2|words",
+    ),
+    _family_of(
+        _Word("count.failed"),
+        _ARM,
+        what="how many gates and guardrails an arm misses somewhere they read",
+        resolve=_failed_count,
+        derived=True,
+        example="count.failed.fast.v2",
+    ),
+    _family_of(
+        _Word("count.levels"),
+        _keyed("<factor>", _factor_ids),
+        what="how many levels one factor of a factorial grid holds",
+        resolve=_levels_count,
+    ),
 )
 
 
@@ -2825,6 +2975,14 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
         # and two decimals on it are noise.
         amount = signed_with_unit(value, MONEY) if signed else with_unit(value, MONEY)
         return _Spelled(_PER_MILLION_TEMPLATE.format(amount=amount))
+    if spelling == "words":
+        whole = round(value)
+        if figure.scale != "count" or whole != value or whole < 0:
+            why = "it is not a whole count" if figure.scale == "count" else f"it is on the {figure.scale} scale"
+            raise _refuse(figure.path, f"cannot read as a word: {why}")
+        if whole < len(COUNT_WORDS):
+            return _Spelled(COUNT_WORDS[whole])
+        return _Spelled(group_thousands(format_number(float(whole))))
     if spelling == "int":
         # A price per 1,000,000 replies also reads as a whole number, as stored plans spell it.
         if figure.scale not in ("count", "plain", "points", "usd_per_1m"):
@@ -3173,6 +3331,7 @@ _FILTER_EXAMPLES: dict[str, str] = {
     "pct10": "strata.off_topic.loss_share|pct10",
     "interval": "reading.fast.v2.interval|interval",
     "usd_per_1k": "scoreboard.base.reply_cost_usd|usd_per_1k",
+    "words": "count.arms|words",
 }
 
 
@@ -3313,6 +3472,11 @@ _FAMILY_GROUPS: tuple[tuple[str, str, frozenset[str]], ...] = (
         "cost",
         "cost per reply and per month, cost uplift, and a move between options priced per point",
         frozenset({"cost_per_1k", "cost", "price", "cost_per_month"}),
+    ),
+    (
+        "counts",
+        "how many of a thing a sentence counts: arms, slices, gates, the options passing each, the places one misses",
+        frozenset({"count"}),
     ),
 )
 
