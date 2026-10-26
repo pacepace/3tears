@@ -99,6 +99,11 @@ survivor on every axis that matters:
 3. *Decide* when two or more survive, none dominates alone, and the campaign declared a rule that ranks the axes (a
    contrast family's merit priority): the rule picks, among the survivors.
 4. *Trade off* otherwise: two or more survive, none dominates alone, and no rule ranks them.
+
+**The same rules, one point at a time**, for the analyst's analyses (:mod:`threetears.evals.analysis.analyst.analyses`):
+:func:`decision_at` is the decision at hypothetical margins and floor margins, one point of the Immateriality
+sweep; :func:`asked_standing` is each arm's standing on the asked aspects, the quality axis
+dominance compares beside cost.
 """
 
 from __future__ import annotations
@@ -123,13 +128,17 @@ from threetears.evals.analysis.report_input import (
 from threetears.evals.analysis.report_margins import flip_margin
 
 __all__ = [
+    "AskedStanding",
     "Caveat",
     "CandidateMargin",
+    "DecisionAt",
     "MarginSensitivity",
     "Materiality",
     "allowed_modes",
+    "asked_standing",
     "caveat_materiality",
     "control_arm",
+    "decision_at",
     "dominant_options",
     "floors_not_held",
     "margin_sensitivity",
@@ -138,6 +147,7 @@ __all__ = [
     "separated_by",
     "separating_contrasts",
     "shown_better",
+    "StandingWord",
     "surviving_options",
     "unsettled_arms",
 ]
@@ -643,6 +653,134 @@ def allowed_modes(report_input: ReportInput) -> frozenset[str]:
     :rtype: frozenset[str]
     """
     return _outcome(report_input, _Overrides())[0]
+
+
+@dataclass(frozen=True)
+class DecisionAt:
+    """The decision code makes at given values of the late criteria it can sweep: the allowed modes, and the one option
+    that dominates.
+
+    :ivar modes: The allowed modes, as :func:`allowed_modes` reads them at those values.
+    :ivar dominant: The one option that dominates there; empty when none does alone.
+    """
+
+    modes: frozenset[str]
+    dominant: tuple[str, ...]
+
+
+def decision_at(
+    report_input: ReportInput,
+    *,
+    margins: Mapping[str, float] | None = None,
+    floors: Mapping[str, float] | None = None,
+) -> DecisionAt:
+    """The decision at hypothetical margins and floor margins: what this module's Immateriality sweeps, one point at a
+    time. With neither, the decision as declared.
+
+    A margin set on an aspect replaces the margin every reading on it is read against; a margin set on a floor reads
+    that floor on each candidate's interval (held above minus its low end, broken at or below minus its high end), as
+    the late-floor check does. Everything else is as the input states it.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param margins: A margin per aspect id, in points.
+    :ptype margins: Mapping[str, float] | None
+    :param floors: A margin per floor key, in points.
+    :ptype floors: Mapping[str, float] | None
+    :return: The allowed modes and the dominant option at those values.
+    :rtype: DecisionAt
+    :raises ValueError: A margin names an aspect the input does not hold, or a floor margin a floor no candidate was
+        read on.
+    """
+    margins = dict(margins or {})
+    floors = dict(floors or {})
+    aspects = {aspect.id for aspect in report_input.aspects}
+    unknown = sorted(set(margins) - aspects)
+    if unknown:
+        raise ValueError(f"the input holds no aspect {', '.join(repr(name) for name in unknown)}")
+    read = {floor.floor for floor in report_input.floors}
+    unread = sorted(set(floors) - read)
+    if unread:
+        raise ValueError(f"the input reads no floor {', '.join(repr(name) for name in unread)}")
+    modes, dominant = _outcome(report_input, _Overrides(margins=margins, floors=floors))
+    return DecisionAt(modes=modes, dominant=dominant)
+
+
+#: How an arm stands on the asked aspects, as this module's Dominance reads it. In a change: ``shown_better`` (level 2),
+#: ``control`` or ``shown_no_worse`` (level 1), ``not_shown_no_worse`` (level 0). In a choice, by the asked pair
+#: readings: ``behind`` when one shows another arm ahead of it, else ``not_behind``.
+StandingWord = Literal["shown_better", "control", "shown_no_worse", "not_shown_no_worse", "behind", "not_behind"]
+
+
+@dataclass(frozen=True)
+class AskedStanding:
+    """One arm's standing on the asked aspects, the axis dominance compares beside cost (this module's Dominance).
+
+    :ivar arm: The arm's id.
+    :ivar standing: Its standing (:data:`StandingWord`).
+    :ivar level: In a change, its level: 2 shown better, 1 shown no worse or the control, 0 otherwise; one arm is at
+        least as good as another on the asked aspects exactly when its level is at least the other's. None in a choice.
+    :ivar behind: In a choice, the arms an asked pair reading shows ahead of it; one arm is at least as good as another
+        exactly when the other is not among them. Empty in a change.
+    :ivar why: Why a change's candidate is not shown no worse: each floor not held, each aspect declaring none, and each
+        asked reading not within its margin. Empty otherwise.
+    """
+
+    arm: str
+    standing: StandingWord
+    level: int | None
+    behind: tuple[str, ...]
+    why: tuple[str, ...]
+
+
+def _not_within(report_input: ReportInput, arm: str) -> list[str]:
+    """Each asked reading of a candidate that declares a margin and is not within it, as a clause."""
+    return [
+        f"its reading on aspect {aspect.id!r} is not within the margin"
+        for aspect in _asked(report_input)
+        for reading in aspect.readings
+        if reading.arm == arm
+        and _margin(aspect, reading, _Overrides()) is not None
+        and not _within(aspect, reading, _Overrides())
+    ]
+
+
+def asked_standing(report_input: ReportInput) -> dict[str, AskedStanding]:
+    """Every arm's standing on the asked aspects: the quality axis dominance compares (this module's Dominance).
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: Each arm's standing, by id, in the input's arm order.
+    :rtype: dict[str, AskedStanding]
+    """
+    control = control_arm(report_input)
+    asked = _asked(report_input)
+    found: dict[str, AskedStanding] = {}
+    for arm in dict.fromkeys(held.id for held in report_input.arms):
+        if control is None:
+            behind = tuple(
+                dict.fromkeys(
+                    pair.ahead
+                    for aspect in asked
+                    for pair in aspect.pairs
+                    if arm in pair.arms and pair.ahead is not None and pair.ahead != arm
+                )
+            )
+            found[arm] = AskedStanding(arm, "behind" if behind else "not_behind", None, behind, ())
+            continue
+        level = _level(report_input, arm, control, _Overrides())
+        if arm == control:
+            found[arm] = AskedStanding(arm, "control", level, (), ())
+        elif level == 2:
+            found[arm] = AskedStanding(arm, "shown_better", level, (), ())
+        elif level == 1:
+            found[arm] = AskedStanding(arm, "shown_no_worse", level, (), ())
+        else:
+            why = [*_floors_not_held(report_input, arm, asked, _Overrides()), *_not_within(report_input, arm)]
+            if not asked:
+                why.append("no aspect is asked, so nothing shows it no worse")
+            found[arm] = AskedStanding(arm, "not_shown_no_worse", level, (), tuple(why))
+    return found
 
 
 # --- immateriality -------------------------------------------------------------------------------------------------

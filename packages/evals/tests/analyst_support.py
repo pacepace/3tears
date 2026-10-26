@@ -100,6 +100,38 @@ def _examples_calls(held: ReportInput) -> list[dict[str, Any]]:
     return [{}, {"offset": 10}] + ([{"arm_filter": arm}] if arm is not None else [])
 
 
+def _dominance_calls(held: ReportInput) -> list[dict[str, Any]]:
+    """The decision's own axes, then two extra ones where the input holds them."""
+    keys = [*held.measures, *held.judged]
+    return [{}, {"axes": keys[:2]}] if keys else [{}]
+
+
+def _sensitivity_calls(held: ReportInput) -> list[dict[str, Any]]:
+    """The first margin, floor and gate the input declares, one sweep each."""
+    margins = [f"margin:{aspect.id}" for aspect in held.aspects if aspect.readings]
+    floors = [f"floor:{read.aspect}/{read.floor}" for read in held.floors]
+    gates = [f"threshold:{criterion.id}" for criterion in held.criteria if criterion.kind in ("gate", "guardrail")]
+    return [{"parameter": found[0]} for found in (margins, floors, gates) if found]
+
+
+def _breakdown_calls(held: ReportInput) -> list[dict[str, Any]]:
+    """Where the input has a control: per way of slicing it holds, the first measure the control holds there."""
+    control = next((arm.id for arm in held.arms if arm.role == "control"), None)
+    if control is None:
+        return []
+    slices = {
+        "stratum": [stratum.per_arm for stratum in held.strata],
+        "task": [task.per_arm for task in held.tasks],
+        "cell": [cell.per_arm for cell in held.cells.values()],
+    }
+    calls: list[dict[str, Any]] = []
+    for slice_by, held_by in slices.items():
+        keys = [key for per_arm in held_by for key in per_arm.get(control, {})]
+        if keys:
+            calls.append({"measure_key": keys[0], "slice_by": slice_by})
+    return calls
+
+
 #: How each analyst action is called on one input, where its example's parameters will not do: the argument sets,
 #: without ``action`` or ``snapshot_id``.
 ANALYST_CALLS: dict[str, Callable[[ReportInput], list[dict[str, Any]]]] = {
@@ -107,6 +139,9 @@ ANALYST_CALLS: dict[str, Callable[[ReportInput], list[dict[str, Any]]]] = {
     "contrasts_list": _contrasts_calls,
     "measure_read": _measure_reads,
     "examples_list": _examples_calls,
+    "options_dominance": _dominance_calls,
+    "decision_sensitivity": _sensitivity_calls,
+    "measure_breakdown": _breakdown_calls,
 }
 
 
