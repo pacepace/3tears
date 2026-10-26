@@ -39,6 +39,7 @@ from threetears.evals.analysis import PlannedPage, TableBlock, planned_page_html
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import format_figure, render, resolve
 from threetears.evals.analysis.report.plan_page.build import plan_page
+from threetears.evals.analysis.report.plan_page.words import EXPLORE_HOLDS
 from threetears.evals.analysis.report_decision import margin_sensitivity
 from threetears.evals.analysis.report_gates import gate_check
 from threetears.evals.analysis.report_input import ReportInput
@@ -344,10 +345,24 @@ def test_a_control_moving_the_margin_draws_each_reading_s_flip_and_whether_the_c
         assert candidate.flip_margin is not None
         assert math.isclose(_number(row["flip"].value), candidate.flip_margin, abs_tol=0.051)
         assert row["declared"].status == ("good" if candidate.within else "bad")
-    assert page.explore.holds, "the line says whether the call holds"
+    assert page.explore.holds == EXPLORE_HOLDS[sensitivity.holds], "the line says whether the call holds"
     html = planned_page_html(page)
     assert 'data-part="explore"' in html
     assert render(plan.explore[0].recomputes, report_input, {}) not in html, "recomputes is not printed"
+
+
+def test_where_the_margin_moves_the_call_the_explore_line_says_it_does_not_hold() -> None:
+    """r5 with qwen3.8-flash the cheapest arm: shown no worse at the declared margin it dominates, and below its flip
+    margin it no longer is, so the call does not hold at every margin, and the line says so."""
+    data = dataset.report_input_of("r5").model_dump(mode="json", by_alias=True, exclude_none=True)
+    data["measures"]["production_replicating_cost"]["per_arm"]["qwen3.8-flash"]["mean"] = 0.0015
+    report_input = ReportInput.model_validate(data)
+    sensitivity = margin_sensitivity(report_input)
+    assert sensitivity.holds is False and margin_sensitivity(_input("r5")).holds is True
+
+    page = plan_page(_plan(REFERENCE_PLAN), report_input)
+
+    assert page.explore is not None and page.explore.holds == EXPLORE_HOLDS[False] != EXPLORE_HOLDS[True]
 
 
 def test_a_plan_whose_controls_move_anything_but_the_margin_draws_no_explore_part() -> None:

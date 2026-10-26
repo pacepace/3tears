@@ -349,8 +349,7 @@ def _gate_cell(
     report_input: ReportInput, criterion: Criterion, arm: str, task: str | None, cell: str | None
 ) -> TableCell:
     """One arm against one criterion at one place: the gate check's status in words, the figure beside it."""
-    alone = report_input.model_copy(update={"criteria": [criterion]})
-    checked: GateCheck = gate_check(alone, arm, task=task, cell=cell)
+    checked: GateCheck = gate_check(report_input, arm, task=task, cell=cell, criterion=criterion.id)
     figure = next(
         (held for held in criterion_figures(report_input, criterion, arm) if (held.task, held.cell) == (task, cell)),
         None,
