@@ -6,6 +6,70 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.79.0 -- 2026-10-26
+
+### core: a scoped snapshot tells its listeners when it becomes ready
+
+**Fixed:** a listener (`on_change`) heard each commit, but not the copy becoming ready. A consumer that builds
+only from a ready copy skipped every commit of a rebuild; the last landed before ready, and with no later write
+it never built (the reports pod's "Preparing reports" on cobalt dev). Becoming ready, from L2 or L3, now calls
+every listener once.
+
+### core: a write that changes no row leaves no write mark
+
+**Fixed:** the write-mark trigger fired per statement, so a statement that changed no row marked too (the hub's
+idempotent `INSERT ... WHERE NOT EXISTS` of a namespace on every tool pod's handshake). Each mark is an advance
+of the table's generation that no follower heard, so every follower dropped the table: about twice a minute on
+cobalt dev, 1,017 times a day on prod's gateway. The trigger (same name, `threetears_collection_write_mark`) is
+now per row, and its function marks a table once per transaction, at the first changed row, behind a
+transaction-local setting; the rest of the rows pay one `current_setting` check. A statement that changes no row fires nothing.
+YugabyteDB has no transition tables, which a statement trigger would need to see whether it changed a row.
+Measured on YugabyteDB 2026.1: a 100,000-row `INSERT ... SELECT` takes 342 ms with the trigger, 282 ms without.
+
+**A writer clears the marks its own advance covers** (`CollectionRegistry.set_write_marks_schema`, unset by
+default, which keeps today's behaviour). A collection write on a switched-on table advances the generation
+itself and broadcasts, and its mark then made the reconciler advance a second time, unheard, so every follower
+dropped the table after every write. With the queue's schema set, the writer reads the table's marks after its
+commit, advances, and deletes exactly the marks it read: each was committed before the advance, which covers
+it. A writer that dies, or fails, between the advance and the delete leaves them, and the reconciler advances
+once more, as before; a read or delete that fails never fails the write. A process sets it only where its L3
+holds the queue (the hub, over its own database).
+
+**Upgrade.** The install backstop and the migration runner count a table whose trigger of that name is not per
+row as missing: under the DDL lock they replace the function, drop the statement trigger and create the row
+trigger, so the two never both fire.
+
+### core: a collection whose L1 holds no table of it reads through rather than raise
+
+**Fixed:** a registry hands its L1 to every collection it builds, but only a collection that creates its table
+there, or whose table its owner declared, has one. A collection built later under a name of its own (the hub's
+tile source, `geo_tiles_<scope>`, and its feature cache) read and wrote a table its L1 never had, and every tile
+answered 500 with `sqlite3.OperationalError: no such table`. Every row of a collection's table enters, leaves
+and is read from L1 through one place, which now uses L1 only while it holds the table: until then the
+collection reads and writes through to L2 and L3, as one built with no L1, and says so once.
+
+### core: a scoped snapshot's rebuild from L3 keeps its progress across waits
+
+**Fixed:** a rebuild from L3 publishes a scope only while no write is in progress or has committed since it
+read the epochs, and on each wait it dropped what it had published, so the next attempt read every scope again
+from the first. Under a loader whose writes leave only short gaps (an LSF pull holding a write open for twenty
+minutes, every five minutes), each gap got two or three scopes in before the next write stopped it, and the copy
+was never ready: readers were refused for hours after a column change. A replica now keeps, across its waits,
+the scopes any rebuild here (a full one or a catch-up) published, and the epoch it published each at; a later
+attempt reads only the scopes whose epoch moved since, or that this L1 or the scope's pointer no longer holds at
+it. What it kept is dropped when NATS lost the snapshot, or when a cold load finds a pointer's chunks gone. The
+index is still written whole, and the copy declared ready, only by an attempt no write outran.
+
+### core: a rebuild repoints a same-epoch pointer of other columns
+
+**Behaviour change.** A rebuild from L3 left a scope's pointer in place when another code version had written
+it at the same epoch under other columns, until a write moved the scope. After a column change, a scope no
+write touched since kept the old version's pointer, so every replica found the snapshot "written for other
+table columns" and rebuilt every scope from L3 at every start. A rebuild now moves such a pointer to its own
+columns, so the next start loads from L2. While two versions run together, a replica that starts repoints the
+other's same-epoch scopes; a ready replica never takes a same-epoch pointer of other columns, so it keeps
+serving its own L1 and is not made to rebuild.
+
 ## v0.78.0 -- 2026-10-24
 
 ### core: a partial update keeps the columns it does not name
