@@ -48,12 +48,13 @@ the check covers the range exactly:
 Every other caveat is open: an uncalibrated judge, a confound, a short run, latency and an unreported observation are
 not a criterion with a range.
 
-**Survivors** (:func:`surviving_options`, GENERATOR §3). An option survives when it passes every gate: each criterion
-of kind ``gate`` or ``guardrail``, read on its point estimate (at least the threshold where higher is better, at most
-where lower is), overall, in its one task, in every task or in every cell as its scope says; and no guardrail the
-pipeline read on it is ``breached``. A gate with no figure for the arm is not shown passed, so the arm does not
-survive it. Borderline counts as passing for the decision (GENERATOR §3). Floors and bars warn and never remove an
-option; a margin is the asked aspect's own axis, not a gate.
+**Survivors** (:func:`surviving_options`, GENERATOR §3). An option survives when the gate check
+(:func:`~threetears.evals.analysis.report_gates.gate_check`) does not fail it, and no guardrail the pipeline read on it
+is ``breached``. The check reads each criterion of kind ``gate`` or ``guardrail`` on its point estimate (at least the
+threshold where higher is better, at most where lower is), overall, in its one task, in every task or in every cell as
+its scope says. A gate with no figure for the arm is not shown passed, so the arm does not survive it. Borderline
+counts as passing for the decision (GENERATOR §3). Floors and bars warn and never remove an option; a margin is the
+asked aspect's own axis, not a gate.
 
 **Dominance** (:func:`dominant_options`). One surviving option dominates when it is at least as good as every other
 survivor on every axis that matters:
@@ -92,16 +93,16 @@ from typing import Literal
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.bundle.schema import SEPARATED_VERDICTS
+from threetears.evals.analysis.report_gates import GateCheck, GateStatus, gate_check
 from threetears.evals.analysis.report_input import (
     Aspect,
     Contrast,
-    Criterion,
     FloorRead,
     LateCriterion,
     Reading,
     ReportInput,
 )
-from threetears.evals.analysis.report_margins import criterion_figures, flip_margin
+from threetears.evals.analysis.report_margins import flip_margin
 
 __all__ = [
     "Caveat",
@@ -289,13 +290,13 @@ def report_caveats(report_input: ReportInput) -> list[Caveat]:
 # --- gates and survivors -------------------------------------------------------------------------------------------
 
 
-def _passes(report_input: ReportInput, criterion: Criterion, arm: str) -> bool:
-    values = [figure.value for figure in criterion_figures(report_input, criterion, arm)]
-    if not values:
-        return False
-    if criterion.direction == "higher_is_better":
-        return all(value >= criterion.threshold for value in values)
-    return all(value <= criterion.threshold for value in values)
+#: The gate statuses an option survives: borderline counts as passing for the decision (GENERATOR §3).
+_SURVIVING: frozenset[GateStatus] = frozenset({"pass", "borderline"})
+
+
+def _passes(report_input: ReportInput, arm: str) -> bool:
+    check: GateCheck = gate_check(report_input, arm)
+    return check.status in _SURVIVING
 
 
 def surviving_options(report_input: ReportInput) -> list[str]:
@@ -306,15 +307,10 @@ def surviving_options(report_input: ReportInput) -> list[str]:
     :return: The surviving arms' ids, in the input's arm order.
     :rtype: list[str]
     """
-    gates = [criterion for criterion in report_input.criteria if criterion.kind in ("gate", "guardrail")]
     breached = {
         str(guardrail.get("arm")) for guardrail in report_input.guardrails if guardrail.get("decision") == "breached"
     }
-    return [
-        arm.id
-        for arm in report_input.arms
-        if arm.id not in breached and all(_passes(report_input, gate, arm.id) for gate in gates)
-    ]
+    return [arm.id for arm in report_input.arms if arm.id not in breached and _passes(report_input, arm.id)]
 
 
 # --- the asked aspect ----------------------------------------------------------------------------------------------
@@ -627,12 +623,56 @@ def _holds(report_input: ReportInput, base: _Outcome, trials: Iterator[_Override
     return all(_outcome(report_input, overrides) == base for overrides in trials)
 
 
-def _margin_holds(report_input: ReportInput, base: _Outcome) -> bool:
-    aspects = [
+@dataclass(frozen=True)
+class _CandidateMargin:
+    """One reading against its margin: where it flips, and whether it is within the margin declared.
+
+    :ivar arm: The reading's arm.
+    :ivar aspect: The aspect it is read on.
+    :ivar flip_margin: The margin it flips at (``-lo``); None where it states no interval.
+    :ivar within: Whether it is within the declared margin.
+    """
+
+    arm: str
+    aspect: str
+    flip_margin: float | None
+    within: bool
+
+
+@dataclass(frozen=True)
+class _MarginSensitivity:
+    """How the call rests on the margins: each reading's flip, and whether the call holds at every margin.
+
+    :ivar candidates: Each reading on an aspect that declares a margin, in the input's order.
+    :ivar holds: Whether the decision is the same at every margin from zero up, on each such aspect.
+    """
+
+    candidates: tuple[_CandidateMargin, ...]
+    holds: bool
+
+
+def _margined(report_input: ReportInput) -> list[Aspect]:
+    """The aspects that declare a margin, on the aspect or on one of its readings."""
+    return [
         aspect
         for aspect in report_input.aspects
         if aspect.margin is not None or any(reading.margin is not None for reading in aspect.readings)
     ]
+
+
+def _margin_sensitivity(report_input: ReportInput, base: _Outcome) -> _MarginSensitivity:
+    """Each reading's flip margin and whether it is within the declared margin, and whether the call holds at every
+    margin. The late margin's materiality reads ``holds``; a page's explore part, each candidate."""
+    candidates = tuple(
+        _CandidateMargin(reading.arm, aspect.id, flip_margin(reading), _within(aspect, reading, _Overrides()))
+        for aspect in _margined(report_input)
+        for reading in aspect.readings
+    )
+    return _MarginSensitivity(candidates, _margin_holds(report_input, base))
+
+
+def _margin_holds(report_input: ReportInput, base: _Outcome) -> bool:
+    aspects = _margined(report_input)
     if not aspects:
         return False
     for aspect in aspects:
@@ -655,7 +695,7 @@ def _floor_holds(report_input: ReportInput, base: _Outcome, key: str | None) -> 
 
 def _late_immaterial(report_input: ReportInput, late: LateCriterion, base: _Outcome) -> bool:
     if late.criterion == "margin":
-        return _margin_holds(report_input, base)
+        return _margin_sensitivity(report_input, base).holds
     if late.criterion == "floor":
         return _floor_holds(report_input, base, late.name)
     return late.criterion == "bar"
