@@ -40,6 +40,7 @@ from threetears.evals.actions import (
     standard_tools,
 )
 from threetears.evals.actions.render import render_cited
+from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.ops import JobHandle, JobsStarted, OpsHost, RunLine
 from packages.evals.tests.ops_support import CALLER, ops_fixture
@@ -511,13 +512,66 @@ def test_a_tool_cut_to_workflows_mounts_their_actions_alone() -> None:
         [_action(), _action(name="note_count", workflow="Count", params=_OtherMeaning, example={"note": 1})]
     )
     counts = catalogue.mount(
-        ToolSpec(name="t", description="d", permissions=frozenset({"read"}), workflows=frozenset({"Count"}))
+        ToolSpec(
+            name="t", description="d", permissions=frozenset({"read"}), workflows=frozenset({"Count"}), left_out="w"
+        )
     )
     assert [action.name for action in counts.actions] == ["note_count"], "and 'note' means one thing on it"
     with pytest.raises(ValueError, match=r"no action has those classes in workflows \['Elsewhere'\]"):
         catalogue.mount(
-            ToolSpec(name="t", description="d", permissions=frozenset({"read"}), workflows=frozenset({"Elsewhere"}))
+            ToolSpec(
+                name="t",
+                description="d",
+                permissions=frozenset({"read"}),
+                workflows=frozenset({"Elsewhere"}),
+                left_out="w",
+            )
         )
+
+
+def test_a_tool_cut_to_workflows_says_in_one_line_why_its_role_goes_without_the_others_and_only_it_does() -> None:
+    reads = frozenset({"read"})
+    for left_out in ("", "  ", "two\nlines"):
+        with pytest.raises(ValueError, match="left_out"):
+            ToolSpec(name="t", description="d", permissions=reads, workflows=frozenset({"Count"}), left_out=left_out)
+    with pytest.raises(ValueError, match="left_out"):
+        ToolSpec(name="t", description="d", permissions=reads, left_out="a tool of every workflow leaves none out")
+
+
+class _Counted(EvalBaseModel):
+    """A host action's result that refuses."""
+
+    note: str
+
+
+async def _refers_to_echo(host: OpsHost, caller: Caller, params: _Echo) -> _Counted:
+    raise ValidationFailedError("nothing to count", remedy="echo the note first with note_echo, then count it")
+
+
+async def test_an_action_a_role_goes_without_is_refused_with_why_and_a_remedy_needing_one_is_what_it_does_instead() -> (
+    None
+):
+    count = _action(name="note_count", workflow="Count", result=_Counted, handler=_refers_to_echo)
+    catalogue = ActionCatalogue([_action(), count])
+    why = "a counter counts what it is given and echoes nothing; ask the echoing role for the note"
+    reads = frozenset({"read"})
+    tool = catalogue.mount(
+        ToolSpec(name="counter", description="d", permissions=reads, workflows=frozenset({"Count"}), left_out=why)
+    )
+    whole = catalogue.mount(ToolSpec(name="whole", description="d", permissions=reads))
+
+    called = await _call(tool, {"action": "note_echo", "note": "x"})
+    assert called.is_error and called.text.splitlines()[0] == (
+        f"refused: note_echo is not on tool counter: {why}. valid actions: help, note_count."
+    )
+    assert "call it on" not in called.text, "the role has no other tool to be sent to"
+    asked = await _call(tool, {"action": "help", "topic": "note_echo"})
+    assert asked.is_error and why in asked.text
+
+    remedied = await _call(tool, {"action": "note_count", "note": "x"})
+    assert remedied.is_error and remedied.text == f"refused: note_count: nothing to count\nremedy: {why}"
+    on_whole = await _call(whole, {"action": "note_count", "note": "x"})
+    assert "remedy: echo the note first with note_echo, then count it" in on_whole.text, "the control"
 
 
 async def test_help_serves_a_reference_topic_beside_the_actions_and_lists_it() -> None:

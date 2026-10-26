@@ -104,7 +104,7 @@ _READS_AS = (
 _HYBRIDS = (
     "not priced: a modeled hybrid is an option nobody ran, and no key states its cost or gain; describe one from "
     "measure_breakdown and the strata keys, labelled modeled, not measured. A routed mix over routable tasks shows "
-    "on block_render's gate_matrix, in its pick column"
+    "in a gate_matrix block's pick column"
 )
 
 #: How the interval on a move's price reads: both ends stated, the high end unbounded, no interval stated, or no price.

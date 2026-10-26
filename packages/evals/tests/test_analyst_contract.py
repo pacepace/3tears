@@ -23,7 +23,8 @@ from __future__ import annotations
 import ast
 import json
 import logging
-from collections.abc import Iterator
+import re
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,7 @@ from threetears.evals.actions import (
     MountedTool,
     analyst_actions,
     analyst_tools,
+    catalogue_primer,
     engine_actions,
     eval_catalogue,
     read_only_tools,
@@ -615,6 +617,111 @@ def test_the_editors_cut_is_the_analyst_tool_read_off_the_workflows_with_no_bloc
     editor_params, analyst_params = editor.input_schema()["properties"], analyst.input_schema()["properties"]
     assert all(editor_params[name] == analyst_params[name] for name in editor_params if name != "action")
     assert set(editor_params) < set(analyst_params), "the block parameters are the analyst's alone"
+
+
+def _editor_tool() -> MountedTool:
+    (spec,) = analyst_tools(role="editor")
+    return eval_catalogue().mount(spec)
+
+
+def _named_in(text: str, names: set[str]) -> set[str]:
+    """The names in ``names`` a text spells as words."""
+    return {name for name in names if re.search(rf"\b{re.escape(name)}\b", text)}
+
+
+def _static_texts(tool: MountedTool) -> Iterator[tuple[str, str]]:
+    """Every text a tool serves without a call to an action: its description, input, help, topics and primer."""
+    yield "description", tool.description
+    yield "input schema", json.dumps(tool.input_schema())
+    yield "help index", tool.help_index()
+    for action in tool.actions:
+        yield f"help {action.name}", tool.help_page(action.name)
+    for topic in tool.spec.topics:
+        yield f"topic {topic.name}", topic.text()
+        for page, text in (topic.pages() if topic.pages is not None else {}).items():
+            yield f"topic {topic.name}.{page}", text
+    yield "primer", catalogue_primer([tool])
+
+
+def _outcome_text(outcome: ActionOutcome) -> str:
+    """All an outcome tells its caller: its text, its result's JSON and its recovery's."""
+    recovery = json.dumps(outcome.recovery.as_data()) if outcome.recovery is not None else ""
+    return "\n".join([outcome.text, json.dumps(outcome.structured), recovery])
+
+
+async def _called_texts(
+    tool: MountedTool, fixture: OpsFixture, snapshots: dict[str, EvalReportSnapshot], broken: str
+) -> AsyncIterator[tuple[str, str]]:
+    """Every text a call to the tool's actions returns: each on every fixture snapshot, on an unknown snapshot and a
+    broken one, with each text parameter naming nothing, an undeclared parameter and a value that does not
+    validate; then help on a topic that is none, and an action that is none."""
+    for name, snapshot in snapshots.items():
+        held = frozen_input(snapshot)
+        for action in tool.actions:
+            for arguments in action_calls(action, held, snapshot.id):
+                yield f"{action.name} on {name}", _outcome_text(await _call(tool, fixture, arguments))
+    held = frozen_input(snapshots["r4"])
+    for action in tool.actions:
+        (call, *_) = action_calls(action, held, snapshots["r4"].id) or [
+            {**action.example, "action": action.name, "snapshot_id": snapshots["r4"].id}
+        ]
+        for snapshot_id in ("report-snapshot:unknown", broken):
+            yield (
+                f"{action.name} on {snapshot_id}",
+                _outcome_text(await _call(tool, fixture, {**call, "snapshot_id": snapshot_id})),
+            )
+        texts = [field for field, info in action.params.model_fields.items() if info.annotation in (str, str | None)]
+        for field in texts:
+            if field != "snapshot_id":
+                outcome = await _call(tool, fixture, {**call, field: "no-such-thing"})
+                yield f"{action.name} with {field} naming nothing", _outcome_text(outcome)
+        yield f"{action.name} undeclared", _outcome_text(await _call(tool, fixture, {**call, "nothing_here": 1}))
+        yield f"{action.name} invalid", _outcome_text(await _call(tool, fixture, {**call, "snapshot_id": ""}))
+    yield "help on no topic", _outcome_text(await _call(tool, fixture, {"action": "help", "topic": "nothing_here"}))
+    yield "no such action", _outcome_text(await _call(tool, fixture, {"action": "nothing_here"}))
+
+
+async def test_nothing_the_editors_tool_serves_names_an_action_it_does_not_carry() -> None:
+    store = InMemoryDocumentStore()
+    fixture, snapshots = off_loop(_seeded, store)
+    held = fixture_inputs()["r2"]
+    copy = held.model_copy(update={"meta": held.meta.model_copy(update={"campaign": "a copy to break"})})
+    broken = report_snapshot(copy, scope_id=TOYHOST_SCOPE, campaign_id=None, source="report_input", created_by="me")
+    off_loop(fixture.host.eval_host.storage.save_report_snapshot, broken)
+    off_loop(_tampered, store, broken, redigest=False, change="figure")
+    editor = _editor_tool()
+    left_out = {action.name for action in analyst_actions()} - {action.name for action in editor.actions}
+    assert {"block_render", "block_catalog", "report_snapshot_freeze"} <= left_out, "the control"
+
+    named: dict[str, set[str]] = {}
+    for where, text in _static_texts(editor):
+        named[where] = _named_in(text, left_out)
+    async for where, text in _called_texts(editor, fixture, snapshots, broken.id):
+        named[where] = _named_in(text, left_out)
+    assert {where: names for where, names in named.items() if names} == {}
+    assert any(where.endswith("on report-snapshot:unknown") for where in named), "the control: the refusals ran"
+    on_analyst = set[str]().union(*(_named_in(text, left_out) for _, text in _static_texts(_analyst_tool())))
+    assert on_analyst == left_out, "the control: the walk finds each name where a tool carrying it serves it"
+
+
+async def test_an_action_the_editor_goes_without_is_refused_with_why_and_sends_it_nowhere() -> None:
+    fixture, snapshots = off_loop(_seeded)
+    editor = _editor_tool()
+    left_out = {action.name for action in analyst_actions()} - {action.name for action in editor.actions}
+    for name in sorted(left_out):
+        action = next(action for action in analyst_actions() if action.name == name)
+        call = {**action.example, "action": name}
+        if "snapshot_id" in call:
+            call["snapshot_id"] = snapshots["r4"].id
+        for outcome in (
+            await _call(editor, fixture, call),
+            await _call(editor, fixture, {"action": "help", "topic": name}),
+        ):
+            assert outcome.ending == "refused", (name, outcome.text)
+            head = outcome.text.splitlines()[0]
+            assert head.startswith(f"refused: {name} is not on tool evals_analyst: {editor.spec.left_out}."), head
+            assert "call it on" not in outcome.text, "the editor has no other tool to be sent to"
+            assert _named_in(_outcome_text(outcome), left_out - {name}) == set(), (name, outcome.text)
 
 
 #: Every analyst listing, the fixture snapshot it is read on, and a call whose rows run to more than one small page.

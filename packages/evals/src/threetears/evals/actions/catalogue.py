@@ -367,6 +367,10 @@ class ToolSpec:
         index; none, the default.
     :ivar constraints: The rules every call to it is held to, one line each, which its help index and the primer
         (:func:`catalogue_primer`) repeat, so a client reads them before its first call; none, the default.
+    :ivar left_out: For a tool cut to workflows, one line saying why its role goes without the cut's other workflows
+        and what its caller does instead. A call naming a left-out action is refused with it, and a remedy that needs
+        one is served as it, so the tool never sends its caller to an action it does not carry, and never names one
+        it was not asked for. Required with ``workflows``, and blank without them.
     """
 
     name: str
@@ -376,11 +380,12 @@ class ToolSpec:
     workflows: frozenset[str] | None = None
     topics: tuple[HelpTopic, ...] = ()
     constraints: tuple[str, ...] = ()
+    left_out: str = ""
 
     def __post_init__(self) -> None:
         """Refuse a malformed name or cut, a blank description, a set of classes that is empty or unknown, a set of
-        workflows that is empty or names a blank one, two help topics of one name, or a constraint that is blank or
-        more than one line.
+        workflows that is empty or names a blank one, workflows with no one-line ``left_out`` or a ``left_out`` with no
+        workflows, two help topics of one name, or a constraint that is blank or more than one line.
 
         :raises ValueError: As described.
         """
@@ -393,6 +398,13 @@ class ToolSpec:
         if self.workflows is not None and (not self.workflows or not all(name.strip() for name in self.workflows)):
             raise ValueError(
                 f"tool {self.name!r}: workflows names one or more workflows, none blank, or is None for all"
+            )
+        # prose-canary: allow — ToolSpec.left_out is help text a host's code declares, not text a model wrote
+        said = bool(self.left_out.strip()) and "\n" not in self.left_out.strip()
+        if (self.workflows is not None) != said or (self.workflows is None and self.left_out):
+            raise ValueError(
+                f"tool {self.name!r}: a tool cut to workflows says in one line, left_out, why its role goes without "
+                "the others and what its caller does instead; a tool of every workflow says nothing there"
             )
         if not all(rule.strip() and "\n" not in rule.strip() for rule in self.constraints):
             raise ValueError(f"tool {self.name!r}: each constraint is one non-blank line")

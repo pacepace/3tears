@@ -58,16 +58,27 @@ _FIGURE_KEYS = "figure_keys"
 #: a line per group of paths, and each group's forms, statistics and examples are a page of it.
 _FIGURE_KEYS_TOPIC = HelpTopic(
     name=_FIGURE_KEYS,
-    summary="The figure-key grammar: how a figure is cited, its filters, and every path by group (block_catalog lists "
-    "the paths alone).",
+    summary="The figure-key grammar: how a figure is cited, its filters, and every path by group.",
     text=functools.partial(figure_key_index, _FIGURE_KEYS),
     pages=figure_key_pages,
 )
 
-#: The rules every call to the analyst tool is held to, whichever role it is cut for.
-_CONSTRAINTS = (
-    "every call but the freeze names snapshot_id, the snapshot report_snapshot_freeze returned; the same id throughout.",
-    "every figure reads key = reads: cite its key in a report, never the number typed.",
+#: The rule every call to the analyst tool is held to, whichever role it is cut for.
+_CITE_BY_KEY = "every figure reads key = reads: cite its key in a report, never the number typed."
+
+#: What a tool carrying the freeze says of the snapshot id, and what one without it says: a tool names only the
+#: actions it carries.
+_SNAPSHOT_RULES = {
+    True: "every call but the freeze names snapshot_id, the snapshot report_snapshot_freeze returned; the same id "
+    "throughout.",
+    False: "every call names snapshot_id, the snapshot frozen for this work; the same id throughout.",
+}
+
+#: Why the editor's tool goes without the blocks and the freeze, and what its caller does instead: what it is told
+#: of a call to one, or of a remedy that needs one.
+_EDITOR_LEFT_OUT = (
+    "the editor tests the report it is given against the snapshot it was written from, so it renders no blocks and "
+    "freezes nothing; a snapshot that must be frozen again goes back to the analyst that froze it"
 )
 
 #: Each role's tool description.
@@ -218,15 +229,17 @@ def analyst_tools(
     :rtype: tuple[ToolSpec]
     """
     classes: frozenset[PermissionClass] = frozenset({"read", "write"} if writes else {"read"})
+    editor = role == "editor"
     return (
         ToolSpec(
             name=f"{prefix}_analyst",
             description=_DESCRIPTIONS[role],
             permissions=classes,
             cut=ANALYST_CUT,
-            workflows=_EDITOR_WORKFLOWS if role == "editor" else None,
+            workflows=_EDITOR_WORKFLOWS if editor else None,
             topics=(_FIGURE_KEYS_TOPIC,),
-            constraints=_CONSTRAINTS,
+            constraints=(_SNAPSHOT_RULES[writes and not editor], _CITE_BY_KEY),
+            left_out=_EDITOR_LEFT_OUT if editor else "",
         ),
     )
 

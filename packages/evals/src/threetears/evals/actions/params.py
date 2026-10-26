@@ -26,7 +26,7 @@ SnapshotId = Annotated[
     str,
     Field(
         min_length=1,
-        description="The snapshot every figure is read from, as report_snapshot_freeze returned it.",
+        description="The snapshot every figure is read from, by the id its freeze returned.",
     ),
 ]
 ArmFilter = Annotated[
