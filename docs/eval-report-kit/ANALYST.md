@@ -106,26 +106,27 @@ What the analyst writes, and what is stored. It replaces the slot-based plan.
 
 ## 6. Tools (MCP)
 
-All read-only except rendering. Every tool returns figures with ids, so the analyst can cite them as figure keys.
+One domain tool, `evals_analyst`, with one action per capability (owner, 2026-10-26: minimize tools, actions inside a domain). The analyst and the in-process loop use the same tool as MCP clients; the editor's cut leaves out the block actions. All actions are read-only except `report_snapshot_freeze`. Every figure an action returns carries a figure key, so the analyst can cite it. `help` lists the actions and the figure-key topics.
 
-| Group | Tool | Returns |
+| Group | Action | Returns |
 |---|---|---|
-| Facts | `campaign_overview()` | Question, arms (full and short names), aspects, declarations and when they were made, counts, caveats |
-| | `readings(aspect?)`, `contrasts(arm?, measure?)` | The pipeline's readings and contrasts, with their levels and families |
-| | `measure(name, by?=arm\|stratum\|case)` | Per-arm or per-stratum figures with intervals |
-| | `examples(arm?, stratum?, outcome?, n)` | Trials with judge reasons and excerpts |
-| | `caveats()` | Every open caveat, with what it touches |
-| Analyses | `sensitivity(decision_param, range)` | Where the call or a reading flips (margin, floor, weighting) |
-| | `breakdown(measure, by, arm_vs_control)` | Where a difference is concentrated, labeled exploratory |
-| | `dominance(axes)` | Options surviving gates and guardrails, and which dominate on which axes |
-| | `price_tradeoff(axis_a, axis_b, volume?)` | Price per point, flip bands, modeled hybrids |
-| | `settle(question)` | Cases or calibration labels needed to separate a reading |
-| | `confound_check(arm, covariate)` | How much of a difference could come from the covariate |
-| Rendering | `render_block(kind, query, options)` | Drawn block, values table, warnings |
-| | `render_report(doc)` | The page, `check.py` results, screenshots at 1200 and 390 px. Not in MVP (owner, 2026-10-26): no browser at storage time; check.py runs in integration tests. |
-| Reference | `block_catalog()`, `exemplar(name)` | The catalog with usage notes; a reasoning note and its rendered memo |
+| Snapshot | `report_snapshot_freeze` | The frozen evidence every other action reads, by id |
+| Facts | `campaign_overview` | Question, arms (full and short names, settings), aspects, declarations and when they were made, judges, counts |
+| | `readings_list`, `contrasts_list` | The pipeline's readings and contrasts, with their levels and families |
+| | `measure_read` | Per-arm or per-slice figures with intervals |
+| | `examples_list` | Trials with judge reasons and excerpts |
+| | `caveats_list` | Every open caveat, with what it touches |
+| Analyses | `decision_sensitivity` | Where the call or a reading flips (margin, floor, threshold) |
+| | `measure_breakdown` | Where a difference is concentrated, labeled exploratory |
+| | `options_dominance` | Options surviving gates and guardrails, and which dominate on which axes |
+| | `price_tradeoff` | Price per point and the steps along the cost frontier. Modeled hybrids are out (owner, 2026-10-26: backlog #657) |
+| | settle, two-arm comparison, lever effects | Being built in the W2 fix wave; `confound_check` stays deferred until a prototype run needs it |
+| Rendering | `block_render` | Values table and warnings for a block; no pixels |
+| | `render_report(doc)` | Not in MVP (owner, 2026-10-26): no browser at storage time; check.py runs in integration tests |
+| Reference | `block_catalog` | The block kinds, their sources and usage notes |
+| Gaps | `capability_gap` | Acknowledges a missing capability the analyst worked around (§8 of the program plan) |
 
-Add a tool when an analyst run shows it reasoning around a missing capability. Never add one to handle a specific eval type.
+Add an action when an analyst run shows it reasoning around a missing capability. Never add one to handle a specific eval type.
 
 ## 7. Invariants and the critic
 
