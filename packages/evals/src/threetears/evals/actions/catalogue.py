@@ -11,6 +11,11 @@ grants work, so the classes are what a host splits on: :func:`standard_tools` gi
 spend, write) and ``evals_admin`` (destructive), and :func:`read_only_tools` a tool a host can mount for
 an agent that may only look. The host supplies the prefix.
 
+**And by cut.** An action may name a cut (:attr:`Action.cut`): a set of actions with a tool of its own, which only a
+:class:`ToolSpec` of the same cut mounts. The standard tools are the actions that name none. The analyst's actions are
+one cut (:func:`~threetears.evals.actions.analyst.analyst_tools`), so a client mounting ``evals`` does not see them,
+and its flat parameters do not grow with them.
+
 **One tool, many actions, flat parameters.** A mounted tool's input is ``action`` — an enum of its
 actions plus ``help`` — and the union of its actions' parameters, flat. A parameter name means one
 thing across the tool: two actions declaring it with different types or descriptions are refused at
@@ -203,6 +208,8 @@ class Action:
     :ivar text_field: The one field of the result its ``render`` returns verbatim (``report_read``'s ``body``), so a
         transport sending the text and the result's JSON in one reply leaves that field out of the JSON rather than
         send it twice; ``None``, the default, for a render that composes its text, whose result is sent whole.
+    :ivar cut: The cut whose tools alone mount it (:attr:`ToolSpec.cut`); ``None``, the default, for an action the
+        standard tools mount.
     """
 
     name: str
@@ -218,6 +225,7 @@ class Action:
     detail: str = ""
     happy_path: HappyPath | None = None
     text_field: str | None = None
+    cut: str | None = None
 
     def __post_init__(self) -> None:
         """Refuse an action no transport could mount honestly.
@@ -226,12 +234,14 @@ class Action:
             class is not one of :data:`PERMISSION_CLASSES`; a parameter is reserved, undescribed or a
             nested model; a destructive action declares no required ``confirm``; ``long_running``
             disagrees with whether the result is ``JobsStarted``; an action whose result is anything else
-            declares no ``render`` of its own; a spend action declares no ``happy_path``; or the example
-            does not validate.
+            declares no ``render`` of its own; a spend action declares no ``happy_path``; the cut is not a
+            lowercase identifier; or the example does not validate.
         """
         where = f"action {self.name!r}"
         if not ACTION_NAME.fullmatch(self.name):
             raise ValueError(f"{where}: an action is named noun_verb — lowercase words joined by underscores")
+        if self.cut is not None and not TOOL_NAME.fullmatch(self.cut):
+            raise ValueError(f"{where}: cut {self.cut!r} is not a lowercase identifier")
         # prose-canary: allow — Action.summary is help text a host's code declares, not text a model wrote
         if not self.summary.strip() or "\n" in self.summary.strip():
             raise ValueError(f"{where}: the summary is one non-blank line; longer help goes in `detail`")
@@ -283,19 +293,24 @@ class ToolSpec:
     :ivar name: The tool's name (:data:`TOOL_NAME`).
     :ivar description: What the tool is for, in a sentence or two; the tool adds how to get help.
     :ivar permissions: The classes of action it mounts.
+    :ivar cut: The cut whose actions it mounts (:attr:`Action.cut`); ``None``, the default, for a standard tool, which
+        mounts the actions that name no cut.
     """
 
     name: str
     description: str
     permissions: frozenset[PermissionClass]
+    cut: str | None = None
 
     def __post_init__(self) -> None:
-        """Refuse a malformed name, a blank description or a set of classes that is empty or unknown.
+        """Refuse a malformed name or cut, a blank description or a set of classes that is empty or unknown.
 
         :raises ValueError: As described.
         """
         if not TOOL_NAME.fullmatch(self.name):
             raise ValueError(f"tool name {self.name!r} is not a lowercase identifier")
+        if self.cut is not None and not TOOL_NAME.fullmatch(self.cut):
+            raise ValueError(f"tool {self.name!r}: cut {self.cut!r} is not a lowercase identifier")
         if not self.description.strip():
             raise ValueError(f"tool {self.name!r}: the description is blank")
         unknown = sorted(set(self.permissions) - set(PERMISSION_CLASSES))
@@ -684,18 +699,25 @@ class ActionCatalogue:
         return ActionCatalogue([*self._actions.values(), *actions])
 
     def mount(self, spec: ToolSpec) -> MountedTool:
-        """Cut one tool from the catalogue: the actions whose class the tool mounts.
+        """Cut one tool from the catalogue: the actions of the tool's cut whose class the tool mounts.
 
         :param spec: The tool.
         :ptype spec: ToolSpec
         :return: The mounted tool.
         :rtype: MountedTool
-        :raises ValueError: No action has a class the tool mounts, or two of its actions declare one
+        :raises ValueError: No action of its cut has a class the tool mounts, or two of its actions declare one
             parameter name with different meanings (type or description).
         """
-        actions = tuple(action for action in self._actions.values() if action.permission in spec.permissions)
+        actions = tuple(
+            action
+            for action in self._actions.values()
+            if action.permission in spec.permissions and action.cut == spec.cut
+        )
         if not actions:
-            raise ValueError(f"tool {spec.name!r} mounts {sorted(spec.permissions)} and no action has those classes")
+            where = "" if spec.cut is None else f" in cut {spec.cut!r}"
+            raise ValueError(
+                f"tool {spec.name!r} mounts {sorted(spec.permissions)} and no action has those classes{where}"
+            )
         properties: dict[str, dict[str, Any]] = {}
         declared_by: dict[str, str] = {}
         for action in actions:

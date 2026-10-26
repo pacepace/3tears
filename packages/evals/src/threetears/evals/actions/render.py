@@ -12,7 +12,8 @@ Every string a mounted tool returns is made here, so the conventions hold in one
 - **A result reads as every fact it carries.** One generic renderer prints any result model field by field
   (:func:`render_model`); a few results keep their own: a started job says how to poll it and a finished one
   what to read next, a page of results how to read the next, one result its counted goal verdicts, and a report
-  is its own text.
+  is its own text. Every analyst action reads back through :func:`render_cited`, which writes each figure as
+  ``key = reads``, so the key an analyst cites sits beside the figure as the page prints it.
 
 This module reads the catalogue's types only for annotations, so the catalogue imports it freely.
 """
@@ -43,6 +44,7 @@ from threetears.evals.ops import (
     dollars_text,
     format_number,
 )
+from threetears.evals.ops.analyst import CitedFigure
 
 if TYPE_CHECKING:
     from threetears.evals.actions.catalogue import Action, MountedTool
@@ -137,6 +139,8 @@ def refuse_no_action(tool: MountedTool) -> str:
 def refuse_unknown_action(tool: MountedTool, name: str) -> str:
     """A call naming an action this tool does not carry — saying where it lives when the catalogue has it."""
     elsewhere = tool.catalogue.get(name)
+    if elsewhere is not None and elsewhere.cut != tool.spec.cut:
+        return f"refused: {name} is not an action of tool {tool.name}: {_cut_of(elsewhere)}. {_valid_actions(tool)}."
     if elsewhere is not None:
         return (
             f"refused: {name} is a {elsewhere.permission} action, and tool {tool.name} carries "
@@ -144,6 +148,13 @@ def refuse_unknown_action(tool: MountedTool, name: str) -> str:
             f"{elsewhere.permission} actions. {_valid_actions(tool)}."
         )
     return f"refused: there is no action {name!r}. {_valid_actions(tool)}."
+
+
+def _cut_of(action: Action) -> str:
+    """Which tools mount an action of another cut than the calling tool's, as a refusal says it."""
+    if action.cut is None:
+        return f"it is a {action.permission} action of the standard tools — call it there"
+    return f"it is a {action.permission} action of the {action.cut} tools — call it on the {action.cut} tool"
 
 
 def refuse_help_parameters(tool: MountedTool, undeclared: Sequence[str]) -> str:
@@ -225,7 +236,9 @@ def _refused_with_remedy(tool: MountedTool, subject: str, refused: EvalServiceEr
         named = sorted(set(_ACTION_TOKEN.findall(refused.remedy)))
         for name in named:
             elsewhere = tool.catalogue.get(name)
-            if elsewhere is not None and tool.action(name) is None:
+            if elsewhere is not None and tool.action(name) is None and elsewhere.cut != tool.spec.cut:
+                lines.append(f"{name} is not an action of tool {tool.name}: {_cut_of(elsewhere)}")
+            elif elsewhere is not None and tool.action(name) is None:
                 lines.append(
                     f"{name} is a {elsewhere.permission} action, which tool {tool.name} does not carry: call it on "
                     f"the tool that mounts {elsewhere.permission} actions"
@@ -294,6 +307,60 @@ def _value(value: Any) -> str:
 def _compact(value: Any) -> str:
     """A stored JSON value on one line, keys sorted, as written — never re-typed or summarised."""
     return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def render_cited(result: BaseModel) -> str:
+    """An analyst action's result as text: each figure ``key = reads``, grouped under the row that holds it.
+
+    What the result is comes first, then its fields in the model's own order. A figure
+    (:class:`~threetears.evals.ops.analyst.CitedFigure`) is one line, its key and the figure as the page writes it, so
+    an analyst cites the key it read; the value, kind and scale stay in the structured result. A row of a list is one
+    bullet of its plain fields, its figures and nested rows indented beneath it. Nothing is summarised or left out.
+    """
+    return "\n".join([_RESULT_WORDS.sub(r" \1", type(result).__name__).strip().lower(), *_cited_body(result, "")])
+
+
+def _cited_body(model: BaseModel, indent: str) -> list[str]:
+    """Every field of one model, each as :func:`_cited_field` writes it."""
+    lines: list[str] = []
+    for name in type(model).model_fields:
+        lines += _cited_field(name, getattr(model, name), indent)
+    return lines
+
+
+def _cited_field(name: str, value: Any, indent: str) -> list[str]:
+    """One field: a figure as ``key = reads``, a model or a map of them under its name, a list of rows as bullets."""
+    if isinstance(value, CitedFigure):
+        return [f"{indent}{value.key} = {value.reads}"]
+    if isinstance(value, BaseModel):
+        return [f"{indent}{name}:", *_cited_body(value, indent + "  ")]
+    if isinstance(value, Mapping) and value and all(isinstance(item, BaseModel) for item in value.values()):
+        lines = [f"{indent}{name}:"]
+        for key, item in value.items():
+            lines += _cited_field(str(key), item, indent + "  ")
+        return lines
+    if isinstance(value, list | tuple) and value and all(isinstance(item, BaseModel) for item in value):
+        lines = [f"{indent}{name} ({len(value)}):"]
+        for item in value:
+            lines += _cited_row(item, indent + "  ")
+        return lines
+    return [f"{indent}{name}: {_value(value)}"]
+
+
+def _cited_row(item: BaseModel, indent: str) -> list[str]:
+    """One row of a list: a bullet of its plain fields, then its figures and nested rows beneath it."""
+    if isinstance(item, CitedFigure):
+        return [f"{indent}{item.key} = {item.reads}"]
+    plain: list[str] = []
+    beneath: list[str] = []
+    for name in type(item).model_fields:
+        value = getattr(item, name)
+        written = _cited_field(name, value, indent + "  ")
+        if len(written) == 1 and not isinstance(value, CitedFigure):
+            plain.append(written[0].strip())
+        else:
+            beneath += written
+    return [f"{indent}- {'; '.join(plain)}".rstrip(), *beneath]
 
 
 def render_report(document: ReportDocument) -> str:
@@ -541,6 +608,7 @@ __all__ = [
     "refuse_no_action",
     "refuse_undeclared",
     "refuse_unknown_action",
+    "render_cited",
     "render_help_index",
     "render_help_page",
     "render_job_status",

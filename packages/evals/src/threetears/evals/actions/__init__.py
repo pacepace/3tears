@@ -3,7 +3,8 @@
 An :class:`Action` binds one operation (:mod:`threetears.evals.ops`) to its name, help, flat parameters,
 result, permission class and agent-facing rendering. :func:`eval_catalogue` is the engine's actions plus
 any a host contributes; :meth:`ActionCatalogue.mount` cuts a tool from it by permission class —
-:func:`standard_tools` (``evals`` and ``evals_admin``) or :func:`read_only_tools` — and a mounted tool's
+:func:`standard_tools` (``evals`` and ``evals_admin``) or :func:`read_only_tools`, and the analyst's actions by their
+cut, :func:`analyst_tools` — and a mounted tool's
 :meth:`MountedTool.call` carries a call out: ``help`` generated from the catalogue, undeclared parameters
 refused, errors that teach and carry their :class:`Refusal` as data, long work as a job to poll. A
 transport adapter is a thin binding of :class:`MountedTool` to its server's tool shape
@@ -40,6 +41,7 @@ from threetears.evals.actions.catalogue import (
     read_only_tools,
     standard_tools,
 )
+from threetears.evals.actions.analyst import analyst_actions, analyst_toolset, analyst_tools, editor_toolset
 from threetears.evals.actions.definitions import definition_drift_actions
 from threetears.evals.actions.engine import engine_actions, eval_catalogue
 from threetears.evals.actions.render import render_jobs_started
@@ -66,7 +68,11 @@ __all__ = [
     "RefusalKind",
     "ToolHints",
     "ToolSpec",
+    "analyst_actions",
+    "analyst_tools",
+    "analyst_toolset",
     "definition_drift_actions",
+    "editor_toolset",
     "engine_actions",
     "eval_catalogue",
     "read_only_tools",
