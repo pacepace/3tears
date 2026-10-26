@@ -65,6 +65,10 @@ __all__ = ["planned_page_html"]
 #: The confidence forms set in the amber box: caveats stay open, or the evidence is weak.
 _AMBER_FORMS = frozenset({"high_if_immaterial", "low"})
 
+#: A wrapper the first screen's grid may narrow below its content's width, so a wide table scrolls in its own frame
+#: rather than widening the page (the kit's ``.tbl`` and ``.fig`` shrink so; a wrapper of them must too).
+_SHRINKS = ' style="min-width:0"'
+
 #: The flag's mark, as the kit's reference pages draw it, hidden from a screen reader, which reads the words.
 _FLAG_MARK = '<b aria-hidden="true">!</b>'
 
@@ -121,7 +125,7 @@ def _answers(answers: Sequence[PageAnswer]) -> str:
 
 def _options(options: PageOptions) -> str:
     highlighted = [options.highlighted] if options.highlighted is not None else []
-    return f'<div class="table-block" data-table="options">{grid_html(options.table, highlighted=highlighted)}</div>'
+    return f'<div data-table="options"{_SHRINKS}>{grid_html(options.table, highlighted=highlighted)}</div>'
 
 
 def _chart(chart: PageChart, chart_id: str, *, static: bool) -> str:
@@ -216,7 +220,8 @@ def planned_page_html(page: PlannedPage, *, appendix: Sequence[str] = (), static
     ]
     if page.summary:
         charts = "".join(
-            f"<div>{_chart(chart, f'summary-{index}', static=static)}</div>" for index, chart in enumerate(page.summary)
+            f"<div{_SHRINKS}>{_chart(chart, f'summary-{index}', static=static)}</div>"
+            for index, chart in enumerate(page.summary)
         )
         bluf.append(f'<div class="grid2" data-part="summary">{charts}</div>')
     parts = [
