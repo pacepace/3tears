@@ -66,6 +66,7 @@ from threetears.core.collections.l2_order import (
 )
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
+from threetears.core.ddl.write_marks import WRITE_MARKS_TABLE
 from threetears.core.entities.base import BaseEntity, derive_addressing_id
 from threetears.core.exceptions import (
     ConcurrentModificationError,
@@ -76,6 +77,7 @@ from threetears.core.exceptions import (
     L2ScopeNotConfiguredError,
     L2WriteRefusedError,
 )
+from threetears.core.sql_fragments import quote_identifier
 from threetears.nats.errors import KvError
 from threetears.observe import contain, get_logger, set_span_attribute, traced
 
@@ -1639,6 +1641,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         source = registry.generation_source
         assert source is not None  # narrow: _write_generation_on
+        # read before the advance, so every mark read was committed before it and the advance covers it
+        covered = await self._marks_before_advance(registry)
         try:
             token = await source.advance(self.table_name)
         except GenerationNotCommittedError as exc:
@@ -1667,9 +1671,61 @@ class BaseCollection(ABC, Generic[EntityT]):
                 )
                 return _Bump(failure=unadvanced)
             # a source that does not say what it wrote: advanced, but nothing to stamp or count.
+            await self._clear_marks(registry, covered)
             return _NO_BUMP
         registry.account_generation(self.table_name, token)
+        await self._clear_marks(registry, covered)
         return _Bump(token=token, rows=rows)
+
+    async def _marks_before_advance(self, registry: CollectionRegistry) -> list[int]:
+        """the ids of this table's write marks committed so far, which the advance about to run covers.
+
+        Read only where the registry names the queue's schema
+        (:meth:`CollectionRegistry.set_write_marks_schema`) and this collection has L3. A read that fails
+        clears nothing: the reconciler then advances once more from those marks, as it always did.
+
+        :param registry: this collection's registry
+        :ptype registry: CollectionRegistry
+        :return: the mark ids, empty when there are none or nothing is cleared here
+        :rtype: list[int]
+        """
+        schema = registry.write_marks_schema
+        if schema is None or self.l3_pool is None:
+            return []
+        marks = f"{quote_identifier(schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
+        try:
+            rows = await self.l3_pool.fetch(f"SELECT id FROM {marks} WHERE table_name = $1", self.table_name)  # noqa: S608 - the registry's schema, quoted
+        # prawduct:allow prawduct/broad-except -- the write committed; a mark left is drained by the reconciler
+        except Exception as exc:
+            contain(exc, log=log, what="could not read the write marks this advance covers; the reconciler drains them")
+            return []
+        return [int(row["id"]) for row in rows]
+
+    async def _clear_marks(self, registry: CollectionRegistry, covered: list[int]) -> None:
+        """delete exactly the marks this writer's advance covered, after it succeeded.
+
+        Each was committed before the advance, so the generation has moved past it, and the reconciler's
+        second advance of the table, which no follower would hear, is not made. A delete that fails, or a
+        writer that dies before it, leaves them to the reconciler, which advances once more.
+
+        :param registry: this collection's registry
+        :ptype registry: CollectionRegistry
+        :param covered: the mark ids read before the advance
+        :ptype covered: list[int]
+        :return: nothing
+        :rtype: None
+        """
+        schema = registry.write_marks_schema
+        if not covered or schema is None or self.l3_pool is None:
+            return
+        marks = f"{quote_identifier(schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
+        try:
+            await self.l3_pool.execute(f"DELETE FROM {marks} WHERE id = ANY($1::bigint[])", covered)  # noqa: S608 - the registry's schema, quoted
+        # prawduct:allow prawduct/broad-except -- the advance landed; a mark left only costs the reconciler one more advance
+        except Exception as exc:
+            contain(
+                exc, log=log, what="could not clear the write marks this advance covered; the reconciler drains them"
+            )
 
     @property
     def keeps_write_generation_in_l2(self) -> bool:

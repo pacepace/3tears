@@ -19,6 +19,15 @@ setting; the rest of the rows pay one `current_setting` check. A statement that 
 YugabyteDB has no transition tables, which a statement trigger would need to see whether it changed a row.
 Measured on YugabyteDB 2026.1: a 100,000-row `INSERT ... SELECT` takes 342 ms with the trigger, 282 ms without.
 
+**A writer clears the marks its own advance covers** (`CollectionRegistry.set_write_marks_schema`, unset by
+default, which keeps today's behaviour). A collection write on a switched-on table advances the generation
+itself and broadcasts, and its mark then made the reconciler advance a second time, unheard, so every follower
+dropped the table after every write. With the queue's schema set, the writer reads the table's marks after its
+commit, advances, and deletes exactly the marks it read: each was committed before the advance, which covers
+it. A writer that dies, or fails, between the advance and the delete leaves them, and the reconciler advances
+once more, as before; a read or delete that fails never fails the write. A process sets it only where its L3
+holds the queue (the hub, over its own database).
+
 **Upgrade.** The install backstop and the migration runner find every switched-on table missing the new trigger,
 replace the function, drop the old statement trigger (`threetears_collection_write_mark`) and create the row
 trigger, under the DDL lock, so the two never both fire. `drop_write_mark_triggers` drops either.

@@ -17,6 +17,15 @@ from collections.abc import AsyncIterator
 
 import asyncpg
 import pytest
+from typing import Any
+
+from threetears.core.backends.sql import SqlL3Backend
+from threetears.core.collections import WRITE_GENERATION, CollectionRegistry
+from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, TableSchema, collection_for_schema
+from threetears.core.collections.schema_backed import Column as SchemaColumn
+from threetears.core.config import DefaultCoreConfig
+from threetears.core.entities.base import BaseEntity
+from threetears.core.testing.kv import FakeNatsClient
 
 from threetears.core.data.migrations.ddl_lock import DdlLockPolicy, database_ddl_lock
 from threetears.core.data.migrations.session import ConnectionSession
@@ -280,3 +289,76 @@ async def test_the_migration_run_that_creates_a_switched_table_gives_it_its_trig
     finally:
         await conn.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
         await conn.close()
+
+
+_ROWS = TableSchema(
+    name=_TABLE,
+    primary_key="id",
+    columns=[SchemaColumn("id", STRING_TYPE), SchemaColumn("n", BIGINT_TYPE, nullable=True)],
+    on_conflict="update",
+)
+
+
+class _Row(BaseEntity):
+    primary_key_field = "id"
+
+
+class _SwitchedRows(collection_for_schema(_ROWS, entity_class=_Row)):  # type: ignore[misc]
+    write_generation = WRITE_GENERATION
+
+
+async def _switched_writer(db_container: str, platform: str, agent: str) -> tuple[Any, asyncpg.Pool, _Generations]:
+    """a switched-on collection over the agent schema's table, its registry naming the platform's queue."""
+    pool = await asyncpg.create_pool(db_container, min_size=1, max_size=2, server_settings={"search_path": agent})
+    assert pool is not None
+    source = _Generations()
+    registry = CollectionRegistry()
+    registry.configure(l2_client=FakeNatsClient(), kv_key_scope="marks-test", l3_pool=SqlL3Backend(pool))
+    registry.set_generation_source(source)
+    registry.set_write_marks_schema(platform)
+    return _SwitchedRows(registry, DefaultCoreConfig()), pool, source
+
+
+async def test_a_collection_write_that_advanced_itself_leaves_no_mark(
+    db_container: str, schemas: tuple[asyncpg.Pool, str, str]
+) -> None:
+    # its own advance is heard; the reconciler's second one from its mark was not, and every follower dropped
+    pool, platform, agent = schemas
+    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
+    rows, writer_pool, source = await _switched_writer(db_container, platform, agent)
+    try:
+        await rows.save_entity(rows.create({"id": "a", "n": 1}))
+        await rows.save_entity(rows.create({"id": "b", "n": 2}))
+    finally:
+        await writer_pool.close()
+
+    assert source.advanced == [_TABLE, _TABLE]
+    assert await _marks(pool, platform) == []
+
+
+async def test_a_writer_that_dies_between_its_advance_and_the_delete_leaves_marks_one_pass_drains(
+    db_container: str, schemas: tuple[asyncpg.Pool, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pool, platform, agent = schemas
+    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
+    rows, writer_pool, source = await _switched_writer(db_container, platform, agent)
+
+    async def dies(*_: Any) -> None:
+        return None  # the process ends here: the advance landed, the delete never ran
+
+    monkeypatch.setattr(rows, "_clear_marks", dies)
+    try:
+        await rows.save_entity(rows.create({"id": "a", "n": 1}))
+    finally:
+        await writer_pool.close()
+    assert source.advanced == [_TABLE]
+    assert await _marks(pool, platform) == [_TABLE]
+
+    drain = _Generations()
+    done = await WriteMarkReconciler(
+        pool, generation_source=drain, marks_schema=platform, tables=lambda: [_TABLE]
+    ).run_pass()
+
+    assert drain.advanced == [_TABLE]
+    assert done.applied == 1
+    assert await _marks(pool, platform) == []
