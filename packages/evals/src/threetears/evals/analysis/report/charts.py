@@ -27,7 +27,7 @@ from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler, model_serializer, model_validator
 
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.numbers import format_number, group_thousands
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, signed_with_unit, with_unit
 from threetears.evals.schema.base import EvalDocumentModel
 
@@ -236,12 +236,16 @@ _CELL_NUMBER = re.compile(r"(?<![\w.,])([+\-−]?)(\d[\d,]*)(?:\.(\d+))?(?![\w])
 #: The most decimals a column is padded to: past it the figures are small amounts whose precision is their own.
 _MOST_PADDED = 3
 
+#: A dollar amount's whole dollars in a table cell, written without their thousands grouped: ``$1239``.
+_UNGROUPED_DOLLARS = re.compile(r"(?<=\$)\d{4,}(?![\d,])")
+
 
 def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
     """A values table's cells, every number at one precision among the cells that read alike: cells that read the
     same but for their numbers (``94% · $1 per 1,000 calls``, ``96.4% · $1.06 per 1,000 calls``), wherever they sit in
     the table, have each number in the same place padded with zeros to the most decimals that place holds among them
-    (``94.0%``, ``$1.00``), up to three.
+    (``94.0%``, ``$1.00``), up to three. Money's whole dollars are then grouped by thousands (``$1239`` reads
+    ``$1,239``), as the figure keys write money, so a table and the prose citing it print one amount alike.
 
     Padding never rounds: a cell keeps every digit it had, so a table still never rounds away what a value holds,
     and two figures a reader compares read at one precision. A cell no other reads like (a label, words) is left as it
@@ -264,7 +268,9 @@ def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
         most = [max(len(numbers[place].group(3) or "") for numbers in found) for place in range(len(found[0]))]
         for at, column in places:
             table[at][column] = _padded_cell(table[at][column], most)
-    return table
+    return [
+        [_UNGROUPED_DOLLARS.sub(lambda whole: group_thousands(whole.group(0)), cell) for cell in row] for row in table
+    ]
 
 
 def _padded_cell(cell: str, most: Sequence[int]) -> str:

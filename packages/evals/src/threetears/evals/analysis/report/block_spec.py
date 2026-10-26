@@ -47,7 +47,9 @@ measure in its own panel (a heatmap's matrix, a dot strip's strip, bars in panel
 several units, and its stored unit is then empty.
 
 **What refuses a chart** (:func:`chart_faults`): its kind cannot draw its source; its query names an arm, aspect,
-measure or stratum the input does not hold, or selects no row; a forest selects a row with no interval; its reference
+measure or stratum the input does not hold, or selects no row (a ``prices`` query on one gain axis says why: the
+frontier on that axis holds one option or none, so there is no step to price, or no step joins two of the arms it
+keeps, and names the frontier's options); a forest selects a row with no interval; its reference
 key does not resolve; it stresses something that is no arm, stratum or task (or an option the plan's table lists);
 and a chart drawn as each arm less the control (diverging bars over measures, judged figures, strata or tasks; a
 difference heatmap naming fewer than two arms, which otherwise draws its second arm less its first) on an input that
@@ -70,6 +72,7 @@ from threetears.evals.analysis.report.figure_keys import (
     DIRECTION_WORDS,
     format_figure,
     parse_key,
+    price_frontier,
     reader_names,
     resolve,
 )
@@ -705,7 +708,7 @@ def _query_faults(path: str, chart: ChartSpec, report_input: ReportInput, option
         yield f"{path}.query.strata", f"name {stray}, which are no strata or tasks of the report input"
     rows: list[SourceRow] = query_rows(query, report_input)
     if not rows:
-        yield f"{path}.query", f"selects nothing from {source!r}: the chart would be empty"
+        yield _nothing_selected(path, query, report_input)
     elif chart.kind in INTERVAL_KINDS and any(row.interval is None for row in rows):
         yield (
             f"{path}.kind",
@@ -715,6 +718,34 @@ def _query_faults(path: str, chart: ChartSpec, report_input: ReportInput, option
         yield from bare_key_faults(f"{path}.reference[{index}].key", reference.key, report_input)
     if chart.emphasis and chart.emphasis not in _emphasizable(options, report_input):
         yield f"{path}.emphasis", f"is {chart.emphasis!r}, which is no arm, option, stratum or task to stress"
+
+
+def _nothing_selected(path: str, query: ChartQuery, report_input: ReportInput) -> _Fault:
+    """A query that selects no row: on a ``prices`` query reading one gain axis, why its frontier yields no step (it
+    holds one option or none, or no step joins two of the arms the query keeps), naming the frontier's options; else
+    that the chart would be empty."""
+    if query.source in _ONE_MEASURE and len(query.measures) == 1:
+        (gain_key,) = query.measures
+        try:
+            frontier = price_frontier(report_input, gain_key)
+        except UnresolvableReference:
+            # NOSILENT: a gain key naming no axis is the measures fault above, which names the axes this source reads.
+            frontier = None
+        if frontier is not None:
+            options = [f"arm:{arm}" for arm in frontier.frontier]
+            if not frontier.steps:
+                held = f"one option, {options[0]}" if options else "no option"
+                return (
+                    f"{path}.query.measures",
+                    f"selects no step from {query.source!r}: the price frontier on {gain_key!r} holds {held}, so "
+                    "there is no step to price",
+                )
+            return (
+                f"{path}.query.arms",
+                f"selects no step from {query.source!r}: no step of the frontier on {gain_key!r} joins two of the "
+                f"arms it keeps; the frontier runs {' → '.join(options)}",
+            )
+    return f"{path}.query", f"selects nothing from {query.source!r}: the chart would be empty"
 
 
 def _measure_vocabulary(source: str, report_input: ReportInput) -> set[str]:

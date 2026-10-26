@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 from collections.abc import Iterator
 from dataclasses import replace
 from typing import Any
@@ -51,7 +52,15 @@ from threetears.evals.analysis.report_gates import gate_findings
 from threetears.evals.analysis.summary import dollars_text
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.analysis.report.figure_keys import figure_key_grammar, key_subjects, render, resolve
+from threetears.evals.analysis.report.cost_unit import per_count
+from threetears.evals.analysis.report.figure_keys import (
+    cost_basis,
+    figure_key_grammar,
+    format_figure,
+    key_subjects,
+    render,
+    resolve,
+)
 from threetears.evals.analysis.report_decision import surviving_options
 from threetears.evals.analysis.analyst.blocks import block_catalog, block_render
 from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES
@@ -929,3 +938,107 @@ def test_a_prices_block_naming_no_gain_axis_or_two_is_refused_naming_the_axes() 
         assert "query.measures" in refused.value.parameters
     catalog = {source.source: source for source in block_catalog(held, "s").sources}
     assert catalog["prices"].holds_rows and "bars" in BLOCK_SOURCES and "prices" in BLOCK_SOURCES["bars"]
+
+
+def _monthly_steps(held: ReportInput) -> Iterator[tuple[str, list[Price]]]:
+    """Each gain axis whose frontier takes a step, on an input that declares a monthly volume, with its steps."""
+    if held.meta.volume_per_month is None:
+        return
+    for key in _axes(held):
+        steps = price_tradeoff(held, key, limit=len(held.arms)).steps
+        if steps:
+            yield key, steps
+
+
+def test_a_prices_tables_money_reads_with_its_thousands_grouped_and_a_months_to_the_whole_dollar() -> None:
+    """A step's price a month reads as its key reads under ``usd_whole`` (``$1,239``, never ``$1239``) where every step
+    on the axis is $10 or more, which whole dollars do not round away; under that, every price keeps its cents. Either
+    way no dollar amount prints four digits ungrouped, in the table or in the bars' values."""
+    whole_seen = cents_seen = False
+    for name, held in fixture_inputs().items():
+        for key, steps in _monthly_steps(held):
+            prices = [step.monthly_per_point for step in steps]
+            assert all(price is not None for price in prices), (name, key)
+            values = [float(price.value) for price in prices if price is not None]  # type: ignore[arg-type]
+            table = block_render(held, block_kind="table", query=_prices_query([key]))
+            bars = block_render(held, block_kind="bars", query=_prices_query([key]))
+            for block in (table, bars):
+                for row in block.rows:
+                    assert not any(re.search(r"\$\d{4}", cell) for cell in row.cells), (name, key, row.cells)
+            cells = [row.cells[1] for row in table.rows]
+            if min(abs(value) for value in values) >= 10:
+                whole = [format_figure(resolve(price.key, held), ("usd_whole",)) for price in prices if price]
+                assert cells == whole, (name, key)
+                whole_seen |= any(abs(value) >= 1000 for value in values)
+            else:
+                assert all("." in cell for cell in cells), (name, key, cells)
+                cents_seen = True
+    assert whole_seen, "the control: some fixture prices a step a month at $1,000 or more"
+    assert cents_seen, "the control: some fixture prices a step a month under $10"
+
+
+def _stepless(held: ReportInput) -> Iterator[tuple[str, list[str]]]:
+    """Each gain axis whose frontier takes no step, with the options on that frontier."""
+    for key in _axes(held):
+        trade = price_tradeoff(held, key, limit=len(held.arms))
+        if not trade.steps:
+            yield key, [row.arm.removeprefix("arm:") for row in trade.frontier]
+
+
+@pytest.mark.parametrize("name", sorted(fixture_inputs()))
+def test_a_prices_block_on_an_axis_whose_frontier_takes_no_step_is_refused_saying_so_and_sent_to_the_frontier(
+    name: str,
+) -> None:
+    held = fixture_inputs()[name]
+    if not _costed(held):
+        return
+    stepped = [key for key in _axes(held) if price_tradeoff(held, key, limit=len(held.arms)).steps]
+    for key, frontier in _stepless(held):
+        for kind in ("bars", "table"):
+            with pytest.raises(RefusedInput) as refused:
+                block_render(held, block_kind=kind, query=_prices_query([key]))
+            said = str(refused.value)
+            assert "selects nothing" not in said, said
+            assert f"the price frontier on {key!r} holds" in said and "no step to price" in said, said
+            assert all(f"arm:{arm}" in said for arm in frontier), said
+            assert ("holds no option" in said) == (not frontier), said
+            assert f"price_tradeoff with gain_key={key!r}" in refused.value.remedy, refused.value.remedy
+            assert "query.measures" in refused.value.parameters
+            assert list(refused.value.valid_values) == stepped
+
+
+def _costed(held: ReportInput) -> bool:
+    try:
+        price_tradeoff(held, next(iter(_axes(held))), limit=1)
+    except RefusedInput, StopIteration:
+        return False
+    return True
+
+
+def test_the_reference_inputs_include_an_axis_whose_frontier_takes_no_step() -> None:
+    """The control for the refusal above: r2 prices its pass rate on a frontier of one option."""
+    assert "pass_rate" in dict(_stepless(fixture_inputs()["r2"]))
+
+
+def test_a_prices_block_keeping_no_two_neighbours_of_its_frontier_is_refused_naming_the_frontier() -> None:
+    held = fixture_inputs()["r1 reading only bars"]
+    trade = price_tradeoff(held, "overall", limit=len(held.arms))
+    assert len(trade.frontier) > 1, "the control: the frontier takes a step"
+    first = trade.frontier[0].arm.removeprefix("arm:")
+    with pytest.raises(RefusedInput) as refused:
+        block_render(held, block_kind="table", query=_prices_query(["overall"], arms=[first]))
+    said = str(refused.value)
+    assert "selects nothing" not in said and "joins two of the arms it keeps" in said, said
+    assert all(row.arm in said for row in trade.frontier), said
+    assert "query.arms" in refused.value.parameters
+
+
+def test_a_prices_chart_says_its_prices_are_per_1000_of_what_the_snapshots_cost_counts() -> None:
+    """r1's cost counts conversations: a prices chart on it, with no monthly volume, says so, never replies."""
+    held = fixture_inputs()["r1 reading only bars"]
+    assert held.meta.volume_per_month is None, "the control: the steps are priced per 1,000"
+    per = per_count(cost_basis(held).noun)
+    assert "replies" not in per, "the control: the cost counts something else"
+    bars = block_render(held, block_kind="bars", query=_prices_query(["overall"]))
+    assert any(f"price per point {per}:" in note for note in bars.notes), bars.notes
+    assert not any("replies" in note for note in bars.notes), bars.notes

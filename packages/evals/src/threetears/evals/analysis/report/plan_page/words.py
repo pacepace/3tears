@@ -474,11 +474,12 @@ TABLE_HEADERS = {
 #: How a step along a price frontier is named: the option it moves from, then the one it moves to.
 PRICE_STEP_TEMPLATE = "{first} → {second}"
 
-#: What a chart of price steps says its prices are: a month's at the declared volume, or per 1,000 replies.
+#: What a chart of price steps says its prices are: a month's at the declared volume, or per 1,000 of what the cost
+#: counts, ``{per}`` the phrase (:func:`~threetears.evals.analysis.report.cost_unit.per_count`).
 PRICE_STEP_NOTES = {
     True: "Each step's price per point a month at the declared volume: where the best option moves as a point's "
     "price rises.",
-    False: "Each step's price per point per 1,000 replies: where the best option moves as a point's price rises.",
+    False: "Each step's price per point {per}: where the best option moves as a point's price rises.",
 }
 
 #: An interval column's head in a plain table: the chart's interval level, where it states one (``95% interval``).

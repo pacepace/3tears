@@ -8,7 +8,8 @@ source          columns
 readings        the arm, its change in points with its interval, the pipeline's reading
 contrasts       the arm, the measure, the change (a rate's in points) with its interval, the verdict
 measures,       wide: a row per arm, a column per measure holding its figure (its mean, else the statistic a
-judged,         criterion on it reads) with its interval; money per reply stated per 1,000 replies
+judged,         criterion on it reads) with its interval; money stated per 1,000 of what it counts (per 1,000
+                replies for money per reply)
 configs
 scoreboard      the arm, the figure, its value (a count by cause as its total)
 floors          the floor, the arm, its status, the largest drop its interval allows, its margin
@@ -19,7 +20,7 @@ cells           wide: a row per cell (its row level and column level) and arm, a
 confusion       the axis, the arm, the true label, the predicted label, the share of the row (or the count)
 human_pref      the slice, the share of ratings preferring the control with its interval
 prices          the step along the price frontier (from one option to the next), its price per point with its
-                interval: a month's at the declared volume, else per 1,000 replies
+                interval: a month's at the declared volume, else per 1,000 of what the cost counts
 ==============  ===================================================================================================
 
 **Wide, so paired figures sit side by side.** An arm's pass rate, cost and latency are one row, each in its
@@ -29,8 +30,11 @@ measure's column headed by its reader name, rather than three rows a reader pair
 each interval's ends, headed by the chart's interval level (``95% interval``), so a reader without the glyph (the
 Markdown page, a values table) reads the interval and its level too.
 
-An arm is the kit's chip (its tag and name); every number is spelled by the package's number rule, an absent one a
-dash. A query's arms keep the rows of those arms, on sources whose rows are of no one arm too.
+An arm is the kit's chip (its tag and name); every number is spelled by the package's number rule, an absent one a dash.
+A month's prices are whole dollars where every one on the axis is :data:`_WHOLE_DOLLARS_FROM` or more, as the
+``usd_whole`` figure key filter writes them: the cents of a monthly amount are noise, and under that whole dollars would
+round away too much, so every price keeps its cents. A query's arms keep the rows of those arms, on sources whose rows
+are of no one arm too.
 """
 
 from __future__ import annotations
@@ -310,10 +314,19 @@ def _human_pref(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
         }
 
 
+#: The least monthly price a table writes in whole dollars, as the ``usd_whole`` filter reads one.
+_WHOLE_DOLLARS_FROM = 10.0
+
+
 def _prices(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
     steps = [(row.item, row.interval) for row in context.rows() if isinstance(row.item, PriceStep)]
     monthly = any(step.monthly for step, _ in steps)
     drawn = quantity("dollars" if monthly else "usd_per_1k", [step.value for step, _ in steps])
+    amounts = [abs(value) for step, interval in steps for value in (step.value, *(interval or ()))]
+    whole = monthly and min(amounts, default=0.0) * drawn.factor >= _WHOLE_DOLLARS_FROM
+
+    def dollars(value: float) -> float:
+        return float(round(value * drawn.factor)) if whole else value * drawn.factor
 
     def name(arm: str) -> str:
         return context.look.arm(arm).name if arm in context.look.arms else arm
@@ -321,7 +334,11 @@ def _prices(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
     for step, interval in steps:
         yield {
             "step": _words(PRICE_STEP_TEMPLATE.format(first=name(step.first), second=name(step.second))),
-            "per_point": _number(step.value * drawn.factor, drawn.unit, interval),
+            "per_point": _number(
+                dollars(step.value),
+                drawn.unit,
+                (dollars(interval[0]), dollars(interval[1])) if interval is not None else None,
+            ),
         }
 
 
