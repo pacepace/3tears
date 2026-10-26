@@ -39,6 +39,23 @@ Now:
 - Every sweep covers each pod the catalog holds a copy for.
 - A pod a replica quarantined is revived there when a peer records its heartbeat.
 
+### core: coordination redemptions keep no L1 copy
+
+**Fixed:** `coordination_redemptions` cached every row a `RedemptionLedger` or `CollectionReplayAnchor` wrote in
+the writer's L1, where nothing read it again or removed it before its expiry, so a process's memory grew by one
+row per redemption (identity-core: one per token refresh, held 400 days). `CoordinationRedemptionsCollection`
+now declares `caches_in_l1 = False`: L2's compare-and-swap decides a redemption and L3 records it, as before, and
+`was_redeemed` and the replay anchor's read go to L2.
+
+### core: a revocation's recorded absence stands for fifteen minutes
+
+**Behaviour change.** `CoordinationRevocationsCollection.negative_cache_max_age` is 15 minutes, not 60 seconds.
+An absence is correct only under the write generation it was recorded at, and every check reads the current one,
+so a revocation on any replica ends it at the next check; the age bounds only a revocation whose generation
+advance was lost, which the write-mark reconciler repairs within its pass. At 60 s, nearly every 15-minute
+refresh found its `sid` and `sub` absences gone and asked L3. A consumer that runs no reconciler shortens it on a
+subclass.
+
 ### core: a scoped snapshot tells its listeners when it becomes ready
 
 **Fixed:** a listener (`on_change`) heard each commit, but not the copy becoming ready. A consumer that builds
