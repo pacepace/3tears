@@ -8,8 +8,9 @@ cut, :func:`analyst_tools` — and a mounted tool's
 :meth:`MountedTool.call` carries a call out: ``help`` generated from the catalogue, undeclared parameters
 refused, errors that teach and carry their :class:`Refusal` as data, long work as a job to poll. A
 transport adapter is a thin binding of :class:`MountedTool` to its server's tool shape
-(:mod:`threetears.evals.transports.fastmcp`). A loop running a model in process presents actions one tool each
-instead: :func:`action_tools` cuts them by name, each an :class:`ActionTool` whose call is its mounted tool's.
+(:mod:`threetears.evals.transports.fastmcp`). A loop running a model in process hands it the same mounted tools: each
+one's :attr:`MountedTool.name`, :attr:`MountedTool.description` and :meth:`MountedTool.input_schema` are a provider's
+tool definition, and :meth:`MountedTool.call` answers its calls.
 
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``.
@@ -42,7 +43,6 @@ from threetears.evals.actions.catalogue import (
     read_only_tools,
     standard_tools,
 )
-from threetears.evals.actions.action_tools import ActionTool, action_tools
 from threetears.evals.actions.analyst import analyst_actions, analyst_toolset, analyst_tools, editor_toolset
 from threetears.evals.actions.definitions import definition_drift_actions
 from threetears.evals.actions.engine import engine_actions, eval_catalogue
@@ -60,7 +60,6 @@ __all__ = [
     "ActionCatalogue",
     "ActionHandler",
     "ActionOutcome",
-    "ActionTool",
     "Caller",
     "ConformanceSample",
     "ConformanceStage",
@@ -71,7 +70,6 @@ __all__ = [
     "RefusalKind",
     "ToolHints",
     "ToolSpec",
-    "action_tools",
     "analyst_actions",
     "analyst_tools",
     "analyst_toolset",
