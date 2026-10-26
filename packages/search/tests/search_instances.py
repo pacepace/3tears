@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from threetears.search.contracts import (
+    AnswerMetadata,
     FACET_EXTRACTION_STATUS,
     FACET_HAS_DOWNLOADABLE_DATA,
     FACET_HEIGHT,
@@ -21,7 +22,11 @@ from threetears.search.contracts import (
     PRICING_FREE_SELF_HOSTED,
     PRODUCER_API_PROVIDER,
     SCALE_RANK,
+    PRICING_PER_WEIGHTED_UNIT,
     SCALE_UNIT_INTERVAL,
+    Anchor,
+    AnswerCapabilities,
+    AnswerRequest,
     Candidate,
     CandidateSet,
     ContentSlot,
@@ -30,6 +35,7 @@ from threetears.search.contracts import (
     Criterion,
     CriterionDisposition,
     FailureRecord,
+    GroundedAnswer,
     Locator,
     Provenance,
     ProviderCapabilities,
@@ -189,6 +195,68 @@ FAILED_METADATA = SearchResultsMetadata.from_failure(
     failure=FAILURE_RECORD,
 )
 
+ANSWER_REQUEST = AnswerRequest(
+    question="where do capybaras live?",
+    criteria=(Criterion.language("en"), Criterion.namespaced("brave", "country", "us")),
+    budget_scope_tags=("persona:capy", "run:eval-042"),
+)
+
+ANSWER_PROVENANCE = Provenance(
+    query="where do capybaras live?",
+    provider_instance="brave-answers",
+    provider_ids={"model": "brave"},
+    retrieved_at=RETRIEVED_AT,
+    egress="warp",
+)
+
+CITED = Candidate(
+    identity="https://example.org/capybaras",
+    locators=(LOCATOR,),
+    provenance=Provenance(
+        query="where do capybaras live?",
+        provider_instance="brave-answers",
+        provider_ids={"number": "1", "favicon": "https://example.org/favicon.ico"},
+        retrieved_at=RETRIEVED_AT,
+        egress="warp",
+    ),
+    snippet="Capybaras live throughout South America.",
+    fidelity_available="snippet",
+)
+
+ANCHOR = Anchor(start=0, end=38, source_index=0)
+
+GROUNDED_ANSWER = GroundedAnswer(
+    text="Capybaras live across South America, near water.",
+    sources=(CITED,),
+    anchors=(ANCHOR,),
+    provenance=ANSWER_PROVENANCE,
+    spend=Spend(money=Decimal("0.01567"), calls=1, provider_units=Decimal("2"), provider_unit="brave:searches"),
+    notices=("anchor offsets are provisional",),
+    dispositions=(CriterionDisposition(criterion_key="language", disposition="pushdown"),),
+    prompt_tokens=1234,
+    completion_tokens=300,
+)
+
+ANSWER_CAPABILITIES = AnswerCapabilities(
+    provider="brave",
+    modes=("single",),
+    citations_in_modes=("single",),
+    pushdown_criteria=("language",),
+    unsatisfiable_criteria=("time-range",),
+    namespaced_parameters=("brave:country",),
+    pricing_model=PRICING_PER_WEIGHTED_UNIT,
+    metered_unit="searches",
+    minimum_timeout_seconds=30.0,
+)
+
+ANSWER_METADATA = AnswerMetadata(
+    question="where do capybaras live?", answer=GROUNDED_ANSWER, spend=GROUNDED_ANSWER.spend
+)
+
+FAILED_ANSWER_METADATA = AnswerMetadata(
+    question="where do capybaras live?", spend=FAILURE_RECORD.spend, failure=FAILURE_RECORD
+)
+
 #: one fully-populated instance per exported wire type. The round-trip
 #: suite asserts this list covers every exported ContractModel subclass.
 ALL_INSTANCES = [
@@ -208,4 +276,9 @@ ALL_INSTANCES = [
     FAILURE_RECORD,
     METADATA,
     CAPABILITIES,
+    ANSWER_REQUEST,
+    ANCHOR,
+    GROUNDED_ANSWER,
+    ANSWER_CAPABILITIES,
+    ANSWER_METADATA,
 ]

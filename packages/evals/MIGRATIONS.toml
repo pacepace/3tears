@@ -58,10 +58,10 @@
 # callers.
 
 [[release]]
-version = "unreleased"
+version = "0.80.0"
 since = "v0.79.0"
 summary = """
-A campaign's page reads like a senior analyst's for any eval shape: its first screen is the decision (the title, the
+Search and agent-tools give grounded answers (#930). For 3tears-evals, a campaign's page reads like a senior analyst's for any eval shape: its first screen is the decision (the title, the
 question, the writer's answer, what warns, each report-wide caveat once), code's readings sit in one Scorecard matrix
 per campaign kind, and Design & provenance states the report-wide detail once. An aspect and a goal check may
 declare the name a page prints for them, which no identity, digest or fingerprint reads. The page is built by one
