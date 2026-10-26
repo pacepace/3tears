@@ -509,11 +509,17 @@ class _Panel:
 
 
 def _axis_keys(context: ChartContext) -> tuple[str, str]:
-    """The gate scatter's two measures, x then y: the two its query names, else the two its gates read; up is the one
-    a gate reads as a floor (higher is better), across the one read as a budget."""
+    """The gate scatter's two measures, x then y: the two its query names, else the two its gates read (over tasks,
+    the two every task reads); up is the one a gate reads as a floor (higher is better), across the one read as a
+    budget."""
     report_input = context.report_input
+    # Over tasks, the gates every task reads (a task's own gates draw in its panel only where they are the axes').
     place = "task" if context.query.source == "tasks" else "overall"
-    gating = [criterion for criterion in _gating(report_input) if criterion_place(criterion) == place]
+    gating = [
+        criterion
+        for criterion in _gating(report_input)
+        if criterion_place(criterion) == place and criterion.task is None
+    ]
     keys = list(dict.fromkeys(context.query.measures))
     if len(keys) != 2:
         keys = list(dict.fromkeys(criterion.measure for criterion in gating))

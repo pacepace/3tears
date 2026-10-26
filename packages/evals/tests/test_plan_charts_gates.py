@@ -426,9 +426,10 @@ def test_its_paths_join_configs_along_one_factor_coloured_by_the_first_and_cover
     assert {arm for path in data.paths for arm in path.ids} == set(levels)
 
 
-def test_a_gate_scatter_over_tasks_panels_each_task_at_its_own_gates() -> None:
+@pytest.mark.parametrize("measures", [["overall", "latency_s"], []], ids=["named", "the-gates-every-task-reads"])
+def test_a_gate_scatter_over_tasks_panels_each_task_at_its_own_gates(measures: list[str]) -> None:
     report_input = _input("r1")
-    block, _ = _draw("r1", _spec("gate_scatter", "tasks", measures=["overall", "latency_s"]))
+    block, _ = _draw("r1", _spec("gate_scatter", "tasks", measures=measures))
     data = block.data
     assert isinstance(data, GateScatterChart) and data.panels is not None
     assert [panel.title for panel in data.panels] == [task.name or task.id for task in report_input.tasks]
