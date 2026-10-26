@@ -2,7 +2,7 @@
   "mode": "no_call",
   "headline_kind": "no_call",
   "headline": "Keep {control.name}. Both candidates cost {cost.uplift_range|pct} more per reply and stay in character less often.",
-  "lede": "{arm:qwen3.8-flash} is worse on the asked pass rate, by {reading.qwen3.8-flash.high|abs|pts} to {reading.qwen3.8-flash.low|abs|pts} points, and neither candidate beats {control.name} on anything this campaign measured. A candidate priced at or below {control.name} that holds character as well would change the answer.",
+  "lede": "{arm:qwen3.8-flash} has a lower pass rate, by {reading.qwen3.8-flash.high|abs|pts} to {reading.qwen3.8-flash.low|abs|pts} points, and neither candidate beats {control.name} on anything this campaign measured. A candidate priced at or below {control.name} that holds character as well would change the answer.",
   "decision": {
     "slots": [
       {
@@ -57,7 +57,7 @@
     },
     {
       "term": "Pass",
-      "text": "A trial passes when every check and every judged dimension passes. The asked reading uses confirmatory {reading.qwen3.8-flash.level} intervals.",
+      "text": "A trial passes when every check and every judged dimension passes. The pass-rate reading uses confirmatory {reading.qwen3.8-flash.level} intervals.",
       "caveats": []
     },
     {
@@ -91,11 +91,6 @@
         "unreported:output_tokens",
         "apparatus:simulator_sent_settings"
       ]
-    },
-    {
-      "term": "Strata",
-      "text": "Per-stratum rates are descriptive. Their intervals are not corrected, and small strata move a lot on one case.",
-      "caveats": []
     },
     {
       "term": "Source",
@@ -216,7 +211,7 @@
       "id": "question",
       "eyebrow": "The asked question",
       "headline": "Both candidates stay inside the {aspect.margin}-point margin, but {arm:qwen3.8-flash} is separated as worse",
-      "takeaway": "The question: does either candidate stay in character within {aspect.margin} points of {control.name}? The shaded region is the margin; a candidate passes when its whole interval sits inside it.",
+      "takeaway": "The question: does either candidate's pass rate stay within {aspect.margin} points of {control.name}'s? The shaded region is the margin; a candidate passes when its whole interval sits inside it.",
       "chart": {
         "kind": "forest",
         "title": "",
@@ -250,7 +245,7 @@
     {
       "id": "strata",
       "eyebrow": "Where character is lost",
-      "headline": "Off-lane asks, the largest stratum, carry about {strata.off_lane.loss_share|pct10} of each candidate's loss",
+      "headline": "Off-lane asks, the largest stratum, show each candidate's deepest drop in in-character rate",
       "takeaway": "Change in in-character rate against {control.name}, by kind of listener message. The twelve largest strata, by cases. Bold rows are separated from zero before any correction; read them as leads.",
       "chart": {
         "kind": "diverging_bars",

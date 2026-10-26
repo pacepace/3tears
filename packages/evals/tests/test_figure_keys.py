@@ -136,7 +136,7 @@ class TestTheKairoPlanResolves:
 
     def test_the_lede_prints_the_drop_by_its_interval_ends_in_two_sentences(self):
         lede = _rendered(_plan()["lede"])
-        assert lede.startswith("qwen3.8-flash (A) is worse on the asked pass rate, by 3.4 to 10.8 points")
+        assert lede.startswith("qwen3.8-flash (A) has a lower pass rate, by 3.4 to 10.8 points")
         assert "neither candidate beats September on anything this campaign measured" in lede
         assert lede.endswith("would change the answer.")
         assert lede.count(". ") == 1
@@ -163,9 +163,10 @@ class TestTheKairoPlanResolves:
     def test_watch_prints_the_reasoning_shares_in_whole_percents(self):
         assert "spent 55% of its output reasoning against September's 76%" in _rendered(_slot("watch"))
 
-    def test_the_strata_headline_rounds_the_loss_share_to_ten(self):
-        headline = next(section for section in _plan()["sections"] if section["id"] == "strata")["headline"]
-        assert "carry about 50% of each candidate's loss" in _rendered(headline)
+    def test_next_rounds_the_off_lane_loss_share_to_ten(self):
+        """The share rides in Next, where the experiment it sizes is said; the strata section's headline claims only
+        what its chart of changes shows (owner-approved anchor fix, 2026-10-26)."""
+        assert "since they carry about 50% of each candidate's loss" in _rendered(_slot("next"))
 
     def test_the_masthead_counts(self):
         counts = _rendered(_plan()["masthead"]["counts"])

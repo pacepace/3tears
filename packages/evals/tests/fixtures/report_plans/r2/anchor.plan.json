@@ -22,7 +22,7 @@
       },
       {
         "key": "next",
-        "text": "Re-run {arm:brisk-s.low.r1} on a larger multi-hop and date-math sample: if its pass rate drops below the gate there, the answer becomes {arm:brisk-s.high.r1} with a looser latency budget.",
+        "text": "Re-run {arm:brisk-s.low.r1} on a larger sample across every task: it clears the {criteria.pass_rate.threshold|pct} overall pass-rate gate by only {weakest.margin} points, so an overall rate below the gate leaves no configuration passing both gates and the call becomes a no call; a rate above it confirms the pick.",
         "caveats": []
       }
     ],

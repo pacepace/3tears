@@ -1120,7 +1120,7 @@ KAIRO_PROSE = [
     "explore[0].recomputes",
     "explore[0].controls[0].title",
     "explore[0].controls[1].title",
-    *(f"method[{index}].{field}" for index in range(9) for field in ("term", "text")),
+    *(f"method[{index}].{field}" for index in range(8) for field in ("term", "text")),
     "durable_claims[0].text",
     "durable_claims[1].text",
 ]
