@@ -9,6 +9,7 @@ it once done.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import io
 import json
 from collections.abc import AsyncIterator
@@ -19,6 +20,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from threetears.core.backends.protocol import LOAD_FILES_MAX_WAIT_SECONDS, LoadFile
+from threetears.datasources import export_read, partitioned_export
 from threetears.datasources.export_read import DEFAULT_PRESIGN_SECONDS, ExportNotDeletedError, IncompleteExportError
 from threetears.datasources.partitioned_export import (
     CountedFile,
@@ -27,6 +29,7 @@ from threetears.datasources.partitioned_export import (
     export_counted_partitions,
     presigned_counted_partition,
     read_counted_partition,
+    read_counted_partition_arrow,
 )
 from threetears.datasources.query_client import DatasourceExportResult
 
@@ -254,3 +257,46 @@ async def test_the_caller_deletes_a_proven_export_and_a_failed_delete_is_raised_
 def test_a_presigned_file_outlives_the_longest_wait_for_its_load() -> None:
     # the broker reaches a file anywhere inside the pod's wait; a URL that expired first fails the load
     assert DEFAULT_PRESIGN_SECONDS > LOAD_FILES_MAX_WAIT_SECONDS
+
+
+class TestAPartReadAsArrow:
+    """the Arrow read holds a part to its count exactly as the row read does, and makes no row a Python object."""
+
+    @pytest.mark.asyncio
+    async def test_the_arrow_read_holds_the_rows_the_row_read_returns(self) -> None:
+        store = _Store(_export({"TX": [_rows("TX", 1), _rows("TX", 2)], "DE": [_rows("DE", 2)]}))
+        export = await _counted(_Client(row_count=5), store, {"TX": 3, "DE": 2})
+
+        for part in ("TX", "DE"):
+            table = await read_counted_partition_arrow(store, export, part)
+            assert isinstance(table, pa.Table)
+            assert table.num_rows == export.rows[part]
+            assert table.to_pylist() == await read_counted_partition(store, export, part)
+
+    @pytest.mark.asyncio
+    async def test_a_part_with_no_files_is_an_empty_table(self) -> None:
+        store = _Store(_export({"TX": [_rows("TX", 3)]}))
+        export = await _counted(_Client(row_count=3), store, {"TX": 3, "WY": 0})
+        empty = await read_counted_partition_arrow(store, export, "WY")
+        assert (empty.num_rows, empty.num_columns) == (0, 0)
+
+    @pytest.mark.asyncio
+    async def test_files_holding_other_than_the_count_are_refused(self) -> None:
+        objects = _export({"TX": [_rows("TX", 3)]}, counted=False)
+        objects[f"{_PREFIX}join_state_code=TX/0000_part_00.parquet"] = _parquet(_rows("TX", 2))
+        store = _Store(objects)
+        export = await _counted(_Client(row_count=3), store, {"TX": 3})
+        with pytest.raises(IncompleteExportError, match="files hold 2 rows, the caller counted 3"):
+            await read_counted_partition_arrow(store, export, "TX")
+
+    def test_no_row_becomes_a_python_object(self) -> None:
+        """pinned on the code: pyarrow's Table cannot be patched to catch a conversion as it happens."""
+        reader = inspect.getsource(partitioned_export)
+        writer = inspect.getsource(export_read)
+        arrow_path = [
+            inspect.getsource(partitioned_export.read_counted_partition_arrow),
+            reader[reader.index("async def _read_part_arrow") : reader.index("def _moved(")],
+            writer[writer.index("def _parquet_table") : writer.index("async def read_export")],
+        ]
+        for code in arrow_path:
+            assert "to_pylist" not in code and "to_pydict" not in code and "_parquet_rows" not in code, code[:60]

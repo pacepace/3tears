@@ -3054,11 +3054,15 @@ class ScopedSnapshot:
         self,
         scope: str,
         epoch: int,
-        rows: Mapping[str, Sequence[Mapping[str, Any]]],
+        rows: Mapping[str, Sequence[Mapping[str, Any]] | Any],
         *,
-        added: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+        added: Mapping[str, Sequence[Mapping[str, Any]] | Any] | None = None,
     ) -> StagedScope:
         """write a scope's chunks under ``epoch`` without moving its pointer or touching this L1.
+
+        A table's rows are dict rows, or one Arrow table (an export read straight into Arrow): either is
+        typed by this L1 alike (:meth:`~threetears.core.cache.duckdb.DuckDBBackend.storage_arrow`), refused
+        alike, and staged as the same chunk bytes.
 
         For a writer that knows a change's epoch before it commits (the write's version is the
         epoch, :mod:`~threetears.core.collections.scope_epochs`): it stages each scope as soon as
@@ -3074,13 +3078,14 @@ class ScopedSnapshot:
         :ptype scope: str
         :param epoch: the epoch the write will commit
         :ptype epoch: int
-        :param rows: table name -> every row the scope holds in that table after the write; a table
-            left out of both ``rows`` and ``added`` is one the write did not change, kept from the
-            scope's current chunk
-        :ptype rows: Mapping[str, Sequence[Mapping[str, Any]]]
-        :param added: append-only table name -> the rows the write ADDED to the scope, staged as a
-            piece that :meth:`publish_staged` appends to the chain the pointer holds at ``carry_at``
-        :ptype added: Mapping[str, Sequence[Mapping[str, Any]]] | None
+        :param rows: table name -> every row the scope holds in that table after the write, as dict rows
+            or one ``pyarrow.Table``; a table left out of both ``rows`` and ``added`` is one the write did
+            not change, kept from the scope's current chunk
+        :ptype rows: Mapping[str, Sequence[Mapping[str, Any]] | pyarrow.Table]
+        :param added: append-only table name -> the rows the write ADDED to the scope, as dict rows or one
+            ``pyarrow.Table``, staged as a piece that :meth:`publish_staged` appends to the chain the
+            pointer holds at ``carry_at``
+        :ptype added: Mapping[str, Sequence[Mapping[str, Any]] | pyarrow.Table] | None
         :return: the staged chunks
         :rtype: StagedScope
         :raises ValueError: when the scope is ``None``; a table is not one of the snapshot's, is named
@@ -3126,7 +3131,7 @@ class ScopedSnapshot:
             pieces=frozenset(added),
         )
 
-    async def _export(self, table: SnapshotTable, scope: str, rows: Sequence[Mapping[str, Any]]) -> Any:
+    async def _export(self, table: SnapshotTable, scope: str, rows: Sequence[Mapping[str, Any]] | Any) -> Any:
         """the Arrow table a scope of ``table`` holds with ``rows``, typed by this L1, changing nothing.
 
         :return: the rows

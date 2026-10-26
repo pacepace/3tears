@@ -8,6 +8,31 @@ packages (bumped in lock-step).
 
 ## v0.79.0 -- 2026-10-26
 
+### datasources, core: an export part read as Arrow, and staged as Arrow
+
+**Added:** a counted export's part can travel from the export's parquet files into a scoped
+snapshot's chunks without any row becoming a Python object.
+- `threetears.datasources.partitioned_export.read_counted_partition_arrow(store, export, part, *,
+  file_concurrency=8) -> pyarrow.Table`, beside `read_counted_partition`.
+  - It reads each file straight into Arrow, several at once and off the event loop, then
+    concatenates them.
+  - It holds the part to its count exactly as the row read does: a mismatch raises
+    `IncompleteExportError`, naming both counts.
+  - A part with no files is an empty table. Needs the `export` extra.
+- `ScopedSnapshot.stage` accepts one `pyarrow.Table` per table, in `rows` and in `added`, as
+  well as dict rows.
+  - The table is typed by the same L1 SQL and refused the same way: an unknown table, a null
+    key, a missing key column. A key given twice keeps its last row.
+  - It stages chunk bytes identical to the same rows given as dicts.
+- `DuckDBBackend.storage_arrow(table, rows, primary_key) -> (columns, pyarrow.Table)` puts an
+  Arrow table into a table's storage forms, as `export_rows` does with dict rows.
+  - `export_rows` now takes either form.
+  - A subclass that types rows itself (a retaining backend's `export_rows`) calls
+    `storage_arrow` to take Arrow too.
+  - Columns whose Arrow type an insert's cast stores exactly (integers, floats, booleans,
+    strings, dates, decimals at the column's scale, zoned timestamps into zoned columns) stay
+    Arrow. Any other column is stored value by value, as a dict row's is.
+
 ### core: a compare-and-swap reads its bucket's creation time once, not twice
 
 **Changed:** every ordered `l2_cas_mutate` made two `STREAM.INFO` round trips for the bucket's
