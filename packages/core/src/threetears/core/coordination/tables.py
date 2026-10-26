@@ -107,10 +107,15 @@ STORAGE_FAILURES: Final[tuple[type[Exception], ...]] = (
     OSError,
 )
 
-#: how long a recorded absence may answer on the revocation table. The generation stamp is what
-#: makes an absence correct; this only bounds the window left by a write that commits and then
-#: cannot advance the generation.
-_REVOCATION_NEGATIVE_CACHE_SECONDS: Final = 60.0
+#: how long a recorded absence may answer on the revocation table. The generation stamp is what makes an
+#: absence correct, and it is event-driven: every check reads the table's current generation and drops an
+#: absence stamped under an older one, so a revocation on any replica ends it at the next check whatever this
+#: age. The age bounds only a revocation that committed and then never advanced the generation, which the
+#: write-mark reconciler (:mod:`threetears.core.collections.write_marks`) advances from the write's own mark
+#: within its pass interval. So it is sized to the checks it saves, not to that window: fifteen minutes, a
+#: session's refresh cadence, where the 60 s it was let nearly every refresh's check find its absence gone and
+#: ask L3. A consumer that runs no reconciler shortens it on a subclass (``negative_cache_max_age``).
+_REVOCATION_NEGATIVE_CACHE_SECONDS: Final = 15 * 60.0
 
 #: how often one process sweeps a table's expired rows, and how many it removes per statement.
 #: The sweep is table-size hygiene: every read already treats an expired row as absent.
@@ -559,7 +564,16 @@ class CoordinationRevocationsCollection(CoordinationCollection):
 
 
 class CoordinationRedemptionsCollection(CoordinationCollection):
-    """single-use redemptions: the durable ledger shape, where a second sighting is the answer."""
+    """single-use redemptions: the durable ledger shape, where a second sighting is the answer.
+
+    No L1 copy: a redemption is decided by L2's compare-and-swap and recorded in L3, and a row is
+    almost never read again where it was written (a reuse reaches whichever replica it reaches). Held
+    in L1, every row written stayed until its expiry, so a process's memory grew by one row per
+    redemption (identity-core: one per token refresh, held 400 days). The replay anchor's read of its
+    one row per purpose goes to L2, once per guard.
+    """
+
+    caches_in_l1: ClassVar[bool] = False
 
     l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "synchronous"
     expires_at_column: ClassVar[str | None] = "expires_at"
