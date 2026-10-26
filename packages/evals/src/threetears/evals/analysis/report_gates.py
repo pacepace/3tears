@@ -8,8 +8,9 @@ the decision dropped.
 (:func:`~threetears.evals.analysis.report_margins.criterion_place` and
 :func:`~threetears.evals.analysis.report_margins.criterion_figures`): overall, in its one task, in every task, or in
 every cell. A check narrowed to a task reads only the criteria read in tasks, at that task's figures; one narrowed to
-a cell, only those read in cells, at that cell's. Floors and bars warn and never gate; a guardrail the pipeline read
-``breached`` is the decision's to drop, not a figure here.
+a cell, only those read in cells, at that cell's; one narrowed to a criterion, only that one, wherever it reads (a gate
+matrix's row per gate). Floors and bars warn and never gate; a guardrail the pipeline read ``breached`` is the
+decision's to drop, not a figure here.
 
 **Each figure**, on its point estimate:
 
@@ -20,7 +21,8 @@ a cell, only those read in cells, at that cell's. Floors and bars warn and never
 - else *passes*.
 
 A gate with no figure for the arm at a place the check reads it fails there (GENERATOR §1.1): a figure the input does
-not hold is not shown passed. Unnarrowed, a gate read in every task (or every cell) fails at each task (cell) that
+not hold is not shown passed, and neither is one that is not a number (a NaN or an infinity), which reads as no
+figure. Each comparison is written as the figure *meeting* the line, so a value no comparison holds for meets none. Unnarrowed, a gate read in every task (or every cell) fails at each task (cell) that
 lacks the arm's figure, so the unnarrowed check agrees with every narrowed one.
 
 **The status** is ``fail`` when any figure fails, ``borderline`` when none fails and one is borderline, else
@@ -33,13 +35,15 @@ interval $0.00522–$0.00559``, ``Latency budget (p95): no figure``, ``Overall q
 account Q&A``. An unnarrowed check adds where the figure sits
 (``in Billing & account Q&A``, ``in Complex × News``).
 
-**Routing** (GENERATOR §3, read by the gate matrix): for each routable task, the cheapest arm that passes there and
-in every cross-cutting task. Cost is the task's figure on the input's one measure stated per 1,000 replies, else on
-its one dollar measure on the cost merit axis, times 1,000; an arm with no cost there is never the cheapest.
+**Routing** (GENERATOR §3, read by the gate matrix, :func:`routing_picks`): for each routable task, the cheapest arm
+that passes there and in every cross-cutting task. Cost (:func:`task_costs`) is the task's figure on the input's one
+measure stated per 1,000 replies, else on its one dollar measure on the cost merit axis, times 1,000; an arm with no
+cost there is never the cheapest.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
@@ -54,7 +58,7 @@ from threetears.evals.analysis.report_margins import (
     criterion_places,
 )
 
-__all__ = ["GateCheck", "GateStatus", "gate_check"]
+__all__ = ["GateCheck", "GateStatus", "gate_check", "routing_picks", "task_costs"]
 
 #: An arm's status against the gates: every figure passes, one sits borderline and none fails, or one fails.
 GateStatus = Literal["pass", "borderline", "fail"]
@@ -92,9 +96,10 @@ class GateCheck:
     borders: tuple[str, ...]
 
 
-def _applies(criterion: Criterion, task: str | None, cell: str | None) -> bool:
-    """Whether a check narrowed to ``task`` or ``cell`` (neither: unnarrowed) reads ``criterion``."""
-    if criterion.kind not in _GATING:
+def _applies(criterion: Criterion, task: str | None, cell: str | None, only: str | None) -> bool:
+    """Whether a check narrowed to ``task`` or ``cell`` (neither: unnarrowed), and to the criterion ``only`` (None: to
+    none), reads ``criterion``."""
+    if criterion.kind not in _GATING or only not in (None, criterion.id):
         return False
     place: CriterionPlace = criterion_place(criterion)
     if task is not None:
@@ -151,17 +156,26 @@ def _read(
     threshold = float(criterion.threshold)
     higher = criterion.direction == "higher_is_better"
     stated = format_figure(replace(line, value=figure.value))
-    if figure.value < threshold if higher else figure.value > threshold:
+    meets = figure.value >= threshold if higher else figure.value <= threshold
+    if not meets:
         return "fail", f"{name} {stated} {_MISSED[criterion.direction]} {format_figure(line)}"
     interval = _interval(figure)
-    if interval is not None and (interval[0] < threshold if higher else interval[1] > threshold):
+    if interval is not None and not (interval[0] >= threshold if higher else interval[1] <= threshold):
         separator = ", " if figure.ci is not None else " "
         return "borderline", f"{name} {stated}{separator}{_spread(line, figure)}"
     return "pass", ""
 
 
-def gate_check(report_input: ReportInput, arm: str, *, task: str | None = None, cell: str | None = None) -> GateCheck:
-    """Check one arm against every gate and guardrail, overall or in one task or cell (this module's account).
+def gate_check(
+    report_input: ReportInput,
+    arm: str,
+    *,
+    task: str | None = None,
+    cell: str | None = None,
+    criterion: str | None = None,
+) -> GateCheck:
+    """Check one arm against every gate and guardrail, overall or in one task or cell, or against one of them (this
+    module's account).
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -171,9 +185,11 @@ def gate_check(report_input: ReportInput, arm: str, *, task: str | None = None, 
     :ptype task: str | None
     :param cell: The one target-matrix cell to check in, by id; None to check wherever each criterion reads.
     :ptype cell: str | None
+    :param criterion: The one gate or guardrail to check against, by id; None for every one.
+    :ptype criterion: str | None
     :return: The arm's status, with a reason per failing and per borderline figure.
     :rtype: GateCheck
-    :raises ValueError: Both a task and a cell were named, or one the input does not hold.
+    :raises ValueError: Both a task and a cell were named, or a task, cell or gating criterion the input does not hold.
     """
     if task is not None and cell is not None:
         raise ValueError(f"a gate check reads one place at most; it was given task {task!r} and cell {cell!r}")
@@ -181,39 +197,53 @@ def gate_check(report_input: ReportInput, arm: str, *, task: str | None = None, 
         raise ValueError(f"the input holds no task {task!r}")
     if cell is not None and cell not in report_input.cells:
         raise ValueError(f"the input holds no cell {cell!r}")
+    if criterion is not None and criterion not in {held.id for held in report_input.criteria if held.kind in _GATING}:
+        raise ValueError(f"the input holds no gate or guardrail {criterion!r}")
     narrowed = task is not None or cell is not None
     found: dict[GateStatus, list[str]] = {"fail": [], "borderline": []}
-    for criterion in report_input.criteria:
-        if not _applies(criterion, task, cell):
+    for held in report_input.criteria:
+        if not _applies(held, task, cell, criterion):
             continue
         places = [
             (at_task, at_cell)
-            for at_task, at_cell in criterion_places(report_input, criterion)
+            for at_task, at_cell in criterion_places(report_input, held)
             if (task is None or at_task == task) and (cell is None or at_cell == cell)
         ]
-        no_figure = _NO_FIGURE_TEMPLATE.format(name=reader_name("criterion", criterion.id, report_input))
+        no_figure = _NO_FIGURE_TEMPLATE.format(name=reader_name("criterion", held.id, report_input))
         if not places:
             found["fail"].append(no_figure)
             continue
         figures: dict[tuple[str | None, str | None], CriterionFigure] = {
-            (figure.task, figure.cell): figure for figure in criterion_figures(report_input, criterion, arm)
+            (figure.task, figure.cell): figure for figure in criterion_figures(report_input, held, arm)
         }
-        line = resolve(f"criteria.{criterion.id}.threshold", report_input)
+        line = resolve(f"criteria.{held.id}.threshold", report_input)
         for at_task, at_cell in places:
             figure = figures.get((at_task, at_cell))
-            if figure is None:
+            if figure is None or not math.isfinite(figure.value):
                 found["fail"].append(_placed(report_input, no_figure, at_task, at_cell, narrowed))
                 continue
-            read, reason = _read(report_input, criterion, figure, line)
+            read, reason = _read(report_input, held, figure, line)
             if read != "pass":
                 found[read].append(_placed(report_input, reason, at_task, at_cell, narrowed))
     status: GateStatus = "fail" if found["fail"] else "borderline" if found["borderline"] else "pass"
     return GateCheck(arm=arm, status=status, fails=tuple(found["fail"]), borders=tuple(found["borderline"]))
 
 
-def _task_costs(report_input: ReportInput, task_id: str) -> dict[str, float]:
-    """Each arm's cost per 1,000 replies in one task (this module's Routing)."""
-    task = next(held for held in report_input.tasks if held.id == task_id)
+def task_costs(report_input: ReportInput, task_id: str) -> dict[str, float]:
+    """Each arm's cost per 1,000 replies in one task (this module's Routing): what a gate matrix's cell prices and
+    routing picks the cheapest by.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param task_id: The task, by id.
+    :ptype task_id: str
+    :return: Each arm's cost per 1,000 replies there, by arm; empty where the task states no cost.
+    :rtype: dict[str, float]
+    :raises ValueError: The input holds no such task.
+    """
+    task = next((held for held in report_input.tasks if held.id == task_id), None)
+    if task is None:
+        raise ValueError(f"the input holds no task {task_id!r}")
     for unit, merit, factor in (("usd_per_1k", None, 1.0), ("usd", "cost", 1000.0)):
         keys = [
             key
@@ -229,11 +259,16 @@ def _task_costs(report_input: ReportInput, task_id: str) -> dict[str, float]:
     return {}
 
 
-def _routing_picks(report_input: ReportInput, arms: Sequence[str]) -> dict[str, str]:
+def routing_picks(report_input: ReportInput, arms: Sequence[str]) -> dict[str, str]:
     """For each routable task, the cheapest of ``arms`` passing there and in every cross-cutting task (this module's
     Routing), by task id; a task no costed arm passes has no pick. The first in ``arms`` order wins a tie.
 
-    Private until the gate matrix, its one reader, is built.
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param arms: The arms that may be picked, in the order a tie goes by.
+    :ptype arms: Sequence[str]
+    :return: Each routable task's pick, by task id.
+    :rtype: dict[str, str]
     """
     cross_cutting = [task.id for task in report_input.tasks if task.cross_cutting]
     eligible = [
@@ -243,7 +278,7 @@ def _routing_picks(report_input: ReportInput, arms: Sequence[str]) -> dict[str, 
     for task in report_input.tasks:
         if not task.routable:
             continue
-        costs = _task_costs(report_input, task.id)
+        costs = task_costs(report_input, task.id)
         passing = [
             arm for arm in eligible if arm in costs and gate_check(report_input, arm, task=task.id).status != "fail"
         ]
