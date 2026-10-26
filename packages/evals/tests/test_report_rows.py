@@ -229,6 +229,35 @@ def test_human_pref_rows_are_its_slices_with_the_interval_about_each_share() -> 
     assert _rows("r1", "human_pref") == []
 
 
+def test_human_pref_rows_keep_the_querys_arms_as_every_source_of_one_arm_does() -> None:
+    report_input = dataset.report_input_of("r4")
+    preference = report_input.human_pref
+    assert preference is not None
+    every = _rows("r4", "human_pref")
+    assert _rows("r4", "human_pref", arms=[preference.arm]) == every
+    assert _rows("r4", "human_pref", arms=[preference.control, preference.arm]) == every
+    others = [arm.id for arm in report_input.arms if arm.id != preference.arm]
+    assert others, "the input must hold an arm the preference does not rate"
+    assert _rows("r4", "human_pref", arms=others) == [], "no slice is of an arm the query leaves out"
+
+
+def test_every_stored_human_pref_query_selects_what_it_did_without_its_arms() -> None:
+    """The filter moves no stored chart: each committed plan's preference query keeps its rated arm."""
+    plans = [FIXTURES / name / "anchor.plan.json" for name in ("r1", "r2", "r3", "r4", "r5")]
+    plans += dataset.run_plans()
+    held = 0
+    for path in plans:
+        plan = dataset.load_plan(path)
+        report_input = dataset.report_input_of(dataset.plan_input(path) if "runs" in path.parts else path.parent.name)
+        for chart in [*plan.summary, *(section.chart for section in plan.sections)]:
+            if chart.query.source != "human_pref":
+                continue
+            held += 1
+            unfiltered = chart.query.model_copy(update={"arms": []})
+            assert query_rows(chart.query, report_input) == query_rows(unfiltered, report_input), path
+    assert held, "no stored plan reads human preference: the test would hold nothing"
+
+
 # --- the limit -----------------------------------------------------------------------------------------------------
 
 

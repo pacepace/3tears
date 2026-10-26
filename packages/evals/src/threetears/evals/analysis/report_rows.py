@@ -30,10 +30,10 @@ interval where the input carries one: a reading's ``within_interval``, a contras
 figure's ``ci``, a preference slice's half-width about its share.
 
 **The filters.** An empty filter keeps everything (:class:`~threetears.evals.kernel.report_plan.ChartQuery`).
-``arms`` keeps the rows of those arms, where a row is of one arm (an example with no arm is kept); ``measures`` the
-contrasts, figures, floors and confusion axes on those keys; ``strata`` the slices, examples and cells by id;
-``aspect`` the contrasts, floors and examples on it (an example naming no aspect is kept), and the aspect readings,
-figures and a scoreboard read. Rows come in the input's order, whatever order the query lists its arms in: the
+``arms`` keeps the rows of those arms, where a row is of one arm (an example with no arm is kept; a preference slice
+is of the arm rated against the control); ``measures`` the contrasts, figures, floors and confusion axes on those
+keys; ``strata`` the slices, examples and cells by id; ``aspect`` the contrasts, floors and examples on it (an example
+naming no aspect is kept), and the aspect readings, figures and a scoreboard read. Rows come in the input's order, whatever order the query lists its arms in: the
 order a chart shows them in is the chart's.
 
 **The limit.** ``limit`` is the most rows a strata or examples query keeps, 0 for no limit. Strata keep the largest
@@ -251,8 +251,9 @@ def _confusion(query: ChartQuery, report_input: ReportInput) -> Iterator[SourceR
 
 
 def _human_pref(query: ChartQuery, report_input: ReportInput) -> Iterator[SourceRow]:
+    """Each preference slice, a row of the arm rated against the control: kept where the query keeps that arm."""
     preference = report_input.human_pref
-    if preference is None:
+    if preference is None or preference.arm not in _arms(query, report_input):
         return
     for row in preference.rows:
         width = row.half_width
