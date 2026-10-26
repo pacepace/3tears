@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: figure keys for every figure the report analyst cites, and a figure held on two aspects is named by its aspect
+
+**Added:** the figure-key grammar keys a contrast, a measure's and a judged dimension's figures, the scoreboard, the
+flip margin and the contrast family on any one aspect (`aspects.<aspect>.contrast|measure|judged|scoreboard|flip_margin|family.…`);
+any statistic of a judged figure (`judged.<dimension>.<arm>.<statistic>`); an aspect's pair readings, floors and bars
+(`aspects.<aspect>.pair|floor|bar.…`, a floor with its derived `held_above` and `broken_at`); an arm's figure within a
+stratum (`strata.<stratum>.<arm>.<measure>.<statistic>`, and on one aspect) and a target-matrix cell
+(`cells.<row>.<column>.…`), each with the derived `vs_control`, as tasks now have; a stratum's loss share on any
+measure (`strata.<stratum>.loss_share.<candidate>.<measure>`); and a criterion's figure for an arm at each place it
+reads (`criteria.<criterion>.<arm>[.<place>].value|low|high|gap`). A contrast also reads its `level`, `materiality`
+and `reason`. `Figure` gains `derived`, true for a figure computed from the input's point figures. The planner's
+prompt carries the larger grammar, so its prompt version changes.
+
+**Changed:** an unqualified key whose figure the input holds on more than one aspect is refused, naming the
+`aspects.<aspect>.` key for each: `contrast.<arm>.<measure>.…` held on two aspects (which read the first one), any
+`strata.<stratum>.…` whose id two aspects hold (which was refused as reading two ways), and `family.…` with several
+families. A stored plan written against a multi-aspect input with such a key now refuses its page with the existing
+"generate the analysis again (`analysis_generate`)" remedy.
+
 ### evals: the reporter judge reads the page's arms key
 
 **Fixed:** `render_plan_for_judge` omitted the arms key the planned page shows, so an arm written `{name} ({tag})`
