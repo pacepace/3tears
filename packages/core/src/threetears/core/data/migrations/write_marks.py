@@ -18,6 +18,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from threetears.core.ddl.write_marks import MARK_FUNCTION, WRITE_MARK_TRIGGER, write_mark_trigger_sql, write_marks_ddl
+from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import get_logger
 
 __all__ = ["give_switched_tables_their_trigger"]
@@ -34,7 +36,7 @@ SELECT t.table_name AS table_name FROM information_schema.tables t
 WHERE t.table_type = 'BASE TABLE' AND t.table_schema = current_schema() AND t.table_name::text = ANY($1::text[])
 AND NOT EXISTS (
     SELECT 1 FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE g.tgname = $2 AND c.relname = t.table_name AND n.nspname = t.table_schema
+    WHERE g.tgname = $2 AND c.relname = t.table_name AND n.nspname = t.table_schema AND (g.tgtype & 1) = 1
 )
 ORDER BY 1
 """
@@ -52,11 +54,6 @@ async def give_switched_tables_their_trigger(store: Any, tables: Sequence[str]) 
     :return: ``schema.table`` for each trigger created
     :rtype: list[str]
     """
-    from threetears.core.collections.write_marks import (  # noqa: PLC0415 - the collections module imports this package
-        MARK_FUNCTION,
-        WRITE_MARK_TRIGGER,
-        write_mark_trigger_sql,
-    )
 
     here = str((await store.query("SELECT current_schema() AS schema"))[0]["schema"])
     holders = [str(row["schema"]) for row in await store.query(_FUNCTION_SCHEMAS, MARK_FUNCTION)]
@@ -73,8 +70,16 @@ async def give_switched_tables_their_trigger(store: Any, tables: Sequence[str]) 
             )
         return []
     created: list[str] = []
-    for row in await store.query(_MISSING_HERE, list(tables), WRITE_MARK_TRIGGER):
-        table = str(row["table_name"])
+    missing = [str(row["table_name"]) for row in await store.query(_MISSING_HERE, list(tables), WRITE_MARK_TRIGGER)]
+    if missing:
+        # the function the row trigger calls, replacing the one that marked every statement
+        await store.execute(write_marks_ddl(marks_schema)[1])
+    for table in missing:
+        # 0.78.0's statement trigger of the same name goes first, so the two never both mark a write
+        await store.execute(
+            f"DROP TRIGGER IF EXISTS {quote_identifier(WRITE_MARK_TRIGGER)} "
+            f"ON {quote_identifier(here)}.{quote_identifier(table)}"
+        )
         await store.execute(write_mark_trigger_sql(marks_schema=marks_schema, table_schema=here, table=table))
         created.append(f"{here}.{table}")
     if created:

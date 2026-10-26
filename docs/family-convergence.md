@@ -935,8 +935,12 @@ The remedy, three moves, adopted wholesale:
    `eval-contracts` is designed that way (§4.2). First candidates: the
    channel `Frame`/stream protocol (samsung's planned chat is the waiting
    second consumer), the audit envelope, `DurableStore` (open question 16).
-3. **Lazy imports at the seam**, so the extra is the only switch a consumer
-   flips.
+3. **Optional imports at the seam**, so the extra is the only switch a consumer
+   flips. Owner ruling, 2026-10-24: never a lazy import inside a function (it
+   runs mid-request, holding the event loop); the extra's library is imported at
+   its module's top under `try/except ImportError`, and the code that needs it
+   raises naming the extra. `tests/enforcement/test_no_function_level_imports.py`
+   holds every package to it.
 
 Enforcement closes it: import cost is gated package-by-package today
 (`test_import_cost` / `test_lazy_init` siblings -- a new package must bring

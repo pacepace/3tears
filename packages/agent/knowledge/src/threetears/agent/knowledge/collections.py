@@ -307,13 +307,13 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
             Column("playbook_id", UUID_TYPE),
             Column("customer_id", UUID_TYPE, nullable=True),
             Column("user_id", UUID_TYPE, nullable=True),
-            Column("visibility", STRING_TYPE),
+            Column("visibility", STRING_TYPE, server_default="'private'"),
             Column("origin_entry_id", UUID_TYPE, nullable=True),
             Column("title", STRING_TYPE),
             Column("body", STRING_TYPE),
-            Column("tags", JSONB_TYPE),
+            Column("tags", JSONB_TYPE, server_default="'[]'::jsonb"),
             Column("datasource_id", UUID_TYPE),
-            Column("always_inject", BOOL_TYPE),
+            Column("always_inject", BOOL_TYPE, server_default="false"),
             # draft lifecycle + turn provenance (knowledge-task-06 / v019).
             # ``status`` carries ``server_default='active'`` so the agent never
             # has to name it (the agent never WRITES this table -- the hub
@@ -540,17 +540,17 @@ class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
             Column("id", UUID_TYPE),
             Column("customer_id", UUID_TYPE, nullable=True),
             Column("user_id", UUID_TYPE, nullable=True),
-            Column("visibility", STRING_TYPE),
+            Column("visibility", STRING_TYPE, server_default="'private'"),
             Column("origin_concept_id", UUID_TYPE, nullable=True),
             Column("name", STRING_TYPE),
-            Column("aliases", JSONB_TYPE),
+            Column("aliases", JSONB_TYPE, server_default="'[]'::jsonb"),
             Column("definition", STRING_TYPE),
             Column("datasource_id", UUID_TYPE),
             Column("datasource_table_id", UUID_TYPE, nullable=True),
             Column("sql_fragment", STRING_TYPE, nullable=True),
             Column("caveats", STRING_TYPE, nullable=True),
-            Column("tags", JSONB_TYPE),
-            Column("always_inject", BOOL_TYPE),
+            Column("tags", JSONB_TYPE, server_default="'[]'::jsonb"),
+            Column("always_inject", BOOL_TYPE, server_default="false"),
             # draft lifecycle + turn provenance (knowledge-task-06 / v019).
             # ``status`` carries ``server_default='active'`` (the agent never
             # writes this table; the hub emitter does). declaring the columns

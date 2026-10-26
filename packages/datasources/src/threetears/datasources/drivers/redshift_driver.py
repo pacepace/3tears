@@ -149,10 +149,9 @@ from typing import TYPE_CHECKING, Any
 try:
     import redshift_connector
 except ImportError as exc:  # pragma: no cover -- environments without the extra
-    # the factory's lazy-import contract means this module only loads
-    # when a REDSHIFT-typed config dispatches here. raising at module
-    # load with a clear install hint is more actionable than the bare
-    # ImportError ``import redshift_connector`` would otherwise raise.
+    # the factory imports this module under try/except ImportError, so without the extra the
+    # package still imports and a REDSHIFT-typed config raises this, whose install hint is more
+    # actionable than the bare ImportError ``import redshift_connector`` would otherwise raise.
     raise ImportError(
         "redshift-connector not installed; install via 'pip install 3tears-datasources[redshift]'"
     ) from exc
@@ -178,6 +177,7 @@ from threetears.datasources.drivers.sql_fragments import (
     build_set_search_path_sql,
     build_set_statement_timeout_sql,
 )
+
 from threetears.datasources.drivers.base import (
     CallbackTransaction,
     ColumnRow,
@@ -185,7 +185,8 @@ from threetears.datasources.drivers.base import (
     RelationFingerprint,
     TableRow,
     Transaction,
-    _check_otel_metrics,
+    _OTEL_METRICS,
+    _drivers_meter,
     _instrument_cache,
     check_max_rows,
     log_unselectable_relations,
@@ -677,7 +678,7 @@ def _get_cancellation_fired_counter() -> Any:
     :rtype: Any
     """
     result: Any = None
-    if _check_otel_metrics():
+    if _OTEL_METRICS:
         key = ("redshift", "datasource.driver.cancellation.fired")
 
         def _build() -> Any:
@@ -687,9 +688,7 @@ def _get_cancellation_fired_counter() -> Any:
             :return: the new OTel instrument
             :rtype: Any
             """
-            from opentelemetry import metrics
-
-            meter = metrics.get_meter("threetears.datasources.drivers")
+            meter = _drivers_meter()
             instrument = meter.create_counter(
                 name="datasource.driver.cancellation.fired",
                 description="datasource driver cancellation fired count",
@@ -711,7 +710,7 @@ def _get_cancellation_failed_counter() -> Any:
     :rtype: Any
     """
     result: Any = None
-    if _check_otel_metrics():
+    if _OTEL_METRICS:
         key = ("redshift", "datasource.driver.cancellation.failed")
 
         def _build() -> Any:
@@ -721,9 +720,7 @@ def _get_cancellation_failed_counter() -> Any:
             :return: the new OTel instrument
             :rtype: Any
             """
-            from opentelemetry import metrics
-
-            meter = metrics.get_meter("threetears.datasources.drivers")
+            meter = _drivers_meter()
             instrument = meter.create_counter(
                 name="datasource.driver.cancellation.failed",
                 description="datasource driver cancellation failed count",
@@ -744,7 +741,7 @@ def _get_cache_hit_counter() -> Any:
     :rtype: Any
     """
     result: Any = None
-    if _check_otel_metrics():
+    if _OTEL_METRICS:
         key = ("redshift", "datasource.driver.cache.hit")
 
         def _build() -> Any:
@@ -754,9 +751,7 @@ def _get_cache_hit_counter() -> Any:
             :return: the new OTel instrument
             :rtype: Any
             """
-            from opentelemetry import metrics
-
-            meter = metrics.get_meter("threetears.datasources.drivers")
+            meter = _drivers_meter()
             instrument = meter.create_counter(
                 name="datasource.driver.cache.hit",
                 description="datasource driver connection-cache hit count",
@@ -777,7 +772,7 @@ def _get_cache_miss_counter() -> Any:
     :rtype: Any
     """
     result: Any = None
-    if _check_otel_metrics():
+    if _OTEL_METRICS:
         key = ("redshift", "datasource.driver.cache.miss")
 
         def _build() -> Any:
@@ -787,9 +782,7 @@ def _get_cache_miss_counter() -> Any:
             :return: the new OTel instrument
             :rtype: Any
             """
-            from opentelemetry import metrics
-
-            meter = metrics.get_meter("threetears.datasources.drivers")
+            meter = _drivers_meter()
             instrument = meter.create_counter(
                 name="datasource.driver.cache.miss",
                 description="datasource driver connection-cache miss count",
@@ -812,7 +805,7 @@ def _get_executor_saturation_gauge() -> Any:
     :rtype: Any
     """
     result: Any = None
-    if _check_otel_metrics():
+    if _OTEL_METRICS:
         key = ("redshift", "datasource.driver.executor.saturation")
 
         def _build() -> Any:
@@ -822,9 +815,7 @@ def _get_executor_saturation_gauge() -> Any:
             :return: the new OTel instrument
             :rtype: Any
             """
-            from opentelemetry import metrics
-
-            meter = metrics.get_meter("threetears.datasources.drivers")
+            meter = _drivers_meter()
             # use UpDownCounter rather than Gauge for portability --
             # OTel's sync Gauge API is comparatively new and the
             # UpDownCounter accepts an arbitrary delta which we
@@ -977,8 +968,8 @@ class RedshiftDriver(Driver):
     """concrete :class:`Driver` for Amazon Redshift via ``redshift_connector``.
 
     construct via :func:`threetears.datasources.drivers.create_driver`
-    rather than directly -- the factory enforces the lazy-import
-    contract.
+    rather than directly -- the factory is the one dispatch on the
+    config's type.
 
     threading model:
 

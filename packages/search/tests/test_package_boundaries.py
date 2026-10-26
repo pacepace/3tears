@@ -50,9 +50,10 @@ def _modules() -> list[Path]:
 def _module_level_imports(source: Path) -> set[str]:
     """Dotted names ``source`` imports at module level.
 
-    Nested imports inside a function are excluded: a lazily-imported optional
-    dependency is the sanctioned pattern, and it is only the module-level ones
-    that make an extra mandatory.
+    Only the module's top-level statements are read, so an import inside a
+    ``try: ... except ImportError`` guard is excluded: that guard is how an
+    optional dependency is imported, and it is only the unguarded module-level
+    imports that make an extra mandatory.
 
     :param source: the module to read
     :ptype source: Path

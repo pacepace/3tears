@@ -36,6 +36,8 @@ from threetears.media.contracts import (
 )
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.langchain_adapter import to_langchain_tool
+from threetears.agent.tools.builtin.image_prep import ImagePrepError, prepare_image_for_vision
 from threetears.agent.tools.document import DocumentParseError, can_parse_document, parse_document
 from threetears.agent.tools.protocols import (
     MediaInfo,
@@ -263,8 +265,6 @@ def create_analyze_media_tool(
     :rtype: StructuredTool
     :raises TypeError: if ``storage`` is missing from *config*
     """
-    from threetears.agent.tools.langchain_adapter import to_langchain_tool
-
     storage: MediaStorage | None = config.get("storage")
     if storage is None:
         raise TypeError("create_analyze_media_tool requires 'storage' (MediaStorage) in config")
@@ -1056,11 +1056,6 @@ class AnalyzeMediaTool(TearsTool):
                     "No valid media found for the given media IDs.",
                 )
             return await self._handle_vision_by_reference(resolved, acfg.vision, question, analyzer_name)
-
-        from threetears.agent.tools.builtin.image_prep import (
-            ImagePrepError,
-            prepare_image_for_vision,
-        )
 
         # download and preprocess all images, each never more than
         # MAX_VISION_IMAGE_BYTES. one image over the bound refuses the whole

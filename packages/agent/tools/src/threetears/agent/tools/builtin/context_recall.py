@@ -25,6 +25,7 @@ from langchain_core.tools import StructuredTool
 from threetears.core.utils.local_time import resolve_zone
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.langchain_adapter import to_langchain_tool
 from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
 from threetears.agent.tools.text_window import WindowedInput
 from threetears.agent.tools.context import missing_result_text, recalled_text
@@ -68,8 +69,6 @@ def create_context_recall_tool(config: dict[str, Any], description: str) -> Stru
     :raises TypeError: if ``context_factory`` is given and is not callable
     :raises ValueError: if ``tz`` is a name that is not a known zone
     """
-    from threetears.agent.tools.langchain_adapter import to_langchain_tool
-
     context_factory = config.get("context_factory")
     if context_factory is not None and not callable(context_factory):
         raise TypeError(

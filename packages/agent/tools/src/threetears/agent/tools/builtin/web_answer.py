@@ -31,16 +31,16 @@ from typing import TYPE_CHECKING, Any
 from langchain_core.tools import StructuredTool
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.langchain_adapter import to_langchain_tool
 from threetears.search.adapters.brave_answers import BraveAnswersAdapter
 from threetears.search.bind_answer import RenderedAnswer, bind_answer
 from threetears.search.contracts import AnswerRequest
+from threetears.search.standalone import StandaloneTransport
 
 if TYPE_CHECKING:
     from threetears.search.contracts import BudgetPort, RateLimiterPort, StreamingTransport
 
-# ``create_web_answer_tool`` is reached by name, through ``register_builtins``'s
-# lazy import, which keeps this module unimported until a registry asks for it.
-__all__ = ["WebAnswerTool"]
+__all__ = ["WebAnswerTool", "create_web_answer_tool"]
 
 
 def create_web_answer_tool(config: dict[str, Any], description: str) -> StructuredTool:
@@ -70,8 +70,6 @@ def create_web_answer_tool(config: dict[str, Any], description: str) -> Structur
         number of 0 or more (the message names its config key), or one rate
         is given without the other
     """
-    from threetears.agent.tools.langchain_adapter import to_langchain_tool
-
     api_key = config.get("api_key")
     if not api_key:
         raise ValueError("web_answer requires 'api_key' in config")
@@ -164,8 +162,6 @@ class WebAnswerTool(TearsTool):
             without the other
         """
         if transport is None:
-            from threetears.search.standalone import StandaloneTransport
-
             transport = StandaloneTransport()
         self._transport = transport
         self._provider = BraveAnswersAdapter(

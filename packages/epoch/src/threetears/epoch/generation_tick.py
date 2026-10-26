@@ -99,6 +99,10 @@ async def generation_catchup_tick(registry: CollectionRegistry, reader: EpochGen
     A pass that reads a generation while that advance's broadcasts are still in flight sees them
     unheard and drops the table needlessly. That is the safe direction.
 
+    **A table whose generation is kept in L2** (``L2_WRITE_GENERATION``) has none in the epoch bucket:
+    it is judged by ``CollectionRegistry.catch_up_l2_generations``, which this pass runs after the
+    others, and its drops are counted with theirs.
+
     :param registry: the registry whose followed tables this pass judges
     :ptype registry: CollectionRegistry
     :param reader: reads each table's generation from the epoch bucket
@@ -111,6 +115,8 @@ async def generation_catchup_tick(registry: CollectionRegistry, reader: EpochGen
     dropped = 0
     first_error: BaseException | None = None
     for table_name in registry.generation_marks.followed:
+        if registry.generation_kept_in_l2(table_name):
+            continue
         try:
             token = await reader.read(table_name)
             verdict = registry.settle_generation(table_name, token)
@@ -134,6 +140,14 @@ async def generation_catchup_tick(registry: CollectionRegistry, reader: EpochGen
             continue
         if verdict.drops:
             dropped += 1
+    try:
+        dropped += await registry.catch_up_l2_generations()
+    # prawduct:allow prawduct/broad-except -- the L2-kept tables are one more table's worth of the pass;
+    # re-raised below with the first error, like any table's.
+    except Exception as exc:  # noqa: BLE001
+        contain(exc, log=log, what="write generation catch-up failed for the tables kept in L2")
+        if first_error is None:
+            first_error = exc
     if first_error is not None:
         raise first_error
     return dropped

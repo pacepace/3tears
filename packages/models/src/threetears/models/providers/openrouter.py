@@ -58,23 +58,47 @@ SDK's reply and keeps only part of it (``cost``, ``cost_details``, and token cou
 
 from __future__ import annotations
 
+import copy
 from collections.abc import AsyncIterator, Iterator
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Self
 
-from pydantic import PrivateAttr, model_validator
+from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.outputs import ChatGenerationChunk
+from langchain_openrouter import ChatOpenRouter
+from pydantic import BaseModel, PrivateAttr, model_validator
+from pydantic.fields import FieldInfo
 
 from threetears.models.capabilities import ModelCapabilities, register_capabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 from threetears.models.providers._name_translation_mixin import NameTranslatingChatMixin
-from threetears.models.providers.structured_output import ensure_valid_json_schema
+from threetears.models.providers._structured_output_schema import ensure_valid_json_schema
+
+# The SDK classes the two declare_* functions below extend. Guarded rather than imported bare: a
+# release that moves one must fail the call that needs it, by name, not every import of the package.
+_SERVED_PROVIDER_IMPORT_ERROR: ImportError | None = None
+try:
+    from openrouter.components.chatresult import ChatResult as SdkChatResult
+    from openrouter.components.chatstreamchunk import ChatStreamChunk as SdkChatStreamChunk
+    from openrouter.components.chatstreamingresponse import ChatStreamingResponse as SdkChatStreamingResponse
+except ImportError as _exc:  # NOSILENT: declare_served_provider raises this, naming what moved
+    _SERVED_PROVIDER_IMPORT_ERROR = _exc
+
+_REASONING_IMPORT_ERROR: ImportError | None = None
+try:
+    from openrouter.components.chatrequest import ChatRequest as SdkChatRequest
+    from openrouter.components.chatrequest import ChatRequestReasoning as SdkChatRequestReasoning
+    from openrouter.operations.sendchatcompletionrequest import (
+        SendChatCompletionRequestRequest as SdkSendChatCompletionRequest,
+    )
+    from openrouter.types import UNSET
+except ImportError as _exc:  # NOSILENT: _declare_reasoning_budget raises this, naming what moved
+    _REASONING_IMPORT_ERROR = _exc
 
 if TYPE_CHECKING:
     from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
     from langchain_core.messages import BaseMessage
-    from langchain_core.outputs import ChatGenerationChunk
     from langchain_core.outputs import ChatResult as LcChatResult
-    from langchain_openrouter import ChatOpenRouter
 
 __all__ = [
     "OPENROUTER_PROVIDER_NAME",
@@ -166,12 +190,10 @@ def declare_served_provider() -> None:
     :raises ImportError: when the ``openrouter`` SDK no longer has these modules or classes
     :raises TypeError: when one of them is no longer a pydantic model
     """
-    from openrouter.components.chatresult import ChatResult as SdkChatResult
-    from openrouter.components.chatstreamchunk import ChatStreamChunk as SdkChatStreamChunk
-    from openrouter.components.chatstreamingresponse import ChatStreamingResponse as SdkChatStreamingResponse
-    from pydantic import BaseModel
-    from pydantic.fields import FieldInfo
-
+    if _SERVED_PROVIDER_IMPORT_ERROR is not None:
+        raise ImportError(
+            "the openrouter SDK no longer has the response models the served provider is declared on",
+        ) from _SERVED_PROVIDER_IMPORT_ERROR
     for model in (SdkChatResult, SdkChatStreamChunk, SdkChatStreamingResponse):
         if not (isinstance(model, type) and issubclass(model, BaseModel)):
             raise TypeError(f"openrouter's {model!r} is no longer a pydantic model; the served provider cannot be read")
@@ -286,9 +308,6 @@ class _ReplySlot:
         :return: the chunk, or ``None`` when nothing waits
         :rtype: ChatGenerationChunk | None
         """
-        from langchain_core.messages import AIMessageChunk
-        from langchain_core.outputs import ChatGenerationChunk
-
         if not self.pending():
             return None
         return ChatGenerationChunk(message=AIMessageChunk(content="", response_metadata=self.take()))
@@ -304,10 +323,6 @@ class _ReplySlot:
         :return: ``result``, its AI messages carrying the keys when something was seen
         :rtype: LcChatResult
         """
-        import copy
-
-        from langchain_core.messages import AIMessage
-
         keys = self.take()
         if not keys:
             return result
@@ -518,15 +533,10 @@ def _declare_reasoning_budget() -> None:
     :raises ImportError: when the ``openrouter`` SDK no longer has these modules or classes
     :raises TypeError: when one of them is no longer a pydantic model
     """
-    from openrouter.components.chatrequest import ChatRequest as SdkChatRequest
-    from openrouter.components.chatrequest import ChatRequestReasoning as SdkChatRequestReasoning
-    from openrouter.operations.sendchatcompletionrequest import (
-        SendChatCompletionRequestRequest as SdkSendChatCompletionRequest,
-    )
-    from openrouter.types import UNSET
-    from pydantic import BaseModel
-    from pydantic.fields import FieldInfo
-
+    if _REASONING_IMPORT_ERROR is not None:
+        raise ImportError(
+            "the openrouter SDK no longer has the request models a reasoning budget is declared on",
+        ) from _REASONING_IMPORT_ERROR
     holders = (SdkChatRequest, SdkSendChatCompletionRequest)
     for model in (SdkChatRequestReasoning, *holders):
         if not (isinstance(model, type) and issubclass(model, BaseModel)):
@@ -546,241 +556,222 @@ def _declare_reasoning_budget() -> None:
         holder.model_rebuild(force=True)
 
 
-def _build_translating_chat_class() -> type[ChatOpenRouter]:
-    """build the :class:`ChatOpenRouter` subclass with name-translation hooks.
+class _RoutingChatOpenRouter(ChatOpenRouter):
+    """``ChatOpenRouter`` that keeps the model's provider routing under a bound ``provider``,
+    and puts what OpenRouter sent and LangChain drops on each answer.
 
-    Defined inside a function so the langchain-openrouter import is
-    lazy -- :mod:`threetears.models.providers.openrouter` is imported
-    eagerly at package load to populate the capability registry, and we
-    must not require ``langchain-openrouter`` to be installed for that
-    side-effect import to succeed (it is an optional dependency,
-    selected via ``3tears-models[openrouter]``).
+    Sits below :class:`NameTranslatingChatMixin` in the MRO, so the mixin's call deadline and
+    name translation wrap it and it wraps the SDK call itself.
 
-    :return: name-translating ChatOpenRouter subclass
-    :rtype: type[ChatOpenRouter]
+    ``openrouter_usage`` / ``openrouter_response`` (see the module docstring): this model's
+    ``client`` is a :class:`_ReplyObservingClient`. Each call makes its own
+    :class:`_ReplySlot`, sets it in :data:`_CALL_REPLY` only until LangChain has sent the
+    request (the first chunk, or the result), and puts what the slot saw on its own message.
+    Two calls on one model never share a slot: the client wrapper binds the slot it finds at
+    send time to that send's own reply, and each call's slot is set only in its own context
+    (task or thread), and reset before the call yields anything.
     """
-    from langchain_openrouter import ChatOpenRouter
 
-    declare_served_provider()
-    _declare_reasoning_budget()
+    @model_validator(mode="after")
+    def _observe_replies(self) -> Self:
+        """make the model's SDK client the reply-observing wrapper, once.
 
-    class _RoutingChatOpenRouter(ChatOpenRouter):
-        """``ChatOpenRouter`` that keeps the model's provider routing under a bound ``provider``,
-        and puts what OpenRouter sent and LangChain drops on each answer.
-
-        Sits below :class:`NameTranslatingChatMixin` in the MRO, so the mixin's call deadline and
-        name translation wrap it and it wraps the SDK call itself.
-
-        ``openrouter_usage`` / ``openrouter_response`` (see the module docstring): this model's
-        ``client`` is a :class:`_ReplyObservingClient`. Each call makes its own
-        :class:`_ReplySlot`, sets it in :data:`_CALL_REPLY` only until LangChain has sent the
-        request (the first chunk, or the result), and puts what the slot saw on its own message.
-        Two calls on one model never share a slot: the client wrapper binds the slot it finds at
-        send time to that send's own reply, and each call's slot is set only in its own context
-        (task or thread), and reset before the call yields anything.
+        :return: the model
+        :rtype: Self
+        :raises TypeError: when the SDK client's ``chat.send`` / ``chat.send_async`` moved
         """
+        if not isinstance(self.client, _ReplyObservingClient):
+            self.client = _ReplyObservingClient(self.client)
+        return self
 
-        @model_validator(mode="after")
-        def _observe_replies(self) -> Self:
-            """make the model's SDK client the reply-observing wrapper, once.
+    def _with_model_routing(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """``kwargs`` with a bound ``provider`` block merged INTO the model's own routing.
 
-            :return: the model
-            :rtype: Self
-            :raises TypeError: when the SDK client's ``chat.send`` / ``chat.send_async`` moved
-            """
-            if not isinstance(self.client, _ReplyObservingClient):
-                self.client = _ReplyObservingClient(self.client)
-            return self
+        ``ChatOpenRouter`` builds each request as ``{**params, **kwargs}``, so a bound
+        ``provider`` (the structured-output directive binds
+        ``{"require_parameters": True}``) would REPLACE the model's whole routing block --
+        its ``only`` and ``ignore`` lists -- and the request would go out with no provider
+        restrictions at all. Merged instead: the model's routing, with the bound keys on top.
 
-        def _with_model_routing(self, kwargs: dict[str, Any]) -> dict[str, Any]:
-            """``kwargs`` with a bound ``provider`` block merged INTO the model's own routing.
-
-            ``ChatOpenRouter`` builds each request as ``{**params, **kwargs}``, so a bound
-            ``provider`` (the structured-output directive binds
-            ``{"require_parameters": True}``) would REPLACE the model's whole routing block --
-            its ``only`` and ``ignore`` lists -- and the request would go out with no provider
-            restrictions at all. Merged instead: the model's routing, with the bound keys on top.
-
-            :param kwargs: the call's keyword arguments, bound ones included
-            :ptype kwargs: dict[str, Any]
-            :return: the kwargs to send, with the merged ``provider`` block
-            :rtype: dict[str, Any]
-            """
-            bound = kwargs.get("provider")
-            routing = self._default_params.get("provider")
-            if not isinstance(bound, dict) or not isinstance(routing, dict):
-                return kwargs
-            return {**kwargs, "provider": {**routing, **bound}}
-
-        def _generate(
-            self,
-            messages: list[BaseMessage],
-            stop: list[str] | None = None,
-            run_manager: CallbackManagerForLLMRun | None = None,
-            **kwargs: Any,
-        ) -> LcChatResult:
-            """The parent's generate, with the model's routing kept under a bound ``provider``,
-            and what OpenRouter sent and LangChain dropped on each AI message of the result.
-
-            :param messages: chat messages
-            :ptype messages: list[BaseMessage]
-            :param stop: optional stop sequences
-            :ptype stop: list[str] | None
-            :param run_manager: LangChain run manager
-            :ptype run_manager: CallbackManagerForLLMRun | None
-            :param kwargs: passthrough
-            :ptype kwargs: Any
-            :return: the parent's chat result, its AI messages carrying ``openrouter_usage`` / ``openrouter_response``
-            :rtype: LcChatResult
-            """
-            slot = _ReplySlot()
-            token = _CALL_REPLY.set(slot)
-            try:
-                result: LcChatResult = super()._generate(
-                    messages, stop=stop, run_manager=run_manager, **self._with_model_routing(kwargs)
-                )
-            finally:
-                _CALL_REPLY.reset(token)
-            return slot.mark_result(result)
-
-        async def _agenerate(
-            self,
-            messages: list[BaseMessage],
-            stop: list[str] | None = None,
-            run_manager: AsyncCallbackManagerForLLMRun | None = None,
-            **kwargs: Any,
-        ) -> LcChatResult:
-            """The parent's async generate, with the model's routing kept under a bound ``provider``,
-            and what OpenRouter sent and LangChain dropped on each AI message of the result.
-
-            :param messages: chat messages
-            :ptype messages: list[BaseMessage]
-            :param stop: optional stop sequences
-            :ptype stop: list[str] | None
-            :param run_manager: LangChain run manager
-            :ptype run_manager: AsyncCallbackManagerForLLMRun | None
-            :param kwargs: passthrough
-            :ptype kwargs: Any
-            :return: the parent's chat result, its AI messages carrying ``openrouter_usage`` / ``openrouter_response``
-            :rtype: LcChatResult
-            """
-            slot = _ReplySlot()
-            token = _CALL_REPLY.set(slot)
-            try:
-                result: LcChatResult = await super()._agenerate(
-                    messages, stop=stop, run_manager=run_manager, **self._with_model_routing(kwargs)
-                )
-            finally:
-                _CALL_REPLY.reset(token)
-            return slot.mark_result(result)
-
-        def _stream(
-            self,
-            messages: list[BaseMessage],
-            stop: list[str] | None = None,
-            run_manager: CallbackManagerForLLMRun | None = None,
-            **kwargs: Any,
-        ) -> Iterator[ChatGenerationChunk]:
-            """The parent's stream, with the model's routing kept under a bound ``provider``,
-            and what OpenRouter sent and LangChain dropped on the usage chunk.
-
-            :param messages: chat messages
-            :ptype messages: list[BaseMessage]
-            :param stop: optional stop sequences
-            :ptype stop: list[str] | None
-            :param run_manager: LangChain run manager
-            :ptype run_manager: CallbackManagerForLLMRun | None
-            :param kwargs: passthrough
-            :ptype kwargs: Any
-            :return: the parent's chunks, the usage chunk carrying ``openrouter_usage`` / ``openrouter_response``
-            :rtype: Iterator[ChatGenerationChunk]
-            """
-            slot = _ReplySlot()
-            stream = super()._stream(messages, stop=stop, run_manager=run_manager, **self._with_model_routing(kwargs))
-            token = _CALL_REPLY.set(slot)
-            try:
-                first = next(stream, None)
-            finally:
-                _CALL_REPLY.reset(token)
-            if first is None:
-                return
-            yield slot.mark_chunk(first)
-            for chunk in stream:
-                yield slot.mark_chunk(chunk)
-            tail = slot.trailing_chunk()
-            if tail is not None:
-                if run_manager:
-                    run_manager.on_llm_new_token(tail.text, chunk=tail)
-                yield tail
-
-        async def _astream(
-            self,
-            messages: list[BaseMessage],
-            stop: list[str] | None = None,
-            run_manager: AsyncCallbackManagerForLLMRun | None = None,
-            **kwargs: Any,
-        ) -> AsyncIterator[ChatGenerationChunk]:
-            """The parent's async stream, with the model's routing kept under a bound ``provider``,
-            and what OpenRouter sent and LangChain dropped on the usage chunk.
-
-            :param messages: chat messages
-            :ptype messages: list[BaseMessage]
-            :param stop: optional stop sequences
-            :ptype stop: list[str] | None
-            :param run_manager: LangChain run manager
-            :ptype run_manager: AsyncCallbackManagerForLLMRun | None
-            :param kwargs: passthrough
-            :ptype kwargs: Any
-            :return: the parent's chunks, the usage chunk carrying ``openrouter_usage`` / ``openrouter_response``
-            :rtype: AsyncIterator[ChatGenerationChunk]
-            """
-            slot = _ReplySlot()
-            stream = super()._astream(messages, stop=stop, run_manager=run_manager, **self._with_model_routing(kwargs))
-            token = _CALL_REPLY.set(slot)
-            try:
-                first = await anext(stream, None)
-            finally:
-                _CALL_REPLY.reset(token)
-            if first is None:
-                return
-            yield slot.mark_chunk(first)
-            async for chunk in stream:
-                yield slot.mark_chunk(chunk)
-            tail = slot.trailing_chunk()
-            if tail is not None:
-                if run_manager:
-                    await run_manager.on_llm_new_token(tail.text, chunk=tail)
-                yield tail
-
-    class _NameTranslatingChatOpenRouter(NameTranslatingChatMixin, _RoutingChatOpenRouter):
-        """``ChatOpenRouter`` with dot<->underscore tool-name translation at
-        the wire boundary, hiding Bedrock-style provider quirks from the rest
-        of the codebase.
-
-        All translation hooks live in :class:`NameTranslatingChatMixin`
-        (mixed in ahead of ``ChatOpenRouter`` so ``super()`` resolves to it);
-        this subclass only supplies the per-instance reverse-map slot.
-
-        :ivar _name_reverse_map: underscored-wire -> canonical-dotted map,
-            populated at ``bind_tools`` time.
-        :ptype _name_reverse_map: dict[str, str]
+        :param kwargs: the call's keyword arguments, bound ones included
+        :ptype kwargs: dict[str, Any]
+        :return: the kwargs to send, with the merged ``provider`` block
+        :rtype: dict[str, Any]
         """
+        bound = kwargs.get("provider")
+        routing = self._default_params.get("provider")
+        if not isinstance(bound, dict) or not isinstance(routing, dict):
+            return kwargs
+        return {**kwargs, "provider": {**routing, **bound}}
 
-        _name_reverse_map: dict[str, str] = PrivateAttr(default_factory=dict)
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> LcChatResult:
+        """The parent's generate, with the model's routing kept under a bound ``provider``,
+        and what OpenRouter sent and LangChain dropped on each AI message of the result.
 
-        def call_deadline_s(self) -> float | None:
-            """The configured timeout, as the whole call's deadline.
+        :param messages: chat messages
+        :ptype messages: list[BaseMessage]
+        :param stop: optional stop sequences
+        :ptype stop: list[str] | None
+        :param run_manager: LangChain run manager
+        :ptype run_manager: CallbackManagerForLLMRun | None
+        :param kwargs: passthrough
+        :ptype kwargs: Any
+        :return: the parent's chat result, its AI messages carrying ``openrouter_usage`` / ``openrouter_response``
+        :rtype: LcChatResult
+        """
+        slot = _ReplySlot()
+        token = _CALL_REPLY.set(slot)
+        try:
+            result: LcChatResult = super()._generate(
+                messages, stop=stop, run_manager=run_manager, **self._with_model_routing(kwargs)
+            )
+        finally:
+            _CALL_REPLY.reset(token)
+        return slot.mark_result(result)
 
-            The OpenRouter SDK hands the timeout to httpx, which applies it to
-            each read, and OpenRouter answers 200 at once and keeps the call
-            open with keep-alive comments while the upstream works. So no read
-            ever waited 120 s and the call ran as long as the upstream did: one
-            summary call held a turn for 218 s. The mixin holds each call to this.
-            """
-            timeout_ms = getattr(self, "request_timeout", None)
-            return timeout_ms / 1000 if timeout_ms else None
+    async def _agenerate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> LcChatResult:
+        """The parent's async generate, with the model's routing kept under a bound ``provider``,
+        and what OpenRouter sent and LangChain dropped on each AI message of the result.
 
-    return _NameTranslatingChatOpenRouter
+        :param messages: chat messages
+        :ptype messages: list[BaseMessage]
+        :param stop: optional stop sequences
+        :ptype stop: list[str] | None
+        :param run_manager: LangChain run manager
+        :ptype run_manager: AsyncCallbackManagerForLLMRun | None
+        :param kwargs: passthrough
+        :ptype kwargs: Any
+        :return: the parent's chat result, its AI messages carrying ``openrouter_usage`` / ``openrouter_response``
+        :rtype: LcChatResult
+        """
+        slot = _ReplySlot()
+        token = _CALL_REPLY.set(slot)
+        try:
+            result: LcChatResult = await super()._agenerate(
+                messages, stop=stop, run_manager=run_manager, **self._with_model_routing(kwargs)
+            )
+        finally:
+            _CALL_REPLY.reset(token)
+        return slot.mark_result(result)
+
+    def _stream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk]:
+        """The parent's stream, with the model's routing kept under a bound ``provider``,
+        and what OpenRouter sent and LangChain dropped on the usage chunk.
+
+        :param messages: chat messages
+        :ptype messages: list[BaseMessage]
+        :param stop: optional stop sequences
+        :ptype stop: list[str] | None
+        :param run_manager: LangChain run manager
+        :ptype run_manager: CallbackManagerForLLMRun | None
+        :param kwargs: passthrough
+        :ptype kwargs: Any
+        :return: the parent's chunks, the usage chunk carrying ``openrouter_usage`` / ``openrouter_response``
+        :rtype: Iterator[ChatGenerationChunk]
+        """
+        slot = _ReplySlot()
+        stream = super()._stream(messages, stop=stop, run_manager=run_manager, **self._with_model_routing(kwargs))
+        token = _CALL_REPLY.set(slot)
+        try:
+            first = next(stream, None)
+        finally:
+            _CALL_REPLY.reset(token)
+        if first is None:
+            return
+        yield slot.mark_chunk(first)
+        for chunk in stream:
+            yield slot.mark_chunk(chunk)
+        tail = slot.trailing_chunk()
+        if tail is not None:
+            if run_manager:
+                run_manager.on_llm_new_token(tail.text, chunk=tail)
+            yield tail
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        """The parent's async stream, with the model's routing kept under a bound ``provider``,
+        and what OpenRouter sent and LangChain dropped on the usage chunk.
+
+        :param messages: chat messages
+        :ptype messages: list[BaseMessage]
+        :param stop: optional stop sequences
+        :ptype stop: list[str] | None
+        :param run_manager: LangChain run manager
+        :ptype run_manager: AsyncCallbackManagerForLLMRun | None
+        :param kwargs: passthrough
+        :ptype kwargs: Any
+        :return: the parent's chunks, the usage chunk carrying ``openrouter_usage`` / ``openrouter_response``
+        :rtype: AsyncIterator[ChatGenerationChunk]
+        """
+        slot = _ReplySlot()
+        stream = super()._astream(messages, stop=stop, run_manager=run_manager, **self._with_model_routing(kwargs))
+        token = _CALL_REPLY.set(slot)
+        try:
+            first = await anext(stream, None)
+        finally:
+            _CALL_REPLY.reset(token)
+        if first is None:
+            return
+        yield slot.mark_chunk(first)
+        async for chunk in stream:
+            yield slot.mark_chunk(chunk)
+        tail = slot.trailing_chunk()
+        if tail is not None:
+            if run_manager:
+                await run_manager.on_llm_new_token(tail.text, chunk=tail)
+            yield tail
+
+
+class _NameTranslatingChatOpenRouter(NameTranslatingChatMixin, _RoutingChatOpenRouter):
+    """``ChatOpenRouter`` with dot<->underscore tool-name translation at
+    the wire boundary, hiding Bedrock-style provider quirks from the rest
+    of the codebase.
+
+    All translation hooks live in :class:`NameTranslatingChatMixin`
+    (mixed in ahead of ``ChatOpenRouter`` so ``super()`` resolves to it);
+    this subclass only supplies the per-instance reverse-map slot.
+
+    :ivar _name_reverse_map: underscored-wire -> canonical-dotted map,
+        populated at ``bind_tools`` time.
+    :ptype _name_reverse_map: dict[str, str]
+    """
+
+    _name_reverse_map: dict[str, str] = PrivateAttr(default_factory=dict)
+
+    def call_deadline_s(self) -> float | None:
+        """The configured timeout, as the whole call's deadline.
+
+        The OpenRouter SDK hands the timeout to httpx, which applies it to
+        each read, and OpenRouter answers 200 at once and keeps the call
+        open with keep-alive comments while the upstream works. So no read
+        ever waited 120 s and the call ran as long as the upstream did: one
+        summary call held a turn for 218 s. The mixin holds each call to this.
+        """
+        timeout_ms = getattr(self, "request_timeout", None)
+        return timeout_ms / 1000 if timeout_ms else None
 
 
 def create_openrouter_chat(
@@ -812,7 +803,10 @@ def create_openrouter_chat(
     :return: configured ``ChatOpenRouter`` (the name-translating subclass)
     :rtype: ChatOpenRouter
     """
-    chat_cls = _build_translating_chat_class()
+    # Idempotent; done here rather than at import so the SDK's models are extended only by a process
+    # that builds an OpenRouter model, and a class that moved fails this call, not the package import.
+    declare_served_provider()
+    _declare_reasoning_budget()
 
     # langchain-openrouter 0.1.0 defaults app_title="langchain" and forwards
     # it as `x_title` to the underlying openrouter SDK. openrouter 0.8+
@@ -830,7 +824,7 @@ def create_openrouter_chat(
     }
     kwargs.update(extra_kwargs)
 
-    model: ChatOpenRouter = chat_cls(**kwargs)
+    model: ChatOpenRouter = _NameTranslatingChatOpenRouter(**kwargs)
     return model
 
 

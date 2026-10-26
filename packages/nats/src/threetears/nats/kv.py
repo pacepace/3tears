@@ -2207,7 +2207,7 @@ class NatsKvBucket:
             raise _kv_error(f"{failure}: {exc}", bucket=self._full_name, cause=exc) from exc
         return int(ack.seq)
 
-    async def delete(self, *, key: str, revision: int | None = None) -> bool:
+    async def delete(self, *, key: str, revision: int | None = None, marker_ttl: timedelta | None = None) -> bool:
         """delete a key, optionally guarded by a CAS revision.
 
         when ``revision`` is supplied the underlying nats-py call
@@ -2217,14 +2217,33 @@ class NatsKvBucket:
         ``None``); on a missing key it returns ``True`` (delete is
         idempotent). transport failures raise :class:`KvError`.
 
+        A delete publishes a marker, and on a bucket with no expiry that marker is the key's one
+        message forever: a writer of a fresh key per unit of work fills a bounded bucket with them.
+        ``marker_ttl`` gives the marker a lifetime, after which the server removes it and the key
+        holds nothing. Any ``revision`` given fences it, ``0`` included. The marker is then a PURGE marker (it rolls the key's earlier revisions up),
+        so its going never brings an older revision back on a bucket that keeps history. The
+        lifetime is the marker's alone: a write that lands on the key before it lapses replaces it,
+        and lives as long as that write asks. A stream that refuses the marker (no
+        ``allow_msg_ttl``, or no rollups) gets the plain delete, under the same revision, and keeps
+        its marker, as before, and the refusal's code and description are logged.
+
         :param key: key to delete
         :ptype key: str
         :param revision: expected current revision for CAS delete; ``None`` performs an unconditional delete
         :ptype revision: int | None
+        :param marker_ttl: how long the delete's marker lives before the server removes it; ``None``
+            keeps it as long as the bucket keeps messages. Whole seconds, at least one
+        :ptype marker_ttl: timedelta | None
         :return: ``True`` on success or absent key, ``False`` only on revision mismatch
         :rtype: bool
         :raises KvError: on transport failure
+        :raises ValueError: when ``marker_ttl`` is under one second
         """
+        msg_ttl = _msg_ttl_seconds(marker_ttl)
+        if msg_ttl is not None:
+            lapsing = await self._purge_with_marker_ttl(key=key, revision=revision, msg_ttl=msg_ttl)
+            if lapsing is not None:
+                return lapsing
 
         async def _do_delete() -> None:
             if revision is None:
@@ -2249,6 +2268,63 @@ class NatsKvBucket:
                 )
                 return False
             raise _kv_error(f"{failure}: {exc}", bucket=self._full_name, cause=exc) from exc
+        return True
+
+    async def _purge_with_marker_ttl(self, *, key: str, revision: int | None, msg_ttl: float) -> bool | None:
+        """remove ``key`` with a purge marker the server itself removes after ``msg_ttl`` seconds.
+
+        nats-py's ``KeyValue.purge`` takes no expected revision, so this sends what it would -- a
+        publish to the key's subject with ``KV-Operation: PURGE`` and a subject rollup -- with the
+        ``Nats-TTL`` header and, when ``revision`` is given, the expected-last-subject-sequence
+        header :meth:`delete` fences on.
+
+        :param key: key to remove
+        :ptype key: str
+        :param revision: expected current revision, or ``None`` for an unconditional removal
+        :ptype revision: int | None
+        :param msg_ttl: the marker's lifetime in whole seconds
+        :ptype msg_ttl: float
+        :return: ``True`` when removed, ``False`` on a revision mismatch, ``None`` when the stream
+            refused a marker with a lifetime (the caller deletes plainly)
+        :rtype: bool | None
+        :raises KvError: on transport failure
+        """
+        js = self._client.jetstream_context()
+        subject = f"$KV.{self._full_name}.{key}"
+        headers = {_KV_OPERATION_HEADER: "PURGE", Header.ROLLUP: "sub"}
+        if revision is not None:
+            # every given revision fences, 0 included (the key must hold nothing): a fence is never
+            # dropped for a falsy value, as nats-py's own delete drops ``last=0``
+            headers[Header.EXPECTED_LAST_SUBJECT_SEQUENCE] = str(revision)
+        failure = f"KV delete failed: bucket={self._full_name} key={key} revision={revision}"
+        try:
+            await self._run_op(
+                lambda: js.publish(subject, b"", headers=headers, msg_ttl=msg_ttl),
+                passthrough=(APIError,),
+                failure=failure,
+            )
+        except APIError as exc:
+            if exc.err_code in _JS_ERR_WRONG_LAST_SEQUENCE:
+                log.debug(
+                    "KV delete lost: revision mismatch",
+                    extra={"extra_data": {"bucket": self._full_name, "key": key, "expected_revision": revision}},
+                )
+                return False
+            log.warning(
+                "KV delete: the stream refused the lapsing purge marker (err_code=%s: %s), so the key is "
+                "deleted plainly and its marker stays until the bucket's owner sweeps it",
+                exc.err_code,
+                exc.description,
+                extra={
+                    "extra_data": {
+                        "bucket": self._full_name,
+                        "key": key,
+                        "err_code": exc.err_code,
+                        "description": exc.description,
+                    }
+                },
+            )
+            return None
         return True
 
     async def date_created(self) -> datetime:
@@ -2562,6 +2638,69 @@ class NatsKvBucket:
             for msg in messages
             if (msg.headers or {}).get(_KV_OPERATION_HEADER) not in _KV_REMOVAL_OPERATIONS
         ]
+
+    async def purge_removal_markers(self, *, apply: bool = True) -> int:
+        """purge every key whose latest message is a delete or purge marker: the bucket OWNER's sweep.
+
+        A delete publishes a marker, and on a bucket with no expiry the marker is the key's one message
+        forever: a writer that removes a fresh key per unit of work (a lease per computed answer) fills a
+        bounded bucket with them until every write to it is refused. A delete given ``marker_ttl`` leaves
+        nothing behind; this removes the markers a bucket already holds, from before that, or from a writer
+        still on a release that predates it.
+
+        A stream purge is a management verb, which only the bucket's owner (the hub, for the pod buckets)
+        is granted: through any other principal's handle it is refused, or never answered. Each marker is
+        purged by its exact subject and only BELOW its own sequence plus one, so a write that lands on the
+        key after this read the marker has a higher sequence and is kept: a live entry is never removed,
+        however the sweep and a writer interleave.
+
+        :param apply: purge; ``False`` only counts what would be purged
+        :ptype apply: bool
+        :return: how many markers were purged (or, without ``apply``, found)
+        :rtype: int
+        :raises KvError: when the listing or a purge fails
+        """
+        stream = kv_stream_name(self._full_name)
+
+        def failure(message: str, cause: BaseException | None) -> Exception:
+            return KvError(message) if cause is None else _kv_error(message, bucket=self._full_name, cause=cause)
+
+        messages = await read_through_named_consumer(
+            self._client,
+            NamedRead(
+                stream=stream,
+                filter_subject=f"$KV.{self._full_name}.>",
+                deliver_policy=DeliverPolicy.LAST_PER_SUBJECT,
+                name_prefix=_KEY_LISTING_CONSUMER_PREFIX,
+                headers_only=True,
+                timeout_seconds=self._timings.key_listing_timeout_seconds,
+                receiver="removal marker sweep",
+            ),
+            failure=failure,
+        )
+        markers = [
+            (msg.subject, int(msg.metadata.sequence.stream))
+            for msg in messages
+            if (msg.headers or {}).get(_KV_OPERATION_HEADER) in _KV_REMOVAL_OPERATIONS
+        ]
+        if apply:
+            js = self._client.jetstream_context()
+            for subject, sequence in markers:
+                # below the marker's own sequence plus one: the marker and anything older, never a write
+                # that landed on the key since the marker was read
+                await self._run_op(
+                    lambda subject=subject, sequence=sequence: js.purge_stream(
+                        stream, subject=subject, seq=sequence + 1
+                    ),
+                    passthrough=(),
+                    failure=f"KV marker purge failed: bucket={self._full_name} subject={subject}",
+                )
+        log.info(
+            "KV removal markers %s",
+            "purged" if apply else "found",
+            extra={"extra_data": {"bucket": self._full_name, "markers": len(markers)}},
+        )
+        return len(markers)
 
 
 class _KeyWatchConsumer:
@@ -2938,7 +3077,7 @@ class KvBucketLike(Protocol):
 
     async def update(self, *, key: str, value: bytes, revision: int, ttl: timedelta | None = None) -> int | None: ...
 
-    async def delete(self, *, key: str, revision: int | None = None) -> bool: ...
+    async def delete(self, *, key: str, revision: int | None = None, marker_ttl: timedelta | None = None) -> bool: ...
 
     async def date_created(self) -> datetime: ...
 

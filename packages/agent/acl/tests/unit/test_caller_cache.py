@@ -14,10 +14,20 @@ from uuid import uuid4
 
 import pytest
 
-from threetears.agent.acl import ACCESS_TABLES, CallerAccessCache, CallerKey, bind_caller_cache_to_access_tables
+from threetears.agent.acl import (
+    ACCESS_TABLES,
+    DEFAULT_CALLER_CACHE_MAX_ENTRIES,
+    CallerAccessCache,
+    CallerKey,
+    CallerNamespaces,
+    CallerNamespacesUnavailable,
+    bind_caller_cache_to_access_tables,
+)
 from threetears.agent.acl.access_tables import DegradedEvictions
+from threetears.agent.acl.generation_follow import follow_caller_access_cache
 from threetears.core.collections import CollectionRegistry
 from threetears.core.collections.registry import CacheInvalidationMessage
+from threetears.core.testing.kv import FakeNatsClient
 
 
 def _member_row(member_type: str, member_id: Any) -> CacheInvalidationMessage:
@@ -130,8 +140,6 @@ class _Pushing:
 
 
 async def test_following_binds_and_follows_every_access_table_and_stop_undoes_both() -> None:
-    from threetears.agent.acl.generation_follow import follow_caller_access_cache
-    from threetears.core.testing.kv import FakeNatsClient
 
     registry = CollectionRegistry()
     bus = FakeNatsClient()
@@ -184,7 +192,6 @@ class _Discovery:
 
 
 def _asking(discovery: Any) -> tuple[Any, CallerAccessCache[frozenset[str]], CollectionRegistry]:
-    from threetears.agent.acl import CallerNamespaces
 
     registry = CollectionRegistry()
     cache: CallerAccessCache[frozenset[str]] = _followed(CallerAccessCache())
@@ -196,7 +203,7 @@ async def test_a_callers_namespaces_are_asked_once_and_again_after_a_change_nami
     discovery = _Discovery(["tools.enr.state.va.1-0"])
     names, _cache, registry = _asking(discovery)
     agent, user = uuid4(), uuid4()
-    caller = {"agent_id": agent, "user_id": user, "identity_token": "t", "user_identity_token": "u"}
+    caller: dict[str, Any] = {"agent_id": agent, "user_id": user, "identity_token": "t", "user_identity_token": "u"}
     assert await names.names_for(**caller) == frozenset({"tools.enr.state.va.1-0"})
     assert await names.names_for(**caller) == frozenset({"tools.enr.state.va.1-0"})
     assert len(discovery.asked) == 1
@@ -238,10 +245,15 @@ async def test_two_callers_never_share_an_answer() -> None:
 async def test_an_answer_that_cannot_be_had_refuses_and_is_never_cached(
     discovery: Any, caller: dict[str, Any], why: str
 ) -> None:
-    from threetears.agent.acl import CallerNamespacesUnavailable
 
     names, cache, _registry = _asking(discovery)
-    asked = {"agent_id": uuid4(), "user_id": uuid4(), "identity_token": "t", "user_identity_token": "u", **caller}
+    asked: dict[str, Any] = {
+        "agent_id": uuid4(),
+        "user_id": uuid4(),
+        "identity_token": "t",
+        "user_identity_token": "u",
+        **caller,
+    }
     with pytest.raises(CallerNamespacesUnavailable, match=why):
         await names.names_for(**asked)
     assert cache.size == 0
@@ -272,12 +284,16 @@ def test_a_failing_watch_empties_the_cache_and_it_refills_only_once_the_watches_
 
 
 async def test_an_unfollowed_cache_asks_the_hub_every_time() -> None:
-    from threetears.agent.acl import CallerNamespaces
 
     discovery = _Discovery(["a"])
     cache: CallerAccessCache[frozenset[str]] = CallerAccessCache()
     names = CallerNamespaces(lambda: discovery, cache)
-    caller = {"agent_id": uuid4(), "user_id": uuid4(), "identity_token": "t", "user_identity_token": "u"}
+    caller: dict[str, Any] = {
+        "agent_id": uuid4(),
+        "user_id": uuid4(),
+        "identity_token": "t",
+        "user_identity_token": "u",
+    }
     await names.names_for(**caller)
     await names.names_for(**caller)
     assert len(discovery.asked) == 2
@@ -298,7 +314,6 @@ class _RevokedWhileAsked(_Discovery):
 
 
 async def test_an_answer_whose_caller_changed_while_it_was_asked_is_returned_but_not_kept() -> None:
-    from threetears.agent.acl import CallerNamespaces
 
     registry = CollectionRegistry()
     cache: CallerAccessCache[frozenset[str]] = _followed(CallerAccessCache())
@@ -306,7 +321,7 @@ async def test_an_answer_whose_caller_changed_while_it_was_asked_is_returned_but
     agent, user = uuid4(), uuid4()
     discovery = _RevokedWhileAsked(registry, user)
     names = CallerNamespaces(lambda: discovery, cache)
-    caller = {"agent_id": agent, "user_id": user, "identity_token": "t", "user_identity_token": "u"}
+    caller: dict[str, Any] = {"agent_id": agent, "user_id": user, "identity_token": "t", "user_identity_token": "u"}
     assert await names.names_for(**caller) == frozenset({"tools.enr.state.va.1-0"})
     assert cache.get(CallerKey(agent, user)) is None
     assert cache.fence_skipped_stores == 1
@@ -378,7 +393,6 @@ def test_reaching_the_bound_is_logged_once(caplog: pytest.LogCaptureFixture) -> 
 
 
 def test_the_default_bound_is_the_documented_one_and_a_bound_below_one_is_refused() -> None:
-    from threetears.agent.acl import DEFAULT_CALLER_CACHE_MAX_ENTRIES
 
     assert CallerAccessCache[Any]().max_entries == DEFAULT_CALLER_CACHE_MAX_ENTRIES == 10_000
     with pytest.raises(ValueError, match="at least one"):
@@ -386,14 +400,13 @@ def test_the_default_bound_is_the_documented_one_and_a_bound_below_one_is_refuse
 
 
 async def test_an_answer_dropped_for_size_is_asked_of_the_hub_again() -> None:
-    from threetears.agent.acl import CallerNamespaces
 
     discovery = _Discovery(["tools.enr.state.va.1-0"])
     cache: CallerAccessCache[frozenset[str]] = _followed(CallerAccessCache(max_entries=1))
     names = CallerNamespaces(lambda: discovery, cache)
     agent = uuid4()
-    ann = {"agent_id": agent, "user_id": uuid4(), "identity_token": "t", "user_identity_token": "ann"}
-    bob = {"agent_id": agent, "user_id": uuid4(), "identity_token": "t", "user_identity_token": "bob"}
+    ann: dict[str, Any] = {"agent_id": agent, "user_id": uuid4(), "identity_token": "t", "user_identity_token": "ann"}
+    bob: dict[str, Any] = {"agent_id": agent, "user_id": uuid4(), "identity_token": "t", "user_identity_token": "bob"}
 
     await names.names_for(**ann)
     await names.names_for(**ann)

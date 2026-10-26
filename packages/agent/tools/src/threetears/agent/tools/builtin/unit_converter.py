@@ -17,6 +17,7 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.langchain_adapter import to_langchain_tool
 from threetears.agent.tools.utils import tool_error, tool_no_change
 from threetears.observe import contain, get_logger
 
@@ -242,8 +243,6 @@ def create_unit_converter_tool(config: dict[str, Any], description: str) -> Stru
     path share :meth:`UnitConverterTool.execute` as their single
     execution body. ``config`` is unused.
     """
-    from threetears.agent.tools.langchain_adapter import to_langchain_tool
-
     return to_langchain_tool(
         UnitConverterTool(),
         description=description,

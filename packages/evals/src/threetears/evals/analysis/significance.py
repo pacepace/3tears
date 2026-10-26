@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.stats import PAIRED_TEST_NAME, UNPAIRED_TEST_NAME
 
 if TYPE_CHECKING:
     pass
@@ -165,8 +166,6 @@ def significance_disclosure(*, paired: bool) -> str:
     :return: The disclosure sentence.
     :rtype: str
     """
-    from threetears.evals.analysis.stats import PAIRED_TEST_NAME, UNPAIRED_TEST_NAME
-
     test_name = PAIRED_TEST_NAME if paired else UNPAIRED_TEST_NAME
     return f"Significance: {test_name}. Descriptive only — no alerting, and no verdict without the statistic behind it."
 

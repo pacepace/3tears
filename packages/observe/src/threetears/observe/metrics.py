@@ -19,7 +19,7 @@ Provides two layers:
 unlike :func:`traced` (OpenTelemetry spans, push/export-based), this
 module's backend is ``prometheus_client`` (pull/scrape-based), matching
 :class:`threetears.observe.inflight.InflightRequestsGauge`'s existing
-"prometheus is OPTIONAL, lazy import, silent no-op when absent" contract
+"prometheus is OPTIONAL, probed at import, silent no-op when absent" contract
 -- the two telemetry backends in this package are deliberately different
 tools for different jobs (traces answer "what happened on this one
 request," metrics answer "what's the aggregate rate/latency/error-count
@@ -35,29 +35,16 @@ from typing import Any, Callable, TypeVar, overload
 
 from threetears.observe.build_once import BuildOnce
 
+try:
+    from prometheus_client import Counter, Gauge, Histogram
+
+    _prometheus_available = True
+except ImportError:  # NOSILENT: the prometheus extra is optional; every instrument is a no-op without it
+    _prometheus_available = False
+
 __all__ = ["counter", "gauge", "histogram", "metered"]
 
 F = TypeVar("F", bound=Callable[..., Any])
-
-
-# ---------------------------------------------------------------------------
-# prometheus_client availability check (cached after first probe)
-# ---------------------------------------------------------------------------
-
-_prometheus_available: bool | None = None
-
-
-def _check_prometheus() -> bool:
-    """Check if prometheus_client is importable (cached after first check)."""
-    global _prometheus_available  # noqa: PLW0603
-    if _prometheus_available is None:
-        try:
-            import prometheus_client  # noqa: F401
-
-            _prometheus_available = True
-        except ImportError:
-            _prometheus_available = False
-    return _prometheus_available
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +180,7 @@ def _get_or_create_instrument(
         prometheus_client is unavailable
     :rtype: Any
     """
-    if not _check_prometheus():
+    if not _prometheus_available:
         return _NOOP_METRIC
 
     sanitized = _sanitize_metric_name(name)
@@ -205,8 +192,6 @@ def _get_or_create_instrument(
         :return: the new prometheus instrument
         :rtype: Any
         """
-        from prometheus_client import Counter, Gauge, Histogram
-
         instrument_classes = {"counter": Counter, "histogram": Histogram, "gauge": Gauge}
         return instrument_classes[kind](sanitized, description or f"{sanitized} {kind}", list(label_names))
 
@@ -339,7 +324,7 @@ def metered(
 
             @functools.wraps(fn)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-                if not _check_prometheus():
+                if not _prometheus_available:
                     return await fn(*args, **kwargs)
 
                 start = time.monotonic()
@@ -360,7 +345,7 @@ def metered(
 
             @functools.wraps(fn)
             def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-                if not _check_prometheus():
+                if not _prometheus_available:
                     return fn(*args, **kwargs)
 
                 start = time.monotonic()

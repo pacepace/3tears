@@ -16,9 +16,11 @@
 # Exempting is right here; the alternative would be to stop walking these packages, which is what
 # this gate's hand-written root list used to do by accident and hid six packages.
 #
-# Verified 2026-09-16 against 14-eng-ai-bot/src/aibots/hub/migrations: every column below is
-# declared `timestamp with time zone` there, which is what DATETIMETZ_TYPE renders to, so these
-# 19 are an ownership boundary and NOT suppressed drift. Re-verify when the hub moves one.
+# Verified 2026-09-16 against 14-eng-ai-bot/src/aibots/hub/migrations, and 2026-10-24 for the
+# datasource tables, columns, relations, schema digests and table templates (their collections
+# declare a TableSchema since 0.78.0): every column below is declared `timestamp with time zone`
+# there, which is what DATETIMETZ_TYPE renders to, so these 33 are an ownership boundary and NOT
+# suppressed drift. Re-verify when the hub moves one.
 #
 # What is still caught: a type mismatch inside 3tears' own migration trees, and any NEW datetime
 # column in these packages, which is not exempt until someone adds it here with its own rationale.
@@ -30,6 +32,34 @@
 datasources:date_created
 # rationale: platform.datasources is created by the hub (v001_initial_schema.sql:185), declared there as timestamp with time zone
 datasources:date_updated
+# rationale: platform.datasource_tables is created by the hub (v001_initial_schema.sql:117), declared there as timestamp with time zone
+datasource_tables:date_introspected
+# rationale: platform.datasource_tables is created by the hub (v001_initial_schema.sql:117), declared there as timestamp with time zone
+datasource_tables:date_described
+# rationale: platform.datasource_tables is created by the hub (v001_initial_schema.sql:117), declared there as timestamp with time zone
+datasource_tables:date_created
+# rationale: platform.datasource_tables is created by the hub (v001_initial_schema.sql:117), declared there as timestamp with time zone
+datasource_tables:date_updated
+# rationale: platform.datasource_columns is created by the hub (v001_initial_schema.sql:73), declared there as timestamp with time zone
+datasource_columns:date_introspected
+# rationale: platform.datasource_columns is created by the hub (v001_initial_schema.sql:73), declared there as timestamp with time zone
+datasource_columns:date_described
+# rationale: platform.datasource_columns is created by the hub (v001_initial_schema.sql:73), declared there as timestamp with time zone
+datasource_columns:date_created
+# rationale: platform.datasource_columns is created by the hub (v001_initial_schema.sql:73), declared there as timestamp with time zone
+datasource_columns:date_updated
+# rationale: platform.datasource_relations is created by the hub (v001_initial_schema.sql:94), declared there as timestamp with time zone
+datasource_relations:date_created
+# rationale: platform.datasource_relations is created by the hub (v001_initial_schema.sql:94), declared there as timestamp with time zone
+datasource_relations:date_updated
+# rationale: platform.table_templates is created by the hub (v001_initial_schema.sql:134), declared there as timestamp with time zone
+table_templates:date_created
+# rationale: platform.table_templates is created by the hub (v001_initial_schema.sql:134), declared there as timestamp with time zone
+table_templates:date_updated
+# rationale: platform.datasource_schema_digests is created by the hub (v029_datasource_schema_digests.py), declared there as timestamp with time zone
+datasource_schema_digests:date_created
+# rationale: platform.datasource_schema_digests is created by the hub (v029_datasource_schema_digests.py), declared there as timestamp with time zone
+datasource_schema_digests:date_updated
 
 # rationale: platform.groups is created by the hub (v001_initial_schema.sql:294), declared there as timestamp with time zone
 groups:date_created

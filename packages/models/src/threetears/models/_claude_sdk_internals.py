@@ -53,6 +53,19 @@ from dataclasses import dataclass
 from types import ModuleType
 from typing import Any, Final
 
+#: why the SDK this module reaches into is unavailable, when the ``claude-cli`` extra is not installed
+_CLAUDE_CLI_IMPORT_ERROR: ImportError | None = None
+try:
+    import claude_agent_sdk
+    from claude_agent_sdk._internal.query import Query
+    from claude_agent_sdk._internal.sdk_mcp_bridge import SdkMcpBridge
+    from claude_agent_sdk._internal.transport import subprocess_cli
+    from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+
+    from threetears.models._claude_cli_spawn import open_process_without_fork
+except ImportError as _exc:  # NOSILENT: the claude-cli extra is optional; each function names it
+    _CLAUDE_CLI_IMPORT_ERROR = _exc
+
 __all__ = [
     "PRIVATE_SURFACE",
     "PrivateAttribute",
@@ -63,6 +76,19 @@ __all__ = [
     "send_control_request",
     "spawn_clis_without_fork",
 ]
+
+
+def _require_sdk() -> None:
+    """refuse to reach into an SDK that is not installed, naming the extra that installs it.
+
+    :return: nothing
+    :rtype: None
+    :raises ImportError: when ``claude-agent-sdk`` (or a module of it this one reads) did not import
+    """
+    if _CLAUDE_CLI_IMPORT_ERROR is not None:
+        raise ImportError(
+            "the Claude CLI pool needs the claude-cli extra: install 3tears-models[claude-cli]",
+        ) from _CLAUDE_CLI_IMPORT_ERROR
 
 
 @dataclass(frozen=True)
@@ -126,9 +152,9 @@ async def install_tool_server(client: Any, name: str, server: Any) -> None:
     :return: nothing
     :rtype: None
     :raises AttributeError: when the SDK no longer carries the members this function reads
+    :raises ImportError: when the ``claude-cli`` extra is not installed
     """
-    from claude_agent_sdk._internal.sdk_mcp_bridge import SdkMcpBridge  # noqa: PLC0415
-
+    _require_sdk()
     query = client._query
     await _close_bridge(query, name)
     query.sdk_mcp_servers[name] = server
@@ -187,9 +213,6 @@ class _AnyioSpawningWithoutFork:
     """``anyio`` as the SDK's transport module sees it, with ``open_process`` started without a fork."""
 
     def __init__(self, module: ModuleType) -> None:
-        # imported here: _claude_cli_spawn needs anyio, which only the claude-cli extra installs
-        from threetears.models._claude_cli_spawn import open_process_without_fork  # noqa: PLC0415
-
         self.module = module
         self.open_process = open_process_without_fork
 
@@ -213,9 +236,9 @@ def spawn_clis_without_fork() -> None:
     :func:`~threetears.models._claude_cli_spawn.open_process_without_fork`.
 
     :raises AttributeError: when the SDK's transport module no longer has a global ``anyio``
+    :raises ImportError: when the ``claude-cli`` extra is not installed
     """
-    from claude_agent_sdk._internal.transport import subprocess_cli  # noqa: PLC0415 -- the claude-cli extra
-
+    _require_sdk()
     current = subprocess_cli.anyio  # type: ignore[attr-defined]  # the transport's own import, not an export
     if isinstance(current, _AnyioSpawningWithoutFork):
         return
@@ -227,14 +250,12 @@ def _instances() -> dict[str, object]:
 
     :return: instances by class name
     :rtype: dict[str, object]
+    :raises ImportError: when the ``claude-cli`` extra is not installed
     """
-    from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient  # noqa: PLC0415 -- the claude-cli extra
-    from claude_agent_sdk._internal.query import Query  # noqa: PLC0415
-    from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport  # noqa: PLC0415
-
-    transport = SubprocessCLITransport(prompt="", options=ClaudeAgentOptions())
+    _require_sdk()
+    transport = SubprocessCLITransport(prompt="", options=claude_agent_sdk.ClaudeAgentOptions())
     return {
-        "ClaudeSDKClient": ClaudeSDKClient(),
+        "ClaudeSDKClient": claude_agent_sdk.ClaudeSDKClient(),
         "Query": Query(transport, is_streaming_mode=True),
         "SubprocessCLITransport": transport,
     }

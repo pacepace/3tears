@@ -95,6 +95,16 @@ log = get_logger(__name__)
 #: waiting longer -- the TTL, as a release once did -- stretches every owner's shutdown by that much.
 RENEWAL_ANSWER_WAIT_SECONDS: Final[float] = 10.0
 
+#: how long the marker a release leaves lives before the server removes it. A KV delete publishes a
+#: marker, and on the shared ``leases`` bucket (one revision, no expiry) that marker was the released
+#: key's one message forever: a host that takes a lease per unique key (a build lock per computed
+#: answer) filled the bounded bucket with them until every lease write on the platform was refused.
+#: This is the marker's lifetime, not a cache's freshness and not a lease's: the release has already
+#: landed when it starts, and an acquire that lands on the key before it lapses replaces it. Long
+#: enough for an acquire racing the release (a create that finds the marker and swaps against its
+#: revision) to finish against it; short enough that a bucket holds a few seconds of releases at most.
+_RELEASED_MARKER_TTL: Final[timedelta] = timedelta(seconds=5)
+
 #: why a held lease was lost (:attr:`HeldLease.lost_reason`): the one vocabulary
 #: :func:`~threetears.core.coordination.nats_distributed_lock` reports too, so it is that enum, under the name
 #: this module's callers read.
@@ -897,6 +907,7 @@ class KVLease:
         key_scope: str | None = None,
         bucket: "KvBucketLike | None" = None,
         expire_entries: bool = False,
+        released_marker_ttl: timedelta = _RELEASED_MARKER_TTL,
     ) -> None:
         """configure factory; defer bucket creation until first acquire.
 
@@ -940,6 +951,10 @@ class KVLease:
             whose readers test whether a key exists rather than decode it. The bucket must allow
             per-key TTLs
         :ptype expire_entries: bool
+        :param released_marker_ttl: how long the marker a release leaves stays before the server removes
+            it, so a released key leaves nothing in the bucket. A marker's lifetime, never a cache freshness
+            bound: the release has already landed when it starts
+        :ptype released_marker_ttl: timedelta
         :return: None
         :rtype: None
         :raises ValueError: when ``key_scope`` is not one literal subject token, or not exactly one of
@@ -957,6 +972,7 @@ class KVLease:
         self._bucket: "KvBucketLike | None" = bucket
         self._bucket_lock = asyncio.Lock()
         self._expire_entries = expire_entries
+        self._released_marker_ttl = released_marker_ttl
         self._holds = _Holds()
 
     @property
@@ -1198,6 +1214,12 @@ class KVLease:
         # to catch for the conflict path -- the wrapper hides
         # KeyWrongLastSequenceError behind the typed ``None`` return.
         revision = await bucket.create(key=key, value=payload, ttl=self._entry_ttl(ttl_seconds))
+        if revision is None and await bucket.get_entry(key=key) is None:
+            # the create lost, yet the key holds nothing: it lost to a released key's marker that
+            # lapsed under it (a create over a marker swaps against the marker's revision), or to an
+            # entry released since. The key is free, so it is created again, once: a contender that
+            # took it meanwhile makes this one lose too, and the entry is then judged below
+            revision = await bucket.create(key=key, value=payload, ttl=self._entry_ttl(ttl_seconds))
         if revision is not None:
             result = LeaseHandle(
                 lease=self,
@@ -1553,12 +1575,24 @@ class KVLease:
             # this handle's own renewal, applied by the server after the handle stopped waiting for
             # its answer: the entry is ours, one revision on from what the handle recorded
             revision = observed
+        if revision <= 0:
+            # no revision proves the entry is this handle's own (one of its holder's other handles may
+            # have taken the key since): an unfenced removal could take a successor's lease, so the
+            # entry is left to lapse by its TTL
+            log.info(
+                "KVLease: the release of %s holds no revision to fence its delete on; it is left to lapse by its TTL",
+                handle.key,
+            )
+            handle.released = True
+            return
         # CAS delete keyed on the handle's revision so a stale-after-
         # check delete cannot evict a successor's freshly reclaimed
         # entry. KvBucketLike.delete returns False on revision mismatch
         # which is treated as "raced with another writer; entry
-        # effectively gone from our view" -- diagnostic-only here.
-        deleted = await bucket.delete(key=handle.key, revision=revision)
+        # effectively gone from our view" -- diagnostic-only here. its
+        # marker lapses (_RELEASED_MARKER_TTL), so a released key leaves
+        # nothing in the bucket.
+        deleted = await bucket.delete(key=handle.key, revision=revision, marker_ttl=self._released_marker_ttl)
         if not deleted:
             # a write landed after the read: another holder's, or a renewal of this one's that is not
             # recognisably its own -- either way not provably this holder's to delete

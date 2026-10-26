@@ -83,6 +83,7 @@ from uuid import UUID, uuid7
 from watchfiles import Change, awatch
 
 from threetears.agent.audit import AuditEvent, publish_audit
+from threetears.agent.tools.call_scope import current_scope
 from threetears.core.utils.atomic_write import atomic_write
 from threetears.observe import contain, counter, get_logger
 
@@ -1496,11 +1497,7 @@ async def _capture_back(
         # outer swallow.
         try:
             if namespace is not None and nats_client is not None and changed:
-                from threetears.agent.tools.call_scope import (
-                    current_scope as _current_scope,
-                )
-
-                _scope = _current_scope()
+                _scope = current_scope()
                 if _scope is None:
                     raise RuntimeError(
                         "workspace.materialize audit: no ToolCallScope installed; bind must run under enter_call_scope."

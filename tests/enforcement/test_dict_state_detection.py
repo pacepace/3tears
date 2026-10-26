@@ -63,6 +63,16 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/versioned_answers.py",
+        class_name="VersionedAnswers",
+        attr_name="_retirements",
+        rationale=(
+            "one background retirement task per scope this replica has been told the current version of; "
+            "the floors it drives are in L2 (the index's versions rows), and a restart that forgets the tasks "
+            "is asked again by the next read"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/security/door_proof.py",
         class_name="DoorProofModes",
         attr_name="_switches",
@@ -326,6 +336,16 @@ _ALLOWLIST = (
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/testing/kv.py",
         class_name="FakeKvBucket",
+        attr_name="_marker_expiry",
+        rationale=(
+            "when each marker given a lifetime (delete's marker_ttl) is removed, on the double's own "
+            "clock -- the lifetime half of _markers, cleared with it. Same test-double rationale as "
+            "FakeKvBucket._entries above"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/kv.py",
+        class_name="FakeKvBucket",
         attr_name="_key_watchers",
         rationale=(
             "the asyncio queues of each open watch_key iterator, keyed by the key it watches, "
@@ -496,6 +516,16 @@ _ALLOWLIST = (
         rationale=(
             "whether the run of each of this process's control flows now in progress has waited, "
             "flow -> bool; it lives for one run and is meaningless outside the process running it"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
+        class_name="ScopedSnapshot",
+        attr_name="_rebuilt",
+        rationale=(
+            "the scopes this replica's own rebuilds published from its own L1, scope -> epoch, kept across "
+            "the rebuild's waits; it names what this process's DuckDB L1 holds, which no other replica holds "
+            "and a restart loses with it, so it is checked against that L1 and the pointer at each use"
         ),
     ),
     DictStateAllowlistEntry(

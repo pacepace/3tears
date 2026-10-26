@@ -17,9 +17,11 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Float,
     Integer,
     LargeBinary,
     MetaData,
+    Numeric,
     String,
     Table,
 )
@@ -45,6 +47,7 @@ def _make_metadata() -> MetaData:
 # Skip all tests in this module if duckdb is not installed
 duckdb = pytest.importorskip("duckdb")
 
+from threetears.core.cache.base import UnsupportedL1ColumnError  # noqa: E402
 from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 
 
@@ -742,3 +745,51 @@ class TestMemoryAnExportHolds:
     def test_the_database_gives_freed_memory_back_from_a_thread_of_its_own(self, backend: DuckDBBackend) -> None:
         found = backend.execute_query("SELECT current_setting('allocator_background_threads') AS on")
         assert found == [{"on": True}]
+
+
+class TestNumericReadsBackAsDecimal:
+    """an exact NUMERIC column is a native DuckDB DECIMAL, read back as the Decimal L3 answers."""
+
+    def test_numeric_columns_read_back_as_decimals_at_their_scale(self) -> None:
+        metadata = MetaData()
+        Table(
+            "rates",
+            metadata,
+            Column("id", String(255), primary_key=True),
+            Column("price", Numeric(12, 4)),
+            Column("wide", Numeric(38, 12)),
+            Column("ratio", Float()),
+        )
+        b = DuckDBBackend()
+        b.initialize(metadata)
+        try:
+            b.upsert("rates", {"id": "a", "price": Decimal("1.5"), "wide": Decimal("2.5"), "ratio": 0.25})
+            b.upsert("rates", {"id": "b", "price": Decimal("-10.00"), "wide": 3, "ratio": None})
+            row = b.select_by_id("rates", "a")
+            assert row is not None
+            assert isinstance(row["price"], Decimal) and str(row["price"]) == "1.5000"
+            assert isinstance(row["wide"], Decimal) and str(row["wide"]) == "2.500000000000"
+            assert row["ratio"] == 0.25 and isinstance(row["ratio"], float)
+            # DECIMAL stays a number to DuckDB: analytics over it run exactly
+            assert b.execute_query("SELECT SUM(price) AS total FROM rates")[0]["total"] == Decimal("-8.5000")
+            ordered = b.execute_query("SELECT id FROM rates ORDER BY price")
+            assert [r["id"] for r in ordered] == ["b", "a"]
+        finally:
+            b.reset()
+
+    @pytest.mark.parametrize(
+        ("sa_type", "reason"),
+        [(Numeric(), "no declared precision and scale"), (Numeric(39, 2), r"NUMERIC\(39, 2\)")],
+    )
+    def test_a_numeric_duckdb_cannot_hold_exactly_is_refused_naming_its_column(
+        self, sa_type: Numeric, reason: str
+    ) -> None:
+        metadata = MetaData()
+        Table("wide", metadata, Column("id", String(255), primary_key=True), Column("amount", sa_type))
+        b = DuckDBBackend()
+        try:
+            with pytest.raises(UnsupportedL1ColumnError, match=rf"wide\.amount: .*{reason}"):
+                b.initialize(metadata)
+            assert not b.has_table("wide")
+        finally:
+            b.reset()

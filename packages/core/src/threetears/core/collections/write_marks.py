@@ -7,9 +7,10 @@ the advance, the row is committed and the generation is unmoved: every pod holdi
 absence for that key keeps answering "absent" -- for the revocation list, a revoked session still
 answering "not revoked". Nothing in the epoch system could see a commit that never moved it.
 
-So the database records the write itself. Each switched-on table carries a statement-level trigger
+So the database records the write itself. Each switched-on table carries a row trigger
 (:data:`WRITE_MARK_TRIGGER`) that inserts one row into :data:`WRITE_MARKS_TABLE` in the same
-transaction as the write: the mark commits exactly when the write does, whoever the writer is. The
+transaction as the write, at the transaction's first changed row of the table: the mark commits exactly
+when the write does, whoever the writer is, and a statement that changed no row marks nothing. The
 :class:`WriteMarkReconciler` drains the marks: it advances each marked table's generation once and
 deletes exactly the marks it read. A writer that advanced after its commit, as before, costs a
 second advance, which only makes followers re-read the table once more. Every process that owns a
@@ -37,7 +38,7 @@ and is excluded from the rest of the pass's pages, so every other table's marks 
 
 **Worst-case repair.** A commit whose own advance was lost is seen by a follower within the pass
 interval, plus the lease's lifetime when the replica holding it died mid-pass, plus the follower's
-own catch-up. ``TRUNCATE`` fires no statement-level row trigger and leaves no mark.
+own catch-up. ``TRUNCATE`` fires no row trigger and leaves no mark.
 """
 
 from __future__ import annotations
@@ -53,9 +54,16 @@ from threetears.observe.metrics import counter, gauge
 
 from threetears.core.collections.generation import GenerationSource
 from threetears.core.coordination.lease import KVLease, LeaseUnavailable
-from threetears.core.data.migrations.ddl_lock import DdlLockPolicy, database_ddl_lock
-from threetears.core.data.migrations.errors import DdlLockTimeoutError
-from threetears.core.data.migrations.session import ConnectionSession
+from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
+from threetears.core.ddl.errors import DdlLockTimeoutError
+from threetears.core.ddl.session import ConnectionSession
+from threetears.core.ddl.write_marks import (
+    MARK_FUNCTION,
+    WRITE_MARK_TRIGGER,
+    WRITE_MARKS_TABLE,
+    write_mark_trigger_sql,
+    write_marks_ddl,
+)
 from threetears.core.sql_fragments import quote_identifier
 
 __all__ = [
@@ -75,15 +83,6 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
-
-#: the queue of committed writes not yet reconciled
-WRITE_MARKS_TABLE: Final[str] = "collection_write_marks"
-
-#: the trigger function every switched-on table's trigger calls
-MARK_FUNCTION: Final[str] = "threetears_mark_collection_write"
-
-#: the trigger's name on every switched-on table
-WRITE_MARK_TRIGGER: Final[str] = "threetears_collection_write_mark"
 
 #: how long an install waits for the DDL lock before deferring to its next run: never long, since a
 #: migration or an index build holding the lock may hold it for minutes
@@ -128,55 +127,6 @@ _OLDEST_AGE = gauge(
 )
 
 
-def write_marks_ddl(schema: str) -> tuple[str, ...]:
-    """the statements that create the marks table and the trigger function in ``schema``, idempotently.
-
-    The function names the marks table by its schema, so a trigger on a table in any other schema
-    (an agent's) writes the one queue.
-
-    :param schema: the schema that holds the queue (the platform schema)
-    :ptype schema: str
-    :return: the statements, in order; run them one at a time (YugabyteDB runs no DDL in a transaction)
-    :rtype: tuple[str, ...]
-    """
-    marks = f"{quote_identifier(schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
-    function = f"{quote_identifier(schema)}.{quote_identifier(MARK_FUNCTION)}"
-    return (
-        f"CREATE TABLE IF NOT EXISTS {marks} ("
-        "id BIGSERIAL PRIMARY KEY, "
-        "table_name TEXT NOT NULL, "
-        "date_created TIMESTAMPTZ NOT NULL DEFAULT now())",
-        f"CREATE OR REPLACE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $mark$\n"
-        "BEGIN\n"
-        f"  INSERT INTO {marks} (table_name) VALUES (TG_TABLE_NAME);\n"
-        "  RETURN NULL;\n"
-        "END\n"
-        "$mark$",
-    )
-
-
-def write_mark_trigger_sql(*, marks_schema: str, table_schema: str, table: str) -> str:
-    """the statement that gives one table its write-mark trigger.
-
-    Statement-level: one mark per write statement, however many rows it touched (a statement that
-    touched none marks too, which costs one spurious advance).
-
-    :param marks_schema: the schema holding the queue and its function
-    :ptype marks_schema: str
-    :param table_schema: the table's schema
-    :ptype table_schema: str
-    :param table: the table
-    :ptype table: str
-    :return: the ``CREATE TRIGGER`` statement
-    :rtype: str
-    """
-    return (
-        f"CREATE TRIGGER {quote_identifier(WRITE_MARK_TRIGGER)} "
-        f"AFTER INSERT OR UPDATE OR DELETE ON {quote_identifier(table_schema)}.{quote_identifier(table)} "
-        f"FOR EACH STATEMENT EXECUTE FUNCTION {quote_identifier(marks_schema)}.{quote_identifier(MARK_FUNCTION)}()"
-    )
-
-
 class SqlConnection(Protocol):
     """one database connection (an asyncpg ``Connection``)."""
 
@@ -205,6 +155,7 @@ WHERE t.table_type = 'BASE TABLE' AND t.table_name::text = ANY($1::text[]) AND N
     JOIN pg_class c ON c.oid = g.tgrelid
     JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE g.tgname = $2 AND c.relname = t.table_name AND n.nspname = t.table_schema
+    AND (g.tgtype & 1) = 1
 )
 ORDER BY t.table_schema, t.table_name
 """
@@ -270,8 +221,17 @@ async def install_write_mark_triggers(
     async with pool.acquire() as conn:
         try:
             async with database_ddl_lock(ConnectionSession(conn), policy):
-                for schema, table in await tables_missing_the_trigger(conn, names):
+                missing = await tables_missing_the_trigger(conn, names)
+                if missing:
+                    # the function the row trigger calls, replacing the one that marked every statement
+                    await conn.execute(write_marks_ddl(marks_schema)[1])
+                for schema, table in missing:
                     try:
+                        # 0.78.0's statement trigger of the same name goes first, so the two never both mark
+                        await conn.execute(
+                            f"DROP TRIGGER IF EXISTS {quote_identifier(WRITE_MARK_TRIGGER)} "
+                            f"ON {quote_identifier(schema)}.{quote_identifier(table)}"
+                        )
                         await conn.execute(
                             write_mark_trigger_sql(marks_schema=marks_schema, table_schema=schema, table=table)
                         )

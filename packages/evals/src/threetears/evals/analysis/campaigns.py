@@ -64,10 +64,12 @@ from threetears.evals.kernel.errors import ConflictError, NotFoundError, Validat
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN, FIND_TEMPLATE, SCHEMA_REMEDY
+from threetears.evals.kernel.declaration import NO_TEMPLATE_REMEDY, DesignRefused, refuse_an_undeclarable_design
+from threetears.evals.kernel.campaign import CampaignView, derive_window
+from threetears.evals.kernel.identity import IDENTITY_VERSION, resolve_variant_identity
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
-    from threetears.evals.kernel.campaign import CampaignView
     from threetears.evals.schema.models import EvalResult, EvalRun, EvalRunStamp, EvalTemplate
     from threetears.evals.schema.values import SweepableValue
 
@@ -962,8 +964,6 @@ def _gate_aspect(storage: CampaignStore, campaign: EvalCampaign, aspect: Aspect,
         looser than the registered incumbent or against its measure's direction, a guardrail margin or a floor on
         nothing the aspect measures, or latency asked about without being under test.
     """
-    from threetears.evals.kernel.declaration import NO_TEMPLATE_REMEDY, DesignRefused, refuse_an_undeclarable_design
-
     if aspect.design is None:
         return
     template = storage.load_template(aspect.template_id, campaign.scope_id) if aspect.template_id else None
@@ -1294,8 +1294,6 @@ def get_campaign_view(storage: CampaignStore, campaign_id: str, scope_id: str) -
     :rtype: CampaignView
     :raises NotFoundError: No campaign with that id in the scope.
     """
-    from threetears.evals.kernel.campaign import CampaignView, derive_window
-
     campaign = get_campaign(storage, campaign_id, scope_id)
     archived_run_ids: list[str] = []
     unresolved_run_ids: list[str] = []
@@ -1835,8 +1833,6 @@ def _address_arm(storage: CampaignStore, scope_id: str, run_id: str, *, profile:
         and the host's variant map disagrees with its own registry — as assembling a bundle over the
         run would refuse too.
     """
-    from threetears.evals.kernel.identity import IDENTITY_VERSION, resolve_variant_identity
-
     run = storage.load_eval_run(run_id, scope_id)
     if run is None:
         raise ValidationFailedError(

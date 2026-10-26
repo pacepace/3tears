@@ -37,6 +37,7 @@ separate design pass on deletion semantics.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -59,7 +60,7 @@ from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
 )
-from threetears.agent.workspace.factory import register_tool_builder
+from threetears.agent.workspace.tool_registry import register_tool_builder
 from threetears.agent.workspace.sandbox import WorkspaceSandbox
 from threetears.agent.workspace.tools.helpers import (
     NoWorkspacePinned,
@@ -291,8 +292,6 @@ def _disk_sha_matches(path: Path, expected_sha: str) -> bool:
         expected digest, False otherwise (including missing file)
     :rtype: bool
     """
-    import hashlib
-
     if not path.is_file():
         return False
     try:

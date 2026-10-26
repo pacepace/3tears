@@ -38,8 +38,16 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import Decimal
 from functools import wraps
 from typing import Any, ClassVar, Generic, Literal, TypeVar, overload
+from uuid import UUID
+
+import sqlalchemy as sa
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, Numeric, Text
+from sqlalchemy import Enum as SAEnum
+from sqlalchemy.dialects.postgresql import BYTEA, JSONB, TSVECTOR
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
 from threetears.core.backends.protocol import (
     BulkDeletingStore,
@@ -54,18 +62,21 @@ from threetears.core.backends.protocol import (
     load_requests,
 )
 from threetears.core.backends.schema_sql import (
+    PGVECTOR_TYPES,
     coerce_row as _coerce_row_fn,
     decode_l2_value as _decode_l2_value,
     decode_vector as _decode_vector,
     encode_jsonb as encode_jsonb,
     json_default as _json_default,
 )
+from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.base import BaseCollection, EntityT
 from threetears.core.collections.generation import WRITE_GENERATION_UNDECLARED, WriteGenerationDeclaration
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.flush import FlushStrategy
 from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUMNS, L2_REVISION_COLUMN
 from threetears.core.entities.base import BaseEntity
+from threetears.core.serialization import resolve_base_type
 from threetears.observe import contain, get_logger
 
 __all__ = [
@@ -92,8 +103,11 @@ __all__ = [
     "TableSchema",
     "UUID_TYPE",
     "VECTOR_TYPE",
+    "check_declared_row_types",
     "collection_for_schema",
     "l2_order_columns",
+    "schema_datetime_columns",
+    "schema_field_types",
     "spans_partitions",
 ]
 
@@ -1144,27 +1158,6 @@ class TableSchema:
             v0.7.5 factory behaviour -- the failure is legible at
             registration time, not at first INSERT)
         """
-        # import inside the method so callers that never invoke
-        # to_sqlalchemy_table don't import SQLAlchemy at module-import
-        # time. local imports here are tiny -- the global SQLAlchemy
-        # initialisation cost is large.
-        import sqlalchemy as sa
-        from sqlalchemy import (
-            BigInteger,
-            Boolean,
-            DateTime,
-            Enum as SAEnum,
-            Integer,
-            Numeric,
-            Text,
-        )
-        from sqlalchemy.dialects.postgresql import (
-            BYTEA,
-            JSONB,
-            TSVECTOR,
-            UUID as PgUUID,
-        )
-
         if self.name in metadata.tables:
             return metadata.tables[self.name]
 
@@ -1180,7 +1173,7 @@ class TableSchema:
             INT_TYPE: lambda col: Integer(),
             BIGINT_TYPE: lambda col: BigInteger(),
             BOOL_TYPE: lambda col: Boolean(),
-            VECTOR_TYPE: lambda col: _require_pgvector()(col.vector_dim),
+            VECTOR_TYPE: lambda col: require_pgvector()(col.vector_dim),
             NUMERIC_TYPE: lambda col: Numeric(col.precision, col.scale),
             TSVECTOR_TYPE: lambda col: TSVECTOR(),
             ENUM_TYPE: lambda col: SAEnum(
@@ -1284,27 +1277,24 @@ class TableSchema:
         )
 
 
-def _require_pgvector() -> Any:
+def require_pgvector() -> Any:
     """return pgvector's ``Vector`` column class.
 
-    deferred lazy-import: pgvector is pulled in only when a caller
-    declares a VECTOR_TYPE column. import failure raises at call time
-    so the failure is legible at table-registration / collection-init,
-    not deep inside an asyncpg INSERT.
+    pgvector is imported with this module when the pgvector extra is
+    installed; without it this raises, so the failure is legible at
+    table-registration / collection-init, not deep inside an asyncpg INSERT.
 
     :return: the :class:`pgvector.sqlalchemy.Vector` class
     :rtype: type
     :raises ImportError: when pgvector is not installed
     """
-    try:
-        from pgvector.sqlalchemy import Vector
-    except ImportError as exc:
+    if not PGVECTOR_TYPES:
         raise ImportError(
             "pgvector is required to materialise VECTOR_TYPE columns; "
             "install ``pgvector`` or remove the column from the "
             "TableSchema",
-        ) from exc
-    return Vector
+        )
+    return PGVECTOR_TYPES[0]
 
 
 class PartitionEnforcementError(TypeError):
@@ -1486,6 +1476,127 @@ def _method_accepts_partition(method: Any, partition_column: str) -> bool:
     return partition_column in sig.parameters
 
 
+#: the Python type a row holds for each column type: what a codec rehydrates a column to, and what
+#: a hand-written field-type map has to name for the column to agree with its schema
+_COLUMN_PYTHON_TYPES: Mapping[str, Any] = {
+    UUID_TYPE: UUID,
+    STRING_TYPE: str,
+    ENUM_TYPE: str,
+    TSVECTOR_TYPE: str,
+    NUMERIC_TYPE: Decimal,
+    DATETIMETZ_TYPE: datetime,
+    # any JSON value: an object, an array or a scalar, passed through as decoded
+    JSONB_TYPE: object,
+    BYTES_TYPE: bytes,
+    INT_TYPE: int,
+    BIGINT_TYPE: int,
+    BOOL_TYPE: bool,
+    VECTOR_TYPE: list,
+}
+
+#: the types a hand-written field-type map may name for a column type besides
+#: :data:`_COLUMN_PYTHON_TYPES`'s: a ``jsonb`` column holds whichever JSON shape its rows carry
+_ALSO_AGREEING: Mapping[str, frozenset[Any]] = {
+    JSONB_TYPE: frozenset({dict, list, Any}),
+}
+
+
+def schema_field_types(schema: TableSchema) -> dict[str, Any]:
+    """every column of ``schema`` with the Python type its rows hold, in declared order.
+
+    :param schema: the table
+    :ptype schema: TableSchema
+    :return: column name to Python type (:data:`_COLUMN_PYTHON_TYPES`)
+    :rtype: dict[str, Any]
+    """
+    return {column.name: _COLUMN_PYTHON_TYPES[column.column_type] for column in schema.columns}
+
+
+def schema_datetime_columns(schema: TableSchema) -> frozenset[str]:
+    """the columns of ``schema`` holding instants (``DATETIMETZ_TYPE``).
+
+    :param schema: the table
+    :ptype schema: TableSchema
+    :return: their names
+    :rtype: frozenset[str]
+    """
+    return frozenset(column.name for column in schema.columns if column.column_type == DATETIMETZ_TYPE)
+
+
+def _field_type_disagreements(schema: TableSchema, declared: Mapping[str, Any]) -> list[str]:
+    """how a hand-written field-type map differs from ``schema``, one line per difference.
+
+    :param schema: the table
+    :ptype schema: TableSchema
+    :param declared: the hand-written map, column name to type hint (``UUID``, ``datetime | None``)
+    :ptype declared: Mapping[str, Any]
+    :return: the differences; empty when the map agrees
+    :rtype: list[str]
+    """
+    found: list[str] = []
+    for name in declared:
+        if schema.get_column(name) is None:
+            found.append(f"{name!r} is not a column of {schema.name!r}")
+    for column in schema.columns:
+        if column.name not in declared:
+            found.append(f"{column.name!r} is missing")
+            continue
+        hint = declared[column.name]
+        base = resolve_base_type(hint)
+        agreeing = {_COLUMN_PYTHON_TYPES[column.column_type], *_ALSO_AGREEING.get(column.column_type, ())}
+        if base not in agreeing:
+            found.append(
+                f"{column.name!r} is declared {hint!r}, but the schema's {column.column_type!r} column holds "
+                f"{_COLUMN_PYTHON_TYPES[column.column_type].__name__}"
+            )
+    return found
+
+
+def _restates_row_types(cls: type) -> bool:
+    """whether ``cls`` itself declares its schema or a copy of the row types read off one.
+
+    :param cls: the collection class being defined
+    :ptype cls: type
+    :return: ``True`` when its own namespace holds ``schema``, ``datetime_columns`` or ``field_types``
+    :rtype: bool
+    """
+    return any(name in cls.__dict__ for name in ("schema", "datetime_columns", "field_types"))
+
+
+def check_declared_row_types(cls: type, schema: TableSchema) -> None:
+    """refuse a class whose hand-written row types disagree with the schema it declares.
+
+    The schema says each column's type, so :attr:`~threetears.core.collections.base.BaseCollection.datetime_columns`
+    and a ``field_types`` map are read off it. A class may still state either, and then each must
+    say what the schema says: a copy kept beside the schema that is not checked is how a column
+    added by a migration goes missing from it.
+
+    :param cls: the collection class being defined
+    :ptype cls: type
+    :param schema: the table it declares
+    :ptype schema: TableSchema
+    :return: nothing
+    :rtype: None
+    :raises TypeError: when the class's own ``datetime_columns`` or ``field_types`` differ from the
+        schema's, naming every difference
+    """
+    instants = schema_datetime_columns(schema)
+    declared_instants = cls.__dict__.get("datetime_columns")
+    if declared_instants is not None and frozenset(declared_instants) != instants:
+        raise TypeError(
+            f"{cls.__name__} declares datetime_columns {sorted(declared_instants)!r}, but its schema's instants "
+            f"are {sorted(instants)!r}; the schema is the declaration, so drop datetime_columns"
+        )
+    declared_types = cls.__dict__.get("field_types")
+    if declared_types is not None:
+        found = _field_type_disagreements(schema, declared_types)
+        if found:
+            raise TypeError(
+                f"{cls.__name__} declares field_types that disagree with its schema {schema.name!r}: "
+                f"{'; '.join(found)}. the schema is the declaration, so drop field_types"
+            )
+
+
 class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     """base collection that generates CRUD SQL from a :class:`TableSchema`.
 
@@ -1555,11 +1666,16 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     schema: TableSchema
     partition_exempt_methods: ClassVar[frozenset[str]] = frozenset()
     #: whether every L3 write this collection makes is a statement generated from :attr:`schema`,
-    #: so :meth:`complete_written_row` may fill in the columns those statements write ``NULL``.
+    #: so :meth:`complete_written_row` may name, as ``None``, the nullable columns a write that
+    #: reaches L2 before L3 leaves out: those statements write the ``None`` sent as ``NULL``.
     #: ``None`` infers it: ``True`` unless the subclass overrides :meth:`save_to_store`. A
     #: subclass whose override only wraps the generated write (calls ``super().save_to_store``
     #: for every row it writes) declares ``True``; one that writes its own SQL leaves it inferred.
     stores_through_generated_sql: ClassVar[bool | None] = None
+    #: every column's Python type (:data:`_COLUMN_PYTHON_TYPES`), read off :attr:`schema` when the
+    #: class is defined. A subclass may state it; it must then agree with the schema, or the class
+    #: is refused (:func:`check_declared_row_types`).
+    field_types: ClassVar[Mapping[str, Any]] = {}
     # lazily-built (underlying_pool, SqlL3Backend) cache for the case where a raw
     # transport is assigned directly to ``l3_pool`` (registry not in play); keeps the
     # on-demand wrapper stable across CRUD calls. ``None`` until first wrap.
@@ -1586,17 +1702,20 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype kwargs: Any
         :return: nothing
         :rtype: None
+        :raises TypeError: when the class's own ``datetime_columns`` or ``field_types`` disagree
+            with its schema (:func:`check_declared_row_types`)
         :raises PartitionEnforcementError: when a public subclass
             method violates the partition contract
         """
         schema = cls.__dict__.get("schema")
-        if isinstance(schema, TableSchema):
+        effective = getattr(cls, "schema", None)
+        if isinstance(effective, TableSchema) and _restates_row_types(cls):
             # the schema already says which columns hold instants; restating them as
-            # ``datetime_columns`` is how one gets left out. derived before the base hook runs,
-            # which checks ``expires_at_column`` against this set.
-            cls.datetime_columns = cls.datetime_columns | frozenset(
-                column.name for column in schema.columns if column.column_type == DATETIMETZ_TYPE
-            )
+            # ``datetime_columns`` is how one gets left out, so a restatement must agree. derived
+            # before the base hook runs, which checks ``expires_at_column`` against this set.
+            check_declared_row_types(cls, effective)
+            cls.datetime_columns = schema_datetime_columns(effective)
+            cls.field_types = schema_field_types(effective)
         super().__init_subclass__(**kwargs)
         if schema is None or not isinstance(schema, TableSchema):
             return None
@@ -1705,18 +1824,19 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         return self.schema.declares_l2_order and (store is None or isinstance(store, OrderedDurableStore))
 
     def complete_written_row(self, data: dict[str, Any]) -> dict[str, Any]:
-        """``data`` with each declared column every generated statement stores as ``NULL`` filled in.
+        """``data`` with each nullable column a write ahead of L3 leaves out named as ``None``.
 
-        see :meth:`BaseCollection.complete_written_row`. a nullable, mutable, non-key column with no
-        ``server_default`` that ``data`` leaves out is written ``NULL`` by every statement this
-        collection generates: the INSERT names it (:func:`~threetears.core.backends.schema_sql
-        .pull_value` answers ``None``), its ``DO UPDATE SET`` and the fenced UPDATE both set it. so
-        its stored value is known without reading it, and the row is completed with it.
+        see :meth:`BaseCollection.complete_written_row`: consulted only by a write that reaches L1
+        and L2 before L3, which sends L3 the completed row. a nullable, mutable, non-key column with
+        no ``server_default`` that ``data`` leaves out is named ``None``, and every statement this
+        collection generates writes a named ``None`` as ``NULL`` -- the INSERT, its ``DO UPDATE
+        SET`` and the fenced UPDATE alike -- so L3 stores the row the tiers cache. (a synchronous
+        write is never completed: its update rewrites only the columns the row names, and a column
+        it leaves out keeps its stored value, read back for the caches.)
 
         only while this collection's L3 writes are the generated statements
-        (:attr:`stores_through_generated_sql`): a subclass that writes its own SQL may leave such a
-        column out of an UPDATE and keep its stored value, so nothing is completed for it, and
-        :meth:`columns_decided_by_store` sends the row to a read back.
+        (:attr:`stores_through_generated_sql`): a subclass that writes its own SQL may not write a
+        ``None`` it is sent, so nothing is completed for it, and such a write is refused.
 
         :param data: the row as the write sends it, stamped
         :ptype data: dict[str, Any]
@@ -1747,11 +1867,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         answer. two shapes, both read off the schema:
 
         * a declared column ``data`` does not name. the generated INSERT drops it when it has a
-          ``server_default`` and the database fills the default in; an immutable one is kept by
-          any update of an existing row; a statement this collection writes itself may keep any
-          of them. none of those is knowable from ``data``. (the framework asks after
-          :meth:`complete_written_row`, so a column every generated statement writes ``NULL`` is
-          already present.)
+          ``server_default`` and the database fills the default in; any update of an existing row
+          keeps its stored value (the generated statements rewrite only the columns the row
+          names); a statement this collection writes itself may keep any of them. none of those
+          is knowable from ``data``. (a write ahead of L3 asks after
+          :meth:`complete_written_row`, so a nullable column it sends as ``None`` is present.)
         * a ``NOT NULL`` ``server_default`` column ``data`` names as ``None``. the fenced UPDATE
           skips it and keeps the stored value (:func:`~threetears.core.backends.schema_sql
           .cas_mutable_columns_for_data`).
@@ -1838,16 +1958,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     def _register_schema(self) -> None:
         """register :attr:`schema` with the resolved ``SqlL3Backend``, if any.
 
-        imported lazily inside the method to avoid a module-import cycle
-        (``schema_backed`` is imported by ``collections.__init__`` very early;
-        ``backends.sql`` pulls in ``schema_sql`` which type-checks against this
-        module). a non-``SqlL3Backend`` backend (or ``None``) is left untouched.
+        a non-``SqlL3Backend`` backend (or ``None``) is left untouched.
 
         :return: nothing
         :rtype: None
         """
-        from threetears.core.backends.sql import SqlL3Backend
-
         backend = self.l3_pool
         if isinstance(backend, SqlL3Backend):
             backend.register_schema(self.schema.name, self.schema)
@@ -1877,8 +1992,6 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         cached = self._durable_store_cache
         if cached is not None and cached[0] is backend:
             return cached[1]
-        from threetears.core.backends.sql import SqlL3Backend
-
         wrapper = SqlL3Backend(backend)
         wrapper.register_schema(self.schema.name, self.schema)
         self._durable_store_cache = (backend, wrapper)
@@ -1907,6 +2020,29 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         pk_values = self.normalize_pk(entity_id)
         pk = dict(zip(self.schema.pk_columns, pk_values, strict=True))
         return await store.fetch_one(self.schema.name, pk)
+
+    async def fetch_from_store_in_transaction(self, entity_id: Any, *, conn: Any) -> dict[str, Any] | None:
+        """fetch one row on a caller's open transaction, through the :class:`DurableStore` seam.
+
+        See :meth:`BaseCollection.fetch_from_store_in_transaction`. The same declared-columns
+        SELECT and read coercion as :meth:`fetch_from_store`, bound to ``conn`` so it sees the
+        transaction's uncommitted writes. A subclass that overrides :meth:`fetch_from_store` reads
+        its own way, which this cannot know, so it reads nothing here unless it overrides this too.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values (composite-pk)
+        :ptype entity_id: Any
+        :param conn: the caller's connection, with its transaction open
+        :ptype conn: Any
+        :return: row dict on hit; ``None`` on miss, with no durable store, or when a subclass reads
+            its own way
+        :rtype: dict[str, Any] | None
+        """
+        store = self._durable_store()
+        if store is None or type(self).fetch_from_store is not SchemaBackedCollection.fetch_from_store:
+            return None
+        pk_values = self.normalize_pk(entity_id)
+        pk = dict(zip(self.schema.pk_columns, pk_values, strict=True))
+        return await store.fetch_one(self.schema.name, pk, conn=conn)
 
     #: the most rows one bulk statement writes: well inside a broker's statement timeout for a
     #: row of a few dozen columns

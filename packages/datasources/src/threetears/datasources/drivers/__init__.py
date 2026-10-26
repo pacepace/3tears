@@ -18,20 +18,17 @@ public surface (DS-09-09):
   (see :mod:`threetears.datasources.drivers.connect_guard`)
 
 concrete driver classes (``AsyncpgDriver``, ``RedshiftDriver``,
-``SnowflakeDriver``, ``BigQueryDriver``) are NOT re-exported here. they
-ship in shards 10 / 11 / 12 and are accessed exclusively via
-:func:`create_driver`. re-exporting them at this layer would break the
-lazy-import contract (any import of ``threetears.datasources.drivers``
-would pull every backend library into ``sys.modules``).
+``SnowflakeDriver``, ``BigQueryDriver``) are NOT re-exported here: they
+are built exclusively via :func:`create_driver`.
 
-lazy-import contract: importing :mod:`threetears.datasources`,
-:mod:`threetears.datasources.drivers`, or
-:mod:`threetears.datasources.drivers.factory` MUST NOT load any of
-``asyncpg``, ``redshift_connector``, ``snowflake.connector``, or
-``google.cloud.bigquery`` into ``sys.modules``. backend libs are
-imported only inside the matching ``case`` arm of
-:func:`create_driver`. a runtime audit (``test_lazy_imports.py``)
-verifies this in a clean subprocess on every test run.
+import contract (owner ruling, 2026-10-24: no lazy imports in serving
+code): importing :mod:`threetears.datasources.drivers.factory` imports
+every driver module, so building a driver on the event loop loads
+nothing. Redshift's module is imported under ``try/except ImportError``,
+so without the redshift extra the package still imports and a Redshift
+config raises the ImportError naming it; the Snowflake and BigQuery
+drivers are stubs that load no backend library. a runtime audit
+(``test_driver_imports.py``) verifies both in clean subprocesses.
 """
 
 from __future__ import annotations

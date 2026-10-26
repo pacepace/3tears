@@ -37,6 +37,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse, urlsplit
+from urllib.request import url2pathname
 
 from threetears.observe import get_logger
 
@@ -50,8 +52,24 @@ from threetears.core.backends.protocol import (
     TruncatingStore,
     parse_rowcount,
 )
+from threetears.core.ddl.ddl_lock import database_ddl_lock
+from threetears.core.ddl.session import ConnectionSession
 from threetears.core.keyset import read_keyset_pages
 from threetears.core.sql_fragments import as_written
+
+try:
+    import httpx
+
+    _HTTPX = True
+except ImportError:  # NOSILENT: the http extra is optional; a load naming an https file says so without it
+    _HTTPX = False
+
+try:
+    import pyarrow.parquet as pq
+
+    _PARQUET = True
+except ImportError:  # NOSILENT: the snapshot extra is optional; a load of parquet files says so without it
+    _PARQUET = False
 
 if TYPE_CHECKING:
     from threetears.core.collections.schema_backed import TableSchema
@@ -218,8 +236,6 @@ def _check_load_url(url: str) -> None:
     :rtype: None
     :raises ValueError: for any other scheme, or plain ``http`` to a host not on this machine
     """
-    from urllib.parse import urlsplit  # noqa: PLC0415 - only a direct load fetches
-
     parts = urlsplit(url)
     if parts.scheme in ("https", "file"):
         return
@@ -239,9 +255,6 @@ async def _fetch_load_file(url: str) -> bytes:
     :rtype: bytes
     :raises ValueError: for a URL :func:`_check_load_url` refuses
     """
-    from urllib.parse import urlparse  # noqa: PLC0415 - only a direct load fetches
-    from urllib.request import url2pathname  # noqa: PLC0415 - only a direct load fetches
-
     _check_load_url(url)
     parsed = urlparse(url)
     if parsed.scheme == "file":
@@ -252,8 +265,8 @@ async def _fetch_load_file(url: str) -> bytes:
                 return handle.read()
 
         return await asyncio.to_thread(read)
-    import httpx  # noqa: PLC0415 - the http extra, needed only once a file is fetched
-
+    if not _HTTPX:
+        raise ImportError("fetching a load's file over https needs httpx: install 3tears[http]")
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0), follow_redirects=False) as client:
         response = await client.get(url)
         response.raise_for_status()
@@ -271,8 +284,8 @@ def _parquet_columns(data: bytes, columns: Sequence[str]) -> tuple[int, list[lis
     :rtype: tuple[int, list[list[Any]]]
     :raises ValueError: when the file lacks one of ``columns``
     """
-    import pyarrow.parquet as pq  # noqa: PLC0415 - the snapshot extra, needed only once a file is read
-
+    if not _PARQUET:
+        raise ImportError("reading a load's parquet file needs pyarrow: install 3tears[snapshot]")
     table = pq.read_table(io.BytesIO(data))
     missing = [column for column in columns if column not in table.column_names]
     if missing:
@@ -842,9 +855,6 @@ class SqlL3Backend:
         if isinstance(self._pool, TruncatingStore):
             await self._pool.truncate(table)
             return
-        from threetears.core.data.migrations.ddl_lock import database_ddl_lock
-        from threetears.core.data.migrations.session import ConnectionSession
-
         statement = f"TRUNCATE TABLE {as_written(_plain_identifier(table))}"
         with _unmask_asyncpg_release_race():
             async with self._pool.acquire() as conn, database_ddl_lock(ConnectionSession(conn)):

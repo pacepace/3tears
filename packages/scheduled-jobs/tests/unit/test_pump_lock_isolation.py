@@ -210,7 +210,8 @@ async def _noop(_trigger: JobTrigger, _fire_id: UUID) -> JobFireResult:
 def _install_lock_manager(monkeypatch: pytest.MonkeyPatch) -> _KeyedLockManager:
     """Install and return the keyed-mutex lock stand-in."""
     manager = _KeyedLockManager()
-    monkeypatch.setattr("threetears.core.coordination.nats_distributed_lock", manager.context)
+    monkeypatch.setattr("threetears.scheduled_jobs.tick.nats_distributed_lock", manager.context)
+    monkeypatch.setattr("threetears.scheduled_jobs.background.nats_distributed_lock", manager.context)
     return manager
 
 
@@ -292,7 +293,8 @@ class TestTwoPumpsDoNotContend:
 
     async def test_no_nats_client_skips_locking_entirely(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Single-pod dev mode: the per-row CAS is the only guard."""
-        monkeypatch.setattr("threetears.core.coordination.nats_distributed_lock", lambda *_a, **_k: _CtxHealthy())
+        for module in ("threetears.scheduled_jobs.tick", "threetears.scheduled_jobs.background"):
+            monkeypatch.setattr(f"{module}.nats_distributed_lock", lambda *_a, **_k: _CtxHealthy())
         scans: list[str] = []
         await tick_mod.scheduled_tick_job(
             _SlowScheduleStore("solo", scans),

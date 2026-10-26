@@ -15,6 +15,7 @@ mirrors the conversations entity / collection tests:
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -164,12 +165,10 @@ def _make_conversation_pg_mock(store: dict[str, dict[str, Any]]) -> AsyncMock:
     """
     build a mock asyncpg pool for the ``conversations`` table.
 
-    emulates the CAS-UPDATE path for the conversations column order
-    (agent_id, conversation_id, then mutables name, folder_id, status,
-    summary, date_updated, date_last_message, metadata, message_count,
-    language, parent_type, parent_id) so ``save_entity`` ->
-    ``save_to_store`` round-trips the cleared ``folder_id`` back into the
-    in-memory L3 store.
+    emulates the CAS-UPDATE path: the pk pair is ``$1``/``$2``, and each
+    ``col = $n`` of the SET clause is applied, so only the columns the row
+    names are written (v0.78.0), and ``save_entity`` -> ``save_to_store``
+    round-trips the cleared ``folder_id`` back into the in-memory L3 store.
 
     :param store: in-memory L3 row dict keyed by str(conversation_id)
     :ptype store: dict[str, dict[str, Any]]
@@ -184,19 +183,9 @@ def _make_conversation_pg_mock(store: dict[str, dict[str, Any]]) -> AsyncMock:
             existing = store.get(entity_id)
             if existing is None:
                 return "UPDATE 0"
-            # mutables follow the pk pair in declared order: name $3,
-            # folder_id $4, status $5, summary $6, date_updated $7, ...
-            existing["name"] = args[2]
-            existing["folder_id"] = args[3]
-            existing["status"] = args[4]
-            existing["summary"] = args[5]
-            existing["date_updated"] = args[6]
-            existing["date_last_message"] = args[7]
-            existing["metadata"] = args[8]
-            existing["message_count"] = args[9]
-            existing["language"] = args[10]
-            existing["parent_type"] = args[11]
-            existing["parent_id"] = args[12]
+            set_clause = query.split(" SET ", 1)[1].split(" WHERE ", 1)[0]
+            for column, index in re.findall(r"(\w+) = \$(\d+)", set_clause):
+                existing[column] = args[int(index) - 1]
             return "UPDATE 1"
         return "OK"
 
@@ -592,6 +581,8 @@ class TestConversationFolderId:
                 "metadata": None,
                 "message_count": 0,
                 "language": "english",
+                "parent_type": None,
+                "parent_id": None,
             }
             rows.append(row)
             l3[str(row["conversation_id"])] = dict(row)

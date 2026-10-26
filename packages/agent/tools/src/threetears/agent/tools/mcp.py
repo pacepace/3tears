@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,8 +28,6 @@ def _get_mcp_timeout() -> int:
     :return: MCP timeout in seconds
     :rtype: int
     """
-    import os
-
     raw = os.environ.get("THREETEARS_MCP_TIMEOUT")
     if raw is not None:
         try:
