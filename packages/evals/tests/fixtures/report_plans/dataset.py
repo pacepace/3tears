@@ -63,6 +63,7 @@ __all__ = [
     "HERE",
     "KAIRO_BUNDLE",
     "LABELS",
+    "OPUS_SCORER",
     "SCORES_SCHEMA",
     "PlanScores",
     "PlannerInfo",
@@ -110,6 +111,9 @@ RECORDINGS = HERE / "recordings"
 CURRENT_RUNS = RECORDINGS / "runs.json"
 #: The schema id every score record carries.
 SCORES_SCHEMA = "plan-scores/1"
+#: The scorer the dataset's model-scored records name: the id the score records were written under, an identity in
+#: recorded calibration data, never a model this code calls (records pool by it, ``pool_key``).
+OPUS_SCORER = "claude-opus-5-5"
 #: Who wrote an anchor's plan, in place of a planner model.
 HAND_WRITTEN = "hand-written"
 
@@ -390,7 +394,7 @@ def run_plans() -> list[Path]:
     return sorted(HERE.glob("r*/runs/*.plan.json"))
 
 
-def score_skeleton(plan_path: Path, *, scorer: str = "claude-opus-5-5", version: str | None = None) -> dict[str, Any]:
+def score_skeleton(plan_path: Path, *, scorer: str = OPUS_SCORER, version: str | None = None) -> dict[str, Any]:
     """A score record for the plan at ``plan_path`` with every field but the verdicts set."""
     name = plan_input(plan_path)
     version = version or latest_rubric()

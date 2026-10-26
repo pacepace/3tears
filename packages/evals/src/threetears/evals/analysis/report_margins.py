@@ -38,10 +38,23 @@ from typing import Literal
 
 from threetears.evals.analysis.report_input import Criterion, Reading, ReportInput, Stat
 
-__all__ = ["CriterionFigure", "Margin", "MarginKind", "criterion_figures", "flip_margin", "margins", "weakest_margin"]
+__all__ = [
+    "CriterionFigure",
+    "CriterionPlace",
+    "Margin",
+    "MarginKind",
+    "criterion_figures",
+    "criterion_place",
+    "flip_margin",
+    "margins",
+    "weakest_margin",
+]
 
 #: What a margin is read against: a declared criterion, an aspect's margin, or a floor the pipeline read.
 MarginKind = Literal["criterion", "margin", "floor"]
+
+#: Where a criterion reads its figures: the arm's overall value, each task's (or its one task's), or each cell's.
+CriterionPlace = Literal["overall", "task", "cell"]
 
 #: The criterion kinds that remove an option that misses them.
 _GATING = frozenset({"gate", "guardrail"})
@@ -108,6 +121,22 @@ def flip_margin(reading: Reading) -> float | None:
     return max(0.0, -float(reading.within_interval[0]))
 
 
+def criterion_place(criterion: Criterion) -> CriterionPlace:
+    """Where a criterion reads its figures, from its declared scope and task: every cell, a task (each task, or the
+    one it names), else the arm's overall value. The one reading of ``Criterion.scope``, so every reader agrees.
+
+    :param criterion: The declared criterion.
+    :ptype criterion: Criterion
+    :return: ``cell``, ``task`` or ``overall``.
+    :rtype: CriterionPlace
+    """
+    if criterion.scope == "each_cell":  # prose-canary: allow — Criterion.scope is the input's declared enum, not prose
+        return "cell"
+    if criterion.scope == "each_task" or criterion.task is not None:  # prose-canary: allow — the same declared enum
+        return "task"
+    return "overall"
+
+
 def criterion_figures(report_input: ReportInput, criterion: Criterion, arm: str) -> list[CriterionFigure]:
     """The arm's figures a criterion reads, at its statistic, where its scope reads them.
 
@@ -122,9 +151,10 @@ def criterion_figures(report_input: ReportInput, criterion: Criterion, arm: str)
     :rtype: list[CriterionFigure]
     """
     holders: list[tuple[Mapping[str, Stat], str | None, str | None]] = []
-    if criterion.scope == "each_cell":  # prose-canary: allow — Criterion.scope is the input's declared enum, not prose
+    place = criterion_place(criterion)
+    if place == "cell":
         holders = [(cell.per_arm.get(arm, {}), None, key) for key, cell in report_input.cells.items()]
-    elif criterion.scope == "each_task" or criterion.task is not None:  # prose-canary: allow — the same declared enum
+    elif place == "task":
         holders = [
             (task.per_arm.get(arm, {}), task.id, None)
             for task in report_input.tasks

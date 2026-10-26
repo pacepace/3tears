@@ -309,7 +309,7 @@ def test_a_sound_reply_becomes_a_record_with_every_digest_set() -> None:
 
 def test_a_reply_quoting_the_rendered_prose_is_sound() -> None:
     rendered = "Keep September. Both candidates cost"
-    scores = dataset.record(R5_ANCHOR, _reply(R2={"verdict": "fail", "quote": rendered}), scorer="claude-opus-5-5")
+    scores = dataset.record(R5_ANCHOR, _reply(R2={"verdict": "fail", "quote": rendered}), scorer=dataset.OPUS_SCORER)
     assert scores.items[0].quote == rendered
 
 
@@ -323,7 +323,7 @@ def test_a_reply_quoting_the_rendered_prose_is_sound() -> None:
 )
 def test_an_unsound_reply_is_refused(changes: dict[str, Any], fault: str) -> None:
     with pytest.raises(ValueError, match=re.escape(fault)):
-        dataset.record(R5_ANCHOR, _reply(**changes), scorer="claude-opus-5-5")
+        dataset.record(R5_ANCHOR, _reply(**changes), scorer=dataset.OPUS_SCORER)
 
 
 def test_a_record_of_a_changed_plan_or_rubric_is_unsound(tmp_path: Path) -> None:
@@ -335,7 +335,7 @@ def test_a_record_of_a_changed_plan_or_rubric_is_unsound(tmp_path: Path) -> None
 
 
 def test_records_pool_only_by_prompt_rubric_and_scorer() -> None:
-    base = dataset.record(R5_ANCHOR, _reply(), scorer="claude-opus-5-5")
+    base = dataset.record(R5_ANCHOR, _reply(), scorer=dataset.OPUS_SCORER)
     other_scorer = base.model_copy(update={"scorer": "owner"})
     other_prompt = base.model_copy(update={"planner": base.planner.model_copy(update={"prompt_digest": "p2"})})
     other_rubric = base.model_copy(update={"rubric": dataset.RubricRef(version="v1", digest="r1")})

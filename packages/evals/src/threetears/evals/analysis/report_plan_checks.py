@@ -180,7 +180,7 @@ from threetears.evals.analysis.report_decision import (
     surviving_options,
 )
 from threetears.evals.analysis.report_input import Aspect, Judged, Measure, ReportInput
-from threetears.evals.analysis.report_margins import weakest_margin
+from threetears.evals.analysis.report_margins import criterion_place, weakest_margin
 from threetears.evals.kernel.report_plan import ChartSpec, OptionRow, ReportPlan, Signals, WarningRef
 from threetears.evals.schema.prose import field_is_prose
 
@@ -411,7 +411,7 @@ def spine(report_input: ReportInput) -> Spine:
         measures = axes if len(axes) == 2 and set(axes) <= figures else None
     elif shape == "C":
         source = "configs" if report_input.configs else ""
-        overall = [gate.measure for gate in gates if gate.scope == "overall" and gate.task is None]
+        overall = [gate.measure for gate in gates if criterion_place(gate) == "overall"]
         measures = (overall[0],) if overall and overall[0] in figures else None
     elif shape == "D":
         source, aspect, measures, reference = _forest_spine(report_input)
@@ -1253,7 +1253,9 @@ def _watch_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Faul
         try:
             cited = any(key.path.startswith(WEAKEST_PREFIX) for key in keys_in(slot.text))
         except UnresolvableReference:
-            continue  # the key check refuses a key that does not parse
+            # NOSILENT: a Watch key that does not parse is refused by the key check (_key_faults) at this same path,
+            # naming it; whether that text cites the weakest margin is asked again once the key is mended.
+            continue
         if not cited:
             said = render(_WEAKEST_SAID, report_input, {})
             yield (
