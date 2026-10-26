@@ -55,7 +55,9 @@ from threetears.evals.analysis.report_input import (
     Contrast,
     ContrastFamily,
     Criterion,
+    Depth,
     Judged,
+    LateCriterion,
     Measure,
     Reading,
     ReportInput,
@@ -846,13 +848,18 @@ def _depth_figure(report_input: ReportInput, path: str, read: Callable[[ReportIn
     return Figure(path=path, kind="number", value=float(value), scale="count")
 
 
+def _mean_repeats(depth: Depth) -> float | None:
+    """The mean repeats a case got (``repeats_per_case`` is fewest, mean, most), where the input states it."""
+    return float(depth.repeats_per_case[1]) if len(depth.repeats_per_case) > 1 else None
+
+
 def _depth_of(aspect: Aspect, report_input: ReportInput) -> list[tuple[int, float]]:
     """``(cases, mean repeats)`` for the control where it ran the aspect, else for every arm that did."""
     depth = aspect.depth or {}
     control = _control(report_input)
     if control is not None and control.id in depth:
         return [(depth[control.id].cases, float(depth[control.id].repeats_per_case[1]))]
-    return [(d.cases, float(d.repeats_per_case[1])) for d in depth.values() if len(d.repeats_per_case) > 1]
+    return [(d.cases, mean) for d in depth.values() if (mean := _mean_repeats(d)) is not None]
 
 
 def _agreed(values: Iterable[float]) -> float | None:
@@ -868,27 +875,103 @@ def _repeats(report_input: ReportInput, _: tuple[str, ...], path: str) -> Figure
     return _depth_figure(report_input, path, lambda ri, a: _agreed(r for _c, r in _depth_of(a, ri)))
 
 
+def _aspect_depth(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    """The cases (or mean repeats) one aspect ran as one figure: the control's where it ran the aspect, else the one
+    every arm agrees on."""
+    aspect_id, field = values
+    depth = _depth_of(_aspect_by_id(report_input, aspect_id), report_input)
+    value = _agreed(cases if field == "cases" else repeats for cases, repeats in depth)
+    if value is None:
+        raise _refuse(
+            path,
+            f"names the {field} aspect {aspect_id} ran as one figure, which the input does not state: its arms ran "
+            f"it to different depths, or no depth is stated; read each arm's `aspects.{aspect_id}.depth.<arm>.{field}`",
+        )
+    return Figure(path=path, kind="number", value=float(value), scale="count")
+
+
+_DEPTH_FIELDS = ("cases", "trials", "repeats")
+
+
+def _depth_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return list(_aspect_by_id(report_input, prior[0]).depth or {})
+
+
+def _arm_depth(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    """How deeply one arm ran one aspect: its distinct cases, its trials, the mean repeats a case got."""
+    aspect_id, arm_id, field = values
+    depth = (_aspect_by_id(report_input, aspect_id).depth or {})[arm_id]
+    if field == "repeats":
+        return _number(path, _mean_repeats(depth), "the mean repeats a case got", "count")
+    return _number(path, getattr(depth, field), f"the arm's {field} on the aspect", "count")
+
+
 def _late_set_at(report_input: ReportInput, _: tuple[str, ...], path: str) -> Figure:
     when = list(dict.fromkeys(late.set_at for late in report_input.caveats.late_criteria))
     if not when:
         raise _refuse(path, "names when the late criteria were set, and no criterion was set late")
     if len(when) > 1:
-        raise _refuse(path, f"names one date, and the late criteria were set at {len(when)} different times")
+        per = ", ".join(f"`late_criteria.{late}.set_at`" for late in _late_names(report_input, ()))
+        raise _refuse(
+            path, f"names one date, and the late criteria were set at {len(when)} different times; name one: {per}"
+        )
     return Figure(path=path, kind="text", value=when[0])
 
 
+def _late_name(late: LateCriterion) -> str:
+    """How a key names one late criterion: what was set, then which one where it names one (``floor:<floor>``), as
+    its caveat's id names it after ``late:``."""
+    return f"{late.criterion}:{late.name}" if late.name else late.criterion
+
+
+def _late_names(report_input: ReportInput, _: tuple[str, ...]) -> list[str]:
+    return list(dict.fromkeys(_late_name(late) for late in report_input.caveats.late_criteria))
+
+
+def _late_criterion_set_at(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    (named,) = values
+    held = [late for late in report_input.caveats.late_criteria if _late_name(late) == named]
+    when = list(dict.fromkeys(late.set_at for late in held))
+    if len(when) > 1:
+        raise _refuse(path, f"names when {named} was set, which the input records {len(when)} different times")
+    return _text(path, when[0], f"when {named} was set")
+
+
+def _setting_arms(report_input: ReportInput, _: tuple[str, ...]) -> list[str]:
+    return [arm.id for arm in report_input.arms if arm.settings]
+
+
+def _setting_names(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return list(_arm(report_input, prior[0]).settings)
+
+
+def _setting(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    """One of an arm's settings as the input holds it: a number where it holds a number, else its text."""
+    arm_id, name = values
+    value = _arm(report_input, arm_id).settings[name]
+    if isinstance(value, str) or value is None:
+        return _text(path, value, f"the arm's {name} setting")
+    return _number(path, value, f"the arm's {name} setting", "plain")
+
+
 _FAMILY_FIELDS = ("disclosure", "correction", "alpha", "family_size", "level")
+
+
+def _family_key(report_input: ReportInput, index: int, field: str) -> str:
+    """The key that reads one field of the family at ``index``: by its aspect where it alone sits on one, else by its
+    place in the input's families."""
+    aspect = report_input.contrast_families[index].aspect
+    alone = aspect is not None and sum(family.aspect == aspect for family in report_input.contrast_families) == 1
+    return f"aspects.{aspect}.family.{field}" if alone else f"families.{index}.{field}"
 
 
 def _family(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     (field,) = values
     families = report_input.contrast_families
     if len(families) > 1:
-        raise _held_apart(
-            path,
-            "the one contrast family",
-            [family.aspect for family in families],
-            lambda aspect: f"aspects.{aspect}.family.{field}",
+        keys = ", ".join(f"`{_family_key(report_input, index, field)}`" for index in range(len(families)))
+        raise _refuse(
+            path, f"names the one contrast family, which the input holds {len(families)} times; name one: {keys}"
         )
     if not families:
         raise _refuse(path, "reads the one contrast family, and the input holds 0")
@@ -897,12 +980,24 @@ def _family(report_input: ReportInput, values: tuple[str, ...], path: str) -> Fi
 
 def _aspect_family(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     aspect_id, field = values
-    families = [family for family in report_input.contrast_families if family.aspect == aspect_id]
-    if not families:
+    held = [index for index, family in enumerate(report_input.contrast_families) if family.aspect == aspect_id]
+    if not held:
         raise _refuse(path, f"names aspect {aspect_id}'s contrast family, which the input does not state")
-    if len(families) > 1:
-        raise _refuse(path, f"names aspect {aspect_id}'s contrast family, and the input holds {len(families)} on it")
-    return _family_figure(families[0], field, path)
+    if len(held) > 1:
+        keys = ", ".join(f"`families.{index}.{field}`" for index in held)
+        raise _refuse(
+            path, f"names aspect {aspect_id}'s contrast family, and the input holds {len(held)} on it; name one: {keys}"
+        )
+    return _family_figure(report_input.contrast_families[held[0]], field, path)
+
+
+def _family_places(report_input: ReportInput, _: tuple[str, ...]) -> list[str]:
+    return [str(index) for index in range(len(report_input.contrast_families))]
+
+
+def _indexed_family(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    index, field = values
+    return _family_figure(report_input.contrast_families[int(index)], field, path)
 
 
 def _family_figure(family: ContrastFamily, field: str, path: str) -> Figure:
@@ -1338,6 +1433,11 @@ _FLOOR_FIELDS = (
 _FLOOR_DERIVED = ("held_above", "broken_at")
 
 
+def _floor_aspects(report_input: ReportInput, _: tuple[str, ...]) -> list[str]:
+    """The aspects floors are read on, as each read names its own: an aspect the input holds a record for or not."""
+    return list(dict.fromkeys(read.aspect for read in report_input.floors))
+
+
 def _floor_keys(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
     return list(dict.fromkeys(read.floor for read in report_input.floors if read.aspect == prior[0]))
 
@@ -1367,6 +1467,11 @@ def _floor(report_input: ReportInput, values: tuple[str, ...], path: str) -> Fig
 
 
 _BAR_FIELDS = ("status", "value", "bar", "interval", "low", "high", "why")
+
+
+def _bar_aspects(report_input: ReportInput, _: tuple[str, ...]) -> list[str]:
+    """The aspects bars are read on, as each read names its own: an aspect the input holds a record for or not."""
+    return list(dict.fromkeys(read.aspect for read in report_input.bars))
 
 
 def _bar_measures(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
@@ -1858,24 +1963,28 @@ _FAMILIES: tuple[_Family, ...] = (
         example="aspects.speed.pair.base.fast.v2.change|pts",
     ),
     _family_of(
-        *_ON_ASPECT,
+        _Word("aspects"),
+        _Ids("<aspect>", _floor_aspects),
         _Word("floor"),
         _Ids("<floor>", _floor_keys),
         _Ids("<arm>", _floor_arms),
         _Statistic(_FLOOR_FIELDS, "<field>"),
-        what="a floor read on one candidate: `held_above` is the margin above which it holds (minus the interval's "
-        "low end), `broken_at` the margin at or below which it breaks (minus the high end)",
+        what="a floor read on one candidate, on the aspect the read names (one the input may hold no aspect record "
+        "for): `held_above` is the margin above which it holds (minus the interval's low end), `broken_at` the margin "
+        "at or below which it breaks (minus the high end)",
         resolve=_floor,
         derived_statistics=_FLOOR_DERIVED,
         example="aspects.answers.floor.answers/rate_drop/*.fast.v2.held_above",
     ),
     _family_of(
-        *_ON_ASPECT,
+        _Word("aspects"),
+        _Ids("<aspect>", _bar_aspects),
         _Word("bar"),
         _Ids("<measure>", _bar_measures),
         _Ids("<arm>", _bar_arms),
         _Statistic(_BAR_FIELDS, "<field>"),
-        what="an arm against an absolute bar on one aspect, in the measure's units",
+        what="an arm against an absolute bar, in the measure's units, on the aspect the read names (one the input may "
+        "hold no aspect record for)",
         resolve=_bar,
         example="aspects.speed.bar.latency_ms.fast.v2.value",
     ),
@@ -2001,6 +2110,55 @@ _FAMILIES: tuple[_Family, ...] = (
         resolve=_criterion_arm_at,
         derived_statistics=_CRITERION_DERIVED,
         example="criteria.cell_floor.fast.v2.short.en.value|pct",
+    ),
+    _family_of(
+        _Word("settings"),
+        _Ids("<arm>", _setting_arms),
+        _Ids("<setting>", _setting_names),
+        what="one of an arm's settings as the input holds it: a number where it holds a number, else its text",
+        resolve=_setting,
+        example="settings.base.retries",
+    ),
+    _family_of(
+        *_ON_ASPECT,
+        _Word("cases"),
+        what="the cases one aspect ran: the control's, else the count every arm agrees on",
+        resolve=lambda report_input, values, path: _aspect_depth(report_input, (values[0], "cases"), path),
+        example="aspects.answers.cases",
+    ),
+    _family_of(
+        *_ON_ASPECT,
+        _Word("repeats"),
+        what="the mean repeats each case of one aspect ran: the control's, else the figure every arm agrees on",
+        resolve=lambda report_input, values, path: _aspect_depth(report_input, (values[0], "repeats"), path),
+        example="aspects.answers.repeats",
+    ),
+    _family_of(
+        *_ON_ASPECT,
+        _Word("depth"),
+        _Ids("<arm>", _depth_arms),
+        _Statistic(_DEPTH_FIELDS, "<field>"),
+        what="how deeply one arm ran one aspect: its distinct cases, its trials, the mean repeats a case got",
+        resolve=_arm_depth,
+        example="aspects.answers.depth.fast.v2.repeats",
+    ),
+    _family_of(
+        _Word("late_criteria"),
+        _Ids("<late>", _late_names),
+        _Word("set_at"),
+        what="when one criterion was set after the results were seen, named as its caveat id names it after `late:` "
+        "(what was set, then `:` and which one where it names one)",
+        resolve=_late_criterion_set_at,
+        example="late_criteria.floor:answers/rate_drop/*.set_at",
+    ),
+    _family_of(
+        _Word("families"),
+        _Ids("<family>", _family_places),
+        _Statistic(_FAMILY_FIELDS, "<field>"),
+        what="any contrast family by its place in the input's families, counting from 0: the key for one that names "
+        "no aspect, or shares its aspect with another",
+        resolve=_indexed_family,
+        example="families.1.correction",
     ),
 )
 
@@ -2188,7 +2346,7 @@ class KeySubjects:
 
     ``arms`` are the ids the path's arm or candidate slots matched (or the arm of ``{arm:<id>}``); ``aspects`` the
     aspect ids it named, or the asked aspect for a family that reads it without naming it (``reading``, ``aspect``,
-    ``cases``, ``flip_margin``). ``against_control`` is True for a figure that is a difference from the control (a
+    ``cases``, ``repeats``, ``flip_margin``). ``against_control`` is True for a figure that is a difference from the control (a
     reading, a contrast, a cost uplift, a flip margin, a stratum's loss share, a slice's ``vs_control``), whose
     evidence is the control's too.
     """
@@ -2202,7 +2360,7 @@ class KeySubjects:
 _ARM_SLOTS = frozenset({"<arm>", "<candidate>"})
 
 #: The families that read the asked aspect without naming it.
-_ASKED_FAMILIES = frozenset({"aspect", "reading", "cases", "flip_margin"})
+_ASKED_FAMILIES = frozenset({"aspect", "reading", "cases", "repeats", "flip_margin"})
 
 #: The words that make a figure a difference from the control.
 _AGAINST_CONTROL = frozenset(
@@ -2501,7 +2659,8 @@ GRAMMAR_HEADING = "Figure keys"
 
 def _example_input() -> ReportInput:
     """A small made-up input the grammar's examples are rendered on, with a dotted arm id and a dotted dimension: one
-    asked aspect and one other, with a measure on both, a pair reading, a floor, a bar, strata, a cell and criteria."""
+    asked aspect and one other, with a measure on both, a pair reading, a floor, a bar, strata, a cell, criteria, a
+    numeric setting, each arm's depth, a criterion set late, and a second contrast family naming no aspect."""
     rate = {"base": (0.912, 897), "fast.v2": (0.874, 895)}
     return ReportInput.model_validate(
         {
@@ -2513,7 +2672,7 @@ def _example_input() -> ReportInput:
                     "name": "Baseline",
                     "role": "control",
                     "served_model": "vendor/base-7",
-                    "settings": {"model": "vendor/base-7", "max_output": "64k"},
+                    "settings": {"model": "vendor/base-7", "max_output": "64k", "retries": 2},
                     "reasoning_ratio": 0.62,
                 },
                 {
@@ -2532,6 +2691,10 @@ def _example_input() -> ReportInput:
                     "readings": [
                         {"arm": "fast.v2", "reading": "within_margin", "change": -4.26, "within_interval": [-7.1, -1.4]}
                     ],
+                    "depth": {
+                        "base": {"cases": 300, "trials": 900, "repeats_per_case": [3, 3.0, 3]},
+                        "fast.v2": {"cases": 300, "trials": 897, "repeats_per_case": [2, 2.99, 3]},
+                    },
                 },
                 {
                     "id": "speed",
@@ -2633,7 +2796,10 @@ def _example_input() -> ReportInput:
                     "interval": [-190, -140],
                 },
             ],
-            "contrast_families": [{"aspect": "answers", "correction": "holm", "alpha": 0.05, "family_size": 1}],
+            "contrast_families": [
+                {"aspect": "answers", "correction": "holm", "alpha": 0.05, "family_size": 1},
+                {"correction": "none", "family_size": 1},
+            ],
             "strata": [
                 {
                     "id": "off_topic",
@@ -2660,7 +2826,9 @@ def _example_input() -> ReportInput:
                     "per_arm": {"base": {"tone.kept": {"mean": 0.94}}, "fast.v2": {"tone.kept": {"mean": 0.9}}},
                 }
             },
-            "caveats": {},
+            "caveats": {
+                "late_criteria": [{"criterion": "floor", "name": "answers/rate_drop/*", "set_at": "25 Oct 2026"}]
+            },
         }
     )
 
@@ -2741,8 +2909,8 @@ def figure_key_grammar() -> str:
     )
     lines.append(
         "Without a filter a rate reads as a percent, a change in points, money in dollars. A digit outside a key is "
-        "refused unless it is part of a name the input holds: an arm's id or name, a served model, a setting as "
-        "displayed (such as `64k`), an aspect, measure, dimension, stratum or task id or name, the campaign's name, "
+        "refused unless it is part of a name the input holds: an arm's id or name, a served model, a setting held as "
+        "text (such as `64k`; one held as a number is a key), an aspect, measure, dimension, stratum or task id or name, the campaign's name, "
         "a trial or case id. An id made only of digits is never such a name: write `{arm:1017}`, not `1017`. "
         f"Percentile names ({', '.join(f'`{name}`' for name in PERCENTILE_NAMES)}) and the package's unit phrases "
         f"({', '.join(f'`{phrase}`' for phrase in _UNIT_PHRASES)}, whole) are written as they are; any other number "
