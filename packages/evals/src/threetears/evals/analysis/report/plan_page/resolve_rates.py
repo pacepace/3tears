@@ -14,18 +14,22 @@
 The line is the stored one, else the one criterion on the measure read where the chart reads it (overall, in every
 task, or in the one task a panel draws). A dot that misses its line is hollow. A strip always states a level (the
 kit's contract): the stored one, else the one level the figures it reads declare, else none, when no interval is
-drawn.
+drawn. A rate's interval is drawn within 0 to 100, where a rate lies.
 
 **range_bars** draw each latency from its p50 to its p95: a group per task (or per measure, over measures), a row per
 arm; a figure holding only its p95 is drawn as its end mark alone, which a caption names. The line is the stored one,
-else the one p95 criterion read where the chart reads it, and a bar ending past its budget is hollow.
+else the one p95 criterion read where the chart reads it, and a bar ending past its budget is hollow, its tooltip
+saying so. A legend names the arms, in the page's order.
 
 **scatter_frontier** plots two measures that trade off, an arm (or config) per point, with the Pareto line: the
 query's two measures, else the two its rows hold; up is the one where higher is better, across the other. Over tasks,
 a panel per task. A point that fails a gate (:func:`~threetears.evals.analysis.report_gates.gate_check`, in the task
 a panel draws) is hollow; on a summary, an arm that does not survive is faded. Each axis carries its criterion's line
 (the stored line and domain are the y axis's). An x axis spanning more than ten times is logarithmic, which a
-caption says.
+caption says. A config takes its first factor's colour, which a legend names
+(:func:`~threetears.evals.analysis.report.plan_page.charting.factor_token`); a panel of more than eight points labels
+only the stressed and the recommended one
+(:func:`~threetears.evals.analysis.report.plan_page.charting.point_labels`).
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ from threetears.evals.analysis.report.charts import (
     DotIntervalChart,
     DotIntervalPanel,
     DotIntervalRow,
+    LegendItem,
     RangeBarsChart,
     RangeGroup,
     RangeRow,
@@ -57,11 +62,14 @@ from threetears.evals.analysis.report.plan_page.charting import (
     KindResolver,
     chart_block,
     criterion_line,
+    factor_legend,
+    factor_token,
     figure_unit,
     interval_words,
     measure_words,
     misses_line,
     missing_note,
+    point_labels,
     reference_line,
     slice_keys,
     slice_name,
@@ -167,6 +175,9 @@ def _dot(
     interval: tuple[float, float] | None,
     drawn: Quantity,
 ) -> _Dot:
+    if interval is not None and drawn.rate:
+        # A rate's interval stated as plus or minus a half-width can run past 0 or 100; a rate never does.
+        interval = (max(interval[0], 0.0), min(interval[1], 100.0))
     tip = [label, figure_text(value, drawn)]
     if interval is not None:
         tip[1] += f", {interval_words(*interval, drawn)}"
@@ -527,7 +538,14 @@ def _range_bars(context: ChartContext) -> Drawn:
         drawn_groups.append(RangeGroup(label=label, rows=drawn_rows))
     ends = [*(value * drawn.factor for value in values), *([line.value] if line is not None else [])]
     domain = context.spec.domain or magnitude_domain(ends)
-    data = RangeBarsChart(groups=drawn_groups, domain=(domain[0], domain[1]), fmt=drawn.fmt, reference=line)
+    drawn_arms = dict.fromkeys(arm for *_, bars in groups for arm, _ in bars if arm in context.look.arms)
+    legend = [
+        LegendItem(label=look.name, color=look.token, mark=look.shape)
+        for look in (context.look.arm(arm) for arm in context.look.ordered(drawn_arms))
+    ]
+    data = RangeBarsChart(
+        groups=drawn_groups, domain=(domain[0], domain[1]), fmt=drawn.fmt, reference=line, legend=legend or None
+    )
     notes = (_NO_MEDIAN_TEMPLATE.format(missing="; ".join(no_median)),) if no_median else ()
     return Drawn(chart_block(context, data), notes)
 
@@ -653,12 +671,15 @@ def _scatter(context: ChartContext) -> Drawn:
         )
         return y_line, x_line
 
+    configs = context.query.source == "configs"
+
     def drawn_points(task: str | None) -> list[ScatterPoint]:
         drawn = []
-        for point in points:
-            if point.task != task:
-                continue
+        here = [point for point in points if point.task == task]
+        for point in here:
             look = context.look.arm(point.arm) if point.arm in context.look.arms else None
+            label, narrow = point_labels(context, point.arm, _arm_label(context, point.arm), len(here))
+            colour = factor_token(context.report_input, point.arm) if configs else None
             fails = (
                 bool(context.report_input.criteria)
                 and gate_check(context.report_input, point.arm, task=point.task).status == "fail"
@@ -669,10 +690,10 @@ def _scatter(context: ChartContext) -> Drawn:
                     id=point.arm,
                     x=x_value,
                     y=y_value,
-                    label=_arm_label(context, point.arm),
-                    narrow_label=look.tag if look is not None else None,
-                    color=look.token if look is not None else None,
-                    shape=look.shape if look is not None else None,
+                    label=label,
+                    narrow_label=narrow,
+                    color=colour or (look.token if look is not None else None),
+                    shape=look.shape if look is not None and colour is None else None,
                     hollow=True if fails else None,
                     muted=True if context.summary and point.arm not in context.look.survivors else None,
                     tip=[
@@ -704,6 +725,7 @@ def _scatter(context: ChartContext) -> Drawn:
                 "y_title": humanize("dimension", y_key) if scoreboard else measure_words(context.report_input, y_key),
                 "frontier": True,
                 "emphasis": context.emphasis,
+                "legend": factor_legend(context.report_input, (point.arm for point in points)) if configs else None,
                 **part,
             }
         )

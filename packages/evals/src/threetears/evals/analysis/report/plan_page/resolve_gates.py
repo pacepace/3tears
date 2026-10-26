@@ -50,7 +50,7 @@ Dot strips, range bars and the frontier scatter, which draw rates against the sa
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from itertools import product
 from typing import Literal
@@ -70,7 +70,6 @@ from threetears.evals.analysis.report.charts import (
     LatticeCell,
     LatticeChart,
     LatticeRow,
-    LegendItem,
     ScatterPath,
     ScatterPoint,
 )
@@ -81,10 +80,13 @@ from threetears.evals.analysis.report.plan_page.charting import (
     Drawn,
     KindResolver,
     chart_block,
+    factor_legend,
+    factor_token,
     figure_stat,
     figure_unit,
     interval_words,
     measure_words,
+    point_labels,
     slice_name,
     stat_value,
 )
@@ -147,9 +149,6 @@ _LOG_SPREAD = 10.0
 #: The room a log axis leaves past its least and its largest value, as factors.
 _LOG_PAD = (0.8, 1.25)
 
-#: The most points a scatter labels every one of; past it, only the emphasised and the recommended are labelled.
-_LABEL_ALL_UP_TO = 8
-
 
 # --- what every kind here reads -------------------------------------------------------------------------------------
 
@@ -204,16 +203,6 @@ def _config_name(report_input: ReportInput, arm: str) -> str:
         if factor.id in levels
     ]
     return " · ".join(names) or arm
-
-
-def _first_factor_place(report_input: ReportInput, arm: str) -> int | None:
-    """A config's first factor's level by its place, which colours it; None where it ran none."""
-    if not report_input.factors:
-        return None
-    first = report_input.factors[0]
-    level = _config_levels(report_input, arm).get(first.id)
-    ids = [one.id for one in first.levels]
-    return ids.index(level) if level in ids else None
 
 
 def _gate_cell(check: GateCheck, *, cost: float | None = None, pick: bool = False) -> GateCell:
@@ -590,31 +579,17 @@ def _axis_domain(values: Sequence[float], drawn: Quantity, *, log: bool) -> tupl
     return band_domain(values, drawn)
 
 
-def _point_label(context: ChartContext, arm: str, *, configs: bool, count: int) -> tuple[str | None, str | None]:
-    """A point's label (wide) and narrow label: every point's name on a small chart, else only the stressed and the
-    recommended one's; narrow, an arm's tag, or a config's name where it is stressed."""
-    name = _config_name(context.report_input, arm) if configs else _arm_name(context, arm)
-    stressed = arm == context.emphasis or arm == context.look.recommended
-    wide = name if count <= _LABEL_ALL_UP_TO or stressed else None
-    if configs:
-        return wide, name if stressed else None
-    tag = context.look.arm(arm).tag if arm in context.look.arms else None
-    return wide, tag if wide is not None else None
-
-
 def _scatter_point(context: ChartContext, point: _Point, axes: tuple[_Axis, _Axis], count: int) -> ScatterPoint:
     configs = context.query.source == "configs"
     x_axis, y_axis = axes
     x, y = point.x * x_axis.drawn.factor, point.y * y_axis.drawn.factor
-    label, narrow = _point_label(context, point.arm, configs=configs, count=count)
-    color: str | None = None
+    name = _config_name(context.report_input, point.arm) if configs else _arm_name(context, point.arm)
+    label, narrow = point_labels(context, point.arm, name, count)
+    color: str | None = factor_token(context.report_input, point.arm) if configs else None
     shape: ChartShape | None = None
-    if configs and (place := _first_factor_place(context.report_input, point.arm)) is not None:
-        color = series_token(place)
-    elif point.arm in context.look.arms:
+    if color is None and point.arm in context.look.arms:
         look = context.look.arm(point.arm)
         color, shape = look.token, look.shape
-    name = _config_name(context.report_input, point.arm) if configs else _arm_name(context, point.arm)
     tip = [name, f"{x_axis.title} {figure_text(x, x_axis.drawn)} · {y_axis.title} {figure_text(y, y_axis.drawn)}"]
     return ScatterPoint(
         id=point.arm,
@@ -653,20 +628,6 @@ def _paths(context: ChartContext, drawn_ids: set[str]) -> list[ScatterPath] | No
             place = [one.id for one in colouring.levels].index(fixed[colouring.id])
             paths.append(ScatterPath(ids=ids, color=series_token(place)))
     return paths or None
-
-
-def _legend(context: ChartContext, arms: Iterable[str]) -> list[LegendItem] | None:
-    """A config scatter's legend: its first factor's levels, by colour; none for arms, which their points name."""
-    report_input = context.report_input
-    if context.query.source != "configs" or not report_input.factors:
-        return None
-    first = report_input.factors[0]
-    shown = {_first_factor_place(report_input, arm) for arm in arms}
-    return [
-        LegendItem(label=level.name or level.id, color=series_token(place))
-        for place, level in enumerate(first.levels)
-        if place in shown
-    ] or None
 
 
 def _gate_scatter(context: ChartContext) -> Drawn:
@@ -720,7 +681,7 @@ def _gate_scatter(context: ChartContext) -> Drawn:
         "x_title": x_axis.title,
         "y_title": y_axis.title,
         "emphasis": context.emphasis,
-        "legend": _legend(context, arms),
+        "legend": factor_legend(context.report_input, arms) if context.query.source == "configs" else None,
     }
     notes = (LOG_AXIS_NOTE.format(axis=x_axis.title),) if x_log else ()
     data: GateScatterChart

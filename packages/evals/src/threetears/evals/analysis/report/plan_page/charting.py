@@ -18,6 +18,10 @@ selects (:func:`~threetears.evals.analysis.report_rows.query_rows`, the one owne
   draws its criterion's line where the plan stores none (a dot strip's floor, range bars' budget, a heatmap's cell
   floor) reads it by :func:`criterion_line`: the one criterion on the measure, at the statistic drawn, read where the
   chart reads it.
+- **A config's colour** (:func:`factor_token`, :func:`factor_legend`): a chart of a factorial grid's configs colours
+  each by its first factor's level, the kit's series in that factor's order, and its legend names the levels.
+- **A scatter's labels** (:func:`point_labels`): every point's name where a chart draws at most eight, else only the
+  stressed and the recommended one's, so labels never bury the points; narrow, the arm's letter tag.
 - **Row order** (:meth:`ChartContext.arm_order`): a summary chart's rows in the options table's order (GENERATOR
   §5.3); a section's in its query's order, else the page's.
 - **The descriptive rule** (:func:`separated`): a change code computes from two point figures is bold where it lies
@@ -38,9 +42,9 @@ from typing import Literal
 
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
-from threetears.evals.analysis.report.charts import ChartReference, KitChart
+from threetears.evals.analysis.report.charts import ChartReference, KitChart, LegendItem
 from threetears.evals.analysis.report.figure_keys import Figure, NamedKind, resolve
-from threetears.evals.analysis.report.plan_page.look import PageLook, Quantity, figure_text, quantity
+from threetears.evals.analysis.report.plan_page.look import PageLook, Quantity, figure_text, quantity, series_token
 from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
 from threetears.evals.analysis.report.plan_page.words import MISSING_TEMPLATE, REFERENCE_TEMPLATE
 from threetears.evals.analysis.report_input import Cell, Criterion, ReportInput, Stat, Stratum, Task
@@ -55,12 +59,15 @@ __all__ = [
     "KindResolver",
     "chart_block",
     "criterion_line",
+    "factor_legend",
+    "factor_token",
     "figure_stat",
     "figure_unit",
     "interval_words",
     "measure_words",
     "misses_line",
     "missing_note",
+    "point_labels",
     "reference_line",
     "separated",
     "slice_keys",
@@ -446,9 +453,10 @@ def misses_line(value: float, line: ChartReference | None) -> bool:
     """
     if line is None:
         return False
+    # Written as not meeting the line, so a value no comparison holds for (NaN) misses it rather than passing.
     if line.kind == "floor":
-        return value < line.value
-    return value > line.value if line.kind == "budget" else False
+        return not value >= line.value
+    return not value <= line.value if line.kind == "budget" else False
 
 
 def slice_name(context: ChartContext, item: Stratum | Task) -> str:
@@ -493,3 +501,76 @@ def missing_note(missing: Sequence[str]) -> tuple[str, ...]:
     :rtype: tuple[str, ...]
     """
     return (MISSING_TEMPLATE.format(missing="; ".join(missing)),) if missing else ()
+
+
+def _first_factor_place(report_input: ReportInput, arm: str) -> int | None:
+    """A config's first factor's level by its place in that factor's levels; None where it ran none."""
+    if not report_input.factors:
+        return None
+    first = report_input.factors[0]
+    config = next((config for config in report_input.configs if config.arm == arm), None)
+    level = config.levels.get(first.id) if config is not None else None
+    ids = [one.id for one in first.levels]
+    return ids.index(level) if level in ids else None
+
+
+def factor_token(report_input: ReportInput, arm: str) -> str | None:
+    """A config's colour (this module's config colour): the kit's series colour at its first factor's level.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param arm: The config's arm.
+    :ptype arm: str
+    :return: The kit colour token; None for an arm that ran no config, or an input with no factors.
+    :rtype: str | None
+    """
+    place = _first_factor_place(report_input, arm)
+    return series_token(place) if place is not None else None
+
+
+def factor_legend(report_input: ReportInput, arms: Iterable[str]) -> list[LegendItem] | None:
+    """A config chart's legend: the first factor's levels the drawn configs run, each in its colour, in order.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param arms: The configs drawn, by arm.
+    :ptype arms: Iterable[str]
+    :return: The legend; None where no drawn arm ran a config.
+    :rtype: list[LegendItem] | None
+    """
+    if not report_input.factors:
+        return None
+    shown = {_first_factor_place(report_input, arm) for arm in arms}
+    first = report_input.factors[0]
+    items = [
+        LegendItem(label=level.name or level.id, color=series_token(place))
+        for place, level in enumerate(first.levels)
+        if place in shown
+    ]
+    return items or None
+
+
+#: The most points a scatter labels every one of (this module's scatter labels).
+_LABEL_ALL_UP_TO = 8
+
+
+def point_labels(context: ChartContext, arm: str, name: str, count: int) -> tuple[str | None, str | None]:
+    """A scatter point's label at 560 px and wider, and below (this module's scatter labels).
+
+    :param context: The chart being resolved.
+    :ptype context: ChartContext
+    :param arm: The point's arm.
+    :ptype arm: str
+    :param name: What the point is called.
+    :ptype name: str
+    :param count: How many points the panel it sits in draws.
+    :ptype count: int
+    :return: ``(label, narrow_label)``: its name where the panel draws few points or it is stressed or recommended,
+        else None; narrow, the arm's tag where it is labelled.
+    :rtype: tuple[str | None, str | None]
+    """
+    stressed = arm in (context.emphasis, context.look.recommended)
+    if count > _LABEL_ALL_UP_TO and not stressed:
+        return None, None
+    tag = context.look.arm(arm).tag if arm in context.look.arms else None
+    return name, tag
