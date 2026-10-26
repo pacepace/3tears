@@ -6,6 +6,35 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the analyst's facts surface intervals, implied caveats, more examples, and lever effects
+
+**Changed:** `measure_read` with no `statistics` reads every statistic the snapshot holds on the measure read that
+way, its interval (`ci` or `half_width`) among them, where it read only the mean, its `ci` and `n`; `statistics` is
+now optional. Its result names what it holds (`held`), what a narrower read left out (`not_shown`) and the intervals'
+`level`. A measure held only within slices is refused by arm, naming where it is held. `campaign_overview`'s measure
+rows gain `statistics` (what each way of reading holds), and `arms_without` lists only the arms holding a measure
+nowhere, so a measure held per cell or stratum no longer reads as missing on every arm.
+
+**Added:** `implied_caveats(report_input)` and `ImpliedCaveat` in `report_decision`: the caveats what a report input
+holds implies, each with a stable id and `matters_if`: `judge_unstated`, `judge_partly_uncalibrated`, `no_control`,
+`nothing_declared`, `point_estimate:<criterion>` and `best_of_n`. `caveats_list` and the overview list them after the
+stated ones (`source`: stated or implied). They are not plan caveat ids: `report_caveats`, the planner and stored plans
+are unchanged.
+
+**Changed:** a snapshot's report input is built by `analyst_input(bundle)`: up to `ANALYST_PER_SLICE` (three) failed
+trials per aspect, arm and stratum and `ANALYST_EXAMPLES` (now 96) in all, each excerpt centred on the passage the
+judge's reason quotes, else the reply's end. `report_input` gains `per_slice` and `excerpt`; its defaults keep the
+planner's input as it was. `examples_list` returns the judge's reason whole. A freeze of unchanged evidence now builds
+a different input, so it writes a new snapshot beside any stored one.
+
+**Added:** `levers_effects` (analyses workflow, on the analyst's and the editor's cuts): what each setting the arms
+vary does to a measure, read only between two arms whose settings differ in it alone, with an interval recovered from
+the two arms' own intervals as if independent, and each interaction across another setting with a verdict (reverses,
+differs, within, no_interval). Arms that isolate no setting are refused. New figure keys:
+`lever.<setting>.<from>.<to>.<measure>[.<place>].<field>` and the interaction form
+`lever.<setting>.<from>.<to>.<measure>[.<place>].vs.<from>.<to>.<field>`, with `arm_settings` and `lever_of` in
+`figure_keys`. The figure-key grammar gains a `levers` group, so the planner's prompt text changes with it.
+
 ### evals: the report analyst's tool, evals_analyst, over a frozen report snapshot
 
 **Added:** `analyst_actions()` and `analyst_tools(prefix="evals", *, writes=True, role="analyst")`: one tool,
