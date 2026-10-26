@@ -22,8 +22,9 @@ page = campaign_report(host, campaign_id, scope_id)          # a host
 files = page.write("eval-report")  # report.html, report.md, campaign.json, bundle-<aspect>.json
 ```
 
-`report.html` needs nothing beside it: no script, no stylesheet, no image, no URL but `#` links to places on the
-page; its marks are inline SVG, and drill-down is `<details>`. `report.md` is the same page as Markdown, each mark
+`report.html` needs nothing beside it: no stylesheet, no image, no URL but `#` links to places on the page and the
+kit's fonts. It carries exactly one script, the package's own `kit.js`, which draws each chart from the JSON beside
+it; without it, every chart reads as its values table. Drill-down is `<details>`. `report.md` is the same page as Markdown, each mark
 printed as the text it draws. `campaign.json` is the page's machine form: code's readings, the recommendation's arm
 (by label and variant key) and confidence, the call, and each aspect's bundle by its fingerprint
 ([its shape](serving.md#the-campaign-json)). Each aspect's evidence bundle is written whole beside it as `bundle-<aspect>.json`, with its `schema_version`;
@@ -388,13 +389,15 @@ dark alike.
 
 ### Embedding the page in a host
 
-Serve the directory `write` produces as static files; or keep a route that returns `report_read(format="html")`
-with a strict content security policy: `default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com;
-font-src https://fonts.gstatic.com` holds, since the page has no script, inline SVG needs no `img-src`, and the only
-things it loads are the kit's fonts from the Google Fonts hosts. The stricter `default-src 'none'; style-src
-'unsafe-inline'` also works: the browser blocks the fonts (and logs each block), and the page reads the same in the
-system faces the stylesheet falls back to. Or show that route in an `<iframe sandbox>` with no `allow-scripts`,
-changing the host's own `frame-ancestors` to `'self'`. Linking to the route needs no change at all.
+Serve the directory `write` produces as static files; or keep a route that returns `report_read(format="html")`.
+The default page carries the package's `kit.js` inline and links the kit's fonts, so it needs a policy that allows
+that one inline script (by its hash, which changes only when the package's `kit.js` does) and the Google Fonts hosts.
+A host whose policy runs and loads nothing asks for `report_read(format="html", static=True)` (or
+`report_html(report, static=True)`, `campaign_report_html(report, static=True)`): that page has no `<script>`, no
+`<link>`, every chart as its values table and its text in the system faces, and `default-src 'none'; style-src
+'unsafe-inline'` holds over it. Either page can also be shown in an `<iframe sandbox>` with no `allow-scripts`,
+changing the host's own `frame-ancestors` to `'self'`; the default page then reads as its tables. Linking to the route
+needs no change at all.
 
 `Report.basis` says whether an analysis wrote the memo (`analysis`) or none did (`code_only`); `report.verdicts`
 holds every verdict typed — each guardrail, each bar on each arm, each contrast — for a program to branch on.

@@ -1,7 +1,8 @@
-"""The report as one self-contained HTML page whose one script is the eval report kit's own.
+"""The report as one self-contained HTML page, in one of two modes: the default page, whose one script is the eval
+report kit's own, and the static page, which runs and loads nothing at all.
 
 **Nothing an author or a model wrote can make the page run or load anything.** Every text node is escaped, so no
-field can open a ``<script>``, a ``<link>``, an event-handler attribute or a ``javascript:`` URL. The page carries
+field can open a ``<script>``, a ``<link>``, an event-handler attribute or a ``javascript:`` URL. The default page carries
 exactly one script, written by this module and never from a field: the kit's ``kit.js``, shipped beside this module
 as package data, inlined verbatim as the last element of the body. It draws each chart from its data, and a chart's
 data reaches the page only as JSON escaped into its ``data-chart`` attribute, every string in it text the kit sets as
@@ -10,6 +11,13 @@ Mono), two preconnects and one stylesheet link to the Google Fonts hosts, the sa
 memos carry. Where a host's policy blocks those hosts the page reads the same in the system faces the kit names after
 each Plex face. Every other link is a ``#`` link to a place on the page itself. Drill-down is ``<details>``; moving
 between the screens is ``#`` anchors; neither needs the script.
+
+**The static page** (``static=True`` on :func:`report_html` and :func:`campaign_report_html`) is for a host whose
+policy lets a page neither run nor load anything (``default-src 'none'``), even were escaping ever to fail. It is the
+default page less exactly three things: the kit's script, the three font links, and each chart's ``div.chart`` with
+its data. So it carries no ``<script>`` and no ``<link>``; its text is set in the system faces the kit's stylesheet
+names after each Plex face; and every chart is its table of values, shown, since the one rule that hides the table
+needs a drawn chart beside it. The default page is unchanged by the option, byte for byte.
 
 **A chart reads without its picture.** Each chart is the kit's ``.fig``: its title, a ``div.chart`` the kit draws at
 its real width, and a table of every value it draws. While the chart is drawn the table is visually hidden, for a
@@ -98,38 +106,42 @@ log = get_logger(__name__)
 _COUNTED_SECTIONS: frozenset[str] = frozenset({"cases"})
 
 
-def report_html(report: Report) -> str:
-    """Render a report as one standalone HTML page whose one script is the kit's.
+def report_html(report: Report, *, static: bool = False) -> str:
+    """Render a report as one standalone HTML page whose one script is the kit's, or, ``static``, with none.
 
     :param report: The report.
     :ptype report: Report
+    :param static: Write the static page: no ``<script>``, no ``<link>``, the text in the system faces the kit's
+        stylesheet names, and every chart as its table of values. False (the default) writes the page with the kit's
+        script and font links, byte for byte as before the option existed.
+    :ptype static: bool
     :return: The page.
     :rtype: str
     """
     head = [block for block in report.blocks if block.section in FIRST_SCREEN]
     parts = [
-        *page_head(report.title),
+        *page_head(report.title, static=static),
         "<body>",
         '<div class="page">',
         f'<article data-basis="{escape(report.basis)}">',
         "<header>",
         # The title first, then the first screen in order: what warns is under the verdict, never above the title.
         f"<h1>{escape(one_line(report.title))}</h1>",
-        *(_block(block, index) for index, block in enumerate(head)),
+        *(_block(block, index, static=static) for index, block in enumerate(head)),
         "</header>",
     ]
     titles = report.section_titles
     present = _present_sections(report)
     nav = [*present, *(["glossary"] if report.terms else [])]
     parts.append("<nav>" + "".join(f'<a href="#{section}">{escape(titles[section])}</a>' for section in nav) + "</nav>")
-    parts += _sections(report, present)
+    parts += _sections(report, present, static=static)
     parts += _glossary(report.terms)
-    parts += ["</article>", "</div>", f"<script>{KIT_JS}</script>", "</body>", "</html>"]
+    parts += ["</article>", "</div>", *_script(static), "</body>", "</html>"]
     return _links_in_sight("\n".join(parts) + "\n")
 
 
-def campaign_report_html(report: CampaignReport) -> str:
-    """Render a campaign's page as one standalone HTML page whose one script is the kit's.
+def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str:
+    """Render a campaign's page as one standalone HTML page whose one script is the kit's, or, ``static``, with none.
 
     The first screen is the page's ``<header>``: the title first, then the rest of the first screen in order (the
     question, the answer, what warns, set apart but never announced over the title). The sections the page reads
@@ -141,20 +153,22 @@ def campaign_report_html(report: CampaignReport) -> str:
 
     :param report: The campaign's page.
     :ptype report: CampaignReport
+    :param static: Write the static page, as :func:`report_html` does: no script, no link, every chart its table.
+    :ptype static: bool
     :return: The page.
     :rtype: str
     """
     head = [block for block in report.blocks if block.section in FIRST_SCREEN]
     slugs = report.fold_ids
     parts = [
-        *page_head(report.title),
+        *page_head(report.title, static=static),
         "<body>",
         '<div class="page">',
         f'<article data-basis="{escape(report.basis)}" data-page="campaign">',
         "<header>",
         # The title first, then the decision: the question, the answer, then what warns, as consequences.
         f"<h1>{escape(one_line(report.title))}</h1>",
-        *(_block(block, index) for index, block in enumerate(head)),
+        *(_block(block, index, static=static) for index, block in enumerate(head)),
         "</header>",
     ]
     # What the page reads and the writer says sit before the folds; how the page was made (the methods) after them.
@@ -167,22 +181,27 @@ def campaign_report_html(report: CampaignReport) -> str:
     links += [("glossary", SECTION_TITLES["glossary"])] if report.terms else []
     parts.append("<nav>" + "".join(f'<a href="#{href}">{escape(text)}</a>' for href, text in links) + "</nav>")
     for section in before:
-        parts += _campaign_section(report, section)
+        parts += _campaign_section(report, section, static=static)
     for fold, slug in zip(report.aspects, slugs, strict=True):
-        parts += _aspect_fold(fold, slug)
+        parts += _aspect_fold(fold, slug, static=static)
     for section in after:
-        parts += _campaign_section(report, section)
+        parts += _campaign_section(report, section, static=static)
     parts += _glossary(report.terms)
-    parts += ["</article>", "</div>", f"<script>{KIT_JS}</script>", "</body>", "</html>"]
+    parts += ["</article>", "</div>", *_script(static), "</body>", "</html>"]
     return _links_in_sight("\n".join(parts) + "\n")
 
 
-def _campaign_section(report: CampaignReport, section: str) -> list[str]:
+def _script(static: bool) -> list[str]:
+    """The page's one script, the kit's, as the last element of its body; nothing on a static page."""
+    return [] if static else [f"<script>{KIT_JS}</script>"]
+
+
+def _campaign_section(report: CampaignReport, section: str, *, static: bool) -> list[str]:
     """One section of a campaign's page after its first screen: what it means open, the methods folded."""
     blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
     return [
         f'<section id="{section}">',
-        *_section(section, report.section_titles[section], _folded(blocks), count=None),
+        *_section(section, report.section_titles[section], _folded(blocks, static=static), count=None),
         "</section>",
     ]
 
@@ -192,7 +211,7 @@ _ID_ATTRIBUTE = re.compile(r'\b(id|aria-labelledby)="([^"]*)"')
 _LOCAL_LINK = re.compile(r'href="#(?!g-)([^"]*)"')
 
 
-def _aspect_fold(fold: CampaignAspectFold, slug: str) -> list[str]:
+def _aspect_fold(fold: CampaignAspectFold, slug: str, *, static: bool) -> list[str]:
     """One aspect's closed fold: the writer's summary of it, then its page's first screen and sections, a heading level
     down, every id in it prefixed ``a-<slug>--``.
 
@@ -207,9 +226,9 @@ def _aspect_fold(fold: CampaignAspectFold, slug: str) -> list[str]:
     report = fold.report
     head = fold.head
     body = [
-        *(_block(block, index) for index, block in enumerate(fold.summary)),
-        *(_block(block, index) for index, block in enumerate(head)),
-        *_sections(report, _present_sections(report)),
+        *(_block(block, index, static=static) for index, block in enumerate(fold.summary)),
+        *(_block(block, index, static=static) for index, block in enumerate(head)),
+        *_sections(report, _present_sections(report), static=static),
     ]
     prefix = f"a-{slug}--"
     inner = _prefixed("\n".join(body), prefix)
@@ -247,14 +266,15 @@ def _present_sections(report: Report) -> list[str]:
     return [section for section in sections if any(block.section == section for block in report.blocks)]
 
 
-def _sections(report: Report, present: Sequence[str]) -> list[str]:
+def _sections(report: Report, present: Sequence[str], *, static: bool) -> list[str]:
     """Each section after the first screen, in a ``<section>`` of its id."""
     titles = report.section_titles
     parts: list[str] = []
     for section in present:
         blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
         parts.append(f'<section id="{section}">')
-        parts.extend(_section(section, titles[section], _folded(blocks), count=_section_count(section, blocks)))
+        body = _folded(blocks, static=static)
+        parts.extend(_section(section, titles[section], body, count=_section_count(section, blocks)))
         parts.append("</section>")
     return parts
 
@@ -302,7 +322,7 @@ def _section_count(section: str, blocks: Sequence[tuple[int, ReportBlock]]) -> i
     return None if table is None else table.total_rows
 
 
-def _folded(blocks: Sequence[tuple[int, ReportBlock]]) -> list[str]:
+def _folded(blocks: Sequence[tuple[int, ReportBlock]], *, static: bool) -> list[str]:
     """A section's blocks, each consecutive run naming one fold inside one closed ``<details>``."""
     parts: list[str] = []
     open_fold: str | None = None
@@ -313,20 +333,21 @@ def _folded(blocks: Sequence[tuple[int, ReportBlock]]) -> list[str]:
             if block.fold is not None:
                 parts.append(f'<details class="fold"><summary>{escape(block.fold)}</summary>')
             open_fold = block.fold
-        parts.append(_block(block, index))
+        parts.append(_block(block, index, static=static))
     if open_fold is not None:
         parts.append("</details>")
     return parts
 
 
-def _block(block: ReportBlock, index: int) -> str:
-    """One block as HTML; ``index`` makes a chart's ids unique on the page."""
+def _block(block: ReportBlock, index: int, *, static: bool) -> str:
+    """One block as HTML; ``index`` makes a chart's ids unique on the page, and a static page's charts are their
+    tables."""
     if isinstance(block, TextBlock):
         return _text(block)
     if isinstance(block, TableBlock):
         return table_html(block)
     if isinstance(block, ChartBlock):
-        return chart_html(block, f"chart-{index}")
+        return chart_html(block, f"chart-{index}", static=static)
     if isinstance(block, TrialBlock):
         return _trial(block)
     return _disclosure(block)

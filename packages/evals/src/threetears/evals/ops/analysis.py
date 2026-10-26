@@ -339,7 +339,7 @@ class ReportDocument(EvalBaseModel):
     format: ReportFormat
     body: VerbatimText = Field(
         description="The report in that form, exactly as its serializer wrote it: Markdown, canonical JSON, or "
-        "script-free HTML."
+        "HTML (one page whose one script is the kit's, or, static, with no script and no link)."
     )
 
 
@@ -1164,7 +1164,13 @@ def _claim_generation_slot(host: EvalHost, campaign_id: str, scope_id: str, atte
 
 
 def report_read(
-    host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat, trials: TrialDetail = "table"
+    host: EvalHost,
+    campaign_id: str,
+    scope_id: str,
+    *,
+    format: ReportFormat,
+    trials: TrialDetail = "table",
+    static: bool = False,
 ) -> ReportDocument:
     """The campaign's report, serialized in one form — the same report the command line's ``report`` prints.
 
@@ -1186,12 +1192,16 @@ def report_read(
     :ptype campaign_id: str
     :param scope_id: The scope it lives in.
     :ptype scope_id: str
-    :param format: ``markdown``, ``html`` (one page, its charts drawn by the kit's inlined script) or ``json`` (the page's machine form: code's
+    :param format: ``markdown``, ``html`` (one page, its charts drawn by the kit's inlined script; see ``static``) or ``json`` (the page's machine form: code's
         readings across the campaign's aspects, the recommendation, the call, and each aspect's bundle by its
         fingerprint, as ``campaign.json`` beside a written page holds it).
     :ptype format: ReportFormat
     :param trials: ``table`` (the default) or ``all``, which adds each failed or lost trial's full record.
     :ptype trials: TrialDetail
+    :param static: For ``html``, the static page, for a host whose policy lets a page neither run nor load anything:
+        no ``<script>``, no ``<link>``, the system faces, every chart its table of values. Markdown and JSON are
+        the same either way.
+    :ptype static: bool
     :return: The report in that form.
     :rtype: ReportDocument
     :raises NotFoundError: No campaign with that id in the scope.
@@ -1208,7 +1218,7 @@ def report_read(
         analysis_basis=analysis.basis if analysis is not None else None,
         plan=dict(plan.plan) if plan is not None else None,
         format=format,
-        body=serialize_report(report, format),
+        body=serialize_report(report, format, static=static),
     )
 
 

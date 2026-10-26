@@ -153,9 +153,9 @@ _CASE_NUMBER = re.compile(r"case (\d+)")
 _PROSE_CELL = 40
 
 
-def page_head(title: str) -> list[str]:
-    """The page's ``<head>``: its title, the kit's font links and the stylesheet — the kit's, then the page's own and
-    the charts'. Nothing in it comes from a field but the title, escaped."""
+def page_head(title: str, *, static: bool) -> list[str]:
+    """The page's ``<head>``: its title, the kit's font links (none on a static page) and the stylesheet — the kit's,
+    then the page's own and the charts'. Nothing in it comes from a field but the title, escaped."""
     return [
         "<!doctype html>",
         '<html lang="en">',
@@ -163,7 +163,7 @@ def page_head(title: str) -> list[str]:
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         f"<title>{escape(one_line(title))}</title>",
-        _FONT_LINKS,
+        *([] if static else [_FONT_LINKS]),
         f"<style>{_KIT_CSS}{_PAGE_STYLE}{GLYPH_STYLE}</style>",
         "</head>",
     ]
@@ -375,17 +375,21 @@ def _column_class(block: TableBlock, key: str) -> str:
     return f' class="num{emphasis}"'
 
 
-def chart_html(block: ChartBlock, chart_id: str) -> str:
+def chart_html(block: ChartBlock, chart_id: str, *, static: bool) -> str:
     """A chart as the kit's ``.fig``: its title, the chart the kit draws, and a table of every value it draws.
 
     The chart is a ``div.chart`` whose ``data-chart`` is its JSON, escaped into the attribute: the kit's script draws
     it at the chart's real width, every string in it as text. The table follows it. While the kit has drawn the chart
     the table is visually hidden, read by a screen reader; where the chart is empty (no script ran, or the kit refused
-    the data) or there is no chart to draw, the table is the figure, in its own scrolling frame."""
+    the data) or there is no chart to draw, the table is the figure, in its own scrolling frame.
+
+    A static page writes no ``div.chart`` at all, so no script is wanted to draw one, no empty box stands where it
+    would be, and the one rule that hides the table (``.chart:not(:empty) + .chart-values``) never matches: every
+    figure is its title and its table."""
     headers, rows = block.values_table()
     head = "".join(f'<th scope="col">{escape(header)}</th>' for header in headers)
     body = "".join("<tr>" + "".join(f"<td>{escape(cell)}</td>" for cell in row) + "</tr>" for row in rows)
-    drawn = block.kit_chart()
+    drawn = None if static else block.kit_chart()
     chart = ""
     if drawn is not None:
         kind, data = drawn
