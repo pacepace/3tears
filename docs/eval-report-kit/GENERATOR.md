@@ -19,7 +19,7 @@ The planner is the part that makes the structure fit the data. A fixed template 
 
 ## 1. Classify the eval (code, before the planner)
 
-Code reads these signals from the report input, applies the shape lookup below, and writes `plan.signals` and `plan.shape` before the planner runs; the planner receives them as facts and never writes them. The same holds for the masthead, arm colours, and each chart's interval level, unit and axis range (owner ruling, 2026-10-25: code computes facts; the planner chooses the mode, the sections, the charts and every sentence).
+Code reads these signals from the report input, applies the shape lookup below, and writes `plan.signals` and `plan.shape` before the planner runs; the planner receives them as facts and never writes them. The shape's spine is a fact too: code looks it up below and hands it to the planner, and the plan's first evidence section draws it. The same holds for the masthead, arm colours, and each chart's interval level, unit and axis range (owner ruling, 2026-10-25: code computes facts; the planner chooses the mode, the sections, the charts and every sentence).
 
 | Signal | Read from | Values |
 |---|---|---|
@@ -42,6 +42,8 @@ Map them to a shape with this lookup. It is a lookup, not a judgment call. When 
 | E. Version lineage | ordered versions, same cases | Step chart per task across versions, then cases that newly fail | none yet: build from the rules |
 
 A prompt eval can be A, D or E. A model eval can be A, B or D. The shape follows the structure of the comparison, not what varied.
+
+**The spine is code's fact** (owner ruling, 2026-10-25: code computes facts). Code reads the spine chart's kind off this table, and the parts of its query the input settles (`report_plan_checks.spine`): A, a gate matrix over the tasks; B, a gate-space scatter over the configs, its axes the two measures the gates read; C, a config lattice over the configs, its metric the measure of the first gate read over the whole comparison; D, a forest of the asked aspect's readings (else of the contrasts), with the margin line where the asked aspect declares a margin; E, lines over the tasks (else the strata). It hands the spine to the planner with the other facts, and the plan's first evidence section copies the kind, every query field code fixed and the reference line. A plan whose first evidence section is not the spine is refused. What the input does not settle is the planner's: a source the input holds none of the above for, the measures where no rule names them, and on every spine the arms and their order, the strata and the emphasis. Some of what a spine draws is no query field at all (a gate matrix's binding reasons and cheapest passing cell, a gate scatter's gate region and paths per factor level, a lattice's row and column factors); the renderer reads those off the criteria and the configs.
 
 ### 1.1 Mode: decide or trade off (code computes the allowed modes)
 
@@ -74,7 +76,7 @@ Top to bottom. The renderer enforces the order; the planner fills the slots and 
 6. **Options table.** 3–5 rows: the recommendation first, then the near-miss, the most accurate, and the cheapest (skip duplicates). Columns are the criteria plus cost, at real volume when the volume is known.
 7. **Summary charts.** One or two (at most three), beside or under the options table, in the same row order and colors (§5.3).
 8. **Arms key** whenever any arm's full configuration is longer than about 24 characters, or any setting other than the model varied (§6.1).
-9. **Evidence sections.** One per question the decision raises: eyebrow · headline stating the finding · one line on how to read the chart · the chart. The shape picks the spine; add supporting sections only if they change or qualify the decision.
+9. **Evidence sections.** One per question the decision raises: eyebrow · headline stating the finding · one line on how to read the chart · the chart. The first draws the shape's spine, which code gives (§1); add supporting sections only if they change or qualify the decision.
 10. **Explore part.** Under a divider. 1–3 controls for business choices (a margin, a floor, a price per point, a weighting, a lever level). It recomputes with the same gate function as the decision and says in words where the answer flips. When no setting can flip the decision (a dominated choice), it says so in one sentence and shows where each arm's *reading* flips instead (for example, the margin below which a candidate stops holding).
 11. **Full results.** Every arm × measure, contrasts with their level, and strata, as sortable tables. These double as the table view of every chart.
 12. **Method.** 4–8 short term/definition pairs: cases and repeats, what "pass" means, the interval method and level, correction, the judge and its tier, cost basis, what wasn't compared, and the source.

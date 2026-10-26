@@ -89,6 +89,11 @@ def _swap_watch_and_next(plan: Plan) -> None:
     slots[watch], slots[nxt] = slots[nxt], slots[watch]
 
 
+def _swap_first_sections(plan: Plan) -> None:
+    sections = plan["sections"]
+    sections[0], sections[1] = sections[1], sections[0]
+
+
 def _no_call(plan: Plan) -> None:
     plan["mode"] = "no_call"
     plan["headline_kind"] = "no_call"
@@ -182,6 +187,14 @@ WEAKENINGS: tuple[Weakening, ...] = (
         "The shape is not the one code looks up from the signals.",
         rule="facts",
         faults=(("shape", "the signals look up shape 'D'"),),
+    ),
+    Weakening(
+        "refused-spine",
+        "r5",
+        _swap_first_sections,
+        "The strata section opens the evidence, ahead of the forest that is shape D's spine.",
+        rule="spine",
+        faults=(("sections[0].chart.kind", "shape D's spine, code's fact, is a 'forest'"),),
     ),
     Weakening(
         "refused-mode-headline-kind",

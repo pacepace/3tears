@@ -208,6 +208,7 @@ def _prefix(report_input: ReportInput, facts: PlanFacts, modes: Sequence[str], b
     view = {
         "shape": facts.shape,
         "signals": facts.signals.model_dump(mode="json"),
+        "spine": facts.spine.as_fact(),
         "allowed_modes": list(modes),
         "masthead": facts.masthead.model_dump(mode="json"),
         "arms": [arm.model_dump(mode="json") for arm in facts.arms],
@@ -239,10 +240,11 @@ def first_plan_request(
     One function, called by :func:`generate_report_plan` and by anything that must predict what it will send (a
     recording keys on it), so the two cannot drift. The user message is the report input's planner view
     (:func:`~threetears.evals.analysis.report_input_build.planner_view`), then code's facts
-    (:func:`~threetears.evals.analysis.report_plan_facts.plan_facts`): the shape and signals, the allowed modes, the
-    masthead, each arm with its tag, name and colour, whether the arms key shows, the options columns and full-results
-    tables, every warning code raises on each arm, numbered as an answer is keyed, the disclosures each mode implies,
-    the weakest margin with the keys that name it, and each id's reader name.
+    (:func:`~threetears.evals.analysis.report_plan_facts.plan_facts`): the shape and signals, the spine the first
+    evidence section draws, the allowed modes, the masthead, each arm with its tag, name and colour, whether the arms
+    key shows, the options columns and full-results tables, every warning code raises on each arm, numbered as an
+    answer is keyed, the disclosures each mode implies, the weakest margin with the keys that name it, and each id's
+    reader name.
 
     :param report_input: The campaign's report input.
     :ptype report_input: ReportInput

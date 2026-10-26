@@ -48,6 +48,7 @@ Rendering, recommended route: the HTML serializer emits `<div class="chart" data
 
 Add `ReportPlan` (pydantic) mirroring `schema/report-plan.schema.json`. The writer prompt (#956 chunk 08) becomes the planner prompt. Its input is the writer's view, the shape lookup and the block vocabulary (GENERATOR.md §1–§5). Its output is a `ReportPlan`. Validation refuses:
 
+- a plan whose first evidence section is not the shape's spine code reads off the input (GENERATOR.md §1: its kind, and the query fields and reference line code fixes);
 - a plan whose sections reference figures missing from the input;
 - prose with a literal number that isn't a figure key;
 - a headline that isn't a decision, trade or stated no-call;

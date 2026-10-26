@@ -45,6 +45,7 @@ HERE = dataset.HERE
 RULES = frozenset(
     {
         "facts",
+        "spine",
         "mode",
         "allowed_mode",
         "ids",

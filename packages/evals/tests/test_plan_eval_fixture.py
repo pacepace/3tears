@@ -6,6 +6,9 @@ Contracts held here:
   recording, each call recorded once, and every run ends in a plan;
 - each replayed plan passes the plan checks against its report input, and is byte for byte the run plan the dataset
   keeps (``rN/runs/<run_id>.plan.json``), so a scored plan is the plan its recording makes;
+- P3's done-when (CONVERGENCE.md P3): every current run passes rubric R1 (the plan checks, and the first evidence
+  section draws its shape's spine), and the Kairo run (r5) matches ``references/r5-kairo-round2.plan.json`` in shape,
+  mode, spine and the chart kinds of its sections in order;
 - the replayed runs are the current runs ``recordings/runs.json`` names; every other run plan is a historical record a
   re-record added to, never deleted (``test_plan_dataset.py`` holds those to record soundness);
 - the run id names the model, the day the recording was made and the planner's prompt version; every input has its
@@ -21,8 +24,10 @@ from typing import Any
 import pytest
 
 from packages.evals.tests.fixtures.report_plans import dataset, plan_eval
+from packages.evals.tests.report_kit_support import KIT
 from threetears.evals.analysis.planner import PlanGeneration
 from threetears.evals.analysis.report_plan_checks import validate_plan
+from threetears.evals.kernel.report_plan import ReportPlan
 from threetears.evals.schema import ClientRequestSettings
 from threetears.evals.testing import RecordedCompletions
 
@@ -87,6 +92,26 @@ async def test_each_replayed_plan_passes_the_checks_and_is_the_kept_run_plan(
         kept = plan_eval.run_plan_path(run, generated)
         assert kept.is_file(), f"{run}: the dataset keeps no plan at {kept.name}"
         assert kept.read_text(encoding="utf-8") == plan_eval.plan_json(generated), run
+
+
+async def test_every_current_run_passes_rubric_r1(generations: dict[str, PlanGeneration]) -> None:
+    scored = {run: dataset.code_score(generated.plan, plan_eval.report_input(run)) for run, generated in generations.items()}
+    assert {run: verdict for run, (verdict, _) in scored.items()} == dict.fromkeys(plan_eval.RUNS, "pass"), scored
+
+
+async def test_the_kairo_run_matches_the_reference_in_shape_mode_spine_and_section_order(
+    generations: dict[str, PlanGeneration],
+) -> None:
+    reference = ReportPlan.model_validate_json(
+        (KIT / "references" / "r5-kairo-round2.plan.json").read_text(encoding="utf-8")
+    )
+    run = generations["r5"].plan
+
+    def outline(plan: ReportPlan) -> tuple[str, str, str, list[str]]:
+        kinds = [section.chart.kind for section in plan.sections]
+        return plan.shape, plan.mode, kinds[0] if kinds else "", kinds
+
+    assert outline(run) == outline(reference)
 
 
 async def test_the_run_id_names_model_day_and_prompt_version(generations: dict[str, PlanGeneration]) -> None:

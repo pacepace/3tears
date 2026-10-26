@@ -5,7 +5,9 @@ facts (owner ruling, 2026-10-25: code computes facts). This module computes them
 as :class:`PlanFacts`, so the planner's user message and the plan code completes from its reply state the same facts:
 
 - **The classification** (GENERATOR §1): the signals and the shape, from
-  :func:`~threetears.evals.analysis.report_plan_checks.classify`.
+  :func:`~threetears.evals.analysis.report_plan_checks.classify`, and the shape's spine, the chart the first evidence
+  section draws, with the query fields the input settles
+  (:func:`~threetears.evals.analysis.report_plan_checks.spine`), which the plan copies.
 - **The masthead** (§2.1): the campaign's kind, the system under test, the counts and the run date, counts and date
   as figure keys where the input holds the figure.
 - **The arms** (§5.2, §6.1): each arm's colour slot (-1 for the control, then series colours in the input's order),
@@ -71,9 +73,11 @@ from threetears.evals.analysis.report_decision import allowed_modes, caveat_mate
 from threetears.evals.analysis.report_input import Aspect, ReportInput
 from threetears.evals.analysis.report_margins import weakest_margin
 from threetears.evals.analysis.report_plan_checks import (
+    Spine,
     classify,
     implied_disclosures,
     raised_warnings,
+    spine,
     validate_plan,
 )
 from threetears.evals.kernel.report_plan import (
@@ -167,6 +171,7 @@ class PlanFacts(BaseModel):
 
     signals: Signals
     shape: str
+    spine: Spine = Field(description="The shape's spine: the chart the first evidence section draws, as code fixes it.")
     masthead: Masthead
     arms: tuple[FactArm, ...]
     show_arms_key: bool
@@ -217,6 +222,7 @@ def plan_facts(report_input: ReportInput) -> PlanFacts:
     return PlanFacts(
         signals=signals,
         shape=shape,
+        spine=spine(report_input),
         masthead=_masthead(report_input, control),
         arms=arms,
         show_arms_key=_shows_arms_key(report_input),

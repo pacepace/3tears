@@ -52,6 +52,21 @@
       "note": "The shape is not the one code looks up from the signals."
     },
     {
+      "plan": "anchors/weak/refused-spine.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "spine",
+      "faults": [
+        [
+          "sections[0].chart.kind",
+          "shape D's spine, code's fact, is a 'forest'"
+        ]
+      ],
+      "labeled_by": "pending_owner",
+      "note": "The strata section opens the evidence, ahead of the forest that is shape D's spine."
+    },
+    {
       "plan": "anchors/weak/refused-mode-headline-kind.plan.json",
       "input": "r5",
       "from": "r5/anchor.plan.json",

@@ -33,9 +33,30 @@ aspect declares one, a floor was read, or a criterion is a floor or a guardrail;
 declares none: it warns and decides nothing. **Cross-cutting** aspects are the tasks marked so. The **cost axis** is
 logarithmic when the arms' cost per 1,000 replies spans more than ten times.
 
+**Code reads the spine (GENERATOR §1).** :func:`spine` looks the shape's spine chart up (A a gate matrix, B a
+gate-space scatter, C a config lattice, D a forest, E lines) and names the parts of its query the input settles, which
+the planner copies:
+
+====  ==============================================================================================================
+A     ``gate_matrix`` over the ``tasks`` where the input names tasks
+B     ``gate_scatter`` over the ``configs``, its two axes the measures the gates read where they read exactly two
+C     ``lattice`` over the ``configs``, its metric the measure of the first gate read over the whole comparison
+D     ``forest`` of the asked aspect's ``readings``, else of the ``contrasts``, with a margin line where the asked
+      aspect declares a margin
+E     ``lines`` over the ``tasks``, else the ``strata``
+====  ==============================================================================================================
+
+A part the input does not settle is the planner's: a source where it holds none of those (the planner picks one the
+kind draws), the measures where no rule names them, and on every spine the arms and their order, strata, limit,
+transform, small multiples and emphasis. Some of what a spine draws is no query field at all: a gate matrix's binding
+reasons and cheapest passing cell, a gate scatter's gate region and one path per factor level, a lattice's row and
+column factors and its tiles' cost and latency. The renderer reads those off the criteria and the configs (P4).
+
 **The checks** (:func:`validate_plan`), each refusing at the field it names:
 
 - *Facts code filled*: ``signals`` and ``shape`` are :func:`classify`'s.
+- *The spine*: the first evidence section's chart is :func:`spine`'s kind, with every query field and reference line
+  code fixed; a plan with no evidence section is refused.
 - *Allowed mode*: ``mode`` is one :func:`~threetears.evals.analysis.report_decision.allowed_modes` allows, and a
   decide plan whose input has one dominant survivor recommends that one.
 - *Mode*: ``headline_kind`` suits ``mode`` (decide: decision; tradeoff: trade; no call: no_call). The decision slots
@@ -122,8 +143,9 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.errors import PlanRefusal, UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import (
@@ -155,7 +177,16 @@ from threetears.evals.analysis.report_margins import weakest_margin
 from threetears.evals.kernel.report_plan import ChartSpec, OptionRow, ReportPlan, Signals, WarningRef
 from threetears.evals.schema.prose import field_is_prose
 
-__all__ = ["MODE_SLOTS", "classify", "implied_disclosures", "raised_warnings", "validate_plan"]
+__all__ = [
+    "MODE_SLOTS",
+    "SPINE_KINDS",
+    "Spine",
+    "classify",
+    "implied_disclosures",
+    "raised_warnings",
+    "spine",
+    "validate_plan",
+]
 
 #: The ``meta.design_shape`` that marks the candidates as ordered versions of one thing.
 _ORDERED_VERSIONS = "ordered_versions"
@@ -301,6 +332,113 @@ def _shape(signals: Signals) -> str:
     return "D" if signals.baseline == "control" else "A"
 
 
+# --- the spine -----------------------------------------------------------------------------------------------------
+
+#: GENERATOR §1: the spine chart each shape opens its evidence on.
+SPINE_KINDS: dict[str, str] = {"A": "gate_matrix", "B": "gate_scatter", "C": "lattice", "D": "forest", "E": "lines"}
+
+
+class Spine(BaseModel):
+    """The shape's spine (GENERATOR §1): the chart the first evidence section draws, a fact code reads off the input.
+
+    ``kind`` is the shape's spine chart. The query fields code can name are fixed with it, and the planner copies them:
+    ``source`` (empty where the input holds no source the spine reads, and the planner picks one the kind draws),
+    ``aspect`` (empty for none), ``measures`` (None where the measures are the planner's to choose) and the reference
+    line kinds. Everything else on the chart (its arms and their order, strata, limit, transform, small multiples,
+    emphasis and title) is the planner's.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    shape: str = Field(description="The shape the spine is read for.")
+    kind: str = Field(description="The spine chart's kind.")
+    source: str = Field(description="What it reads; empty where the planner picks a source the kind draws.")
+    aspect: str = Field(description="The aspect it reads; empty for none.")
+    measures: tuple[str, ...] | None = Field(description="Its measures, in order; None where the planner picks them.")
+    reference: tuple[str, ...] = Field(description="The kinds of its reference lines, in order; empty for none.")
+
+    def as_fact(self) -> dict[str, Any]:
+        """The spine as the planner is told it: its kind, the query fields code fixes, and its reference lines."""
+        query: dict[str, Any] = {"source": self.source} if self.source else {}
+        if self.source:
+            query["aspect"] = self.aspect
+        if self.measures is not None:
+            query["measures"] = list(self.measures)
+        return {"kind": self.kind, "query": query, "reference": [{"kind": kind} for kind in self.reference]}
+
+    def said(self) -> str:
+        """The spine in words, for a refusal."""
+        parts = [f"a {self.kind!r}"]
+        if self.source:
+            parts.append(f"of {self.source!r}")
+        if self.aspect:
+            parts.append(f"on aspect {self.aspect!r}")
+        if self.measures:
+            parts.append(f"over the measures {list(self.measures)}")
+        parts.append("with a " + " and a ".join(self.reference) + " line" if self.reference else "with no reference line")
+        return " ".join(parts)
+
+
+def spine(report_input: ReportInput) -> Spine:
+    """The spine chart of the input's shape, with the query fields code can name (this module's Spine).
+
+    :param report_input: The report input the plan is written against.
+    :ptype report_input: ReportInput
+    :return: The spine.
+    :rtype: Spine
+    """
+    _, shape = classify(report_input)
+    kind = SPINE_KINDS[shape]
+    gates = [criterion for criterion in report_input.criteria if criterion.kind == "gate"]
+    figures = set(report_input.measures) | set(report_input.judged)
+    source, aspect, measures, reference = "", "", None, ()
+    if shape == "A":
+        source = "tasks" if report_input.tasks else ""
+    elif shape == "B":
+        source = "configs" if report_input.configs else ""
+        axes = tuple(dict.fromkeys(gate.measure for gate in gates))
+        measures = axes if len(axes) == 2 and set(axes) <= figures else None
+    elif shape == "C":
+        source = "configs" if report_input.configs else ""
+        overall = [gate.measure for gate in gates if gate.scope == "overall" and gate.task is None]
+        measures = (overall[0],) if overall and overall[0] in figures else None
+    elif shape == "D":
+        asked = _aspect_of("", report_input)
+        if asked is not None and any(reading.within_interval for reading in asked.readings):
+            source, aspect = "readings", asked.id
+        elif any(contrast.interval is not None for contrast in report_input.contrasts):
+            source = "contrasts"
+        if source and asked is not None and asked.margin is not None:
+            reference = ("margin",)
+    else:
+        source = "tasks" if report_input.tasks else ("strata" if report_input.strata else "")
+    if source == "readings":
+        measures = ()
+    return Spine(shape=shape, kind=kind, source=source, aspect=aspect, measures=measures, reference=reference)
+
+
+def _spine_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
+    """The first evidence section draws the spine code read off the input, with every query field code fixed."""
+    wanted = spine(report_input)
+    told = f"shape {wanted.shape}'s spine, code's fact, is {wanted.said()}"
+    if not plan.sections:
+        yield "sections", f"hold no evidence section, and the first draws the spine: {told}"
+        return
+    chart = plan.sections[0].chart
+    if chart.kind != wanted.kind:
+        yield "sections[0].chart.kind", f"is {chart.kind!r}, and the first evidence section draws the spine: {told}"
+        return
+    query = chart.query
+    if wanted.source and query.source != wanted.source:
+        yield "sections[0].chart.query.source", f"is {query.source!r}, and {told}"
+    if wanted.source and query.aspect != wanted.aspect:
+        yield "sections[0].chart.query.aspect", f"is {query.aspect!r}, and {told}"
+    if wanted.measures is not None and tuple(query.measures) != wanted.measures:
+        yield "sections[0].chart.query.measures", f"are {list(query.measures)}, and {told}"
+    if tuple(reference.kind for reference in chart.reference) != wanted.reference:
+        yield "sections[0].chart.reference", f"draws {[r.kind for r in chart.reference]}, and {told}"
+
+
 # --- what code raises and implies ----------------------------------------------------------------------------------
 
 
@@ -366,6 +504,7 @@ def validate_plan(plan: ReportPlan, report_input: ReportInput) -> None:
     """
     faults: list[_Fault] = []
     faults += _classification_faults(plan, report_input)
+    faults += _spine_faults(plan, report_input)
     faults += _mode_faults(plan)
     faults += _allowed_mode_faults(plan, report_input)
     faults += _id_faults(plan)

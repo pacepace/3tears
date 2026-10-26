@@ -116,6 +116,11 @@ class TestTheRequests:
         assert user.startswith(REPORT_INPUT_HEADING + "\n")
         facts = json.loads(user.split(f"\n\n{FACTS_HEADING}\n", 1)[1])
         assert facts["allowed_modes"] == ["decide"], "code computes the modes when the caller passes none"
+        assert facts["spine"] == {
+            "kind": "forest",
+            "query": {"source": "readings", "aspect": "character adherence (v2)", "measures": []},
+            "reference": [{"kind": "margin"}],
+        }, "code gives the spine the first section draws"
         assert facts["disclosures"]["decide"] == ["late:aspect", "late:control", "judge_uncalibrated"]
         checked = {caveat["id"]: caveat["checked"] for caveat in facts["caveats"]}
         assert checked["late:margin"] == "The late margin was checked: the call holds at every margin."

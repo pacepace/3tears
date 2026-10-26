@@ -3,7 +3,8 @@
 A generation is written by the report planner in two calls (``threetears.evals.analysis.planner``): a structure, then
 its prose. A test that drives a generation end to end needs a planner whose replies pass the plan checks for whatever
 campaign it generates over, so :func:`structure_reply` chooses the structure code's own facts permit (the dominant
-option recommended, each open caveat landed once, one scoreboard section, one durable claim), and :func:`prose_reply`
+option recommended, each open caveat landed once, one section drawing the spine code gives, one durable claim), and
+:func:`prose_reply`
 writes every prose key that structure creates, with no digit outside a figure key and, in Watch, the weakest margin
 by its keys. :class:`PlanReplies` answers each
 call of a generation by the contract it was sent.
@@ -27,22 +28,39 @@ __all__ = ["PLAN_CALLS", "PlanWriter", "contract_name", "prose_reply", "replies_
 #: The calls an unrepaired plan takes: its structure and its prose.
 PLAN_CALLS = 2
 
-#: The one section's chart: every arm's trials, from the scoreboard.
-_SCOREBOARD_CHART: dict[str, Any] = {
-    "kind": "bars",
-    "query": {
-        "source": "scoreboard",
-        "aspect": "",
-        "measures": [],
-        "arms": [],
-        "strata": [],
-        "limit": 0,
-        "transform": "none",
-        "small_multiples_by": "none",
-    },
-    "reference": [],
-    "emphasis": "",
-}
+#: Where a spine reads when code names no source: the first of these the input holds rows for.
+_SPINE_SOURCES = ("tasks", "floors", "measures", "configs", "strata")
+
+
+def _spine_chart(report_input: ReportInput) -> dict[str, Any]:
+    """The one section's chart: the spine code gives (``PlanFacts.spine``), every query field it fixes copied, and a
+    source the input holds where code names none (over the measures, the first of them, for one unit)."""
+    spine = plan_facts(report_input).spine
+    held = {
+        "tasks": report_input.tasks,
+        "floors": report_input.floors,
+        "measures": report_input.measures,
+        "configs": report_input.configs,
+        "strata": report_input.strata,
+    }
+    source = spine.source or next(name for name in _SPINE_SOURCES if held[name])
+    # A chart carries one unit, so a spine over the measures that code names none for reads the first of them.
+    measures = list(spine.measures or ()) or (list(report_input.measures)[:1] if source == "measures" else [])
+    return {
+        "kind": spine.kind,
+        "query": {
+            "source": source,
+            "aspect": spine.aspect,
+            "measures": measures,
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none",
+        },
+        "reference": [{"kind": kind} for kind in spine.reference],
+        "emphasis": "",
+    }
 
 
 def contract_name(response_format: Any) -> str | None:
@@ -105,7 +123,7 @@ def structure_reply(report_input: ReportInput) -> dict[str, Any]:
         "caveat_landings": landings,
         "options": {"rows": rows},
         "summary": [],
-        "sections": [{"id": "outcomes", "chart": _SCOREBOARD_CHART}],
+        "sections": [{"id": "outcomes", "chart": _spine_chart(report_input)}],
         "explore": [],
         "method_items": 3,
         "durable_claims": [{"confidence": "low", "keys": [_claim_key(report_input, recommended)]}],

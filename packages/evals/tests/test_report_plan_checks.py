@@ -5,6 +5,8 @@ Contracts held here (``threetears.evals.analysis.report_plan_checks``, GENERATOR
 - the kit's Kairo round 2 plan passes against r5's input: the base case every refusal below breaks one thing of;
 - :func:`classify` looks r1–r5 up as A, B, C, D, D, and an ordered-versions input as E; the criteria signal wins a
   control under hard gates;
+- :func:`spine` reads each shape's spine chart and the query fields the input settles, the rubric's spine table, and
+  a plan whose first evidence section is not it (its kind, a query field or reference line code fixed) is refused;
 - each check refuses at the field path it names: code's facts, mode (one code allows), slots, roles, ids, the
   recommendation (the memo's refusals ported, and the one option that dominates; a choice's pick no pair reading
   shows ahead is stated at low confidence unless declared gates leave it the one dominant survivor), the warning answers
@@ -29,9 +31,11 @@ from packages.evals.tests.report_kit_support import KIT
 from threetears.evals.analysis.errors import PlanRefusal, SoundnessRefusal
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_checks import (
+    SPINE_KINDS,
     classify,
     implied_disclosures,
     raised_warnings,
+    spine,
     validate_plan,
 )
 from threetears.evals.kernel import report_plan
@@ -243,6 +247,92 @@ class TestCodesFacts:
 
     def test_a_signal_off_the_input_is_refused(self):
         assert "'mixed'" in _why(_set(_plan(), "signals.score_type", "graded"), "signals.score_type")
+
+
+# --- the spine -----------------------------------------------------------------------------------------------------
+
+
+class TestTheSpine:
+    @pytest.mark.parametrize(
+        ("name", "fact"),
+        [
+            ("r1", {"kind": "gate_matrix", "query": {"source": "tasks", "aspect": ""}, "reference": []}),
+            (
+                "r2",
+                {
+                    "kind": "gate_scatter",
+                    "query": {"source": "configs", "aspect": "", "measures": ["pass_rate", "latency_ms"]},
+                    "reference": [],
+                },
+            ),
+            (
+                "r3",
+                {
+                    "kind": "lattice",
+                    "query": {"source": "configs", "aspect": "", "measures": ["balanced_accuracy"]},
+                    "reference": [],
+                },
+            ),
+            ("r4", {"kind": "forest", "query": {"source": "contrasts", "aspect": ""}, "reference": []}),
+            (
+                "r5",
+                {
+                    "kind": "forest",
+                    "query": {"source": "readings", "aspect": ASPECT, "measures": []},
+                    "reference": [{"kind": "margin"}],
+                },
+            ),
+        ],
+    )
+    def test_each_fixture_reads_its_shapes_spine(self, name: str, fact: dict[str, Any]):
+        assert spine(_input(name)).as_fact() == fact
+
+    def test_a_spine_the_input_settles_no_source_for_leaves_it_to_the_planner(self):
+        data = _input_dict("r1")
+        data["tasks"] = []
+        found = spine(_input(data=data))
+        assert (found.kind, found.source, found.as_fact()["query"]) == ("gate_matrix", "", {})
+
+    def test_a_gate_scatter_names_its_axes_only_where_the_gates_read_two_measures(self):
+        data = _input_dict("r2")
+        data["criteria"] = data["criteria"][:1]
+        assert spine(_input(data=data)).measures is None
+
+    def test_the_first_section_off_the_spine_is_refused_naming_it(self):
+        plan = _plan()
+        plan["sections"][0], plan["sections"][1] = plan["sections"][1], plan["sections"][0]
+        assert _paths(plan) == ["sections[0].chart.kind"]
+        why = _why(plan, "sections[0].chart.kind")
+        assert "is 'diverging_bars'" in why and "shape D's spine, code's fact, is a 'forest' of 'readings'" in why
+
+    @pytest.mark.parametrize(
+        ("path", "value"),
+        [
+            ("sections[0].chart.query.source", "contrasts"),
+            ("sections[0].chart.query.aspect", ""),
+            ("sections[0].chart.reference", []),
+        ],
+    )
+    def test_a_query_field_or_reference_code_fixed_is_refused_off_it(self, path: str, value: Any):
+        assert path in _paths(_set(_plan(), path, value))
+
+    def test_a_gate_scatter_off_codes_axes_is_refused(self):
+        plan: dict[str, Any] = json.loads((FIXTURES / "r2" / "anchor.plan.json").read_text(encoding="utf-8"))
+        plan["sections"][0]["chart"]["query"]["measures"] = ["pass_rate", "cost_per_1k"]
+        faults = _faults(plan, _input_dict("r2"))
+        assert [path for path, _ in faults] == ["sections[0].chart.query.measures"]
+
+    def test_a_plan_with_no_evidence_section_is_refused(self):
+        plan = _set(_plan(), "sections", [])
+        assert "hold no evidence section" in _why(plan, "sections")
+
+    def test_what_code_does_not_fix_is_the_planners(self):
+        plan = _set(_set(_plan(), "sections[0].chart.query.arms", ["1017"]), "sections[0].chart.emphasis", "1017")
+        _passes(plan)
+
+    def test_every_shapes_spine_is_the_rubrics(self):
+        rubric: dict[str, Any] = json.loads((FIXTURES / "rubric" / "v2.json").read_text(encoding="utf-8"))
+        assert {shape: [kind] for shape, kind in SPINE_KINDS.items()} == rubric["spine"]
 
 
 # --- mode, slots and roles -----------------------------------------------------------------------------------------
