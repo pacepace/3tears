@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the analyst checks its keys, counts by key, and prices per slice, pooled and as a what-if
+
+**Added:** `figure_keys_check` on the analyst tool, for both roles: each key a report cites (a path with any filters,
+braced or not, or `arm:<id>`) read on the snapshot as the page prints it (`key|filters = reads`), with the family form
+it reads by and the filters its figure takes; or why it reads nothing (unstated or refused) and what to write instead.
+`figure_keys` gains `key_form`, `KeyForm`, `figure_filters` and `FILTER_SPELLINGS`; `cited` gains `WrittenFigure` and
+`cite_written`.
+
+**Added:** count keys: `count.<what>` (arms, aspects, tasks, strata, cells, configs, gates, criteria, surviving),
+`count.passing.<criterion>`, `count.places.<criterion>`, `count.failing.<criterion>.<arm>`, `count.failed.<arm>`,
+`count.levels.<factor>`, `count.frontier.<gain>` and `count.steps.<gain>`; and the `words` filter, which spells a
+count from zero to twenty as its word (`COUNT_WORDS`). `report_margins` gains `criterion_misses`, `criterion_passes`
+and `surviving_arms`.
+
+**Added:** `price_tradeoff` prices within one task, stratum or cell (`slice_filter`; keys
+`task.<task>.price.<from>.<to>.<gain>.<field>`, and the same under `strata.` and `cells.`, with `cost_basis`), carries
+an unpaired interval on every move whose options state their own half-widths (`gain_interval_unpaired`,
+`per_point_low_unpaired`, `per_point_high_unpaired` and their monthly forms; `Price.unpaired`), pools a gain axis held
+only per slice (`pooled.<measure>.<arm>.<field>`, `pooled_figures`, by traffic share or equal weights stated as a
+caveat), and prices a gated option as a labelled what-if (`what_if`, never a recommendation). The frontier is
+`figure_keys.price_frontier` (`PriceFrontier`), the one rule the tool, the counts and the new `prices` chart source
+read. `prices` is a `ChartQuery.source`: `bars` and `table` draw the frontier's steps at their price per point.
+
+**Changed:** `price_tradeoff` pages its frontier and steps with its options (the frontier first, cheapest first), and
+states the whole frontier's size on every page (`frontier_options`, `frontier_steps`), so a wide frontier keeps a page
+within one result.
+
 ### evals: the report analyst's tool, evals_analyst, over a frozen report snapshot
 
 **Added:** `analyst_actions()` and `analyst_tools(prefix="evals", *, writes=True, role="analyst")`: one tool,

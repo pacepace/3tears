@@ -55,9 +55,9 @@ One tool, `evals_analyst`; each call is `{"action": "<name>", ...}` and, but for
 | analyses | `options_dominance` | `axes` | Which options survive the gates, which dominate, and each gate figure an option fails or borders, by its keys |
 | | `decision_sensitivity` | `parameter` (`margin:<aspect>`, `floor:<aspect>/<floor>`, `threshold:<criterion>`), `range_low`, `range_high` | Where the call flips |
 | | `measure_breakdown` | `measure_key`, `slice_by` | Where a difference concentrates; exploratory |
-| | `price_tradeoff` | `gain_key`, `arm_filter` | Price per point among measured options; never a mix nobody ran |
+| | `price_tradeoff` | `gain_key`, `arm_filter`, `slice_filter`, `what_if` | Price per point among measured options, overall or within one task, stratum or cell; a gated option as a labelled what-if; never a mix nobody ran |
 | blocks | `block_catalog` | | Block kinds, sources, figure key forms |
-| | `block_render` | `block_kind`, `query`, `reference` | One block's values table |
+| | `block_render` | `block_kind`, `query`, `reference` | One block's values table; `bars` or `table` over source `prices` (one gain axis in `query.measures`) draws the price frontier's steps |
 | gaps | `capability_gap` | `need`, `why`, `workaround`, `claim_ids` | Record a workaround |
 
 **Help.** `action='help'` lists the actions; `topic='<action>'` gives one's parameters and an example; `topic='figure_keys'` the figure-key grammar's rules, filters and path groups, and `topic='figure_keys.<group>'` a group's forms. **Paging.** Every result that grows with the campaign is paged, the overview included, each page sized to one result. A page with more ends with `next: action=…, offset=N`: send that call. **Refusals** end with `recovery: {…}` (the parameters at fault, those accepted, an example, valid values): build the next call from it.
