@@ -14,7 +14,8 @@ start (`RouteChanged`) until `relocate` ran with every process stopped: an outag
 `eval_report_plan` (derived, regenerable) hit it on every host keeping unknowns with its evidence. A registered type
 the record does not name is now new to the stores: placed by the route, recorded, and not counted as moved. The record
 lists every type registered when it was written and the engine writes only registered types, so no earlier start
-wrote one; after a rollback its documents already sit at its placement. A type the record names still refuses to
+wrote one. A host that rolled back and ran an older build's `relocate` relocates again once the newer build is back,
+and during a rolling deploy an older pod restarting after a newer one has started refuses to start. A type the record names still refuses to
 start when its placement moved, as do a changed `unregistered` store, disagreeing records, swapped stores and stores
 with no record. The one assumption, documented on the router: no host keeps its own documents under an `eval_*` name
 the engine registers. See `packages/evals/MIGRATIONS.toml`.

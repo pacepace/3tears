@@ -34,13 +34,13 @@ document of the scopes its host names to its placement, then writes the record.
 **A type new to the stores needs no relocation, wherever it is placed.** A record lists every type registered
 when it was written, and the engine writes only registered types, so a registered type the record does not name
 (new in this release) has no document in these stores: the router places it by the rule, rewrites every record to
-name it, and does not count it as moved. After a rollback (a newer build wrote the type, an older one started and
-rewrote the record without it) its documents already sit where the rule places it, so they are read where they
-are. The one assumption is that no document of a type the engine registers was written by anyone else: a host
+name it, and does not count it as moved. The one assumption is that no document of a type the engine registers was written by anyone else: a host
 that keeps its own documents under an ``eval_*`` name the engine later registers has them read from the type's
 placement rather than its store for unregistered types, and runs :meth:`RoutedDocumentStore.relocate` to move
-them. The same holds for documents an older build's :meth:`~RoutedDocumentStore.relocate` moved to its store for
-unregistered types after such a rollback: relocate again once the newer build is back. A type the record does
+them. A rollback goes the same way: an older build cannot start on a newer build's record (it reads a type placed
+apart from its store for unregistered types as moved), so the operator runs the older build's
+:meth:`~RoutedDocumentStore.relocate`, which moves that type's documents to the store for unregistered types; relocate
+again once the newer build is back. A type the record does
 name still refuses to start when its placement moved, and so does a changed store for unregistered types.
 
 **A core baseline is one call, and the stores boot after it.** :meth:`RoutedDocumentStore.reset_core` deletes every

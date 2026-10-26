@@ -993,7 +993,9 @@ records list every type registered when they were written, so a type they do not
 router places it by the route and records it. This assumes you never keep your own documents under an `eval_*` name;
 one the engine later registers is read from that type's placement, and you relocate to move them. If you roll back
 and run an older build's `relocate`, it moves the newer types' documents to your `unregistered` store; relocate again
-once the newer build is back. A release that adds a fact value needs your route to map it: a
+once the newer build is back. During a rolling deploy, once a pod of the newer build has started and rewritten the
+records, an older pod that restarts refuses to start (`RouteChanged`): finish rolling forward rather than restarting
+older pods. A release that adds a fact value needs your route to map it: a
 lifecycle route must map `durable` (from `.26`), or it is refused when built. Giving `durable` a store other than
 the one `kept` types were written to moves the nine durable types, so the first start raises `RouteChanged` for
 them until you relocate (or run `RoutedDocumentStore.reset_core`, which relocates).

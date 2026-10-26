@@ -494,10 +494,10 @@ def test_a_type_new_to_the_record_placed_elsewhere_than_unknowns_were_starts_and
 
 
 def test_after_a_rollback_a_type_the_record_lost_is_read_where_its_documents_already_are() -> None:
-    """A newer build wrote the type where it is placed; an older one rewrote the record without it; this one starts.
+    """Documents of a type the record does not name, already at the type's placement, are read there.
 
-    The documents sit where the rule places the type now, so reading them there is right, and a refusal would have
-    sent the operator to stop every process for a relocation that moves nothing.
+    A real older build cannot rewrite a newer record (it refuses to start), so this record state is constructed: it pins
+    that the router reads a new type at its placement rather than at the store for unregistered types.
     """
     router, stores = _router()
     router.upsert(_doc("p1", "eval_report_plan", v=1))
