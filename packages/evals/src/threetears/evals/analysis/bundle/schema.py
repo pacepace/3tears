@@ -15,7 +15,7 @@ from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Final, Literal
 
-from pydantic import Field, computed_field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, computed_field, field_validator, model_validator
 
 from threetears.evals.analysis.agreement import (
     JudgeAgreement,
@@ -2744,14 +2744,19 @@ class AnalysisContextBundle(EvalDocumentModel):
         ),
     )
 
-    @field_validator("short_runs")
+    @field_validator("incomplete_runs", "short_runs")
     @classmethod
-    def _short_runs_by_run_id(cls, short_runs: dict[str, str]) -> dict[str, str]:
-        """The short runs by run id, on assembly and on every read: the order every caveat naming them lists them in.
+    def _in_run_order(cls, by_run: dict[str, str], info: ValidationInfo) -> dict[str, str]:
+        """The runs in the order assembly read them, ``run_summaries``' order, on assembly and on every read.
 
-        The order is held only by the mapping's keys, which a store does not keep, so it is one a read can put back.
+        The order is held only by the mapping's keys, and a store keeps no mapping's key order (a ``jsonb`` column
+        holds its keys shortest first), so it is put back from the list the runs were summarized in, which a store
+        keeps: a bundle read back renders its runs as the live one did. A run no summary names keeps its place after
+        them.
         """
-        return dict(sorted(short_runs.items()))
+        summaries: list[RunSummary] = info.data.get("run_summaries") or []
+        place = {summary.run_id: index for index, summary in enumerate(summaries)}
+        return dict(sorted(by_run.items(), key=lambda item: place.get(item[0], len(place))))
 
     completeness_unknown_run_ids: list[str] = Field(
         default_factory=list,
@@ -3149,6 +3154,29 @@ class AnalysisContextBundle(EvalDocumentModel):
             "there is no design or it says nothing about combinations, so no unrun combination is read either way."
         ),
     )
+
+    @field_validator("declared_crossing")
+    @classmethod
+    def _levels_in_axis_order(cls, crossing: DeclaredCrossing | None, info: ValidationInfo) -> DeclaredCrossing | None:
+        """Each cell's levels in the order the design declares its axes, on assembly and on every read.
+
+        A cell's levels are a mapping by axis, whose key order a store does not keep (a ``jsonb`` column holds its keys
+        shortest first), and the page names a cell by its levels in that order. The order is put back from the
+        declared design's axes, which are a list; a level on an axis the design does not declare keeps its place after
+        them.
+        """
+        declared: AspectDeclaration | None = info.data.get("declared")
+        if crossing is None or declared is None:
+            return crossing
+        place = {axis.axis_id: index for index, axis in enumerate(declared.design.axes)}
+        cells = [
+            cell.model_copy(
+                update={"levels": dict(sorted(cell.levels.items(), key=lambda item: place.get(item[0], len(place))))}
+            )
+            for cell in crossing.cells
+        ]
+        return crossing.model_copy(update={"cells": cells})
+
     arm_mechanisms: list[ArmMechanismReading] = Field(
         default_factory=list,
         description=(
