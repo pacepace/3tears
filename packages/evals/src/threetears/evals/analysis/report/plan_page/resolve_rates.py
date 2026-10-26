@@ -17,13 +17,13 @@ kit's contract): the stored one, else the one level the figures it reads declare
 drawn. A rate's interval is drawn within 0 to 100, where a rate lies. Each strip is drawn in its own measure's unit
 (the one-unit rule, :func:`~threetears.evals.analysis.report.plan_page.charting.unit_refusal`): where the measures
 it reads are in several, each panel carries its unit's format and span, the panels of one unit sharing one span; a
-strip per arm holds every measure, so its measures must share one unit.
+strip per arm holds every measure, so its measures must share one unit, each drawn at its own scale.
 
 **range_bars** draw each latency from its p50 to its p95: a group per task (or per measure, over measures), a row per
 arm; a figure holding only its p95 is drawn as its end mark alone, which a caption names. The line is the stored one,
 else the one p95 criterion read where the chart reads it, and a bar ending past its budget is hollow, its tooltip
 saying so. A legend names the arms, in the page's order. Measures in more than one unit are refused: the bars share
-one axis.
+one axis, on which measures drawn alike (a share beside a percent) are each drawn at their own scale.
 
 **scatter_frontier** plots two measures that trade off, an arm (or config) per point, with the Pareto line: the
 query's two measures, else the two its rows hold; up is the one where higher is better, across the other. Over tasks,
@@ -111,8 +111,7 @@ __all__ = ["RESOLVERS"]
 #: The spread of an x axis past which it is drawn logarithmic.
 _LOG_SPREAD = 10.0
 
-#: The scoreboard's figures that are money, each to how it is stated, and those that count by cause.
-_SCOREBOARD_UNITS = {"reply_cost_usd": "usd", "test_cost_usd": "dollars"}
+#: The scoreboard's figures that count by cause.
 _BY_CAUSE = frozenset({"lost", "failed"})
 #: The scoreboard's figures where less is better.
 _SCOREBOARD_LOWER = frozenset({"reply_cost_usd", "test_cost_usd", "lost", "failed"})
@@ -300,7 +299,8 @@ def _slice_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, 
 
     strips: list[_Strip] = []
     if context.query.small_multiples_by == "arm":
-        # A strip per arm holds every measure: the one-unit rule has refused measures in more than one.
+        # A strip per arm holds every measure on one axis: the one-unit rule has refused measures in more than one,
+        # and those drawn alike (a share beside a percent) share one quantity, each dot at its own measure's scale.
         drawn = quantities[keys[0]]
         line = line_of(keys[0], None, {statistic for *_, statistic, _ in found}) if len(keys) == 1 else None
         for arm in arms:
@@ -308,15 +308,16 @@ def _slice_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, 
             for item, key, on, value, _, interval in found:
                 if on != arm:
                     continue
-                shown = (interval[0] * drawn.factor, interval[1] * drawn.factor) if interval is not None else None
+                own = quantities[key]
+                shown = (interval[0] * own.factor, interval[1] * own.factor) if interval is not None else None
                 dot = _dot(
                     context,
                     row_id=f"{item.id}/{key}",
                     label=place(item, key),
                     arm=arm,
-                    value=value * drawn.factor,
+                    value=value * own.factor,
                     interval=shown,
-                    drawn=drawn,
+                    drawn=own,
                 )
                 dots.append(dataclasses.replace(dot, tip=_with_line(dot.tip, dot.value, line)))
             strips.append(_Strip(title=_arm_name(context, arm), arm=arm, dots=dots, line=line, drawn=drawn))
@@ -524,9 +525,13 @@ def _range_bars(context: ChartContext) -> Drawn:
         raise context.refuse("range bars draw measures or tasks")
     if not groups:
         raise context.refuse("it selects no figure with a p95")
-    values = [end for *_, bars in groups for _, spread in bars for end in spread if end is not None]
-    # One unit: the one-unit rule has refused range bars whose measures are in more than one.
-    drawn = quantity(figure_unit(report_input, groups[0][2]), values)
+    ends_of: dict[str, list[float]] = {}
+    for _, _, key, bars in groups:
+        ends_of.setdefault(key, []).extend(end for _, spread in bars for end in spread if end is not None)
+    # One axis: the one-unit rule has refused range bars whose measures are in more than one unit, and those drawn
+    # alike (a share beside a percent) share one quantity, each group at its own measure's scale.
+    quantities = unit_quantities(report_input, ends_of)
+    drawn = quantities[groups[0][2]]
     keys_drawn = {key for _, _, key, _ in groups}
     line = reference_line(context, drawn)
     if line is None and len(keys_drawn) == 1:
@@ -535,11 +540,12 @@ def _range_bars(context: ChartContext) -> Drawn:
         line = criterion_line(context, key, drawn, where=where, statistic="p95")
     drawn_groups = []
     no_median: list[str] = []
-    for label, _, _, bars in groups:
+    for label, _, key, bars in groups:
+        factor = quantities[key].factor
         drawn_rows = []
         for arm, (p50, p95) in bars:
-            high = p95 * drawn.factor
-            low = p50 * drawn.factor if p50 is not None else high
+            high = p95 * factor
+            low = p50 * factor if p50 is not None else high
             look = context.look.arm(arm) if arm in context.look.arms else None
             said = (
                 RANGE_TEMPLATE.format(p50=figure_text(low, drawn), p95=figure_text(high, drawn))
@@ -563,7 +569,10 @@ def _range_bars(context: ChartContext) -> Drawn:
                 )
             )
         drawn_groups.append(RangeGroup(label=label, rows=drawn_rows))
-    ends = [*(value * drawn.factor for value in values), *([line.value] if line is not None else [])]
+    ends = [
+        *(end * quantities[key].factor for key, figures in ends_of.items() for end in figures),
+        *([line.value] if line is not None else []),
+    ]
     domain = context.spec.domain or magnitude_domain(ends)
     drawn_arms = dict.fromkeys(arm for *_, bars in groups for arm, _ in bars if arm in context.look.arms)
     legend = [
@@ -638,7 +647,8 @@ def _scatter_points(context: ChartContext) -> tuple[list[_Point], str, str, str,
             across, up = _scoreboard_value(boards[arm], x), _scoreboard_value(boards[arm], y)
             if across is not None and up is not None:
                 points.append(_Point(arm, None, across, up, "mean", "mean"))
-        return points, x, y, _SCOREBOARD_UNITS.get(x, ""), _SCOREBOARD_UNITS.get(y, "")
+        x_unit = figure_unit(report_input, x, source="scoreboard")
+        return points, x, y, x_unit, figure_unit(report_input, y, source="scoreboard")
     if source == "tasks":
         slices = [row.item for row in rows if isinstance(row.item, Task)]
         keys = list(context.query.measures) or list(

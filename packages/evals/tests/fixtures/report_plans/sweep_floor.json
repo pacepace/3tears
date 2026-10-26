@@ -271,6 +271,21 @@
    "table/readings",
    "table/scoreboard",
    "table/strata"
+  ],
+  "r1+control~restated": [
+   "bars/scoreboard",
+   "bars/tasks",
+   "diff_heatmap/tasks",
+   "diverging_bars/tasks",
+   "dot_interval/tasks",
+   "gate_matrix/tasks",
+   "gate_scatter/tasks",
+   "heatmap/tasks",
+   "lines/tasks",
+   "range_bars/tasks",
+   "scatter_frontier/tasks",
+   "table/scoreboard",
+   "table/tasks"
   ]
  }
 }

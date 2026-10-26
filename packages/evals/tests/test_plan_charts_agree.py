@@ -7,7 +7,8 @@ accept draws, each figure its key's in that key's unit.
   is refused by the plan checks and by the page alike, and so is a chart of tasks naming no measure where its kind
   draws only one. A chart in one unit shares one format and span across its panels.
 - **The sweep.** On every r1–r5 input, and each with a control where it has none (its recommended arm, so its anchor
-  plan holds on it) or without the one it has, every chart over the vocabulary (each kind, each source it reads; no
+  plan holds on it) or without the one it has, and on r1 with a control and one of its per-task rates stated as a
+  share beside the others' percents, every chart over the vocabulary (each kind, each source it reads; no
   measure, each measure, and a pair of measures for each pair of units; unpanelled, or in panels by arm or by task)
   that the plan checks accept on that input draws on that input. Each figure a chart of figures draws is its key's,
   read through the figure keys, in that key's unit, and every axis's format is that key's. The checks include the
@@ -17,7 +18,10 @@ accept draws, each figure its key's in that key's unit.
   page stops drawing fails here rather than quietly leaving the accepted set.
 - **Over figures by measure, at both ends.** A dot strip over measures in two units is accepted and drawn a strip per
   unit; bars and diverging bars over them are refused by the checks and the page alike; a share and a percent are one
-  unit, drawn on one axis. A stored axis span on a chart drawn a panel per unit, and bars in two units that fall into
+  unit, drawn on one axis, each figure at its own scale, on every kind that draws several measures on one axis (bars,
+  a difference heatmap, a strip per arm, range bars).
+- **A contrast's unit** is one reading at both ends: a rate's change in points, an ordinal dimension's a score
+  change, so a forest mixing the two is refused by the checks and the page alike. A stored axis span on a chart drawn a panel per unit, and bars in two units that fall into
   one panel, are refused by the page.
 
 The expected side is read from the input: the figure keys (:func:`~threetears.evals.analysis.report.figure_keys.resolve`)
@@ -29,6 +33,7 @@ from __future__ import annotations
 import functools
 import itertools
 import json
+import re
 from collections.abc import Iterator, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
@@ -44,13 +49,14 @@ from threetears.evals.analysis.report.charts import (
     BarsChart,
     DiffHeatmapChart,
     DotIntervalChart,
+    ForestChart,
     HeatmapChart,
     LinesChart,
     RangeBarsChart,
     ScatterChart,
 )
 from threetears.evals.analysis.report.figure_keys import resolve
-from threetears.evals.analysis.report.plan_page.charting import figure_unit
+from threetears.evals.analysis.report.plan_page.charting import contrast_unit, figure_unit
 from threetears.evals.analysis.report.plan_page.drawable import plan_look
 from threetears.evals.analysis.report.plan_page.look import PageLook, quantity
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
@@ -91,21 +97,112 @@ def _with_control(report_input: ReportInput, control: str | None) -> ReportInput
 
 
 def _base(key: str) -> str:
-    return key.partition("+")[0].partition("-")[0]
+    return key.partition("~")[0].partition("+")[0].partition("-")[0]
+
+
+#: Each input's rate restated in another scale (:func:`_restated`), by the input: on r1, a judged dimension held per
+#: task beside others in percent; on r4, a measure beside another in percent; on r5, a judged dimension held per
+#: stratum beside another as a share.
+_RESTATED = {"r1": ("resolves", 100.0), "r4": ("specul", 100.0), "r5": ("persona.holds_character", 0.01)}
+#: Each input's rate held beside the restated one, in the scale the restated one left.
+_BESIDE = {"r1": "steps", "r4": "task", "r5": "persona.booth_stays_offstage"}
+
+
+def _restated(data: dict[str, Any], key: str, by: float) -> dict[str, Any]:
+    """The input with ``key``, a rate, stated on another scale: every figure held for it (the measure's or judged
+    dimension's, overall and by aspect, and each task's, stratum's and cell's) divided by ``by``, its criteria's
+    thresholds too, and a measure's unit left to be read off them."""
+
+    def scaled(stat: dict[str, Any]) -> dict[str, Any]:
+        out = dict(stat)
+        for name in ("mean", "p50", "p95", "sem", "half_width"):
+            if isinstance(out.get(name), int | float):
+                out[name] = out[name] / by
+        if isinstance(out.get("ci"), list):
+            out["ci"] = [end / by for end in out["ci"]]
+        return out
+
+    tables = [table[key] for table in (data["measures"], data.get("judged", {})) if key in table]
+
+    def walk(node: Any) -> Any:
+        if isinstance(node, dict):
+            if any(node is table for table in tables):
+                held = dict(node)
+                held["per_arm"] = {arm: scaled(stat) for arm, stat in node["per_arm"].items()}
+                if "by_aspect" in node:
+                    held["by_aspect"] = {
+                        aspect: {arm: scaled(stat) for arm, stat in figures.items()}
+                        for aspect, figures in node["by_aspect"].items()
+                    }
+                return held
+            return {
+                name: scaled(value) if name == key and isinstance(value, dict) and "mean" in value else walk(value)
+                for name, value in node.items()
+            }
+        if isinstance(node, list):
+            return [walk(item) for item in node]
+        return node
+
+    shared = walk(data)
+    if key in shared["measures"]:
+        shared["measures"][key]["unit"] = None
+    for criterion in shared["criteria"]:
+        if criterion.get("measure") == key and isinstance(criterion.get("threshold"), int | float):
+            criterion["threshold"] /= by
+    return shared
+
+
+def _spread(data: dict[str, Any], keys: Sequence[str]) -> dict[str, Any]:
+    """The input with each of ``keys``' figures holding a p50 at its mean and a p95 above it, within its rate's
+    scale (as range bars read them): each figure a mean holds, the measure's and each task's."""
+
+    def spread(stat: dict[str, Any]) -> dict[str, Any]:
+        mean = stat.get("mean")
+        if not isinstance(mean, int | float):
+            return stat
+        return stat | {"p50": mean, "p95": min(mean * 1.05, 100.0)}
+
+    def walk(node: Any) -> Any:
+        if isinstance(node, dict):
+            return {
+                name: {arm: spread(stat) for arm, stat in value.items()}
+                if name == "per_arm" and any(node is table.get(key) for table in tables for key in keys)
+                else (spread(value) if name in keys and isinstance(value, dict) and "mean" in value else walk(value))
+                for name, value in node.items()
+            }
+        if isinstance(node, list):
+            return [walk(item) for item in node]
+        return node
+
+    tables = [data["measures"], data.get("judged", {})]
+    spread_out: dict[str, Any] = walk(data)
+    return spread_out
 
 
 @functools.cache
 def _input(key: str) -> ReportInput:
     """An input by key: ``rN`` as it is; ``rN+control`` with the arm its anchor recommends made the control (so the
-    anchor's plan still holds), ``rN-control`` with its control made a candidate."""
-    name = _base(key)
+    anchor's plan still holds), ``rN-control`` with its control made a candidate; then each change named after a
+    ``~``, in order: ``~spread`` gives its two rates (:data:`_RESTATED`, :data:`_BESIDE`) a p50 and a p95, ``~restated``
+    states the first on another scale (:func:`_restated`)."""
+    base, *changes = key.split("~")
+    name = _base(base)
     report_input = dataset.report_input_of(name)
-    if key.endswith("+control"):
+    if base.endswith("+control"):
         recommended = _recommended(name)
         assert recommended is not None, f"{name}'s anchor recommends no arm to make the control"
-        return _with_control(report_input, recommended)
-    if key.endswith("-control"):
-        return _with_control(report_input, None)
+        report_input = _with_control(report_input, recommended)
+    elif base.endswith("-control"):
+        report_input = _with_control(report_input, None)
+    for change in changes:
+        data = report_input.model_dump(by_alias=True, exclude_none=True)
+        restated, by = _RESTATED[name]
+        if change == "spread":
+            data = _spread(data, [restated, _BESIDE[name]])
+        else:
+            assert change == "restated", change
+            data = _restated(data, restated, by)
+        report_input = ReportInput.model_validate(data)
     return report_input
 
 
@@ -114,6 +211,9 @@ def _variants() -> list[str]:
     for name in INPUTS:
         found.append(name)
         found.append(f"{name}-control" if control_arm(dataset.report_input_of(name)) is not None else f"{name}+control")
+    # A rate stated as a share beside rates in percent, per task, with a control: charts of tasks reading both draw
+    # each at its own scale on one axis (a difference heatmap, a strip per arm, bars), or the sweep sees it misdrawn.
+    found.append("r1+control~restated")
     return found
 
 
@@ -509,44 +609,10 @@ def test_a_single_scale_chart_over_measures_in_two_units_is_refused_by_checks_an
         _draw("r4", _stored(chart))
 
 
-def _as_share(data: dict[str, Any], key: str) -> dict[str, Any]:
-    """The input with ``key``, a rate declared in percent, stated as a share instead: every figure held for it (the
-    measure's, each stratum's) divided by 100, its criteria's thresholds too, and its unit left to be read off them."""
-
-    def scaled(stat: dict[str, Any]) -> dict[str, Any]:
-        out = dict(stat)
-        for name in ("mean", "p50", "p95", "sem", "half_width"):
-            if isinstance(out.get(name), int | float):
-                out[name] = out[name] / 100
-        if isinstance(out.get("ci"), list):
-            out["ci"] = [end / 100 for end in out["ci"]]
-        return out
-
-    def walk(node: Any) -> Any:
-        if isinstance(node, dict):
-            return {
-                name: {arm: scaled(stat) for arm, stat in value.items()}
-                if name == "per_arm" and node is data["measures"][key]
-                else (scaled(value) if name == key and isinstance(value, dict) and "mean" in value else walk(value))
-                for name, value in node.items()
-            }
-        if isinstance(node, list):
-            return [walk(item) for item in node]
-        return node
-
-    shared = walk(data)
-    shared["measures"][key]["unit"] = None
-    for criterion in shared["criteria"]:
-        if criterion.get("measure") == key and isinstance(criterion.get("threshold"), int | float):
-            criterion["threshold"] /= 100
-    return shared
-
-
 def test_a_share_and_a_percent_are_one_unit_drawn_on_one_axis_in_percent() -> None:
     """r4's two rates, one stated as a share: both draw as a percent, so bars over them share one axis, each figure
     at its own scale."""
-    data = _as_share(_input("r4").model_dump(by_alias=True, exclude_none=True), "specul")
-    report_input = ReportInput.model_validate(data)
+    report_input = _input("r4~restated")
     assert (figure_unit(report_input, "task"), figure_unit(report_input, "specul")) == ("percent", "share")
     chart = _chart("bars", "measures", measures=["task", "specul"])
     block = _drawn_on("r4", report_input, _accepted_on("r4", report_input, chart))
@@ -557,6 +623,153 @@ def test_a_share_and_a_percent_are_one_unit_drawn_on_one_axis_in_percent() -> No
     held = _input("r4").measures
     expected = {round(float(stat.mean), _PLACES) for key in ("task", "specul") for stat in held[key].per_arm.values()}
     assert drawn == expected, "each rate drawn in percent, the share at a hundred times its figure"
+
+
+def test_bars_over_scoreboard_figures_in_two_units_are_refused_by_checks_and_page_alike() -> None:
+    """A scoreboard figure's unit is the one rule's too: a reply's cost beside what the trials cost in all is two
+    units on one axis, and two counts are one."""
+    chart = _chart("bars", "scoreboard", measures=["reply_cost_usd", "test_cost_usd"])
+    faults = _probe_faults("r5", [chart]).get(0, [])
+    assert any("more than one unit" in fault for fault in faults), faults
+    with pytest.raises(UnresolvableReference, match="more than one unit"):
+        _draw("r5", _stored(chart))
+    counts = _chart("bars", "scoreboard", measures=["ran", "usable"])
+    assert _probe_faults("r5", [counts]) == {}
+
+
+# --- a share beside a percent, on one axis: each figure at its own scale ---------------------------------------------
+
+
+def _alike_pair(input_key: str) -> list[str]:
+    """The restated rate and the one beside it (:data:`_RESTATED`, :data:`_BESIDE`), in units drawn alike that are not
+    one unit: a share and a percent."""
+    name = _base(input_key)
+    keys = [_RESTATED[name][0], _BESIDE[name]]
+    report_input = _input(input_key)
+    assert {figure_unit(report_input, key) for key in keys} == {"share", "percent"}
+    return keys
+
+
+def _accepted_spec(input_key: str, chart: dict[str, Any]) -> ChartSpec:
+    assert _probe_faults(input_key, [chart]) == {}, "the plan checks accept it"
+    (spec,) = _completed(input_key, [chart])
+    return spec
+
+
+def _holding(input_key: str, source: str, keys: Sequence[str]) -> list[str]:
+    """The slices some arm holds every one of ``keys`` in (on r1, the one task judging both), by id."""
+    rows = query_rows(ChartQuery.model_validate(_query(source)), _input(input_key))
+    return [
+        row.item.id
+        for row in rows
+        if isinstance(row.item, Stratum | Task)
+        and all(any(key in figures for figures in row.item.per_arm.values()) for key in keys)
+    ]
+
+
+def _own_figures(input_key: str, key: str, values: Sequence[float]) -> list[float]:
+    """The values that are ``key``'s figures in its own unit as the page draws it."""
+    return [value for value in values if _is_figure(value, _figures(input_key, key))]
+
+
+@pytest.mark.parametrize(
+    ("input_key", "source"), [("r1+control~restated", "tasks"), ("r5~restated", "strata")], ids=["tasks", "strata"]
+)
+def test_a_difference_heatmap_of_a_share_beside_a_percent_draws_each_at_its_own_scale(
+    input_key: str, source: str
+) -> None:
+    keys = _alike_pair(input_key)
+    spec = _accepted_spec(
+        input_key, _chart("diff_heatmap", source, measures=keys, strata=_holding(input_key, source, keys))
+    )
+    block = _draw(input_key, spec)
+    assert isinstance(block, ChartBlock) and isinstance(block.data, DiffHeatmapChart)
+    data = block.data
+    assert data.detail_fmt == quantity("percent").fmt
+    for row in data.rows:
+        for key, cell in zip(keys, row.cells, strict=True):
+            assert cell.detail is not None
+            assert _own_figures(input_key, key, [cell.detail]), f"{cell.detail} is no figure of {key} in percent"
+            base = cell.detail - cell.value
+            assert _own_figures(input_key, key, [base]), f"{cell.detail} less {cell.value} is no figure of {key}"
+
+
+@pytest.mark.parametrize(
+    ("input_key", "source"), [("r1+control~restated", "tasks"), ("r5~restated", "strata")], ids=["tasks", "strata"]
+)
+def test_a_strip_per_arm_of_a_share_beside_a_percent_draws_each_at_its_own_scale(input_key: str, source: str) -> None:
+    keys = _alike_pair(input_key)
+    spec = _accepted_spec(input_key, _chart("dot_interval", source, measures=keys, small_multiples_by="arm"))
+    block = _draw(input_key, spec)
+    assert isinstance(block, ChartBlock) and isinstance(block.data, DotIntervalChart)
+    data = block.data
+    assert data.panels is not None and data.fmt == quantity("percent").fmt
+    assert all(panel.fmt is None for panel in data.panels), "one quantity: every strip shares the chart's axis"
+    drawn: dict[str, list[float]] = {key: [] for key in keys}
+    for panel in data.panels:
+        for row in panel.rows:
+            assert row.id is not None and row.value is not None
+            drawn[row.id.rpartition("/")[2]].append(row.value)
+    for key, values in drawn.items():
+        assert values, f"{key} is drawn"
+        assert _own_figures(input_key, key, values) == values, f"{key}'s dots are its figures in percent"
+
+
+@pytest.mark.parametrize(
+    ("input_key", "source"),
+    [("r4~spread~restated", "measures"), ("r1+control~spread~restated", "tasks")],
+    ids=["measures", "tasks"],
+)
+def test_range_bars_of_a_share_beside_a_percent_draw_each_at_its_own_scale(input_key: str, source: str) -> None:
+    keys = _alike_pair(input_key)
+    spec = _accepted_spec(input_key, _chart("range_bars", source, measures=keys))
+    block = _draw(input_key, spec)
+    assert isinstance(block, ChartBlock) and isinstance(block.data, RangeBarsChart)
+    data = block.data
+    assert data.fmt == quantity("percent").fmt
+    ends = [end for group in data.groups for row in group.rows for end in (row.from_, row.to)]
+    owned = {key: _own_figures(input_key, key, ends) for key in keys}
+    assert all(owned.values()), f"each measure is drawn: {owned}"
+    assert all(any(end in values for values in owned.values()) for end in ends), "every end is a figure"
+    assert not _figure_faults(input_key, spec, data, keys)
+
+
+# --- a contrast's unit: one reading, at both ends ---------------------------------------------------------------------
+
+
+def test_a_contrasts_unit_is_points_for_a_rates_change_and_a_score_for_an_ordinal_ones() -> None:
+    report_input = _input("r5")
+    units = {(contrast.measure, contrast_unit(report_input, contrast)) for contrast in report_input.contrasts}
+    assert ("persona.holds_character", "points") in units, "a pass-fail judged dimension's change"
+    assert ("passed", "points") in units, "how each trial ended"
+    assert ("__outcome__", "score") in units, "an ordinal judged dimension's change is a score change"
+    assert ("production_replicating_cost", "usd") in units
+
+
+def test_a_forest_of_rates_contrasts_is_one_unit_stored_and_drawn_in_points() -> None:
+    keys = ["persona.holds_character", "passed"]
+    spec = _accepted_spec("r5", _chart("forest", "contrasts", measures=keys))
+    assert spec.unit == "points"
+    block = _draw("r5", spec)
+    assert isinstance(block, ChartBlock) and isinstance(block.data, ForestChart)
+    drawn = [row.value for row in block.data.rows]
+    report_input = _input("r5")
+    expected = sorted(
+        round(float(contrast.delta) * 100, _PLACES)
+        for contrast in report_input.contrasts
+        if contrast.measure in keys and contrast.delta is not None
+    )
+    assert sorted(round(value, _PLACES) for value in drawn) == expected, "each change in points"
+
+
+def test_a_forest_mixing_a_score_change_with_point_changes_is_refused_by_checks_and_page_alike() -> None:
+    """An ordinal dimension's change (a score on its own scale) and a rate's (in points) are two quantities, and a
+    forest's groups share one axis."""
+    chart = _chart("forest", "contrasts", measures=["persona.holds_character", "__outcome__"])
+    why = "more than one unit (['points', 'score'])"
+    assert any(why in fault for fault in _probe_faults("r5", [chart]).get(0, []))
+    with pytest.raises(UnresolvableReference, match=re.escape(why)):
+        _draw("r5", _stored(chart))
 
 
 # --- the refusals no generated plan reaches -------------------------------------------------------------------------

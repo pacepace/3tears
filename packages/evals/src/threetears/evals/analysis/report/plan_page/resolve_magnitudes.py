@@ -75,9 +75,6 @@ __all__ = ["RESOLVERS"]
 #: The most lines that carry a band (GENERATOR §5.1: bands on at most two series).
 _MOST_BANDS = 2
 
-#: The scoreboard figures that are money, and how each is stated.
-_SCOREBOARD_UNITS = {"reply_cost_usd": "usd", "test_cost_usd": "dollars"}
-
 #: A scoreboard's figures that count by cause, drawn as their total.
 _BY_CAUSE = frozenset({"lost", "failed"})
 
@@ -190,9 +187,6 @@ def _scoreboard_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[s
     keys = list(context.query.measures)
     if not keys:
         raise context.refuse("a scoreboard chart names the scoreboard figures it draws, and this one names none")
-    units = {_SCOREBOARD_UNITS.get(key, "") for key in keys}
-    if len(units) > 1:
-        raise context.refuse(f"its figures {keys} are in more than one unit")
     rows = {row.arm: row.item for row in context.rows() if isinstance(row.item, ScoreboardRow)}
     picked: list[tuple[str, str, float]] = []
     for key in keys:
@@ -201,7 +195,10 @@ def _scoreboard_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[s
             value = sum(held.values()) if key in _BY_CAUSE else held
             if value is not None:
                 picked.append((key, arm, float(value)))
-    drawn = quantity(units.pop(), [value for _, _, value in picked])
+    # One unit: the one-unit rule (charting.unit_refusal, which the bars resolver reads first) has refused figures in
+    # more than one.
+    unit = figure_unit(context.report_input, keys[0], source="scoreboard")
+    drawn = quantity(unit, [value for _, _, value in picked])
     bars = [
         _arm_bar(
             context,
