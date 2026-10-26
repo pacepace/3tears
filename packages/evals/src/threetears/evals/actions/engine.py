@@ -2266,7 +2266,8 @@ def engine_actions() -> tuple[Action, ...]:
                 "record (what it asked, what the judge saw and said, and why): most of a large campaign's page, so "
                 "read it when you need the records, or read one trial with result_get. analysis_basis says what wrote "
                 "the analysis: memo (an analysis stored before the report planner) or plan, whose report plan is "
-                "plan (report-plan/1 JSON, figures by key). static=true makes the html page one a host can serve "
+                "plan (report-plan/1 JSON, figures by key); a plan analysis's markdown and html body is the page its "
+                "plan draws, each aspect's fold (and its trials) a closed appendix after Method. static=true makes the html page one a host can serve "
                 "under a policy that runs and loads nothing: no script, no link, every chart its table."
             ),
         ),

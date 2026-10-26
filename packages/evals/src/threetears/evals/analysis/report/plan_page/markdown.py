@@ -4,7 +4,8 @@ Line for line what :func:`~threetears.evals.analysis.report.plan_page.html.plann
 Markdown checks every number the page draws: the masthead line, the headline as the page's heading, the lede, the
 flag and the confidence (its clauses, then code's checked lines), the decision's slots, the answers, the options
 table, each summary chart's values, the arms key, each evidence section (its eyebrow, headline, takeaway, chart and
-caption), the explore part and Full results where the page holds them, Method and the made line.
+caption), the explore part and Full results where the page holds them, Method, the made line, and the appendix the
+caller passes (the per-aspect folds) under its own heading.
 
 Nothing quoted is structure: planner prose is laid out by the writers every page shares
 (:mod:`~threetears.evals.analysis.report.md_parts`), which escape a line's opening so it opens no block, and print a
@@ -13,12 +14,13 @@ table cell on one line with its pipes escaped.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 
 from threetears.evals.analysis.report.blocks import ChartBlock
 from threetears.evals.analysis.report.md_parts import chart_lines, inert, one_line, paragraphs, table_lines
 from threetears.evals.analysis.report.plan_page.model import PageChart, PageConfidence, PageMasthead, PlannedPage
 from threetears.evals.analysis.report.plan_page.words import (
+    APPENDIX_TITLE,
     CONFIDENCE_LABEL,
     FULL_RESULTS_TITLE,
     RUN_TEMPLATE,
@@ -103,11 +105,14 @@ def _lines(page: PlannedPage) -> Iterator[list[str]]:
         yield [inert(f"_{one_line(page.made)}_")]
 
 
-def planned_page_markdown(page: PlannedPage) -> str:
+def planned_page_markdown(page: PlannedPage, *, appendix: Sequence[str] = ()) -> str:
     """Write a planned page as Markdown (this module's account).
 
     :param page: The page.
     :ptype page: PlannedPage
+    :param appendix: Lines this package wrote (the campaign's per-aspect folds), laid out under the appendix's heading
+        after the made line; none by default.
+    :ptype appendix: Sequence[str]
     :return: The Markdown, ending in a newline.
     :rtype: str
     """
@@ -116,4 +121,6 @@ def planned_page_markdown(page: PlannedPage) -> str:
         if out:
             out.append("")
         out += lines
+    if appendix:
+        out += ["", f"## {APPENDIX_TITLE}", *([""] if appendix[0] else []), *appendix]
     return "\n".join(out) + "\n"

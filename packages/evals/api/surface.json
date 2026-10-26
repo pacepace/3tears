@@ -4863,7 +4863,7 @@
     },
     "threetears.evals.analysis.CampaignReport": {
       "kind": "model",
-      "signature": "CampaignReport(basis: ReportBasis, title: str, campaign_id: str, campaign_name: str | None = None, scope_id: str, analysis_id: str | None = None, finding_count: int, blocks: list[ReportBlock], aspects: list[CampaignAspectFold], readings: CampaignReadings, call: CampaignCall | None = None, recommendation: Recommendation | None = None, recommended_variant_key: str | None = None)",
+      "signature": "CampaignReport(basis: ReportBasis, title: str, campaign_id: str, campaign_name: str | None = None, scope_id: str, analysis_id: str | None = None, finding_count: int, blocks: list[ReportBlock], aspects: list[CampaignAspectFold], readings: CampaignReadings, call: CampaignCall | None = None, recommendation: Recommendation | None = None, recommended_variant_key: str | None = None, plan_page: PlannedPage | None = None)",
       "tier": "stable"
     },
     "threetears.evals.analysis.CampaignStore": {

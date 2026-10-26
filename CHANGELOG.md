@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a planned analysis's page is the page its report plan draws
+
+**Changed:** the campaign's page for an analysis the report planner wrote is now the report kit's page, built from
+the stored plan and the report input rebuilt from the analysis's frozen bundle: the masthead, headline, lede, flag,
+confidence and decision, the answers to the warnings on the recommended arm, the options table and summary charts,
+the arms key, the evidence sections, the explore part (a static table of where each reading flips, where the plan's
+control moves the margin), Full results (every table the plan lists) and Method. Each aspect's fold follows Method in
+one closed appendix ("Evidence record"), so `trials=` and each trial's stored result read as before. This is the
+`body` of `report_read` (Markdown and HTML, default and `static=True`) for a `plan` analysis; its JSON is unchanged,
+and memo and code-only pages are unchanged byte for byte. `CampaignReport` gains `plan_page` (a `PlannedPage`, set
+only on a planned analysis's page, which then holds no blocks of its own). A stored plan whose figure key or chart no
+longer resolves against its frozen evidence refuses the page with the existing "generate the analysis again
+(`analysis_generate`)" remedy. `report_decision.margin_sensitivity` (with `MarginSensitivity` and `CandidateMargin`)
+is public: each reading's flip margin, and whether the call holds at every margin. The interim first-screen blocks
+(`analysis.report.campaign.plan_blocks`) are removed. No stored shape moves.
+
 ### evals: a static report page, for a host whose policy runs and loads nothing
 
 **Added:** `report_html` and `campaign_report_html` take `static: bool = False`. So do `serialize_report` and

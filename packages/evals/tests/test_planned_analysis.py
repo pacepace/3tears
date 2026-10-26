@@ -14,9 +14,13 @@ Contracts held here (``threetears.evals.analysis.planned_analysis``, ``threetear
 - a model or storage bug building the analysis from an accepted plan is recorded as a failure and raised as one,
   never as the planner's refusal;
 - the plan is regenerable: ``drop_derived`` sweeps it, and deleting its analysis deletes it (its insights stay);
-- the campaign's page for a planned analysis carries the plan's first screen, and the actions round-trip: a generation
-  started through ``analysis_generate`` is listed by ``analyses_list`` as a plan and read by ``report_read`` with its
-  plan;
+- the campaign's page for a planned analysis is the page its stored plan draws over the input it was written against
+  (no blocks of its own, its made line naming the planner), the aspects' folds a closed appendix after Method in HTML
+  and Markdown; ``report_read`` serves it static where asked and ``trials="all"`` still reaches every failed trial's
+  record through the folds; a key the frozen evidence no longer holds refuses the page naming the regeneration; a
+  planned page is an analysis's and holds no blocks of its own;
+- the actions round-trip: a generation started through ``analysis_generate`` is listed by ``analyses_list`` as a plan
+  and read by ``report_read`` with its plan;
 - a key's subjects (the arms and aspects it names) are read off its one reading of the input.
 
 The model is the one non-production part: a fixtured planner writes a structure and its prose over whatever report
@@ -31,7 +35,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
-from threetears.evals.analysis import build_report
+from threetears.evals.analysis import CampaignReport, build_report
 from pydantic import ValidationError
 
 from threetears.evals.analysis import planned_analysis as planned_analysis_module
@@ -39,6 +43,7 @@ from threetears.evals.analysis.errors import SoundnessRefusal, UnresolvableRefer
 from threetears.evals.analysis.planned_analysis import plan_recommended_arm, report_input_digest, report_plan_of
 from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
 from threetears.evals.analysis.report.figure_keys import key_subjects
+from threetears.evals.analysis.report.plan_page.build import plan_page
 from threetears.evals.analysis.report.serialize import serialize_report
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.service import (
@@ -57,6 +62,7 @@ from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture,
 from packages.evals.tests.report_plan_support import r5_input
 from packages.evals.tests.report_support import stored_memo_analysis, toy_campaign_host
 from packages.evals.tests.reporter_case_support import freeze_corpus_campaign, reporter_fixture
+from packages.evals.tests.static_page_support import assert_static, less_what_static_leaves_out
 from packages.evals.tests.toyhost_plan import PLAN_CALLS, PlanWriter, contract_name
 from threetears.evals.kernel.inner_ceilings import MAX_GENERATION_CALLS
 
@@ -147,15 +153,77 @@ class TestAGeneration:
         ledger = off_loop(host.storage.query_insights, analysis.scope_id, subject_id=analysis.subject_id)
         assert [each.id for each in ledger] == [insight.id]
 
-    async def test_its_page_carries_the_plans_first_screen(self) -> None:
-        host, _, analysis, _, _ = await _generated()
+    async def test_its_page_is_the_page_its_plan_draws_its_folds_a_closed_appendix(self) -> None:
+        host, prepared, analysis, _, _ = await _generated()
+        stored = off_loop(get_report_plan, host.storage, analysis)
+        assert stored is not None
 
         page = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
-        assert (page.basis, page.analysis_id, page.finding_count) == ("analysis", analysis.id, 0)
+
+        assert (page.basis, page.analysis_id, page.finding_count, page.blocks) == ("analysis", analysis.id, 0, [])
+        assert page.plan_page is not None
+        # The page is the one the stored plan draws over the input it was written against, made by the planner.
+        assert page.plan_page == plan_page(report_plan_of(stored), prepared.report_input, made=page.plan_page.made)
+        assert analysis.id in page.plan_page.made and stored.generation.generator_model in page.plan_page.made
+        assert page.fold_ids and len(page.aspects) == len(prepared.bundle.aspects), "every aspect keeps its fold"
+
+        html = serialize_report(page, "html")
+        assert 'data-page="planned"' in html and "{" + "arm:" not in html
+        assert html.index('class="method"') < html.index('data-part="appendix"')
+        assert '<details class="section" data-part="appendix">' in html, "the appendix is closed"
+        for slug in page.fold_ids:
+            assert html.index('data-part="appendix"') < html.index(f'id="aspect-{slug}"'), "each fold is in it"
+        assert "No recommendation was written" not in html, "the code-only page's first screen is gone"
+
         markdown = serialize_report(page, "markdown")
-        assert "it is the option the evidence favours." in markdown and "**How sure:** Low." in markdown
-        assert "**Recommendation:**" in markdown and "{arm:" not in markdown
-        assert "No recommendation was written" not in markdown
+        assert page.plan_page.masthead.system in markdown.splitlines()[0] and f"# {page.plan_page.headline}" in markdown
+        assert markdown.index(page.plan_page.made) < markdown.index("## Evidence record")
+        assert all(f"## {fold.aspect}" in markdown.split("## Evidence record", 1)[1] for fold in page.aspects)
+
+    async def test_its_report_read_serves_the_planned_page_static_where_asked(self) -> None:
+        host, _, analysis, _, _ = await _generated()
+
+        static = off_loop(report_read, host, analysis.campaign_id, analysis.scope_id, format="html", static=True)
+        default = off_loop(report_read, host, analysis.campaign_id, analysis.scope_id, format="html")
+
+        assert 'data-page="planned"' in static.body and 'data-part="appendix"' in static.body
+        assert_static(static.body)
+        assert static.body == less_what_static_leaves_out(default.body)
+
+    async def test_trials_all_lays_each_failed_trial_s_record_out_in_its_fold(self) -> None:
+        host, _, analysis, _, _ = await _generated()
+
+        table = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
+        everything = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id, trials="all")
+
+        assert table.plan_page == everything.plan_page, "the plan's page reads the same either way"
+        assert [fold.report for fold in table.aspects] != [fold.report for fold in everything.aspects]
+        assert serialize_report(everything, "html").count("<details") > serialize_report(table, "html").count(
+            "<details"
+        )
+
+    async def test_a_plan_key_its_frozen_evidence_no_longer_holds_refuses_naming_the_regeneration(self) -> None:
+        host, _, analysis, _, _ = await _generated()
+        stored = off_loop(get_report_plan, host.storage, analysis)
+        assert stored is not None
+        unheld = {**stored.plan, "headline": "Keep it: {pass_rate.nobody}."}
+        off_loop(host.storage.save_report_plan, stored.model_copy(update={"plan": unheld}))
+
+        with pytest.raises(RefusedInput, match=r"generate the analysis again \(analysis_generate\)") as refused:
+            off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
+        assert "pass_rate.nobody" in str(refused.value)
+        lines = off_loop(analyses_list, host, analysis.campaign_id, analysis.scope_id).analyses
+        assert [line.needs_regeneration for line in lines] == [None], "the listing reads the plan, which still parses"
+
+    async def test_a_planned_page_is_an_analysis_s_and_holds_no_blocks_of_its_own(self) -> None:
+        host, _, analysis, _, _ = await _generated()
+        page = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
+        assert page.plan_page is not None
+
+        with pytest.raises(ValidationError, match="a planned page lays out an analysis"):
+            CampaignReport.model_validate({**dict(page), "basis": "code_only"})
+        with pytest.raises(ValidationError, match="a planned page is the page's whole first part"):
+            CampaignReport.model_validate({**dict(page), "blocks": [page.plan_page.options.table]})
 
     async def test_an_aspect_page_of_a_planned_analysis_is_refused(self) -> None:
         _, _, analysis, _, _ = await _generated()

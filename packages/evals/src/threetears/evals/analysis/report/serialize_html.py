@@ -90,6 +90,7 @@ from threetears.evals.analysis.report.html_parts import (
     table_html,
     term_link,
 )
+from threetears.evals.analysis.report.plan_page.html import planned_page_html
 from threetears.evals.analysis.report.serialize_md import RESOLUTION_WORDS, SUMMARY_LEADS, trial_summary
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.schema.logs import contain, get_logger
@@ -151,6 +152,11 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
     level down. Every id inside an aspect's fold is prefixed with the aspect's, so a link inside it lands inside it
     (``#a-billing-T4``); a glossary link lands on the page's one glossary, which defines every term any fold uses.
 
+    A planned analysis's page (``plan_page`` set) is the page its report plan draws
+    (:func:`~threetears.evals.analysis.report.plan_page.html.planned_page_html`), static where this page is, with the
+    aspects' folds and the glossary they link as its closed appendix after Method, so a trial's id and its stored
+    result are reached as on every other campaign page.
+
     :param report: The campaign's page.
     :ptype report: CampaignReport
     :param static: Write the static page, as :func:`report_html` does: no script, no link, every chart its table.
@@ -158,6 +164,8 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
     :return: The page.
     :rtype: str
     """
+    if report.plan_page is not None:
+        return _links_in_sight(planned_page_html(report.plan_page, appendix=_appendix(report, static), static=static))
     head = [block for block in report.blocks if block.section in FIRST_SCREEN]
     slugs = report.fold_ids
     parts = [
@@ -189,6 +197,17 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
     parts += _glossary(report.terms)
     parts += ["</article>", "</div>", *_script(static), "</body>", "</html>"]
     return _links_in_sight("\n".join(parts) + "\n")
+
+
+def _appendix(report: CampaignReport, static: bool) -> list[str]:
+    """A planned page's appendix: each aspect's fold, as every campaign page lays it out, then the glossary its folds
+    link."""
+    folds = [
+        "\n".join(_aspect_fold(fold, slug, static=static))
+        for fold, slug in zip(report.aspects, report.fold_ids, strict=True)
+    ]
+    glossary = _glossary(report.terms)
+    return [*folds, *(["\n".join(glossary)] if glossary else [])]
 
 
 def _script(static: bool) -> list[str]:
