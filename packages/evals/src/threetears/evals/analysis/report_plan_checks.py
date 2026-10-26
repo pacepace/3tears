@@ -174,6 +174,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from threetears.evals.analysis.errors import PlanRefusal, UnresolvableReference
 from threetears.evals.analysis.quantities import MONEY, UNIT_NAMES
 from threetears.evals.analysis.report.charts import KIT_CHARTS
+from threetears.evals.analysis.report.plan_page.charting import contrast_unit
 from threetears.evals.analysis.report.figure_keys import (
     INTERVAL_TEMPLATE,
     PERCENTILE_NAMES,
@@ -216,7 +217,6 @@ __all__ = [
     "Spine",
     "classify",
     "contrast_level",
-    "contrast_unit",
     "implied_disclosures",
     "raised_warnings",
     "spine",
@@ -484,24 +484,6 @@ def spine(report_input: ReportInput) -> Spine:
     if source == "readings":
         measures = ()
     return Spine(shape=shape, kind=kind, source=source, aspect=aspect, measures=measures, reference=reference)
-
-
-def contrast_unit(report_input: ReportInput, contrast: Contrast) -> str:
-    """The unit a contrast's change is in: points for a judged dimension or a trial's outcome, else its measure's own
-    unit (empty where the input declares none). A chart of contrasts carries one (GENERATOR §5.2).
-
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
-    :param contrast: One of its contrasts.
-    :ptype contrast: Contrast
-    :return: The unit.
-    :rtype: str
-    """
-    kind = contrast.kind
-    if kind in ("judged", "trial") or (kind is None and contrast.measure in report_input.judged):
-        return "points"
-    figures = report_input.measures.get(contrast.measure)
-    return figures.unit or "" if figures is not None else ""
 
 
 def contrast_level(report_input: ReportInput, contrast: Contrast) -> str:

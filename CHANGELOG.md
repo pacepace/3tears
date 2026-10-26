@@ -34,9 +34,13 @@ in panels by slice); any other such chart, and a chart of strata or tasks naming
 is refused when the plan is generated, by the rule the page draws by, so no page draws one measure on another's
 scale. That rule is now the plan checks' only unit rule, over every source (GENERATOR §5.2, one unit per axis): a dot
 strip, or bars in panels by aspect, over measures or judged dimensions in two units is accepted and drawn a panel per
-unit, where the checks refused it; a share and a percent count as one unit, both drawn as a percent; and a chart of
+unit, where the checks refused it; a share and a percent count as one unit, both drawn as a percent, each figure at
+its own scale on every kind that draws several measures on one axis (bars, a difference heatmap, a strip per arm,
+range bars); and a chart of
 contrasts whose changes are in more than one unit drawn (a rate's change in points beside a score's or a latency's) is
-refused by the checks and the page alike, where the checks compared each contrast's declared unit. A stored chart
+refused by the checks and the page alike, where the checks compared each contrast's declared unit. A contrast's
+unit is one reading for the checks' spine, their stored unit and the page (`charting.contrast_unit`): an ordinal
+judged dimension's change is a score change, where the checks called every judged change points. A stored chart
 whose rows state several units stores an empty `unit`. A stored plan with a chart the page now refuses (a chart over
 tasks, strata or cells in several units on one axis, or a chart of contrasts mixing a rate's change with a score's)
 refuses its page with the "generate the analysis again" remedy, and generating it again writes one that draws. No

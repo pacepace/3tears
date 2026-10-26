@@ -8,10 +8,14 @@ selects (:func:`~threetears.evals.analysis.report_rows.query_rows`, the one owne
 - **Units.** A figure's unit as the page reads it (:func:`figure_unit`): a measure's declared unit; a pass-fail
   rate's scale read from every figure the input holds for it (a share where each lies in 0 to 1, a percent
   otherwise), as the figure keys read it; an ordinal judged dimension a ``score``; a contrast of how each trial ended,
-  the pass rate, a share. :func:`~threetears.evals.analysis.report.plan_page.look.quantity` says how it is drawn.
+  the pass rate, a share; a scoreboard figure money (a reply's cost, or the trials' in all) or a count.
+  :func:`~threetears.evals.analysis.report.plan_page.look.quantity` says how it is drawn. A contrast's change
+  (:func:`contrast_unit`) is in points where it is a rate's, else in its figures' own unit: an ordinal dimension's is
+  a score change, never points.
 - **One unit per axis** (:func:`unit_refusal`, over the measures a chart draws, :func:`drawn_keys`, or the contrasts
   it draws): an axis draws measures of one unit, each at its own scale, two units being one where they are drawn
-  alike (a share and a percent both as a percent; any rate's change in points). A kind that draws each measure in its
+  alike (a share and a percent both as a percent; any rate's change in points), each measure still drawn at its own
+  scale (:func:`unit_quantities`). A kind that draws each measure in its
   own panel (a heatmap's matrix, a dot strip's strip, bars in panels by slice or measure) gives each panel its
   measure's unit and format, panels of one unit sharing an axis's span; any other chart reading measures in several
   units is refused, and so is a chart of contrasts in several, whose groups share one axis. The plan checks refuse
@@ -43,6 +47,7 @@ maps to "generate the analysis again".
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -68,6 +73,7 @@ __all__ = [
     "Drawn",
     "KindResolver",
     "chart_block",
+    "contrast_unit",
     "count_text",
     "criterion_line",
     "drawn_keys",
@@ -216,18 +222,29 @@ def _rate_unit(values: Sequence[float]) -> str:
     return "share" if all(0 <= value <= 1 for value in values) else "percent"
 
 
-def figure_unit(report_input: ReportInput, key: str, *, kind: str | None = None) -> str:
-    """A measure's or judged dimension's unit as the page reads it (this module's Units), wherever its figures sit.
+#: The scoreboard's figures that are money, each to how it is stated: a reply's cost, and what the arm's trials cost
+#: in all. Every other scoreboard figure is a count.
+_SCOREBOARD_UNITS = {"reply_cost_usd": "usd", "test_cost_usd": "dollars"}
+
+
+def figure_unit(report_input: ReportInput, key: str, *, kind: str | None = None, source: str | None = None) -> str:
+    """A measure's or judged dimension's unit as the page reads it (this module's Units), wherever its figures sit; a
+    scoreboard figure's, where the chart reads the scoreboard.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
-    :param key: The measure or judged dimension, by key.
+    :param key: The measure or judged dimension, by key; a scoreboard figure's name over the scoreboard.
     :ptype key: str
     :param kind: A contrast's kind (``measure``, ``judged``, ``trial``), where the key is a contrast's; None otherwise.
     :ptype kind: str | None
-    :return: ``share``, ``percent``, ``score``, a money unit, ``ms``, ``s``, any other declared unit, or empty.
+    :param source: The chart's source, where ``scoreboard`` makes the key a scoreboard figure; None otherwise.
+    :ptype source: str | None
+    :return: ``share``, ``percent``, ``score``, a money unit, ``ms``, ``s``, any other declared unit, or empty (a
+        bare number, as every scoreboard count is).
     :rtype: str
     """
+    if source == "scoreboard":
+        return _SCOREBOARD_UNITS.get(key, "")
     if kind == "trial":
         return "share"
     measure = report_input.measures.get(key)
@@ -532,7 +549,7 @@ _SLICE_SOURCES = frozenset({"strata", "tasks", "cells"})
 
 #: The kinds the one-unit rule holds (:func:`unit_refusal`), each over the sources it draws figures by measure from.
 _UNIT_RULED: dict[str, frozenset[str]] = {
-    "bars": frozenset({"measures", "judged", "configs", "strata", "tasks"}),
+    "bars": frozenset({"measures", "judged", "configs", "scoreboard", "strata", "tasks"}),
     "dot_interval": frozenset({"contrasts", "measures", "judged", "strata", "tasks"}),
     "heatmap": frozenset({"cells", "strata", "tasks"}),
     "diff_heatmap": frozenset({"cells", "strata", "tasks"}),
@@ -555,6 +572,7 @@ def drawn_keys(kind: str, query: ChartQuery, report_input: ReportInput) -> list[
 
     - over measures, judged dimensions or configs: the keys of the figures its query selects; range bars only those
       holding a p95;
+    - over the scoreboard: the figures its query names;
     - over strata, tasks or cells: the measures its query names, else every one the slices hold for a heatmap or a
       difference heatmap (a matrix each), and the one they hold for any other kind (:func:`slice_keys`); range bars
       keep only those an arm the query keeps holds a p95 on in some slice;
@@ -569,8 +587,10 @@ def drawn_keys(kind: str, query: ChartQuery, report_input: ReportInput) -> list[
     :return: The measures, by key, in the order the chart reads them.
     :rtype: list[str]
     """
-    rows = query_rows(query, report_input)
     source = query.source
+    if source == "scoreboard":
+        return list(dict.fromkeys(query.measures))
+    rows = query_rows(query, report_input)
     if source in _FIGURE_SOURCES:
         return list(
             dict.fromkeys(
@@ -598,8 +618,9 @@ def drawn_keys(kind: str, query: ChartQuery, report_input: ReportInput) -> list[
 
 def unit_quantities(report_input: ReportInput, values: Mapping[str, Sequence[float]]) -> dict[str, Quantity]:
     """Each measure's quantity on a chart that draws it in its own unit (this module's one unit per axis): its unit's
-    (:func:`figure_unit`), its format following every figure the chart draws in that unit, so the measures of one unit
-    read alike.
+    (:func:`figure_unit`), at its own factor, so each figure is drawn at its own scale; and the measures drawn alike (a
+    share beside a percent) share one quantity but for the factor, its format following every figure the chart draws
+    of them, so they read alike on one axis.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -609,10 +630,15 @@ def unit_quantities(report_input: ReportInput, values: Mapping[str, Sequence[flo
     :rtype: dict[str, Quantity]
     """
     units = {key: figure_unit(report_input, key) for key in values}
-    by_unit: dict[str, list[float]] = {}
+    # A quantity's equality ignores its factor, so the quantity a unit draws as is the class of the units drawn alike.
+    alike = {key: quantity(units[key]) for key in values}
+    shown: dict[Quantity, list[float]] = {}
+    lead: dict[Quantity, str] = {}
     for key, figures in values.items():
-        by_unit.setdefault(units[key], []).extend(figures)
-    return {key: quantity(units[key], by_unit[units[key]]) for key in values}
+        lead.setdefault(alike[key], units[key])
+        shown.setdefault(alike[key], []).extend(figure * alike[key].factor for figure in figures)
+    drawn = {each: quantity(lead[each], shown[each]) for each in shown}
+    return {key: dataclasses.replace(drawn[alike[key]], factor=alike[key].factor) for key in values}
 
 
 def _a_panel_per_measure(kind: str, query: ChartQuery) -> bool:
@@ -655,7 +681,7 @@ def unit_refusal(kind: str, query: ChartQuery, report_input: ReportInput) -> str
         units = _contrast_units(query, report_input)
         change = True
     else:
-        units = {figure_unit(report_input, key) for key in drawn_keys(kind, query, report_input)}
+        units = {figure_unit(report_input, key, source=source) for key in drawn_keys(kind, query, report_input)}
         change = kind in _CHANGE_KINDS
     drawn_as = {quantity(unit, change=change) for unit in units}
     if len(drawn_as) > 1 and (source == "contrasts" or not _a_panel_per_measure(kind, query)):
@@ -663,11 +689,28 @@ def unit_refusal(kind: str, query: ChartQuery, report_input: ReportInput) -> str
     return ""
 
 
+def contrast_unit(report_input: ReportInput, contrast: Contrast) -> str:
+    """The unit a contrast's change is in, as the page draws it (this module's Units): a rate's change (a pass-fail
+    measure or judged dimension, a percent, how each trial ended) in ``points``; any other's in its figures' own unit,
+    an ordinal judged dimension's in ``score``, a score change no point of a rate is. The one reading of a contrast's
+    unit: the plan checks group a chart's contrasts and store its unit by it, and the one-unit rule compares it.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param contrast: One of its contrasts.
+    :ptype contrast: Contrast
+    :return: ``points``, ``score``, a money unit, ``ms``, ``s``, any other declared unit, or empty.
+    :rtype: str
+    """
+    unit = figure_unit(report_input, contrast.measure, kind=contrast.kind)
+    return "points" if quantity(unit, change=True) == quantity("points") else unit
+
+
 def _contrast_units(query: ChartQuery, report_input: ReportInput) -> set[str]:
-    """The units of the contrasts a chart of contrasts draws: each one with a change, at its measure's unit as the
-    page reads a contrast of its kind. The rows of every group share one axis, so they share one unit drawn."""
+    """The units of the contrasts a chart of contrasts draws (:func:`contrast_unit`): each one with a change. The rows
+    of every group share one axis, so they share one unit drawn."""
     return {
-        figure_unit(report_input, row.item.measure, kind=row.item.kind)
+        contrast_unit(report_input, row.item)
         for row in query_rows(query, report_input)
         if isinstance(row.item, Contrast) and row.item.delta is not None
     }
