@@ -66,7 +66,13 @@ from typing import TYPE_CHECKING, get_args
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.report.charts import KIT_CHARTS
-from threetears.evals.analysis.report.figure_keys import DIRECTION_WORDS, format_figure, parse_key, resolve
+from threetears.evals.analysis.report.figure_keys import (
+    DIRECTION_WORDS,
+    format_figure,
+    parse_key,
+    reader_names,
+    resolve,
+)
 from threetears.evals.analysis.report.plan_page.charting import contrast_unit, unit_refusal
 from threetears.evals.analysis.report.plan_page.look import PageLook, page_look
 from threetears.evals.analysis.report_decision import control_arm, surviving_options
@@ -76,8 +82,8 @@ from threetears.evals.analysis.report_rows import SourceRow, query_aspect, query
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.kernel.report_plan import ChartQuery, ChartReference, ChartSpec, PlannedChart
 
-if TYPE_CHECKING:  # code's facts are read by type only: the completion step that computes them imports this module.
-    from threetears.evals.analysis.report_plan_facts import PlanFacts
+if TYPE_CHECKING:  # an arm's facts are read by type only: the completion step that defines them imports this module.
+    from threetears.evals.analysis.report_plan_facts import FactArm
 
 __all__ = [
     "BLOCK_SOURCES",
@@ -186,27 +192,28 @@ def contrast_level(report_input: ReportInput, contrast: Contrast) -> str:
     return contrast.level or by_aspect.get(contrast.aspect) or only or ""
 
 
-def block_look(report_input: ReportInput, facts: PlanFacts) -> PageLook:
+def block_look(report_input: ReportInput, arms: Sequence[FactArm]) -> PageLook:
     """The look one chart is drawn with when no plan stands behind it: each arm's tag, name, colour and mark as code's
-    facts give them, the arms in the input's order, the survivors, and no arm recommended.
+    facts give them, the arms in the input's order, the survivors, the reader names, and no arm recommended.
 
     It is :func:`~threetears.evals.analysis.report.plan_page.look.page_look`, the planned page's own, with nothing a
     plan chooses: a chart whose query lists its arms draws them in that order on both.
 
     :param report_input: The report input the chart reads.
     :ptype report_input: ReportInput
-    :param facts: Code's facts about the input.
-    :ptype facts: PlanFacts
+    :param arms: Each arm as code's facts give it
+        (:func:`~threetears.evals.analysis.report_plan_facts.fact_arms`).
+    :ptype arms: Sequence[FactArm]
     :return: The look.
     :rtype: PageLook
     """
     return page_look(
-        facts.arms,
-        {arm.id: arm.color_slot for arm in facts.arms},
+        arms,
+        {arm.id: arm.color_slot for arm in arms},
         order=(),
         survivors=surviving_options(report_input),
         recommended=None,
-        names=facts.names,
+        names={str(kind): found for kind, found in reader_names(report_input).items()},
     )
 
 

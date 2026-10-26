@@ -18,10 +18,13 @@ from typing import Any
 from packages.evals.tests.fixtures.report_plans.dataset import kairo_bundle
 from packages.evals.tests.fixtures.report_plans.misfits import MISFITS, NAMES, reference_data
 from threetears.evals.actions import Action, analyst_actions
+from threetears.evals.analysis.analyst.blocks import block_catalog, block_render
 from threetears.evals.analysis.analyst.snapshot import ANALYST_EXAMPLES, report_snapshot
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel import EvalReportSnapshot
+from threetears.evals.kernel.errors import RefusedInput
+from threetears.evals.kernel.report_plan import ChartQuery
 
 __all__ = [
     "ANALYST_CALLS",
@@ -113,3 +116,34 @@ def action_calls(action: Action, held: ReportInput, snapshot_id: str) -> list[di
 def read_actions() -> list[Action]:
     """Every analyst action that reads a snapshot: the ones held to the contract on every fixture."""
     return [action for action in analyst_actions() if action.permission == "read"]
+
+
+def _block_calls(held: ReportInput) -> list[dict[str, Any]]:
+    """For each source the input holds rows of, the first kind that draws every row of it; then the first of those
+    paged from its second row, two rows to a page."""
+    calls: list[dict[str, Any]] = []
+    catalog = block_catalog(held, "")
+    for source in (row.source for row in catalog.sources if row.holds_rows):
+        for kind in (row.kind for row in catalog.kinds if source in row.sources):
+            query = ChartQuery.model_validate({**_WHOLE, "source": source})
+            try:
+                block_render(held, block_kind=kind, query=query)
+            except RefusedInput:
+                continue
+            calls.append({"block_kind": kind, "query": {"source": source}})
+            break
+    return calls + [{**calls[0], "offset": 1, "limit": 2}] if calls else []
+
+
+#: A query of every row of its source.
+_WHOLE: dict[str, Any] = {
+    "aspect": "",
+    "measures": [],
+    "arms": [],
+    "strata": [],
+    "limit": 0,
+    "transform": "none",
+    "small_multiples_by": "none",
+}
+
+ANALYST_CALLS["block_render"] = _block_calls

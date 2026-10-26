@@ -105,6 +105,7 @@ __all__ = [
     "FactCaveat",
     "PlanFacts",
     "complete_plan",
+    "fact_arms",
     "flag_disclosures",
     "plan_facts",
 ]
@@ -207,18 +208,7 @@ def plan_facts(report_input: ReportInput) -> PlanFacts:
     signals, shape = classify(report_input)
     materiality = caveat_materiality(report_input)
     control = next((arm.id for arm in report_input.arms if arm.role == "control"), None)
-    tags = arm_tags([arm.id for arm in report_input.arms], control)
-    slots = iter(range(len(report_input.arms)))
-    arms = tuple(
-        FactArm(
-            id=arm.id,
-            tag=tags[arm.id],
-            name=arm.short_name or arm.name or arm.id,
-            role=arm.role,
-            color_slot=-1 if arm.id == control else next(slots),
-        )
-        for arm in report_input.arms
-    )
+    arms = fact_arms(report_input)
     return PlanFacts(
         signals=signals,
         shape=shape,
@@ -237,6 +227,30 @@ def plan_facts(report_input: ReportInput) -> PlanFacts:
         ),
         weakest=_weakest(report_input),
         names={str(kind): found for kind, found in reader_names(report_input).items()},
+    )
+
+
+def fact_arms(report_input: ReportInput) -> tuple[FactArm, ...]:
+    """Each arm as the planner is told of it, and as a page draws it: its tag, name, role and colour slot (-1 for the
+    control, then series colours in the input's order).
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The arms, in the input's order.
+    :rtype: tuple[FactArm, ...]
+    """
+    control = next((arm.id for arm in report_input.arms if arm.role == "control"), None)
+    tags = arm_tags([arm.id for arm in report_input.arms], control)
+    slots = iter(range(len(report_input.arms)))
+    return tuple(
+        FactArm(
+            id=arm.id,
+            tag=tags[arm.id],
+            name=arm.short_name or arm.name or arm.id,
+            role=arm.role,
+            color_slot=-1 if arm.id == control else next(slots),
+        )
+        for arm in report_input.arms
     )
 
 
