@@ -6,7 +6,7 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-## v0.78.1 -- 2026-10-26
+## v0.79.0 -- 2026-10-26
 
 ### core: a scoped snapshot tells its listeners when it becomes ready
 
