@@ -404,7 +404,19 @@ def test_the_options_table_is_the_plans_rows_under_codes_column_families_its_cho
 ) -> None:
     plan, page = _plan(path), _page(name, path)
     table = page.options.table
-    assert [column.key for column in table.columns] == ["option", "role", *plan.options.columns]
+    held = _input(name)
+    arms = {arm.id: arm for arm in held.arms}
+    # What each option runs is on the page wherever some option declares its settings or served model.
+    described = any(
+        (arm := arms.get(row.option)) is not None and (arm.settings or arm.served_model) for row in plan.options.rows
+    )
+    runs = ["runs"] if described else []
+    assert [column.key for column in table.columns] == ["option", "role", *runs, *plan.options.columns]
+    for row, cells in zip(plan.options.rows, table.rows, strict=True):
+        arm = arms.get(row.option)
+        if described and arm is not None and arm.served_model:
+            said = cells["runs"].value
+            assert isinstance(said, str) and arm.served_model in said, "an option's served model is named"
     names = {fact.id: fact.name for fact in plan_facts(_input(name)).arms}
     assert [row["option"].value for row in table.rows] == [
         names.get(row.option, row.option) for row in plan.options.rows
