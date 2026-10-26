@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the reporter judge reads the page's arms key
+
+**Fixed:** `render_plan_for_judge` omitted the arms key the planned page shows, so an arm written `{name} ({tag})`
+read to the reporter judge as an unexplained handle. Where the plan's page shows an arms key, the judged text now
+leads with that key (the page's own `arms_key` table, tag, name and role), then the plan's JSON; a plan whose page
+shows no key judges as before. A plan reporter case frozen before this change keeps its stored text.
+
 ### evals: a planned analysis's page is the page its report plan draws
 
 **Changed:** the campaign's page for an analysis the report planner wrote is now the report kit's page, built from
@@ -39,6 +46,13 @@ each summary chart and each section's chart through the page's own resolvers
 refused there, at its field path with the page's reason, for the planner's repair round, never stored. Before, such a
 plan passed the checks and was stored, and its page then refused with "generate the analysis again", which wrote the
 same plan again. Stored plans are read as before.
+
+**Added:** a caveat kind, `unsettled:<aspect>` (#980): a surviving candidate's reading on an aspect declaring a margin,
+asked or not, whose interval allows both a loss past the margin and a change short of it. It is report-wide when the
+option code's decision names is among those candidates, and scoped otherwise; a plan recommending such a candidate
+(a ranking rule's pick included) may not state a plain `high` while it is open, and states `high_if_immaterial` with
+its `material_if` clause, or `low`. Code never proves it immaterial. `report_decision.unsettled_arms` is public, and
+the plan's caveat and flag id patterns accept the new kind, so every stored plan still reads.
 
 ### evals: a static report page, for a host whose policy runs and loads nothing
 

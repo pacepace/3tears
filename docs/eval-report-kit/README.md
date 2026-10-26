@@ -4,6 +4,7 @@ Everything needed to produce campaign reports that read and look like the five r
 
 ## Start here
 
+0. **`ANALYST.md`** is the foundation (2026-10-26): an expert analyst agent with tools, a skill and a report editor writes the report; code computes and verifies. It supersedes GENERATOR's shape table, spine and code-computed mode as rules.
 1. **`GENERATOR.md`** is the complete spec: how to classify an eval, the page contract, gate logic, tradeoff mode, chart choice, words, the visual system, and the definition of done.
 2. **`references/`** holds five finished pages. Open the `.html` files in a browser.
 3. **`CONVERGENCE.md`** is the phased plan for the report module, with acceptance criteria.
@@ -13,7 +14,8 @@ Everything needed to produce campaign reports that read and look like the five r
 
 | Path | What it is |
 |---|---|
-| `GENERATOR.md` | Procedure and rules (the spec) |
+| `ANALYST.md` | The analyst foundation: roles, workflow, report document, tools, invariants, editor rubric |
+| `GENERATOR.md` | Procedure and rules; its §1 shape table, spine and mode rules are superseded by ANALYST.md, the rest is guidance |
 | `CONVERGENCE.md` | How the pipeline converges on the references, in phases P0–P7 |
 | `UPSTREAM.md` | Bundle requirements U1–U15, each with evidence from Kairo round 2 |
 | `BLIND-TEST.md` | What a fresh agent found with only this bundle, and how each gap was closed |
