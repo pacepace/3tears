@@ -193,6 +193,12 @@ REFUSALS = [
         '"level" is required',
     ),
     (
+        "level-less-dot-intervals",
+        "dot_interval",
+        '{"domain":[0,100],"fmt":"pct","rows":[{"label":"a","value":50,"lo":40,"hi":60}]}',
+        'rows carry intervals, so "level" is required',
+    ),
+    (
         "unknown-pattern",
         "bars",
         '{"domain":[0,4],"fmt":"int","rows":[{"label":"a","segments":[{"value":2,"color":"--bad","pattern":"url(x)"}]}]}',

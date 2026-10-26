@@ -618,12 +618,14 @@ class DotIntervalRow(_KitModel):
 class _DotIntervalFields(_Kind):
     """The fields a dot-and-interval strip draws from."""
 
-    REQUIRED: ClassVar[tuple[str, ...]] = ("rows", "domain", "fmt", "level")
+    REQUIRED: ClassVar[tuple[str, ...]] = ("rows", "domain", "fmt")
 
     rows: list[DotIntervalRow] | None = Field(default=None, description="The rows, in drawn order.")
     domain: tuple[float, float] | None = Field(default=None, description="The axis range.")
     fmt: Fmt | None = Field(default=None, description="The values' format.")
-    level: str | None = Field(default=None, description='The intervals\' level ("95%").')
+    level: str | None = Field(
+        default=None, description='The intervals\' level ("95%"); required with intervals, unprinted without them.'
+    )
     ticks: list[float] | None = Field(default=None, description="Explicit tick positions.")
     reference: ChartReference | None = Field(default=None, description="The floor.")
     emphasis: str | None = Field(default=None, description="The id of the one row to bold.")
@@ -631,7 +633,15 @@ class _DotIntervalFields(_Kind):
     label_width_narrow: float | None = Field(default=None, description="The label column in px below 480 px.")
     row_height: float | None = Field(default=None, description="The row pitch in px.")
 
+    def check_drawable(self) -> None:
+        super().check_drawable()
+        _need_level(self.level, any(row.lo is not None or row.hi is not None for row in self.rows or []))
+
     def table(self, legend: Sequence[LegendItem]) -> tuple[list[str], list[list[str]]]:
+        if not self.level:
+            headers = ["Row", "Value"]
+            body = [[row.label, _formatted(self._format, row.value)] for row in self.rows or []]
+            return headers, body + _reference_row(self.reference, self._format, len(headers))
         headers = ["Row", "Value", f"{self.level} interval"]
         body = [
             [row.label, _formatted(self._format, row.value), _interval(self._format, row.lo, row.hi)]
