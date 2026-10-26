@@ -5,7 +5,9 @@ Contracts held here (``threetears.evals.analysis.report_gates``, GENERATOR.md §
 - an arm fails a gate or guardrail on its point estimate (at least the threshold where higher is better, at most
   where lower is), and a passing figure whose interval crosses the threshold is borderline; the interval is the
   figure's ``Stat.ci``, else its ``half_width``, and only a mean carries one, so a p95 is never borderline;
-- a gate with no figure for the arm, where the check reads it, is a failure;
+- a gate with no figure for the arm, at any place its scope reads (overall, its task, every task, every cell), is a
+  failure there (GENERATOR §1.1), so an unnarrowed check agrees with each narrowed one, and the weakest margin reads
+  the same survivors;
 - each reason is one code template: the criterion's reader name (or the statistic it reads, when that is not the
   mean), the figure and the line ("p95 3.6 s > 3 s", "Resolves the issue 90% ±4.4"), with where the figure sits when
   the check is not narrowed to a task or a cell;
@@ -25,6 +27,7 @@ import pytest
 from threetears.evals.analysis.report_decision import allowed_modes, surviving_options
 from threetears.evals.analysis.report_gates import GateCheck, gate_check
 from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_margins import weakest_margin
 from threetears.evals.analysis.report_plan_checks import classify
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_plans"
@@ -69,7 +72,8 @@ def _r1_resolves_above_atlas_m() -> dict[str, Any]:
 
 
 def _r1_atlas_m_without_billing_quality() -> dict[str, Any]:
-    """The overall quality gate reads every task, and Atlas-M has no quality figure in billing alone."""
+    """The overall quality gate reads every task, and Atlas-M has no quality figure in billing alone: it is not shown to
+    pass there, so it does not survive (GENERATOR §1.1)."""
     data = _data("r1")
     del data["tasks"][0]["per_arm"]["atlas-m"]["overall"]
     return data
@@ -89,7 +93,9 @@ def _r4_facts_at_prods_figure() -> dict[str, Any]:
 
 
 #: Each case's survivors, allowed modes and shape, captured from ``surviving_options``, ``allowed_modes`` and
-#: ``classify`` before survivors were read through the gate check. They must never move.
+#: ``classify`` before survivors were read through the gate check. They must never move, save where GENERATOR §1.1
+#: rules: a gate read in every task fails an arm lacking its figure in any one, which moved the one synthetic case
+#: built for it ("r1 Atlas-M without billing quality", once ``["atlas-m"]`` and ``decide``).
 BEFORE: list[tuple[str, Any, list[str], set[str], str]] = [
     ("r1", lambda: _data("r1"), ["atlas-m"], {"decide"}, "A"),
     ("r2", lambda: _data("r2"), ["brisk-s.low.r1"], {"decide"}, "B"),
@@ -100,7 +106,7 @@ BEFORE: list[tuple[str, Any, list[str], set[str], str]] = [
     ("r2 no p95 for the pick", _r2_no_p95, [], {"no_call"}, "B"),
     ("r5 tone guardrail", _r5_tone, [], {"no_call"}, "D"),
     ("r1 resolves above Atlas-M", _r1_resolves_above_atlas_m, [], {"no_call"}, "A"),
-    ("r1 Atlas-M without billing quality", _r1_atlas_m_without_billing_quality, ["atlas-m"], {"decide"}, "A"),
+    ("r1 Atlas-M without billing quality", _r1_atlas_m_without_billing_quality, [], {"no_call"}, "A"),
     ("r3 cell floor at 95", _r3_cell_floor_95, [], {"no_call"}, "C"),
     ("r4 facts at prod's figure", _r4_facts_at_prods_figure, ["prod"], {"decide"}, "D"),
 ]
@@ -218,6 +224,22 @@ class TestTheCheck:
     def test_a_task_lacking_the_figure_fails_there(self):
         check = gate_check(_input(_r1_atlas_m_without_billing_quality()), "atlas-m", task="billing")
         assert check.fails == ("Overall quality floor: no figure",)
+
+    def test_an_unnarrowed_check_fails_a_task_lacking_the_figure_and_names_it(self):
+        check = gate_check(_input(_r1_atlas_m_without_billing_quality()), "atlas-m")
+        assert (check.status, check.fails) == ("fail", ("Overall quality floor: no figure in Billing & account Q&A",))
+
+    def test_an_unnarrowed_check_fails_a_cell_lacking_the_figure_and_names_it(self):
+        data = _data("r3")
+        del data["cells"]["complex|news"]["per_arm"]["brisk-s.few"]
+        report_input = _input(data)
+        assert gate_check(report_input, "brisk-s.few").fails == ("Cell floor: no figure in Complex × News",)
+        assert gate_check(report_input, "brisk-s.few", cell="complex|news").fails == ("Cell floor: no figure",)
+        assert "brisk-s.few" not in surviving_options(report_input)
+
+    def test_the_weakest_margin_reads_the_same_survivors(self):
+        """With Atlas-M out for a missing figure, no arm survives and none is one figure from returning."""
+        assert weakest_margin(_input(_r1_atlas_m_without_billing_quality())) is None
 
     def test_an_input_with_no_gate_passes_every_arm(self):
         assert gate_check(_input(_data("r5")), "1017") == GateCheck(arm="1017", status="pass", fails=(), borders=())

@@ -19,8 +19,9 @@ a cell, only those read in cells, at that cell's. Floors and bars warn and never
   ``half_width``. Only a mean carries one, so a p50 or p95 is never borderline;
 - else *passes*.
 
-A gate with no figure for the arm where the check reads it fails: a figure the input does not hold is not shown
-passed. Unnarrowed, a gate read in every task fails this way only when no task holds its figure.
+A gate with no figure for the arm at a place the check reads it fails there (GENERATOR §1.1): a figure the input does
+not hold is not shown passed. Unnarrowed, a gate read in every task (or every cell) fails at each task (cell) that
+lacks the arm's figure, so the unnarrowed check agrees with every narrowed one.
 
 **The status** is ``fail`` when any figure fails, ``borderline`` when none fails and one is borderline, else
 ``pass``. Borderline counts as passing for the decision (GENERATOR §3).
@@ -28,7 +29,8 @@ passed. Unnarrowed, a gate read in every task fails this way only when no task h
 **Reasons** are code's templates, one per figure, in the criteria's order. Each names what it reads (the statistic
 for a p50 or p95, the criterion's reader name for a mean) and states the figure by the package's number rule:
 ``p95 3.6 s > 3 s``, ``Resolves the issue 74% < 90%``, ``Resolves the issue 90% ±4.4``, ``Cost per reply $0.00541,
-interval $0.00522–$0.00559``, ``Latency budget (p95): no figure``. An unnarrowed check adds where the figure sits
+interval $0.00522–$0.00559``, ``Latency budget (p95): no figure``, ``Overall quality floor: no figure in Billing &
+account Q&A``. An unnarrowed check adds where the figure sits
 (``in Billing & account Q&A``, ``in Complex × News``).
 
 **Routing** (GENERATOR §3, read by the gate matrix): for each routable task, the cheapest arm that passes there and
@@ -44,7 +46,13 @@ from typing import Literal
 
 from threetears.evals.analysis.report.figure_keys import Figure, format_figure, reader_name, resolve
 from threetears.evals.analysis.report_input import Criterion, ReportInput
-from threetears.evals.analysis.report_margins import CriterionFigure, CriterionPlace, criterion_figures, criterion_place
+from threetears.evals.analysis.report_margins import (
+    CriterionFigure,
+    CriterionPlace,
+    criterion_figures,
+    criterion_place,
+    criterion_places,
+)
 
 __all__ = ["GateCheck", "GateStatus", "gate_check"]
 
@@ -106,13 +114,13 @@ def _cell_words(report_input: ReportInput, cell_id: str) -> str:
     return _CELL_TEMPLATE.format(row=row, column=column)
 
 
-def _placed(report_input: ReportInput, reason: str, figure: CriterionFigure, narrowed: bool) -> str:
+def _placed(report_input: ReportInput, reason: str, task: str | None, cell: str | None, narrowed: bool) -> str:
     if narrowed:
         return reason
-    if figure.task is not None:
-        return _WHERE_TEMPLATE.format(reason=reason, place=reader_name("task", figure.task, report_input))
-    if figure.cell is not None:
-        return _WHERE_TEMPLATE.format(reason=reason, place=_cell_words(report_input, figure.cell))
+    if task is not None:
+        return _WHERE_TEMPLATE.format(reason=reason, place=reader_name("task", task, report_input))
+    if cell is not None:
+        return _WHERE_TEMPLATE.format(reason=reason, place=_cell_words(report_input, cell))
     return reason
 
 
@@ -178,20 +186,27 @@ def gate_check(report_input: ReportInput, arm: str, *, task: str | None = None, 
     for criterion in report_input.criteria:
         if not _applies(criterion, task, cell):
             continue
-        figures = [
-            figure
-            for figure in criterion_figures(report_input, criterion, arm)
-            if (task is None or figure.task == task) and (cell is None or figure.cell == cell)
+        places = [
+            (at_task, at_cell)
+            for at_task, at_cell in criterion_places(report_input, criterion)
+            if (task is None or at_task == task) and (cell is None or at_cell == cell)
         ]
-        if not figures:
-            name = reader_name("criterion", criterion.id, report_input)
-            found["fail"].append(_NO_FIGURE_TEMPLATE.format(name=name))
+        no_figure = _NO_FIGURE_TEMPLATE.format(name=reader_name("criterion", criterion.id, report_input))
+        if not places:
+            found["fail"].append(no_figure)
             continue
+        figures: dict[tuple[str | None, str | None], CriterionFigure] = {
+            (figure.task, figure.cell): figure for figure in criterion_figures(report_input, criterion, arm)
+        }
         line = resolve(f"criteria.{criterion.id}.threshold", report_input)
-        for figure in figures:
+        for at_task, at_cell in places:
+            figure = figures.get((at_task, at_cell))
+            if figure is None:
+                found["fail"].append(_placed(report_input, no_figure, at_task, at_cell, narrowed))
+                continue
             read, reason = _read(report_input, criterion, figure, line)
             if read != "pass":
-                found[read].append(_placed(report_input, reason, figure, narrowed))
+                found[read].append(_placed(report_input, reason, at_task, at_cell, narrowed))
     status: GateStatus = "fail" if found["fail"] else "borderline" if found["borderline"] else "pass"
     return GateCheck(arm=arm, status=status, fails=tuple(found["fail"]), borders=tuple(found["borderline"]))
 
