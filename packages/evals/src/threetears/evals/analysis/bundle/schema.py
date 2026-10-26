@@ -2439,6 +2439,17 @@ class ArmScoreboard(EvalDocumentModel):
         ),
     )
 
+    @field_validator("lost", "failed")
+    @classmethod
+    def _the_most_trials_first(cls, causes: dict[str, int]) -> dict[str, int]:
+        """Each cause the most trials first, then by name: the order the census reads, put back on every read.
+
+        The order is held only by the mapping's keys, and a store keeps no mapping's key order (a ``jsonb`` column
+        holds its keys shortest first), so a census read back from a stored analysis would otherwise hand the planner
+        and the page its causes in the store's order.
+        """
+        return dict(sorted(causes.items(), key=lambda item: (-item[1], item[0])))
+
     @model_validator(mode="after")
     def _the_census_adds_up(self) -> ArmScoreboard:
         """Refuse a census whose parts do not sum to its whole.
@@ -2732,6 +2743,16 @@ class AnalysisContextBundle(EvalDocumentModel):
             "do not share. The sentence is the same one every run-level surface renders."
         ),
     )
+
+    @field_validator("short_runs")
+    @classmethod
+    def _short_runs_by_run_id(cls, short_runs: dict[str, str]) -> dict[str, str]:
+        """The short runs by run id, on assembly and on every read: the order every caveat naming them lists them in.
+
+        The order is held only by the mapping's keys, which a store does not keep, so it is one a read can put back.
+        """
+        return dict(sorted(short_runs.items()))
+
     completeness_unknown_run_ids: list[str] = Field(
         default_factory=list,
         description=(

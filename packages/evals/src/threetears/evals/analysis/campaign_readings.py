@@ -57,7 +57,7 @@ from dataclasses import dataclass, replace
 from statistics import NormalDist, variance
 from typing import Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from threetears.evals.analysis.bundle.schema import FLOOR_COST_MEASURE, AnalysisContextBundle, ArmScoreboard
 from threetears.evals.analysis.depth import Depth, Precision, precision
@@ -273,6 +273,20 @@ class AspectReading(EvalDocumentModel):
         ),
     )
 
+    @field_validator("precision")
+    @classmethod
+    def _control_side_first(cls, precision: Precision | None, info: ValidationInfo) -> Precision | None:
+        """Each arm's own half-width in the order the comparison read its sides: the control's, then the candidate's.
+
+        The order is held only by the mapping's keys, and a store keeps no mapping's key order (a ``jsonb`` column
+        holds its keys shortest first), so it is put back on every read, where the planner's message and the page read
+        the sides in it.
+        """
+        arm = info.data.get("arm")
+        if precision is None or arm not in precision.half_widths:
+            return precision
+        return _in_side_order(precision, sorted(precision.half_widths, key=lambda key: key == arm))
+
 
 class PairReading(EvalDocumentModel):
     """Two arms of a choice on one aspect: the difference between them, how sure, and which is shown ahead.
@@ -348,6 +362,22 @@ class PairReading(EvalDocumentModel):
             "limiting it, and the between-case share of its variance. None with no interval."
         ),
     )
+
+    @field_validator("precision")
+    @classmethod
+    def _sides_in_key_order(cls, precision: Precision | None) -> Precision | None:
+        """Each arm's own half-width in the order the pair's comparison read its sides: by variant key.
+
+        Put back on every read, as a candidate's reading puts its sides back: a store keeps no mapping's key order.
+        """
+        return None if precision is None else _in_side_order(precision, sorted(precision.half_widths))
+
+
+def _in_side_order(precision: Precision, sides: Sequence[str]) -> Precision:
+    """``precision`` with each side's own half-width in ``sides``' order; the same object when it already is."""
+    if list(precision.half_widths) == list(sides):
+        return precision
+    return precision.model_copy(update={"half_widths": {side: precision.half_widths[side] for side in sides}})
 
 
 class BarStatus(EvalDocumentModel):
