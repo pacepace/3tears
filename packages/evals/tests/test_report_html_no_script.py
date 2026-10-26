@@ -31,21 +31,15 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import (
-    KIT_CHARTS,
-    CampaignReport,
-    build_campaign_report,
-    build_code_only_report,
-    campaign_readings,
-    campaign_report_html,
-    report_html,
+from threetears.evals.analysis import KIT_CHARTS, campaign_report_html, report_html
+from packages.evals.tests.hostile_page_support import (
+    HOSTILE,
+    HOSTILE_ASPECT,
+    HOSTILE_LINE,
+    hostile_campaign_page,
+    hostile_kit_charts,
+    hostile_report,
 )
-from threetears.evals.analysis.report import Report
-from threetears.evals.kernel.authored import AspectSummary, AuthoredCampaignAnalysis, NextStep
-from threetears.evals.kernel.declaration import CampaignArm
-from packages.evals.tests.campaign_page_support import campaign_fixture, two_aspect_memo
-from packages.evals.tests.campaign_support import ASSEMBLED_AT
-from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.page_contract_support import (
     FONT_LINK_MARKUP,
     FONT_LINKS,
@@ -57,398 +51,18 @@ from packages.evals.tests.page_contract_support import (
 from packages.evals.tests.report_kit_support import chromium_unavailable, rendered
 from packages.evals.tests.report_support import toy_report
 
-#: What an author might write into a field a model fills, to try to make the page run or load something: a script,
-#: a handler, a ``javascript:`` link, a frame, a stylesheet from another host, and the package's own font links,
-#: which from a field are an author's, not the package's.
-_HOSTILE = (
-    '<script>alert(1)</script><img src=x onerror="alert(2)"><a href="javascript:alert(3)">x</a>'
-    '<iframe src=//evil></iframe><link rel="stylesheet" href="https://evil.example/x.css">' + FONT_LINK_MARKUP
-)
-
-
-def _hostile_kit_charts() -> list[dict[str, Any]]:
-    """A chart of each of the kit's fourteen kinds whose every string the kit draws carries markup: titles, labels,
-    short labels, tags, notes, tooltips, legend entries, panel titles, column headings, pill words (a lattice's built
-    as markup by ``pill()``), reasons, region labels, a confusion matrix's labels and an example card's every part."""
-    h = _HOSTILE
-    chart = {"kind": "chart", "section": "memo", "finding": 0, "title": h}
-    return [
-        {
-            "kind": "chart",
-            "section": "memo",
-            "finding": 0,
-            "chart": "bars",
-            "title": h,
-            "data": {
-                "domain": [0, 10],
-                "fmt": "int",
-                "level": "95%",
-                "legend": [{"label": h, "color": "--s1"}],
-                "reference": {"value": 5, "label": h, "kind": "floor"},
-                "rows": [
-                    {"label": h, "short_label": h, "value": 4, "lo": 3, "hi": 6, "note": h, "tip": [h, h], "group": h},
-                    {
-                        "label": h,
-                        "tag": h,
-                        "segments": [{"value": 2, "color": "--bad", "pattern": "hatch"}],
-                        "tip": [h],
-                    },
-                ],
-            },
-        },
-        {
-            **chart,
-            "chart": "diverging_bars",
-            "data": {
-                "domain": [-10, 10],
-                "fmt": "+pts",
-                "reference": {"value": 0, "label": h, "kind": "no_preference"},
-                "legend": [{"label": h, "color": "--bad", "mark": "square", "pattern": "dots"}],
-                "rows": [{"label": h, "short_label": h, "value": -4, "note": h, "tip": [h], "group": h}],
-            },
-        },
-        {
-            **chart,
-            "chart": "forest",
-            "data": {
-                "domain": [-10, 10],
-                "fmt": "+pts",
-                "level": h,
-                "reference": {"value": 2, "label": h, "kind": "margin"},
-                "rows": [
-                    {"label": h, "short_label": h, "value": 1, "lo": -2, "hi": 4, "note": h, "tip": [h], "group": h}
-                ],
-            },
-        },
-        {
-            **chart,
-            "chart": "dot_interval",
-            "data": {
-                "domain": [0, 100],
-                "fmt": "pct",
-                "level": h,
-                "reference": {"value": 80, "label": h, "kind": "floor"},
-                "rows": [{"label": h, "value": 85, "lo": 80, "hi": 90, "tip": [h]}, {"label": h, "value": 70}],
-            },
-        },
-        {
-            **chart,
-            "chart": "range_bars",
-            "data": {
-                "domain": [0, 10],
-                "fmt": "s",
-                "reference": {"value": 5, "label": h, "kind": "budget"},
-                "legend": [{"label": h}],
-                "groups": [{"label": h, "short_label": h, "rows": [{"label": h, "from": 1, "to": 3, "tip": [h]}]}],
-            },
-        },
-        {
-            **chart,
-            "chart": "gate_scatter",
-            "data": {
-                "x_domain": [0, 10],
-                "y_domain": [0, 100],
-                "x_fmt": "usd",
-                "y_fmt": "pct",
-                "region_label": h,
-                "reference": {"value": 80, "label": h, "kind": "floor"},
-                "x_reference": {"value": 5, "label": h, "kind": "budget"},
-                "points": [{"x": 2, "y": 90, "label": h, "narrow_label": h, "tip": [h]}],
-            },
-        },
-        {
-            **chart,
-            "chart": "lattice",
-            "data": {
-                "fmt": "pct",
-                "cost_fmt": "usd",
-                "cost_unit": h,
-                "latency_fmt": "s",
-                "bar_domain": [0, 100],
-                "columns": [{"label": h}],
-                "rows": [
-                    {
-                        "label": h,
-                        "color": "--s1",
-                        "cells": [
-                            {"value": 80, "cost": 1, "latency": 2, "status": "bad", "status_label": h, "tip": [h]}
-                        ],
-                    }
-                ],
-            },
-        },
-        {
-            **chart,
-            "chart": "diff_heatmap",
-            "data": {
-                "fmt": "+pts",
-                "detail_fmt": "pct",
-                "columns": [{"label": h}],
-                "rows": [{"label": h, "cells": [{"value": 3, "detail": 80, "tip": [h]}]}],
-            },
-        },
-        {**chart, "chart": "confusion", "data": {"labels": [h, h], "matrix": [[90, 10], [5, 95]]}},
-        {
-            "kind": "chart",
-            "section": "memo",
-            "finding": 0,
-            "chart": "scatter_frontier",
-            "title": h,
-            "data": {
-                "x_domain": [0, 10],
-                "y_domain": [0, 100],
-                "x_fmt": "usd",
-                "y_fmt": "pct",
-                "x_title": h,
-                "y_title": h,
-                "price_line": {"value": 2, "label": h, "region_label": h},
-                "points": [
-                    {"x": 2, "y": 80, "id": "a", "label": h, "narrow_label": h, "tip": [h]},
-                    {"x": 6, "y": 90, "id": "b", "label": h, "narrow_label": h, "tip": [h]},
-                ],
-            },
-        },
-        {
-            "kind": "chart",
-            "section": "memo",
-            "finding": 0,
-            "chart": "gate_matrix",
-            "title": h,
-            "data": {
-                "row_header": h,
-                "pick_label": h,
-                "cost_fmt": "usd",
-                "cost_unit": h,
-                "columns": [{"label": h}],
-                "rows": [
-                    {
-                        "label": h,
-                        "detail": h,
-                        "flag": h,
-                        "cells": [{"status": "bad", "label": h, "reasons": [h], "cost": 1, "pick": True}],
-                    }
-                ],
-            },
-        },
-        {
-            "kind": "chart",
-            "section": "memo",
-            "finding": 0,
-            "chart": "heatmap",
-            "title": h,
-            "data": {
-                "domain": [0, 100],
-                "fmt": "pct",
-                "columns": [{"label": h}],
-                "panels": [
-                    {"title": h, "subtitle": h, "rows": [{"label": h, "cells": [{"value": 50, "tip": [h]}]}]},
-                    {"title": h, "subtitle": h},
-                ],
-            },
-        },
-        {
-            "kind": "chart",
-            "section": "memo",
-            "finding": 0,
-            "chart": "examples",
-            "title": h,
-            "data": {
-                "cards": [
-                    {
-                        "meta": [{"text": h, "mono": True}, {"status": "bad", "label": h}, {"tag": h, "label": h}],
-                        "question": h,
-                        "fields": [{"term": h, "text": h, "tone": "bad"}],
-                        "reason": h,
-                        "excerpt": h,
-                        "note": h,
-                    }
-                ]
-            },
-        },
-        {
-            "kind": "chart",
-            "section": "memo",
-            "finding": 0,
-            "chart": "lines",
-            "title": h,
-            "data": {
-                "categories": [h, h],
-                "domain": [0, 100],
-                "fmt": "pct",
-                "x_title": h,
-                "series": [{"name": h, "end_label": h, "values": [40, 60]}],
-            },
-        },
-    ]
-
-
-def _hostile_report() -> Report:
-    """A report whose every author-written field, every label a chart draws and every trial's text carries markup."""
-    fields: dict[str, Any] = {
-        "basis": "analysis",
-        "title": _HOSTILE,
-        "finding_count": 1,
-        "source": {
-            "analysis_id": "a",
-            "campaign_id": "c",
-            "scope_id": "s",
-            "behavior": "b",
-            "generated_at": "2026-10-05T00:00:00+00:00",
-            "generator_model": "m",
-            "bundle_fingerprint": "f",
-        },
-        "blocks": [
-            {"kind": "disclosure", "section": "header", "source": "verdict", "text": _HOSTILE},
-            {"kind": "text", "section": "memo", "role": "finding_title", "finding": 0, "body": _HOSTILE},
-            {
-                "kind": "text",
-                "section": "memo",
-                "role": "finding_body",
-                "finding": 0,
-                "body": f"- {_HOSTILE}\n- **bold** `code`",
-            },
-            {
-                "kind": "text",
-                "section": "memo",
-                "role": "caveat",
-                "finding": 0,
-                "body": _HOSTILE,
-                "facts": [{"name": "Kind", "value": _HOSTILE}],
-            },
-            {
-                "kind": "chart",
-                "section": "scoreboard",
-                "chart": "outcome_bar",
-                "title": _HOSTILE,
-                "bars": [{"arm": _HOSTILE, "segments": [{"state": "lost", "label": _HOSTILE, "count": 2}]}],
-            },
-            {
-                "kind": "chart",
-                "section": "memo",
-                "finding": 0,
-                "chart": "interval_rows",
-                "title": _HOSTILE,
-                "rows": [{"label": _HOSTILE, "value": 1.0, "low": 0.5, "high": 1.5, "n_cases": 6, "verdict": _HOSTILE}],
-                "unit": _HOSTILE,
-            },
-            *_hostile_kit_charts(),
-            {
-                "kind": "table",
-                "section": "cases",
-                "name": "cases",
-                "title": _HOSTILE,
-                "columns": [
-                    {"key": "case", "header": "Case"},
-                    {"key": "label", "header": _HOSTILE},
-                    {"key": "trials", "header": "Trials"},
-                ],
-                "rows": [
-                    {"case": {"value": "case 1"}, "label": {"value": _HOSTILE}, "trials": {"value": f"T1 {_HOSTILE}"}}
-                ],
-                "order": _HOSTILE,
-                "total_rows": 1,
-            },
-            {
-                "kind": "trial",
-                "section": "trials",
-                "anchor": "T1",
-                "trial_id": "T1",
-                "case_label": _HOSTILE,
-                "arm": _HOSTILE,
-                "repeat": 1,
-                "state": "lost",
-                "cause_words": _HOSTILE,
-                "first_input": _HOSTILE,
-                "excerpt": _HOSTILE,
-                "failed_checks": [{"name": _HOSTILE, "expression": _HOSTILE}],
-                "judge": [
-                    {"dim": _HOSTILE, "criterion": _HOSTILE, "score": None, "scale": "ordinal", "reason": _HOSTILE}
-                ],
-                "error_words": _HOSTILE,
-                "result_id": _HOSTILE,
-                "open": True,
-            },
-            {"kind": "disclosure", "section": "methods", "source": "generation", "text": _HOSTILE},
-        ],
-        "bundle": toyhost_bundle(),
-    }
-    return Report.model_validate(fields)
-
-
-#: What an author might write where a page prints a label or a line: the hostile markup above, an ``onerror`` and a
-#: ``javascript:`` URL in an attribute that tries to break out of its quotes, and an element claiming one of the
-#: page's own ids.
-_HOSTILE_LINE = (
-    _HOSTILE + '"><img src=x onerror="alert(4)"><a id="glossary" href="javascript:alert(5)">x</a>'
-    '<section id="aspect-billing">'
-)
-
-
-#: An aspect label carrying markup. A label never holds a ``/``, so this one has no closing tag: a handler, an
-#: element that loads, a ``javascript:`` link and an id the page already holds, all in opening tags.
-_HOSTILE_ASPECT = '<img src=x onerror="alert(6)"><svg onload="alert(7)"><a id="glossary" href="javascript:alert(8)">'
-
-
-def _hostile_memo(control: str) -> AuthoredCampaignAnalysis:
-    """The two-aspect memo with markup in every field its writer fills, recommending ``control``."""
-    memo = two_aspect_memo()
-    finding = memo.findings[0].model_copy(update={"title": _HOSTILE_LINE, "body": f"- {_HOSTILE_LINE}\n- **bold**"})
-    recommended = memo.recommended()
-    assert recommended is not None
-    return memo.model_copy(
-        update={
-            "findings": [finding],
-            "recommendation": [recommended.model_copy(update={"arm": control, "reasons": [_HOSTILE_LINE]})],
-            "aspect_summaries": [
-                AspectSummary(aspect=aspect, what_changed=_HOSTILE_LINE, how_sure=_HOSTILE_LINE, means=_HOSTILE_LINE)
-                for aspect in ("billing", _HOSTILE_ASPECT)
-            ],
-            "summary": _HOSTILE_LINE,
-            "next": [NextStep(title=_HOSTILE_LINE, why=_HOSTILE_LINE, leverage="high", lever="")],
-        }
-    )
-
-
-async def _hostile_campaign_page() -> CampaignReport:
-    """A campaign page of two real aspects, one of them labelled with markup, whose campaign name, arm labels, memo,
-    fold lines and second folded page carry markup too: everything on it a host or a model supplies."""
-    control_label, candidate_label = f"{_HOSTILE_LINE} A", f"{_HOSTILE_LINE} B"
-    campaign, measured = await campaign_fixture("billing", _HOSTILE_ASPECT, name=_HOSTILE_LINE)
-    control = campaign.control
-    assert control is not None
-    arms = [
-        control.model_copy(update={"label": control_label}),
-        CampaignArm(label=candidate_label, role="candidate", variant_key=measured[0].candidate),
-    ]
-    bundles = {one.bundle.aspect: one.bundle for one in measured}
-    read = campaign_readings(campaign, bundles, arms=arms)
-    reports = {
-        label: build_code_only_report(
-            evidence, assembled_at=ASSEMBLED_AT, campaign_name=_HOSTILE_LINE, arm_labels=read.arm_labels()
-        )
-        for label, evidence in bundles.items()
-    }
-    memo = _hostile_memo(control_label)
-    page = build_campaign_report(campaign, read, reports, memo, recommended_variant_key=control.variant_key)
-    first, second = page.aspects
-    folds = [
-        first.model_copy(update={"shows": _HOSTILE_LINE}),
-        second.model_copy(update={"shows": _HOSTILE_LINE, "report": _hostile_report()}),
-    ]
-    return page.model_copy(update={"aspects": folds})
-
 
 async def test_markup_a_host_or_a_model_put_on_a_campaign_page_is_text_not_markup() -> None:
-    page = campaign_report_html(await _hostile_campaign_page())
+    page = campaign_report_html(await hostile_campaign_page())
     read = parsed(page)
 
     assert what_runs(page) == []
     assert font_links(page) == list(FONT_LINKS), "an author's link, even a copy of the package's, is text"
     assert any("<script>alert(1)</script>" in text for text in read.text), "the words survive as text"
     assert any('onerror="alert(4)"' in text for text in read.text)
-    assert any(_HOSTILE_ASPECT in text for text in read.text), "the aspect's label is words too"
+    assert any(HOSTILE_ASPECT in text for text in read.text), "the aspect's label is words too"
     drawn = [text for _, data in _chart_data(page) for text in _strings(data)]
-    assert any(text.startswith(_HOSTILE_LINE) for text in drawn), "an arm's label reaches its chart as words"
+    assert any(text.startswith(HOSTILE_LINE) for text in drawn), "an arm's label reaches its chart as words"
     assert any(FONT_LINK_MARKUP.split(">", 1)[0] in text for text in read.text), "so is the copied font link"
     assert page.count("&lt;script&gt;alert(1)&lt;/script&gt;") > 10, "every field's markup is escaped"
     ids = [value for _, attrs in read.tags for name, value in attrs if name == "id"]
@@ -472,7 +86,7 @@ async def test_the_toy_report_s_html_carries_the_kit_s_script_and_no_other() -> 
 
 
 def test_markup_an_author_wrote_is_text_not_markup() -> None:
-    page = report_html(_hostile_report())
+    page = report_html(hostile_report())
 
     assert what_runs(page) == []
     assert font_links(page) == list(FONT_LINKS), "an author's link, even a copy of the package's, is text"
@@ -487,7 +101,7 @@ def test_a_closed_value_that_bypassed_validation_is_escaped_too() -> None:
     page's "every attribute escaped" holds of the page, not of the model that usually guards it.
     """
     breakout = '"><script>alert(1)</script><p x="'
-    report = _hostile_report()
+    report = hostile_report()
     blocks = [
         block.model_copy(update={"role": breakout})
         if block.kind == "text"
@@ -505,7 +119,7 @@ def test_a_closed_value_that_bypassed_validation_is_escaped_too() -> None:
 
 def test_the_markdown_a_memo_uses_still_renders() -> None:
     """Escaping first is not escaping everything: a list, bold and code still become structure."""
-    tags = [tag for tag, _ in parsed(report_html(_hostile_report())).tags]
+    tags = [tag for tag, _ in parsed(report_html(hostile_report())).tags]
     assert {"ul", "li", "strong", "code"} <= set(tags)
 
 
@@ -528,13 +142,13 @@ def _strings(value: Any) -> list[str]:
 
 
 def test_a_chart_carries_the_labels_it_is_given_as_escaped_text_in_its_data() -> None:
-    page = report_html(_hostile_report())
+    page = report_html(hostile_report())
     charts = _chart_data(page)
     kinds = [kind for kind, _ in charts]
-    assert kinds == ["bars", *(chart["chart"] for chart in _hostile_kit_charts())]
+    assert kinds == ["bars", *(chart["chart"] for chart in hostile_kit_charts())]
     assert set(kinds) == set(KIT_CHARTS), "every kind the kit draws"
     for kind, data in charts:
-        assert _HOSTILE in _strings(data), f"a {kind} chart's labels survive as words"
+        assert HOSTILE in _strings(data), f"a {kind} chart's labels survive as words"
     # In the markup the JSON is escaped into its double-quoted attribute: not one raw angle bracket or quote in it.
     raw = re.findall(r'data-chart="([^"]*)"', page)
     assert len(raw) == len(charts) and all(not set("<>'") & set(value) for value in raw)
@@ -544,7 +158,7 @@ def test_a_chart_carries_the_labels_it_is_given_as_escaped_text_in_its_data() ->
 def test_interval_rows_reach_the_page_as_their_table_alone() -> None:
     """Interval rows name no interval level, and the kit never draws an interval without one: their figure holds
     their table and no chart."""
-    page = report_html(_hostile_report())
+    page = report_html(hostile_report())
     figure = page[page.index('data-figure="interval_rows"') :]
     figure = figure[: figure.index("</figure>")]
     assert 'class="chart"' not in figure and 'class="tbl chart-values"' in figure
@@ -559,7 +173,7 @@ def test_once_the_kit_has_drawn_the_charts_no_injected_markup_is_an_element(tmp_
     if reason is not None:
         pytest.skip(f"headless Chromium cannot launch: {reason}")
     page = tmp_path / "hostile.html"
-    page.write_text(report_html(_hostile_report()), encoding="utf-8")
+    page.write_text(report_html(hostile_report()), encoding="utf-8")
     probe = """() => {
       const charts = [...document.querySelectorAll('div.chart[data-kind]')];
       const tips = [...document.querySelectorAll('[data-tip]')].flatMap(e => {
