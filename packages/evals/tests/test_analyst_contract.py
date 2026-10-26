@@ -427,10 +427,12 @@ _TYPED_NUMBER = re.compile(
 )
 
 #: The text fields that hold the input's own words verbatim rather than text code composes: an example's trial (what
-#: the case asked, what the arm replied, the judge's reason, its repeat's label), a measure's stated interval level,
-#: and the note a caveat carries in the input. A number there is the input's, quoted, not a figure code wrote.
+#: the case asked, what the arm replied, the judge's reason, its repeat's label), a measure's stated interval level
+#: (in the overview's rows, and atop a measure's read), and the note a caveat carries in the input. A number there is
+#: the input's, quoted, not a figure code wrote.
 _VERBATIM = re.compile(
-    r"\.examples\[\d+\]\.(?:excerpt|input|expected|reason|repeat)$|\.measures\[\d+\]\.level$|\.caveats\[\d+\]\.says$"
+    r"\.examples\[\d+\]\.(?:excerpt|input|expected|reason|repeat)$|\.measures\[\d+\]\.level$|^\.level$"
+    r"|\.caveats\[\d+\]\.says$"
 )
 
 

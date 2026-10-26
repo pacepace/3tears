@@ -609,6 +609,125 @@ def test_measure_read_keeps_only_the_arm_named() -> None:
     assert read.total == len(held.tasks)
 
 
+#: The statistics a figure stores, in the grammar's order: what a read naming none reads, each where stated.
+STORED = ("mean", "ci", "half_width", "sem", "n", "n_cases", "p50", "p95", "change")
+
+#: The statistics that are an interval on a mean.
+INTERVALS = frozenset({"ci", "half_width"})
+
+
+def _stored(stat: Stat) -> dict[str, Any]:
+    """Every statistic one figure states, as a cited figure reads it."""
+    values = {statistic: getattr(stat, statistic) for statistic in STORED}
+    return {
+        statistic: (_pair(value) if statistic == "ci" else value)
+        for statistic, value in values.items()
+        if value is not None
+    }
+
+
+def _slice_stats(held: ReportInput, key: str) -> dict[str, list[Stat]]:
+    """Every figure the input holds on one measure, by the way it is read, each way holding one."""
+    table = held.measures.get(key) or held.judged[key]
+    by = {
+        "arm": [*table.per_arm.values(), *(stat for arms in table.by_aspect.values() for stat in arms.values())],
+        "stratum": [figures[key] for s in held.strata for figures in s.per_arm.values() if key in figures],
+        "task": [figures[key] for t in held.tasks for figures in t.per_arm.values() if key in figures],
+        "cell": [figures[key] for c in held.cells.values() for figures in c.per_arm.values() if key in figures],
+    }
+    return {way: stats for way, stats in by.items() if stats}
+
+
+def _named_stats(stats: Sequence[Stat]) -> list[str]:
+    return [statistic for statistic in STORED if any(getattr(stat, statistic) is not None for stat in stats)]
+
+
+@pytest.mark.parametrize(("name", "key", "by"), _all_measure_reads())
+def test_a_read_naming_no_statistics_reads_every_one_held_its_interval_among_them(name: str, key: str, by: str) -> None:
+    _snapshot, held = _held(name)
+    read = measure_read(held, key, by=by, limit=200)  # type: ignore[arg-type]
+    expected = _expected_rows(held, key, by)
+    assert [(row.slice, row.arm.value) for row in read.rows] == [(at, arm) for at, arm, _stat in expected]
+    for row, (_at, _arm, stat) in zip(read.rows, expected, strict=True):
+        assert _by_stat(row.figures) == _stored(stat)
+    assert read.held == _named_stats(_slice_stats(held, key)[by])
+    assert read.not_shown == []
+    table = held.measures.get(key) or held.judged[key]
+    assert read.level == table.level
+
+
+def _interval_reads() -> list[tuple[str, str, str]]:
+    """Every fixture read whose figures hold an interval on the mean."""
+    found: list[tuple[str, str, str]] = []
+    for name in FIXTURES:
+        _snapshot, held = _held(name)
+        for key in [*held.measures, *held.judged]:
+            for by, stats in _slice_stats(held, key).items():
+                if INTERVALS & set(_named_stats(stats)):
+                    found.append((name, key, by))
+    return found
+
+
+def test_an_interval_on_a_slice_is_read_without_asking_and_a_narrower_read_names_it_as_not_shown() -> None:
+    reads = _interval_reads()
+    assert {name for name, _key, _by in reads} >= {"r1", "r3", "r4", "r5"}, "the control: intervals held by slice"
+    for name, key, by in reads:
+        _snapshot, held = _held(name)
+        whole = measure_read(held, key, by=by, limit=200)  # type: ignore[arg-type]
+        intervals = INTERVALS & set(whole.held)
+        assert intervals and any(intervals & set(_by_stat(row.figures)) for row in whole.rows), (name, key, by)
+        narrow = measure_read(held, key, by=by, statistics=["mean"], limit=200)  # type: ignore[arg-type]
+        assert set(narrow.not_shown) == set(whole.held) - {"mean"} and intervals <= set(narrow.not_shown)
+        assert all(set(_by_stat(row.figures)) <= {"mean"} for row in narrow.rows)
+
+
+def test_a_measure_held_only_within_slices_is_refused_by_arm_naming_where_it_is_held() -> None:
+    refused = 0
+    for name in FIXTURES:
+        _snapshot, held = _held(name)
+        for key in [*held.measures, *held.judged]:
+            ways = _slice_stats(held, key)
+            if "arm" in ways or not ways:
+                continue
+            with pytest.raises(RefusedInput, match="holds no figure read by arm") as caught:
+                measure_read(held, key)
+            assert list(caught.value.valid_values or ()) == list(ways)
+            refused += 1
+    assert refused, "the control: a fixture holds a measure only within its slices"
+
+
+@pytest.mark.parametrize("name", FIXTURES)
+def test_the_overview_says_which_statistics_each_measure_holds_and_no_arm_lacks_one_held_per_slice(name: str) -> None:
+    _snapshot, held = _held(name)
+    for row in campaign_overview(held, "s").measures:
+        ways = _slice_stats(held, row.key)
+        assert row.statistics == [f"{way}: {', '.join(_named_stats(stats))}" for way, stats in ways.items()]
+        assert row.slices == list(ways)
+        slices = [
+            *(s.per_arm for s in held.strata),
+            *(t.per_arm for t in held.tasks),
+            *(c.per_arm for c in held.cells.values()),
+        ]
+        table = held.measures.get(row.key) or held.judged[row.key]
+        holding = set(table.per_arm) | {arm for arms in table.by_aspect.values() for arm in arms}
+        holding |= {arm for per_arm in slices for arm, figures in per_arm.items() if row.key in figures}
+        assert row.arms_without == [arm.id for arm in held.arms if arm.id not in holding]
+
+
+def test_a_measure_held_per_cell_lists_no_arm_without_it() -> None:
+    """The r3 discoverability fault: accuracy held per cell read as missing on every arm."""
+    held = next(held for _, held in map(_held, FIXTURES) if held.cells)
+    per_cell = [
+        row
+        for row in campaign_overview(held, "s").measures
+        if row.slices == ["cell"] and INTERVALS & set(_named_stats(_slice_stats(held, row.key)["cell"]))
+    ]
+    assert per_cell, "the control: a measure held only per cell, with an interval"
+    for row in per_cell:
+        assert row.arms_without == []
+        assert any(interval in row.statistics[0] for interval in INTERVALS)
+
+
 # =============================================================================
 # examples_list
 # =============================================================================

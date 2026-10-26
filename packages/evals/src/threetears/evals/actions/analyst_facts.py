@@ -73,11 +73,6 @@ OutcomeFilter = Annotated[
 ]
 
 
-def _default_statistics() -> list[MeasureStatistic]:
-    """The statistics a measure is read with when none are named: the mean, its interval and its observations."""
-    return ["mean", "ci", "n"]
-
-
 class SnapshotParams(EvalBaseModel):
     """``campaign_overview``, ``caveats_list``: the snapshot to read, and the page."""
 
@@ -116,11 +111,12 @@ class MeasureReadParams(EvalBaseModel):
         default="arm",
         description="Read each arm's figure (arm), or each arm's within each stratum, task or target-matrix cell.",
     )
-    statistics: list[MeasureStatistic] = Field(
-        default_factory=_default_statistics,
+    statistics: list[MeasureStatistic] | None = Field(
+        default=None,
         min_length=1,
-        description="The statistics to read, each where the snapshot states it; vs_control (a candidate's mean minus "
-        "the control's within a slice) needs a slice and a control.",
+        description="The statistics to read, each where the snapshot states it; omitted, every one it holds on the "
+        "measure read this way, its interval (ci or half_width) among them. vs_control (a candidate's mean minus the "
+        "control's within a slice) needs a slice and a control, and is read only when named.",
     )
     aspect_filter: AspectFilter = None
     arm_filter: ArmFilter = None
@@ -238,7 +234,9 @@ def analyst_facts_actions() -> tuple[Action, ...]:
             detail=(
                 "Every id another tool takes is listed here: each arm (cited arm:<id>), each aspect and what rows it "
                 "holds, each measure and judged dimension by its key with the key form that reads it, what it can "
-                "be read by and, for a judged one, its judge's tier, calibration and agreement, each criterion and its "
+                "be read by and the statistics it holds there (an interval is ci or half_width; arms_without lists "
+                "only arms holding it nowhere, so a measure held per cell or stratum is not missing) and, for a judged "
+                "one, its judge's tier, calibration and agreement, each criterion and its "
                 "threshold, each caveat with its reach, the late criteria, prior insights, and the name a reader is "
                 "shown for each id. Every figure is written key = reads: cite the key, never the number. Its rows are "
                 "paged in that order, the campaign's own figures on every page; without a limit a page holds as many "
@@ -293,10 +291,14 @@ def analyst_facts_actions() -> tuple[Action, ...]:
             paged=True,
             example={**snapshot, "measure_key": "resolves", "by": "stratum"},
             detail=(
-                "campaign_overview lists each measure key and the slices it can be read by. By arm, a measure read on "
-                "more than one aspect is read on each, by its aspect's key. Within a slice, vs_control is a candidate's "
-                "mean minus the control's there: derived and descriptive, with no interval and no test. Without a "
-                f"limit a page holds as many rows as fit one result, up to {MEASURE_LIMIT}."
+                "campaign_overview lists each measure key, the slices it can be read by and the statistics it holds "
+                "in each. Without statistics, every statistic held is read, the interval (ci or half_width) among "
+                "them; the result names every one held, the ones a narrower read left out (not_shown) and the "
+                "intervals' level. A measure held only within slices is refused by arm, naming where it is held. By "
+                "arm, a measure read on more than one aspect is read on each, by its aspect's key. Within a slice, "
+                "vs_control is a candidate's mean minus the control's there: derived and descriptive, with no "
+                f"interval and no test. Without a limit a page holds as many rows as fit one result, up to "
+                f"{MEASURE_LIMIT}."
             ),
         ),
         Action(

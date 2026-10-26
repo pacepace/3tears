@@ -233,7 +233,7 @@ async def measure_read(
     snapshot_id: str,
     measure_key: str,
     by: MeasureBy = "arm",
-    statistics: Sequence[MeasureStatistic] = ("mean", "ci", "n"),
+    statistics: Sequence[MeasureStatistic] | None = None,
     aspect_filter: str | None = None,
     arm_filter: str | None = None,
     limit: int = MEASURE_LIMIT,
@@ -252,8 +252,8 @@ async def measure_read(
     :ptype measure_key: str
     :param by: What to read it by.
     :ptype by: MeasureBy
-    :param statistics: The statistics to read.
-    :ptype statistics: Sequence[MeasureStatistic]
+    :param statistics: The statistics to read; None for every one the snapshot holds on the measure read this way.
+    :ptype statistics: Sequence[MeasureStatistic] | None
     :param aspect_filter: Only this aspect.
     :ptype aspect_filter: str | None
     :param arm_filter: Only this arm.
@@ -269,7 +269,8 @@ async def measure_read(
     :rtype: MeasureFigures
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read; the key names no measure; a filter names nothing it
-        holds; it holds no slice of that kind; or a statistic or filter does not apply to the read.
+        holds; it holds no slice of that kind, or holds the measure in none; or a statistic or filter does not apply
+        to the read.
     """
     return await _read(
         host,
