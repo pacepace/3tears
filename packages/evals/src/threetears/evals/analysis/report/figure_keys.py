@@ -22,6 +22,12 @@ an :class:`~threetears.evals.analysis.errors.UnresolvableReference`, so the plan
 figure's ``gap`` are computed here from the input's point figures. They carry no interval and no test, the grammar
 says so, and their :class:`Figure` is marked ``derived``. Everything else is copied from the input.
 
+**A trade is priced here too.** ``price.<from>.<to>.<gain>.<field>`` prices a move between two options on one gain
+axis (:func:`gain_axis`): the gain, signed toward better, the cost gap per 1,000 replies, and the price per point
+gained, whose low and high ends are read off the gain's interval where a contrast states one (an end the interval
+leaves open is refused as unbounded, never written as a number). ``cost_per_month.<arm>`` and the ``monthly_`` price
+fields read the same at the declared ``meta.volume_per_month``. All are derived and marked so.
+
 **A figure held on more than one aspect is named by its aspect.** Every figure that sits on an aspect has an
 ``aspects.<aspect>.`` form. Where the input holds a contrast's arm and measure, a stratum id or a contrast family on
 more than one aspect, the unqualified form is refused, naming the qualified key for each aspect, rather than reading
@@ -1375,6 +1381,222 @@ def _flip_figure(reading: Reading, path: str) -> Figure:
     return Figure(path=path, kind="number", value=flip, scale="points")
 
 
+# --- prices: one option priced in another, on one gain axis -------------------------------------------------------
+
+#: What a price key reads for a move from one option to another, on one gain axis. ``gain`` is how much better the
+#: second option reads, toward the axis's better side; ``gain_interval`` the interval on it, where a contrast states
+#: one; ``cost_gap`` what the second costs more per 1,000 replies; ``per_point`` the cost gap per point gained (per
+#: unit, on an axis not in points), and its ``low`` and ``high`` ends read off the gain's interval; the ``monthly_``
+#: fields the same at the declared monthly volume.
+_PRICE_FIELDS = (
+    "gain",
+    "gain_interval",
+    "cost_gap",
+    "per_point",
+    "per_point_low",
+    "per_point_high",
+    "monthly_cost_gap",
+    "monthly_per_point",
+    "monthly_per_point_low",
+    "monthly_per_point_high",
+)
+
+#: The price fields read at the declared monthly volume.
+_MONTHLY_PREFIX = "monthly_"
+
+
+@dataclass(frozen=True)
+class GainAxis:
+    """A measure or judged dimension as the axis a trade's gain is read on, and where it places each arm.
+
+    ``positions`` puts each arm that holds a figure on the axis, signed so that higher is better: on the ``contrast``
+    basis, each candidate's contrast against the control (the control at zero); on the ``means`` basis, each arm's
+    overall mean. A gain between two arms is the difference of their positions, so every price on one axis reads one
+    basis. Code reads it to order options; a figure it prints is always a key's.
+    """
+
+    key: str
+    higher_is_better: bool
+    basis: Literal["contrast", "means"]
+    positions: Mapping[str, float]
+
+
+def _gain_axes(report_input: ReportInput, _: tuple[str, ...] = ()) -> list[str]:
+    """Every measure or judged dimension a gain can be read on: a judged dimension, or a measure with a direction."""
+    measures = [key for key, measure in report_input.measures.items() if measure.higher_is_better is not None]
+    return list(dict.fromkeys([*report_input.judged, *measures]))
+
+
+def _gain_table(report_input: ReportInput, key: str) -> Measure | Judged:
+    """The axis's own table: a judged dimension's, where the key names one, else the measure's."""
+    return report_input.judged[key] if key in report_input.judged else report_input.measures[key]
+
+
+def _gain_contrasts(report_input: ReportInput, key: str, control: str) -> list[Contrast]:
+    """The contrasts that state a candidate against the control on the axis, with their difference."""
+    return [
+        contrast
+        for contrast in report_input.contrasts
+        if contrast.measure == key
+        and contrast.delta is not None
+        and contrast.arm != control
+        and contrast.control in (None, control)
+    ]
+
+
+def _delta(contrast: Contrast) -> float:
+    if contrast.delta is None:
+        raise ValueError(f"the contrast of {contrast.arm} on {contrast.measure!r} states no difference")
+    return float(contrast.delta)
+
+
+def gain_axis(report_input: ReportInput, key: str) -> GainAxis:
+    """A measure or judged dimension as a trade's gain axis: which way is better, and where it places each arm.
+
+    The axis reads its arms' **contrasts** against the control when the input has a control and every other arm
+    holding a figure on the axis holds exactly one contrast on it that states its difference: the paired estimate,
+    which the contrast's interval belongs to. Otherwise it reads each arm's **overall mean**, which carries no paired
+    interval. A judged dimension is read higher is better.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param key: The measure or judged dimension, by key.
+    :ptype key: str
+    :return: The axis.
+    :rtype: GainAxis
+    :raises UnresolvableReference: The key names no measure or judged dimension the input holds, or a measure that
+        states no direction.
+    """
+    path = f"price.<from>.<to>.{key}"
+    if key not in report_input.judged and key not in report_input.measures:
+        raise _refuse(path, f"names {key!r}, which the input holds as no measure or judged dimension")
+    table = _gain_table(report_input, key)
+    higher = True if isinstance(table, Judged) else table.higher_is_better
+    if higher is None:
+        raise _refuse(path, f"reads a gain on {key!r}, which states no direction (higher or lower is better)")
+    sign = 1.0 if higher else -1.0
+    means = {arm: float(stat.mean) for arm, stat in table.per_arm.items() if stat.mean is not None}
+    control = _control(report_input)
+    if control is not None:
+        contrasts = _gain_contrasts(report_input, key, control.id)
+        held = {*means, *(contrast.arm for contrast in contrasts)} - {control.id}
+        arms = [contrast.arm for contrast in contrasts]
+        if contrasts and all(arms.count(arm) == 1 for arm in held):
+            positions = {control.id: 0.0}
+            positions |= {contrast.arm: sign * _delta(contrast) for contrast in contrasts}
+            return GainAxis(key=key, higher_is_better=higher, basis="contrast", positions=positions)
+    return GainAxis(
+        key=key, higher_is_better=higher, basis="means", positions={arm: sign * mean for arm, mean in means.items()}
+    )
+
+
+def _gain_scale(report_input: ReportInput, key: str) -> tuple[Scale, str]:
+    table = _gain_table(report_input, key)
+    if isinstance(table, Judged):
+        return _judged_scale(table), ""
+    return _measure_scale(table)
+
+
+def _gain_interval(
+    report_input: ReportInput, axis: GainAxis, first: str, second: str
+) -> tuple[tuple[float, float] | None, str]:
+    """The interval on the gain from ``first`` to ``second``, signed toward better, or None and why it is unstated."""
+    control = _control(report_input)
+    if axis.basis == "means":
+        return None, (
+            f"the gain on {axis.key!r} is read on the arms' overall means, which carry no paired interval (not every "
+            "arm holding a figure on it holds one contrast against the control)"
+        )
+    if control is None or control.id not in (first, second):
+        return None, "a paired interval is stated only between the control and a candidate, by their contrast"
+    candidate, toward = (second, 1.0) if first == control.id else (first, -1.0)
+    (contrast,) = (c for c in _gain_contrasts(report_input, axis.key, control.id) if c.arm == candidate)
+    if contrast.interval is None:
+        return None, f"the contrast of {candidate} against the control on {axis.key!r} states no interval"
+    sign = toward * (1.0 if axis.higher_is_better else -1.0)
+    low, high = sorted((sign * float(contrast.interval[0]), sign * float(contrast.interval[1])))
+    return (low, high), ""
+
+
+def _gain_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    """The arms a move can be priced to: every costed arm but the one it starts from."""
+    return [arm for arm in _costs_per_thousand(report_input) if arm != prior[0]]
+
+
+def _monthly_factor(report_input: ReportInput, path: str) -> float:
+    """What turns a figure per 1,000 replies into one per month at the declared volume."""
+    volume = report_input.meta.volume_per_month
+    if volume is None:
+        raise _refuse(
+            path,
+            "names a monthly figure, which needs the monthly volume (meta.volume_per_month), which the input does "
+            "not state",
+        )
+    return float(volume) / 1000.0
+
+
+def _price_bounds(path: str, gap: float, gain: float, interval: tuple[float, float], field: str) -> float:
+    """One end of the price per point the gain's interval allows: ``gap`` over each end of the interval's part on
+    the gain's own side of zero. An end at or across zero bounds nothing: that end is unbounded, and refused so."""
+    low, high = interval
+    far, near = (high, low) if gain > 0 else (low, high)
+    if far * gain <= 0:
+        raise _refuse(path, "reads a gain whose interval does not hold it, so no price is read off the interval")
+    if field == "per_point_low":
+        return gap / far
+    if near * gain <= 0:
+        raise _refuse(
+            path,
+            "is unbounded: the gain's interval reaches zero, so the evidence allows a price per point as high as "
+            "any; no number states it",
+        )
+    return gap / near
+
+
+def _price(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    first, second, key, field = values
+    axis = gain_axis(report_input, key)
+    positions = axis.positions
+    for arm in (first, second):
+        if arm not in positions:
+            raise _refuse(path, f"names {arm}'s figure on {key!r}, which the input does not state")
+    gain = positions[second] - positions[first]
+    scale, unit = _gain_scale(report_input, key)
+    if field == "gain":
+        return Figure(path=path, kind="number", value=gain, scale=scale, unit=unit, change=True)
+    interval, unstated = _gain_interval(report_input, axis, first, second)
+    if field == "gain_interval":
+        if interval is None:
+            raise _refuse(path, f"names the gain's interval, which the input does not state: {unstated}")
+        return Figure(path=path, kind="interval", value=interval, scale=scale, unit=unit, change=True)
+    costs = _costs_per_thousand(report_input)
+    gap = costs[second] - costs[first]
+    monthly = field.startswith(_MONTHLY_PREFIX)
+    factor = _monthly_factor(report_input, path) if monthly else 1.0
+    money: Scale = "usd" if monthly else "usd_per_1k"
+    field = field.removeprefix(_MONTHLY_PREFIX)
+    if field == "cost_gap":
+        return Figure(path=path, kind="number", value=gap * factor, scale=money, change=True)
+    points = 100.0 if scale == "share" else 1.0
+    if gain == 0 or gap * gain <= 0:
+        raise _refuse(
+            path,
+            f"is no price: {second} reads no better than {first} on {key!r} for no less cost, or better for no "
+            "more, so one is at least as good on both and the move has no price per point",
+        )
+    if field == "per_point":
+        return Figure(path=path, kind="number", value=gap / (gain * points) * factor, scale=money)
+    if interval is None:
+        raise _refuse(path, f"names an end of the price's interval, which the input does not state: {unstated}")
+    bound = _price_bounds(path, gap, gain * points, (interval[0] * points, interval[1] * points), field)
+    return Figure(path=path, kind="number", value=bound * factor, scale=money)
+
+
+def _cost_per_month(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    factor = _monthly_factor(report_input, path)
+    return Figure(path=path, kind="number", value=_costs_per_thousand(report_input)[values[0]] * factor, scale="usd")
+
+
 # --- an aspect's pair readings, floors and bars ----------------------------------------------------------------------
 
 _PAIR_STATISTICS = ("change", "interval", "low", "high", "confidence", "p_holm", "ahead", "why")
@@ -2160,6 +2382,30 @@ _FAMILIES: tuple[_Family, ...] = (
         resolve=_indexed_family,
         example="families.1.correction",
     ),
+    _family_of(
+        _Word("price"),
+        _keyed("<from>", _costs_per_thousand),
+        _Ids("<to>", _gain_arms),
+        _Ids("<measure>", _gain_axes),
+        _Statistic(_PRICE_FIELDS, "<field>"),
+        what="a move from one option to another priced on one gain axis (a measure with a direction, or a judged "
+        "dimension): `gain` is how much better the second reads, toward better; `cost_gap` what it costs more per "
+        "1,000 replies; `per_point` the cost gap per point gained (per unit off a points scale), its `_low` and "
+        "`_high` ends read off `gain_interval`, the contrast's interval where the move is between the control and a "
+        "candidate; an end the interval leaves open is refused as unbounded; `monthly_` fields at the declared "
+        "monthly volume. Cost is read as exact",
+        resolve=_price,
+        derived=True,
+        example="price.base.fast.v2.latency_ms.monthly_per_point",
+    ),
+    _family_of(
+        _Word("cost_per_month"),
+        _keyed("<arm>", _costs_per_thousand),
+        what="an arm's cost per month at the declared monthly volume",
+        resolve=_cost_per_month,
+        derived=True,
+        example="cost_per_month.base",
+    ),
 )
 
 
@@ -2357,7 +2603,7 @@ class KeySubjects:
 
 
 #: The slots an arm id fills.
-_ARM_SLOTS = frozenset({"<arm>", "<candidate>"})
+_ARM_SLOTS = frozenset({"<arm>", "<candidate>", "<from>", "<to>"})
 
 #: The families that read the asked aspect without naming it.
 _ASKED_FAMILIES = frozenset({"aspect", "reading", "cases", "repeats", "flip_margin"})
@@ -2660,12 +2906,18 @@ GRAMMAR_HEADING = "Figure keys"
 def _example_input() -> ReportInput:
     """A small made-up input the grammar's examples are rendered on, with a dotted arm id and a dotted dimension: one
     asked aspect and one other, with a measure on both, a pair reading, a floor, a bar, strata, a cell, criteria, a
-    numeric setting, each arm's depth, a criterion set late, and a second contrast family naming no aspect."""
+    numeric setting, each arm's depth, a criterion set late, a second contrast family naming no aspect, and a
+    monthly volume."""
     rate = {"base": (0.912, 897), "fast.v2": (0.874, 895)}
     return ReportInput.model_validate(
         {
             "schema": "report-input/1",
-            "meta": {"campaign": "Example", "kind": "change", "question": "Is fast.v2 as good as base?"},
+            "meta": {
+                "campaign": "Example",
+                "kind": "change",
+                "question": "Is fast.v2 as good as base?",
+                "volume_per_month": 1_000_000,
+            },
             "arms": [
                 {
                     "id": "base",
@@ -2924,11 +3176,13 @@ __all__ = [
     "WEAKEST_PREFIX",
     "Figure",
     "FigureKey",
+    "GainAxis",
     "KeySubjects",
     "NamedKind",
     "figure_key_grammar",
     "flip_margin",
     "format_figure",
+    "gain_axis",
     "key_subjects",
     "keys_in",
     "literal_numbers",
