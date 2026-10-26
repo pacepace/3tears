@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 
+from packages.evals.tests.fixtures.report_plans.misfits import MISFITS, NAMES, reference_data
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.toyhost_memo import MODEL, FixturedClient, FixturedCompletion
 from packages.evals.tests.toyhost_plan import prose_reply
@@ -40,61 +41,14 @@ from threetears.evals.analysis.report_plan_facts import complete_plan, plan_fact
 from threetears.evals.kernel.report_plan import PlanProse, PlanStructure, ReportPlan
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_plans"
-NAMES = ("r1", "r2", "r3", "r4", "r5")
-
-
-def _data(name: str) -> dict[str, Any]:
-    loaded: dict[str, Any] = json.loads((FIXTURES / name / "input.json").read_text(encoding="utf-8"))
-    return loaded
-
-
-def _without_gates(name: str) -> dict[str, Any]:
-    data = _data(name)
-    data["criteria"] = []
-    return data
-
-
-def _gates_in_each_task() -> dict[str, Any]:
-    data = _data("r2")
-    for criterion in data["criteria"]:
-        criterion["scope"] = "each_task"
-    return data
-
-
-def _one_gate() -> dict[str, Any]:
-    data = _data("r2")
-    data["criteria"] = data["criteria"][:1]
-    return data
-
-
-def _without_configs() -> dict[str, Any]:
-    data = _data("r3")
-    data["configs"] = []
-    return data
-
-
-def _only_bars() -> dict[str, Any]:
-    """r1 deciding by nothing but one absolute bar on its latency, read met on every arm."""
-    data = _without_gates("r1")
-    data["bars"] = [
-        {"aspect": "overall", "arm": arm["id"], "measure": "latency_s", "bar": 9.0, "direction": "lower_is_better",
-         "status": "met"}
-        for arm in data["arms"]
-    ]  # fmt: skip
-    return data
-
 
 #: Inputs whose criteria or configs leave a chart code or a planner might name with nothing to draw, each read fresh.
-DEGENERATE: dict[str, Callable[[], dict[str, Any]]] = {
-    "r2 without its gates": lambda: _without_gates("r2"),
-    "r2 with its gates read in each task": _gates_in_each_task,
-    "r2 with one gate": _one_gate,
-    "r3 without its configs": _without_configs,
-    "r1 without its gates": lambda: _without_gates("r1"),
-    "r1 reading only bars": _only_bars,
-}
+DEGENERATE: dict[str, Callable[[], dict[str, Any]]] = MISFITS
 #: Every input the agreement is held on.
-INPUTS: dict[str, Callable[[], dict[str, Any]]] = {**DEGENERATE, **{name: (lambda n=name: _data(n)) for name in NAMES}}
+INPUTS: dict[str, Callable[[], dict[str, Any]]] = {
+    **DEGENERATE,
+    **{name: (lambda n=name: reference_data(n)) for name in NAMES},
+}
 
 
 def _input(name: str) -> ReportInput:
