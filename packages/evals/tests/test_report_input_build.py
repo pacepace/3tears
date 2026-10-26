@@ -33,6 +33,7 @@ from threetears.evals.analysis.campaign_bundle import (
 )
 from threetears.evals.analysis.report_input import Example, ReportInput, Stat, Stratum
 from threetears.evals.analysis.report_input_build import planner_view, report_input
+from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.kernel.errors import RefusedInput
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_plans"
@@ -154,6 +155,22 @@ def test_a_measurements_readings_reach_its_measures(bundles: dict[str, CampaignB
         assert figures[measured.arm_label].mean == measured.value
     assert set(built.judged) == {"answer.clear", "answer.correct"}
     assert built.primary_judged == "answer.correct"
+
+
+@pytest.mark.parametrize("name", list(SHAPES))
+def test_a_measure_whose_figures_carry_intervals_states_the_level_they_are_read_at(
+    bundles: dict[str, CampaignBundle], name: str
+) -> None:
+    built = report_input(bundles[name])
+    stated = 0
+    for key, measure in built.measures.items():
+        figures = [*measure.per_arm.values(), *(stat for arms in measure.by_aspect.values() for stat in arms.values())]
+        if any(stat.ci is not None for stat in figures):
+            assert measure.level == f"{100 * INTERVAL_LEVEL:g}%", key
+            stated += 1
+        else:
+            assert measure.level is None, key
+    assert stated, "the shape carries a measure with intervals"
 
 
 def test_every_other_aspects_figures_sit_beside_the_lead_aspects(bundles: dict[str, CampaignBundle]) -> None:

@@ -61,7 +61,7 @@
     "strata": "target_matrix",
     "criteria": "hard_gates",
     "cross_cutting": [],
-    "log_cost_axis": false
+    "log_cost_axis": true
   },
   "shape": "C",
   "masthead": {
@@ -131,7 +131,8 @@
       }
     ],
     "columns": [
-      "gate"
+      "gate",
+      "cost_per_1k"
     ]
   },
   "summary": [

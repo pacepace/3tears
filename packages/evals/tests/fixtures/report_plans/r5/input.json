@@ -280,7 +280,8 @@
      "n_cases": 299,
      "p95": 0.01181
     }
-   }
+   },
+   "level": "95%"
   },
   "delivered_items": {
    "label": null,
@@ -319,7 +320,8 @@
      "n_cases": 30,
      "p95": null
     }
-   }
+   },
+   "level": "95%"
   },
   "execution_mode": {
    "label": null,
@@ -366,7 +368,8 @@
      "n_cases": 299,
      "p95": 0.0
     }
-   }
+   },
+   "level": "95%"
   },
   "goal_state:call_count(\"discord.send_message\") >= 1 or call_count(\"music.queue_voice\") >= 1": {
    "label": null,
@@ -405,7 +408,8 @@
      "n_cases": 299,
      "p95": null
     }
-   }
+   },
+   "level": "95%"
   },
   "production_replicating_cost": {
    "label": null,
@@ -444,7 +448,8 @@
      "n_cases": 285,
      "p95": 0.006199
     }
-   }
+   },
+   "level": "95%"
   },
   "status": {
    "label": null,
@@ -491,7 +496,8 @@
      "n_cases": 299,
      "p95": 0.0
     }
-   }
+   },
+   "level": "95%"
   },
   "turns_ended_by_budget": {
    "label": null,
@@ -530,7 +536,8 @@
      "n_cases": 299,
      "p95": 0.0
     }
-   }
+   },
+   "level": "95%"
   }
  },
  "judged": {
