@@ -461,6 +461,21 @@ async def test_block_render_reads_back_a_values_table_and_its_line_by_its_key() 
     assert outcome.text.startswith("rendered block\nblock_kind: bars\n")
 
 
+async def test_block_render_echoes_the_line_and_the_emphasis_it_drew_beside_its_query() -> None:
+    """A report document's evidence carries a block's line and emphasis beside its query, so the block says both."""
+    emphasis = next(arm.id for arm in fixture_inputs()["r2"].arms if arm.role != "control")
+    query = {"source": "measures", "measures": ["latency_ms"]}
+    outcome = await _call(
+        {"action": "block_render", "block_kind": "range_bars", "query": query, "reference": "budget", "emphasis": emphasis}
+    )
+    assert outcome.structured is not None, outcome.text
+    assert outcome.structured["reference_line"] == "budget" and outcome.structured["emphasis"] == emphasis
+    assert "\nreference_line: budget\n" in outcome.text and f"\nemphasis: {emphasis}\n" in outcome.text
+    plain = await _call({"action": "block_render", "block_kind": "range_bars", "query": query})
+    assert plain.structured is not None, plain.text
+    assert plain.structured["reference_line"] is None and plain.structured["emphasis"] == ""
+
+
 async def test_block_render_refused_on_the_snapshot_names_its_faults_and_the_catalog() -> None:
     outcome = await _call({"action": "block_render", "block_kind": "lattice", "query": {"source": "readings"}})
     assert outcome.refusal is not None and outcome.refusal.kind == "validation_failed"

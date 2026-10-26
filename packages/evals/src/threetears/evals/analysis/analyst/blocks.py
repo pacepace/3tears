@@ -100,6 +100,14 @@ class RenderedBlock(BaseModel):
 
     block_kind: str = Field(description="The block's kind.")
     query: ChartQuery = Field(description="What it reads, every field filled.")
+    reference_line: str | None = Field(
+        description="The reference line it draws, as the call named it; None for none. It sits outside the query, so "
+        "a report document's evidence carries it beside the query."
+    )
+    emphasis: str = Field(
+        description="The one arm, stratum or task it stresses, by id, as the call named it; empty for none. It sits "
+        "outside the query, so a report document's evidence carries it beside the query."
+    )
     title: str = Field(description="Its title, its figure keys written out; empty for none.")
     level: str = Field(description="The interval level it prints; empty where it draws no interval.")
     unit: str = Field(description="The unit its values are in; empty for several (a panel each) or none.")
@@ -260,6 +268,8 @@ def block_render(
     return RenderedBlock(
         block_kind=spec.kind,
         query=spec.query,
+        reference_line=spec.reference[0].kind if spec.reference else None,
+        emphasis=spec.emphasis,
         title=written,
         level=spec.level,
         unit=spec.unit,
