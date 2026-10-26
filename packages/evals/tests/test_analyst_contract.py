@@ -34,6 +34,8 @@ from pydantic import BaseModel
 from packages.evals.tests.analyst_support import (
     KAIRO,
     TEXT_BUDGET,
+    WIDE,
+    budget_inputs,
     action_calls,
     fixture_inputs,
     fixture_snapshots,
@@ -55,12 +57,15 @@ from threetears.evals.actions import (
 )
 from threetears.evals.actions.render import render_cited
 from threetears.evals.analysis import assemble_campaign_bundle
+from threetears.evals.analysis.analyst.analyses import dominance, sensitivity
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
+from threetears.evals.analysis.analyst.facts import campaign_overview
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.analyst.snapshot import ANALYST_EXAMPLES, frozen_input, report_snapshot
 from threetears.evals.analysis.planned_analysis import report_input_digest, report_input_document_digest
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
-from threetears.evals.analysis.report.figure_keys import figure_key_grammar, render, resolve
+from threetears.evals.analysis.report.figure_keys import figure_key_grammar, reader_names, render, resolve
+from threetears.evals.analysis.report.figures import PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel import EvalReportSnapshot, report_snapshot_id
@@ -410,10 +415,62 @@ def _numbers(node: Any, path: str = "") -> Iterator[tuple[str, Any, dict[str, An
         yield path, node, None
 
 
-def _held_to_figures(structured: dict[str, Any], held: ReportInput) -> None:
-    """Every number in a result sits in a cited figure, and every cited figure's key resolves to its value."""
+#: A date as a text names one, which is a time a figure states rather than a figure: ISO-8601 (``2026-10-20``, with
+#: any time after it) or day, month and year (``25 Oct 2026``).
+_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}(?:T[\d:.]+(?:Z|[+-]\d{2}:\d{2})?)?\b|\b\d{1,2} [A-Z][a-z]{2} \d{4}\b")
+
+#: A number written in text: digits standing alone as a word, with any sign, currency, grouping, decimals, percent or
+#: range, and not part of an id or key (``qwen3.8-flash``, ``p95``, ``criteria.gate.v2.value``), whose digits sit
+#: inside a word with letters.
+_TYPED_NUMBER = re.compile(
+    r"(?<![\w.:/@-])[-+±−]?\$?\d[\d,]*(?:\.\d+)?%?(?:[–-]\$?\d[\d,]*(?:\.\d+)?%?)?(?![\w.:/@-]*[A-Za-z_])"
+)
+
+#: The text fields that hold the input's own words verbatim rather than text code composes: an example's trial (what
+#: the case asked, what the arm replied, the judge's reason, its repeat's label), a measure's stated interval level,
+#: and the note a caveat carries in the input. A number there is the input's, quoted, not a figure code wrote.
+_VERBATIM = re.compile(
+    r"\.examples\[\d+\]\.(?:excerpt|input|expected|reason|repeat)$|\.measures\[\d+\]\.level$|\.caveats\[\d+\]\.says$"
+)
+
+
+def _known_words(held: ReportInput) -> list[str]:
+    """Every id and reader name the input holds, longest first: words a text may name, digits and all."""
+    words = {arm.id for arm in held.arms} | {aspect.id for aspect in held.aspects} | {*held.measures, *held.judged}
+    words |= {stratum.id for stratum in held.strata} | {task.id for task in held.tasks} | set(held.cells)
+    words |= {criterion.id for criterion in held.criteria} | {read.floor for read in held.floors}
+    for names in reader_names(held).values():
+        words |= set(names) | set(names.values())
+    return sorted((word for word in words if word), key=len, reverse=True)
+
+
+def _typed_numbers(node: Any, known: list[str], path: str = "") -> Iterator[tuple[str, str]]:
+    """Every number a result's text fields write outside a cited figure: where it sits, and the number as written.
+    The input's ids and reader names, dates, and the unit cost is stated per are words, not numbers."""
+    if isinstance(node, dict):
+        if FIGURE_FIELDS <= node.keys():
+            return
+        for key, item in node.items():
+            if key not in PAGING:
+                yield from _typed_numbers(item, known, f"{path}.{key}")
+    elif isinstance(node, list):
+        for index, item in enumerate(node):
+            yield from _typed_numbers(item, known, f"{path}[{index}]")
+    elif isinstance(node, str) and not _VERBATIM.search(path):
+        text = _DATE.sub("", node).replace(PER_THOUSAND_REPLIES, "")
+        for word in known:
+            text = re.sub(rf"(?<!\w){re.escape(word)}(?!\w)", "", text)
+        for typed in _TYPED_NUMBER.findall(text):
+            yield path, typed
+
+
+def _held_to_figures(structured: dict[str, Any], held: ReportInput, *, text: bool = True) -> None:
+    """Every number in a result sits in a cited figure, and every cited figure's key resolves to its value: a JSON
+    number and, with ``text``, one written in a text field."""
     for where, _number, figure in _numbers(structured):
         assert figure is not None, f"{where} is a number no figure key names"
+    typed = list(_typed_numbers(structured, _known_words(held))) if text else []
+    assert not typed, f"text fields write numbers no figure key names: {typed[:8]}"
     figures = [node for node in _figure_nodes(structured)]
     for figure in figures:
         resolved = resolve(figure["key"], held)
@@ -442,6 +499,16 @@ def test_the_number_walk_finds_a_bare_number_and_a_figure_that_does_not_resolve(
     with pytest.raises(AssertionError, match="holds 999.0"):
         _held_to_figures({"figure": figure}, held)
     _held_to_figures({"total": 3, "offset": 0, "next_offset": None}, held)
+    for written in ("pass rate 72.0% below 80%", "interval 85.6-94.4%", "costs $7,560.00", "reads 2 ways", "-1.5"):
+        with pytest.raises(AssertionError, match="write numbers no figure key names"):
+            _held_to_figures({"why": [written]}, held)
+    named = "arm:qwen3.8-flash at p95 on criteria.gate.v2.value, set 25 Oct 2026 and 2026-10-20T00:00:00+00:00"
+    _held_to_figures({"why": [named], "snapshot": "report-snapshot:0193a1b2c3d4"}, held)
+    numeric = next(arm.id for arm in held.arms if arm.id.isdigit())
+    _held_to_figures({"notes": [f"no loss share for arm:{numeric}: {numeric}'s loss is nothing"]}, held)
+    _held_to_figures({"examples": [{"excerpt": "34x12 is 408"}], "notes": ["prices are per 1,000 replies"]}, held)
+    with pytest.raises(AssertionError, match="write numbers no figure key names"):
+        _held_to_figures({"notes": ["the excerpt reads 408"]}, held)
 
 
 async def test_every_analyst_read_action_answers_alike_twice_within_its_budget_on_every_figure_by_its_key() -> None:
@@ -460,7 +527,39 @@ async def test_every_analyst_read_action_answers_alike_twice_within_its_budget_o
                 assert (first.text, first.structured) == (second.text, second.structured), where
                 assert len(first.text) <= TEXT_BUDGET, f"{where}: {len(first.text)} characters"
                 assert first.structured is not None
-                _held_to_figures(first.structured, held)
+                # A block is returned as a page prints it: its cells, domain and notes are the chart's own print, held
+                # equal to the planned page's (test_analyst_render), so its text is not held to keys here.
+                _held_to_figures(first.structured, held, text=action.name != "block_render")
+
+
+@pytest.mark.parametrize("name", sorted(budget_inputs()))
+async def test_every_analyst_read_action_keeps_its_default_page_within_the_budget_on_shape_and_wide_campaigns(
+    name: str,
+) -> None:
+    fixture = off_loop(ops_fixture)
+    held = budget_inputs()[name]
+    snapshot = report_snapshot(held, scope_id=TOYHOST_SCOPE, campaign_id=None, source="report_input", created_by="me")
+    off_loop(fixture.host.eval_host.storage.save_report_snapshot, snapshot)
+    tool = _analyst_tool()
+    for action in read_actions():
+        for arguments in action_calls(action, held, snapshot.id):
+            outcome = await _call(tool, fixture, arguments)
+            where = f"{action.name} on {name}"
+            assert outcome.ending == "ok" and outcome.structured is not None, f"{where}: {outcome.text}"
+            assert len(outcome.text) <= TEXT_BUDGET, f"{where}: {len(outcome.text)} characters"
+            _held_to_figures(outcome.structured, held, text=action.name != "block_render")
+
+
+def test_the_wide_campaign_is_wider_than_one_result_holds_unpaged() -> None:
+    """The control for the budget above: read whole, the wide campaign's dominance, overview and sensitivity each run
+    past one result's budget, so only their paging keeps a default page within it."""
+    wide = budget_inputs()[WIDE]
+    whole = (
+        dominance(wide),
+        campaign_overview(wide, "s"),
+        sensitivity(wide, "threshold:pass_rate", limit=len(wide.arms) * len(wide.tasks)),
+    )
+    assert all(len(render_cited(result)) > TEXT_BUDGET for result in whole), [len(render_cited(r)) for r in whole]
 
 
 def test_the_fixture_snapshots_hold_the_kairo_bundle_and_its_examples_results() -> None:
@@ -726,6 +825,9 @@ async def test_an_action_the_editor_goes_without_is_refused_with_why_and_sends_i
 
 #: Every analyst listing, the fixture snapshot it is read on, and a call whose rows run to more than one small page.
 _PAGED_CALLS: dict[str, tuple[str, dict[str, Any]]] = {
+    "campaign_overview": (KAIRO, {"limit": 7}),
+    "caveats_list": (KAIRO, {"limit": 1}),
+    "options_dominance": (KAIRO, {"limit": 1}),
     "readings_list": (KAIRO, {"limit": 2}),
     "contrasts_list": (KAIRO, {"limit": 3}),
     "measure_read": (KAIRO, {"measure_key": "persona.holds_character", "by": "stratum", "limit": 3}),
@@ -788,10 +890,10 @@ async def test_following_next_reads_every_row_once_and_the_last_page_names_no_ne
 
 #: The field each listing's rows are in; the readings are grouped by aspect, each group's rows by kind.
 _ROWS = {
+    "caveats_list": "caveats",
     "contrasts_list": "contrasts",
     "measure_read": "rows",
     "examples_list": "examples",
-    "decision_sensitivity": "flips",
     "measure_breakdown": "slices",
     "block_render": "rows",
 }
@@ -806,6 +908,16 @@ def _page_rows(action: str, structured: dict[str, Any]) -> list[Any]:
     """A page's rows, in order."""
     if action in _ROWS:
         return list(structured[_ROWS[action]])
+    if action == "decision_sensitivity":
+        # A page lists its flips and the segments starting at them: every segment is read once over the pages.
+        return [("flip", row) for row in structured["flips"]] + [("segment", row) for row in structured["segments"]]
+    if action == "options_dominance":
+        # A page holds the options in a window of the arms: the survivors and the removed among them, tagged by which.
+        return [("survivor", row) for row in structured["survivors"]] + [("out", row) for row in structured["out"]]
+    if action == "campaign_overview":
+        sections = ("arms", "aspects", "measures", "criteria", "cells", "caveats", "late_criteria", "prior_insights")
+        named = [(kind, held, name) for kind, names in structured["names"].items() for held, name in names.items()]
+        return [(section, row) for section in sections for row in structured[section]] + [("names", n) for n in named]
     if action == "price_tradeoff":
         # A page covers options in arm order, each priced against one or listed off the frontier: tagged by which.
         return sorted(

@@ -58,7 +58,7 @@ from threetears.evals.analysis.report_margins import (
     criterion_places,
 )
 
-__all__ = ["GateCheck", "GateStatus", "gate_check", "routing_picks", "task_costs"]
+__all__ = ["GateCheck", "GateFinding", "GateStatus", "gate_check", "gate_findings", "routing_picks", "task_costs"]
 
 #: An arm's status against the gates: every figure passes, one sits borderline and none fails, or one fails.
 GateStatus = Literal["pass", "borderline", "fail"]
@@ -94,6 +94,26 @@ class GateCheck:
     status: GateStatus
     fails: tuple[str, ...]
     borders: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class GateFinding:
+    """One figure a gate check fails or holds borderline, as data: which criterion, where, and its reason.
+
+    :ivar criterion: The gate's or guardrail's id.
+    :ivar status: ``fail`` or ``borderline``.
+    :ivar task: The task the figure is read in; None when it is not read in a task.
+    :ivar cell: The target-matrix cell it is read in, by id; None when it is not read in a cell.
+    :ivar figure: The arm's figure there; None where the input states none, which fails.
+    :ivar reason: The reason :func:`gate_check` gives for it, its figures written by the package's number rule.
+    """
+
+    criterion: str
+    status: Literal["fail", "borderline"]
+    task: str | None
+    cell: str | None
+    figure: CriterionFigure | None
+    reason: str
 
 
 def _applies(criterion: Criterion, task: str | None, cell: str | None, only: str | None) -> bool:
@@ -166,6 +186,71 @@ def _read(
     return "pass", ""
 
 
+def gate_findings(
+    report_input: ReportInput,
+    arm: str,
+    *,
+    task: str | None = None,
+    cell: str | None = None,
+    criterion: str | None = None,
+) -> tuple[GateFinding, ...]:
+    """Every figure one arm fails or holds borderline on, overall or in one task or cell, or on one criterion, as data:
+    what :func:`gate_check` reads its status and reasons off, for a reader that keys each figure rather than reading
+    its reason.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param arm: The arm's id.
+    :ptype arm: str
+    :param task: The one task to check in, by id; None to check wherever each criterion reads.
+    :ptype task: str | None
+    :param cell: The one target-matrix cell to check in, by id; None to check wherever each criterion reads.
+    :ptype cell: str | None
+    :param criterion: The one gate or guardrail to check against, by id; None for every one.
+    :ptype criterion: str | None
+    :return: Each failing and each borderline figure, in the criteria's order and each criterion's places' order.
+    :rtype: tuple[GateFinding, ...]
+    :raises ValueError: Both a task and a cell were named, or a task, cell or gating criterion the input does not hold.
+    """
+    if task is not None and cell is not None:
+        raise ValueError(f"a gate check reads one place at most; it was given task {task!r} and cell {cell!r}")
+    if task is not None and task not in {held.id for held in report_input.tasks}:
+        raise ValueError(f"the input holds no task {task!r}")
+    if cell is not None and cell not in report_input.cells:
+        raise ValueError(f"the input holds no cell {cell!r}")
+    if criterion is not None and criterion not in {held.id for held in report_input.criteria if held.kind in _GATING}:
+        raise ValueError(f"the input holds no gate or guardrail {criterion!r}")
+    narrowed = task is not None or cell is not None
+    found: list[GateFinding] = []
+    for held in report_input.criteria:
+        if not _applies(held, task, cell, criterion):
+            continue
+        places = [
+            (at_task, at_cell)
+            for at_task, at_cell in criterion_places(report_input, held)
+            if (task is None or at_task == task) and (cell is None or at_cell == cell)
+        ]
+        no_figure = _NO_FIGURE_TEMPLATE.format(name=reader_name("criterion", held.id, report_input))
+        if not places:
+            found.append(GateFinding(held.id, "fail", None, None, None, no_figure))
+            continue
+        figures: dict[tuple[str | None, str | None], CriterionFigure] = {
+            (figure.task, figure.cell): figure for figure in criterion_figures(report_input, held, arm)
+        }
+        line = resolve(f"criteria.{held.id}.threshold", report_input)
+        for at_task, at_cell in places:
+            figure = figures.get((at_task, at_cell))
+            if figure is None or not math.isfinite(figure.value):
+                reason = _placed(report_input, no_figure, at_task, at_cell, narrowed)
+                found.append(GateFinding(held.id, "fail", at_task, at_cell, None, reason))
+                continue
+            read, reason = _read(report_input, held, figure, line)
+            if read != "pass":
+                placed = _placed(report_input, reason, at_task, at_cell, narrowed)
+                found.append(GateFinding(held.id, read, at_task, at_cell, figure, placed))
+    return tuple(found)
+
+
 def gate_check(
     report_input: ReportInput,
     arm: str,
@@ -191,42 +276,11 @@ def gate_check(
     :rtype: GateCheck
     :raises ValueError: Both a task and a cell were named, or a task, cell or gating criterion the input does not hold.
     """
-    if task is not None and cell is not None:
-        raise ValueError(f"a gate check reads one place at most; it was given task {task!r} and cell {cell!r}")
-    if task is not None and task not in {held.id for held in report_input.tasks}:
-        raise ValueError(f"the input holds no task {task!r}")
-    if cell is not None and cell not in report_input.cells:
-        raise ValueError(f"the input holds no cell {cell!r}")
-    if criterion is not None and criterion not in {held.id for held in report_input.criteria if held.kind in _GATING}:
-        raise ValueError(f"the input holds no gate or guardrail {criterion!r}")
-    narrowed = task is not None or cell is not None
-    found: dict[GateStatus, list[str]] = {"fail": [], "borderline": []}
-    for held in report_input.criteria:
-        if not _applies(held, task, cell, criterion):
-            continue
-        places = [
-            (at_task, at_cell)
-            for at_task, at_cell in criterion_places(report_input, held)
-            if (task is None or at_task == task) and (cell is None or at_cell == cell)
-        ]
-        no_figure = _NO_FIGURE_TEMPLATE.format(name=reader_name("criterion", held.id, report_input))
-        if not places:
-            found["fail"].append(no_figure)
-            continue
-        figures: dict[tuple[str | None, str | None], CriterionFigure] = {
-            (figure.task, figure.cell): figure for figure in criterion_figures(report_input, held, arm)
-        }
-        line = resolve(f"criteria.{held.id}.threshold", report_input)
-        for at_task, at_cell in places:
-            figure = figures.get((at_task, at_cell))
-            if figure is None or not math.isfinite(figure.value):
-                found["fail"].append(_placed(report_input, no_figure, at_task, at_cell, narrowed))
-                continue
-            read, reason = _read(report_input, held, figure, line)
-            if read != "pass":
-                found[read].append(_placed(report_input, reason, at_task, at_cell, narrowed))
-    status: GateStatus = "fail" if found["fail"] else "borderline" if found["borderline"] else "pass"
-    return GateCheck(arm=arm, status=status, fails=tuple(found["fail"]), borders=tuple(found["borderline"]))
+    found = gate_findings(report_input, arm, task=task, cell=cell, criterion=criterion)
+    fails = tuple(finding.reason for finding in found if finding.status == "fail")
+    borders = tuple(finding.reason for finding in found if finding.status == "borderline")
+    status: GateStatus = "fail" if fails else "borderline" if borders else "pass"
+    return GateCheck(arm=arm, status=status, fails=fails, borders=borders)
 
 
 def task_costs(report_input: ReportInput, task_id: str) -> dict[str, float]:

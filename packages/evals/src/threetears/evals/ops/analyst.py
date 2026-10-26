@@ -14,6 +14,7 @@ call, and makes no model call. The assembly and the report input it builds run o
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Literal
 
 from pydantic import Field, ValidationError
@@ -288,6 +289,37 @@ async def report_snapshot_freeze(
     return await run_blocking(executor, _kept, storage, snapshot)
 
 
+def sized_page[T](compute: Callable[[int], T], limit: int, fits: Callable[[T], bool] | None) -> T:
+    """The page of at most ``limit`` rows ``compute`` builds, as large as ``fits`` passes. Blocking.
+
+    A page grows with its rows, so the largest that fits is found by halving between one row and ``limit``. A page
+    of one row is returned even where it does not fit: one row is what a page always holds. With no ``fits`` (the
+    caller named the page's size), the page of ``limit`` rows.
+
+    :param compute: Builds the page holding at most the rows it is given.
+    :ptype compute: Callable[[int], T]
+    :param limit: The most rows the page holds.
+    :ptype limit: int
+    :param fits: Whether a page is short enough; ``None`` for a page of ``limit`` rows.
+    :ptype fits: Callable[[T], bool] | None
+    :return: The page.
+    :rtype: T
+    """
+    page = compute(limit)
+    if fits is None or fits(page):
+        return page
+    low, high = 1, limit - 1
+    best = compute(1)
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = compute(middle)
+        if fits(candidate):
+            best, low = candidate, middle + 1
+        else:
+            high = middle - 1
+    return best
+
+
 def _gap_id(snapshot_id: str, need: str, why: str) -> str:
     """The id of one noted gap: the same snapshot, need and why always name the same gap.
 
@@ -364,5 +396,6 @@ __all__ = [
     "SnapshotFrozen",
     "capability_gap",
     "report_snapshot_freeze",
+    "sized_page",
     "snapshot_input",
 ]

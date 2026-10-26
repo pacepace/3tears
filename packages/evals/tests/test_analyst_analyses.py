@@ -23,7 +23,7 @@ Contracts held here (``threetears.evals.analysis.analyst.analyses``, ``ops.analy
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from functools import cache
 from typing import Any
 
@@ -34,7 +34,7 @@ from packages.evals.tests.fixtures.report_plans.misfits import reference_data
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
 from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, eval_catalogue
-from threetears.evals.analysis.analyst.analyses import breakdown, dominance, sensitivity
+from threetears.evals.analysis.analyst.analyses import GateRead, breakdown, dominance, sensitivity
 from threetears.evals.analysis.analyst.snapshot import frozen_input, report_snapshot
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report_decision import (
@@ -48,7 +48,7 @@ from threetears.evals.analysis.report_decision import (
     margin_sensitivity,
     surviving_options,
 )
-from threetears.evals.analysis.report_gates import gate_check
+from threetears.evals.analysis.report_gates import gate_check, gate_findings
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import criterion_figures, flip_margin
 from threetears.evals.kernel import EvalReportSnapshot
@@ -162,7 +162,8 @@ def test_dominance_names_the_decisions_survivors_dominant_options_and_call(name:
     for row in result["survivors"]:
         arm = _arm_id(row["arm"])
         check = gate_check(held, arm)
-        assert (row["gate_status"], row["borders"]) == (check.status, list(check.borders))
+        assert row["gate_status"] == check.status
+        assert len(row["borders"]) == len(check.borders), "a borderline figure per reason the gate check gives"
         assert row["standing"] == standing[arm].standing
         assert [_arm_id(other) for other in row["behind"]] == list(standing[arm].behind)
         if arm in dominant:
@@ -170,11 +171,47 @@ def test_dominance_names_the_decisions_survivors_dominant_options_and_call(name:
         elif len(dominant) == 1:
             assert f"arm:{dominant[0]}" in row["dominated_by"], f"{name}: {arm} is not dominated by the one dominant"
     for row in result["out"]:
-        assert row["why"], f"{name}: {row['arm']} was removed with no reason"
+        assert row["gates"] or row["breached"], f"{name}: {row['arm']} was removed with no reason"
     code = result["code_call"]
     assert (code["modes"], code["dominant"]) == _call(decision_at(held))
     assert "never a constraint" in code["reads_as"]
     _each_figure_resolves(result, held)
+
+
+def _gate_figures_as_found(held: ReportInput, arm: str, gates: Sequence[GateRead], status: str) -> None:
+    """Each gate read is one gate-check finding of that status, in order, citing the criterion's threshold and, where
+    the input states the arm's figure, that figure and its gap."""
+    findings = [finding for finding in gate_findings(held, arm) if finding.status == status]
+    assert [(gate.criterion, gate.status) for gate in gates] == [
+        (finding.criterion, status if finding.figure is not None else "no_figure") for finding in findings
+    ]
+    for gate, finding in zip(gates, findings, strict=True):
+        criterion = next(held_criterion for held_criterion in held.criteria if held_criterion.id == gate.criterion)
+        cited = {figure.key.rsplit(".", 1)[1]: figure.value for figure in gate.figures}
+        assert cited["threshold"] == float(criterion.threshold)
+        if finding.figure is not None:
+            assert cited["value"] == pytest.approx(finding.figure.value) and "gap" in cited
+            if finding.figure.ci is not None:
+                assert (cited["low"], cited["high"]) == pytest.approx(finding.figure.ci)
+        else:
+            assert set(cited) == {"threshold"}, "no figure there: the threshold alone"
+
+
+@pytest.mark.parametrize("name", sorted(_all_inputs()))
+def test_a_removed_option_carries_each_figure_it_fails_on_and_a_survivor_each_it_holds_borderline(name: str) -> None:
+    held = _all_inputs()[name]
+    result = dominance(held)
+    for row in result.out:
+        _gate_figures_as_found(held, _arm_id(row.arm), row.gates, "fail")
+    for survivor in result.survivors:
+        _gate_figures_as_found(held, _arm_id(survivor.arm), survivor.borders, "borderline")
+
+
+def test_the_gate_figures_walk_has_a_removed_option_failing_on_a_figure_and_a_survivor_borderline() -> None:
+    """The control for the walk above: the fixtures hold an option removed on a stated figure, and one borderline."""
+    results = [dominance(held) for held in _all_inputs().values()]
+    assert any(gate.status == "fail" for result in results for row in result.out for gate in row.gates)
+    assert any(row.borders for result in results for row in result.survivors)
 
 
 @pytest.mark.parametrize("name", ["r1", "r2", "r4", "r5", "kairo round 2"])

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Final
 
@@ -482,6 +482,38 @@ def render_page(action: str, params: BaseModel, text: str, structured: dict[str,
         return text, {key: value for key, value in structured.items() if key != _NEXT_OFFSET}
     call = _next_page_call(action, params, offset)
     return f"{text}\n{_next_page_line(call)}", {**structured, "next": call}
+
+
+#: The most characters a page a caller does not size runs to: what one tool result may take of an analyst's context.
+_PAGE_TEXT: Final = 12_000
+
+
+def page_sizing(action: str, params: BaseModel, default: int) -> tuple[int, Callable[[BaseModel], bool] | None]:
+    """The page size a paged operation takes, and the test of length it sizes a page by.
+
+    The caller's ``limit`` as named, with no test; else up to ``default`` rows, as many as fit within 12,000
+    characters (what one tool result may take of an analyst's context) as the tool writes the page
+    (:func:`render_cited`, then :func:`render_page`, the next page's call included). An operation given the test
+    returns the largest page that passes it, so a page of long rows is shorter rather than overlong.
+
+    :param action: The action, as the next page's call names it.
+    :ptype action: str
+    :param params: The call's parameters, ``limit`` among them (``None``: size the page).
+    :ptype params: BaseModel
+    :param default: The most rows a sized page holds.
+    :ptype default: int
+    :return: The page's most rows, and the test, or ``None`` where the caller named the size.
+    :rtype: tuple[int, Callable[[BaseModel], bool] | None]
+    """
+    named = getattr(params, "limit", None)
+    if named is not None:
+        return int(named), None
+
+    def fits(page: BaseModel) -> bool:
+        text, _structured = render_page(action, params, render_cited(page), page.model_dump(mode="json"))
+        return len(text) <= _PAGE_TEXT
+
+    return default, fits
 
 
 def _cited_field(name: str, value: Any, indent: str) -> list[str]:

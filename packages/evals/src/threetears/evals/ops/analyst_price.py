@@ -9,11 +9,13 @@ with the remedy it names.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from threetears.evals.analysis.analyst.price import PRICE_PAGE, PriceTradeoff
 from threetears.evals.analysis.analyst.price import price_tradeoff as priced
 from threetears.evals.kernel.errors import RefusedInput, ValidationFailedError
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.ops.analyst import snapshot_input
+from threetears.evals.ops.analyst import sized_page, snapshot_input
 from threetears.evals.ops.host import OpsHost
 
 
@@ -26,6 +28,7 @@ async def price_tradeoff(
     arm: str | None = None,
     limit: int = PRICE_PAGE,
     offset: int = 0,
+    fits: Callable[[PriceTradeoff], bool] | None = None,
 ) -> PriceTradeoff:
     """The trade between a snapshot's surviving options, priced on one gain axis.
 
@@ -43,6 +46,9 @@ async def price_tradeoff(
     :ptype limit: int
     :param offset: The first of them the page holds.
     :ptype offset: int
+    :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
+        ``None`` takes ``limit`` as it is.
+    :ptype fits: Callable[[PriceTradeoff], bool] | None
     :return: The frontier, the price per point at each step along it, every option priced against one, and why each
         other option is off the frontier.
     :rtype: PriceTradeoff
@@ -53,7 +59,11 @@ async def price_tradeoff(
     held = await snapshot_input(host, scope_id, snapshot_id)
     try:
         return await run_blocking(
-            host.eval_host.blocking_executor, priced, held, gain_key, arm=arm, limit=limit, offset=offset
+            host.eval_host.blocking_executor,
+            sized_page,
+            lambda rows: priced(held, gain_key, arm=arm, limit=rows, offset=offset),
+            limit,
+            fits,
         )
     except RefusedInput as refused:
         raise ValidationFailedError.refusing(refused) from refused

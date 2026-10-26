@@ -22,6 +22,12 @@ AnalysisId = Annotated[str, Field(min_length=1, description="A stored analysis's
 Offset = Annotated[int, Field(ge=0, description="Skip this many rows; the previous page's next_offset.")]
 Limit = Annotated[int, Field(ge=1, le=_PAGE_MAX, description=f"The most rows to return, up to {_PAGE_MAX}.")]
 
+#: A page's size as :data:`Limit` declares it, which a caller may leave out to have the page sized to one result
+#: (:func:`~threetears.evals.actions.render.page_sizing`).
+SizedLimit = Annotated[
+    int | None, Field(ge=1, le=_PAGE_MAX, description=f"The most rows to return, up to {_PAGE_MAX}.")
+]
+
 SnapshotId = Annotated[
     str,
     Field(
@@ -49,5 +55,6 @@ __all__ = [
     "Limit",
     "MeasureKey",
     "Offset",
+    "SizedLimit",
     "SnapshotId",
 ]

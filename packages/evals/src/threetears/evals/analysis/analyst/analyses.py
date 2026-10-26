@@ -46,20 +46,24 @@ from threetears.evals.analysis.report_decision import (
     separating_contrasts,
     surviving_options,
 )
-from threetears.evals.analysis.report_gates import GateStatus, gate_check
+from threetears.evals.analysis.report_gates import GateFinding, GateStatus, gate_check, gate_findings
 from threetears.evals.analysis.report_input import Aspect, Contrast, Criterion, ReportInput
 from threetears.evals.analysis.report_margins import CriterionFigure, criterion_figures
 from threetears.evals.kernel.errors import RefusedInput
 
 __all__ = [
     "BREAKDOWN_PAGE",
+    "DOMINANCE_PAGE",
     "SENSITIVITY_PAGE",
     "Breakdown",
     "Dominance",
+    "GateRead",
     "Sensitivity",
     "SliceBy",
+    "breached_guardrails",
     "breakdown",
     "dominance",
+    "gate_reads",
     "sensitivity",
 ]
 
@@ -74,6 +78,9 @@ _GATING = frozenset({"gate", "guardrail"})
 
 #: The slices one breakdown page holds unless the caller asks for more: a slice reads one line per figure, per arm.
 BREAKDOWN_PAGE = 12
+
+#: The options one dominance page holds unless the caller asks for more.
+DOMINANCE_PAGE = 50
 
 #: The flips one sensitivity page lists unless the caller asks for more.
 SENSITIVITY_PAGE = 50
@@ -144,6 +151,96 @@ class CodeCall(BaseModel):
     )
 
 
+class GateRead(BaseModel):
+    """One gate or guardrail figure an option fails or holds borderline, at one place, by the keys that state it."""
+
+    model_config = _MODEL
+
+    criterion: str = Field(description="The gate or guardrail, by id, as `criteria.<criterion>.` keys name it.")
+    place: str | None = Field(
+        description="Where the figure sits, as its key names it: a task's id or a cell's <row>.<column>; None overall."
+    )
+    status: Literal["fail", "borderline", "no_figure"] = Field(
+        description="fail: the figure misses the threshold; borderline: its interval crosses it, which counts as "
+        "passing; no_figure: the input states no figure there, which fails."
+    )
+    figures: list[CitedFigure] = Field(
+        description="The threshold, then the figure, its interval's ends where stated, and its gap toward passing."
+    )
+
+
+def _criterion_key(
+    report_input: ReportInput, criterion: Criterion, arm: str, figure: CriterionFigure, field: str
+) -> str:
+    """The key of one figure a criterion reads for an arm, at ``field``: by its place where the criterion reads the
+    arm at more than one (the form ``_criterion_keys`` writes)."""
+    held = criterion_figures(report_input, criterion, arm)
+    place = _place(report_input, figure)
+    if len(held) == 1 or place is None:
+        return f"criteria.{criterion.id}.{arm}.{field}"
+    return f"criteria.{criterion.id}.{arm}.{place}.{field}"
+
+
+def _gate_read(report_input: ReportInput, arm: str, finding: GateFinding) -> GateRead:
+    criterion = next(held for held in report_input.criteria if held.id == finding.criterion)
+    figures = [cite(f"criteria.{criterion.id}.threshold", report_input)]
+    figure = finding.figure
+    if figure is not None:
+        keys = [
+            _criterion_key(report_input, criterion, arm, figure, field) for field in ("value", "low", "high", "gap")
+        ]
+        figures += _stated(keys, report_input)
+        where = _place(report_input, figure)
+    else:
+        where = _finding_place(report_input, finding)
+    status: Literal["fail", "borderline", "no_figure"] = "no_figure" if figure is None else finding.status
+    return GateRead(criterion=criterion.id, place=where, status=status, figures=figures)
+
+
+def _finding_place(report_input: ReportInput, finding: GateFinding) -> str | None:
+    """Where a finding with no figure sits, as a key would name it."""
+    if finding.cell is not None:
+        cell = report_input.cells[finding.cell]
+        return f"{cell.row}.{cell.column}"
+    return finding.task
+
+
+def _stated(keys: Sequence[str], report_input: ReportInput) -> list[CitedFigure]:
+    """The figures the keys name that the input states, in the keys' order."""
+    return [figure for key in keys if (figure := cite_if(key, report_input)) is not None]
+
+
+def gate_reads(report_input: ReportInput, arm: str, status: Literal["fail", "borderline"]) -> list[GateRead]:
+    """Every figure an arm fails, or holds borderline, on the gates and guardrails, each by the keys that state it:
+    the gate check's own findings (:func:`~threetears.evals.analysis.report_gates.gate_findings`), keyed, so a
+    reason's numbers reach a reader as figures.
+
+    :param report_input: The snapshot's report input.
+    :ptype report_input: ReportInput
+    :param arm: The arm's id.
+    :ptype arm: str
+    :param status: ``fail`` for the figures it fails on, ``borderline`` for the ones it holds borderline.
+    :ptype status: Literal["fail", "borderline"]
+    :return: Each, in the criteria's order.
+    :rtype: list[GateRead]
+    """
+    return [
+        _gate_read(report_input, arm, finding)
+        for finding in gate_findings(report_input, arm)
+        if finding.status == status
+    ]
+
+
+def breached_guardrails(report_input: ReportInput, arm: str) -> list[str]:
+    """The guardrails the pipeline read breached for an arm, by the name the input gives each (its dimension,
+    measure or id); ``guardrail`` where it gives none."""
+    return [
+        str(guardrail.get("dimension") or guardrail.get("measure") or guardrail.get("id") or "guardrail")
+        for guardrail in report_input.guardrails
+        if str(guardrail.get("arm")) == arm and guardrail.get("decision") == "breached"
+    ]
+
+
 class SurvivorRow(BaseModel):
     """One option that survives the gates, its standing on the decision's axes, and the figures behind it."""
 
@@ -151,10 +248,15 @@ class SurvivorRow(BaseModel):
 
     arm: str = Field(description="The option, as arm:<id>.")
     gate_status: GateStatus = Field(description="pass or borderline: borderline counts as passing.")
-    borders: list[str] = Field(description="Why it is borderline, one reason per figure; empty when it passes.")
+    borders: list[GateRead] = Field(
+        description="Each figure it holds borderline on, by the keys that state it; empty when it passes."
+    )
     standing: StandingWord = Field(description="Its standing on the asked aspects.")
     behind: list[str] = Field(description="In a choice, the arms an asked pair shows ahead of it, as arm:<id>.")
-    why: list[str] = Field(description="Why a candidate is not shown no worse on the asked aspects.")
+    why: list[str] = Field(
+        description="Why a candidate is not shown no worse on the asked aspects, each floor and aspect by its id; the "
+        "figures of each floor it is not shown to hold are among its figures."
+    )
     dominated_by: list[str] = Field(
         description="The survivors at least as good on every axis while it is not as good as them, as arm:<id>."
     )
@@ -169,7 +271,8 @@ class OutRow(BaseModel):
     model_config = _MODEL
 
     arm: str = Field(description="The option, as arm:<id>.")
-    why: list[str] = Field(description="Each failing gate figure, and each breached guardrail.")
+    gates: list[GateRead] = Field(description="Each gate or guardrail figure it fails on, by the keys that state it.")
+    breached: list[str] = Field(description="Each guardrail the pipeline read breached for it, by name.")
 
 
 class AxisArm(BaseModel):
@@ -192,7 +295,7 @@ class AxisRow(BaseModel):
     )
     descriptive: Literal[True] = Field(default=True, description="Always true: point estimates, no interval or test.")
     best: list[str] = Field(description="The survivors with the best figure on it, as arm:<id>; ties all listed.")
-    arms: list[AxisArm] = Field(description="Each survivor's figure, in the input's arm order.")
+    arms: list[AxisArm] = Field(description="Each survivor's figure on this page, in the input's arm order.")
 
 
 class Dominance(BaseModel):
@@ -200,8 +303,10 @@ class Dominance(BaseModel):
 
     model_config = _MODEL
 
-    survivors: list[SurvivorRow] = Field(description="The options that survive the gates, in the input's arm order.")
-    out: list[OutRow] = Field(description="The options the gates or a guardrail removed.")
+    survivors: list[SurvivorRow] = Field(
+        description="The options on this page that survive the gates, in the input's arm order."
+    )
+    out: list[OutRow] = Field(description="The options on this page the gates or a guardrail removed.")
     dominant: list[str] = Field(
         description="The survivors each at least as good as every other on every axis; two or more tie, none: none "
         "dominates.",
@@ -212,6 +317,11 @@ class Dominance(BaseModel):
         "a direction; descriptive. Equal to dominant when no axis is asked for.",
     )
     code_call: CodeCall = Field(description="Code's call on the declared criteria: its reading, never a constraint.")
+    total: int = Field(
+        description="The options the snapshot holds; a page lists the survivors and the removed among them."
+    )
+    offset: int = Field(description="The first option this page holds, in the input's arm order.")
+    next_offset: int | None = Field(description="The offset of the next page of options; None when this is the last.")
 
 
 def _contrast_key(contrast: Contrast) -> str:
@@ -253,7 +363,8 @@ def _asked(report_input: ReportInput) -> list[Aspect]:
 
 def _standing_figures(report_input: ReportInput, arm: str) -> list[CitedFigure]:
     """The figures an arm's standing on the asked aspects rests on: its readings and their flips, the pairs it is in
-    that show an arm ahead, and the contrasts on an asked aspect that separate it from the control."""
+    that show an arm ahead, the contrasts on an asked aspect that separate it from the control, and each asked floor
+    it is not read to hold."""
     found: list[CitedFigure] = []
     asked = _asked(report_input)
     for aspect in asked:
@@ -268,7 +379,17 @@ def _standing_figures(report_input: ReportInput, arm: str) -> list[CitedFigure]:
     for contrast in separating_contrasts(report_input, arm):
         if contrast.delta is not None:
             found.append(cite(_contrast_key(contrast) + ".delta", report_input))
+    asked_ids = {aspect.id for aspect in asked}
+    for read in report_input.floors:
+        if read.arm == arm and read.aspect in asked_ids and read.status != "held":
+            prefix = f"aspects.{read.aspect}.floor.{read.floor}.{arm}"
+            found += [figure for field in _FLOOR_FIELDS if (figure := cite_if(f"{prefix}.{field}", report_input))]
     return found
+
+
+#: What a floor an arm is not shown to hold is cited by: its status, the margin, how far the drop could go and by how
+#: much it misses, and the input's own reason.
+_FLOOR_FIELDS = ("status", "margin", "worst_drop", "short_by", "reason")
 
 
 def _gate_figures(report_input: ReportInput, arm: str) -> list[CitedFigure]:
@@ -336,17 +457,14 @@ def _axis(report_input: ReportInput, axis: str, survivors: Sequence[str]) -> tup
     return row, (None if higher is None else values)
 
 
-def _out_reasons(report_input: ReportInput, arm: str) -> list[str]:
-    reasons = list(gate_check(report_input, arm).fails)
-    for guardrail in report_input.guardrails:
-        if str(guardrail.get("arm")) == arm and guardrail.get("decision") == "breached":
-            named = guardrail.get("dimension") or guardrail.get("measure") or guardrail.get("id")
-            reasons.append(f"guardrail {named} read breached" if named else "a guardrail read breached")
-    return reasons
-
-
-def dominance(report_input: ReportInput, axes: Sequence[str] = ()) -> Dominance:
+def dominance(
+    report_input: ReportInput, axes: Sequence[str] = (), *, limit: int | None = None, offset: int = 0
+) -> Dominance:
     """Which options survive the gates, which dominates on the decision's axes, and what extra axes say beside them.
+
+    A page holds the options from ``offset``, ``limit`` of them in the input's arm order (every one where ``limit`` is
+    None): each survivor's row, each removed option's, and each survivor's figure on every extra axis. What is read
+    over every option (the dominant ones, the best on each axis, code's call) is on every page.
 
     The survivors, the dominant options and code's call are :mod:`~threetears.evals.analysis.report_decision`'s own
     (:func:`~threetears.evals.analysis.report_decision.surviving_options`,
@@ -358,6 +476,10 @@ def dominance(report_input: ReportInput, axes: Sequence[str] = ()) -> Dominance:
     :ptype report_input: ReportInput
     :param axes: Extra measures or judged dimensions, by key, to compare the survivors on, descriptively.
     :ptype axes: Sequence[str]
+    :param limit: The most options one page holds; None for every one.
+    :ptype limit: int | None
+    :param offset: The first option the page holds, in the input's arm order.
+    :ptype offset: int
     :return: The survivors, the options removed, the dominant ones, the extra axes and code's call.
     :rtype: Dominance
     :raises RefusedInput: An axis names no measure or judged dimension the input holds.
@@ -383,8 +505,13 @@ def dominance(report_input: ReportInput, axes: Sequence[str] = ()) -> Dominance:
     def at_least(first: str, second: str) -> bool:
         return _cost_at_least(costs, first, second) and _quality_at_least(standing, first, second)
 
+    order = [arm.id for arm in report_input.arms]
+    end = len(order) if limit is None else min(offset + limit, len(order))
+    window = set(order[offset:end])
     rows: list[SurvivorRow] = []
     for arm in survivors:
+        if arm not in window:
+            continue
         check = gate_check(report_input, arm)
         held = standing[arm]
         figures = [*([cost_figures[arm]] if arm in cost_figures else []), *_gate_figures(report_input, arm)]
@@ -392,7 +519,7 @@ def dominance(report_input: ReportInput, axes: Sequence[str] = ()) -> Dominance:
             SurvivorRow(
                 arm=_arm(arm),
                 gate_status=check.status,
-                borders=list(check.borders),
+                borders=gate_reads(report_input, arm, "borderline"),
                 standing=held.standing,
                 behind=[_arm(other) for other in held.behind],
                 why=list(held.why),
@@ -406,15 +533,21 @@ def dominance(report_input: ReportInput, axes: Sequence[str] = ()) -> Dominance:
         )
     kept = set(survivors)
     out = [
-        OutRow(arm=_arm(arm.id), why=_out_reasons(report_input, arm.id))
+        OutRow(
+            arm=_arm(arm.id),
+            gates=gate_reads(report_input, arm.id, "fail"),
+            breached=breached_guardrails(report_input, arm.id),
+        )
         for arm in report_input.arms
-        if arm.id not in kept
+        if arm.id not in kept and arm.id in window
     ]
     axis_rows: list[AxisRow] = []
     compared: list[tuple[dict[str, float], bool]] = []
     for axis in dict.fromkeys(axes):
         row, values = _axis(report_input, axis, survivors)
-        axis_rows.append(row)
+        axis_rows.append(
+            row.model_copy(update={"arms": [held for held in row.arms if held.arm.removeprefix("arm:") in window]})
+        )
         if values is not None:
             compared.append((values, row.direction == "higher_is_better"))
     dominant = dominant_options(report_input)
@@ -441,6 +574,9 @@ def dominance(report_input: ReportInput, axes: Sequence[str] = ()) -> Dominance:
             dominant=[_arm(arm) for arm in declared.dominant],
             ranking_rule=rule,
         ),
+        total=len(order),
+        offset=offset,
+        next_offset=end if end < len(order) else None,
     )
 
 
@@ -494,7 +630,10 @@ class Sensitivity(BaseModel):
     )
     declared_call: Call = Field(description="Code's call at the criteria as declared.")
     reads_as: str = Field(description="What every call here is: code's reading, never a constraint.")
-    segments: list[Segment] = Field(description="The range swept, cut where code's call changes, low to high.")
+    segments: list[Segment] = Field(
+        description="The range swept, cut where code's call changes, low to high: on each page, the segments starting "
+        "at a flip the page lists, and on the first the one starting at the range's low end."
+    )
     holds: bool = Field(description="Whether every segment's call is the declared call.")
     flips: list[Flip] = Field(description="The values an arm's status flips at inside the range, low to high.")
     total: int = Field(description="The flips inside the range.")
@@ -581,18 +720,21 @@ def _pieces(sweep: _Sweep, cuts: Sequence[_Cut]) -> list[_Piece]:
     return pieces
 
 
-def _segments(pieces: Sequence[_Piece]) -> list[Segment]:
-    """Adjacent pieces with the same call, joined."""
-    segments: list[Segment] = []
+def _segments(pieces: Sequence[_Piece]) -> list[tuple[_Cut | None, Segment]]:
+    """Adjacent pieces with the same call, joined; each with the flip it starts at (None: the range's low end)."""
+    segments: list[tuple[_Cut | None, Segment]] = []
     run: list[_Piece] = []
     for piece in [*pieces, None]:
         if run and (piece is None or piece.call != run[0].call):
             segments.append(
-                Segment(
-                    low=SegmentEnd(at=run[0].low.at) if run[0].low is not None else None,
-                    high=SegmentEnd(at=run[-1].high.at) if run[-1].high is not None else None,
-                    modes=sorted(run[0].call.modes),
-                    dominant=[_arm(arm) for arm in run[0].call.dominant],
+                (
+                    run[0].low,
+                    Segment(
+                        low=SegmentEnd(at=run[0].low.at) if run[0].low is not None else None,
+                        high=SegmentEnd(at=run[-1].high.at) if run[-1].high is not None else None,
+                        modes=sorted(run[0].call.modes),
+                        dominant=[_arm(arm) for arm in run[0].call.dominant],
+                    ),
                 )
             )
             run = []
@@ -808,6 +950,10 @@ def sensitivity(
     declared = decision_at(report_input)
     page = inside[offset : offset + limit]
     end = offset + len(page)
+    at = {id(cut): index for index, cut in enumerate(inside)}
+    segments = [
+        segment for low, segment in _segments(pieces) if (offset == 0 if low is None else offset <= at[id(low)] < end)
+    ]
     notes = list(sweep.notes)
     if len(inside) < len(sweep.cuts):
         notes.append("flips outside the range swept are not listed")
@@ -818,7 +964,7 @@ def sensitivity(
         boundary_belongs_to=sweep.boundary,
         declared_call=_call(declared),
         reads_as=CODE_CALL_READS_AS,
-        segments=_segments(pieces),
+        segments=segments,
         holds=all(piece.call == declared for piece in pieces),
         flips=[
             Flip(arm=_arm(cut.arm), where=cut.where, at=cut.at, call_changes=_changes(pieces, cut.value))

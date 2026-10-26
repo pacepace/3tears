@@ -42,7 +42,9 @@ from threetears.evals.actions import Action, MountedTool, analyst_actions, analy
 from threetears.evals.actions.analyst import ANALYST_CUT
 from threetears.evals.actions.analyst_analyses import ANALYSES_WORKFLOW
 from threetears.evals.actions.analyst_price import analyst_price_actions
+from threetears.evals.analysis.analyst.analyses import gate_reads
 from threetears.evals.analysis.analyst.price import Price, PriceTradeoff, price_tradeoff
+from threetears.evals.analysis.report_gates import gate_findings
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, key_subjects, render, resolve
@@ -274,7 +276,11 @@ def test_r4s_frontier_is_the_cheaper_option_and_the_control_and_the_guardrails_r
     off = {row.arm: row for row in trade.off_frontier}
     assert set(off) == {"arm:f16", "arm:cor"}
     assert all(row.reason == "gated" for row in off.values())
-    assert "Music facts" in " ".join(off["arm:f16"].says) and "speculate" in " ".join(off["arm:cor"].says)
+    for arm in ("f16", "cor"):
+        gates = off[f"arm:{arm}"].gates
+        assert gates == gate_reads(_r4(), arm, "fail") and gates, arm
+        failed = {finding.criterion for finding in gate_findings(_r4(), arm) if finding.status == "fail"}
+        assert {gate.criterion for gate in gates} == failed, "each gate it fails is cited, by its keys"
     assert trade.against_arm == "arm:prod"
     assert [move.from_arm for move in trade.against] == ["arm:f64"]
     assert trade.volume is not None and trade.volume.value == 12_000_000

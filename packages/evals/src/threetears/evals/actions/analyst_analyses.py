@@ -22,10 +22,11 @@ from typing import Annotated
 from pydantic import Field
 
 from threetears.evals.actions.catalogue import Action, Caller
-from threetears.evals.actions.params import ArmFilter, AspectFilter, Limit, MeasureKey, Offset, SnapshotId
-from threetears.evals.actions.render import render_cited
+from threetears.evals.actions.params import ArmFilter, AspectFilter, MeasureKey, Offset, SizedLimit, SnapshotId
+from threetears.evals.actions.render import page_sizing, render_cited
 from threetears.evals.ops.analyst_analyses import (
     BREAKDOWN_PAGE,
+    DOMINANCE_PAGE,
     SENSITIVITY_PAGE,
     Breakdown,
     Dominance,
@@ -60,6 +61,8 @@ class DominanceParams(EvalBaseModel):
         description="Extra measures or judged dimensions to compare the survivors on, by the keys campaign_overview "
         "lists; compared on point estimates, descriptively. Empty: the decision's own axes alone.",
     )
+    limit: SizedLimit = None
+    offset: Offset = 0
 
 
 class SensitivityParams(EvalBaseModel):
@@ -82,7 +85,7 @@ class SensitivityParams(EvalBaseModel):
     range_high: float | None = Field(
         default=None, description="Where the sweep ends, in the criterion's units; omitted, no upper end."
     )
-    limit: Limit = SENSITIVITY_PAGE
+    limit: SizedLimit = None
     offset: Offset = 0
 
 
@@ -96,15 +99,25 @@ class BreakdownParams(EvalBaseModel):
         default="stratum", description="How to slice: stratum, task, or cell (a target-matrix cell)."
     )
     aspect_filter: AspectFilter = None
-    limit: Limit = BREAKDOWN_PAGE
+    limit: SizedLimit = None
     offset: Offset = 0
 
 
 async def _options_dominance(host: OpsHost, caller: Caller, params: DominanceParams) -> Dominance:
-    return await options_dominance(host, caller.scope_id, snapshot_id=params.snapshot_id, axes=params.axes)
+    limit, fits = page_sizing("options_dominance", params, DOMINANCE_PAGE)
+    return await options_dominance(
+        host,
+        caller.scope_id,
+        snapshot_id=params.snapshot_id,
+        axes=params.axes,
+        limit=limit,
+        offset=params.offset,
+        fits=fits,
+    )
 
 
 async def _decision_sensitivity(host: OpsHost, caller: Caller, params: SensitivityParams) -> Sensitivity:
+    limit, fits = page_sizing("decision_sensitivity", params, SENSITIVITY_PAGE)
     return await decision_sensitivity(
         host,
         caller.scope_id,
@@ -112,12 +125,14 @@ async def _decision_sensitivity(host: OpsHost, caller: Caller, params: Sensitivi
         parameter=params.parameter,
         range_low=params.range_low,
         range_high=params.range_high,
-        limit=params.limit,
+        limit=limit,
         offset=params.offset,
+        fits=fits,
     )
 
 
 async def _measure_breakdown(host: OpsHost, caller: Caller, params: BreakdownParams) -> Breakdown:
+    limit, fits = page_sizing("measure_breakdown", params, BREAKDOWN_PAGE)
     return await measure_breakdown(
         host,
         caller.scope_id,
@@ -126,8 +141,9 @@ async def _measure_breakdown(host: OpsHost, caller: Caller, params: BreakdownPar
         arm=params.arm_filter,
         slice_by=params.slice_by,
         aspect=params.aspect_filter,
-        limit=params.limit,
+        limit=limit,
         offset=params.offset,
+        fits=fits,
     )
 
 
@@ -147,14 +163,17 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
             result=Dominance,
             handler=_options_dominance,
             render=render_cited,
+            paged=True,
             example={"snapshot_id": _EXAMPLE_SNAPSHOT, "axes": ["latency_ms"]},
             detail=(
                 "Each survivor comes with its gate status, its standing on the asked aspects (shown better, shown no "
                 "worse, behind in a pair), which survivors are at least as good on every axis while it is not, and "
                 "the figures behind it: cost per 1,000 replies, its gap from each gate, its asked readings, pairs "
-                "and separating contrasts. Options the gates removed are listed with each failing figure. axes adds "
-                "measures or judged dimensions beside the decision's axes, compared on point estimates and marked "
-                "descriptive; dominant_with_axes says who would dominate with them. " + _CODE_CALL
+                "and separating contrasts. Options the gates removed are listed with each figure they fail on, by its "
+                "keys (gates), and each guardrail read breached. axes adds measures or judged dimensions beside the "
+                "decision's axes, compared on point estimates and marked descriptive; dominant_with_axes says who "
+                "would dominate with them. Options are paged in the snapshot's arm order; without a limit a page "
+                f"holds as many as fit one result, up to {DOMINANCE_PAGE}. " + _CODE_CALL
             ),
         ),
         Action(
@@ -175,7 +194,9 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
                 "arm's status flips at, each a figure key (a flip margin, a floor's held_above or broken_at, a "
                 "criterion's figure for an arm), and the call is read on each piece; segments join pieces with the "
                 "same call, and holds says whether the declared call stands across the range. Flips are paged with "
-                "limit and offset. A weighting is not a parameter: the input carries none. " + _CODE_CALL
+                "limit and offset, each page holding the segments that start at its flips; without a limit a page "
+                f"holds as many flips as fit one result, up to {SENSITIVITY_PAGE}. A weighting is not a parameter: the input carries none. "
+                + _CODE_CALL
             ),
         ),
         Action(
@@ -195,7 +216,8 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
                 "of its loss the stratum carries (loss_share); concentrated_in names the stratum carrying the most, "
                 "over every slice. Exploratory: point estimates, no interval, no test. arm_filter shows one "
                 "candidate (default: every one); aspect_filter narrows strata to one aspect's. A snapshot with no "
-                "control is refused: read a measure per stratum with measure_read (by=stratum) instead."
+                "control is refused: read a measure per stratum with measure_read (by=stratum) instead. Without a limit a "
+                f"page holds as many slices as fit one result, up to {BREAKDOWN_PAGE}."
             ),
         ),
     )

@@ -392,7 +392,11 @@ def _floor_status(read: FloorRead, overrides: _Overrides) -> str:
     return "broken" if -high >= margin else "unclear"
 
 
-def _floors_not_held(report_input: ReportInput, arm: str, asked: Sequence[Aspect], overrides: _Overrides) -> list[str]:
+def _floors_not_held(
+    report_input: ReportInput, arm: str, asked: Sequence[Aspect], overrides: _Overrides, *, reasons: bool = True
+) -> list[str]:
+    """One clause per floor not held on the asked aspects, and per aspect declaring none; with ``reasons``, a floor's
+    clause ends with the input's own reason where it speaks for the status read."""
     clauses: list[str] = []
     for aspect in asked:
         floors = list(dict.fromkeys(floor.floor for floor in report_input.floors if floor.aspect == aspect.id))
@@ -405,7 +409,7 @@ def _floors_not_held(report_input: ReportInput, arm: str, asked: Sequence[Aspect
                 continue
             status = _floor_status(read, overrides)
             if status != "held":
-                reason = f" ({read.reason.rstrip('.')})" if read.reason and status == read.status else ""
+                reason = f" ({read.reason.rstrip('.')})" if reasons and read.reason and status == read.status else ""
                 clauses.append(f"floor {key} is {status}{reason}")
     return clauses
 
@@ -723,7 +727,8 @@ class AskedStanding:
     :ivar behind: In a choice, the arms an asked pair reading shows ahead of it; one arm is at least as good as another
         exactly when the other is not among them. Empty in a change.
     :ivar why: Why a change's candidate is not shown no worse: each floor not held, each aspect declaring none, and each
-        asked reading not within its margin. Empty otherwise.
+        asked reading not within its margin, in words that name each by its id and state no figure (a floor read's
+        own reason, and its figures, are read by its keys). Empty otherwise.
     """
 
     arm: str
@@ -776,7 +781,8 @@ def asked_standing(report_input: ReportInput) -> dict[str, AskedStanding]:
         elif level == 1:
             found[arm] = AskedStanding(arm, "shown_no_worse", level, (), ())
         else:
-            why = [*_floors_not_held(report_input, arm, asked, _Overrides()), *_not_within(report_input, arm)]
+            floors = _floors_not_held(report_input, arm, asked, _Overrides(), reasons=False)
+            why = [*floors, *_not_within(report_input, arm)]
             if not asked:
                 why.append("no aspect is asked, so nothing shows it no worse")
             found[arm] = AskedStanding(arm, "not_shown_no_worse", level, (), tuple(why))
