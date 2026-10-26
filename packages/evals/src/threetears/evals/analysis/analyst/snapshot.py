@@ -9,8 +9,8 @@ read as something else.
 **The analyst's example pool is wider than the planner's.** A planner was sent at most
 :data:`~threetears.evals.analysis.report_input_build.EXAMPLES` failed trials, one per aspect, arm and stratum, each
 excerpt the start of what the judge read; an analyst pages through them (``examples_list``), so a snapshot's input is
-built by :func:`analyst_input`: up to :data:`ANALYST_PER_SLICE` failed trials per aspect, arm and stratum, at most
-:data:`ANALYST_EXAMPLES` in all, each excerpt cut around the failure the judge's reason quotes. More than one per slice
+built by :func:`analyst_input`: up to :data:`_ANALYST_PER_SLICE` failed trials per aspect, arm and stratum, at most
+:data:`_ANALYST_EXAMPLES` in all, each excerpt cut around the failure the judge's reason quotes. More than one per slice
 shows whether a failure is typical of it or a one-off. A report rendered against a snapshot is rendered against the
 snapshot's own input, never against a fresh ``report_input(bundle)``, whose example pool differs.
 """
@@ -34,11 +34,11 @@ from threetears.evals.kernel.report_snapshot import (
 )
 
 #: The most failed trials a snapshot's report input holds, eight times the planner's, which ``examples_list`` pages.
-ANALYST_EXAMPLES = 96
+_ANALYST_EXAMPLES = 96
 
 #: The most failed trials a snapshot's report input holds per aspect, arm and stratum: enough to see whether a failure
 #: is typical of its slice.
-ANALYST_PER_SLICE = 3
+_ANALYST_PER_SLICE = 3
 
 
 def analyst_input(bundle: CampaignBundle) -> ReportInput:
@@ -46,11 +46,11 @@ def analyst_input(bundle: CampaignBundle) -> ReportInput:
 
     :param bundle: The campaign's bundle.
     :ptype bundle: CampaignBundle
-    :return: The input, up to :data:`ANALYST_PER_SLICE` failed trials per aspect, arm and stratum and
-        :data:`ANALYST_EXAMPLES` in all, each excerpt cut around the failure.
+    :return: The input, up to :data:`_ANALYST_PER_SLICE` failed trials per aspect, arm and stratum and
+        :data:`_ANALYST_EXAMPLES` in all, each excerpt cut around the failure.
     :rtype: ReportInput
     """
-    return built_input(bundle, examples=ANALYST_EXAMPLES, per_slice=ANALYST_PER_SLICE, excerpt="failure")
+    return built_input(bundle, examples=_ANALYST_EXAMPLES, per_slice=_ANALYST_PER_SLICE, excerpt="failure")
 
 
 def report_snapshot(
@@ -157,4 +157,4 @@ def _first_place(unread: ValidationError) -> str:
     return ".".join(str(part) for part in first["loc"]) or "(the input)"
 
 
-__all__ = ["ANALYST_EXAMPLES", "ANALYST_PER_SLICE", "analyst_input", "frozen_input", "report_snapshot"]
+__all__ = ["analyst_input", "frozen_input", "report_snapshot"]

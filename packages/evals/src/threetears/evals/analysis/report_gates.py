@@ -37,8 +37,8 @@ account Q&A``. An unnarrowed check adds where the figure sits
 
 **Routing** (GENERATOR §3, read by the gate matrix, :func:`routing_picks`): for each routable task, the cheapest arm
 that passes there and in every cross-cutting task. Cost (:func:`task_costs`) is the task's figure on the input's one
-measure stated per 1,000 replies, else on its one dollar measure on the cost merit axis, times 1,000; an arm with no
-cost there is never the cheapest.
+measure stated per 1,000 (of what its label counts), else on its one dollar measure on the cost merit axis, times
+1,000; an arm with no cost there is never the cheapest.
 """
 
 from __future__ import annotations
@@ -284,14 +284,14 @@ def gate_check(
 
 
 def task_costs(report_input: ReportInput, task_id: str) -> dict[str, float]:
-    """Each arm's cost per 1,000 replies in one task (this module's Routing): what a gate matrix's cell prices and
-    routing picks the cheapest by.
+    """Each arm's cost per 1,000 (of what it counts) in one task (this module's Routing): what a gate matrix's cell
+    prices and routing picks the cheapest by.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
     :param task_id: The task, by id.
     :ptype task_id: str
-    :return: Each arm's cost per 1,000 replies there, by arm; empty where the task states no cost.
+    :return: Each arm's cost per 1,000 (of what it counts) there, by arm; empty where the task states no cost.
     :rtype: dict[str, float]
     :raises ValueError: The input holds no such task.
     """

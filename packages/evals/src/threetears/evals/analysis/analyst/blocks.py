@@ -18,6 +18,14 @@ the picture or the kit's chart data. Every fault is refused together, each named
 them (:mod:`~threetears.evals.analysis.report_rows`), whether the snapshot holds any, and the figure key forms
 (:func:`~threetears.evals.analysis.report.figure_keys.figure_key_grammar`). No kind is chosen for the analyst: every
 block is open on every eval, and what refuses one is the data.
+
+**A refusal sends the analyst somewhere.** Most go to the catalog and the overview. A ``prices`` block on a gain axis
+whose frontier yields no step (one option or none on it, or none of its steps between two arms the query keeps) goes
+to ``price_tradeoff`` on that axis, which shows the frontier and why every other option is off it, and lists the gain
+axes whose frontier takes a step: the axes a ``prices`` block draws.
+
+**Money in a values table** reads as the figure keys write it: its whole dollars grouped by thousands (``$1,239``,
+:func:`~threetears.evals.analysis.report.charts.even_precision`).
 """
 
 from __future__ import annotations
@@ -44,7 +52,7 @@ from threetears.evals.analysis.report.block_spec import (
 )
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import KIT_CHARTS, even_precision
-from threetears.evals.analysis.report.figure_keys import figure_key_grammar, render
+from threetears.evals.analysis.report.figure_keys import figure_key_grammar, price_frontier, render
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_facts import fact_arms
@@ -76,6 +84,42 @@ _BLOCK_REMEDY = (
     "block_catalog lists each kind, the sources it draws and the sources this snapshot holds rows of; "
     "campaign_overview lists the ids a query may name"
 )
+
+#: Where a ``prices`` block whose gain axis yields no step sends its caller: the frontier on that axis, or another axis.
+_STEPLESS_REMEDY = (
+    "price_tradeoff with gain_key={gain_key!r} shows the frontier on that axis and why every other option is off it; "
+    "a prices block draws the steps between neighbouring frontier options its query.arms keeps (empty keeps all); or "
+    "name in query.measures a gain axis whose frontier takes a step: {axes}"
+)
+
+#: The parameters a ``prices`` block's step-less refusal sits at: its gain axis, and the arms it keeps.
+_STEP_PARAMETERS = frozenset({"query.measures", "query.arms"})
+
+#: What the remedy above says where no gain axis's frontier takes a step.
+_NO_STEPPED_AXIS = "none does on this snapshot, so no prices block draws"
+
+
+def _stepless_prices(report_input: ReportInput, query: ChartQuery) -> tuple[str, list[str]] | None:
+    """Where a ``prices`` query reads one gain axis and selects no step: the axis, and every gain axis whose frontier
+    takes a step, in the input's order (judged dimensions, then measures); None for any other query, and for a key
+    naming no gain axis, which the chart's measures fault names."""
+    if query.source != _PRICES or len(query.measures) != 1 or query_rows(query, report_input):
+        return None
+    steps: dict[str, bool] = {}
+    for key in dict.fromkeys([*report_input.judged, *report_input.measures]):
+        try:
+            steps[key] = bool(price_frontier(report_input, key).steps)
+        except UnresolvableReference:
+            # NOSILENT: a measure stating no direction is no gain axis, and is listed as none.
+            continue
+    (gain_key,) = query.measures
+    if gain_key not in steps:
+        return None
+    return gain_key, [key for key, stepped in steps.items() if stepped]
+
+
+#: The source of price steps, which reads one gain axis.
+_PRICES = "prices"
 
 #: The figure key grammar's heading for its path forms, and how each form is written under it.
 _FORMS_HEADING = "Paths:"
@@ -190,7 +234,8 @@ _SOURCE_ROWS: dict[str, tuple[str, str, bool, tuple[str, ...]]] = {
     "confusion": ("a confusion table, one per axis", "the axis's key", False, ("measures",)),
     "human_pref": ("a slice of human preference for the arm rated against the control", "its id", True, ("arms",)),
     "prices": ("a step along the price frontier on a gain axis (a block names one in query.measures): its price per "
-               "point a month at the declared volume, else per 1,000 replies, ends off its gain's interval",
+               "point a month at the declared volume, else per thousand of what the cost counts, ends off its gain's "
+               "interval",
                "from→to", True, ("measures", "arms")),
 }  # fmt: skip
 
@@ -261,6 +306,17 @@ def block_render(
     if drawn is None:
         said = "; ".join(f"{_parameter(path)} {why}" for path, why in faults)
         at_fault = dict.fromkeys(_parameter(path) for path, _why in faults if path != _BLOCK)
+        stepless = _stepless_prices(report_input, spec.query)
+        if stepless is not None and set(at_fault) <= _STEP_PARAMETERS and _BLOCK not in (p for p, _ in faults):
+            (gain_key, stepped) = stepless
+            raise RefusedInput(
+                f"the {block_kind!r} block over {query.source!r} cannot be drawn: {said}",
+                remedy=_STEPLESS_REMEDY.format(
+                    gain_key=gain_key, axes=", ".join(stepped) if stepped else _NO_STEPPED_AXIS
+                ),
+                parameters=list(at_fault),
+                valid_values=stepped,
+            )
         raise RefusedInput(
             f"the {block_kind!r} block over {query.source!r} cannot be drawn: {said}",
             remedy=_BLOCK_REMEDY,

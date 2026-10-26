@@ -5,8 +5,8 @@ names it (:mod:`~threetears.evals.analysis.analyst.cited`), so a sentence the an
 renderer prints the same:
 
 - :func:`dominance`: which options survive the gates and which dominates, on the decision's own axes (every gate,
-  cost per 1,000 replies, the asked aspects) as :mod:`~threetears.evals.analysis.report_decision` reads them, with
-  the extra axes the analyst names compared beside them on point estimates, descriptively.
+  cost per 1,000 of what the cost counts, the asked aspects) as :mod:`~threetears.evals.analysis.report_decision`
+  reads them, with the extra axes the analyst names compared beside them on point estimates, descriptively.
 - :func:`sensitivity`: how the decision moves as one declared criterion moves (an aspect's margin, a floor's margin,
   a gate's threshold), or as a hypothetical line the snapshot does not declare moves: the value each arm's status
   flips at, and the call and each routable task's pick on every piece of the range between them.
@@ -289,7 +289,8 @@ class SurvivorRow(BaseModel):
         "while it is not as good as them; descriptive. Equal to dominated_by when no axis is asked for."
     )
     figures: list[CitedFigure] = Field(
-        description="Its cost per 1,000 replies, its gap from each gate, and its asked readings, pairs and contrasts."
+        description="Its cost per 1,000 of what the cost counts, its gap from each gate, and its asked readings, "
+        "pairs and contrasts."
     )
 
 
@@ -524,8 +525,8 @@ def dominance(
     :func:`~threetears.evals.analysis.report_decision.dominant_options`,
     :func:`~threetears.evals.analysis.report_decision.decision_at`), save where cost is the only axis the snapshot
     declares: there no option is dominant or dominated and the call is a tradeoff (this module's No dominance from
-    cost alone). ``dominated_by`` applies the same pairwise rule, cost per 1,000 replies and the asked standing, to
-    each pair of survivors; ``dominated_with_axes`` adds the extra axes.
+    cost alone). ``dominated_by`` applies the same pairwise rule, cost per 1,000 of what the cost counts and the asked
+    standing, to each pair of survivors; ``dominated_with_axes`` adds the extra axes.
 
     :param report_input: The snapshot's report input.
     :ptype report_input: ReportInput

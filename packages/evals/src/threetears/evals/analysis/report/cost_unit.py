@@ -20,7 +20,7 @@ digit rule then refuses the prose that would put it right. So every phrase a pag
 and a label in another language that writes the count as digits reads the same.)*
 
 **Unstated is said, not filled in.** Where the input does not state what a cost is per, the phrase is neutral
-(:data:`UNSTATED`, ``per 1,000 (unit not stated)``) and :func:`per_noun` returns empty, so a caller that raises
+(``per 1,000 (unit not stated)``) and :func:`per_noun` returns empty, so a caller that raises
 caveats sees that the cost's count is unstated (``CostBasis.stated`` in
 :func:`~threetears.evals.analysis.report.figure_keys.cost_basis`).
 
@@ -37,7 +37,6 @@ from threetears.evals.analysis.report_input import Measure
 
 __all__ = [
     "REPLIES",
-    "UNSTATED",
     "CostBasis",
     "per_count",
     "per_noun",
@@ -47,7 +46,7 @@ __all__ = [
 REPLIES = "replies"
 
 #: What a count reads where the input does not say what a cost counts.
-UNSTATED = "(unit not stated)"
+_UNSTATED = "(unit not stated)"
 
 #: How a count of what a cost is per reads: ``per 1,000 conversations``.
 _PER_TEMPLATE = "per {count} {noun}"
@@ -109,7 +108,7 @@ def per_count(noun: str, count: int = 1_000) -> str:
     :ptype noun: str
     :param count: How many of it the cost is per.
     :ptype count: int
-    :return: The phrase; the count with :data:`UNSTATED` where the noun is empty.
+    :return: The phrase; the count with ``(unit not stated)`` where the noun is empty.
     :rtype: str
     """
-    return _PER_TEMPLATE.format(count=group_thousands(format_number(float(count))), noun=noun or UNSTATED)
+    return _PER_TEMPLATE.format(count=group_thousands(format_number(float(count))), noun=noun or _UNSTATED)

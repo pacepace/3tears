@@ -11,7 +11,7 @@ than ten times, by the page's one log rule, which a caption says):
   per row grouped under each slice (a single slice needs no group);
 - *human_pref*: a row per slice, the share of ratings preferring the control;
 - *prices*: a row per step along the price frontier, its price per point (a month's at the declared volume, else per
-  1,000 replies) from zero, its interval's ends where both are stated.
+  1,000 of what the cost counts) from zero, its interval's ends where both are stated.
 
 Bars share one axis, so the measures a chart reads are in one unit, each at its own scale; in panels by slice or by
 measure, where the plan asks for them, each panel is its measure's own, in its unit
@@ -56,6 +56,8 @@ from threetears.evals.analysis.report.plan_page.charting import (
     unit_quantities,
     unit_refusal,
 )
+from threetears.evals.analysis.report.cost_unit import per_count
+from threetears.evals.analysis.report.figure_keys import cost_basis
 from threetears.evals.analysis.report.plan_page.look import (
     Quantity,
     band_domain,
@@ -441,7 +443,9 @@ def _bars(context: ChartContext) -> Drawn:
     if source == "prices":
         notes = (
             *notes,
-            PRICE_STEP_NOTES[any(isinstance(row.item, PriceStep) and row.item.monthly for row in context.rows())],
+            PRICE_STEP_NOTES[
+                any(isinstance(row.item, PriceStep) and row.item.monthly for row in context.rows())
+            ].format(per=per_count(cost_basis(context.report_input).noun)),
         )
     return Drawn(chart_block(context, data), notes)
 

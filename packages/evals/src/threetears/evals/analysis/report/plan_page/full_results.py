@@ -9,7 +9,7 @@ table                 rows and cells
 ``arms_by_measure``   an arm per row, its chip first: its pass rate (passes over usable trials beside it), its mean
                       on each judged dimension, its figure on each measure (its mean, else the statistic a
                       criterion on it reads, which the cell names), and, where no measure states a cost, its cost
-                      per 1,000 replies by the package's one cost rule
+                      per 1,000 (of what it counts) by the package's one cost rule
 ``contrasts``         a corrected comparison per row: the candidate, the measure (and the aspect, where the
                       comparisons span several), the change and its interval in the measure's unit, the interval's
                       level, the adjusted p, the verdict as a pill, the confounds named on it
@@ -151,7 +151,7 @@ def _pass_rate(report_input: ReportInput, arm: str) -> TableCell:
 
 
 def _cost(report_input: ReportInput, arm: str) -> TableCell:
-    """The arm's cost per 1,000 replies, by the package's one cost rule (the ``cost_per_1k`` figure key)."""
+    """The arm's cost per 1,000 of what it counts, by the package's one cost rule (the ``cost_per_1k`` figure key)."""
     try:
         return TableCell(value=format_figure(resolve(f"cost_per_1k.{arm}", report_input), ("usd",)))
     except UnresolvableReference:

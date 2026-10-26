@@ -14,7 +14,8 @@ source      rows                            columns                    cell
 ==========  ==============================  =========================  ===============================================
 tasks       each task, a cross-cutting one  the arms                   the check in the task, its binding reasons
             flagged as applying to all                                 (the failures, else what is borderline); the
-            traffic                                                    task's cost per 1,000 replies; the routing pick
+            traffic                                                    task's cost per 1,000 (of what it counts); the
+                                                                       routing pick
                                                                        (:func:`~threetears.evals.analysis.report_gates.routing_picks`)
                                                                        on a routable task. A task no gate is read in
                                                                        has no status: its cell is neutral, with the
@@ -44,12 +45,12 @@ by retries: a path per model and retry setting, along the budget). Over tasks it
 at that task's gates. An x axis whose values span more than ten times is drawn on a log scale, which a caption says
 (GENERATOR §5.2).
 
-**lattice** tiles a factorial grid: rows the first factor's levels, columns the second's (every combination of the
-rest, where there are more), each tile the config's figure on the query's first measure, its cost per 1,000 replies,
-its latency's p95 and its gate status; where no gate or guardrail is declared, no gate reads a config, and its tile
-carries no status and no pill, since a pill on every tile saying nothing is gated is noise. A gate matrix's ungated
-cell says "Not gated here" only where some gate is declared elsewhere, which is news; where none is, its cell carries
-no word, only its figures.
+**lattice** tiles a factorial grid: rows the first factor's levels, columns the second's (every combination of the rest,
+where there are more), each tile the config's figure on the query's first measure, its cost per 1,000 (of what the cost
+counts), its latency's p95 and its gate status; where no gate or guardrail is declared, no gate reads a config, and its
+tile carries no status and no pill, since a pill on every tile saying nothing is gated is noise. A gate matrix's ungated
+cell says "Not gated here" only where some gate is declared elsewhere, which is news; where none is, its cell carries no
+word, only its figures.
 
 Dot strips, range bars and the frontier scatter, which draw rates against the same lines, are
 :mod:`~threetears.evals.analysis.report.plan_page.resolve_rates`'.
@@ -826,7 +827,8 @@ def _lattice(context: ChartContext) -> Drawn:
 
 
 def _cost(report_input: ReportInput, arm: str) -> float | None:
-    """An arm's cost per 1,000 replies, by the page's one cost rule (``cost_per_1k.<arm>``); None where it has none."""
+    """An arm's cost per 1,000 of what it counts, by the page's one cost rule (``cost_per_1k.<arm>``); None where it
+    has none."""
     try:
         figure = resolve(f"cost_per_1k.{arm}", report_input)
     except UnresolvableReference:

@@ -56,7 +56,7 @@ from threetears.evals.analysis.report.figure_keys import arm_settings, lever_of
 from threetears.evals.analysis.report_input import Judged, Measure, ReportInput, SettingValue
 from threetears.evals.kernel.errors import RefusedInput
 
-__all__ = ["LEVERS_LIMIT", "LeverEffects", "LeverVerdict", "lever_effects"]
+__all__ = ["LEVERS_LIMIT", "LeverEffects", "lever_effects"]
 
 #: A page's default rows: effects, then interactions, each a handful of figures.
 LEVERS_LIMIT = 40

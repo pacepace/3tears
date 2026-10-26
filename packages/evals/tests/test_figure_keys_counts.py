@@ -24,7 +24,6 @@ from packages.evals.tests.analyst_support import KAIRO, budget_inputs, fixture_i
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import (
-    COUNT_WORDS,
     figure_key_grammar,
     format_figure,
     literal_numbers,
@@ -35,6 +34,13 @@ from threetears.evals.analysis.report_decision import surviving_options
 from threetears.evals.analysis.report_gates import gate_findings
 from threetears.evals.analysis.report_input import Criterion, ReportInput, Stat
 from threetears.evals.analysis.report_margins import surviving_arms
+
+
+#: How the ``words`` filter spells a count from zero to twenty, as an English reader reads it.
+WORDS = (
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen "
+    "eighteen nineteen twenty"
+).split()
 
 
 def _inputs() -> dict[str, ReportInput]:
@@ -156,8 +162,8 @@ def test_the_words_filter_spells_a_count_as_its_word_and_a_large_one_in_digits(c
     held = INPUTS["r1"]
     figure = resolve("count.arms", held)
     spelled = format_figure(replace(figure, value=float(count)), ("words",))
-    if count < len(COUNT_WORDS):
-        assert spelled == COUNT_WORDS[count]
+    if count < len(WORDS):
+        assert spelled == WORDS[count]
     else:
         assert spelled == f"{count:,}"
 
@@ -174,7 +180,7 @@ def test_a_count_written_through_a_key_types_no_digit(name: str) -> None:
     held = INPUTS[name]
     sentence = "{count.surviving|words} of {count.arms|words} options survive; {count.gates} gates."
     rendered = render(sentence, held, {})
-    assert str(len(surviving_options(held))) in rendered or COUNT_WORDS[len(surviving_options(held))] in rendered
+    assert str(len(surviving_options(held))) in rendered or WORDS[len(surviving_options(held))] in rendered
     assert literal_numbers(sentence, held) == []
 
 

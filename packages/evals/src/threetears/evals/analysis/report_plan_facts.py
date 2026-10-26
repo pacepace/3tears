@@ -17,7 +17,7 @@ as :class:`PlanFacts`, so the planner's user message and the plan code completes
   :data:`~threetears.evals.analysis.report_plan_checks.OPTION_COLUMN_FAMILIES`, the vocabulary the plan checks hold
   a stored plan's columns to: the pass rate where one resolves; the asked reading's change and verdict where an
   aspect is asked and read; the primary judged dimension; a gate column where a gate is declared; each bar's or
-  guardrail's measure; then the cost per 1,000 replies where it resolves.
+  guardrail's measure; then the cost per 1,000 (of what it counts) where it resolves.
 - **The full-results tables** (§2.11: every arm by measure, contrasts, strata), each where the input holds its rows.
 - **What the planner must answer and disclose**: every warning code raises on each arm
   (:func:`~threetears.evals.analysis.report_plan_checks.raised_warnings`, which the plan answers by position for the

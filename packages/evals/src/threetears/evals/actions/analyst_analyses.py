@@ -250,15 +250,15 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
             example={"snapshot_id": _EXAMPLE_SNAPSHOT, "axes": ["latency_ms"]},
             detail=(
                 "Each survivor comes with its gate status, its standing on the asked aspects (shown better, shown no "
-                "worse, behind in a pair), which survivors are at least as good on every axis while it is not, and "
-                "the figures behind it: cost per 1,000 replies, its gap from each gate, its asked readings, pairs "
-                "and separating contrasts. Options the gates removed are listed with each figure they fail on, by its "
-                "keys (gates), and each guardrail read breached. weighs names the axes the snapshot declares; where "
-                "cost is the only one, code makes no dominance call (code_call.withheld says why) rather than name "
-                "the cheapest. axes adds measures or judged dimensions beside the decision's axes, compared on point "
-                "estimates and marked descriptive; dominant_with_axes says who would dominate with them, and each "
-                "survivor's dominated_with_axes who is ahead of it on all of them. Options are paged in the "
-                "snapshot's arm order; without a limit a page "
+                "worse, behind in a pair), which survivors are at least as good on every axis while it is not, and the "
+                "figures behind it: cost per 1,000 of what the cost counts, its gap from each gate, its asked "
+                "readings, pairs and separating contrasts. Options the gates removed are listed with each figure they "
+                "fail on, by its keys (gates), and each guardrail read breached. weighs names the axes the snapshot "
+                "declares; where cost is the only one, code makes no dominance call (code_call.withheld says why) "
+                "rather than name the cheapest. axes adds measures or judged dimensions beside the decision's axes, "
+                "compared on point estimates and marked descriptive; dominant_with_axes says who would dominate with "
+                "them, and each survivor's dominated_with_axes who is ahead of it on all of them. Options are paged in "
+                "the snapshot's arm order; without a limit a page "
                 f"holds as many as fit one result, up to {DOMINANCE_PAGE}. " + _CODE_CALL
             ),
         ),

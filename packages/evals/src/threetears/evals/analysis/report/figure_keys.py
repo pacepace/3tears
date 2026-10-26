@@ -23,7 +23,8 @@ figure's ``gap`` are computed here from the input's point figures. They carry no
 says so, and their :class:`Figure` is marked ``derived``. Everything else is copied from the input.
 
 **A trade is priced here too.** ``price.<from>.<to>.<gain>.<field>`` prices a move between two options on one gain
-axis (:func:`gain_axis`): the gain, signed toward better, the cost gap per 1,000 replies, and the price per point
+axis (:func:`gain_axis`): the gain, signed toward better, the cost gap per 1,000 of what the cost counts
+(:func:`cost_basis`), and the price per point
 gained, whose low and high ends are read off the gain's interval where a contrast states one (an end the interval
 leaves open is refused as unbounded, never written as a number). ``cost_per_month.<arm>`` and the ``monthly_`` price
 fields read the same at the declared ``meta.volume_per_month``. All are derived and marked so.
@@ -42,7 +43,8 @@ one of them.
 
 **Digits only inside keys (D3).** :func:`literal_numbers` finds every digit that plan prose types outside a key,
 outside a name the input holds, outside a percentile's name (``p95``) and outside one of the package's own unit
-phrases (``per 1,000 replies``). A number a reader sees is code's.
+phrases (``per 1,000 replies``, and ``per 1,000 conversations`` where the input's costs count conversations). A
+number a reader sees is code's.
 
 **The grammar is taught by this module.** :func:`figure_key_grammar` writes the planner prompt's section from the
 module's own families, statistics and filters, with examples rendered on a synthetic input, so the prompt can never
@@ -114,11 +116,11 @@ FigureKind = Literal["number", "interval", "text", "arm"]
 
 #: The scale a figure's number is on, which decides the filters it takes. ``share``: 0 to 1. ``percent``: 0 to 100.
 #: ``points``: a difference already in percentage points. ``usd``: dollars per reply or per unit. ``usd_per_1k``:
-#: dollars per 1,000 replies. ``usd_per_1m``: dollars per 1,000,000 replies. ``count``: a count. ``plain``: any other
-#: number, in ``Figure.unit`` when it has one.
+#: dollars per 1,000 of what the cost counts (``Figure.per``). ``usd_per_1m``: dollars per 1,000,000 of it. ``count``:
+#: a count. ``plain``: any other number, in ``Figure.unit`` when it has one.
 Scale = Literal["share", "percent", "points", "usd", "usd_per_1k", "usd_per_1m", "count", "plain"]
 
-#: The dollar scales, each with the factor that states its figure per 1,000 replies.
+#: The dollar scales, each with the factor that states its figure per 1,000 of what it counts.
 _PER_THOUSAND_FACTORS: dict[str, float] = {"usd": 1000.0, "usd_per_1k": 1.0, "usd_per_1m": 0.001}
 
 #: The filters a key may carry. One spelling at most (``pct``, ``pts``, ``usd``, ``usd_per_1k``, ``int``,
@@ -154,7 +156,7 @@ INTERVAL_TEMPLATE = "{low} to {high}"
 RANGE_TEMPLATE = "{low}–{high}"
 ARM_TEMPLATE = "{name} ({tag})"
 #: How a count from zero to twenty reads as a word (the ``words`` filter), in order; a translation replaces them here.
-COUNT_WORDS: tuple[str, ...] = (
+_COUNT_WORDS: tuple[str, ...] = (
     "zero",
     "one",
     "two",
@@ -744,7 +746,7 @@ def _pass_rate(report_input: ReportInput, values: tuple[str, ...], path: str) ->
 def _cost_measures(report_input: ReportInput) -> tuple[list[str], list[str]]:
     """The measures an arm's cost may be read from, in the order they are tried: each one alone of its kind.
 
-    First the measures read before the scoreboard: the one stated per 1,000 replies, the one stated per 1,000,000,
+    First the measures read before the scoreboard: the one stated per 1,000 (``usd_per_1k``), per 1,000,000,
     the one in dollars on the cost merit axis. Then the one dollar measure, in any of those units, where lower is
     better, read after it.
     """
@@ -1541,9 +1543,9 @@ def _flip_figure(reading: Reading, path: str) -> Figure:
 #: second option reads, toward the axis's better side; ``gain_interval`` the interval on it, where a contrast states
 #: one (paired); ``gain_interval_unpaired`` the gain plus or minus the two options' own half-widths on the axis
 #: combined as independent (descriptive, uncorrected), where both state one; ``cost_gap`` what the second costs more
-#: per 1,000 replies; ``per_point`` the cost gap per point gained (per unit, on an axis not in points), and its
-#: ``low`` and ``high`` ends read off the gain's interval, paired or (``_unpaired``) unpaired; the ``monthly_`` fields
-#: the same at the declared monthly volume.
+#: per 1,000 of what the cost counts; ``per_point`` the cost gap per point gained (per unit, on an axis not in
+#: points), and its ``low`` and ``high`` ends read off the gain's interval, paired or (``_unpaired``) unpaired; the
+#: ``monthly_`` fields the same at the declared monthly volume.
 _PRICE_FIELDS = (
     "gain",
     "gain_interval",
@@ -1877,7 +1879,7 @@ def _gain_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
 
 
 def _monthly_factor(report_input: ReportInput, path: str) -> float:
-    """What turns a figure per 1,000 replies into one per month at the declared volume."""
+    """What turns a figure per 1,000 of what the cost counts into one per month at the declared volume."""
     volume = report_input.meta.volume_per_month
     if volume is None:
         raise _unstated(
@@ -1908,7 +1910,8 @@ def _price_bounds(path: str, gap: float, gain: float, interval: tuple[float, flo
 
 @dataclass(frozen=True)
 class _PriceBasis:
-    """What a price reads: the gain axis, each option's cost per 1,000 replies, the slice it is read within (its key
+    """What a price reads: the gain axis, each option's cost per 1,000 of what the cost counts, the slice it is read
+    within (its key
     prefix; empty overall), whose cost it reads within a slice, and the measure the slice's own cost is read on (empty
     where it reads each option's overall cost)."""
 
@@ -2067,7 +2070,7 @@ class PriceFrontier:
     :ivar gain_key: The gain axis, by key.
     :ivar within: The slice it is read within, as a key's prefix (``task.<task>``); empty overall.
     :ivar axis: The gain axis, as the basis places each arm.
-    :ivar costs: Each option's cost per 1,000 replies, as the basis reads it.
+    :ivar costs: Each option's cost per 1,000 of what the cost counts, as the basis reads it.
     :ivar cost_key: Within a slice, the measure its own cost is read on; empty where each option's overall cost is.
     :ivar priced: The options priced, in the input's order: each survives the gates (or is admitted), holds a cost and
         is placed on the axis.
@@ -2176,7 +2179,8 @@ def price_frontier(
     point.
 
     An option is priced when it survives every gate and guardrail (:func:`~threetears.evals.analysis.report_margins.
-    surviving_arms`) or is admitted as a what-if, holds a cost per 1,000 replies, and is placed on the axis (overall,
+    surviving_arms`) or is admitted as a what-if, holds a cost per 1,000 (of what the cost counts), and is placed on
+    the axis (overall,
     :func:`gain_axis`; within a slice, its mean there, at the slice's own cost where the slice states one for every
     option it places). An option is dominated when another costs no more and reads no worse, ahead on one of the two;
     of the undominated, the frontier is the upper hull, the options best at some price per point, where an option's
@@ -3475,7 +3479,8 @@ _FAMILIES: tuple[_Family, ...] = (
     _family_of(
         _Word("cost_per_1k"),
         _keyed("<arm>", _costs_per_thousand),
-        what="an arm's cost per 1,000 replies",
+        what="an arm's cost per 1,000 of what the cost counts (`per 1,000 conversations` where the cost measure's "
+        "label counts conversations)",
         resolve=_cost_per_1k,
     ),
     _family_of(
@@ -3544,7 +3549,7 @@ _FAMILIES: tuple[_Family, ...] = (
     _family_of(
         _Word("cost.uplift"),
         _CANDIDATE,
-        what="how much more a candidate costs per reply than the control",
+        what="how much more a candidate costs than the control, as a share of the control's cost",
         resolve=_uplift,
         derived=True,
     ),
@@ -3852,10 +3857,10 @@ _FAMILIES: tuple[_Family, ...] = (
         _Statistic(_PRICE_FIELDS, "<field>"),
         what="a move from one option to another priced on one gain axis (a measure with a direction, or a judged "
         "dimension): `gain` is how much better the second reads, toward better; `cost_gap` what it costs more per "
-        "1,000 replies; `per_point` the cost gap per point gained (per unit off a points scale), its `_low` and "
-        "`_high` ends read off `gain_interval`, the contrast's interval where the move is between the control and a "
-        "candidate; an end the interval leaves open is refused as unbounded; `monthly_` fields at the declared "
-        "monthly volume. Cost is read as exact",
+        "1,000 of what the cost counts; `per_point` the cost gap per point gained (per unit off a points scale), its "
+        "`_low` and `_high` ends read off `gain_interval`, the contrast's interval where the move is between the "
+        "control and a candidate; an end the interval leaves open is refused as unbounded; `monthly_` fields at the "
+        "declared monthly volume. Cost is read as exact",
         resolve=_price,
         derived=True,
         derived_note=_PRICE_NOTE,
@@ -4377,8 +4382,8 @@ def _money(value: float, signed: bool) -> str:
     return _plus(text, value) if signed else text
 
 
-#: The spelling a figure on the ``usd_per_1m`` scale reads in without a filter: dollars with the words, ``$180 per
-#: 1,000,000 replies``. No filter names it: a key's own spelling, never chosen.
+#: The spelling a figure on the ``usd_per_1m`` scale reads in without a filter: dollars with the words of what it
+#: counts, ``$180 per 1,000,000 turns``. No filter names it: a key's own spelling, never chosen.
 _PER_MILLION = "per_million"
 
 
@@ -4435,7 +4440,7 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
         dollars = "$" + group_thousands(format_number(float(round(abs(value)))))
         return _Spelled(f"-{dollars}" if value < 0 else _plus(dollars, value) if signed else dollars)
     if spelling == _PER_MILLION:
-        # The package's money spelling (the scoreboard's): a price per million replies is whole dollars or near it,
+        # The package's money spelling (the scoreboard's): a price per million of anything is whole dollars or near it,
         # and two decimals on it are noise.
         amount = signed_with_unit(value, MONEY) if signed else with_unit(value, MONEY)
         return _Spelled(f"{amount} {per_count(figure.per, 1_000_000)}")
@@ -4444,11 +4449,11 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
         if figure.scale != "count" or whole != value or whole < 0:
             why = "it is not a whole count" if figure.scale == "count" else f"it is on the {figure.scale} scale"
             raise _refuse(figure.path, f"cannot read as a word: {why}")
-        if whole < len(COUNT_WORDS):
-            return _Spelled(COUNT_WORDS[whole])
+        if whole < len(_COUNT_WORDS):
+            return _Spelled(_COUNT_WORDS[whole])
         return _Spelled(group_thousands(format_number(float(whole))))
     if spelling == "int":
-        # A price per 1,000,000 replies also reads as a whole number, as stored plans spell it.
+        # A price per 1,000,000 (of what it counts) also reads as a whole number, as stored plans spell it.
         if figure.scale not in ("count", "plain", "points", "usd_per_1m"):
             raise _refuse(figure.path, f"cannot read as a whole number: it is on the {figure.scale} scale")
         text = group_thousands(format_number(float(round(value))))
@@ -4849,8 +4854,8 @@ def _grammar_filters(example: ReportInput, names: Mapping[str, str]) -> list[str
     lines.append(f'For example, "{sentence}" reads "{render(sentence, example, names)}".')
     per_reply = "scoreboard.base.reply_cost_usd"
     lines.append(
-        "A key prints its own unit (`%`, `$`, `ms`, `s`, `per 1,000 replies`, or per 1,000 of what the input's cost "
-        "counts); never write a unit after it. A figure "
+        "A key prints its own unit (`%`, `$`, `ms`, `s`, or per 1,000 of what the input's cost counts, such as "
+        "`per 1,000 conversations`); never write a unit after it. A figure "
         "in points alone prints its bare number, so the word `points` follows it, as above. Money per reply reads per "
         f"1,000 replies: write `{{{per_reply}|usd_per_1k}}`, which reads "
         f'"{format_figure(resolve(per_reply, example), ("usd_per_1k",))}", not `{{{per_reply}}}` '
@@ -4862,9 +4867,10 @@ def _grammar_filters(example: ReportInput, names: Mapping[str, str]) -> list[str
         "text (such as `64k`; one held as a number is a key), an aspect, measure, dimension, stratum or task id or name, the campaign's name, "
         "a trial or case id. An id made only of digits is never such a name: write `{arm:1017}`, not `1017`. "
         f"Percentile names ({', '.join(f'`{name}`' for name in PERCENTILE_NAMES)}) and the package's unit phrases "
-        f"({', '.join(f'`{phrase}`' for phrase in _UNIT_PHRASES)}, and `per 1,000` or `per 1,000,000` of what the "
-        "input's costs count, such as `per 1,000 conversations`, whole) are written as they are; any other number "
-        "is a key."
+        "(`per 1,000` or `per 1,000,000` of what the input's costs count, such as `per 1,000 conversations`, and, "
+        "for the scoreboard's money per reply (`reply_cost_usd`), "
+        f"{', '.join(f'`{phrase}`' for phrase in _UNIT_PHRASES)}; each whole) are written as they are; any other "
+        "number is a key."
     )
     return lines
 
@@ -4943,7 +4949,8 @@ _FAMILY_GROUPS: tuple[tuple[str, str, frozenset[str]], ...] = (
     ),
     (
         "cost",
-        "cost per reply and per month, cost uplift, and a move between options priced per point",
+        "cost per 1,000 of what the cost counts and per month, cost uplift, and a move between options priced per "
+        "point",
         frozenset({"cost_per_1k", "cost", "price", "cost_per_month"}),
     ),
     (
@@ -5035,16 +5042,12 @@ def figure_key_pages() -> dict[str, str]:
 
 
 __all__ = [
-    "COUNT_WORDS",
     "FILTER_SPELLINGS",
     "PERCENTILE_NAMES",
     "WEAKEST_PREFIX",
     "Figure",
     "FigureKey",
-    "GainAxis",
-    "PooledFigure",
     "PriceFrontier",
-    "KeyForm",
     "KeySubjects",
     "NamedKind",
     "arm_settings",

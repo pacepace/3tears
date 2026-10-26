@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the analyst's texts say what the snapshot's cost counts, and a prices block reads its money and its refusals plainly
+
+**Fixed:** no analyst-tool text says a cost is per reply where the snapshot's cost counts something else. Static
+texts (action details, result field descriptions, the figure-key families and grammar) say per 1,000 of what the cost
+counts; `price_tradeoff`'s notes and a prices chart's note use the snapshot's own phrase (`per 1,000 conversations`).
+The scoreboard's per-reply cost still reads per 1,000 replies. The planner's grammar section changes with it.
+
+**Changed:** a block's values table groups money's thousands (`$1,239`), and a prices table states a month's prices in
+whole dollars where every one on the axis is $10 or more. A prices block on a gain axis whose frontier holds one option
+or none is refused saying so, with `price_tradeoff` on that axis and the axes whose frontier takes a step as the remedy;
+one keeping no two neighbouring frontier options in `query.arms` says that. The report-plan schema copy lists the
+`prices` source.
+
 ### evals: the analyst compares any two arms, sizes the run that would settle a reading, and stops reading cost alone as dominance
 
 **Added:** two actions on the analyst tool's analyses (the editor's cut carries both). `arms_compare` reads the first
@@ -46,8 +59,8 @@ holds implies, each with a stable id and `matters_if`: `judge_unstated`, `judge_
 stated ones (`source`: stated or implied). They are not plan caveat ids: `report_caveats`, the planner and stored plans
 are unchanged.
 
-**Changed:** a snapshot's report input is built by `analyst_input(bundle)`: up to `ANALYST_PER_SLICE` (three) failed
-trials per aspect, arm and stratum and `ANALYST_EXAMPLES` (now 96) in all, each excerpt centred on the passage the
+**Changed:** a snapshot's report input is built by `analyst_input(bundle)`: up to three failed
+trials per aspect, arm and stratum and 96 in all, each excerpt centred on the passage the
 judge's reason quotes, else the reply's end. `report_input` gains `per_slice` and `excerpt`; its defaults keep the
 planner's input as it was. `examples_list` returns the judge's reason whole. A freeze of unchanged evidence now builds
 a different input, so it writes a new snapshot beside any stored one.
@@ -71,7 +84,7 @@ it reads by and the filters its figure takes; or why it reads nothing (unstated 
 **Added:** count keys: `count.<what>` (arms, aspects, tasks, strata, cells, configs, gates, criteria, surviving),
 `count.passing.<criterion>`, `count.places.<criterion>`, `count.failing.<criterion>.<arm>`, `count.failed.<arm>`,
 `count.levels.<factor>`, `count.frontier.<gain>` and `count.steps.<gain>`; and the `words` filter, which spells a
-count from zero to twenty as its word (`COUNT_WORDS`). `report_margins` gains `criterion_misses`, `criterion_passes`
+count from zero to twenty as its word. `report_margins` gains `criterion_misses`, `criterion_passes`
 and `surviving_arms`.
 
 **Added:** `price_tradeoff` prices within one task, stratum or cell (`slice_filter`; keys

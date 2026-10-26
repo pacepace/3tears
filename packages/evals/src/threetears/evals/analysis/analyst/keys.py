@@ -49,7 +49,7 @@ from threetears.evals.analysis.report.figure_keys import (
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import RefusedInput
 
-__all__ = ["KEYS_LIMIT", "KEYS_MOST", "KeyCheck", "KeysChecked", "figure_keys_check"]
+__all__ = ["KEYS_LIMIT", "KEYS_MOST", "KeysChecked", "figure_keys_check"]
 
 #: The most keys one call checks: a report's whole prose is checked a few calls at a time.
 KEYS_MOST = 120
@@ -215,7 +215,7 @@ def figure_keys_check(
     if not distinct or any(not key for key in distinct):
         raise RefusedInput(
             "keys names no key to check, or an empty one",
-            remedy="name each key as a report writes it, such as {cost_per_1k.<arm>|usd} or arm:<id>",
+            remedy="name each key as a report writes it, such as '{cost_per_1k.<arm>|usd}' or 'arm:<id>'",
             parameters=("keys",),
         )
     if len(distinct) > KEYS_MOST:
