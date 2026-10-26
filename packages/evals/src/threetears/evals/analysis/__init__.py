@@ -27,7 +27,8 @@ not here. The pipeline:
 - ``errors`` — ``GenerationError`` / ``SoundnessRefusal``, raised by ``generator`` and
   caught by ``service`` and ``reporter_kind``.
 - ``report`` — the :class:`~threetears.evals.analysis.report.Report` a campaign is read through: one page,
-  verdict first, written by code from the evidence bundle beside it, as Markdown and as script-free HTML.
+  verdict first, written by code from the evidence bundle beside it, as Markdown and as HTML (the kit's one
+  script drawing its charts, or a static page that runs and loads nothing).
 - ``service`` — the operations a client drives the lens with: generating and reading analyses,
   inspecting bundles, reading an analysis as its report, the insight ledger, and the reporter cases.
 - ``reads`` — the read lenses over runs that already exist: comparison sets, pivot, frontier,

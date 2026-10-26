@@ -211,7 +211,18 @@ GeneratorModel = Annotated[
 ]
 Format = Annotated[
     Literal["markdown", "json", "html"],
-    Field(description="The report's form: markdown (the memo), json (the schema's form), html (script-free)."),
+    Field(
+        description="The report's form: markdown (the memo), json (the schema's form), html (one page; its one "
+        "script is the kit's, which draws its charts)."
+    ),
+]
+Static = Annotated[
+    bool,
+    Field(
+        description="With html, the static page, for a host whose policy lets a page neither run nor load anything: "
+        "no script and no link, the system's fonts, and every chart shown as its table of values. Markdown and json "
+        "are the same either way."
+    ),
 ]
 Trials = Annotated[
     Literal["table", "all"],
@@ -553,6 +564,7 @@ class ReportReadParams(EvalBaseModel):
     campaign_id: CampaignId
     format: Format = "markdown"
     trials: Trials = "table"
+    static: Static = False
 
 
 class JudgeTemplateCreateParams(JudgeTemplateCreate):
@@ -1151,6 +1163,7 @@ async def _report_read(host: OpsHost, caller: Caller, params: ReportReadParams) 
         caller.scope_id,
         format=params.format,
         trials=params.trials,
+        static=params.static,
     )
 
 
@@ -2253,7 +2266,8 @@ def engine_actions() -> tuple[Action, ...]:
                 "record (what it asked, what the judge saw and said, and why): most of a large campaign's page, so "
                 "read it when you need the records, or read one trial with result_get. analysis_basis says what wrote "
                 "the analysis: memo (an analysis stored before the report planner) or plan, whose report plan is "
-                "plan (report-plan/1 JSON, figures by key)."
+                "plan (report-plan/1 JSON, figures by key). static=true makes the html page one a host can serve "
+                "under a policy that runs and loads nothing: no script, no link, every chart its table."
             ),
         ),
         Action(
