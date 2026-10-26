@@ -1283,6 +1283,17 @@ class TestUnits:
         why = " ".join(why for path, why in _anchor_faults(plan, "r2") if path == "lede")
         assert "writes 'calls'" in why
 
+    def test_the_per_million_words_after_a_key_that_prints_them_are_refused(self):
+        plan = _anchor("r3")
+        plan["lede"] += " Zero-shot costs {measure.cost_per_1m.atlas-m.zero.mean} per 1,000,000 replies."
+        why = " ".join(why for path, why in _anchor_faults(plan, "r3") if path == "lede")
+        assert "writes 'per 1,000,000 replies'" in why
+
+    def test_the_per_million_words_after_a_whole_number_pass(self):
+        plan = _anchor("r3")
+        plan["lede"] += " Zero-shot costs {measure.cost_per_1m.atlas-m.zero.mean|int} dollars per 1,000,000 replies."
+        assert "lede" not in _anchor_paths(plan, "r3")
+
     def test_money_per_reply_under_a_cent_is_refused_where_costs_read_per_thousand(self):
         plan = _replace_in(
             _plan(),
