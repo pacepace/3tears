@@ -1094,10 +1094,11 @@ def _pointer_of(markup: str, base: str) -> tuple[str | None, int, bool]:
 
     ``citation_pdf_url`` is the page saying outright where its article is, so
     it wins; otherwise the page's first ``iframe``, which is followed only
-    when it is the page's one frame. A frame whose address is not a web address
-    (``about:blank``, ``javascript:``, ``data:``) holds no article: it is a
-    placeholder an ad or an embed fills in later, so it is neither the pointer
-    nor counted among the frames.
+    when it is the page's one frame. An address that is not a web address
+    (``about:blank``, ``javascript:``, ``data:``) holds no article: a frame with
+    one is a placeholder an ad or an embed fills in later, so it is neither the
+    pointer nor counted among the frames, and a ``citation_pdf_url`` with one is
+    passed over for the frames.
 
     :param markup: the decoded page
     :ptype markup: str
@@ -1115,8 +1116,9 @@ def _pointer_of(markup: str, base: str) -> tuple[str | None, int, bool]:
     parser.feed(markup)
     parser.close()
     frames = [url for url in (urljoin(base, src) for src in parser.frames) if urlsplit(url).scheme in _WEB_SCHEMES]
-    if parser.citation_pdf:
-        return urljoin(base, parser.citation_pdf), len(frames), True
+    cited = urljoin(base, parser.citation_pdf) if parser.citation_pdf else None
+    if cited is not None and urlsplit(cited).scheme in _WEB_SCHEMES:
+        return cited, len(frames), True
     if frames:
         return frames[0], len(frames), False
     return None, 0, False
@@ -1234,8 +1236,6 @@ async def _follow_a_thin_page(
 
     if frames > 1 and not outright:
         return menu_only(f"the page holds {frames} frames, and which one is the article is not guessed")
-    if urlsplit(target).scheme not in _WEB_SCHEMES:
-        return menu_only("the frame is not a web address")
     if not same_site(page, target):
         return menu_only("it is on another site, and a frame is followed only on the page's own site")
     used = len(response.body)
