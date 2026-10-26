@@ -74,6 +74,9 @@ def _figure(key: str, report_input: ReportInput) -> Figure | None:
     try:
         return resolve(key, report_input)
     except UnresolvableReference:
+        # NOSILENT: every key here is built by code from an arm id and a column family, never typed by the planner, so
+        # one that does not resolve means the input holds no such figure for that arm: the cell prints a dash, which
+        # is what the table says for an absent figure.
         return None
 
 
