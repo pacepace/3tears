@@ -320,7 +320,7 @@ def analyst_facts_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="caveats_list",
-            summary="List every caveat: where it may land, whether code proved it immaterial, and what it touches.",
+            summary="List every caveat, stated or implied: where it may land, whether it matters, and what it touches.",
             workflow=FACTS_WORKFLOW,
             permission="read",
             params=SnapshotParams,
@@ -331,9 +331,15 @@ def analyst_facts_actions() -> tuple[Action, ...]:
             example=snapshot,
             detail=(
                 "Read from the snapshot: a confound touches the contrasts naming it, a short run its arm, a late "
-                "criterion what it set, an unsettled aspect its candidates. A report's confidence rests on every "
-                "report-reach caveat; an immaterial one is never restated, since code renders its checked line. "
-                f"Without a limit a page holds as many caveats as fit one result, up to {CAVEATS_LIMIT}."
+                "criterion what it set, an unsettled aspect its candidates. The caveats the snapshot states come "
+                "first (source stated); then the ones what it holds implies (source implied), each with matters_if: "
+                "a judge it does not describe (judge_unstated), judges stated uncalibrated on some dimensions "
+                "(judge_partly_uncalibrated), no control (no_control), no gate, floor or margin declared "
+                "(nothing_declared), a gate a surviving option clears with no interval on its figure "
+                "(point_estimate:<criterion>), a pick among three candidates or more (best_of_n). Cite each by its id. "
+                "A report's confidence rests on every report-reach caveat; an immaterial one is never restated, since "
+                f"code renders its checked line. Without a limit a page holds as many caveats as fit one result, up to "
+                f"{CAVEATS_LIMIT}."
             ),
         ),
     )

@@ -53,7 +53,14 @@ from threetears.evals.analysis.analyst.facts import (
 from threetears.evals.analysis.analyst.snapshot import frozen_input, report_snapshot
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.report.figure_keys import reader_names, resolve
-from threetears.evals.analysis.report_decision import caveat_materiality, report_caveats, unsettled_arms
+from threetears.evals.analysis.report_decision import (
+    caveat_materiality,
+    implied_caveats,
+    report_caveats,
+    surviving_options,
+    unsettled_arms,
+)
+from threetears.evals.analysis.report_margins import criterion_figures
 from threetears.evals.analysis.report_input import Aspect, ReportInput, Stat
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel import EvalReportSnapshot
@@ -240,8 +247,9 @@ def test_the_overview_lists_the_inputs_own_arms_aspects_measures_criteria_and_ca
     assert [(row.id, row.measure, row.threshold.value) for row in overview.criteria] == [
         (criterion.id, criterion.measure, float(criterion.threshold)) for criterion in held.criteria
     ]
-    assert [(ref.id, ref.kind, ref.reach) for ref in overview.caveats] == [
-        (caveat.id, caveat.kind, caveat.reach) for caveat in report_caveats(held)
+    assert [(ref.id, ref.kind, ref.reach, ref.source) for ref in overview.caveats] == [
+        *((caveat.id, caveat.kind, caveat.reach, "stated") for caveat in report_caveats(held)),
+        *((caveat.id, caveat.kind, caveat.reach, "implied") for caveat in implied_caveats(held)),
     ]
     assert [(row.criterion, row.name, row.set_at.value) for row in overview.late_criteria] == [
         (late.criterion, late.name, late.set_at) for late in held.caveats.late_criteria
@@ -770,11 +778,15 @@ def test_kairos_examples_name_their_stored_results_and_filter_by_arm_stratum_and
 @pytest.mark.parametrize("name", FIXTURES)
 def test_caveats_list_every_caveat_its_materiality_and_what_it_touches(name: str) -> None:
     _snapshot, held = _held(name)
-    rows = caveats_list(held).caveats
+    listed = caveats_list(held).caveats
     materiality = caveat_materiality(held)
-    assert [(row.id, row.kind, row.reach) for row in rows] == [
-        (caveat.id, caveat.kind, caveat.reach) for caveat in report_caveats(held)
+    stated = report_caveats(held)
+    rows = listed[: len(stated)]
+    assert [(row.id, row.kind, row.reach, row.source) for row in listed] == [
+        *((caveat.id, caveat.kind, caveat.reach, "stated") for caveat in stated),
+        *((caveat.id, caveat.kind, caveat.reach, "implied") for caveat in implied_caveats(held)),
     ]
+    assert all(row.matters_if is None for row in rows)
     for row in rows:
         assert (row.immaterial, row.checked) == (materiality[row.id].immaterial, materiality[row.id].checked)
         head, _, rest = row.id.partition(":")
@@ -813,6 +825,117 @@ def test_a_late_floor_touches_the_candidates_it_was_read_on_and_a_late_control_t
     assert late_floor.touches_aspects == list(dict.fromkeys(read.aspect for read in reads))
     assert rows["late:control"].touches_arms == [_control(held)]
     assert rows["late:aspect"].touches_aspects == [aspect.id for aspect in held.aspects if aspect.asked]
+
+
+#: The fewest candidates a pick among is the best of many (``best_of_n``): the rule the caveat states.
+MANY = 3
+
+
+def _undescribed(held: ReportInput) -> list[str]:
+    """The judged dimensions whose judge the input does not describe: no model, tier or calibration."""
+    tiers = held.caveats.judge_tiers
+    dimensions = [*held.judged, *(name for name in tiers if name not in held.judged)]
+    return [
+        dimension
+        for dimension in dimensions
+        if tiers.get(dimension) is None
+        and (
+            (judged := held.judged.get(dimension)) is None
+            or (judged.tier, judged.calibration, judged.judge_model) == (None, None, None)
+        )
+    ]
+
+
+def _expected_implied(held: ReportInput) -> dict[str, tuple[list[str], list[str]]]:
+    """The implied caveats an input's holdings raise, by id, each with the arms and measures it touches, read off the
+    input (the judge's partial calibration is held by its own test below)."""
+    expected: dict[str, tuple[list[str], list[str]]] = {}
+    undescribed = _undescribed(held)
+    if undescribed:
+        expected["judge_unstated"] = ([], undescribed)
+    if len(held.arms) > 1 and _control(held) is None:
+        expected["no_control"] = ([], [])
+    margins = any(a.margin is not None or any(r.margin is not None for r in a.readings) for a in held.aspects)
+    deciding = any(criterion.kind in ("gate", "guardrail", "floor") for criterion in held.criteria)
+    if not deciding and not margins and not held.floors:
+        expected["nothing_declared"] = ([], [])
+    survivors = surviving_options(held)
+    for criterion in held.criteria:
+        if criterion.kind not in ("gate", "guardrail"):
+            continue
+        higher = criterion.direction == "higher_is_better"
+        cleared = [
+            arm
+            for arm in survivors
+            for figure in criterion_figures(held, criterion, arm)
+            if figure.ci is None
+            and figure.half_width is None
+            and (figure.value >= criterion.threshold if higher else figure.value <= criterion.threshold)
+        ]
+        if cleared:
+            expected[f"point_estimate:{criterion.id}"] = (list(dict.fromkeys(cleared)), [criterion.measure])
+    candidates = [arm.id for arm in held.arms if arm.role == "challenger"]
+    if len(candidates) >= MANY:
+        expected["best_of_n"] = (candidates, [])
+    return expected
+
+
+@pytest.mark.parametrize("name", FIXTURES)
+def test_caveats_list_raises_what_the_snapshot_implies_each_with_when_it_matters(name: str) -> None:
+    _snapshot, held = _held(name)
+    implied = [row for row in caveats_list(held).caveats if row.source == "implied"]
+    assert {row.id: (row.touches_arms, row.touches_measures) for row in implied} == _expected_implied(held)
+    stated = {caveat.id for caveat in report_caveats(held)}
+    for row in implied:
+        assert row.id not in stated and row.matters_if and not row.immaterial and row.checked is None
+        assert row.reach in ("report", "scoped")
+
+
+def test_every_implied_kind_is_raised_by_some_fixture() -> None:
+    """The control for the walk above: each implied kind but a partly calibrated judge is raised on the fixtures."""
+    kinds = {row.kind for _, held in map(_held, FIXTURES) for row in caveats_list(held).caveats}
+    assert {"judge_unstated", "no_control", "nothing_declared", "point_estimate", "best_of_n"} <= kinds
+
+
+def test_a_gate_cleared_on_a_point_estimate_cites_its_threshold_and_each_clearance() -> None:
+    raised = 0
+    for _, held in map(_held, FIXTURES):
+        for row in caveats_list(held).caveats:
+            if row.kind != "point_estimate":
+                continue
+            criterion = row.id.partition(":")[2]
+            keys = [figure.key for figure in row.figures]
+            assert keys[0] == f"criteria.{criterion}.threshold"
+            assert keys[1:] and all(
+                key.startswith(f"criteria.{criterion}.") and key.endswith(".gap") for key in keys[1:]
+            )
+            assert all(figure.value >= 0 for figure in row.figures[1:]), "a clearance is signed toward passing"
+            assert all(any(key.startswith(f"criteria.{criterion}.{arm}.") for key in keys) for arm in row.touches_arms)
+            assert all(
+                any(key.startswith(f"criteria.{criterion}.{arm}.") for arm in row.touches_arms) for key in keys[1:]
+            )
+            raised += 1
+    assert raised, "the control: a fixture's survivor clears a gate on a point estimate"
+
+
+def test_a_judge_stated_uncalibrated_on_some_dimensions_is_raised_where_the_whole_judge_is_not() -> None:
+    _snapshot, held = _held(KAIRO)
+    assert "judge_uncalibrated" in {caveat.id for caveat in report_caveats(held)}, "the control: every one is"
+    calibrated = next(iter(held.judged))
+    judged = {**held.judged, calibrated: held.judged[calibrated].model_copy(update={"calibration": "calibrated"})}
+    tiers = {**held.caveats.judge_tiers, calibrated: "calibrated"}
+    partly = held.model_copy(
+        update={"judged": judged, "caveats": held.caveats.model_copy(update={"judge_tiers": tiers})}
+    )
+    assert "judge_uncalibrated" not in {caveat.id for caveat in report_caveats(partly)}
+    rows = {row.id: row for row in caveats_list(partly).caveats}
+    row = rows["judge_partly_uncalibrated"]
+    assert row.touches_measures == [dimension for dimension in held.judged if dimension != calibrated]
+    assert row.source == "implied" and row.matters_if
+    assert {figure.key for figure in row.figures} <= {
+        f"judged.{dimension}.{field}" for dimension in row.touches_measures for field, _ in JUDGE_FIELDS
+    }
+    assert "judge_partly_uncalibrated" not in {row.id for row in caveats_list(held).caveats}
 
 
 # =============================================================================

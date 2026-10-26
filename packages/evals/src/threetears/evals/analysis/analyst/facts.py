@@ -12,7 +12,19 @@ parameters:
   target-matrix cell;
 - :func:`examples_list`: the failed trials frozen with the snapshot, with their stored results where the bundle names
   them;
-- :func:`caveats_list`: every caveat, where it may land, whether code proved it immaterial, and what it touches.
+- :func:`caveats_list`: every caveat, where it may land, whether code proved it immaterial, and what it touches: the
+  ones the input states, then the ones what it holds implies
+  (:func:`~threetears.evals.analysis.report_decision.implied_caveats`).
+
+**Intervals are read wherever they are held.** A measure read with no statistics named reads every statistic the
+input holds on it read that way, its interval (``ci`` or ``half_width``) among them, and names what it holds and the
+intervals' level; the overview says, for each measure, which statistics each way of reading it holds, so a measure
+held only per cell or stratum is held per slice, not missing. **No interval is derived.** Where an overall figure
+holds no interval but its slices do (a balanced accuracy beside its cells' accuracies), an interval could follow from
+the slices' only under assumptions the input does not state: that the figure is the plain mean of those slices and
+that they are independent. Code does not assume how the pipeline computed a figure, so it states none: the overall
+figure reads as a point estimate (``point_estimate:<criterion>`` where a gate reads it), its slices' intervals stay
+citable, and the missing overall interval is the input's to carry (an upstream gap).
 
 **Every number is a figure key's.** A tool builds the key that names a figure and :func:`~.cited.cite` (or
 :func:`~.cited.cite_if`, where the input may leave it unstated) resolves it; no number here is computed. A figure the
@@ -39,7 +51,10 @@ from threetears.evals.analysis.report.figure_keys import NamedKind, reader_names
 from threetears.evals.analysis.report_decision import (
     Caveat,
     CaveatReach,
+    ImpliedCaveat,
+    Materiality,
     caveat_materiality,
+    implied_caveats,
     report_caveats,
     unsettled_arms,
 )
@@ -310,14 +325,26 @@ class LateRow(_Fact):
     set_at: CitedFigure = Field(description="When it was set (`late_criteria.<late>.set_at`).")
 
 
+#: What a caveat's kind is, as a row's field describes it: the kinds the input states, then the kinds its figures imply.
+_CAVEAT_KINDS = (
+    "stated: late, judge_uncalibrated, confound, apparatus, short_run, unsettled, latency or unreported; implied: "
+    "judge_unstated, judge_partly_uncalibrated, no_control, nothing_declared, point_estimate or best_of_n."
+)
+
+#: Where a caveat comes from, as a row's field describes it.
+_CAVEAT_SOURCE = (
+    "stated: the input states it as a caveat; implied: what the input holds implies it (a judge it does not describe, "
+    "no control, nothing declared, a gate cleared on a point estimate, a pick among many)."
+)
+
+
 class CaveatRef(_Fact):
     """One caveat by its id, and where it may land; caveats_list says what it touches."""
 
     id: str = Field(description="The caveat's id.")
-    kind: str = Field(
-        description="late, judge_uncalibrated, confound, apparatus, short_run, unsettled, latency or unreported."
-    )
+    kind: str = Field(description=_CAVEAT_KINDS)
     reach: CaveatReach = Field(description="report (the confidence rests on it), scoped (beside a claim) or method.")
+    source: Literal["stated", "implied"] = Field(description=_CAVEAT_SOURCE)
 
 
 class CampaignOverview(_Fact):
@@ -534,7 +561,11 @@ def campaign_overview(
     named = [(kind, held, name) for kind, by_id in names.items() for held, name in by_id.items()]
     measures = [_measure_row(report_input, *table) for table in _tables(report_input)]
     cells = [cite(f"cells.{cell.row}.{cell.column}.name", report_input) for cell in report_input.cells.values()]
-    caveats = [CaveatRef(id=caveat.id, kind=caveat.kind, reach=caveat.reach) for caveat in reaches]
+    caveats = [CaveatRef(id=caveat.id, kind=caveat.kind, reach=caveat.reach, source="stated") for caveat in reaches]
+    caveats += [
+        CaveatRef(id=caveat.id, kind=caveat.kind, reach=caveat.reach, source="implied")
+        for caveat in implied_caveats(report_input)
+    ]
     late_rows = [
         LateRow(
             criterion=criterion.criterion,
@@ -1298,10 +1329,13 @@ class CaveatRow(_Fact):
     """One caveat: where it may land, whether code proved it immaterial, and what it touches."""
 
     id: str = Field(description="The caveat's id, as a report's flag and confidence clauses name it.")
-    kind: str = Field(
-        description="late, judge_uncalibrated, confound, apparatus, short_run, unsettled, latency or unreported."
-    )
+    kind: str = Field(description=_CAVEAT_KINDS)
     reach: CaveatReach = Field(description="report (the confidence rests on it), scoped (beside a claim) or method.")
+    source: Literal["stated", "implied"] = Field(description=_CAVEAT_SOURCE)
+    matters_if: str | None = Field(
+        description="For an implied caveat, when it matters: what a report's material_if clause weighs. None for a "
+        "stated one."
+    )
     immaterial: bool = Field(description="Whether code proved the decision holds across its whole range.")
     checked: str | None = Field(
         description="The line code renders for an immaterial caveat, which a report never restates."
@@ -1316,8 +1350,8 @@ class CaveatRow(_Fact):
 class CaveatListing(_Fact):
     """Every caveat the snapshot carries, in the order a report lands them."""
 
-    caveats: list[CaveatRow] = Field(description="Each caveat on this page.")
-    total: int = Field(description="The caveats the snapshot carries.")
+    caveats: list[CaveatRow] = Field(description="Each caveat on this page: the stated ones, then the implied.")
+    total: int = Field(description="The caveats the snapshot carries, stated and implied.")
     offset: int = Field(description="The first caveat this page holds.")
     next_offset: int | None = Field(description="The offset of the next page of caveats; None when this is the last.")
 
@@ -1410,10 +1444,29 @@ def _touch(report_input: ReportInput, caveat: Caveat, unsettled: Mapping[str, tu
     return _Touch()
 
 
+def _implied_touch(report_input: ReportInput, caveat: ImpliedCaveat) -> _Touch:
+    """What an implied caveat touches, and the keys of the figures it rests on: a judge's stated figures, the
+    candidates counted, a gate's threshold and each surviving option's clearance with no interval."""
+    keys: list[str] = []
+    if caveat.kind == "judge_partly_uncalibrated":
+        keys = [key for dimension in caveat.measures for key in _judge_keys(dimension)]
+    elif caveat.kind in ("no_control", "best_of_n"):
+        keys = ["n_candidates"]
+    elif caveat.kind == "point_estimate":
+        criterion = caveat.id.partition(":")[2]
+        keys = [f"criteria.{criterion}.threshold"]
+        for arm, task, cell in caveat.at:
+            place = task if cell is None else f"{report_input.cells[cell].row}.{report_input.cells[cell].column}"
+            single = sum(held == arm for held, _task, _cell in caveat.at) == 1 and place is None
+            keys.append(f"criteria.{criterion}.{arm}.gap" if single else f"criteria.{criterion}.{arm}.{place}.gap")
+    return _Touch(arms=list(caveat.arms), measures=list(caveat.measures), keys=keys)
+
+
 def caveats_list(report_input: ReportInput, *, limit: int | None = None, offset: int = 0) -> CaveatListing:
     """Every caveat the snapshot carries: where it may land, whether code proved it immaterial, and what it touches,
     each read from the input (a confound: the contrasts naming it; a short run: its arm; a late criterion: what it
-    set; an unsettled aspect: its candidates).
+    set; an unsettled aspect: its candidates). The caveats the input states come first, then the ones what it holds
+    implies (:func:`~threetears.evals.analysis.report_decision.implied_caveats`), each with when it matters.
 
     :param report_input: The snapshot's frozen report input.
     :ptype report_input: ReportInput
@@ -1426,25 +1479,29 @@ def caveats_list(report_input: ReportInput, *, limit: int | None = None, offset:
     """
     materiality = caveat_materiality(report_input)
     unsettled = unsettled_arms(report_input)
-    every = report_caveats(report_input)
+    every: list[Caveat | ImpliedCaveat] = [*report_caveats(report_input), *implied_caveats(report_input)]
     shown, next_offset = _page(every, len(every) if limit is None else limit, offset)
     rows: list[CaveatRow] = []
     for caveat in shown:
-        touch = _touch(report_input, caveat, unsettled)
-        figures = _figures(touch.keys, report_input)
-        held = materiality[caveat.id]
+        if isinstance(caveat, ImpliedCaveat):
+            touch, held = _implied_touch(report_input, caveat), Materiality(caveat.id, False, None)
+        else:
+            touch, held = _touch(report_input, caveat, unsettled), materiality[caveat.id]
+        implied = isinstance(caveat, ImpliedCaveat)
         rows.append(
             CaveatRow(
                 id=caveat.id,
                 kind=caveat.kind,
                 reach=caveat.reach,
+                source="implied" if implied else "stated",
+                matters_if=caveat.matters_if if isinstance(caveat, ImpliedCaveat) else None,
                 immaterial=held.immaterial,
                 checked=held.checked,
                 touches_arms=touch.arms,
                 touches_aspects=touch.aspects,
                 touches_measures=touch.measures,
                 says=touch.says,
-                figures=figures,
+                figures=_figures(touch.keys, report_input),
             )
         )
     return CaveatListing(caveats=rows, total=len(every), offset=offset, next_offset=next_offset)

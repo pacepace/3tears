@@ -25,6 +25,29 @@ confidence clauses and landing lists use:
 ``unreported:<observation>``              an observation recorded but not reported
 ========================================  ==========================================================================
 
+**Implied caveats** (:func:`implied_caveats`). The ids above are the caveats the input states as caveats, the ones a
+plan's flag and confidence clauses are checked against. What the input holds implies more, and an analyst's report
+rests on these too; each is raised from what the input holds, never from what kind of eval it is, with one stable id
+and the condition under which it matters (``matters_if``). They are not plan caveat ids: a stored plan never names
+one.
+
+========================================  ==========================================================================
+``judge_unstated``                        a judged dimension whose judge the input does not describe: no model, no
+                                          evidence tier, no calibration state
+``judge_partly_uncalibrated``             some judged dimensions' judges are stated uncalibrated (tier and
+                                          calibration undetermined or insufficient) while ``judge_uncalibrated``,
+                                          which needs every one so, is not raised
+``no_control``                            more than one arm and none is the control: no reading or contrast is paired
+                                          against a baseline
+``nothing_declared``                      no gate, guardrail or floor criterion, no margin and no floor read: nothing
+                                          says what is good enough, so code ranks options on cost alone (a bar only
+                                          warns)
+``point_estimate:<criterion>``            a gate or guardrail a surviving option clears only on a point estimate:
+                                          the figure it reads holds no interval there (a percentile never does)
+``best_of_n``                             a pick among three candidates or more: the best of many reads
+                                          high by chance
+========================================  ==========================================================================
+
 **Scope**, which decides where a caveat may land in the plan. *Report-wide*: every late criterion, the uncalibrated
 judge, and a confound, apparatus confound or short run that touches every comparison the report makes (each
 candidate against the control in a change, every pair in a choice, the one arm in a measurement; a short run touches
@@ -125,13 +148,14 @@ from threetears.evals.analysis.report_input import (
     Reading,
     ReportInput,
 )
-from threetears.evals.analysis.report_margins import flip_margin
+from threetears.evals.analysis.report_margins import criterion_figures, flip_margin
 
 __all__ = [
     "AskedStanding",
     "Caveat",
     "CandidateMargin",
     "DecisionAt",
+    "ImpliedCaveat",
     "MarginSensitivity",
     "Materiality",
     "allowed_modes",
@@ -139,6 +163,7 @@ __all__ = [
     "caveat_materiality",
     "control_arm",
     "decision_at",
+    "implied_caveats",
     "dominant_options",
     "floors_not_held",
     "margin_sensitivity",
@@ -322,6 +347,181 @@ def report_caveats(report_input: ReportInput) -> list[Caveat]:
     for observation in caveats.unreported:
         add(Caveat(f"unreported:{observation}", "unreported", "method"))
     return list(found.values())
+
+
+# --- implied caveats -----------------------------------------------------------------------------------------------
+
+#: How many candidates make a pick the best of many (``best_of_n``): from three, the best of the candidates is a
+#: selection among several, whose winner reads high by chance.
+_MANY_OPTIONS = 3
+
+#: The criterion kinds that decide which options survive or are shown no worse: a bar only warns.
+_DECIDING = frozenset({"gate", "guardrail", "floor"})
+
+
+@dataclass(frozen=True)
+class ImpliedCaveat:
+    """One caveat what the input holds implies (this module's Implied caveats), and what it touches.
+
+    :ivar id: Its stable id.
+    :ivar kind: The id's kind: ``judge_unstated``, ``judge_partly_uncalibrated``, ``no_control``,
+        ``nothing_declared``, ``point_estimate`` or ``best_of_n``.
+    :ivar reach: ``report`` (a call may rest on it) or ``scoped`` (said beside the claims it touches).
+    :ivar matters_if: When it matters, in one sentence: the condition a report's ``material_if`` weighs.
+    :ivar arms: The arms it touches, in the input's order; empty for every arm.
+    :ivar measures: The measures and judged dimensions it touches, by key.
+    :ivar at: For a point estimate: each surviving arm's figure that clears with no interval, as ``(arm, task, cell)``
+        (the task or cell id where the criterion reads one there, else None).
+    """
+
+    id: str
+    kind: str
+    reach: CaveatReach
+    matters_if: str
+    arms: tuple[str, ...] = ()
+    measures: tuple[str, ...] = ()
+    at: tuple[tuple[str, str | None, str | None], ...] = ()
+
+
+def _judge_standing(report_input: ReportInput, dimension: str) -> set[str]:
+    """What the input states of how far one judged dimension's judge can be trusted: its tier and calibration state."""
+    judged = report_input.judged.get(dimension)
+    stated = [report_input.caveats.judge_tiers.get(dimension)]
+    if judged is not None:
+        stated += [judged.tier, judged.calibration]
+    return {value for value in stated if value is not None}
+
+
+def _judge_described(report_input: ReportInput, dimension: str) -> bool:
+    """Whether the input describes one judged dimension's judge at all: its model, tier or calibration state."""
+    judged = report_input.judged.get(dimension)
+    return bool(_judge_standing(report_input, dimension)) or (judged is not None and judged.judge_model is not None)
+
+
+def _judged_dimensions(report_input: ReportInput) -> list[str]:
+    tiers = report_input.caveats.judge_tiers
+    return [*report_input.judged, *(name for name in tiers if name not in report_input.judged)]
+
+
+def _deciding_reach(report_input: ReportInput, measures: Sequence[str]) -> CaveatReach:
+    """``report`` where a deciding criterion or the primary judged dimension reads one of the measures, else
+    ``scoped``."""
+    read = {criterion.measure for criterion in report_input.criteria if criterion.kind in _DECIDING}
+    read.add(report_input.primary_judged or "")
+    return "report" if read & set(measures) else "scoped"
+
+
+def _clears(threshold: float, direction: str, value: float) -> bool:
+    return value >= threshold if direction == "higher_is_better" else value <= threshold
+
+
+def _point_estimates(report_input: ReportInput) -> Iterator[ImpliedCaveat]:
+    """A ``point_estimate:<criterion>`` caveat for each gate or guardrail a surviving option clears at some place on a
+    figure that holds no interval there."""
+    survivors = surviving_options(report_input)
+    for criterion in report_input.criteria:
+        if criterion.kind not in ("gate", "guardrail"):
+            continue
+        at = tuple(
+            (arm, figure.task, figure.cell)
+            for arm in survivors
+            for figure in criterion_figures(report_input, criterion, arm)
+            if figure.ci is None
+            and figure.half_width is None
+            and _clears(float(criterion.threshold), criterion.direction, figure.value)
+        )
+        if at:
+            yield ImpliedCaveat(
+                f"point_estimate:{criterion.id}",
+                "point_estimate",
+                "report",
+                "it matters where a surviving option clears the line by little: no interval says whether the "
+                "clearance is more than noise, so a clearance inside its noise reads as a pass",
+                arms=tuple(dict.fromkeys(arm for arm, _task, _cell in at)),
+                measures=(criterion.measure,),
+                at=at,
+            )
+
+
+def implied_caveats(report_input: ReportInput) -> list[ImpliedCaveat]:
+    """The caveats what the report input holds implies, beyond the ones it states (this module's Implied caveats).
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The judge's, then no control, nothing declared, each gate cleared on a point estimate, then a pick among
+        many; each once, in that order.
+    :rtype: list[ImpliedCaveat]
+    """
+    found: list[ImpliedCaveat] = []
+    dimensions = _judged_dimensions(report_input)
+    unstated = tuple(dimension for dimension in dimensions if not _judge_described(report_input, dimension))
+    if unstated:
+        found.append(
+            ImpliedCaveat(
+                "judge_unstated",
+                "judge_unstated",
+                _deciding_reach(report_input, unstated),
+                "it matters where a call rests on a judged figure: nothing says whose scores they are or how far they "
+                "can be trusted, so a judge that is lenient or harsh on one arm moves the call",
+                measures=unstated,
+            )
+        )
+    stated = {caveat.id for caveat in report_caveats(report_input)}
+    uncalibrated = tuple(
+        dimension
+        for dimension in dimensions
+        if (standing := _judge_standing(report_input, dimension)) and standing <= _UNCALIBRATED
+    )
+    if uncalibrated and "judge_uncalibrated" not in stated:
+        found.append(
+            ImpliedCaveat(
+                "judge_partly_uncalibrated",
+                "judge_partly_uncalibrated",
+                _deciding_reach(report_input, uncalibrated),
+                "it matters where a call rests on one of these dimensions: no human ratings stand behind their judge",
+                measures=uncalibrated,
+            )
+        )
+    if len(report_input.arms) > 1 and control_arm(report_input) is None:
+        found.append(
+            ImpliedCaveat(
+                "no_control",
+                "no_control",
+                "report",
+                "it matters for any claim that one arm beats another: with no control nothing is read paired, so two "
+                "arms compare only by their own figures and intervals",
+            )
+        )
+    margins = any(
+        aspect.margin is not None or any(reading.margin is not None for reading in aspect.readings)
+        for aspect in report_input.aspects
+    )
+    deciding = any(criterion.kind in _DECIDING for criterion in report_input.criteria)
+    if not deciding and not margins and not report_input.floors:
+        found.append(
+            ImpliedCaveat(
+                "nothing_declared",
+                "nothing_declared",
+                "report",
+                "it matters for any call: with no gate, floor or margin declared, nothing says what is good enough, "
+                "so code's dominance ranks options on cost alone and the trade is the owner's to price",
+            )
+        )
+    found += _point_estimates(report_input)
+    candidates = [arm.id for arm in report_input.arms if arm.role == "challenger"]
+    if len(candidates) >= _MANY_OPTIONS:
+        found.append(
+            ImpliedCaveat(
+                "best_of_n",
+                "best_of_n",
+                "report",
+                "it matters where the pick leads the next option, or clears a line, by little: the best of many "
+                "candidates reads high by chance, the more so the more there are, so a re-run on fresh cases tends "
+                "to read it lower",
+                arms=tuple(candidates),
+            )
+        )
+    return found
 
 
 # --- gates and survivors -------------------------------------------------------------------------------------------
