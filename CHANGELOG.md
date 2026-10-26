@@ -8,6 +8,24 @@ packages (bumped in lock-step).
 
 ## v0.79.0 -- 2026-10-26
 
+### registry: several replicas evict a dead pod as one registry does
+
+**Fixed:** with more than one registry replica, the heartbeat sweep went wrong in three ways.
+- A pod's missed sweeps were counted in its shared heartbeat row, so every replica's sweep added
+  one, and N replicas evicted a pod after 1/N of `THREETEARS_REGISTRY_HEARTBEAT_MAX_MISSES`.
+- A pod one replica evicted (its row deleted) left the other replicas' tracking but not their
+  catalogs, so they kept offering its copies, and could write them back to the bucket.
+- A replica swept only pods it had heard, so copies it loaded from the bucket for a pod that
+  died before it started stayed forever.
+
+Now:
+- Each replica counts missed sweeps itself, one per its own sweep; every replica hears every
+  heartbeat.
+- A pod whose row is gone is deregistered from the catalog, unless it registered or was heard
+  within the timeout.
+- Every sweep covers each pod the catalog holds a copy for.
+- A pod a replica quarantined is revived there when a peer records its heartbeat.
+
 ### core: a scoped snapshot tells its listeners when it becomes ready
 
 **Fixed:** a listener (`on_change`) heard each commit, but not the copy becoming ready. A consumer that builds
