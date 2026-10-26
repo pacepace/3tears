@@ -76,11 +76,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from threetears.evals.analysis.analyst.analyses import GateRead, breached_guardrails, gate_reads
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import GainAxis, gain_axis
 from threetears.evals.analysis.report_decision import control_arm, surviving_options
-from threetears.evals.analysis.report_gates import gate_check
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import RefusedInput
 
@@ -104,7 +104,7 @@ _READS_AS = (
 _HYBRIDS = (
     "not priced: a modeled hybrid is an option nobody ran, and no key states its cost or gain; describe one from "
     "measure_breakdown and the strata keys, labelled modeled, not measured. A routed mix over routable tasks shows "
-    "on block_render's gate_matrix, in its pick column"
+    "in a gate_matrix block's pick column"
 )
 
 #: How the interval on a move's price reads: both ends stated, the high end unbounded, no interval stated, or no price.
@@ -177,7 +177,10 @@ class OffFrontier(BaseModel):
         "never_best (under the frontier: best at no single price per point)."
     )
     by: list[str] = Field(description="The options that put it off: the one dominating it, or the two passing it.")
-    says: list[str] = Field(description="Why, in words: each failing gate figure, or what the figures below show.")
+    says: list[str] = Field(description="Why, in words: what the gates, or the figures below, show.")
+    gates: list[GateRead] = Field(
+        description="For a gated option, each gate or guardrail figure it fails on, by the keys that state it."
+    )
     figures: list[CitedFigure] = Field(description="The figures that show it, where a figure does.")
 
 
@@ -286,13 +289,11 @@ def _price(report_input: ReportInput, first: str, second: str, gain_key: str, mo
 
 
 def _gated(report_input: ReportInput, arm: str) -> OffFrontier:
-    """An option the gates or a guardrail removed, with each failing figure as the gate check words it."""
-    says = list(gate_check(report_input, arm).fails)
-    for guardrail in report_input.guardrails:
-        if str(guardrail.get("arm")) == arm and guardrail.get("decision") == "breached":
-            named = guardrail.get("dimension") or guardrail.get("measure") or guardrail.get("id")
-            says.append(f"guardrail {named} read breached" if named else "a guardrail read breached")
-    return OffFrontier(arm=_arm(arm), reason="gated", by=[], says=says or ["removed by the gates"], figures=[])
+    """An option the gates or a guardrail removed, with each failing figure by the keys that state it."""
+    says = ["removed by the gates: each figure it fails on is under gates"]
+    says += [f"guardrail {named} read breached" for named in breached_guardrails(report_input, arm)]
+    gates = gate_reads(report_input, arm, "fail")
+    return OffFrontier(arm=_arm(arm), reason="gated", by=[], says=says, gates=gates, figures=[])
 
 
 def _at_least(first: _Option, second: _Option) -> bool:
@@ -432,10 +433,10 @@ def price_tradeoff(
             off.append(_gated(report_input, held))
         elif cost is None:
             says = "the cost rule states no cost per 1,000 replies for it"
-            off.append(OffFrontier(arm=_arm(held), reason="no_cost", by=[], says=[says], figures=[]))
+            off.append(OffFrontier(arm=_arm(held), reason="no_cost", by=[], says=[says], gates=[], figures=[]))
         elif held not in axis.positions:
             says = f"it holds no figure on {gain_key} that the gain axis reads"
-            off.append(OffFrontier(arm=_arm(held), reason="no_gain_figure", by=[], says=[says], figures=[]))
+            off.append(OffFrontier(arm=_arm(held), reason="no_gain_figure", by=[], says=[says], gates=[], figures=[]))
         else:
             options.append(_Option(held, cost, axis.positions[held]))
     priced = [option.arm for option in options]
@@ -464,6 +465,7 @@ def price_tradeoff(
                     reason="dominated",
                     by=[_arm(by.arm)],
                     says=[f"{_arm(by.arm)} costs no more and reads no worse on {gain_key}"],
+                    gates=[],
                     figures=[
                         cite(_key(first.arm, second.arm, gain_key, "gain"), report_input),
                         cite(_key(first.arm, second.arm, gain_key, "cost_gap"), report_input),
@@ -481,6 +483,7 @@ def price_tradeoff(
                         f"a point bought from {_arm(below.arm)} to it costs at least what one bought on to "
                         f"{_arm(above.arm)} does, so the best option moves past it at every price"
                     ],
+                    gates=[],
                     figures=[
                         cite(_key(below.arm, option.arm, gain_key, "per_point"), report_input),
                         cite(_key(option.arm, above.arm, gain_key, "per_point"), report_input),

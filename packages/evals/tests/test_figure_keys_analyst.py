@@ -28,7 +28,7 @@ from packages.evals.tests.fixtures.report_plans.dataset import kairo_bundle, rep
 from packages.evals.tests.fixtures.report_plans.misfits import only_bars, reference_data
 from packages.evals.tests.report_shapes_support import SHAPES
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
-from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import (
     figure_key_grammar,
     format_figure,
@@ -127,7 +127,7 @@ class TestAContrastOnOneAspect:
                 if stated:
                     assert _value(f"{prefix}.{field}", report_input) == stated
                 else:
-                    with pytest.raises(UnresolvableReference, match="does not state"):
+                    with pytest.raises(UnstatedFigure, match="does not state"):
                         resolve(f"{prefix}.{field}", report_input)
 
     def test_a_contrast_held_on_two_aspects_is_refused_naming_both(self) -> None:
@@ -252,7 +252,7 @@ class TestPairsFloorsAndBars:
             assert _value(f"{prefix}.confidence", report_input) == pair.confidence
             assert _value(f"{prefix}.why", report_input) == pair.why
             if pair.ahead is None:
-                with pytest.raises(UnresolvableReference, match="does not state"):
+                with pytest.raises(UnstatedFigure, match="does not state"):
                     resolve(f"{prefix}.ahead", report_input)
             else:
                 ahead = resolve(f"{prefix}.ahead", report_input)
@@ -347,7 +347,7 @@ class TestStrata:
                 for key, stat in figures.items():
                     path = f"strata.{stratum.id}.{arm}.{key}.mean"
                     if stat.mean is None:
-                        with pytest.raises(UnresolvableReference, match="does not state"):
+                        with pytest.raises(UnstatedFigure, match="does not state"):
                             resolve(path, report_input)
                     else:
                         assert _value(path, report_input) == stat.mean
@@ -560,7 +560,7 @@ class TestAFloorOrBarOnAnAspectWithNoRecord:
             prefix = f"aspects.{read.aspect}.bar.{read.measure}.{read.arm}"
             assert _value(f"{prefix}.bar", report_input) == read.bar
             assert _value(f"{prefix}.status", report_input) == read.status
-            with pytest.raises(UnresolvableReference, match="does not state"):
+            with pytest.raises(UnstatedFigure, match="does not state"):
                 resolve(f"{prefix}.value", report_input)
             subjects = key_subjects(f"{prefix}.status", report_input)
             assert (subjects.arms, subjects.aspects) == ((read.arm,), (read.aspect,))
@@ -591,7 +591,7 @@ class TestAnArmsSettings:
             for setting, held in arm.settings.items():
                 key = f"settings.{arm.id}.{setting}"
                 if held is None:
-                    with pytest.raises(UnresolvableReference, match="does not state"):
+                    with pytest.raises(UnstatedFigure, match="does not state"):
                         resolve(key, report_input)
                     continue
                 figure = resolve(key, report_input)
@@ -655,7 +655,7 @@ class TestAnAspectsDepth:
         aspect["depth"][arm]["repeats_per_case"] = [1, 1.5, 2]
         report_input = ReportInput.model_validate(data)
         assert _control(report_input) is None
-        with pytest.raises(UnresolvableReference, match="does not state") as refused:
+        with pytest.raises(UnstatedFigure, match="does not state") as refused:
             resolve(f"aspects.{aspect['id']}.repeats", report_input)
         assert f"`aspects.{aspect['id']}.depth.<arm>.repeats`" in str(refused.value)
         assert _value(f"aspects.{aspect['id']}.depth.{arm}.repeats", report_input) == 1.5

@@ -35,7 +35,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
-from threetears.evals.analysis.report.figure_keys import reader_names
+from threetears.evals.analysis.report.figure_keys import NamedKind, reader_names
 from threetears.evals.analysis.report_decision import (
     Caveat,
     CaveatReach,
@@ -62,9 +62,11 @@ from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS
 from threetears.evals.kernel.errors import RefusedInput
 
 __all__ = [
+    "CAVEATS_LIMIT",
     "CONTRASTS_LIMIT",
     "EXAMPLES_LIMIT",
     "MEASURE_LIMIT",
+    "OVERVIEW_LIMIT",
     "READINGS_LIMIT",
     "CampaignOverview",
     "CaveatListing",
@@ -92,6 +94,8 @@ READINGS_LIMIT = 50
 CONTRASTS_LIMIT = 50
 MEASURE_LIMIT = 40
 EXAMPLES_LIMIT = 10
+OVERVIEW_LIMIT = 200
+CAVEATS_LIMIT = 50
 
 #: The meta fields the grammar keys (``meta.<field>``), in its order: the campaign's own words.
 _META_FIELDS = (
@@ -269,6 +273,11 @@ class MeasureRow(_Fact):
     aspects: list[str] = Field(description="The aspects it is read on, where it is read on more than the lead one.")
     slices: list[str] = Field(description="Where measure_read can read it: arm, stratum, task, cell.")
     key_form: str = Field(description="The figure key that reads one arm's statistic on it.")
+    judge: list[CitedFigure] = Field(
+        description="For a judged dimension, its judge as the input states it: its evidence tier, model, calibration "
+        "state, the human ratings it was calibrated on and its agreement with them (`judged.<dimension>.<field>`); "
+        "empty for a measure, and a field the input leaves unstated is left out."
+    )
 
 
 class CriterionRow(_Fact):
@@ -323,6 +332,12 @@ class CampaignOverview(_Fact):
         description="The one name a reader is shown for each id, by kind (aspect, measure, judged, stratum, task, "
         "criterion), then id."
     )
+    total: int = Field(
+        description="The rows the overview holds: its arms, aspects, measures, criteria, cells, caveats, late "
+        "criteria, prior insights and names, paged in that order; the campaign's own figures are on every page."
+    )
+    offset: int = Field(description="The first row this page holds.")
+    next_offset: int | None = Field(description="The offset of the next page of rows; None when this is the last.")
 
 
 def _late_name(late: LateCriterion) -> str:
@@ -404,17 +419,38 @@ def _measure_row(
         aspects=aspects,
         slices=_slices_of(report_input, key, table),
         key_form=form,
+        judge=[] if source == "measure" else _figures(_judge_keys(key), report_input),
     )
 
 
-def campaign_overview(report_input: ReportInput, snapshot_id: str) -> CampaignOverview:
+#: What a judged dimension's judge is cited by, in the order a reader weighs it: how far its scores can be trusted,
+#: whose they are, and what it was calibrated on.
+_JUDGE_FIELDS = ("tier", "model", "calibration", "calibration_ratings", "agreement")
+
+
+def _judge_keys(dimension: str) -> list[str]:
+    """The keys of one judged dimension's judge figures."""
+    return [f"judged.{dimension}.{field}" for field in _JUDGE_FIELDS]
+
+
+def campaign_overview(
+    report_input: ReportInput, snapshot_id: str, *, limit: int | None = None, offset: int = 0
+) -> CampaignOverview:
     """What a snapshot holds, read first: every id the other tools take, and the campaign's own figures.
+
+    Its rows (arms, aspects, measures, criteria, cells, caveats, late criteria, prior insights, then each reader name)
+    are paged in that order, ``limit`` from ``offset`` (every one where ``limit`` is None); the campaign's own figures
+    (its meta, candidates, cases, repeats, when the late criteria were set) are on every page.
 
     :param report_input: The snapshot's frozen report input.
     :ptype report_input: ReportInput
     :param snapshot_id: The snapshot's id.
     :ptype snapshot_id: str
-    :return: The overview.
+    :param limit: The most rows one page holds; None for every one.
+    :ptype limit: int | None
+    :param offset: The first row the page holds.
+    :ptype offset: int
+    :return: The overview, or one page of it.
     :rtype: CampaignOverview
     """
     reaches = report_caveats(report_input)
@@ -460,30 +496,65 @@ def campaign_overview(report_input: ReportInput, snapshot_id: str) -> CampaignOv
         )
         for criterion in report_input.criteria
     ]
+    names = reader_names(report_input)
+    named = [(kind, held, name) for kind, by_id in names.items() for held, name in by_id.items()]
+    measures = [_measure_row(report_input, *table) for table in _tables(report_input)]
+    cells = [cite(f"cells.{cell.row}.{cell.column}.name", report_input) for cell in report_input.cells.values()]
+    caveats = [CaveatRef(id=caveat.id, kind=caveat.kind, reach=caveat.reach) for caveat in reaches]
+    late_rows = [
+        LateRow(
+            criterion=criterion.criterion,
+            name=criterion.name,
+            set_at=cite(f"late_criteria.{_late_name(criterion)}.set_at", report_input),
+        )
+        for criterion in late
+    ]
+    insights = list(report_input.prior_insights)
+    sections: list[Sequence[object]] = [arms, aspects, measures, criteria, cells, caveats, late_rows, insights, named]
+    total = sum(len(section) for section in sections)
+    end = total if limit is None else min(offset + limit, total)
+    paged = _windowed(sections, offset, end)
     return CampaignOverview(
         snapshot=snapshot_id,
         meta=_figures((f"meta.{field}" for field in _META_FIELDS), report_input),
         n_candidates=cite("n_candidates", report_input),
         cases=cite_if("cases", report_input),
         repeats=cite_if("repeats", report_input),
-        arms=arms,
-        aspects=aspects,
-        measures=[_measure_row(report_input, *table) for table in _tables(report_input)],
-        criteria=criteria,
-        cells=[cite(f"cells.{cell.row}.{cell.column}.name", report_input) for cell in report_input.cells.values()],
-        caveats=[CaveatRef(id=caveat.id, kind=caveat.kind, reach=caveat.reach) for caveat in reaches],
-        late_criteria=[
-            LateRow(
-                criterion=criterion.criterion,
-                name=criterion.name,
-                set_at=cite(f"late_criteria.{_late_name(criterion)}.set_at", report_input),
-            )
-            for criterion in late
-        ],
+        arms=[arms[index] for index in paged[0]],
+        aspects=[aspects[index] for index in paged[1]],
+        measures=[measures[index] for index in paged[2]],
+        criteria=[criteria[index] for index in paged[3]],
+        cells=[cells[index] for index in paged[4]],
+        caveats=[caveats[index] for index in paged[5]],
+        late_criteria=[late_rows[index] for index in paged[6]],
         late_set_at=cite_if("late_criteria.set_at", report_input) if late else None,
-        prior_insights=list(report_input.prior_insights),
-        names={kind: dict(names) for kind, names in reader_names(report_input).items()},
+        prior_insights=[insights[index] for index in paged[7]],
+        names=_names_of(names, [named[index] for index in paged[8]], whole=limit is None),
+        total=total,
+        offset=offset,
+        next_offset=end if end < total else None,
     )
+
+
+def _windowed(sections: Sequence[Sequence[object]], start: int, end: int) -> list[range]:
+    """For each section of rows paged one after another, the indices of its rows from ``start`` up to ``end``."""
+    windows: list[range] = []
+    first = 0
+    for section in sections:
+        windows.append(range(max(start - first, 0), max(min(end - first, len(section)), 0)))
+        first += len(section)
+    return windows
+
+
+def _names_of(
+    names: Mapping[NamedKind, Mapping[str, str]], shown: Sequence[tuple[str, str, str]], *, whole: bool
+) -> dict[str, dict[str, str]]:
+    """The reader names a page holds, by kind then id: every kind where the overview is whole, else the kinds the
+    page holds a name of."""
+    paged: dict[str, dict[str, str]] = {kind: {} for kind in names} if whole else {}
+    for kind, held, name in shown:
+        paged.setdefault(kind, {})[held] = name
+    return paged
 
 
 # --- readings_list --------------------------------------------------------------------------------------------------
@@ -1182,7 +1253,10 @@ class CaveatRow(_Fact):
 class CaveatListing(_Fact):
     """Every caveat the snapshot carries, in the order a report lands them."""
 
-    caveats: list[CaveatRow] = Field(description="Each caveat.")
+    caveats: list[CaveatRow] = Field(description="Each caveat on this page.")
+    total: int = Field(description="The caveats the snapshot carries.")
+    offset: int = Field(description="The first caveat this page holds.")
+    next_offset: int | None = Field(description="The offset of the next page of caveats; None when this is the last.")
 
 
 class _Touch(BaseModel):
@@ -1252,7 +1326,8 @@ def _touch(report_input: ReportInput, caveat: Caveat, unsettled: Mapping[str, tu
         return _late_touch(report_input, lates[caveat.id])
     head, _, rest = caveat.id.partition(":")
     if caveat.id == "judge_uncalibrated":
-        return _Touch(measures=_distinct([*report_input.judged, *caveats.judge_tiers]))
+        keys = [key for dimension in report_input.judged for key in _judge_keys(dimension)]
+        return _Touch(measures=_distinct([*report_input.judged, *caveats.judge_tiers]), keys=keys)
     if head == "confound":
         return _confound_touch(report_input, rest, caveats.confounds.get(rest))
     if head == "apparatus":
@@ -1272,20 +1347,26 @@ def _touch(report_input: ReportInput, caveat: Caveat, unsettled: Mapping[str, tu
     return _Touch()
 
 
-def caveats_list(report_input: ReportInput) -> CaveatListing:
+def caveats_list(report_input: ReportInput, *, limit: int | None = None, offset: int = 0) -> CaveatListing:
     """Every caveat the snapshot carries: where it may land, whether code proved it immaterial, and what it touches,
     each read from the input (a confound: the contrasts naming it; a short run: its arm; a late criterion: what it
     set; an unsettled aspect: its candidates).
 
     :param report_input: The snapshot's frozen report input.
     :ptype report_input: ReportInput
-    :return: The caveats.
+    :param limit: The most caveats one page holds; None for every one.
+    :ptype limit: int | None
+    :param offset: The first caveat the page holds.
+    :ptype offset: int
+    :return: The caveats, or one page of them.
     :rtype: CaveatListing
     """
     materiality = caveat_materiality(report_input)
     unsettled = unsettled_arms(report_input)
+    every = report_caveats(report_input)
+    shown, next_offset = _page(every, len(every) if limit is None else limit, offset)
     rows: list[CaveatRow] = []
-    for caveat in report_caveats(report_input):
+    for caveat in shown:
         touch = _touch(report_input, caveat, unsettled)
         figures = _figures(touch.keys, report_input)
         held = materiality[caveat.id]
@@ -1303,4 +1384,4 @@ def caveats_list(report_input: ReportInput) -> CaveatListing:
                 figures=figures,
             )
         )
-    return CaveatListing(caveats=rows)
+    return CaveatListing(caveats=rows, total=len(every), offset=offset, next_offset=next_offset)

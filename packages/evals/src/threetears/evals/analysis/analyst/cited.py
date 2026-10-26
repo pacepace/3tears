@@ -15,13 +15,9 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.errors import UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import FigureKind, Scale, render, resolve
 from threetears.evals.analysis.report_input import ReportInput
-
-#: What a key's refusal says when the key is well formed and the input leaves its figure unstated (an interval the
-#: pipeline did not compute, a statistic the arm does not carry): the one refusal :func:`cite_if` reads as "absent".
-_UNSTATED = "which the input does not state"
 
 
 class CitedFigure(BaseModel):
@@ -77,7 +73,8 @@ def cite_if(key: str, report_input: ReportInput) -> CitedFigure | None:
     """The figure a key names, or ``None`` when the input leaves that figure unstated.
 
     For a tool listing what an input holds, where a figure one arm or aspect lacks (an interval the pipeline did not
-    compute) is absent rather than an error. Every other refusal is the tool's own key being wrong, and is raised.
+    compute) is absent rather than an error: the key resolver raises :class:`UnstatedFigure` for it, and this reads
+    that type alone as absent. Every other refusal is the tool's own key being wrong, and is raised.
 
     :param key: The path, without braces or filters.
     :ptype key: str
@@ -89,10 +86,10 @@ def cite_if(key: str, report_input: ReportInput) -> CitedFigure | None:
     """
     try:
         return cite(key, report_input)
-    except UnresolvableReference as refused:
-        if _UNSTATED in str(refused):
-            return None
-        raise
+    except UnstatedFigure:
+        # NOSILENT: an unstated figure is an expected condition, the input's shape and not a fault: a listing shows the
+        # figure as absent, which is what None says to its caller. Every other refusal is raised.
+        return None
 
 
 __all__ = ["CitedFigure", "cite", "cite_if"]

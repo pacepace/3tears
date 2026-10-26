@@ -17,18 +17,19 @@ names is the page's size, as named.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Annotated, get_args
+from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from threetears.evals.actions.catalogue import Action, Caller
-from threetears.evals.actions.params import ArmFilter, AspectFilter, Limit, MeasureKey, Offset, SnapshotId
-from threetears.evals.actions.render import render_cited, render_page
+from threetears.evals.actions.params import ArmFilter, AspectFilter, MeasureKey, Offset, SizedLimit, SnapshotId
+from threetears.evals.actions.render import page_sizing, render_cited
 from threetears.evals.ops.analyst_facts import (
+    CAVEATS_LIMIT,
     CONTRASTS_LIMIT,
     EXAMPLES_LIMIT,
     MEASURE_LIMIT,
+    OVERVIEW_LIMIT,
     READINGS_LIMIT,
     CampaignOverview,
     CaveatListing,
@@ -51,15 +52,8 @@ from threetears.evals.schema.base import EvalBaseModel
 #: The help index's group for these actions, which the editor's cut is read off.
 FACTS_WORKFLOW = "Investigate: facts"
 
-#: The most characters a page a caller does not size runs to: what one tool result may take of an analyst's context.
-_PAGE_TEXT = 12_000
-
 #: An example snapshot id, as a freeze returns one.
 _EXAMPLE_SNAPSHOT = "report-snapshot:0193a1b2c3d4e5f60718293a4b5c6d7e"
-
-#: A page's size, as :data:`~threetears.evals.actions.params.Limit` declares it, which a caller may leave out to have
-#: the page sized to one result.
-_SizedLimit = Annotated[int | None, get_args(Limit)[1]]
 
 MeasureFilter = Annotated[
     str | None,
@@ -79,31 +73,17 @@ OutcomeFilter = Annotated[
 ]
 
 
-def _sizing[T: BaseModel](
-    action: str, params: ReadingsListParams | ContrastsListParams | MeasureReadParams | ExamplesListParams, default: int
-) -> tuple[int, Callable[[T], bool] | None]:
-    """The page size an operation takes, and the test of length it sizes a page by: the caller's ``limit`` as named,
-    else up to ``default`` rows, as many as fit within :data:`_PAGE_TEXT` as the tool writes the page, the next
-    page's call included."""
-    if params.limit is not None:
-        return params.limit, None
-
-    def fits(page: T) -> bool:
-        text, _structured = render_page(action, params, render_cited(page), page.model_dump(mode="json"))
-        return len(text) <= _PAGE_TEXT
-
-    return default, fits
-
-
 def _default_statistics() -> list[MeasureStatistic]:
     """The statistics a measure is read with when none are named: the mean, its interval and its observations."""
     return ["mean", "ci", "n"]
 
 
 class SnapshotParams(EvalBaseModel):
-    """``campaign_overview``, ``caveats_list``: the snapshot to read."""
+    """``campaign_overview``, ``caveats_list``: the snapshot to read, and the page."""
 
     snapshot_id: SnapshotId
+    limit: SizedLimit = None
+    offset: Offset = 0
 
 
 class ReadingsListParams(EvalBaseModel):
@@ -112,7 +92,7 @@ class ReadingsListParams(EvalBaseModel):
     snapshot_id: SnapshotId
     aspect_filter: AspectFilter = None
     arm_filter: ArmFilter = None
-    limit: _SizedLimit = None
+    limit: SizedLimit = None
     offset: Offset = 0
 
 
@@ -123,7 +103,7 @@ class ContrastsListParams(EvalBaseModel):
     arm_filter: ArmFilter = None
     measure_filter: MeasureFilter = None
     aspect_filter: AspectFilter = None
-    limit: _SizedLimit = None
+    limit: SizedLimit = None
     offset: Offset = 0
 
 
@@ -144,7 +124,7 @@ class MeasureReadParams(EvalBaseModel):
     )
     aspect_filter: AspectFilter = None
     arm_filter: ArmFilter = None
-    limit: _SizedLimit = None
+    limit: SizedLimit = None
     offset: Offset = 0
 
 
@@ -156,16 +136,19 @@ class ExamplesListParams(EvalBaseModel):
     stratum_filter: StratumFilter = None
     aspect_filter: AspectFilter = None
     outcome_filter: OutcomeFilter = None
-    limit: _SizedLimit = None
+    limit: SizedLimit = None
     offset: Offset = 0
 
 
 async def _campaign_overview(host: OpsHost, caller: Caller, params: SnapshotParams) -> CampaignOverview:
-    return await campaign_overview(host, caller.scope_id, snapshot_id=params.snapshot_id)
+    limit, fits = page_sizing("campaign_overview", params, OVERVIEW_LIMIT)
+    return await campaign_overview(
+        host, caller.scope_id, snapshot_id=params.snapshot_id, limit=limit, offset=params.offset, fits=fits
+    )
 
 
 async def _readings_list(host: OpsHost, caller: Caller, params: ReadingsListParams) -> ReadingsListing:
-    limit, fits = _sizing("readings_list", params, READINGS_LIMIT)
+    limit, fits = page_sizing("readings_list", params, READINGS_LIMIT)
     return await readings_list(
         host,
         caller.scope_id,
@@ -179,7 +162,7 @@ async def _readings_list(host: OpsHost, caller: Caller, params: ReadingsListPara
 
 
 async def _contrasts_list(host: OpsHost, caller: Caller, params: ContrastsListParams) -> ContrastListing:
-    limit, fits = _sizing("contrasts_list", params, CONTRASTS_LIMIT)
+    limit, fits = page_sizing("contrasts_list", params, CONTRASTS_LIMIT)
     return await contrasts_list(
         host,
         caller.scope_id,
@@ -194,7 +177,7 @@ async def _contrasts_list(host: OpsHost, caller: Caller, params: ContrastsListPa
 
 
 async def _measure_read(host: OpsHost, caller: Caller, params: MeasureReadParams) -> MeasureFigures:
-    limit, fits = _sizing("measure_read", params, MEASURE_LIMIT)
+    limit, fits = page_sizing("measure_read", params, MEASURE_LIMIT)
     return await measure_read(
         host,
         caller.scope_id,
@@ -211,7 +194,7 @@ async def _measure_read(host: OpsHost, caller: Caller, params: MeasureReadParams
 
 
 async def _examples_list(host: OpsHost, caller: Caller, params: ExamplesListParams) -> ExampleListing:
-    limit, fits = _sizing("examples_list", params, EXAMPLES_LIMIT)
+    limit, fits = page_sizing("examples_list", params, EXAMPLES_LIMIT)
     return await examples_list(
         host,
         caller.scope_id,
@@ -227,7 +210,10 @@ async def _examples_list(host: OpsHost, caller: Caller, params: ExamplesListPara
 
 
 async def _caveats_list(host: OpsHost, caller: Caller, params: SnapshotParams) -> CaveatListing:
-    return await caveats_list(host, caller.scope_id, snapshot_id=params.snapshot_id)
+    limit, fits = page_sizing("caveats_list", params, CAVEATS_LIMIT)
+    return await caveats_list(
+        host, caller.scope_id, snapshot_id=params.snapshot_id, limit=limit, offset=params.offset, fits=fits
+    )
 
 
 def analyst_facts_actions() -> tuple[Action, ...]:
@@ -247,13 +233,16 @@ def analyst_facts_actions() -> tuple[Action, ...]:
             result=CampaignOverview,
             handler=_campaign_overview,
             render=render_cited,
+            paged=True,
             example=snapshot,
             detail=(
                 "Every id another tool takes is listed here: each arm (cited arm:<id>), each aspect and what rows it "
-                "holds, each measure and judged dimension by its key with the key form that reads it and what it can "
-                "be read by, each criterion and its threshold, each caveat with its reach, the late criteria, prior "
-                "insights, and the name a reader is shown for each id. Every figure is written key = reads: cite the "
-                "key, never the number."
+                "holds, each measure and judged dimension by its key with the key form that reads it, what it can "
+                "be read by and, for a judged one, its judge's tier, calibration and agreement, each criterion and its "
+                "threshold, each caveat with its reach, the late criteria, prior insights, and the name a reader is "
+                "shown for each id. Every figure is written key = reads: cite the key, never the number. Its rows are "
+                "paged in that order, the campaign's own figures on every page; without a limit a page holds as many "
+                f"rows as fit one result, up to {OVERVIEW_LIMIT}."
             ),
         ),
         Action(
@@ -336,11 +325,13 @@ def analyst_facts_actions() -> tuple[Action, ...]:
             result=CaveatListing,
             handler=_caveats_list,
             render=render_cited,
+            paged=True,
             example=snapshot,
             detail=(
                 "Read from the snapshot: a confound touches the contrasts naming it, a short run its arm, a late "
                 "criterion what it set, an unsettled aspect its candidates. A report's confidence rests on every "
-                "report-reach caveat; an immaterial one is never restated, since code renders its checked line."
+                "report-reach caveat; an immaterial one is never restated, since code renders its checked line. "
+                f"Without a limit a page holds as many caveats as fit one result, up to {CAVEATS_LIMIT}."
             ),
         ),
     )

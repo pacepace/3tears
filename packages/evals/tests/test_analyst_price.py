@@ -42,16 +42,16 @@ from threetears.evals.actions import Action, MountedTool, analyst_actions, analy
 from threetears.evals.actions.analyst import ANALYST_CUT
 from threetears.evals.actions.analyst_analyses import ANALYSES_WORKFLOW
 from threetears.evals.actions.analyst_price import analyst_price_actions
+from threetears.evals.analysis.analyst.analyses import gate_reads
 from threetears.evals.analysis.analyst.price import Price, PriceTradeoff, price_tradeoff
+from threetears.evals.analysis.report_gates import gate_findings
+from threetears.evals.analysis.summary import dollars_text
 from threetears.evals.analysis.analyst.snapshot import frozen_input
-from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, key_subjects, render, resolve
 from threetears.evals.analysis.report_decision import surviving_options
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import RefusedInput
-
-#: What a key's refusal says of a figure the input leaves unstated.
-UNSTATED = "which the input does not state"
 
 #: The fields of a listing that page it, which are counts of rows and never figures.
 PAGING = frozenset({"total", "offset", "next_offset", "limit"})
@@ -133,18 +133,23 @@ def test_each_r4_price_reads_what_its_contrasts_costs_and_volume_compute(move: t
 
 
 def test_r4s_switch_to_the_cheaper_option_reads_its_saving_per_point_lost_a_month() -> None:
-    """The reference's own trade: the cheaper option saves the control's cost less its own, 12 million replies a
-    month, for the 6.1 points of persona it loses."""
+    """The reference's own trade, the frontier's one step: the cheaper option saves the dearer's cost less its own at
+    the declared monthly volume, for the points of persona it loses; every figure computed off the raw input."""
     held = _r4()
-    assert render("{price.f64.prod.persona.monthly_cost_gap}", held, {}) == "+$7,560.00"
-    assert _value("price.f64.prod.persona.monthly_per_point", held) == pytest.approx((2.1 - 1.47) * 12_000 / 6.1)
-    assert render("{price.f64.prod.persona.gain}", held, {}) == "+6.1"
-    assert render("{price.f64.prod.persona.gain_interval}", held, {}) == "+4.9 to +7.3"
+    (step,) = price_tradeoff(held, "persona").steps
+    cheaper, dearer = step.from_arm.removeprefix("arm:"), step.to_arm.removeprefix("arm:")
+    expected = _r4_expected(cheaper, dearer)
+    key = f"price.{cheaper}.{dearer}.persona"
+    assert expected["monthly_cost_gap"] >= 1000, "the control: a saving a month of a thousand dollars or more"
+    assert render(f"{{{key}.monthly_cost_gap}}", held, {}) == "+" + dollars_text(expected["monthly_cost_gap"])
+    assert _value(f"{key}.monthly_per_point", held) == pytest.approx(expected["monthly_per_point"])
+    assert _value(f"{key}.gain", held) == pytest.approx(expected["gain"])
+    assert _value(f"{key}.gain_interval", held) == pytest.approx(expected["gain_interval"])
 
 
 def test_a_lower_is_better_measure_gains_toward_its_better_side() -> None:
     """r4's latency states no mean, so it places no arm; r2's calls per task do, and an arm making fewer gains."""
-    with pytest.raises(UnresolvableReference, match=UNSTATED):
+    with pytest.raises(UnstatedFigure):
         resolve("price.f64.prod.latency_s.gain", _r4())
     data = MISFITS["r2 without its gates"]()
     held = fixture_inputs()["r2 without its gates"]
@@ -168,7 +173,7 @@ def test_with_no_control_a_gain_reads_the_arms_means_and_states_no_interval() ->
         (cost[second] - cost[first]) / (rate[second] - rate[first])
     )
     for field in ("gain_interval", "per_point_low", "per_point_high"):
-        with pytest.raises(UnresolvableReference, match=UNSTATED):
+        with pytest.raises(UnstatedFigure):
             resolve(f"{prefix}.{field}", held)
 
 
@@ -215,11 +220,21 @@ def _crossing_r4() -> dict[str, Any]:
     return data
 
 
+def _crossing_figures() -> tuple[float, tuple[float, float]]:
+    """The crossing input's move from its third option to the control on persona, off the raw data: what the control
+    costs more per 1,000 replies, and the interval on the gain (the third option's contrast, turned around)."""
+    data = _crossing_r4()
+    cost = {arm: stat["mean"] for arm, stat in data["measures"]["cost_per_1k"]["per_arm"].items()}
+    (low, high) = next(c["interval"] for c in data["contrasts"] if c["arm"] == "cor" and c["measure"] == "persona")
+    return cost["prod"] - cost["cor"], (-high, -low)
+
+
 def test_an_interval_reaching_zero_leaves_the_high_end_unbounded_and_refused_as_such() -> None:
     held = ReportInput.model_validate(_crossing_r4())
     prefix = "price.cor.prod.persona"
-    assert _value(f"{prefix}.gain_interval", held) == pytest.approx((-0.4, 3.4))
-    assert _value(f"{prefix}.per_point_low", held) == pytest.approx((2.1 - 1.62) / 3.4)
+    gap, interval = _crossing_figures()
+    assert _value(f"{prefix}.gain_interval", held) == pytest.approx(interval)
+    assert _value(f"{prefix}.per_point_low", held) == pytest.approx(gap / interval[1])
     for field in ("per_point_high", "monthly_per_point_high"):
         with pytest.raises(UnresolvableReference, match="is unbounded"):
             resolve(f"{prefix}.{field}", held)
@@ -229,15 +244,16 @@ def test_a_monthly_figure_without_a_declared_volume_is_unstated() -> None:
     held = fixture_inputs()["r5"]
     assert held.meta.volume_per_month is None
     for key in ("cost_per_month.September", "price.September.1017.persona.holds_character.monthly_cost_gap"):
-        with pytest.raises(UnresolvableReference, match=UNSTATED):
+        with pytest.raises(UnstatedFigure):
             resolve(key, held)
 
 
 def test_cost_per_month_is_cost_per_1000_at_the_declared_volume() -> None:
     held = _r4()
+    data = reference_data("r4")
     for arm in _R4_ARMS:
-        cost = reference_data("r4")["measures"]["cost_per_1k"]["per_arm"][arm]["mean"]
-        assert _value(f"cost_per_month.{arm}", held) == pytest.approx(cost * 12_000)
+        cost = data["measures"]["cost_per_1k"]["per_arm"][arm]["mean"]
+        assert _value(f"cost_per_month.{arm}", held) == pytest.approx(cost * data["meta"]["volume_per_month"] / 1000)
 
 
 def test_a_price_names_both_arms_and_is_derived() -> None:
@@ -277,10 +293,14 @@ def test_r4s_frontier_is_the_cheaper_option_and_the_control_and_the_guardrails_r
     off = {row.arm: row for row in trade.off_frontier}
     assert set(off) == {"arm:f16", "arm:cor"}
     assert all(row.reason == "gated" for row in off.values())
-    assert "Music facts" in " ".join(off["arm:f16"].says) and "speculate" in " ".join(off["arm:cor"].says)
+    for arm in ("f16", "cor"):
+        gates = off[f"arm:{arm}"].gates
+        assert gates == gate_reads(_r4(), arm, "fail") and gates, arm
+        failed = {finding.criterion for finding in gate_findings(_r4(), arm) if finding.status == "fail"}
+        assert {gate.criterion for gate in gates} == failed, "each gate it fails is cited, by its keys"
     assert trade.against_arm == "arm:prod"
     assert [move.from_arm for move in trade.against] == ["arm:f64"]
-    assert trade.volume is not None and trade.volume.value == 12_000_000
+    assert trade.volume is not None and trade.volume.value == reference_data("r4")["meta"]["volume_per_month"]
 
 
 def _positions(held: ReportInput, key: str) -> dict[str, float]:
@@ -377,7 +397,8 @@ def test_a_step_whose_interval_crosses_zero_says_its_high_end_is_unbounded() -> 
     assert "no interval" in first.says
     assert second.bounds == "unbounded_above" and second.per_point_high is None
     assert second.monthly_per_point_high is None and "unbounded above" in second.says
-    assert second.per_point_low is not None and second.per_point_low.value == pytest.approx((2.1 - 1.62) / 3.4)
+    gap, interval = _crossing_figures()
+    assert second.per_point_low is not None and second.per_point_low.value == pytest.approx(gap / interval[1])
 
 
 def test_with_no_declared_volume_no_monthly_figure_is_given_and_a_note_says_so() -> None:

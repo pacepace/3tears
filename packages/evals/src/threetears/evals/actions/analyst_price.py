@@ -15,8 +15,8 @@ from pydantic import Field
 
 from threetears.evals.actions.analyst_analyses import ANALYSES_WORKFLOW
 from threetears.evals.actions.catalogue import Action, Caller
-from threetears.evals.actions.params import ArmFilter, Limit, Offset, SnapshotId
-from threetears.evals.actions.render import render_cited
+from threetears.evals.actions.params import ArmFilter, Offset, SizedLimit, SnapshotId
+from threetears.evals.actions.render import page_sizing, render_cited
 from threetears.evals.ops.analyst_price import PRICE_PAGE, PriceTradeoff, price_tradeoff
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
@@ -38,19 +38,21 @@ class PriceParams(EvalBaseModel):
         ),
     ]
     arm_filter: ArmFilter = None
-    limit: Limit = PRICE_PAGE
+    limit: SizedLimit = None
     offset: Offset = 0
 
 
 async def _price_tradeoff(host: OpsHost, caller: Caller, params: PriceParams) -> PriceTradeoff:
+    limit, fits = page_sizing("price_tradeoff", params, PRICE_PAGE)
     return await price_tradeoff(
         host,
         caller.scope_id,
         snapshot_id=params.snapshot_id,
         gain_key=params.gain_key,
         arm=params.arm_filter,
-        limit=params.limit,
+        limit=limit,
         offset=params.offset,
+        fits=fits,
     )
 
 
@@ -79,7 +81,8 @@ def analyst_price_actions() -> tuple[Action, ...]:
                 "the options best at some price per point, cheapest first; each step's per_point is the price per "
                 "point at which the best option moves from the cheaper to the dearer, with its low and high ends "
                 "read off the gain's interval (an end the interval leaves open is unbounded, said in words). Every "
-                "option is also priced against the control, or against arm_filter, paged with limit and offset. "
+                "option is also priced against the control, or against arm_filter, paged with limit and offset; "
+                f"without a limit a page holds as many options as fit one result, up to {PRICE_PAGE}. "
                 "Monthly figures appear only at the declared monthly volume. Cost is read as exact. It prices the "
                 "trade and chooses nothing; a modeled hybrid is not priced."
             ),

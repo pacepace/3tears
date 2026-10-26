@@ -11,12 +11,15 @@ with nothing added here; a chunk whose action needs arguments read off the input
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterable, Mapping
 from functools import cache
 from typing import Any
 
 from packages.evals.tests.fixtures.report_plans.dataset import kairo_bundle
 from packages.evals.tests.fixtures.report_plans.misfits import MISFITS, NAMES, reference_data
+from packages.evals.tests.report_shapes_support import SHAPES
+from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.actions import Action, analyst_actions
 from threetears.evals.analysis.analyst.blocks import block_catalog, block_render
 from threetears.evals.analysis.analyst.price import PriceTradeoff, price_tradeoff
@@ -31,10 +34,13 @@ __all__ = [
     "ANALYST_CALLS",
     "KAIRO",
     "TEXT_BUDGET",
+    "WIDE",
     "action_calls",
+    "budget_inputs",
     "read_actions",
     "fixture_inputs",
     "fixture_snapshots",
+    "widened",
 ]
 
 #: The most characters an analyst action's text may run to at its default limits: what one tool result may take of an
@@ -189,6 +195,100 @@ def fixture_snapshots(scope_id: str) -> dict[str, EvalReportSnapshot]:
     }
     snapshots[KAIRO] = _kairo_snapshot(scope_id)
     return snapshots
+
+
+#: The wide input's name among the budget inputs.
+WIDE = "wide"
+
+#: The reference input whose gates are read in each task, which the wide input is built from.
+_GATES_IN_EACH_TASK = "r2 with its gates read in each task"
+
+
+def _copied_arm(node: Any, source: str, copy: str) -> Any:
+    """A document with one arm's figures copied to a new arm id wherever they sit: every mapping keyed by the arm,
+    and every row naming it (an example's trial excepted, whose id is its own)."""
+    if isinstance(node, dict):
+        held = {key: _copied_arm(value, source, copy) for key, value in node.items()}
+        if source in held:
+            held[copy] = _renamed(_copy(held[source]), source, copy)
+        return held
+    if isinstance(node, list):
+        rows = [_copied_arm(item, source, copy) for item in node]
+        copied = [
+            _renamed(_copy(row), source, copy)
+            for row in rows
+            if isinstance(row, dict) and row.get("arm") == source and "trial" not in row
+        ]
+        return rows + copied
+    return node
+
+
+def _copy(node: Any) -> Any:
+    """A deep copy of a JSON document."""
+    return json.loads(json.dumps(node))
+
+
+def _renamed(node: Any, source: str, copy: str) -> Any:
+    """A row's ``arm`` field renamed from one arm to another."""
+    if isinstance(node, dict) and node.get("arm") == source:
+        return {**node, "arm": copy}
+    return node
+
+
+def widened(held: ReportInput, *, arms: int, tasks: int) -> ReportInput:
+    """A wide campaign built from an input: each candidate copied ``arms`` times and each task ``tasks`` times, every
+    figure of the original carried to each copy, so a result's width grows with the copies and nothing else changes.
+
+    :param held: The input to widen.
+    :ptype held: ReportInput
+    :param arms: How many copies of each candidate to add.
+    :ptype arms: int
+    :param tasks: How many copies of each task to add.
+    :ptype tasks: int
+    :return: The wide input.
+    :rtype: ReportInput
+    """
+    document = held.model_dump(mode="json", by_alias=True)
+    candidates = [arm["id"] for arm in document["arms"] if arm["role"] != "control"]
+    for source in candidates:
+        for number in range(1, arms + 1):
+            copy = f"{source}-copy{number}"
+            arm = next(row for row in document["arms"] if row["id"] == source)
+            document = _copied_arm(document, source, copy)
+            document["arms"].append({**_copy(arm), "id": copy, "short_name": None})
+    document["tasks"] = [
+        *document["tasks"],
+        *(
+            {**_copy(task), "id": f"{task['id']}-copy{number}", "name": f"{task.get('name') or task['id']} copy"}
+            for number in range(1, tasks + 1)
+            for task in document["tasks"]
+        ),
+    ]
+    return ReportInput.model_validate(document)
+
+
+@cache
+def budget_inputs() -> Mapping[str, ReportInput]:
+    """The inputs every analyst action's default page is held to the budget on, beyond the fixtures: the shape
+    campaigns s1 (three aspects), s2 (a choice) and s3 (a measurement), built from their bundles, and a wide campaign
+    (:data:`WIDE`): the reference input whose gates are read in each task, its every candidate copied and its tasks
+    doubled, so its gates are read per task over many arms; and r1 and Kairo round 2 with each candidate copied
+    three times, so a choice's readings, pairs, contrasts and strata run over many arms.
+
+    :return: The inputs, by name.
+    :rtype: Mapping[str, ReportInput]
+    """
+    built: dict[str, ReportInput] = {}
+    for name in ("s1", "s2", "s3"):
+        shape = SHAPES[name]()
+        bundle = build_campaign_bundle(
+            shape.campaign, list(shape.bundles.values()), arms=shape.arms, readings=shape.readings
+        )
+        built[name] = report_input(bundle, examples=ANALYST_EXAMPLES)
+    built[WIDE] = widened(fixture_inputs()[_GATES_IN_EACH_TASK], arms=1, tasks=1)
+    built[f"{WIDE} choice"] = widened(fixture_inputs()["r1"], arms=3, tasks=1)
+    built[f"{WIDE} {KAIRO}"] = widened(ReportInput.model_validate(_kairo_snapshot("s").report_input), arms=3, tasks=0)
+    return built
 
 
 def action_calls(action: Action, held: ReportInput, snapshot_id: str) -> list[dict[str, Any]]:

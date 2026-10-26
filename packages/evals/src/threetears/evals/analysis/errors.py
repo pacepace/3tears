@@ -113,6 +113,16 @@ class UnresolvableReference(SoundnessRefusal):
     """
 
 
+class UnstatedFigure(UnresolvableReference):
+    """A well-formed figure key whose figure the input leaves unstated: an interval the pipeline did not compute, a
+    statistic an arm does not carry, one date where the input holds several.
+
+    The key is spelled right and names a place the input has, so this is the input's shape, not the key's fault. A
+    tool listing what an input holds (:func:`~threetears.evals.analysis.analyst.cited.cite_if`) reads this type, and
+    only this type, as "absent"; every other :class:`UnresolvableReference` is a key that is wrong, and is raised.
+    """
+
+
 class PlanRefusal(SoundnessRefusal):
     """A report plan whose parts disagree with each other or with its report input
     (:func:`~threetears.evals.analysis.report_plan_checks.validate_plan`).
@@ -130,4 +140,4 @@ class PlanRefusal(SoundnessRefusal):
         super().__init__(f"the report plan is refused ({len(self.faults)} fault(s)): {listed}")
 
 
-__all__ = ["GenerationError", "PlanRefusal", "SoundnessRefusal", "UnresolvableReference"]
+__all__ = ["GenerationError", "PlanRefusal", "SoundnessRefusal", "UnresolvableReference", "UnstatedFigure"]

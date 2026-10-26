@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Final
 
@@ -192,10 +192,14 @@ def refuse_no_action(tool: MountedTool) -> str:
 
 
 def refuse_unknown_action(tool: MountedTool, name: str) -> str:
-    """A call naming an action this tool does not carry — saying where it lives when the catalogue has it."""
+    """A call naming an action this tool does not carry — saying where it lives when the catalogue has it, and, for
+    one of the tool's own cut that its role goes without (:attr:`~threetears.evals.actions.catalogue.ToolSpec.workflows`),
+    what the role does instead (:attr:`~threetears.evals.actions.catalogue.ToolSpec.left_out`), never another tool."""
     elsewhere = tool.catalogue.get(name)
     if elsewhere is not None and elsewhere.cut != tool.spec.cut:
         return f"refused: {name} is not an action of tool {tool.name}: {_cut_of(elsewhere)}. {_valid_actions(tool)}."
+    if elsewhere is not None and _left_out(tool, elsewhere):
+        return f"refused: {name} is not on tool {tool.name}: {tool.spec.left_out}. {_valid_actions(tool)}."
     if elsewhere is not None:
         return (
             f"refused: {name} is a {elsewhere.permission} action, and tool {tool.name} carries "
@@ -219,6 +223,12 @@ def refuse_unknown_page(topic: HelpTopic, page: str, named: Sequence[str]) -> st
         f"refused: reference topic {topic.name} has no page {page!r}. Its pages: {', '.join(named)}; "
         f"topic='{topic.name}' is its index."
     )
+
+
+def _left_out(tool: MountedTool, action: Action) -> bool:
+    """Whether an action of the tool's own cut is one its role goes without: of a workflow the tool is not cut to."""
+    workflows = tool.spec.workflows
+    return action.cut == tool.spec.cut and workflows is not None and action.workflow not in workflows
 
 
 def _cut_of(action: Action) -> str:
@@ -263,7 +273,8 @@ def refuse_by_engine(tool: MountedTool, action: Action, refused: EvalServiceErro
 
     A remedy naming an action this tool does not carry says which tool does — the remedy is the engine's and
     names the catalogue's actions, while which of them a caller can reach here is this tool's — so an agent is
-    never sent to a call its tool would refuse as unknown.
+    never sent to a call its tool would refuse as unknown. A remedy needing an action of the tool's own cut that its
+    role goes without is served as what the role does instead (``ToolSpec.left_out``), naming no action.
     """
     return _refused_with_remedy(tool, action.name, refused)
 
@@ -314,8 +325,13 @@ def _refused_with_remedy(tool: MountedTool, subject: str, refused: EvalServiceEr
     head = "raised" if raised(refused.status_code) else "refused"
     lines = [f"{head}: {subject}: {refused.message}"]
     if refused.remedy is not None:
-        lines.append(f"remedy: {refused.remedy}")
         named = sorted(set(_ACTION_TOKEN.findall(refused.remedy)))
+        actions = [action for action in map(tool.catalogue.get, named) if action is not None]
+        if any(_left_out(tool, action) for action in actions):
+            # The remedy needs an action this tool's role goes without: what the role does instead is the remedy.
+            lines.append(f"remedy: {tool.spec.left_out}")
+            return "\n".join(lines)
+        lines.append(f"remedy: {refused.remedy}")
         for name in named:
             elsewhere = tool.catalogue.get(name)
             if elsewhere is not None and tool.action(name) is None and elsewhere.cut != tool.spec.cut:
@@ -466,6 +482,38 @@ def render_page(action: str, params: BaseModel, text: str, structured: dict[str,
         return text, {key: value for key, value in structured.items() if key != _NEXT_OFFSET}
     call = _next_page_call(action, params, offset)
     return f"{text}\n{_next_page_line(call)}", {**structured, "next": call}
+
+
+#: The most characters a page a caller does not size runs to: what one tool result may take of an analyst's context.
+_PAGE_TEXT: Final = 12_000
+
+
+def page_sizing(action: str, params: BaseModel, default: int) -> tuple[int, Callable[[BaseModel], bool] | None]:
+    """The page size a paged operation takes, and the test of length it sizes a page by.
+
+    The caller's ``limit`` as named, with no test; else up to ``default`` rows, as many as fit within 12,000
+    characters (what one tool result may take of an analyst's context) as the tool writes the page
+    (:func:`render_cited`, then :func:`render_page`, the next page's call included). An operation given the test
+    returns the largest page that passes it, so a page of long rows is shorter rather than overlong.
+
+    :param action: The action, as the next page's call names it.
+    :ptype action: str
+    :param params: The call's parameters, ``limit`` among them (``None``: size the page).
+    :ptype params: BaseModel
+    :param default: The most rows a sized page holds.
+    :ptype default: int
+    :return: The page's most rows, and the test, or ``None`` where the caller named the size.
+    :rtype: tuple[int, Callable[[BaseModel], bool] | None]
+    """
+    named = getattr(params, "limit", None)
+    if named is not None:
+        return int(named), None
+
+    def fits(page: BaseModel) -> bool:
+        text, _structured = render_page(action, params, render_cited(page), page.model_dump(mode="json"))
+        return len(text) <= _PAGE_TEXT
+
+    return default, fits
 
 
 def _cited_field(name: str, value: Any, indent: str) -> list[str]:

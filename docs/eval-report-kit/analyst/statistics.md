@@ -50,7 +50,7 @@ Depth is how many times each arm ran each case. Arms can differ when old runs po
 
 ## Judges and calibration
 
-A judged figure is only as good as the judge. Read its calibration tier and agreement figures from the overview.
+A judged figure is only as good as the judge. Read its tier, calibration state, calibration ratings and agreement from the overview: each judged dimension's `judge` figures there (`judged.<dimension>.tier`, `.calibration`, `.calibration_ratings`, `.agreement`), which the `judge_uncalibrated` caveat in `caveats_list` cites too. A field the input leaves unstated is left out.
 
 - An **uncalibrated** judge is a report-wide caveat. Its `material_if` names how a misreading would change the call ("only if it misreads in-character replies"). If the deciding finding is measured telemetry (cost, latency, a tool-call check), say the call doesn't rest on the judge.
 - **Relative** comparisons on one judge are sturdier than **absolute** claims. "Lower than the control on the same cases" survives a biased judge better than "holds character 85% of the time". An absolute judged claim needs a calibrated judge.

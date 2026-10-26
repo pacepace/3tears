@@ -23,7 +23,8 @@ from __future__ import annotations
 import ast
 import json
 import logging
-from collections.abc import Iterator
+import re
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,8 @@ from pydantic import BaseModel
 from packages.evals.tests.analyst_support import (
     KAIRO,
     TEXT_BUDGET,
+    WIDE,
+    budget_inputs,
     action_calls,
     fixture_inputs,
     fixture_snapshots,
@@ -46,6 +49,7 @@ from threetears.evals.actions import (
     MountedTool,
     analyst_actions,
     analyst_tools,
+    catalogue_primer,
     engine_actions,
     eval_catalogue,
     read_only_tools,
@@ -53,12 +57,15 @@ from threetears.evals.actions import (
 )
 from threetears.evals.actions.render import render_cited
 from threetears.evals.analysis import assemble_campaign_bundle
+from threetears.evals.analysis.analyst.analyses import dominance, sensitivity
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
-from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.analyst.facts import campaign_overview
+from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.analyst.snapshot import ANALYST_EXAMPLES, frozen_input, report_snapshot
 from threetears.evals.analysis.planned_analysis import report_input_digest, report_input_document_digest
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
-from threetears.evals.analysis.report.figure_keys import figure_key_grammar, render, resolve
+from threetears.evals.analysis.report.figure_keys import figure_key_grammar, reader_names, render, resolve
+from threetears.evals.analysis.report.figures import PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel import EvalReportSnapshot, report_snapshot_id
@@ -163,7 +170,8 @@ async def test_a_campaign_freezes_to_the_report_input_its_evidence_builds_and_ag
     again = await _call(tool, fixture, {"action": "report_snapshot_freeze", "campaign_id": fixture.campaign.id})
     once_more = await _call(tool, fixture, {"action": "report_snapshot_freeze", "campaign_id": fixture.campaign.id})
     assert again.structured is not None and again.structured["reused"] is True
-    assert {**again.structured, "reused": False} == first.structured
+    assert first.structured["note"] == "" and "frozen before" in again.structured["note"]
+    assert {**again.structured, "reused": False, "note": ""} == first.structured
     assert (again.text, again.structured) == (once_more.text, once_more.structured)
     assert len(first.text) <= TEXT_BUDGET
     _held_to_figures(again.structured, frozen_input(snapshot))
@@ -201,6 +209,32 @@ async def test_a_bare_report_input_is_a_snapshot_every_analyst_tool_reads() -> N
         {"action": "capability_gap", "snapshot_id": snapshot.id, "need": "n", "why": "w", "workaround": "x"},
     )
     assert outcome.structured is not None, outcome.text
+
+
+async def test_a_freeze_reusing_a_snapshot_frozen_another_way_reports_the_stored_freezes_source_and_says_so() -> None:
+    fixture = off_loop(ops_fixture)
+    bundle = off_loop(assemble_campaign_bundle, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE)
+    earlier = report_snapshot(
+        report_input(bundle, examples=ANALYST_EXAMPLES),
+        scope_id=TOYHOST_SCOPE,
+        campaign_id=fixture.campaign.id,
+        source="analysis",
+        created_by="agent:earlier",
+        bundle=bundle,
+        analysis_id="analysis-frozen-earlier",
+        assembled_at="2026-01-01T00:00:00+00:00",
+    )
+    off_loop(fixture.host.eval_host.storage.save_report_snapshot, earlier)
+
+    outcome = await _call(
+        _analyst_tool(), fixture, {"action": "report_snapshot_freeze", "campaign_id": fixture.campaign.id}
+    )
+    assert outcome.structured is not None, outcome.text
+    assert outcome.structured["snapshot_id"] == earlier.id, "the control: the same evidence, frozen another way first"
+    assert outcome.structured["reused"] is True
+    assert (outcome.structured["source"], outcome.structured["analysis_id"]) == ("analysis", earlier.analysis_id)
+    assert outcome.structured["frozen_at"] == earlier.created_at
+    assert outcome.structured["note"] and outcome.structured["note"] in outcome.text
 
 
 def test_a_snapshot_id_is_its_campaign_and_digest_and_a_document_disagreeing_is_refused() -> None:
@@ -271,6 +305,49 @@ async def test_a_snapshot_whose_input_moved_or_no_longer_reads_is_refused_with_t
     )
 
 
+def _broken(store: InMemoryDocumentStore, snapshot: EvalReportSnapshot, how: str) -> None:
+    """Break a stored snapshot the ways a read refuses one: its input moved, its document no longer reads (its id
+    disagrees with its content), or an older build's schema version."""
+    if how in ("figure", "unread"):
+        _tampered(store, snapshot, redigest=how == "unread", change=how)
+        return
+    document = store.get(snapshot.id, snapshot.scope_id)
+    assert document is not None
+    store.upsert({**document, "schema_version": document["schema_version"] - 1})
+
+
+@pytest.mark.parametrize(
+    "how", ["figure", "unread", "schema"], ids=["its input moved", "it no longer reads", "an older schema"]
+)
+async def test_following_the_freeze_again_remedy_replaces_a_snapshot_a_read_refuses_and_its_id_reads_again(
+    how: str,
+) -> None:
+    store = InMemoryDocumentStore()
+    fixture = off_loop(ops_fixture, store=store)
+    tool = _analyst_tool()
+    freeze = {"action": "report_snapshot_freeze", "campaign_id": fixture.campaign.id}
+    first = await _call(tool, fixture, freeze)
+    assert first.structured is not None and first.structured["replaced"] is False, first.text
+    snapshot_id = first.structured["snapshot_id"]
+    overview = {"action": "campaign_overview", "snapshot_id": snapshot_id}
+    sound = await _call(tool, fixture, overview)
+    assert sound.ending == "ok", sound.text
+
+    off_loop(_broken, store, _stored(fixture, snapshot_id), how)
+    refused = await _call(tool, fixture, overview)
+    assert refused.ending == "refused" and "remedy: freeze the campaign or the analysis again" in refused.text
+
+    again = await _call(tool, fixture, freeze)
+    assert again.structured is not None, again.text
+    assert again.structured["snapshot_id"] == snapshot_id, "the same evidence names the same snapshot"
+    assert (again.structured["replaced"], again.structured["reused"]) == (True, False)
+    read = await _call(tool, fixture, overview)
+    assert (read.text, read.structured) == (sound.text, sound.structured)
+    once_more = await _call(tool, fixture, freeze)
+    assert once_more.structured is not None
+    assert (once_more.structured["replaced"], once_more.structured["reused"]) == (False, True)
+
+
 async def test_an_unknown_snapshot_is_refused_naming_how_to_get_one() -> None:
     fixture = off_loop(ops_fixture)
     outcome = await _call(
@@ -338,10 +415,62 @@ def _numbers(node: Any, path: str = "") -> Iterator[tuple[str, Any, dict[str, An
         yield path, node, None
 
 
-def _held_to_figures(structured: dict[str, Any], held: ReportInput) -> None:
-    """Every number in a result sits in a cited figure, and every cited figure's key resolves to its value."""
+#: A date as a text names one, which is a time a figure states rather than a figure: ISO-8601 (``2026-10-20``, with
+#: any time after it) or day, month and year (``25 Oct 2026``).
+_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}(?:T[\d:.]+(?:Z|[+-]\d{2}:\d{2})?)?\b|\b\d{1,2} [A-Z][a-z]{2} \d{4}\b")
+
+#: A number written in text: digits standing alone as a word, with any sign, currency, grouping, decimals, percent or
+#: range, and not part of an id or key (``qwen3.8-flash``, ``p95``, ``criteria.gate.v2.value``), whose digits sit
+#: inside a word with letters.
+_TYPED_NUMBER = re.compile(
+    r"(?<![\w.:/@-])[-+±−]?\$?\d[\d,]*(?:\.\d+)?%?(?:[–-]\$?\d[\d,]*(?:\.\d+)?%?)?(?![\w.:/@-]*[A-Za-z_])"
+)
+
+#: The text fields that hold the input's own words verbatim rather than text code composes: an example's trial (what
+#: the case asked, what the arm replied, the judge's reason, its repeat's label), a measure's stated interval level,
+#: and the note a caveat carries in the input. A number there is the input's, quoted, not a figure code wrote.
+_VERBATIM = re.compile(
+    r"\.examples\[\d+\]\.(?:excerpt|input|expected|reason|repeat)$|\.measures\[\d+\]\.level$|\.caveats\[\d+\]\.says$"
+)
+
+
+def _known_words(held: ReportInput) -> list[str]:
+    """Every id and reader name the input holds, longest first: words a text may name, digits and all."""
+    words = {arm.id for arm in held.arms} | {aspect.id for aspect in held.aspects} | {*held.measures, *held.judged}
+    words |= {stratum.id for stratum in held.strata} | {task.id for task in held.tasks} | set(held.cells)
+    words |= {criterion.id for criterion in held.criteria} | {read.floor for read in held.floors}
+    for names in reader_names(held).values():
+        words |= set(names) | set(names.values())
+    return sorted((word for word in words if word), key=len, reverse=True)
+
+
+def _typed_numbers(node: Any, known: list[str], path: str = "") -> Iterator[tuple[str, str]]:
+    """Every number a result's text fields write outside a cited figure: where it sits, and the number as written.
+    The input's ids and reader names, dates, and the unit cost is stated per are words, not numbers."""
+    if isinstance(node, dict):
+        if FIGURE_FIELDS <= node.keys():
+            return
+        for key, item in node.items():
+            if key not in PAGING:
+                yield from _typed_numbers(item, known, f"{path}.{key}")
+    elif isinstance(node, list):
+        for index, item in enumerate(node):
+            yield from _typed_numbers(item, known, f"{path}[{index}]")
+    elif isinstance(node, str) and not _VERBATIM.search(path):
+        text = _DATE.sub("", node).replace(PER_THOUSAND_REPLIES, "")
+        for word in known:
+            text = re.sub(rf"(?<!\w){re.escape(word)}(?!\w)", "", text)
+        for typed in _TYPED_NUMBER.findall(text):
+            yield path, typed
+
+
+def _held_to_figures(structured: dict[str, Any], held: ReportInput, *, text: bool = True) -> None:
+    """Every number in a result sits in a cited figure, and every cited figure's key resolves to its value: a JSON
+    number and, with ``text``, one written in a text field."""
     for where, _number, figure in _numbers(structured):
         assert figure is not None, f"{where} is a number no figure key names"
+    typed = list(_typed_numbers(structured, _known_words(held))) if text else []
+    assert not typed, f"text fields write numbers no figure key names: {typed[:8]}"
     figures = [node for node in _figure_nodes(structured)]
     for figure in figures:
         resolved = resolve(figure["key"], held)
@@ -370,6 +499,16 @@ def test_the_number_walk_finds_a_bare_number_and_a_figure_that_does_not_resolve(
     with pytest.raises(AssertionError, match="holds 999.0"):
         _held_to_figures({"figure": figure}, held)
     _held_to_figures({"total": 3, "offset": 0, "next_offset": None}, held)
+    for written in ("pass rate 72.0% below 80%", "interval 85.6-94.4%", "costs $7,560.00", "reads 2 ways", "-1.5"):
+        with pytest.raises(AssertionError, match="write numbers no figure key names"):
+            _held_to_figures({"why": [written]}, held)
+    named = "arm:qwen3.8-flash at p95 on criteria.gate.v2.value, set 25 Oct 2026 and 2026-10-20T00:00:00+00:00"
+    _held_to_figures({"why": [named], "snapshot": "report-snapshot:0193a1b2c3d4"}, held)
+    numeric = next(arm.id for arm in held.arms if arm.id.isdigit())
+    _held_to_figures({"notes": [f"no loss share for arm:{numeric}: {numeric}'s loss is nothing"]}, held)
+    _held_to_figures({"examples": [{"excerpt": "34x12 is 408"}], "notes": ["prices are per 1,000 replies"]}, held)
+    with pytest.raises(AssertionError, match="write numbers no figure key names"):
+        _held_to_figures({"notes": ["the excerpt reads 408"]}, held)
 
 
 async def test_every_analyst_read_action_answers_alike_twice_within_its_budget_on_every_figure_by_its_key() -> None:
@@ -388,7 +527,39 @@ async def test_every_analyst_read_action_answers_alike_twice_within_its_budget_o
                 assert (first.text, first.structured) == (second.text, second.structured), where
                 assert len(first.text) <= TEXT_BUDGET, f"{where}: {len(first.text)} characters"
                 assert first.structured is not None
-                _held_to_figures(first.structured, held)
+                # A block is returned as a page prints it: its cells, domain and notes are the chart's own print, held
+                # equal to the planned page's (test_analyst_render), so its text is not held to keys here.
+                _held_to_figures(first.structured, held, text=action.name != "block_render")
+
+
+@pytest.mark.parametrize("name", sorted(budget_inputs()))
+async def test_every_analyst_read_action_keeps_its_default_page_within_the_budget_on_shape_and_wide_campaigns(
+    name: str,
+) -> None:
+    fixture = off_loop(ops_fixture)
+    held = budget_inputs()[name]
+    snapshot = report_snapshot(held, scope_id=TOYHOST_SCOPE, campaign_id=None, source="report_input", created_by="me")
+    off_loop(fixture.host.eval_host.storage.save_report_snapshot, snapshot)
+    tool = _analyst_tool()
+    for action in read_actions():
+        for arguments in action_calls(action, held, snapshot.id):
+            outcome = await _call(tool, fixture, arguments)
+            where = f"{action.name} on {name}"
+            assert outcome.ending == "ok" and outcome.structured is not None, f"{where}: {outcome.text}"
+            assert len(outcome.text) <= TEXT_BUDGET, f"{where}: {len(outcome.text)} characters"
+            _held_to_figures(outcome.structured, held, text=action.name != "block_render")
+
+
+def test_the_wide_campaign_is_wider_than_one_result_holds_unpaged() -> None:
+    """The control for the budget above: read whole, the wide campaign's dominance, overview and sensitivity each run
+    past one result's budget, so only their paging keeps a default page within it."""
+    wide = budget_inputs()[WIDE]
+    whole = (
+        dominance(wide),
+        campaign_overview(wide, "s"),
+        sensitivity(wide, "threshold:pass_rate", limit=len(wide.arms) * len(wide.tasks)),
+    )
+    assert all(len(render_cited(result)) > TEXT_BUDGET for result in whole), [len(render_cited(r)) for r in whole]
 
 
 def test_the_fixture_snapshots_hold_the_kairo_bundle_and_its_examples_results() -> None:
@@ -453,10 +624,11 @@ def test_a_figure_the_input_leaves_unstated_is_absent_and_a_key_naming_nothing_i
     held = fixture_inputs()["r1"]
     assert held.meta.question is None, "the control: r1 states no question"
     assert cite_if("meta.question", held) is None
-    with pytest.raises(UnresolvableReference, match="does not state"):
+    with pytest.raises(UnstatedFigure, match="does not state"):
         cite("meta.question", held)
-    with pytest.raises(UnresolvableReference, match="names no arm"):
+    with pytest.raises(UnresolvableReference, match="names no arm") as refused:
         cite_if("arm:no-such-arm-here", held)
+    assert not isinstance(refused.value, UnstatedFigure), "a key naming nothing is wrong, not an unstated figure"
     campaign = cite_if("meta.campaign", held)
     assert campaign is not None and campaign.value == held.meta.campaign and campaign.kind == "text"
 
@@ -546,8 +718,116 @@ def test_the_editors_cut_is_the_analyst_tool_read_off_the_workflows_with_no_bloc
     assert set(editor_params) < set(analyst_params), "the block parameters are the analyst's alone"
 
 
+def _editor_tool() -> MountedTool:
+    (spec,) = analyst_tools(role="editor")
+    return eval_catalogue().mount(spec)
+
+
+def _named_in(text: str, names: set[str]) -> set[str]:
+    """The names in ``names`` a text spells as words."""
+    return {name for name in names if re.search(rf"\b{re.escape(name)}\b", text)}
+
+
+def _static_texts(tool: MountedTool) -> Iterator[tuple[str, str]]:
+    """Every text a tool serves without a call to an action: its description, input, help, topics and primer."""
+    yield "description", tool.description
+    yield "input schema", json.dumps(tool.input_schema())
+    yield "help index", tool.help_index()
+    for action in tool.actions:
+        yield f"help {action.name}", tool.help_page(action.name)
+    for topic in tool.spec.topics:
+        yield f"topic {topic.name}", topic.text()
+        for page, text in (topic.pages() if topic.pages is not None else {}).items():
+            yield f"topic {topic.name}.{page}", text
+    yield "primer", catalogue_primer([tool])
+
+
+def _outcome_text(outcome: ActionOutcome) -> str:
+    """All an outcome tells its caller: its text, its result's JSON and its recovery's."""
+    recovery = json.dumps(outcome.recovery.as_data()) if outcome.recovery is not None else ""
+    return "\n".join([outcome.text, json.dumps(outcome.structured), recovery])
+
+
+async def _called_texts(
+    tool: MountedTool, fixture: OpsFixture, snapshots: dict[str, EvalReportSnapshot], broken: str
+) -> AsyncIterator[tuple[str, str]]:
+    """Every text a call to the tool's actions returns: each on every fixture snapshot, on an unknown snapshot and a
+    broken one, with each text parameter naming nothing, an undeclared parameter and a value that does not
+    validate; then help on a topic that is none, and an action that is none."""
+    for name, snapshot in snapshots.items():
+        held = frozen_input(snapshot)
+        for action in tool.actions:
+            for arguments in action_calls(action, held, snapshot.id):
+                yield f"{action.name} on {name}", _outcome_text(await _call(tool, fixture, arguments))
+    held = frozen_input(snapshots["r4"])
+    for action in tool.actions:
+        (call, *_) = action_calls(action, held, snapshots["r4"].id) or [
+            {**action.example, "action": action.name, "snapshot_id": snapshots["r4"].id}
+        ]
+        for snapshot_id in ("report-snapshot:unknown", broken):
+            yield (
+                f"{action.name} on {snapshot_id}",
+                _outcome_text(await _call(tool, fixture, {**call, "snapshot_id": snapshot_id})),
+            )
+        texts = [field for field, info in action.params.model_fields.items() if info.annotation in (str, str | None)]
+        for field in texts:
+            if field != "snapshot_id":
+                outcome = await _call(tool, fixture, {**call, field: "no-such-thing"})
+                yield f"{action.name} with {field} naming nothing", _outcome_text(outcome)
+        yield f"{action.name} undeclared", _outcome_text(await _call(tool, fixture, {**call, "nothing_here": 1}))
+        yield f"{action.name} invalid", _outcome_text(await _call(tool, fixture, {**call, "snapshot_id": ""}))
+    yield "help on no topic", _outcome_text(await _call(tool, fixture, {"action": "help", "topic": "nothing_here"}))
+    yield "no such action", _outcome_text(await _call(tool, fixture, {"action": "nothing_here"}))
+
+
+async def test_nothing_the_editors_tool_serves_names_an_action_it_does_not_carry() -> None:
+    store = InMemoryDocumentStore()
+    fixture, snapshots = off_loop(_seeded, store)
+    held = fixture_inputs()["r2"]
+    copy = held.model_copy(update={"meta": held.meta.model_copy(update={"campaign": "a copy to break"})})
+    broken = report_snapshot(copy, scope_id=TOYHOST_SCOPE, campaign_id=None, source="report_input", created_by="me")
+    off_loop(fixture.host.eval_host.storage.save_report_snapshot, broken)
+    off_loop(_tampered, store, broken, redigest=False, change="figure")
+    editor = _editor_tool()
+    left_out = {action.name for action in analyst_actions()} - {action.name for action in editor.actions}
+    assert {"block_render", "block_catalog", "report_snapshot_freeze"} <= left_out, "the control"
+
+    named: dict[str, set[str]] = {}
+    for where, text in _static_texts(editor):
+        named[where] = _named_in(text, left_out)
+    async for where, text in _called_texts(editor, fixture, snapshots, broken.id):
+        named[where] = _named_in(text, left_out)
+    assert {where: names for where, names in named.items() if names} == {}
+    assert any(where.endswith("on report-snapshot:unknown") for where in named), "the control: the refusals ran"
+    on_analyst = set[str]().union(*(_named_in(text, left_out) for _, text in _static_texts(_analyst_tool())))
+    assert on_analyst == left_out, "the control: the walk finds each name where a tool carrying it serves it"
+
+
+async def test_an_action_the_editor_goes_without_is_refused_with_why_and_sends_it_nowhere() -> None:
+    fixture, snapshots = off_loop(_seeded)
+    editor = _editor_tool()
+    left_out = {action.name for action in analyst_actions()} - {action.name for action in editor.actions}
+    for name in sorted(left_out):
+        action = next(action for action in analyst_actions() if action.name == name)
+        call = {**action.example, "action": name}
+        if "snapshot_id" in call:
+            call["snapshot_id"] = snapshots["r4"].id
+        for outcome in (
+            await _call(editor, fixture, call),
+            await _call(editor, fixture, {"action": "help", "topic": name}),
+        ):
+            assert outcome.ending == "refused", (name, outcome.text)
+            head = outcome.text.splitlines()[0]
+            assert head.startswith(f"refused: {name} is not on tool evals_analyst: {editor.spec.left_out}."), head
+            assert "call it on" not in outcome.text, "the editor has no other tool to be sent to"
+            assert _named_in(_outcome_text(outcome), left_out - {name}) == set(), (name, outcome.text)
+
+
 #: Every analyst listing, the fixture snapshot it is read on, and a call whose rows run to more than one small page.
 _PAGED_CALLS: dict[str, tuple[str, dict[str, Any]]] = {
+    "campaign_overview": (KAIRO, {"limit": 7}),
+    "caveats_list": (KAIRO, {"limit": 1}),
+    "options_dominance": (KAIRO, {"limit": 1}),
     "readings_list": (KAIRO, {"limit": 2}),
     "contrasts_list": (KAIRO, {"limit": 3}),
     "measure_read": (KAIRO, {"measure_key": "persona.holds_character", "by": "stratum", "limit": 3}),
@@ -610,10 +890,10 @@ async def test_following_next_reads_every_row_once_and_the_last_page_names_no_ne
 
 #: The field each listing's rows are in; the readings are grouped by aspect, each group's rows by kind.
 _ROWS = {
+    "caveats_list": "caveats",
     "contrasts_list": "contrasts",
     "measure_read": "rows",
     "examples_list": "examples",
-    "decision_sensitivity": "flips",
     "measure_breakdown": "slices",
     "block_render": "rows",
 }
@@ -628,6 +908,16 @@ def _page_rows(action: str, structured: dict[str, Any]) -> list[Any]:
     """A page's rows, in order."""
     if action in _ROWS:
         return list(structured[_ROWS[action]])
+    if action == "decision_sensitivity":
+        # A page lists its flips and the segments starting at them: every segment is read once over the pages.
+        return [("flip", row) for row in structured["flips"]] + [("segment", row) for row in structured["segments"]]
+    if action == "options_dominance":
+        # A page holds the options in a window of the arms: the survivors and the removed among them, tagged by which.
+        return [("survivor", row) for row in structured["survivors"]] + [("out", row) for row in structured["out"]]
+    if action == "campaign_overview":
+        sections = ("arms", "aspects", "measures", "criteria", "cells", "caveats", "late_criteria", "prior_insights")
+        named = [(kind, held, name) for kind, names in structured["names"].items() for held, name in names.items()]
+        return [(section, row) for section in sections for row in structured[section]] + [("names", n) for n in named]
     if action == "price_tradeoff":
         # A page covers options in arm order, each priced against one or listed off the frontier: tagged by which.
         return sorted(

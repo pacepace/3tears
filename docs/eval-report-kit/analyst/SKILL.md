@@ -51,7 +51,7 @@ One tool, `evals_analyst`; each call is `{"action": "<name>", ...}` and, but for
 | | `measure_read` | `measure_key`, `by` (arm, stratum, task, cell), `statistics` | One measure's figures |
 | | `examples_list` | `arm_filter`, `stratum_filter`, `outcome_filter` | Failed trials, reasons, excerpts |
 | | `caveats_list` | | Every caveat and what it touches |
-| analyses | `options_dominance` | `axes` | Which options survive the gates, and which dominate |
+| analyses | `options_dominance` | `axes` | Which options survive the gates, which dominate, and each gate figure an option fails or borders, by its keys |
 | | `decision_sensitivity` | `parameter` (`margin:<aspect>`, `floor:<aspect>/<floor>`, `threshold:<criterion>`), `range_low`, `range_high` | Where the call flips |
 | | `measure_breakdown` | `measure_key`, `slice_by` | Where a difference concentrates; exploratory |
 | | `price_tradeoff` | `gain_key`, `arm_filter` | Price per point among measured options; never a mix nobody ran |
@@ -59,7 +59,7 @@ One tool, `evals_analyst`; each call is `{"action": "<name>", ...}` and, but for
 | | `block_render` | `block_kind`, `query`, `reference` | One block's values table |
 | gaps | `capability_gap` | `need`, `why`, `workaround`, `claim_ids` | Record a workaround |
 
-**Help.** `action='help'` lists the actions; `topic='<action>'` gives one's parameters and an example; `topic='figure_keys'` the figure-key grammar's rules, filters and path groups, and `topic='figure_keys.<group>'` a group's forms. **Paging.** A page with more ends with `next: action=…, offset=N`: send that call. **Refusals** end with `recovery: {…}` (the parameters at fault, those accepted, an example, valid values): build the next call from it.
+**Help.** `action='help'` lists the actions; `topic='<action>'` gives one's parameters and an example; `topic='figure_keys'` the figure-key grammar's rules, filters and path groups, and `topic='figure_keys.<group>'` a group's forms. **Paging.** Every result that grows with the campaign is paged, the overview included, each page sized to one result. A page with more ends with `next: action=…, offset=N`: send that call. **Refusals** end with `recovery: {…}` (the parameters at fault, those accepted, an example, valid values): build the next call from it.
 
 **Not available yet:** `render_report`, `settle` (cases needed to separate a reading), `confound_check`: log a `capability_gap` and say it in words. Exemplars are files (`exemplars/INDEX.md`).
 

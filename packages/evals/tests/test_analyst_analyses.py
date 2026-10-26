@@ -23,7 +23,7 @@ Contracts held here (``threetears.evals.analysis.analyst.analyses``, ``ops.analy
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from functools import cache
 from typing import Any
 
@@ -34,7 +34,7 @@ from packages.evals.tests.fixtures.report_plans.misfits import reference_data
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
 from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, eval_catalogue
-from threetears.evals.analysis.analyst.analyses import breakdown, dominance, sensitivity
+from threetears.evals.analysis.analyst.analyses import GateRead, breakdown, dominance, sensitivity
 from threetears.evals.analysis.analyst.snapshot import frozen_input, report_snapshot
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report_decision import (
@@ -48,7 +48,7 @@ from threetears.evals.analysis.report_decision import (
     margin_sensitivity,
     surviving_options,
 )
-from threetears.evals.analysis.report_gates import gate_check
+from threetears.evals.analysis.report_gates import gate_check, gate_findings
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import criterion_figures, flip_margin
 from threetears.evals.kernel import EvalReportSnapshot
@@ -162,7 +162,8 @@ def test_dominance_names_the_decisions_survivors_dominant_options_and_call(name:
     for row in result["survivors"]:
         arm = _arm_id(row["arm"])
         check = gate_check(held, arm)
-        assert (row["gate_status"], row["borders"]) == (check.status, list(check.borders))
+        assert row["gate_status"] == check.status
+        assert len(row["borders"]) == len(check.borders), "a borderline figure per reason the gate check gives"
         assert row["standing"] == standing[arm].standing
         assert [_arm_id(other) for other in row["behind"]] == list(standing[arm].behind)
         if arm in dominant:
@@ -170,11 +171,47 @@ def test_dominance_names_the_decisions_survivors_dominant_options_and_call(name:
         elif len(dominant) == 1:
             assert f"arm:{dominant[0]}" in row["dominated_by"], f"{name}: {arm} is not dominated by the one dominant"
     for row in result["out"]:
-        assert row["why"], f"{name}: {row['arm']} was removed with no reason"
+        assert row["gates"] or row["breached"], f"{name}: {row['arm']} was removed with no reason"
     code = result["code_call"]
     assert (code["modes"], code["dominant"]) == _call(decision_at(held))
     assert "never a constraint" in code["reads_as"]
     _each_figure_resolves(result, held)
+
+
+def _gate_figures_as_found(held: ReportInput, arm: str, gates: Sequence[GateRead], status: str) -> None:
+    """Each gate read is one gate-check finding of that status, in order, citing the criterion's threshold and, where
+    the input states the arm's figure, that figure and its gap."""
+    findings = [finding for finding in gate_findings(held, arm) if finding.status == status]
+    assert [(gate.criterion, gate.status) for gate in gates] == [
+        (finding.criterion, status if finding.figure is not None else "no_figure") for finding in findings
+    ]
+    for gate, finding in zip(gates, findings, strict=True):
+        criterion = next(held_criterion for held_criterion in held.criteria if held_criterion.id == gate.criterion)
+        cited = {figure.key.rsplit(".", 1)[1]: figure.value for figure in gate.figures}
+        assert cited["threshold"] == float(criterion.threshold)
+        if finding.figure is not None:
+            assert cited["value"] == pytest.approx(finding.figure.value) and "gap" in cited
+            if finding.figure.ci is not None:
+                assert (cited["low"], cited["high"]) == pytest.approx(finding.figure.ci)
+        else:
+            assert set(cited) == {"threshold"}, "no figure there: the threshold alone"
+
+
+@pytest.mark.parametrize("name", sorted(_all_inputs()))
+def test_a_removed_option_carries_each_figure_it_fails_on_and_a_survivor_each_it_holds_borderline(name: str) -> None:
+    held = _all_inputs()[name]
+    result = dominance(held)
+    for row in result.out:
+        _gate_figures_as_found(held, _arm_id(row.arm), row.gates, "fail")
+    for survivor in result.survivors:
+        _gate_figures_as_found(held, _arm_id(survivor.arm), survivor.borders, "borderline")
+
+
+def test_the_gate_figures_walk_has_a_removed_option_failing_on_a_figure_and_a_survivor_borderline() -> None:
+    """The control for the walk above: the fixtures hold an option removed on a stated figure, and one borderline."""
+    results = [dominance(held) for held in _all_inputs().values()]
+    assert any(gate.status == "fail" for result in results for row in result.out for gate in row.gates)
+    assert any(row.borders for result in results for row in result.survivors)
 
 
 @pytest.mark.parametrize("name", ["r1", "r2", "r4", "r5", "kairo round 2"])
@@ -250,17 +287,19 @@ def _end(segment: dict[str, Any], side: str) -> float | None:
     return None if end is None else float(end["at"]["value"])
 
 
-def _midpoint(segment: dict[str, Any], low: float | None, high: float | None) -> float:
-    """A value inside a segment: its middle, or one past its one stated end (the range's ends where it has none)."""
-    start = _end(segment, "low") if segment["low"] is not None else low
-    stop = _end(segment, "high") if segment["high"] is not None else high
-    if start is not None and stop is not None:
-        return (start + stop) / 2
-    if stop is not None:
-        return stop - 1.0
-    if start is not None:
-        return start + 1.0
-    return 0.0
+def _probes(flips: Sequence[float], low: float | None) -> list[float]:
+    """Values to read a sweep's call at, chosen from the input's own flips and not the sweep's rule: just below and
+    just above every flip, each end of the range, and far past the last flip and below the first; a flip the sweep
+    missed sits between two of them, on either side of it."""
+    values = sorted(set(flips))
+    gaps = [high - low_end for low_end, high in zip(values, values[1:], strict=False) if high > low_end]
+    epsilon = min([1e-6, *(gap / 4 for gap in gaps)])
+    reach = max([1.0, *(abs(value) for value in values)])
+    points = {value + side * epsilon * max(1.0, abs(value)) for value in values for side in (-1, 1)}
+    points |= {reach * 10, -reach * 10, *(value for value in values)}
+    if low is not None:
+        points = {point for point in points if point >= low} | {low}
+    return sorted(points)
 
 
 def _holding(segments: list[dict[str, Any]], value: float, boundary: str) -> list[dict[str, Any]]:
@@ -283,9 +322,7 @@ def _sweeps() -> list[tuple[str, str]]:
 
 
 @pytest.mark.parametrize(("name", "parameter"), _sweeps(), ids=lambda value: str(value))
-def test_each_flip_is_its_figure_and_each_segments_call_is_the_decision_at_its_midpoint(
-    name: str, parameter: str
-) -> None:
+def test_each_flip_is_its_figure_and_the_call_at_every_probe_is_its_segments(name: str, parameter: str) -> None:
     held = _all_inputs()[name]
     result = sensitivity(held, parameter, limit=WHOLE).model_dump(mode="json")
     _each_figure_resolves(result, held)
@@ -298,8 +335,8 @@ def test_each_flip_is_its_figure_and_each_segments_call_is_the_decision_at_its_m
     low = 0.0 if not parameter.startswith("threshold:") else None
     segments = result["segments"]
     assert segments, "a sweep always has a segment"
-    for segment in segments:
-        point = _midpoint(segment, low, None)
+    for point in _probes(list(expected.values()), low):
+        (segment,) = _holding(segments, point, result["boundary_belongs_to"])
         assert (segment["modes"], segment["dominant"]) == _decision_at(held, parameter, point), (name, point)
     for left, right in zip(segments, segments[1:], strict=False):
         assert (left["modes"], left["dominant"]) != (right["modes"], right["dominant"]), "adjacent segments differ"
@@ -333,10 +370,11 @@ def test_a_sweep_over_a_range_cuts_only_inside_it_and_pages_its_flips() -> None:
     }
     assert ranged.segments[0].low is None and ranged.segments[-1].high is None
     assert "flips outside the range swept are not listed" in ranged.notes
-    for segment in ranged.segments:
-        point = _midpoint(segment.model_dump(mode="json"), low, high)
-        assert low <= point <= high
-        assert (segment.modes, segment.dominant) == _decision_at(held, "threshold:pass_rate", point)
+    segments = [segment.model_dump(mode="json") for segment in ranged.segments]
+    inside = [float(flip.at.value) for flip in ranged.flips if isinstance(flip.at.value, float)]
+    for point in [low, high, *(point for point in _probes(inside, low) if point <= high)]:
+        (segment,) = _holding(segments, point, ranged.boundary_belongs_to)
+        assert (segment["modes"], segment["dominant"]) == _decision_at(held, "threshold:pass_rate", point), point
 
     seen: list[str] = []
     offset: int | None = 0

@@ -253,6 +253,54 @@ def test_the_overview_lists_the_inputs_own_arms_aspects_measures_criteria_and_ca
     ]
 
 
+#: A judged dimension's judge fields, by the key's last word and the input's attribute.
+JUDGE_FIELDS = (
+    ("tier", "tier"),
+    ("model", "judge_model"),
+    ("calibration", "calibration"),
+    ("calibration_ratings", "calibration_ratings"),
+    ("agreement", "agreement"),
+)
+
+
+def _judge_figures(held: ReportInput, dimension: str) -> list[tuple[str, Any]]:
+    """A judged dimension's judge figures as the input states them, by key: a text, or a number as a float."""
+    judged = held.judged[dimension]
+    stated = [(field, getattr(judged, attribute)) for field, attribute in JUDGE_FIELDS]
+    return [
+        (f"judged.{dimension}.{field}", value if isinstance(value, str) else float(value))
+        for field, value in stated
+        if value is not None and (not isinstance(value, str) or value.strip())
+    ]
+
+
+@pytest.mark.parametrize("name", FIXTURES)
+def test_the_overview_and_the_uncalibrated_judges_caveat_cite_each_judges_tier_calibration_and_agreement(
+    name: str,
+) -> None:
+    _snapshot, held = _held(name)
+    rows = {row.key: row for row in campaign_overview(held, "s").measures}
+    for key, row in rows.items():
+        expected = _judge_figures(held, key) if row.source == "judged" else []
+        assert [(figure.key, figure.value) for figure in row.judge] == expected, key
+    caveat = next((row for row in caveats_list(held).caveats if row.id == "judge_uncalibrated"), None)
+    if caveat is not None:
+        cited = [(figure.key, figure.value) for figure in caveat.figures]
+        assert cited == [figure for dimension in held.judged for figure in _judge_figures(held, dimension)]
+
+
+def test_a_judges_figures_are_cited_where_the_fixtures_state_them() -> None:
+    """The control for the walk above: some fixture states a tier and an agreement, and one carries the caveat."""
+    stated = [_judge_figures(held, key) for _, held in map(_held, FIXTURES) for key in held.judged]
+    keys = {key.rsplit(".", 1)[1] for figures in stated for key, _ in figures}
+    assert {"tier", "calibration"} <= keys
+    assert any(
+        row.id == "judge_uncalibrated" and row.figures
+        for _, held in map(_held, FIXTURES)
+        for row in caveats_list(held).caveats
+    )
+
+
 def test_the_overview_names_each_measures_slices_and_the_key_form_that_reads_it() -> None:
     _snapshot, r1 = _held("r1")
     rows = {row.key: row for row in campaign_overview(r1, "s").measures}
@@ -426,8 +474,13 @@ def test_a_family_naming_no_aspect_among_several_is_keyed_by_its_place_and_each_
 def test_a_kairo_contrasts_confound_is_named_by_its_caveat() -> None:
     _snapshot, held = _held(KAIRO)
     confounded = [row for row in contrasts_list(held).contrasts if row.confounds]
-    assert confounded, "the control: Kairo's 1017 contrasts carry a confound"
-    assert {name for row in confounded for name in row.confounds} == {"confound:observed:reasoning_ratio"}
+    assert confounded, "the control: Kairo's contrasts carry a confound"
+    named = {name for row in confounded for name in row.confounds}
+    caveats = {caveat.id: caveat.kind for caveat in report_caveats(held)}
+    assert all(caveats.get(name) in ("confound", "apparatus") for name in named), "each is a caveat the input carries"
+    assert {name.partition(":")[2] for name in named} == {
+        dimension for contrast in held.contrasts for dimension in contrast.confounds
+    }, "each confound a contrast names, by its caveat"
 
 
 def test_contrasts_list_keeps_only_the_arm_measure_and_aspect_named() -> None:

@@ -1495,6 +1495,14 @@ class EvalStorage:
         """
         return self._load(EvalReportSnapshot, snapshot_id, scope_id)
 
+    def delete_report_snapshot(self, snapshot_id: str, scope_id: str) -> bool:
+        """Delete a report snapshot by id within a scope, raw, reporting whether there was one.
+
+        Raw, so a snapshot no model of this build reads can be deleted: the freeze deletes one stored under the id
+        it would write that no longer reads or no longer matches its digest, and writes the fresh one in its place.
+        """
+        return self._store.delete(snapshot_id, scope_id)
+
     def save_analysis_attempt(self, attempt: EvalAnalysisAttempt, *, if_match: str | None = None) -> None:
         """Persist one generation attempt's record in the scope it names; conditionally when ``if_match`` is given.
 

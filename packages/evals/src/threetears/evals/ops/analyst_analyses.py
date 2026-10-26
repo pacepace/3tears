@@ -3,7 +3,9 @@
 Every operation reads the input by the snapshot's id (:func:`~threetears.evals.ops.analyst.snapshot_input`), so the
 analyst, the editor and a replay compute over the same figures, and runs its computation
 (:mod:`threetears.evals.analysis.analyst.analyses`) on the host's blocking executor: a sweep reads code's decision at
-every flip. A computation that refuses its arguments (a parameter naming nothing the snapshot holds, a breakdown with
+every flip. A paged operation given ``fits`` (a test of whether a page's text is short enough, supplied by the caller
+that renders it) returns the largest page within ``limit`` that passes it, the rest carried to the next page. A
+computation that refuses its arguments (a parameter naming nothing the snapshot holds, a breakdown with
 no control) is refused as the call, with the remedy it names.
 """
 
@@ -13,6 +15,7 @@ from collections.abc import Callable, Sequence
 
 from threetears.evals.analysis.analyst.analyses import (
     BREAKDOWN_PAGE,
+    DOMINANCE_PAGE,
     SENSITIVITY_PAGE,
     Breakdown,
     Dominance,
@@ -25,7 +28,7 @@ from threetears.evals.analysis.analyst.analyses import (
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import RefusedInput, ValidationFailedError
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.ops.analyst import snapshot_input
+from threetears.evals.ops.analyst import sized_page, snapshot_input
 from threetears.evals.ops.host import OpsHost
 
 
@@ -38,7 +41,16 @@ async def _computed[T](host: OpsHost, scope_id: str, snapshot_id: str, compute: 
         raise ValidationFailedError.refusing(refused) from refused
 
 
-async def options_dominance(host: OpsHost, scope_id: str, *, snapshot_id: str, axes: Sequence[str]) -> Dominance:
+async def options_dominance(
+    host: OpsHost,
+    scope_id: str,
+    *,
+    snapshot_id: str,
+    axes: Sequence[str],
+    limit: int = DOMINANCE_PAGE,
+    offset: int = 0,
+    fits: Callable[[Dominance], bool] | None = None,
+) -> Dominance:
     """Which options survive the gates, which dominates on the decision's axes, and what extra axes say beside them.
 
     :param host: The host whose store holds the snapshot.
@@ -49,12 +61,24 @@ async def options_dominance(host: OpsHost, scope_id: str, *, snapshot_id: str, a
     :ptype snapshot_id: str
     :param axes: Extra measures or judged dimensions to compare the survivors on, descriptively.
     :ptype axes: Sequence[str]
-    :return: The survivors, the options removed, the dominant ones, the extra axes and code's call.
+    :param limit: The most options one page holds.
+    :ptype limit: int
+    :param offset: The first option the page holds, in the input's arm order.
+    :ptype offset: int
+    :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
+        ``None`` takes ``limit`` as it is.
+    :ptype fits: Callable[[Dominance], bool] | None
+    :return: The survivors, the options removed, the dominant ones, the extra axes and code's call, a page of options.
     :rtype: Dominance
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read, or an axis names nothing it holds.
     """
-    return await _computed(host, scope_id, snapshot_id, lambda held: dominance(held, axes))
+    return await _computed(
+        host,
+        scope_id,
+        snapshot_id,
+        lambda held: sized_page(lambda rows: dominance(held, axes, limit=rows, offset=offset), limit, fits),
+    )
 
 
 async def decision_sensitivity(
@@ -67,6 +91,7 @@ async def decision_sensitivity(
     range_high: float | None = None,
     limit: int = SENSITIVITY_PAGE,
     offset: int = 0,
+    fits: Callable[[Sensitivity], bool] | None = None,
 ) -> Sensitivity:
     """How code's call moves as one declared criterion moves: where each arm's status flips, and the call between.
 
@@ -86,6 +111,9 @@ async def decision_sensitivity(
     :ptype limit: int
     :param offset: The first flip the page lists.
     :ptype offset: int
+    :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
+        ``None`` takes ``limit`` as it is.
+    :ptype fits: Callable[[Sensitivity], bool] | None
     :return: The segments, a page of flips, and whether the call holds across the range.
     :rtype: Sensitivity
     :raises NotFoundError: No snapshot with that id in the scope.
@@ -96,8 +124,12 @@ async def decision_sensitivity(
         host,
         scope_id,
         snapshot_id,
-        lambda held: sensitivity(
-            held, parameter, range_low=range_low, range_high=range_high, limit=limit, offset=offset
+        lambda held: sized_page(
+            lambda rows: sensitivity(
+                held, parameter, range_low=range_low, range_high=range_high, limit=rows, offset=offset
+            ),
+            limit,
+            fits,
         ),
     )
 
@@ -113,6 +145,7 @@ async def measure_breakdown(
     aspect: str | None = None,
     limit: int = BREAKDOWN_PAGE,
     offset: int = 0,
+    fits: Callable[[Breakdown], bool] | None = None,
 ) -> Breakdown:
     """A measure slice by slice: each candidate against the control in each stratum, task or cell. Exploratory.
 
@@ -134,6 +167,9 @@ async def measure_breakdown(
     :ptype limit: int
     :param offset: The first slice the page holds.
     :ptype offset: int
+    :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
+        ``None`` takes ``limit`` as it is.
+    :ptype fits: Callable[[Breakdown], bool] | None
     :return: A page of slices, and where each candidate's loss sits most.
     :rtype: Breakdown
     :raises NotFoundError: No snapshot with that id in the scope.
@@ -144,14 +180,19 @@ async def measure_breakdown(
         host,
         scope_id,
         snapshot_id,
-        lambda held: breakdown(
-            held, measure_key, arm=arm, slice_by=slice_by, aspect=aspect, limit=limit, offset=offset
+        lambda held: sized_page(
+            lambda rows: breakdown(
+                held, measure_key, arm=arm, slice_by=slice_by, aspect=aspect, limit=rows, offset=offset
+            ),
+            limit,
+            fits,
         ),
     )
 
 
 __all__ = [
     "BREAKDOWN_PAGE",
+    "DOMINANCE_PAGE",
     "SENSITIVITY_PAGE",
     "Breakdown",
     "Dominance",
