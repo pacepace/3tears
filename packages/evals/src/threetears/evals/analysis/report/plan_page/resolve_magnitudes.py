@@ -18,7 +18,8 @@ p95, which a caption says. A floor or budget line sits at its criterion's thresh
 
 - *strata*, *tasks*: the slices are the x, in the input's order; an arm missing a slice's figure is left out and
   named in a caption;
-- *measures*, *judged*: a measure's bins (each arm's share in each), else the aspects it is read on.
+- *measures*, *judged*: a measure's bins (each arm's share in each), else its aspects: the lead aspect (its own
+  figures), then each other aspect it holds figures on.
 
 Bands sit on at most two lines, and only where the chart states a level.
 """
@@ -436,14 +437,21 @@ def _figure_lines(context: ChartContext) -> tuple[list[str], list[_Line], Quanti
                 lines.append(_Line(arm=arm, values=[float(share) for share in stat.shares], bands=None))
         values = [value for line in lines for value in line.values]
         return categories, lines, quantity("percent", values), []
-    aspects = [aspect.id for aspect in report_input.aspects]
+    # The lead aspect's figures are the measure's own (per_arm: the first asked aspect, else the first); any other
+    # aspect is a point of the x only where the measure holds its figures there (by_aspect), never the lead's again.
+    table = report_input.measures.get(key) or report_input.judged.get(key)
+    if table is None or not report_input.aspects:
+        raise context.refuse(f"lines over the aspects read a measure's figures on each, and {key!r} holds none")
+    lead = next((aspect for aspect in report_input.aspects if aspect.asked), report_input.aspects[0])
+    others = [aspect.id for aspect in report_input.aspects if aspect.id != lead.id and aspect.id in table.by_aspect]
+    aspects = [lead.id, *others]
     categories = [context.look.reader("aspect", aspect) for aspect in aspects]
     lines = []
     missing: list[str] = []
     for arm in arms:
         reads = []
         for aspect in aspects:
-            stat = figure_stat(report_input, key, arm, aspect if aspect != aspects[0] else "")
+            stat = table.per_arm.get(arm) if aspect == lead.id else table.by_aspect[aspect].get(arm)
             reads.append(stat_value(report_input, key, stat) if stat is not None else None)
         if any(read is None for read in reads):
             missing.append(_arm_name(context, arm))
