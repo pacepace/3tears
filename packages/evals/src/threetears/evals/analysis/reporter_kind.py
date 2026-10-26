@@ -127,6 +127,27 @@ PLAN_CASE_VERSION: Final = 2
 #: Every reporter kind version this build reads, oldest first.
 ReporterKindVersion = Literal[1, 2]
 
+#: The limit a case states when the message it freezes is not the one its recorded writer was sent, by what the case
+#: judges (``ReporterCase.kind_version``): a memo's writer read a rendered bundle, a plan's planner its report input's
+#: view. ``{recorded}`` is the digest the generation recorded.
+WRITER_MESSAGE_DIFFERS: Mapping[ReporterKindVersion, str] = types.MappingProxyType(
+    {
+        MEMO_CASE_VERSION: (
+            "The bundle reproduces the one the recorded memo was written from, but the writer message frozen here "
+            "is not the one its generator was sent (recorded digest {recorded}): how a bundle is rendered changed "
+            "between the generation and this freeze. The memo is judged against a message its writer did not read, "
+            "so a claim resting on something only the older rendering showed scores as ungrounded here."
+        ),
+        PLAN_CASE_VERSION: (
+            "The planner's message frozen here is not the one the planner was sent (recorded digest {recorded}): how "
+            "the planner is shown its report input changed between the generation and this freeze, or the input "
+            "itself did, which a limit on the report input then states. The plan is judged against a message its "
+            "planner did not read, so a claim resting on something only the older message showed scores as "
+            "ungrounded here."
+        ),
+    }
+)
+
 
 #: Requests the memo writer's generation can make, which a reporter cell measures: the memo, and one repair
 #: round-trip a refused output buys (:func:`~threetears.evals.analysis.generator.generate_analysis`).
@@ -1508,6 +1529,7 @@ __all__ = [
     "LABEL_BANDS",
     "MEMO_CASE_VERSION",
     "PLAN_CASE_VERSION",
+    "WRITER_MESSAGE_DIFFERS",
     "REPLAY_NOTES_HEADING",
     "REPORTER_CASE_KEY",
     "REPORTER_KIND",

@@ -55,6 +55,7 @@ from threetears.evals.analysis.report_input_build import report_input as build_r
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporter_bank import case_limits, decidable_reporter_case_bank, read_calibration
 from threetears.evals.analysis.reporter_kind import (
+    MEMO_CASE_VERSION,
     PLAN_CASE_VERSION,
     REPORTER_KIND,
     LabelCriterion,
@@ -2671,6 +2672,7 @@ def freeze_reporter_case(
         recorded_fingerprint=analysis.generation.bundle_fingerprint if analysis is not None else None,
         writer_message=writer_message,
         recorded_message_digest=recorded_message_digest,
+        kind_version=PLAN_CASE_VERSION if plan_case is not None else MEMO_CASE_VERSION,
     )
     planned_fields: dict[str, Any] = {}
     if plan_case is not None:

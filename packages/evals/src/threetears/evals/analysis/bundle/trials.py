@@ -276,10 +276,11 @@ def _census(arm: str, results: Sequence[EvalResult], readings: Mapping[str, Tria
     return ArmScoreboard(
         variant_key=arm,
         ran=len(results),
-        lost=dict(sorted(lost.items(), key=lambda item: (-item[1], item[0]))),
+        # The census orders its causes itself (most trials first), on assembly and on every read back.
+        lost=dict(lost),
         usable=len(usable),
         passed=sum(1 for reading in states if reading.state == "passed"),
-        failed=dict(sorted(failed.items(), key=lambda item: (-item[1], item[0]))),
+        failed=dict(failed),
         cases=len({result.test_case_id for result in results}),
         usable_cases=len({result.test_case_id for result in usable}),
         no_criterion=sum(1 for reading in states if reading.state == "passed" and reading.no_criterion),
