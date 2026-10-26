@@ -13,6 +13,7 @@ from __future__ import annotations
 import html
 import json
 import re
+from collections.abc import Collection
 from importlib.resources import files
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell
 from threetears.evals.analysis.report.charts import ChartStatus
@@ -174,7 +175,7 @@ def table_html(block: TableBlock) -> str:
     if not block.rows:
         grid = '<p class="order">(no rows)</p>'
     else:
-        grid = _grid(block)
+        grid = grid_html(block)
         if block.total_rows > len(block.rows):
             grid += f'<p class="order">{len(block.rows)} of {block.total_rows} rows shown.</p>'
     title = escape(block.title)
@@ -227,14 +228,24 @@ def _cell_code(text: str) -> str:
     return _CODE.sub(span, escape(text))
 
 
-def _grid(block: TableBlock) -> str:
-    """A table of served cells' text, scrolling inside its own ``.tbl`` frame rather than widening the page.
+def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
+    """A table of served cells' text, scrolling inside its own ``.tbl`` frame rather than widening the page: a table
+    block's rows alone, which :func:`table_html` heads with the block's title and a page that names the table itself
+    (the planned page's options table) lays out as it is.
 
     A column of numbers is classed ``num`` on every cell, header included, so the stylesheet right-aligns it; a cell
     of prose is classed ``wrap`` (the kit's) so it wraps at a measure instead of widening its column. A column whose cells carry
     an interval is classed ``glyph``: each such cell draws its interval beside its number
     (:func:`~threetears.evals.analysis.report.svg.interval_glyph_svg`), every cell of the column in one unit on one
-    scale, and the scale's ends are written once under the table (:func:`_scale_line`).
+    scale, and the scale's ends are written once under the table (:func:`_scale_line`). A row at a position in
+    ``highlighted`` is the kit's highlighted row (``tr.hl``): the one a page sets apart, as the recommendation.
+
+    :param block: The table.
+    :ptype block: TableBlock
+    :param highlighted: The positions of the rows set apart; none by default.
+    :ptype highlighted: Collection[int]
+    :return: The table's markup.
+    :rtype: str
     """
     scales = _glyph_scales(block)
     classes = {
@@ -247,7 +258,7 @@ def _grid(block: TableBlock) -> str:
         f'<th scope="col"{classes[column.key]}>{_header(column.header, column.term)}</th>' for column in block.columns
     )
     body = []
-    for row in block.rows:
+    for position, row in enumerate(block.rows):
         cells = []
         for column in block.columns:
             cell = row[column.key]
@@ -285,6 +296,8 @@ def _grid(block: TableBlock) -> str:
         # prose-canary: allow — a trial id (T4), which code numbered, not anything a model wrote
         elif block.name == "passed_trials" and "trial" in row and TRIAL_ID.fullmatch(row["trial"].text):
             anchor = f' id="{row["trial"].text}"'
+        if position in highlighted:
+            anchor += ' class="hl"'
         body.append(f"<tr{anchor}>" + "".join(cells) + "</tr>")
     grid = f'<div class="tbl"><table><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
     return grid + _scale_line(block, scales)
@@ -375,7 +388,7 @@ def _column_class(block: TableBlock, key: str) -> str:
     return f' class="num{emphasis}"'
 
 
-def chart_html(block: ChartBlock, chart_id: str, *, static: bool) -> str:
+def chart_html(block: ChartBlock, chart_id: str, *, static: bool, figcaption: bool = True) -> str:
     """A chart as the kit's ``.fig``: its title, the chart the kit draws, and a table of every value it draws.
 
     The chart is a ``div.chart`` whose ``data-chart`` is its JSON, escaped into the attribute: the kit's script draws
@@ -385,7 +398,10 @@ def chart_html(block: ChartBlock, chart_id: str, *, static: bool) -> str:
 
     A static page writes no ``div.chart`` at all, so no script is wanted to draw one, no empty box stands where it
     would be, and the one rule that hides the table (``.chart:not(:empty) + .chart-values``) never matches: every
-    figure is its title and its table."""
+    figure is its title and its table.
+
+    Without ``figcaption`` the figure carries no visible title, for a figure whose heading the page writes beside it
+    (a section's headline); its table keeps the title as its caption, for a screen reader."""
     headers, rows = block.values_table()
     head = "".join(f'<th scope="col">{escape(header)}</th>' for header in headers)
     body = "".join("<tr>" + "".join(f"<td>{escape(cell)}</td>" for cell in row) + "</tr>" for row in rows)
@@ -399,7 +415,8 @@ def chart_html(block: ChartBlock, chart_id: str, *, static: bool) -> str:
         )
     return (
         f'<figure class="fig" data-figure="{escape(block.chart)}">'
-        f"<figcaption>{escape(block.title)}</figcaption>{chart}"
+        + (f"<figcaption>{escape(block.title)}</figcaption>" if figcaption else "")
+        + f"{chart}"
         f'<div class="tbl chart-values"><table><caption>{escape(block.title)}</caption><thead><tr>{head}</tr></thead>'
         f"<tbody>{body}</tbody></table></div></figure>"
     )
@@ -490,6 +507,7 @@ __all__ = [
     "code_html",
     "escape",
     "glossary_slug",
+    "grid_html",
     "inline_html",
     "markdown_html",
     "one_line",
