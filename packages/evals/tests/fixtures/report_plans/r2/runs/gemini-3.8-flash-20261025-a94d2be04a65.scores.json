@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261025-a94d2be04a65",
+  "input": "r2",
+  "input_digest": "3b825233f6120f9deb81f63c4a9c2849c6ba2d388a1db0be780cbe5395add19d",
+  "plan_digest": "4e9ef11897defea525bb45a7d3e19d89abacdd7c2ab07bffc5dc758c1e3d6992",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "f22320aad5cf7deb7d6e65c1fbdfd9bf3532240ce3a71df688126db1bd8bad60",
+    "contract_digest": "d633628a4bf781225146719e712eb941c001887b44ee7208a08a282fc8c5ff0d"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision with instruction and reason, naming the options table's recommended arm, which the first chart does not contradict (J is the only arm meeting both gates).",
+      "quote": "Adopt Brisk-S · reasoning low · 1 retry (J): it meets both gates at $0.30 per 1,000 replies.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: a supporting fact (the pass rate and latency under the cap), then what would change the answer (a stricter accuracy gate).",
+      "quote": "Brisk-S · reasoning low · 1 retry (J) delivers 97.1% pass rate and tail latency under the budget cap. A stricter accuracy gate above 98% would force higher-tier models.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "There is no flag, and no caveat is stated twice; the slim accuracy margin and multi-hop risk appear once, in Watch.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The first section headline claims three configurations survive both gates, but only Brisk-S low with 1 retry passes both, and its chart plots pass rate only, so it cannot show the latency criterion.",
+      "quote": "Only three configurations survive both accuracy and latency criteria.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Arms, tasks and measures are named in reader words throughout the prose; no internal ids, hashes or measure keys appear above Full results.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the accuracy-gate margin, which is the call's weakest margin, then a scoped risk (multi-hop queries), though it gives no size for the margin.",
+      "quote": "The margin over the accuracy gate is slim, and multi-hop queries remain the most vulnerable task type.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One measure goes by several names: pass rate is also \"passing rate\" and \"accuracy\", and the latency gate is also \"latency budget\", \"budget cap\" and \"latency ceiling\".",
+      "quote": "A single retry lifts passing rate without jumping to the next model tier.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The headline, lede and decision slots above the options table say what to deploy, why (it meets both gates at its cost) and the main risk (the slim accuracy margin).",
+      "quote": "Deploy Brisk-S · reasoning low · 1 retry (J).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "Next is a ship-and-monitor instruction, not an experiment whose result could change the call.",
+      "quote": "Ship Brisk-S · reasoning low · 1 retry (J) to production and track multi-hop plan failures.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The plan has no confidence clauses, so the item passes.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "fail",
+      "reason": "The arm's cost is offered as the figure for meeting the latency budget, which it does not measure (the lede's 98% is also another arm's pass rate, not where the call flips).",
+      "quote": "It satisfies the accuracy gate at 97.1% and the latency budget at $0.30 per 1,000 replies.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-26T00:27:08Z"
+}

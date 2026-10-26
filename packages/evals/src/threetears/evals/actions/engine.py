@@ -466,6 +466,7 @@ class CampaignUpdateParams(EvalBaseModel):
     aspects: Annotated[list[dict[str, Any]] | None, CampaignChanges.model_fields["aspects"]] = None
     floors: Annotated[list[dict[str, Any]] | None, CampaignChanges.model_fields["floors"]] = None
     short_names: Annotated[dict[str, str | None] | None, CampaignChanges.model_fields["short_names"]] = None
+    arm_short_names: Annotated[dict[str, str | None] | None, CampaignChanges.model_fields["arm_short_names"]] = None
     exploratory: Annotated[bool, CampaignChanges.model_fields["exploratory"]] = False
     control_from_run_id: Annotated[str | None, CampaignChanges.model_fields["control_from_run_id"]] = None
 
@@ -1982,13 +1983,13 @@ def engine_actions() -> tuple[Action, ...]:
             example={"campaign_id": campaign_id, "question": "Is model-b as accurate as model-a, and cheaper?"},
             detail=(
                 "Changes only what it is sent: name, description, question, aspects (replacing them whole, holding "
-                "no runs), floors and short_names (what a page prints for each aspect). A declaration it writes is validated and gated as campaign_create's is, and "
+                "no runs), floors, short_names (what a page prints for each aspect) and arm_short_names (for each named arm). A declaration it writes is validated and gated as campaign_create's is, and "
                 "dated now. Aspects none of which declares a design withdraw the declaration, only beside "
                 "exploratory: true, which clears the question, floors and arms too; exploratory: true beside a "
                 "design is refused. control_from_run_id names one of the campaign's runs whose variant becomes the "
                 "control arm, resolved for you; null clears it. Once any aspect holds a run the declaration is "
                 "frozen: question, aspects and floors are refused in any form, and so is re-pointing or clearing a "
-                "control, which may be named once while none is; name, description and short_names stay editable, and an "
+                "control, which may be named once while none is; name, description, short_names and arm_short_names stay editable, and an "
                 "amended declaration is a new campaign (campaign_create, adopting the aspects it keeps). Runs join "
                 "and leave through campaign_runs_add and campaign_runs_remove."
             ),
@@ -2062,10 +2063,13 @@ def engine_actions() -> tuple[Action, ...]:
             example={"campaign_id": campaign_id},
             long_running=True,
             detail=(
+                "The report planner writes the analysis as a report plan, in two calls (its structure, then its "
+                "prose), each repaired at most once: up to four calls. "
                 "Refused before any spend when the campaign has no evidence or a generation of it is already "
                 "running. Every call is priced before it is sent against the host's out-of-run cap: the first here, "
-                "so one over the cap is refused with nothing spent; the one repair round-trip a refused output buys "
-                "when its prompt exists, against what is left. analysis_estimate prices it first without spending. "
+                "so one over the cap is refused with nothing spent; the prose call and any repair round-trip a refused "
+                "reply buys when its prompt exists, against what is left. analysis_estimate prices it first without "
+                "spending. "
                 "Each call is ledgered under purpose analysis, so scope_out_of_run_spend reads it; the job's record "
                 "is the generation attempt, written however it ends."
             ),
@@ -2183,6 +2187,11 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_analyses_list,
             render=render.render_model,
             example={"campaign_id": campaign_id},
+            detail=(
+                "Each analysis says what wrote it (basis): memo, for one stored before the report planner, or plan, "
+                "for one the planner wrote, with its report plan's id; report_read carries the reported analysis's "
+                "plan."
+            ),
         ),
         Action(
             name="insights_list",
@@ -2242,7 +2251,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "Each aspect's trials section lists its failed and lost trials, one row each naming its stored result "
                 "(read it with result_get), then its passed trials. trials='all' adds each failed or lost trial's full "
                 "record (what it asked, what the judge saw and said, and why): most of a large campaign's page, so "
-                "read it when you need the records, or read one trial with result_get."
+                "read it when you need the records, or read one trial with result_get. analysis_basis says what wrote "
+                "the analysis: memo (an analysis stored before the report planner) or plan, whose report plan is "
+                "plan (report-plan/1 JSON, figures by key)."
             ),
         ),
         Action(
@@ -2283,7 +2294,10 @@ def engine_actions() -> tuple[Action, ...]:
                 "campaign's bundle, frozen with its fingerprint, and a reporter template launches nothing until one "
                 "is frozen. With recorded_analysis_id the case also pins that analysis's memo, which the as-recorded "
                 "candidate replays and labels are written about; without it only a generating candidate can run "
-                "the case. One campaign and memo is one case: a freeze matching the pair's live case returns it, and "
+                "the case. An analysis the report planner wrote freezes as a plan case (kind_version 2), of a "
+                "campaign of any number of aspects: its plan with every figure written out, as the page writes it, "
+                "is what is judged and what a memo_excerpt quotes, and only as-recorded runs it. "
+                "One campaign and memo is one case: a freeze matching the pair's live case returns it, and "
                 "one that differs (other labels, or evidence that moved) is refused unless supersedes names the live "
                 "case. Each label is a reader's verdict in its dimension's form: a direction on an ordinal "
                 "dimension, pass or fail on a pass_fail one, and a mismatch is refused. A memo_excerpt quotes the "

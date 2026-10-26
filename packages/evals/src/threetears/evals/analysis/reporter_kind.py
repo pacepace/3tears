@@ -21,6 +21,13 @@ judge, through the ordinary run path.
 - **Labels** — a reviewer's written read of a recorded memo, mapped to a rubric dimension and
   carrying the criterion text it was written against — ride on the case for the calibration
   comparison and are never shown to the judge.
+- **A plan case** (:data:`PLAN_CASE_VERSION`) judges what the report planner wrote. It freezes the bundle frozen with
+  the planned analysis, the report input built from it, the plan in key form and the planner's prompt version; the
+  judged text is the plan with every figure key written out against that input (:func:`render_plan_for_judge`, as
+  the campaign's page writes it), and the judge's material what the planner read of it
+  (:func:`~threetears.evals.analysis.planner.plan_user_message`). Both are frozen as text in the fields a memo case
+  uses (``recorded_memo``, ``writer_message``), so the replay, the excerpt check and the writer-message check read the
+  two kinds alike. A memo case (:data:`MEMO_CASE_VERSION`, every case stored before) is read and judged as it was.
 
 Generic by construction: nothing here names a subject's shape, a product or a domain. It implements
 the run-side ``CandidateKind`` seam from inside the analysis package. Where it belongs is already
@@ -30,11 +37,13 @@ and moving it is the remaining half of that split.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
-from collections.abc import Callable
+import types
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal
+from typing import Annotated, Any, Final, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -50,7 +59,10 @@ from threetears.evals.analysis.generator import (
     refuse_an_undescribable_arm_table,
     user_message_digest,
 )
+from threetears.evals.analysis.planned_analysis import report_input_document_digest
+from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report.serialize_md import markdown_table
+from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report.words import (
     CONFIDENCE_WORDS,
     evidence_columns,
@@ -69,8 +81,10 @@ from threetears.evals.kernel.candidate_kind import (
     VariantConfig,
 )
 from threetears.evals.kernel.capped_completion import CappedCompletion, call_ceiling
+from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.cassettes import CellCassettes
-from threetears.evals.kernel.inner_ceilings import generation_ceiling_s, judge_phase_ceiling_s
+from threetears.evals.kernel.inner_ceilings import judge_phase_ceiling_s
+from threetears.evals.kernel.report_plan import PlannedReport, ReportPlan
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.schema.models import (
     DimName,
@@ -85,6 +99,7 @@ from threetears.evals.kernel.provider import describe_failure, log_provider_fail
 from threetears.evals.kernel.text_block import one_line, under
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
 from threetears.evals.schema.logs import contain, get_logger
+from threetears.evals.schema.prose import field_is_prose
 
 log = get_logger(__name__)
 
@@ -98,6 +113,25 @@ AS_RECORDED_MODEL = "as-recorded"
 #: The key under which a reporter case lives inside ``EvalTestCase.host_payload``.
 REPORTER_CASE_KEY = "reporter_case"
 
+#: The reporter kind's version for a case judging a MEMO: the memo writer's output, rendered as written
+#: (:func:`render_memo_as_written`) and judged against the writer message the case froze. Every case stored before
+#: plans were judged is one, and is read and judged exactly as it was; it is never migrated.
+MEMO_CASE_VERSION: Final = 1
+
+#: The reporter kind's version for a case judging a PLAN: the report planner's output, its figure keys written out
+#: against the report input the case froze (:func:`render_plan_for_judge`), judged against what the planner read
+#: (:func:`~threetears.evals.analysis.planner.plan_user_message`). The subject changed, so the version did: a plan
+#: case's scores are never pooled with a memo case's (:func:`~threetears.evals.analysis.reporter_bank.read_calibration`).
+PLAN_CASE_VERSION: Final = 2
+
+#: Every reporter kind version this build reads, oldest first.
+ReporterKindVersion = Literal[1, 2]
+
+
+#: Requests the memo writer's generation can make, which a reporter cell measures: the memo, and one repair
+#: round-trip a refused output buys (:func:`~threetears.evals.analysis.generator.generate_analysis`).
+MEMO_WRITER_CALLS = 2
+
 
 def reporter_cell_timeout_s(
     *,
@@ -110,8 +144,9 @@ def reporter_cell_timeout_s(
 ) -> float:
     """The wall-clock ceiling of one reporter cell, derived from the ceilings it wraps.
 
-    A reporter cell is one generation (:func:`~threetears.evals.analysis.generator.generation_ceiling_s`,
-    so the generation's request count lives in one place), then its rubric's judge phase
+    A reporter cell is one memo writer's generation, :data:`MEMO_WRITER_CALLS` requests at the generator's cap (an
+    analysis generation is the planner's, :func:`~threetears.evals.kernel.inner_ceilings.generation_ceiling_s`, and
+    makes more), then its rubric's judge phase
     (:func:`judge_phase_ceiling_s`). Every request in either is bounded by the host's own answer for one
     request at its output cap (``request_s``), so the ceiling sits above the slowest finishing cell
     rather than at a sampled duration: the engine's generic 600s cancelled a generation that was still
@@ -137,7 +172,7 @@ def reporter_cell_timeout_s(
     :return: The cell ceiling in seconds: the generation's ceiling plus the judge phase's.
     :rtype: float
     """
-    generation_s = generation_ceiling_s(request_s=request_s, generator_max_tokens=generator_max_tokens)
+    generation_s = MEMO_WRITER_CALLS * request_s(generator_max_tokens)
     judging_s = judge_phase_ceiling_s(
         judge_dims=judge_dims,
         judge_concurrency=judge_concurrency,
@@ -301,7 +336,10 @@ class ReporterLabel(BaseModel):
 
 
 class ReporterCase(BaseModel):
-    """What one reporter case pins: a frozen bundle, optionally the memo it got, and its labels.
+    """What one reporter case pins: a frozen bundle, optionally the memo (or plan) it got, and its labels.
+
+    ``kind_version`` says which: a memo case freezes no plan field; a plan case freezes every one, with its judged text
+    in ``recorded_memo`` and what its planner read in ``writer_message``.
 
     Plain ``BaseModel`` because ``bundle`` and ``recorded_memo`` are documents whose strings are
     data, not input to tidy.
@@ -365,6 +403,48 @@ class ReporterCase(BaseModel):
             "against it still read it, and no launch runs it again."
         ),
     )
+    kind_version: ReporterKindVersion = Field(
+        default=MEMO_CASE_VERSION,
+        description=(
+            "What the case judges: 1, a memo (every case stored before plans were judged); 2, a report plan. A plan "
+            "case's ``recorded_memo`` is the plan rendered for the judge (:func:`render_plan_for_judge`), and its "
+            "``writer_message`` what the planner read (``plan_user_message``) over the frozen ``report_input``."
+        ),
+    )
+    report_input: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "A plan case's report input, frozen whole (``ReportInput`` JSON by alias), built from the frozen bundle: "
+            "what the plan's figure keys resolve against and what the judge's material is rendered from. None on a "
+            "memo case."
+        ),
+    )
+    report_input_digest: str | None = Field(
+        default=None,
+        description="The frozen report input's digest (``report_input_digest``), re-checked on every read. None on a memo case.",
+    )
+    recorded_report_input_digest: str | None = Field(
+        default=None,
+        description=(
+            "The digest of the report input the recorded plan was written against, copied from its stored plan "
+            "(``EvalReportPlan.report_input_digest``), so whether the frozen input is that one stays checkable from "
+            "the case alone. None on a memo case."
+        ),
+    )
+    recorded_plan: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "The recorded plan in key form, frozen whole (``ReportPlan`` JSON by alias): its prose with figure keys, "
+            "not numbers. None on a memo case."
+        ),
+    )
+    planner_prompt_version: str | None = Field(
+        default=None,
+        description=(
+            "The prompt version the recorded plan's planner ran (``ReportPlanProvenance.prompt_version``): what a "
+            "calibration groups plan cases by beside the kind version. None on a memo case."
+        ),
+    )
 
     @model_validator(mode="after")
     def _a_recorded_memo_travels_with_what_its_writer_read(self) -> ReporterCase:
@@ -394,6 +474,36 @@ class ReporterCase(BaseModel):
             raise ValueError(
                 f"every label a reporter case stores carries the criterion its freeze stamped; the label(s) on "
                 f"{', '.join(unstamped)} carry none"
+            )
+        planned = {
+            "report_input": self.report_input is not None,
+            "report_input_digest": self.report_input_digest is not None,
+            "recorded_report_input_digest": self.recorded_report_input_digest is not None,
+            "recorded_plan": self.recorded_plan is not None,
+            "planner_prompt_version": self.planner_prompt_version is not None,
+            "recorded_memo": self.recorded_memo is not None,
+        }
+        if self.kind_version == PLAN_CASE_VERSION and not all(planned.values()):
+            missing = ", ".join(name for name, has in planned.items() if not has)
+            raise ValueError(
+                f"a plan reporter case (kind version {PLAN_CASE_VERSION}) freezes its recorded plan, the report input "
+                f"it resolves against, their digests, the planner's prompt version and the plan as the judge reads it "
+                f"together; this case lacks {missing}"
+            )
+        if self.report_input is not None and self.report_input_digest is not None:
+            # Checked on the raw document, never through the running build's ReportInput: the frozen input is the
+            # evidence the labels were written against, and a schema move must not make a case unreadable.
+            if (held_digest := report_input_document_digest(self.report_input)) != self.report_input_digest:
+                raise ValueError(
+                    f"the case's frozen report input digests to {held_digest} and the case recorded "
+                    f"{self.report_input_digest}: it does not hold the input it names"
+                )
+        if self.kind_version == MEMO_CASE_VERSION and (
+            stray := [name for name, has in planned.items() if has and name != "recorded_memo"]
+        ):
+            raise ValueError(
+                f"a memo reporter case (kind version {MEMO_CASE_VERSION}) freezes no plan, and this case holds "
+                f"{', '.join(stray)}"
             )
         return self
 
@@ -457,6 +567,17 @@ def reporter_case_payload(case: ReporterCase) -> dict[str, Any]:
         for added in ("direction", "verdict", "memo_excerpt", "reader", "collected_by"):
             if label[added] is None:
                 del label[added]
+    # A memo case is stored exactly as a build before plan cases stored it: no kind version, no plan fields.
+    if case.kind_version == MEMO_CASE_VERSION:
+        for planned in (
+            "kind_version",
+            "report_input",
+            "report_input_digest",
+            "recorded_report_input_digest",
+            "recorded_plan",
+            "planner_prompt_version",
+        ):
+            del frozen[planned]
     return {REPORTER_CASE_KEY: frozen}
 
 
@@ -690,6 +811,13 @@ def _generation_input(test_case: EvalTestCase) -> tuple[ReporterCase, CampaignBu
     case = _read_case(test_case)
     if isinstance(case, str):
         return case
+    if case.kind_version != MEMO_CASE_VERSION:
+        # A generating candidate here is a memo writer, and a plan case's subject is a plan: its output would be
+        # scored against a rubric and evidence that judge another writer.
+        return (
+            f"apparatus: test case {test_case.id} judges a report plan (reporter kind version {case.kind_version}), "
+            "and a generating reporter candidate writes memos; a plan case runs as recorded"
+        )
     try:
         bundle = rebuild_bundle(case)
     except ValueError as exc:
@@ -1082,8 +1210,14 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
     :ptype analysis: EvalAnalysis
     :return: The text the judge reads as the output under review.
     :rtype: str
+    :raises RefusedInput: The analysis was written by the report planner, so it holds no memo.
     """
     document = analysis.document
+    if document is None:
+        raise RefusedInput(
+            f"analysis {analysis.id} was written by the report planner and holds no memo to render",
+            remedy="render a memo the memo writer wrote; a planned analysis is read through its plan",
+        )
     arm = arm_namer(analysis)
     resolutions: list[FindingResolution | None] = (
         list(analysis.resolutions) if analysis.resolutions else [None] * len(document.findings)
@@ -1170,6 +1304,72 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
     return "\n\n".join("\n".join(section) for section in sections) + "\n"
 
 
+def _model_in(annotation: Any) -> type[BaseModel] | None:
+    """The model a field's annotation holds, directly or inside a container, ``Annotated`` or union; None for none."""
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    origin = get_origin(annotation)
+    if origin is None:
+        return None
+    arguments = get_args(annotation)
+    if origin is Annotated:
+        arguments = arguments[:1]
+    elif origin not in (Union, types.UnionType) and not (isinstance(origin, type) and issubclass(origin, Sequence)):
+        return None
+    return next((model for argument in arguments if (model := _model_in(argument)) is not None), None)
+
+
+def _as_planned(node: BaseModel, shape: type[BaseModel], written: Callable[[str], str]) -> dict[str, Any]:
+    """``node`` read as ``shape``, one of the models it extends: only ``shape``'s fields, at every depth, and every
+    prose field written out."""
+    projected: dict[str, Any] = {}
+    for name, info in shape.model_fields.items():
+        value = getattr(node, name)
+        nested = _model_in(info.annotation)
+        if nested is not None and isinstance(value, BaseModel):
+            projected[name] = _as_planned(value, nested, written)
+        elif nested is not None and isinstance(value, Sequence) and not isinstance(value, str):
+            projected[name] = [_as_planned(item, nested, written) for item in value]
+        elif isinstance(value, str) and field_is_prose(info):
+            projected[name] = written(value)
+        elif isinstance(value, BaseModel):
+            # A field the stored plan holds as a model where the planner's part holds a plain value (an answer's
+            # warning: its position as the planner chose it, the warning code resolved it to as stored): the stored
+            # model, which names what the planner pointed at.
+            projected[name] = value.model_dump(mode="json")
+        else:
+            projected[name] = value
+    return projected
+
+
+def render_plan_for_judge(
+    plan: ReportPlan, report_input: ReportInput, arm_names: Mapping[str, str] | None = None
+) -> str:
+    """The plan as the planner wrote it, with every figure key written out: the text the reporter eval judges.
+
+    The planner's own part of the plan (:class:`~threetears.evals.kernel.report_plan.PlannedReport`, what it chose
+    and wrote), as indented JSON in its field order, with nothing code filled in beside it (the signals, the
+    masthead, the options columns, a chart's unit). Every prose field has its figure keys and ``{arm:<id>}``
+    references written out by :func:`~threetears.evals.analysis.report.figure_keys.render`, the renderer the
+    campaign's page writes the plan's prose with, against the same report input, so each sentence reads as a
+    reader sees it. Deterministic: one plan and input render to one string.
+
+    :param plan: The stored plan.
+    :ptype plan: ReportPlan
+    :param report_input: The report input it was written against.
+    :ptype report_input: ReportInput
+    :param arm_names: Each arm's computed short name, by id, as :func:`~threetears.evals.analysis.report.figure_keys.render`
+        takes it; None for none, as the campaign's page passes.
+    :ptype arm_names: Mapping[str, str] | None
+    :return: The text the judge reads as the output under review.
+    :rtype: str
+    :raises UnresolvableReference: A figure key does not resolve against ``report_input``.
+    """
+    names = dict(arm_names or {})
+    projected = _as_planned(plan, PlannedReport, lambda text: render(text, report_input, names))
+    return json.dumps(projected, indent=2, ensure_ascii=False) + "\n"
+
+
 def replay_case_material(case: ReporterCase, material: str) -> str:
     """The evidence a RECORDED memo is judged against: the frozen bundle, plus what its author could not see.
 
@@ -1193,6 +1393,14 @@ def replay_case_material(case: ReporterCase, material: str) -> str:
     if not case.limits:
         return material
     notes = "\n".join(f"- {limit}" for limit in case.limits)
+    if case.kind_version == PLAN_CASE_VERSION:
+        return (
+            f"{material}\n\n{REPLAY_NOTES_HEADING.replace('memo', 'plan')}\n"
+            "The evidence above is rendered by a later build than the one the plan under review was written "
+            "against, and differs from what its planner read as follows. Judge every claim the plan makes against "
+            "the evidence above, but do not count it against the plan that it does not mention any of these:"
+            f"\n{notes}"
+        )
     return (
         f"{material}\n\n{REPLAY_NOTES_HEADING}\n"
         "The memo under review was written against an EARLIER assembly of this evidence. The differences "
@@ -1281,8 +1489,13 @@ class AsRecordedReporterKind:
             # one without), so the material is the frozen text and the bundle is not read.
             material = judge_case_material(case, generated_over=None)
 
+        recorded: dict[str, Any] = {"recorded_analysis_id": case.recorded_analysis_id, "memo": case.recorded_memo}
+        if case.kind_version == PLAN_CASE_VERSION:
+            # The plan as rendered for the judge rides under ``memo``, where every reader of a replay finds the judged
+            # text; the plan in key form beside it.
+            recorded |= {"kind_version": case.kind_version, "plan": case.recorded_plan}
         return CandidateOutput(
-            output=[{"recorded_analysis_id": case.recorded_analysis_id, "memo": case.recorded_memo}],
+            output=[recorded],
             judge_evidence=JudgeEvidence(case_material=material, artifact=case.recorded_memo),
             telemetry=CandidateTelemetry(
                 usage=[], untimed_reason="a replay of the recorded memo — nothing was generated"
@@ -1293,6 +1506,8 @@ class AsRecordedReporterKind:
 __all__ = [
     "AS_RECORDED_MODEL",
     "LABEL_BANDS",
+    "MEMO_CASE_VERSION",
+    "PLAN_CASE_VERSION",
     "REPLAY_NOTES_HEADING",
     "REPORTER_CASE_KEY",
     "REPORTER_KIND",
@@ -1303,6 +1518,7 @@ __all__ = [
     "PreparedReporter",
     "ReporterCase",
     "ReporterKind",
+    "ReporterKindVersion",
     "ReporterLabel",
     "WriterMessageCheck",
     "judge_case_material",
@@ -1310,6 +1526,7 @@ __all__ = [
     "rebuild_bundle",
     "render_case_material",
     "render_memo_as_written",
+    "render_plan_for_judge",
     "replay_case_material",
     "reporter_case_of",
     "reporter_case_payload",

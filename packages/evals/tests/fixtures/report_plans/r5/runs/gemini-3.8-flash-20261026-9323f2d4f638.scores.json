@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261026-9323f2d4f638",
+  "input": "r5",
+  "input_digest": "e369ab25f05eaf9a7f83d11329dc7ce4a5ffba9d557633b18ee33b82a2f59a96",
+  "plan_digest": "152c42ba23d0cba6d92e05ff80eb61e70afc8a920180540fa09755e3f27f9b5d",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "756efc6327e7cadc7c158e21142f53210e883d52222fb7d80fd679727fee446c",
+    "contract_digest": "d633628a4bf781225146719e712eb941c001887b44ee7208a08a282fc8c5ff0d"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision with instruction (keep September) and reason (both candidates regress and cost more), matching headline_kind decision, the options table's recommended row, and the forest of drops.",
+      "quote": "Keep September (P). Both candidates regress on character adherence and raise reply costs.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: September's rate and cost against both challengers, then what a candidate would need to show to change the answer.",
+      "quote": "A candidate would need to demonstrate higher adherence or significant savings without quality losses to justify a switch.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "No flag; the report-wide caveats sit once in the confidence clauses, the scoped confounds and short runs once in Watch, and the method-level caveats once in Method.",
+      "quote": "Simulator request settings were not comprehensively logged, leaving an apparatus confound across runs.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "pass",
+      "reason": "Each section headline is a finding its chart shows: both candidates within the margin but below September in the forest, drops largest in off-lane and multi strata in the diverging bars, and the examples show meta-commentary and out-of-lane help.",
+      "quote": "Adherence drops concentrate in off-lane and multi-turn conversations",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results the plan uses reader names for arms, measures and strata; runs are described without run ids.",
+      "quote": "Two runs for qwen3.8-flash (A) dropped one harness cell each.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the weakest margin under the call (qwen3.8-flash against the 15-point margin, a 4.2-point gap), then the short runs and the reasoning confound.",
+      "quote": "The weakest margin is qwen3.8-flash (A) with a drop of 10.8 points against the margin on character adherence (v2) at 15 points (margin +4.2).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One measure goes by several names (keeps character, adherence, character adherence, persona adherence), and cost appears as both production spend and reply cost.",
+      "quote": "Bars show difference from control in persona adherence across the largest dialogue categories.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "Headline, lede, decision slots and options table say what to do (keep September), why (both candidates lose adherence and cost more), and the main risk (qwen3.8-flash's 4.2-point gap to the margin and the reasoning confound).",
+      "quote": "Retain September (P) as the serving model. It achieves the highest adherence at 85.3% and the lowest production spend at $1.89 per 1,000 replies.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "Next is vague (no arm, no comparison, no decisive result) and conditioned with an 'if', so it names no concrete experiment whose result could change the call to keep September.",
+      "quote": "Test prompts specifically targeted at off-lane queries under matched reasoning token budgets if cost parity remains an objective.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "fail",
+      "reason": "The late-control clause only restates the caveat as possible post-hoc bias and names no concrete condition under which it would change the call.",
+      "quote": "The control designation occurred late, material only if baseline comparisons were biased post-hoc.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "fail",
+      "reason": "10.8 points is the far end of qwen3.8-flash's interval, not its drop, which is 7.6 points as the plan's own Why slot says.",
+      "quote": "The weakest margin is qwen3.8-flash (A) with a drop of 10.8 points",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-26T00:34:57Z"
+}

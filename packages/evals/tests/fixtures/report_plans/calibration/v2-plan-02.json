@@ -1,0 +1,82 @@
+{
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "fail",
+      "reason": "The headline names the topic and gives no decision, trade or no-call, though headline_kind is decision.",
+      "quote": "Results of the second round of the Kairo persona comparison.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: the asked reading against qwen3.8-flash with no candidate better on anything, then the candidate that would change the answer.",
+      "quote": "A candidate priced at or below September that holds character as well would change the answer.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "The three report-wide disclosures are each said once in the confidence clauses, the late margin once in the first section's caption, the scoped confounds and short runs once in Watch, and the judge, interval and cost entries in Method are definitions.",
+      "quote": "The margin was set after the readings were visible.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The examples section's headline claims most failures answer an off-topic question, but the example cards it draws are mostly machinery explanations and an off-lane reply that does brush off the question, and off-lane asks carry only about half the loss, so the chart does not show 'most'.",
+      "quote": "Most failures answer an off-topic question instead of brushing it off",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results the page uses the given arm names, the aspect name and reader words; run ids, hashes and the latency mode key appear only in Method.",
+      "quote": "Two of qwen3.8-flash (A)'s runs each lost one trial to the test setup.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch opens with the weakest margin from the facts (qwen3.8-flash's 10.8-point worst drop, 4.2 inside the margin) and why the call survives it, then the scoped reasoning-ratio and model confounds and the short runs.",
+      "quote": "The weakest margin: qwen3.8-flash (A)'s worst drop, 10.8 points, sits 4.2 points inside the margin on character adherence (v2); past that line September is still cheaper, so the call holds.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "pass",
+      "reason": "Sentences are short and active, with no hedges, and pass rate, in-character rate and cost each keep one name.",
+      "quote": "It has the highest pass rate (85.3%), the highest in-character rate (91.5%) and the lowest cost ($1.89 per 1,000 replies).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "Headline and decision slots above the options table say keep September, why (higher pass and in-character rates, lower cost), and the main risk (the weakest margin and the confounds).",
+      "quote": "**Keep September** (deepseek/deepseek-v4.1-flash). It has the highest pass rate (85.3%), the highest in-character rate (91.5%) and the lowest cost ($1.89 per 1,000 replies).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "Next names a concrete rerun (a candidate priced at or below September, same cases, off-lane asks oversampled) and states both decisive directions.",
+      "quote": "if it holds character within the margin, it replaces September; if not, September stays.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "Each clause names the condition under which its caveat would matter (a misread judge, a different aspect or control favoring a candidate) and the judge clause says the deciding cost finding does not rest on it.",
+      "quote": "Material only if it misreads in-character replies; cost, the deciding finding, is measured and doesn't depend on it.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Each figure measures what its sentence says: 28% and 27% are cost uplifts over September, -6 and -4.7 are in-character deltas, 3.4 to 10.8 is the asked reading's interval, and 55% vs 76% are reasoning shares.",
+      "quote": "**qwen3.8-flash (A):** 28% more per reply, in-character -6 points, pass rate -7.6.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-25T23:29:25Z"
+}

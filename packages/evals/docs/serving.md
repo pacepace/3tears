@@ -245,7 +245,7 @@ evals")`; your users then never name the host.
 ## Operations and jobs
 
 The operations (`threetears.evals.ops`) run over an `OpsHost`: the `LaunchHost`, plus `AnalysisGeneration`
-(the prompt, output cap and budget a background generation runs under). Each returns a typed model.
+(the `eval_report_plan` prompt, output cap and budget a background generation runs under). Each returns a typed model.
 
 **No transport call waits on a model.** Every operation whose work calls one is a **job**: `run_launch`,
 `sweep_launch`, `analysis_generate`, `judge_second`, `judge_drift_check` and `judge_temperature` return
@@ -438,7 +438,7 @@ To ask again after the runs, `campaign_create` with `aspects_from` adopts the as
 so it reads as the campaign declared before the runs did; what it adds (`margins` for an adopted aspect, a floor, an
 arm) is dated now and named on the page where that is later than its aspect's first result.
 
-4. `report_read` the campaign's page; `analysis_generate` adds the writer's memo;
+4. `report_read` the campaign's page; `analysis_generate` adds the report planner's plan (it resolves the `eval_report_plan` prompt);
 5. `campaign_record` the person's call: the arm, `call_reason`, and each broken floor (`floors_overridden`, by key,
    `billing/rate_drop/*`) and missed bar (`bars_overridden`, `tone/cost_usd`) it overrides. It is refused while the
    arm leaves one unnamed, or names one the arm did not raise, and on a measurement
@@ -680,11 +680,18 @@ frozen case, never a generated one.
   with the case id, its bundle fingerprint and the `limits` the freeze recorded. Each label is a reader's verdict:
   it names its `reader` (omitted, the caller), and the host's `attests_person` must vouch that the caller relays
   that reader's verdict, or the freeze is refused (403) and nothing is written; a freeze with no labels asks nothing.
+  A `recorded_analysis_id` the report planner wrote freezes a **plan case** (`kind_version` 2), of a campaign of
+  any number of aspects: the bundle frozen with that analysis, the report input built from it and the plan in key
+  form. The judge reads the plan with every figure key written out as the campaign's page writes it
+  (`render_plan_for_judge`), against what the planner read (`plan_user_message`); a `memo_excerpt` quotes that text.
+  Only the as-recorded replay runs a plan case. A memo analysis freezes a memo case (`kind_version` 1), as before.
 - `reporter_cases_list` reads the template's bank: which case each campaign and memo launches, and what
   superseded or retired the rest.
 - `reporter_case_archive` retires a case or restores it.
 
-The template then launches through `run_launch`, by the reporter kind the host registers.
+The template then launches through `run_launch`, by the reporter kind the host registers. A run's calibration
+(`reporter_calibration`) reads memo cases and plan cases, and cases of different planner prompts, in separate
+`groups`, and never pools their agreement.
 
 ## Judge campaigns: evaluating a judge itself
 

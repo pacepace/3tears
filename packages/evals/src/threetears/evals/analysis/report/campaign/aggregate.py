@@ -34,7 +34,7 @@ from threetears.evals.analysis.campaign_readings import (
 )
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
 from threetears.evals.analysis.report.campaign.names import AspectNames
-from threetears.evals.analysis.report.words import campaign_arm_tags
+from threetears.evals.analysis.report.words import campaign_arm_tags, declared_arm_names
 from threetears.evals.analysis.report.model import (
     ChartBlock,
     CostQualityPoint,
@@ -126,7 +126,10 @@ def aggregate_blocks(
         tags = campaign_arm_tags(
             (report.bundle for report in reports.values()), readings.control, also=(arm.arm for arm in aggregate.arms)
         )
-        points = [point for arm in aggregate.arms if (point := _point(arm, tags[arm.arm])) is not None]
+        declared = declared_arm_names(campaign.arms)
+        points = [
+            point for arm in aggregate.arms if (point := _point(arm, tags[arm.arm], declared.get(arm.arm))) is not None
+        ]
         if len(points) >= 2:
             blocks.append(
                 ChartBlock(
@@ -181,16 +184,17 @@ def _charted(readings: CampaignReadings, aggregate: CampaignAggregate) -> bool:
     return len(aggregate.arms) >= 2 and (len(readings.aspects) >= 2 or len(aggregate.arms) >= 3)
 
 
-def _point(arm: ArmAggregate, tag: str) -> CostQualityPoint | None:
+def _point(arm: ArmAggregate, tag: str, short_name: str | None) -> CostQualityPoint | None:
     """An arm's point on the chart, tagged as the page tags it and named by its label, which a campaign gives each
-    arm; None where its cost or its pass rate is withheld."""
+    arm, and in tight places by the short name it declares, else that label; None where its cost or its pass rate is
+    withheld."""
     rate, cost = arm.pass_rate, arm.cost
     if rate.value is None or rate.interval is None or cost.value is None or cost.interval is None:
         return None
     return CostQualityPoint(
         arm=arm.arm_label,
         tag=tag,
-        short_name=arm.arm_label,
+        short_name=short_name or arm.arm_label,
         cost=cost.value,
         cost_low=cost.interval[0],
         cost_high=cost.interval[1],

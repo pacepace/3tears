@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261026-40a27048a337",
+  "input": "r3",
+  "input_digest": "8ed49915119167ef21cff1f2fafe46ccf65af216b00f381724c01ea19af772a0",
+  "plan_digest": "395a6e785b45c78c3f1aa15260fddee5bf491f27f996cd7f8f84a9013882434a",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "6bba1ddb689d701e14692afd45d9fe36f6004d86b031fb4a14209a94fe900416",
+    "contract_digest": "d633628a4bf781225146719e712eb941c001887b44ee7208a08a282fc8c5ff0d"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision with instruction and reason that names the options table's recommended arm and is consistent with the lattice's emphasis on E above the gate.",
+      "quote": "Select Brisk-S · Few-shot (12 ex.) (E). It clears all accuracy and latency gates while cutting cost compared to larger alternatives.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: E's balanced accuracy and latency, then the gate change that would leave no candidate.",
+      "quote": "Raising the accuracy threshold above 90.7% would eliminate all gate-compliant candidates.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "No flag is raised and the input carries no caveats, so no caveat is stated twice or at the wrong level.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The second section's chart plots only balanced accuracy, so it cannot show the headline's claim about latency and cell-floor limits.",
+      "quote": "Brisk-S · Few-shot (12 ex.) (E) is the only survivor passing latency and cell floor limits",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Arms, criteria and cells appear under reader names above Full results, with no ids, keys or hashes.",
+      "quote": "Nano-XS · Few-shot (12 ex.) (H) misses the cell floor gate on complex news.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the weakest margin under the call (+0.7 on Overall accuracy), then a scoped risk (the complex news cell).",
+      "quote": "Watch Brisk-S · Few-shot (12 ex.) (E): 90.7% against Overall accuracy at 90%, a gap of +0.7.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "pass",
+      "reason": "Sentences are short and active with no hedges, and 'overall accuracy' names the gate criterion on balanced accuracy rather than a second measure.",
+      "quote": "Atlas-M · Rubric + reasoning (C) exceeds the latency gate at 1302 ms ms.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "From the headline to the options table, the first screen says what to do (select E), why (it clears every gate at lower cost) and the main risk (the +0.7 margin and complex news).",
+      "quote": "Select Brisk-S · Few-shot (12 ex.) (E). It clears all accuracy and latency gates while cutting cost compared to larger alternatives.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "Widening E's margin over the cell floor, which it already clears by 2.9 points, would reinforce the current call rather than change it, and no decisive direction is stated.",
+      "quote": "Evaluate targeted few-shot prompt adjustments on complex news examples to widen the safety margin above the cell floor.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The confidence is high with no clauses, so this item passes by default.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Every figure matches its claim: E's 90.7% and 184 ms, C's 1302 ms, D's 86%, the 48,210 turns, and B being the only arm admitted at 483 ms.",
+      "quote": "Relaxing latency to 483 ms ms admits Atlas-M · Few-shot (12 ex.) (B).",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-26T00:35:54+00:00"
+}

@@ -60,6 +60,7 @@ from pydantic import Field, field_validator, model_validator
 from threetears.evals.analysis.arms import arm_names, multi_rig_variants, short_digest, writer_arms
 from threetears.evals.analysis.bundle.caps import capped_text
 from threetears.evals.analysis.bundle.schema import (
+    SEPARATED_VERDICTS,
     AnalysisContextBundle,
     evidence_digest,
     fingerprint_digest,
@@ -94,7 +95,13 @@ from threetears.evals.analysis.report.decision import (
 )
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import CampaignDeclaration, EvalCampaign
-from threetears.evals.kernel.declaration import ASPECT_PRESENTATION_FIELDS, CampaignArm, Floor, resolve_control_arm
+from threetears.evals.kernel.declaration import (
+    ARM_PRESENTATION_FIELDS,
+    ASPECT_PRESENTATION_FIELDS,
+    CampaignArm,
+    Floor,
+    resolve_control_arm,
+)
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.kernel.surface import DecisionSurface
@@ -141,12 +148,9 @@ _MEANING_CHARS = 200
 #: The significant figures a figure in the writer's view keeps: enough to read, not to recompute.
 _FIGURES = 4
 
-#: The comparison verdicts that separate an arm from the control, or establish it alike: listed first, so a trim of
-#: the contrasts drops the unresolved ones before any of these.
-_SEPARATED = frozenset({"improved", "regressed", "equivalent"})
 
 #: What each kind of campaign asks of its memo, as the writer's view says it.
-_KIND_MEANS: dict[str, str] = {
+KIND_MEANS: dict[str, str] = {
     "measurement": "One arm, measured: there is nothing to choose between, so the memo recommends no arm.",
     "choice": (
         "Several arms and no control: the memo picks the arm the evidence favours, or recommends none when no arm "
@@ -551,29 +555,39 @@ def _as_this_shape(document: Mapping[str, Any], bundles: Sequence[AnalysisContex
 
 def _evidence_of(frame: Mapping[str, Any]) -> dict[str, Any]:
     """A campaign bundle's frame as its fingerprint reads it: at :data:`_EVIDENCE_SHAPE`, without the figures derived
-    from its readings (:data:`_DERIVED_READINGS`), and without how a page prints each aspect
-    (:data:`~threetears.evals.kernel.declaration.ASPECT_PRESENTATION_FIELDS`).
+    from its readings (:data:`_DERIVED_READINGS`), and without how a page prints each aspect and arm
+    (:data:`~threetears.evals.kernel.declaration.ASPECT_PRESENTATION_FIELDS`,
+    :data:`~threetears.evals.kernel.declaration.ARM_PRESENTATION_FIELDS`).
 
     The figures across aspects are read off the readings and the aspects' bundles the fingerprint already reads, so a
     bundle of this shape and one frozen at the shape before it fingerprint alike over the same evidence. A short name
-    is presentation, as an aspect bundle's own is (left out of its fingerprint), so naming an aspect leaves every
-    analysis and reporter case of the campaign reproducing. An aspect naming none carries no key to drop.
+    is presentation, as an aspect bundle's own is (left out of its fingerprint), so naming an aspect or an arm leaves
+    every analysis and reporter case of the campaign reproducing. One naming none carries no key to drop.
     """
     frame = dict(frame)
     if frame.get("schema_version") == CAMPAIGN_BUNDLE_SHAPE:
         frame["schema_version"] = _EVIDENCE_SHAPE
         if isinstance(readings := frame.get("readings"), Mapping):
             frame["readings"] = {key: value for key, value in readings.items() if key not in _DERIVED_READINGS}
+    if isinstance(arms := frame.get("arms"), list):
+        frame["arms"] = _unpresented(arms, ARM_PRESENTATION_FIELDS)
     declaration = frame.get("declaration")
-    if not isinstance(declaration, Mapping) or not isinstance(declaration.get("aspects"), list):
+    if not isinstance(declaration, Mapping):
         return frame
-    aspects = [
-        {key: value for key, value in aspect.items() if key not in ASPECT_PRESENTATION_FIELDS}
-        if isinstance(aspect, Mapping)
-        else aspect
-        for aspect in declaration["aspects"]
+    declaration = dict(declaration)
+    if isinstance(declaration.get("aspects"), list):
+        declaration["aspects"] = _unpresented(declaration["aspects"], ASPECT_PRESENTATION_FIELDS)
+    if isinstance(declaration.get("arms"), list):
+        declaration["arms"] = _unpresented(declaration["arms"], ARM_PRESENTATION_FIELDS)
+    return {**frame, "declaration": declaration}
+
+
+def _unpresented(items: Sequence[Any], fields: frozenset[str]) -> list[Any]:
+    """``items`` with each mapping's presentation ``fields`` left out; anything else as it is."""
+    return [
+        {key: value for key, value in item.items() if key not in fields} if isinstance(item, Mapping) else item
+        for item in items
     ]
-    return {**frame, "declaration": {**declaration, "aspects": aspects}}
 
 
 def build_campaign_bundle(
@@ -664,7 +678,7 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
             "aspects": bundle.labels,
         },
         "kind": kind,
-        "kind_means": _KIND_MEANS[kind],
+        "kind_means": KIND_MEANS[kind],
     }
     if kind == "choice":
         # A choice reads first which arm code showed ahead of which, on each aspect, and every bar an arm missed.
@@ -1406,7 +1420,7 @@ def _contrasts(aspect: AnalysisContextBundle, namer: _Namer) -> list[dict[str, A
                     [confound.model_dump(mode="json") for confound in comparison.mechanism_confounds], aspect.aspect
                 ),
             }
-            separated = comparison.verdict in _SEPARATED
+            separated = comparison.verdict in SEPARATED_VERDICTS
             p = comparison.p_adjusted if comparison.p_adjusted is not None else 1.0
             rows.append(
                 ((0 if separated else 1, p), {key: value for key, value in row.items() if value not in (None, [])})

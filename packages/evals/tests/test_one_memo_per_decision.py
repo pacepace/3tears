@@ -2,7 +2,8 @@
 
 The owner's ruling (seven memos for one decision is the worst evals pain) as an acceptance test, end to end over real
 runs. Seven campaigns stored before aspects existed — v15 documents, one template each — are adopted whole into one
-campaign (``aspects_from``): one generation writes one memo over all seven, the campaign's page lays out one row per
+campaign (``aspects_from``): the memo writer writes one memo over all seven (as every analysis stored before the
+report planner was written), the campaign's page lays out one row per
 aspect, the writer's one recommendation and the person's call recorded through ``campaign_record``. A stored v15
 campaign read alone is a campaign of one aspect, whose fold is the aspect's own page. And a campaign of two aspects
 that regresses on one (breaking its floor) and improves on the other shows both on its first screen, the broken floor
@@ -27,15 +28,18 @@ import pytest
 from threetears.evals import Answer, Eval, Result
 from threetears.evals.analysis import (
     CampaignReport,
+    assemble_campaign_bundle,
     campaign_report,
     campaign_report_markdown,
     create_campaign,
     get_campaign,
     list_analyses,
     prepare_analysis_generation,
-    run_analysis_generation,
 )
 from threetears.evals.analysis.campaign_bundle import writer_view
+from threetears.evals.analysis.generator import generate_analysis
+from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
+from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TextBlock
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
 from threetears.evals.kernel import IDENTITY_VERSION, ConflictError, EvalCampaign, ValidationFailedError
@@ -266,17 +270,31 @@ async def _seven() -> tuple[Store, EvalCampaign]:
 
 
 async def _generated(held: Store, campaign: EvalCampaign) -> str:
-    """Generate the campaign's one memo with the writer's canned draft, and return the analysis's id."""
+    """Write the campaign's one memo with the memo writer's canned draft, store it, and return the analysis's id.
 
-    async def prompt() -> str:
-        return PROMPT
-
-    prepared = await prepare_analysis_generation(
-        held.host, campaign.id, SCOPE, model=None, resolve_prompt=prompt, out_of_run_cap_usd=None
+    The memo writer is called directly: a generation through the host is the report planner's now, and a memo analysis
+    is what every analysis stored before it is, which the campaign's page still lays out as written.
+    """
+    assembled_at = utc_now_iso()
+    bundle = off_loop(assemble_campaign_bundle, held.host, campaign.id, SCOPE)
+    control = next(arm.label for arm in bundle.arms if arm.role == "control")
+    client = FixturedClient(json.dumps(_memo(control, [aspect.label for aspect in campaign.aspects])))
+    analysis, insights = await generate_analysis(
+        bundle,
+        prompt=PROMPT,
+        model=client.model_name,
+        client=client,
+        prompt_id=PROMPT_ID,
+        bundle_assembled_at=assembled_at,
+        profile=held.host.profile,
     )
-    control = next(arm.label for arm in prepared.bundle.arms if arm.role == "control")
-    held.clients[-1].completion.content = json.dumps(_memo(control, [aspect.label for aspect in campaign.aspects]))
-    analysis, _ = await run_analysis_generation(held.host, prepared, prompt_id=PROMPT_ID, max_output_tokens=4000)
+
+    def store() -> None:
+        held.host.storage.save_analysis(analysis)
+        for insight in insights:
+            held.host.storage.save_insight(insight)
+
+    off_loop(store)
     return analysis.id
 
 
@@ -577,7 +595,7 @@ async def test_a_campaign_asked_after_its_readings_reads_as_asked_and_names_each
     assert all(confirmatory for *_, confirmatory in rows(held, two))
 
     async def prompt() -> str:
-        return PROMPT
+        return EVAL_REPORT_PLAN_DEFAULT
 
     prepared = await prepare_analysis_generation(
         held.host, two.id, SCOPE, model=None, resolve_prompt=prompt, out_of_run_cap_usd=None
@@ -672,7 +690,7 @@ async def test_a_campaign_adopting_still_valid_runs_reads_exactly_as_one_declare
     assert stored.declared_at is not None and stored.declared_at < first_result, "declared before the runs"
 
     async def prompt() -> str:
-        return PROMPT
+        return EVAL_REPORT_PLAN_DEFAULT
 
     async def told(campaign: EvalCampaign) -> tuple[str, str]:
         prepared = await prepare_analysis_generation(

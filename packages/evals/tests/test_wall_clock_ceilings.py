@@ -40,16 +40,17 @@ class _RecordingRequestCeiling:
 
 
 class TestTheGenerationCeiling:
-    def test_is_two_requests_at_the_generator_cap(self) -> None:
-        """A generation is the request plus its one repair round-trip, each the host's request ceiling at the cap."""
+    def test_is_four_requests_at_the_generator_cap(self) -> None:
+        """A generation is the planner's structure and prose calls, each with its one repair round-trip, each the
+        host's request ceiling at the cap."""
         request_s = _RecordingRequestCeiling()
         ceiling = generation_ceiling_s(request_s=request_s, generator_max_tokens=_GENERATOR_MAX_TOKENS)
-        assert ceiling == 2 * (800 + 7)
+        assert ceiling == 4 * (800 + 7)
         assert set(request_s.asked) == {_GENERATOR_MAX_TOKENS}
 
     def test_adds_nothing_of_its_own_to_a_request(self) -> None:
-        """A host whose request takes a flat 100s, sleeps included, gets exactly 200s: no per-call term on top."""
-        assert generation_ceiling_s(request_s=lambda _max_tokens: 100.0, generator_max_tokens=1) == 200.0
+        """A host whose request takes a flat 100s, sleeps included, gets exactly 400s: no per-call term on top."""
+        assert generation_ceiling_s(request_s=lambda _max_tokens: 100.0, generator_max_tokens=1) == 400.0
 
 
 class TestTheJudgePhaseCeiling:

@@ -32,6 +32,7 @@ from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCal
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgedTierRule, weakest_judged_tier
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
+from threetears.evals.kernel.report_plan import ReportPlan
 from threetears.evals.schema.base import (
     CoreDocumentModel,
     CoreShapeModel,
@@ -319,11 +320,12 @@ class EvalCampaign(DurableDocumentModel):
 
     @model_validator(mode="after")
     def _one_control_first(self) -> Self:
-        """At most one arm is the control and it comes first; labels and variant keys name one arm each.
+        """At most one arm is the control and it comes first; labels, short names and variant keys name one arm each.
 
         :return: The validated campaign.
         :rtype: EvalCampaign
-        :raises ValueError: Two control arms, a control after a candidate, or a label or key on two arms.
+        :raises ValueError: Two control arms, a control after a candidate, a label or key on two arms, or a short name
+            that is another arm's label or short name.
         """
         controls = [index for index, arm in enumerate(self.arms) if arm.role == "control"]
         if len(controls) > 1:
@@ -336,6 +338,20 @@ class EvalCampaign(DurableDocumentModel):
         ):
             if repeated := sorted({value for value in values if values.count(value) > 1}):
                 raise ValueError(f"arm {what}(s) {', '.join(map(repr, repeated))} name more than one arm")
+        # A short name is printed in place of its label where space is tight, and the label stays every identifier (a
+        # recorded call, a recommendation). So no name of one arm, its label or its short name, may be a name of
+        # another: a reader copying a name from a chart must reach the arm the chart meant.
+        owners: dict[str, set[str]] = {}
+        for arm in self.arms:
+            owners.setdefault(arm.label, set()).add(arm.label)
+            if arm.short_name is not None:
+                owners.setdefault(arm.short_name, set()).add(arm.label)
+        if alike := sorted(name for name, held in owners.items() if len(held) > 1):
+            raise ValueError(
+                f"arm name(s) {', '.join(map(repr, alike))} would name more than one arm (a short name is printed in "
+                "place of its label, and may be no other arm's label or short name); give each arm a short name no "
+                "other arm is labelled or named"
+            )
         return self
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
@@ -925,6 +941,12 @@ class EvalAnalysis(EvalDocumentModel):
     off it; and ``campaign_bundle`` what the campaign adds over its aspects — its question, arms, floors and code's
     readings across aspects. Links inside the document are positions, and :meth:`check_positions` refuses one that
     points nowhere or makes the ``invalidates`` relation cycle.
+
+    **Memo or plan.** An analysis generated today is written by the report planner, not the memo writer: its
+    ``document`` is None and ``report_plan_id`` names its :class:`EvalReportPlan`, stored beside it, which the page
+    reads (:attr:`basis` is ``plan``). An analysis stored before the planner keeps its memo and reads exactly as it
+    was written (``basis`` ``memo``, ``report_plan_id`` None), until it is generated again. Either way
+    ``recommended_variant_key``, ``aspects``, ``campaign_bundle`` and the insights it minted mean the same thing.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
@@ -961,14 +983,26 @@ class EvalAnalysis(EvalDocumentModel):
             "analysis written against one declaration must not later read as written against another."
         ),
     )
-    document: AuthoredCampaignAnalysis = Field(
-        description="What the generator authored, as written, with each figure reference in its prose rendered by code."
+    document: AuthoredCampaignAnalysis | None = Field(
+        description=(
+            "What the memo writer authored, as written, with each figure reference in its prose rendered by code. None "
+            "for an analysis the report planner wrote, whose words are its plan (`report_plan_id`)."
+        )
+    )
+    report_plan_id: str | None = Field(
+        default=None,
+        description=(
+            "The id of the report plan this analysis was written as (`EvalReportPlan`, stored beside it; "
+            "`report_plan_id(<analysis id>)` when generated): set exactly when `document` is None. None for an "
+            "analysis the memo writer wrote, which every analysis stored before the planner is."
+        ),
     )
     recommended_variant_key: str | None = Field(
         description=(
-            "The variant key of the arm the memo recommends, resolved by code from the recommendation's label when the "
-            "analysis was saved, so a person's call is matched to the arm by its key whatever later relabels it. None "
-            "where the memo recommends nothing (a measurement, or a choice with no clear winner)."
+            "The variant key of the arm the memo or the plan recommends, resolved by code when the analysis was saved "
+            "(from the memo's recommendation label, or the plan's recommended option), so a person's call is matched "
+            "to the arm by its key whatever later relabels it. None where it recommends nothing (a measurement, a "
+            "choice with no clear winner, a plan's trade-off or no call)."
         )
     )
     judged_tier_rule: JudgedTierRule = Field(
@@ -1017,6 +1051,12 @@ class EvalAnalysis(EvalDocumentModel):
             raise ValueError(f"doc_type must be 'eval_analysis', got '{v}'")
         return v
 
+    @property
+    def basis(self) -> Literal["memo", "plan"]:
+        """What wrote this analysis: ``memo`` (the memo writer, ``document``) or ``plan`` (the report planner, whose
+        plan ``report_plan_id`` names)."""
+        return "memo" if self.document is not None else "plan"
+
     def aspect(self, label: str) -> AspectAnalysis:
         """The aspect of this analysis with ``label``.
 
@@ -1047,6 +1087,15 @@ class EvalAnalysis(EvalDocumentModel):
         labels = [aspect.label for aspect in self.aspects]
         if repeated := sorted({label for label in labels if labels.count(label) > 1}):
             raise ValueError(f"aspects {repeated} appear more than once; one entry per aspect")
+        if (self.document is None) == (self.report_plan_id is None):
+            raise ValueError(
+                "an analysis is written as a memo (`document`) or as a report plan (`report_plan_id`): exactly one is "
+                "set"
+            )
+        if self.document is None:
+            if self.resolutions:
+                raise ValueError("a planned analysis has no memo findings, so it holds no resolutions")
+            return self
         findings = self.document.findings
         count = len(findings)
         if self.resolutions and len(self.resolutions) != count:
@@ -1103,6 +1152,104 @@ class EvalAnalysis(EvalDocumentModel):
         for node in range(count):
             if state.get(node) is None:
                 visit(node, [])
+        return self
+
+
+def report_plan_id(analysis_id: str) -> str:
+    """The id of the report plan an analysis was written as: one plan per analysis, found from the analysis alone.
+
+    :param analysis_id: The analysis.
+    :ptype analysis_id: str
+    :return: Its plan's id.
+    :rtype: str
+    """
+    return f"{analysis_id}:report-plan"
+
+
+class ReportPlanProvenance(EvalDocumentModel):
+    """How a report plan was generated: the planner's prompt, model, calls, repairs and cost.
+
+    The planner makes two calls, a structure and its prose, and each may buy one repair, so a plan took two to four
+    calls; a repaired call keeps the refusal it mended, so a repaired plan is never mistakable for one accepted first
+    time. Every field is required: the generation states each one.
+    """
+
+    prompt_id: str = Field(min_length=1, description="The registry key the planner prompt was resolved under.")
+    prompt_version: str = Field(
+        min_length=1, description="A short hash of both calls' system prompts and both contracts the planner was sent."
+    )
+    generator_model: str = Field(min_length=1, description="The model that wrote the prose, as its provider named it.")
+    calls: int = Field(ge=2, le=4, description="Provider calls the plan took: the structure, the prose, any repairs.")
+    repair_attempts: int = Field(ge=0, le=2, description="Calls repaired: at most one per call.")
+    structure_refusal: str | None = Field(description="The refusal the structure's repair mended; None for none.")
+    prose_refusal: str | None = Field(description="The refusal the prose's repair mended; None for none.")
+    token_cost: float = Field(ge=0.0, description="Dollars reported across every call, each repair's included.")
+    user_message_digest: str = Field(
+        min_length=1, description="sha256 of the structure call's first user message: the report input as sent."
+    )
+    generated_at: str = Field(description="When the plan was accepted (ISO-8601).")
+
+
+class EvalReportPlan(EvalDocumentModel):
+    """The report plan a planned analysis was written as: what its page says, in what order, with which charts.
+
+    Stored beside its :class:`EvalAnalysis`, under the id :func:`report_plan_id` derives from the analysis's, so the
+    analysis names it (``EvalAnalysis.report_plan_id``) and it names the analysis back. Derived and regenerable, like
+    the analysis: generating the campaign again writes a new analysis and a new plan, and
+    ``EvalStorage.drop_derived`` deletes it with the analyses. ``plan`` is the completed, checked
+    :class:`~threetears.evals.kernel.report_plan.ReportPlan`; its prose names figures by key, resolved against the
+    report input built from the analysis's frozen bundle, whose digest at generation is ``report_input_digest``.
+
+    ``plan`` is held as its ``report-plan/1`` JSON (``docs/eval-report-kit/schema/report-plan.schema.json``), checked
+    against the plan model on every construction and read, so a stored plan is always one the model accepts and one
+    whose shape moved is refused on read like every regenerable document.
+    """
+
+    id: str = Field(min_length=1, description="`report_plan_id(analysis_id)`.")
+    doc_type: Literal["eval_report_plan"] = "eval_report_plan"
+    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
+    scope_id: str = Field(min_length=1)
+
+    analysis_id: str = Field(min_length=1, description="Reference → EvalAnalysis.id: the analysis this plan wrote.")
+    campaign_id: str = Field(min_length=1, description="Reference → EvalCampaign.id.")
+    report_input_digest: str = Field(
+        min_length=1,
+        description="sha256 of the report input the plan was written against, as canonical JSON, at generation.",
+    )
+    plan: VerbatimJsonObject = Field(
+        description="The completed, checked plan the page renders, as `report-plan/1` JSON (its prose names figures by key)."
+    )
+    generation: ReportPlanProvenance = Field(description="How the plan was generated.")
+    created_at: str = Field(default_factory=utc_now_iso)
+
+    @field_validator("doc_type")
+    @classmethod
+    def check_doc_type(cls, v: str) -> str:
+        """Reject documents loaded into the wrong model class."""
+        if v != "eval_report_plan":
+            raise ValueError(f"doc_type must be 'eval_report_plan', got '{v}'")
+        return v
+
+    @field_validator("plan")
+    @classmethod
+    def check_plan(cls, v: dict[str, Any]) -> dict[str, Any]:
+        """Refuse a plan the plan model does not accept, and keep it in the model's canonical JSON.
+
+        :raises ValueError: The plan does not validate as a ``ReportPlan``.
+        """
+        canonical: dict[str, Any] = ReportPlan.model_validate(v).model_dump(mode="json", by_alias=True)
+        return canonical
+
+    @model_validator(mode="after")
+    def check_id(self) -> EvalReportPlan:
+        """Refuse a plan whose id is not the one its analysis derives.
+
+        :return: This plan, unchanged.
+        :rtype: EvalReportPlan
+        :raises ValueError: ``id`` is not ``report_plan_id(analysis_id)``.
+        """
+        if self.id != report_plan_id(self.analysis_id):
+            raise ValueError(f"a report plan's id is {report_plan_id(self.analysis_id)!r}, not {self.id!r}")
         return self
 
 
@@ -1610,12 +1757,14 @@ __all__ = [
     "EvalAnalysisAttempt",
     "EvalCampaign",
     "EvalInsight",
+    "EvalReportPlan",
     "EvalSweep",
     "EvidenceRow",
     "EvidenceTier",
     "FindingResolution",
     "GenerationProvenance",
     "LeverCoverage",
+    "ReportPlanProvenance",
     "RunIndexEntry",
     "SweepArmArguments",
     "SweepArmRecord",
@@ -1626,4 +1775,5 @@ __all__ = [
     "derive_window",
     "ended_sweep_lifetimes",
     "evidence_tier_of",
+    "report_plan_id",
 ]

@@ -4,7 +4,7 @@ A fresh agent got only this bundle (with the Kairo reference, UPSTREAM.md and CO
 
 ## Result
 
-It reached the same decision as `references/r5-kairo-round2`: shape D, decide mode, "Keep September", and the same flag: four late criteria plus the uncalibrated judge. (At the time the spec capped confidence at low for these; the owner has since ruled that they are disclosed once and never cap it.) It found the off-lane weakness on its own and passed `check.py` at 1200 and 390 px in both themes. It reported 17 gaps.
+It reached the same decision as `references/r5-kairo-round2`: shape D, decide mode, "Keep September", and the same flag: four late criteria plus the uncalibrated judge. (At the time the spec capped confidence at low for these; it now states a conditional confidence instead: "high, if the caveats below aren't material", with the late margin checked immaterial by code, GENERATOR.md §2 item 5.) It found the off-lane weakness on its own and passed `check.py` at 1200 and 390 px in both themes. It reported 17 gaps.
 
 ## Gaps and what changed
 

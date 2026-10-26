@@ -1,0 +1,98 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261025-fbe870c655ce",
+  "input": "r5",
+  "input_digest": "e369ab25f05eaf9a7f83d11329dc7ce4a5ffba9d557633b18ee33b82a2f59a96",
+  "plan_digest": "b0080d5d03c9a6b8dbf22170a81312b0cc54369b59af849f9926c42c424d2d7c",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "b5a594e0f83555d7de1d01b7fab709c4d62a312fa99922b71c80cda5b3b4b446",
+    "contract_digest": "d633628a4bf781225146719e712eb941c001887b44ee7208a08a282fc8c5ff0d"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v1",
+    "digest": "d4e0c71fd8b2a765a0504241859715db32000301de642e9b25f30a0a673368c8"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "fail",
+      "reason": "The headline says both challengers regress on character adherence, but the first chart's reading for 1017 (-3 points, -5.8 to +1.1) spans zero and shows no regression.",
+      "quote": "Keep September (P): both challengers cost more per reply while regressing on character adherence.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "fail",
+      "reason": "The lede gives supporting facts only and says nothing on what would change the answer.",
+      "quote": "September (P) delivers the highest adherence pass rate at 85.3% for $1.89 per 1,000 replies. Neither candidate beats the baseline on persona fidelity or cost.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "fail",
+      "reason": "The uncorrected-strata caveat is said twice in one section (takeaway and caption), and the judge's insufficient calibration appears in both Method and the confidence clauses.",
+      "quote": "Stratum-level differences are descriptive and uncorrected.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The first section claims both challengers drop adherence, but its forest shows 1017's interval crossing zero.",
+      "quote": "Both challengers drop adherence relative to September (P)",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "fail",
+      "reason": "Measure keys and stratum ids such as holds_character, persona.holds_character and off_lane appear in decision slots and section text above Full results.",
+      "quote": "regresses on holds_character by 4.7 points",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "fail",
+      "reason": "Watch lists only caveats (a prior insight, a reasoning confound, degraded runs) and never names the weakest margin under the call.",
+      "quote": "Reasoning ratio varied from 76% down to 55%, confounding model comparisons. Two degraded runs excluded one cell each.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One measure goes by many names (character adherence, adherence pass rate, persona fidelity, character retention rate), and statistician's grammar such as Holm-corrected intervals appears on the page.",
+      "quote": "Neither candidate beats the baseline on persona fidelity or cost.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The headline, the decision slots and the confidence clauses on the first screen say what to do (keep September), why (higher cost, lower adherence) and the risks.",
+      "quote": "Retain September (P) in production. It achieves 85.3% adherence while serving traffic at $1.89 per 1,000 replies.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "Next is a conditional re-test with no concrete experiment and no stated result or direction that would change the call.",
+      "quote": "Re-test candidate checkpoints only if prompt directives explicitly mitigate the off_lane character drop observed across all models.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "fail",
+      "reason": "The late-aspect clause names a vague condition that could not change the call, since September stays cheaper and no candidate separates as better whatever the aspect reflects.",
+      "quote": "The asked aspect was declared late, material only if evaluated dimensions did not reflect operational objectives.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-25T22:35:42Z"
+}

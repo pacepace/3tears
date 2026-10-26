@@ -1500,9 +1500,10 @@ beside the call.
 
 ## The engine's prompts: shipped defaults, optional overrides
 
-The engine steers three LLM calls of its own with a prompt: the analysis generator (`ANALYSIS_GEN_PROMPT`), the
-capability proposer (`PROPOSER_PROMPT`) and the boundary proposer (`BOUNDARY_GEN_PROMPT`). **A new host does
-nothing here.** Each call runs the default the package ships (`EVAL_ANALYSIS_GEN_DEFAULT` in `analysis`,
+The engine steers three kinds of LLM call of its own with a prompt: the report planner (`REPORT_PLAN_PROMPT`,
+`eval_report_plan`), which writes every analysis, the capability proposer (`PROPOSER_PROMPT`) and the boundary
+proposer (`BOUNDARY_GEN_PROMPT`). **A new host does nothing here.** Each call runs the default the package ships
+(`EVAL_REPORT_PLAN_DEFAULT` in `analysis`, which both of the planner's calls share,
 `EVAL_PROPOSER_TEMPLATE_DEFAULT` and `EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT` in `gen`) unless you hand it a prompt
 of your own: an `AnalysisGeneration` with no `resolve_prompt`, and `plan_draft(axis=..., subject_feed=...,
 catalog_feed=...)` with no `system_prompt` (`default_system_prompt(axis)` is the text it sends).
@@ -1510,7 +1511,7 @@ catalog_feed=...)` with no `system_prompt` (`default_system_prompt(axis)` is the
 **An override is yours to keep.** If an operator tunes a prompt without a deploy, keep the copy in your own
 registry and hand it in: `AnalysisGeneration(resolve_prompt=..., prompt_id=...)` (the id is recorded on every
 analysis as its provenance), and `plan_draft(..., system_prompt=..., reset=...)`. `SEED_PROMPTS` (from
-`threetears.evals.kernel`) lists the three, one `SeedPrompt` each: its id (`prompt_type`), its registry kind
+`threetears.evals.kernel`) lists them (the planner's, the retired memo writer's and the two proposers'), one `SeedPrompt` each: its id (`prompt_type`), its registry kind
 (`template` or `text`) and `seed_ref`, the `(module, constant)` its default is imported from. Seed an empty slot
 from each and never overwrite a stored one. The engine's ids start with `eval_`, so your own prompts can use any
 other name.
@@ -1553,7 +1554,7 @@ check.
 
 The analysis reporter (`REPORTER_KIND`) evaluates the analysis writer itself. Its cases are frozen campaign
 bundles (see [Serving](serving.md#reporter-runs-evaluating-the-analysis-writer-itself)). A
-candidate is a preset of the `ANALYSIS_GEN_PROMPT` prompt on a generator model, or `AS_RECORDED_MODEL`,
+candidate is a preset of the memo writer's `ANALYSIS_GEN_PROMPT` prompt on a generator model, or `AS_RECORDED_MODEL`,
 which replays the memo each campaign got.
 
 The kind is declared by the engine, so your host supplies only two things:
@@ -1601,7 +1602,8 @@ call stays unpriced, since the memo it judges does not exist yet.
    alias's target moves;
 4. a template with no live case, or a campaign-and-memo pair holding two live cases. When the launch
    names a case set, its cases run instead, and each must carry a reporter case;
-5. the replay over a case with no recorded memo.
+5. the replay over a case with no recorded memo, and a generator model over a plan case (a case judging a report
+   plan, which only the replay runs).
 
 Your launcher calls `admit_reporter_launch` again, off the event loop. It builds `ReporterKind` (prompt id
 `ANALYSIS_GEN_PROMPT`) or `AsRecordedReporterKind` from what that returns, and wires its client, subject,

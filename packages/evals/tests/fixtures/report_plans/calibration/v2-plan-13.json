@@ -1,0 +1,82 @@
+{
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision with its instruction and reason, matching the recommended September row in the options table and the first chart's negative contrasts.",
+      "quote": "Keep September. Both candidates cost 27–28% more per reply and stay in character less often.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: the strongest supporting fact (qwen3.8-flash separated as worse, neither candidate better on anything), then what would change the answer.",
+      "quote": "qwen3.8-flash (A) is worse on the asked pass rate, by 3.4 to 10.8 points, and neither candidate beats September on anything this campaign measured. A candidate priced at or below September that holds character as well would change the answer.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "No flag; each caveat appears once (late aspect, control and judge in the confidence, late margin in the question caption, confounds and short runs in Watch, latency and unreported measures in Method), with the per-stratum correction note being Method's interval definition.",
+      "quote": "The aspect was chosen after the results.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The examples section's headline claims a frequency ('most failures') that a chart of example cards cannot show, and the shown examples include machinery failures that are not off-topic answers.",
+      "quote": "Most failures answer an off-topic question instead of brushing it off",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results, arms, measures and strata appear in reader words (pass rate, in-character rate, off-lane asks); run and insight ids appear only in Method's Source.",
+      "quote": "Off-lane asks, the largest stratum, carry about 50% of each candidate's loss",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the weakest margin under the call (qwen3.8-flash's 10.8-point drop, 4.2 points inside the margin) and then the scoped confounds and short runs.",
+      "quote": "The weakest margin: qwen3.8-flash (A)'s worst drop, 10.8 points, sits 4.2 points inside the margin on character adherence (v2); past that line September is still cheaper, so the call holds.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "pass",
+      "reason": "Short active sentences without hedges, one name per measure, and no statistician's grammar on the first screen.",
+      "quote": "It has the highest pass rate (85.3%), the highest in-character rate (91.5%) and the lowest cost ($1.89 per 1,000 replies).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The headline and decision slots alone say what to do (keep September), why (cheaper and more in character) and the main risk (the weakest margin and its confounds).",
+      "quote": "Keep September. Both candidates cost 27–28% more per reply and stay in character less often.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "Next names a concrete experiment whose result could change the call, with both decisive directions stated.",
+      "quote": "if it holds character within the margin, it replaces September; if not, September stays.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "fail",
+      "reason": "The confidence clauses only restate their caveats and name no condition under which they would matter to the call.",
+      "quote": "The judge is uncalibrated.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Every figure measures what its sentence says: the 27–28% are cost uplifts over September, the point changes are each arm's contrasts, and the 3.4–10.8 range is the asked reading's interval.",
+      "quote": "**qwen3.8-flash (A):** 28% more per reply, in-character -6 points, pass rate -7.6.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-25T23:27:01Z"
+}

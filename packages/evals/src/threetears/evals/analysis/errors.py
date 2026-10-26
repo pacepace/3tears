@@ -10,6 +10,8 @@ references against the decision surface on the generator's behalf, raises
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 
 class GenerationError(RuntimeError):
     """The generator's output could not be turned into a valid analysis.
@@ -81,7 +83,7 @@ class SoundnessRefusal(GenerationError):
     them recovers reaches the soundness chain looking complete. It is then a strong candidate
     for any ``_reject_*`` validator — and a refusal there would buy exactly the second full
     generation a truncation must never buy.
-    :func:`~threetears.evals.analysis.generator._reject_incomplete_generation` therefore runs
+    :func:`~threetears.evals.analysis.generation_round.reject_incomplete_generation` therefore runs
     before anything parses, so no cut-short result can reach a ``_reject_*`` validator at
     all. That ordering is now the only thing holding the boundary, which is why it is a
     chokepoint rather than a check at each call site.
@@ -111,4 +113,21 @@ class UnresolvableReference(SoundnessRefusal):
     """
 
 
-__all__ = ["GenerationError", "SoundnessRefusal", "UnresolvableReference"]
+class PlanRefusal(SoundnessRefusal):
+    """A report plan whose parts disagree with each other or with its report input
+    (:func:`~threetears.evals.analysis.report_plan_checks.validate_plan`).
+
+    A :class:`SoundnessRefusal` because the planner can correct it. It carries every fault the plan holds, not the
+    first, each as the field path it sits at (``decision.slots[2].key``) and why, so one repair round can mend them
+    all.
+
+    :ivar faults: Each fault, as ``(field path, why)``, in the order the checks found them.
+    """
+
+    def __init__(self, faults: Sequence[tuple[str, str]]) -> None:
+        self.faults: tuple[tuple[str, str], ...] = tuple(faults)
+        listed = "; ".join(f"`{path}` {why}" for path, why in self.faults)
+        super().__init__(f"the report plan is refused ({len(self.faults)} fault(s)): {listed}")
+
+
+__all__ = ["GenerationError", "PlanRefusal", "SoundnessRefusal", "UnresolvableReference"]

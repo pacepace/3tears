@@ -1,9 +1,10 @@
 """An operations host over the toy host: its template to launch, its corpus campaign to analyse, a writer to analyse it.
 
 Shared by ``test_action_catalogue.py`` and ``test_fastmcp_transport.py`` — harness support, not part of
-the toy host. The one non-production part is the generator model: a fixtured client whose memo is
-written over the campaign's bundle as the generation assembled it, so a generation started through an
-action — which assembles its own bundle — stores a real analysis.
+the toy host. The one non-production part is the generator model: a fixtured client whose report plan is
+written over the campaign's bundle as the generation assembled it (the planner's structure, then its prose), so a
+generation started through an action — which assembles its own bundle — stores a real planned analysis. Sent the memo
+writer's contract, it writes the toy memo instead.
 """
 
 from __future__ import annotations
@@ -26,12 +27,15 @@ from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
 from packages.evals.tests.toyhost_memo import (
     FIXTURED_CALL_CEILING_USD,
-    PROMPT,
-    PROMPT_ID,
     FixturedClient,
     memo_payload,
 )
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.toyhost_plan import contract_name, replies_for
+from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
+from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.kernel.prompts.catalogue import REPORT_PLAN_PROMPT
+from threetears.evals.kernel.report_plan import PROSE_SCHEMA_NAME, STRUCTURE_SCHEMA_NAME
 
 __all__ = [
     "CALLER",
@@ -50,7 +54,8 @@ CALLER = Caller(scope_id=TOYHOST_SCOPE, identity="agent:test")
 
 
 class MemoWriter(FixturedClient):
-    """The fixtured generator, writing the toy memo over the bundle the generation is about to send."""
+    """The fixtured generator, writing the toy plan's structure and prose (or, sent the memo writer's contract, the toy
+    memo) over the bundle the generation is about to send."""
 
     def __init__(self, host: EvalHost, campaign: EvalCampaign) -> None:
         """Bind the writer to the campaign it analyses.
@@ -81,7 +86,10 @@ class MemoWriter(FixturedClient):
             self.completion.content = self.first_output
             return await super().generate(system=system, user=user, response_format=response_format, tools=tools)
         bundle = off_loop(assemble_campaign_bundle, self._host, self._campaign.id, self._campaign.scope_id)
-        self.completion.content = json.dumps(memo_payload(bundle))
+        if contract_name(response_format) in (STRUCTURE_SCHEMA_NAME, PROSE_SCHEMA_NAME):
+            self.completion.content = replies_for(lambda: report_input(bundle))(response_format)
+        else:
+            self.completion.content = json.dumps(memo_payload(bundle))
         return await super().generate(system=system, user=user, response_format=response_format, tools=tools)
 
 
@@ -152,9 +160,12 @@ def ops_fixture(
     hosts.append(launch.eval_host)
 
     async def prompt() -> str:
-        return PROMPT
+        # The planner's prompt, as a host registers it: a generation is written by the report planner.
+        return EVAL_REPORT_PLAN_DEFAULT
 
-    generating = AnalysisGeneration(prompt_id=PROMPT_ID, resolve_prompt=prompt, max_output_tokens=4000, budget_s=60.0)
+    generating = AnalysisGeneration(
+        prompt_id=REPORT_PLAN_PROMPT, resolve_prompt=prompt, max_output_tokens=4000, budget_s=60.0
+    )
 
     host = OpsHost(launch=launch, generation=generating if generation else None)
     return OpsFixture(host, campaign, writers)

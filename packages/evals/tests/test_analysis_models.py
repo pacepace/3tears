@@ -720,7 +720,7 @@ def test_drop_derived_clears_analyses_and_insights_and_keeps_the_campaign():
 
     dropped = storage.drop_derived(["uni-1"])
 
-    assert dropped.counts == {"eval_analysis": 1, "eval_insight": 1, "eval_judge_profile": 0}
+    assert dropped.counts == {"eval_analysis": 1, "eval_insight": 1, "eval_judge_profile": 0, "eval_report_plan": 0}
     assert dropped.judge_profiles == []
     assert storage.load_analysis(analysis.id, "uni-1") is None
     assert storage.query_insights("uni-1") == []

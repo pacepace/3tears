@@ -1,0 +1,92 @@
+{
+  "version": "v1",
+  "applies_to": "report-plan/1",
+  "spec": "docs/eval-report-kit/GENERATOR.md",
+  "verdicts": ["pass", "fail"],
+  "spine": {
+    "A": ["gate_matrix"],
+    "B": ["gate_scatter"],
+    "C": ["lattice"],
+    "D": ["forest"],
+    "E": ["lines"]
+  },
+  "items": [
+    {
+      "id": "R1",
+      "name": "Shape, mode, spine and order",
+      "scored_by": "code",
+      "pass_when": "The plan passes the plan checks (validate_plan: shape and signals are code's, the mode is one code allows, the decision slots are the mode's in order, option roles suit the mode), and the first evidence section draws the shape's spine chart (`spine`).",
+      "fail_when": "Any plan check refuses the plan, or the first evidence section's chart is not a spine chart of the plan's shape."
+    },
+    {
+      "id": "R2",
+      "name": "The headline is the call",
+      "scored_by": "model",
+      "pass_when": "The headline is a decision (an instruction with its reason), a trade (both sides, and where the loss sits) or a stated no-call (what is missing and what would settle it), matching `headline_kind`, and it agrees with the options table (the recommended or lean row) and with the first chart.",
+      "fail_when": "The headline restates the eval question or names a topic; it is a different kind than `headline_kind`; or it names a different option than the options table recommends or leans toward, or claims what the first chart contradicts."
+    },
+    {
+      "id": "R3",
+      "name": "The lede",
+      "scored_by": "model",
+      "pass_when": "At most two sentences: the strongest supporting fact, then what would change the answer.",
+      "fail_when": "More than two sentences, a restatement of the headline, background or method, or no word on what would change the answer."
+    },
+    {
+      "id": "R4",
+      "name": "Each caveat once, at its level",
+      "scored_by": "model",
+      "pass_when": "The flag appears only for report-wide disclosures and says which findings they weaken and which survive; every caveat is said once on the page, beside the claim it qualifies or in the confidence, never repeated in the lede, a slot, a section or Method.",
+      "fail_when": "A caveat is said twice (in the lede and the confidence, in Watch and Method, in the flag and a section); the flag carries a caveat scoped to one arm or finding; or a flag does not say what it weakens and what survives."
+    },
+    {
+      "id": "R5",
+      "name": "Section headlines are findings",
+      "scored_by": "model",
+      "pass_when": "Every evidence section's headline states a finding with a subject and a direction that its chart shows.",
+      "fail_when": "A section headline is a topic label (\"Failure analysis\", \"Latency\"), or claims something its chart does not show."
+    },
+    {
+      "id": "R6",
+      "name": "Reader names above Full results",
+      "scored_by": "model",
+      "pass_when": "Above Full results (masthead to explore part) every measure, dimension, stratum and run is named in reader words; trial and case ids appear only on example cards.",
+      "fail_when": "An internal id, hash, run id or measure key (`production_replicating_cost`, `persona.holds_character`, `off_lane`) appears in the headline, lede, flag, decision block, a section or the explore part."
+    },
+    {
+      "id": "R7",
+      "name": "Watch names the weakest margin",
+      "scored_by": "model",
+      "pass_when": "Decide or no-call mode: the Watch slot names the weakest margin under the call (the reading or gate nearest to flipping it, or the borderline cell with the sample that would settle it), then any scoped confound or unmeasured risk. Tradeoff mode: Where the answer flips names the point at which the best option changes.",
+      "fail_when": "Watch is generic monitoring advice, lists only caveats, or names a margin that is not the weakest; in tradeoff mode, Where the answer flips does not say where it flips."
+    },
+    {
+      "id": "R8",
+      "name": "Style",
+      "scored_by": "model",
+      "pass_when": "Sentences under about twenty-five words, active voice, no hedging adverbs or \"worth noting\", one name per measure, no statistician's grammar above the fold.",
+      "fail_when": "Long or passive sentences dominate, hedges pad the prose, one measure goes by two names, or interval and correction jargon sits in the headline, lede or decision block."
+    },
+    {
+      "id": "R9",
+      "name": "The first screen",
+      "scored_by": "model",
+      "pass_when": "From the masthead, headline, lede, flag, decision block and options table alone, a reviewer can say what to do, why, and what the main risk is.",
+      "fail_when": "Any of the three (what to do, why, the main risk) needs a section, the explore part or Method to find."
+    },
+    {
+      "id": "R10",
+      "name": "Next names the experiment that would change the answer",
+      "scored_by": "model",
+      "pass_when": "The Next slot (What would settle it in tradeoff mode) names a concrete experiment or measurement (what to run or collect, on what) whose result could change the call, and says which way it would change it.",
+      "fail_when": "Next is a to-do list, a generic \"monitor\" or \"gather more data\", or an experiment whose result could not change the call."
+    },
+    {
+      "id": "R11",
+      "name": "Each confidence clause says what would make its caveat material",
+      "scored_by": "model",
+      "pass_when": "Every clause under the confidence names its caveat and the condition under which it would matter to the call (\"material only if the judge misreads in-character replies\"), or says the deciding finding does not rest on it. A plan whose confidence lists no caveat passes.",
+      "fail_when": "A clause only restates the caveat, hedges (\"may affect results\"), or names a condition that could not change the call."
+    }
+  ]
+}

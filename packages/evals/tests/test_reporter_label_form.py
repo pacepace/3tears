@@ -25,7 +25,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.analysis import get_analysis, render_memo_as_written
+from threetears.evals.analysis import render_memo_as_written
 from threetears.evals.analysis.reporter_bank import label_agrees, read_calibration
 from threetears.evals.analysis.reporter_kind import (
     REPORTER_CASE_KEY,
@@ -38,10 +38,10 @@ from threetears.evals.analysis.reporter_kind import (
 from threetears.evals.analysis.generator import user_message_digest
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.identity import IDENTITY_VERSION
-from threetears.evals.ops import analysis_generate
 from threetears.evals.schema.models import EvalResult, EvalTestCase, RubricScore
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture, settled
+from packages.evals.tests.report_support import stored_memo_analysis
+from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture
 from packages.evals.tests.reporter_case_support import (
     ANSWERS,
     GROUNDED,
@@ -191,12 +191,10 @@ class TestAgreement:
 
 
 async def _memo(fixture: OpsFixture) -> tuple[str, str]:
-    """Generate the corpus campaign's analysis, and return its id and its memo as the judge reads it."""
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
-    analysis_id = (await settled(fixture.host, job.job_id)).analysis_id
-    assert analysis_id is not None
-    analysis = off_loop(get_analysis, fixture.host.eval_host.storage, analysis_id, TOYHOST_SCOPE)
-    return analysis_id, render_memo_as_written(analysis)
+    """Store a memo analysis of the corpus campaign (a reporter case pins a recorded memo, which the memo writer
+    writes), and return its id and its memo as the judge reads it."""
+    analysis, _ = await stored_memo_analysis(fixture.host.eval_host, fixture.campaign)
+    return analysis.id, render_memo_as_written(analysis)
 
 
 def _scaled_fixture() -> OpsFixture:

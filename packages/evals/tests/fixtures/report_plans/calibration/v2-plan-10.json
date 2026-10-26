@@ -1,0 +1,82 @@
+{
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision with instruction and reason, matching the recommended September row, and the forest of readings (both candidates lower) does not contradict it; 27-28% matches the production cost figures.",
+      "quote": "Keep September. Both candidates cost 27–28% more per reply and stay in character less often.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "fail",
+      "reason": "Three sentences of background that never give a supporting fact or say what would change the answer.",
+      "quote": "This campaign compared three persona models on character adherence. It ran under production routing. The details follow in the sections below.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "There is no flag; the uncalibrated judge and the late aspect and control appear only in the confidence clauses, the late margin only beside the reading it qualifies, and the scoped confounds only in Watch.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The examples section claims a distribution of all failures that a few example cards cannot show; of the shown cards, most fail for explaining the machinery or a voice slip, not for answering an off-topic question.",
+      "quote": "Most failures answer an off-topic question instead of brushing it off",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results, arms, the aspect and strata use reader names, and the short runs are described without run ids.",
+      "quote": "Two of qwen3.8-flash (A)'s runs each lost one trial to the test setup.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch opens with the weakest margin from the facts (qwen3.8-flash's 10.8-point worst drop, 4.2 inside the margin), says why the call survives it, then gives the scoped confounds.",
+      "quote": "The weakest margin: qwen3.8-flash (A)'s worst drop, 10.8 points, sits 4.2 points inside the margin on character adherence (v2); past that line September is still cheaper, so the call holds.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "pass",
+      "reason": "Sentences are short and active, the slots keep one name per measure ('in-character'), and there are no hedges or statistician's grammar above the fold.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The headline and decision slots say what to do (keep September), why (cheaper and more in character), and the main risk (the weakest margin and confounds) without any section.",
+      "quote": "It has the highest pass rate (85.3%), the highest in-character rate (91.5%) and the lowest cost ($1.89 per 1,000 replies).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "Next names a concrete experiment (a cheaper-or-equal candidate on the same cases, off-lane oversampled) with both decisive directions stated.",
+      "quote": "if it holds character within the margin, it replaces September; if not, September stays.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "Each clause names a condition under which its caveat would matter, and the judge clause says the deciding cost finding does not rest on it.",
+      "quote": "Material only if it misreads in-character replies; cost, the deciding finding, is measured and doesn't depend on it.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Each figure measures what its sentence claims: the uplifts are ratios of reply cost, the -6/-4.7 point changes are paired deltas, 85.3%/91.5%/$1.89 are September's own figures, and 3.4 to 10.8 is the confirmatory reading interval.",
+      "quote": "qwen3.8-flash (A): 28% more per reply, in-character -6 points, pass rate -7.6.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-25T23:34:00Z"
+}

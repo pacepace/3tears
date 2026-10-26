@@ -55,19 +55,19 @@ NEVER_MOVES = 15
 PINNED_DURABLE_SCHEMA_VERSION = 16
 
 #: The ``DURABLE_SCHEMA_MINOR`` every digest below was taken under.
-PINNED_DURABLE_SCHEMA_MINOR = 3
+PINNED_DURABLE_SCHEMA_MINOR = 6
 
 #: Each durable type's validation JSON schema, normalised as the core pins normalise it, by ``doc_type``.
 DURABLE_SHAPE_DIGESTS: dict[str, str] = {
-    "calibration_rating": "b185e9d06cd747482dc37336a3100db47885b74c64843457b818210101e1daec",
-    "case_set": "def689cc1d49d06bddfb32727c98f0e3fb775f6187939b989699e495c2f6e0c5",
-    "eval_campaign": "152214f8642384967bc1811383034a8d949ff4c407dd7145ad5edeefee4392b4",
-    "eval_template": "68b1ed828aa9331c88b07350666abc2b1531f93d6b4e11968af2394780067127",
-    "eval_test_case": "6a6719dfbf17f23f7a0cb6728782478230221c3bac218471f4f32a855962c85e",
-    "judge_config": "cd643621bc3f6ac1d2c023626c6cf8e702fcd9ebce0b55a3deba82bdf4bd6209",
-    "judge_config_tombstone": "c100c9502bc1ad870d47c4be0aee1a479c84835e025620ac4453b578963b3643",
-    "rubric_dim": "4cbb75caa72b9e2f90f1b4644489e0a7f00d9e57d1f964beb3938e22950cbf8c",
-    "rubric_dim_tombstone": "160dde8507b727fc7f1169cb12520b9e64f85b093757e8194c21f24b92da69e1",
+    "calibration_rating": "49f179fdffa2f911e9900d9e1e72426e08787164a4b16ddf23899a3ca03f4610",
+    "case_set": "ae3786aed6c9001ba6f4486163b72187c52d3dd7e9fd6074d48a66dcd1de6ad2",
+    "eval_campaign": "d49f5b3ffe53cb48543912a3b694481a009e109f9a9d1622bf9abdb3dffd4818",
+    "eval_template": "6a8cb74939fe2c1b465d4ea1326729137ba3d827c85e4489d6625689302f6ac7",
+    "eval_test_case": "08faf578787ebdde8c4267dcd5b318cf296b8a9c5945c7c0121f68a81500d5e2",
+    "judge_config": "c365466497f12c0a04991db28a43efcb13f8444ab2b17c4ac1a861b9fed2a2e3",
+    "judge_config_tombstone": "fc09648af56724acef4e629e5569a8c9c09fc65760fca29baabe0a8858ce0d6e",
+    "rubric_dim": "ab0863fa68ee8774526e5b36de44415404546b0dd8d2b5f059d6f339dfbd9070",
+    "rubric_dim_tombstone": "3ca45cdb56efbd63e47ff024fa7a9f9086724a10fc2d6f41543535e8ecdf6663",
 }
 
 #: The fields the store addresses each durable type by, pinned: a durable step may never touch one.

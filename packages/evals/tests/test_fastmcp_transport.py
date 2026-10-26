@@ -113,6 +113,8 @@ async def test_a_report_s_body_is_sent_once_as_the_text_and_every_other_field_as
                 "campaign_id": fixture.campaign.id,
                 "basis": expected.basis,
                 "analysis_id": expected.analysis_id,
+                "analysis_basis": expected.analysis_basis,
+                "plan": expected.plan,
                 "format": form,
             }
         # A result whose text is composed from its fields keeps every field.

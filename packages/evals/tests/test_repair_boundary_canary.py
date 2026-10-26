@@ -38,7 +38,7 @@ import pytest
 _TERMINAL_RAISERS = {
     # The provider reported it cut the call short. Regenerating runs into the identical fixed
     # output cap and bills a second full charge to fail the same way.
-    "_reject_incomplete_generation",
+    "reject_incomplete_generation",
     # Nothing was sent: the bundle describes no arm, so the apparatus every arm-bound check joins
     # through is broken before a token is spent. There is no output because there was no call, and
     # no output a model could produce would repair it — the defect is in the evidence handed to it.
@@ -51,8 +51,8 @@ _TERMINAL_RAISERS = {
 
 #: Every module of the analysis package, DERIVED rather than listed. A hand-maintained list is
 #: the same drift this file exists to catch, one level up: a new module raising the bare class
-#: would simply not be looked at, and nothing would say so. Only `generator.py` raises today;
-#: the glob is what keeps a second one from escaping silently.
+#: would simply not be looked at, and nothing would say so. `generator.py`, `generation_round.py` (the helpers the
+#: writer and the planner share) and `planner.py` raise today; the glob is what keeps another from escaping silently.
 _ANALYSIS = Path(__file__).resolve().parents[1] / "src" / "threetears" / "evals" / "analysis"
 _MODULES = sorted(p for p in _ANALYSIS.glob("*.py") if p.name != "__init__.py")
 
@@ -122,11 +122,12 @@ def test_the_repairable_class_is_what_the_validators_raise():
         fn for path in _MODULES for fn, classes in _raises_by_function(path).items() if "SoundnessRefusal" in classes
     }
     # Named rather than counted, and a floor rather than the whole set: the chain itself (a reply off
-    # the contract, or a stored-model refusal), the parse step, and the chain's `_reject_*` member.
+    # the contract, or a stored-model refusal), the parse step, the chain's `_reject_*` member, and the
+    # planner's chain (a reply off the plan contract).
     # A scan that collapsed loses one of them; a validator added beside them joins without an edit.
-    chain_sites = {"_assemble_and_validate", "_parse_payload", "_reject_mismatched_aspect_summaries"}
+    chain_sites = {"_assemble_and_validate", "parse_reply", "_reject_mismatched_aspect_summaries", "_reply"}
     assert chain_sites <= repairing, f"the repairable population lost {sorted(chain_sites - repairing)}"
-    assert "_reject_incomplete_generation" not in repairing, "the truncation guard must never buy a repair"
+    assert "reject_incomplete_generation" not in repairing, "the truncation guard must never buy a repair"
 
 
 def test_the_walk_reads_the_analysis_package():

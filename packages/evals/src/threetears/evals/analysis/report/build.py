@@ -147,6 +147,7 @@ from threetears.evals.analysis.report.words import (
     UNTRACED,
     arm_tags,
     comparison_words,
+    declared_arm_names,
     evidence_rows,
     guardrail_words,
     reading_heading,
@@ -174,7 +175,7 @@ from threetears.evals.analysis.quantities import (
     with_unit,
 )
 from threetears.evals.kernel.analysis_measures import MeasureSummary
-from threetears.evals.kernel.authored import Finding, NextStep
+from threetears.evals.kernel.authored import AuthoredCampaignAnalysis, Finding, NextStep
 from threetears.evals.kernel.campaign import (
     AspectAnalysis,
     EvalAnalysis,
@@ -254,8 +255,10 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None, tr
     :ptype trials: TrialDetail
     :return: The report, ``basis="analysis"``.
     :rtype: Report
-    :raises RefusedInput: The analysis covers several aspects, or its bundle predates one aspect per bundle.
+    :raises RefusedInput: The analysis covers several aspects, its bundle predates one aspect per bundle, or it was
+        written by the report planner (it holds no memo).
     """
+    _memo(analysis)
     generation = analysis.generation
     bundle = analysis_bundle(analysis)
     source = ReportSource(
@@ -269,15 +272,35 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None, tr
         # This aspect's bundle, as it is frozen and served beside the page; the generation's is the campaign bundle's.
         bundle_fingerprint=_only_aspect(analysis).bundle_fingerprint,
     )
+    listed = analysis.campaign_bundle.get("arms")
+    arms = [CampaignArm.model_validate(arm) for arm in listed] if isinstance(listed, list) else []
     return _page(
         bundle,
         basis="analysis",
         source=source,
         memo=lambda charts, names: _memo_blocks(analysis, bundle, charts, names),
-        finding_count=len(analysis.document.findings),
+        finding_count=len(_memo(analysis).findings),
         writer=analysis_writer(analysis),
+        arm_short_names=declared_arm_names(arms),
         trials=trials,
     )
+
+
+def _memo(analysis: EvalAnalysis) -> AuthoredCampaignAnalysis:
+    """The memo a stored analysis holds.
+
+    :raises RefusedInput: The analysis was written by the report planner, so it holds no memo; its page is the
+        campaign's.
+    """
+    if analysis.document is None:
+        raise RefusedInput(
+            f"analysis {analysis.id} was written by the report planner and holds no memo, and this page lays out a memo",
+            remedy=(
+                "read the campaign's page, which lays out a planned analysis, through report_read, or "
+                "threetears.evals.analysis.analysis_report by its id"
+            ),
+        )
+    return analysis.document
 
 
 def analysis_writer(analysis: EvalAnalysis) -> str:
@@ -335,6 +358,7 @@ def build_code_only_report(
     campaign_name: str | None = None,
     arm_labels: Mapping[str, str] | None = None,
     arm_tags: Mapping[str, str] | None = None,
+    arm_short_names: Mapping[str, str] | None = None,
     writer: str | None = None,
     bundle_fingerprint: str | None = None,
     trials: TrialDetail = "all",
@@ -361,6 +385,10 @@ def build_code_only_report(
         is tagged and coloured as on every other chart of that page; None tags this page's arms by themselves, as
         does a map that leaves out an arm of this page.
     :ptype arm_tags: Mapping[str, str] | None
+    :param arm_short_names: The short names the campaign's arms declare, by variant key
+        (:func:`~threetears.evals.analysis.report.words.declared_arm_names`), which a chart prints for those arms in
+        its tight places ahead of any it would compute; None computes every arm's.
+    :ptype arm_short_names: Mapping[str, str] | None
     :param writer: Who wrote the memo of the campaign page this page is a fold of, as the methods name a writer; None
         says no analysis was written. The memo is the campaign page's: this page lays out none of its words.
     :ptype writer: str | None
@@ -393,6 +421,7 @@ def build_code_only_report(
         writer=writer,
         arm_labels=arm_labels,
         tags=arm_tags,
+        arm_short_names=arm_short_names,
         trials=trials,
     )
 
@@ -495,13 +524,14 @@ def _page(
     writer: str | None,
     arm_labels: Mapping[str, str] | None = None,
     tags: Mapping[str, str] | None = None,
+    arm_short_names: Mapping[str, str] | None = None,
     trials: TrialDetail = "all",
 ) -> Report:
     """The page every door renders: the same screens, from one bundle, whatever wrote the memo.
 
     ``arm_labels`` are a campaign's own labels for its arms, by variant key, which name those arms everywhere on the
     page in place of their variants' names; ``tags`` the campaign's letter tags for them, which tag and colour them on
-    its charts. ``trials`` says whether each failed or lost trial's record is laid out.
+    its charts; ``arm_short_names`` the short names its arms declare, which its charts print in tight places. ``trials`` says whether each failed or lost trial's record is laid out.
 
     The memo and the contrasts are laid out before the scoreboard, though they print after it: each chart they leave
     out is counted on the way, for the scoreboard's one line about what was not charted.
@@ -549,7 +579,7 @@ def _page(
         ),
         *_floor_warning_blocks(bundle, arm),
         *caveat_blocks([bundle], section="header"),
-        *_scoreboard_blocks(bundle, arm, _short_names(bundle, names, arm_labels or {}), tags),
+        *_scoreboard_blocks(bundle, arm, _short_names(bundle, names, arm_labels or {}, arm_short_names or {}), tags),
         *_decision_blocks(bundle, arm),
         *written,
         *contrasts,
@@ -838,19 +868,27 @@ def _per_reply(bundle: AnalysisContextBundle | None) -> str:
 
 
 def _short_names(
-    bundle: AnalysisContextBundle, names: Mapping[str, ArmName], given: Mapping[str, str]
+    bundle: AnalysisContextBundle,
+    names: Mapping[str, ArmName],
+    given: Mapping[str, str],
+    declared: Mapping[str, str],
 ) -> dict[str, str]:
-    """Each arm's short name, for a chart's tight places (GENERATOR.md §6.1): the label the campaign gives it; the
-    control's ``control``; else only the levels where it differs from the control, the model first and trimmed of the
-    prefix it shares with the control's. With no control, or nothing that differs, an arm's short name is its name,
-    and so is it where that name is no longer than the short one (a quick run's ``v4-flash``, never ``candidate
-    v4-flash``); two arms whose short names agree are each named in full, so no two read alike."""
+    """Each arm's short name, for a chart's tight places (GENERATOR.md §6.1): the short name the campaign declares for
+    it, as declared; else the label the campaign gives it; the control's ``control``; else only the levels where it
+    differs from the control, the model first and trimmed of the prefix it shares with the control's. With no control,
+    or nothing that differs, an arm's short name is its name, and so is it where that name is no longer than the short
+    one (a quick run's ``v4-flash``, never ``candidate v4-flash``). Declared names are unique, which the campaign
+    refuses otherwise, so only a computed one can collide: one that agrees with any other arm's short name is named in
+    full, so no two read alike."""
     control = _control_key(bundle)
     entries = {entry.variant_key: entry for entry in bundle.variant_index}
     distinguishing = distinguishing_axes(bundle.variant_index)
     base = {level.axis_id: level for level in arm_levels(entries.get(control) if control else None, distinguishing)}
     shorts: dict[str, str] = {}
     for key, name in names.items():
+        if key in declared:
+            shorts[key] = declared[key]
+            continue
         if key in given:
             shorts[key] = given[key]
         elif key == control:
@@ -873,7 +911,9 @@ def _short_names(
         if len(name.label) <= len(shorts[key]):
             shorts[key] = name.label
     taken = list(shorts.values())
-    return {key: short if taken.count(short) == 1 else names[key].label for key, short in shorts.items()}
+    return {
+        key: short if key in declared or taken.count(short) == 1 else names[key].label for key, short in shorts.items()
+    }
 
 
 #: What separates the parts of a model's name, where a shared prefix may be cut.
@@ -1333,7 +1373,7 @@ def _memo_blocks(
     not laid out here but noted in one line with what was not tested (``The analysis also noted: …``). The coverage
     map goes to the methods, folded: it restates nothing the findings say.
     """
-    document = analysis.document
+    document = _memo(analysis)
     held = _only_aspect(analysis)
     # The analysis's own variant index names the cells its memo cites, by the page's rule.
     arm = _ref_namer(held.decision_surface, {**names, **_arm_names(bundle, held.variant_index)})
@@ -1414,7 +1454,7 @@ def _recommendation_blocks(analysis: EvalAnalysis, bundle: AnalysisContextBundle
     """
     listed = analysis.campaign_bundle.get("arms")
     arms = [CampaignArm.model_validate(arm) for arm in listed] if isinstance(listed, list) else []
-    recommended = analysis.document.recommended()
+    recommended = _memo(analysis).recommended()
     if recommended is None:
         kind = campaign_kind(arms)
         return [DisclosureBlock(section="memo", source="memo", text=NO_RECOMMENDATION_WORDS[kind])]
@@ -1462,7 +1502,7 @@ def _recommendation_blocks(analysis: EvalAnalysis, bundle: AnalysisContextBundle
         )
     # The findings a recommendation rests on are the ones printed just above it: its block carries them for a
     # program (``rests_on``), and the page does not cite them again.
-    if cases := _cases_of(bundle, recommended.rests_on, analysis.document.findings, analysis):
+    if cases := _cases_of(bundle, recommended.rests_on, _memo(analysis).findings, analysis):
         facts.append(Fact(name="See", value=", ".join(cases)))
     blocks: list[ReportBlock] = [
         TextBlock(
@@ -1540,7 +1580,7 @@ def _coverage_blocks(analysis: EvalAnalysis, kept: Sequence[NextStep], steps: Se
     levers = _only_aspect(analysis).coverage.levers
     if not levers:
         return []
-    findings = analysis.document.findings
+    findings = _memo(analysis).findings
     rows: list[dict[str, CellValue]] = []
     for row in levers:
         named = sum(1 for finding in findings if row.name in finding.axes)
@@ -1905,7 +1945,9 @@ def _contrast_blocks(
     blocks.extend(_comparison_blocks(bundle, surface, contrasts_read, charts, arm, rulers))
     blocks.extend(_readings_blocks(bundle, surface, names, rulers))
     blocks.extend(_guardrail_blocks(surface, bundle.guardrails, guardrails_read, rulers))
-    blocks.extend(_strata_blocks(surface, names, rulers, check_names=bundle.goal_check_names))
+    blocks.extend(
+        _strata_blocks(surface, names, rulers, check_names=bundle.goal_check_names, stratum_names=bundle.stratum_names)
+    )
     blocks.extend(_label_blocks(surface, names, rulers))
     return blocks
 
@@ -2904,7 +2946,12 @@ def _figure_text(mean: float, sem: float | None, ruler: MeasureRuler) -> str:
 
 
 def _strata_blocks(
-    surface: DecisionSurface, arms: dict[str, ArmName], rulers: Rulers, *, check_names: Mapping[str, str]
+    surface: DecisionSurface,
+    arms: dict[str, ArmName],
+    rulers: Rulers,
+    *,
+    check_names: Mapping[str, str],
+    stratum_names: Mapping[str, str],
 ) -> list[ReportBlock]:
     """Each arm's figures per stratum beside its pooled figure — or nothing, when no case declares a stratum."""
     control = surface.control_variant_key
@@ -2942,7 +2989,9 @@ def _strata_blocks(
             if stratum.n_cases < STRATUM_MIN_CASES:
                 cases[columns[name]] = f"{cases[columns[name]]} — {TOO_FEW_CASES}"
                 plural = "" if stratum.n_cases == 1 else "s"
-                thin.append(f"{_stratum_word(name)} in {arm.removeprefix('▸ ')} ({stratum.n_cases} case{plural})")
+                thin.append(
+                    f"{_stratum_word(name, stratum_names)} in {arm.removeprefix('▸ ')} ({stratum.n_cases} case{plural})"
+                )
         rows.append(cases)
         rows.extend(_measure_rows(arm, cell, by_name, columns, surface, rulers, check_names=check_names))
         rows.extend(_judged_rows(arm, cell, by_name, columns, rulers))
@@ -2955,7 +3004,10 @@ def _strata_blocks(
                 TableColumn(key="arm", header="Arm", term="control" if control is not None else None),
                 TableColumn(key="reading", header="Reading"),
                 TableColumn(key="all", header="All cases", term="cases"),
-                *(TableColumn(key=columns[name], header=_stratum_word(name), term="stratum") for name in names),
+                *(
+                    TableColumn(key=columns[name], header=_stratum_word(name, stratum_names), term="stratum")
+                    for name in names
+                ),
             ],
             rows=[table_row(row) for row in rows],
             order=surface_order_sentence(has_control_row=any(cell.variant_key == control for cell in cells))
@@ -2976,9 +3028,10 @@ def _strata_blocks(
     return blocks
 
 
-def _stratum_word(name: str | None) -> str:
-    """A stratum as a column header and a disclosure name it: its own name, or :data:`NO_STRATUM`."""
-    return NO_STRATUM if name is None else name
+def _stratum_word(name: str | None, declared: Mapping[str, str]) -> str:
+    """A stratum as a column header and a disclosure name it: its declared display name, else its id, else
+    :data:`NO_STRATUM`."""
+    return NO_STRATUM if name is None else declared.get(name, name)
 
 
 def _cases_text(n_trials: int, n_cases: int | None) -> str:
@@ -3277,7 +3330,7 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
             "flag": {0: "regression", 1: "no usable trial", 2: None}[group(case)],
         }
         if strata:
-            row["stratum"] = trials[0].stratum
+            row["stratum"] = _stratum_word(trials[0].stratum, bundle.stratum_names) if trials[0].stratum else None
         for index, key in enumerate(arms):
             row[f"arm_{index}"] = _marks([trial for trial in trials if trial.arm == key])
         # The ids are navigation, not information: the failed and lost ones lead, since those are the records a

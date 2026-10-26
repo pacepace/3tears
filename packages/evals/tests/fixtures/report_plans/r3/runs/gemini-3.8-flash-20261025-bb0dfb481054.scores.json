@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261025-bb0dfb481054",
+  "input": "r3",
+  "input_digest": "8ed49915119167ef21cff1f2fafe46ccf65af216b00f381724c01ea19af772a0",
+  "plan_digest": "62d235b50a4217135575ff12846df9b02ec158b80d79c3d0b8e4c30f5b04728f",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "46b2691a55b6edc02a8d0b6fca8bf2ea60aeb6be0c4733bfe5575cf3bab4565f",
+    "contract_digest": "d633628a4bf781225146719e712eb941c001887b44ee7208a08a282fc8c5ff0d"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision with a reason that names the options table's recommended arm, E, which is the only configuration clearing the overall bar, every cell floor and the latency budget.",
+      "quote": "Deploy Brisk-S · Few-shot (12 ex.) (E). It is the only configuration to clear all accuracy floors within the latency budget.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: E's accuracy and latency, then a lower cell floor as the change that would admit the cheaper Nano-XS few-shot.",
+      "quote": "Lowering the cell accuracy floor below 80% would allow Nano-XS · Few-shot (12 ex.) (H) at lower cost.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "The input carries no caveats and the plan has no flag or confidence clauses.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The confusion section claims E avoids complex-turn confusion that disqualifies H, but the complexity confusion matrix gives them nearly equal complex-row accuracy (92.7% vs 92.3%), and H fails on the complex-news cell floor, not on complexity confusion.",
+      "quote": "Brisk-S · Few-shot (12 ex.) (E) avoids the confusion on complex turns that disqualifies Nano-XS · Few-shot (12 ex.) (H).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results the plan uses reader arm, measure and criterion names, with no ids or keys.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the code-identified weakest margin, 0.7 points on overall accuracy, then a scoped risk: drift toward complex news.",
+      "quote": "Brisk-S · Few-shot (12 ex.) (E) achieves 90.7% against Overall accuracy at 90%, a margin of +0.7.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One measure has two names ('balanced accuracy' and 'overall target'/'Overall accuracy'), and the p95 criterion has two more ('latency cap' and 'latency budget').",
+      "quote": "It satisfies the 90% overall target, clears the 80% floor across every cell, and stays under the 250 ms ms latency cap.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The headline and decision slots give the choice (E), the reason (it alone clears every floor within budget) and the main risk (a 0.7-point overall margin).",
+      "quote": "Brisk-S · Few-shot (12 ex.) (E) achieves 90.7% against Overall accuracy at 90%, a margin of +0.7.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "A prompt trial on H's failing complex-news cell could flip the call to the far cheaper H if it clears the floor, a direction clear from context.",
+      "quote": "Run a targeted prompt trial on Nano-XS · Few-shot (12 ex.) (H) specifically for complex news turns to test if its cell floor failure can be eliminated.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The confidence form is high and the plan has no confidence clauses.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "fail",
+      "reason": "420 ms is Atlas-M zero-shot's p95, yet raising the budget there would not unlock that arm: its 89.8% balanced accuracy fails the 90% overall bar, so the figure does not measure an unlock point.",
+      "quote": "raising the latency budget to 420 ms ms unlocks Atlas-M · Zero-shot (A).",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-25T23:29:36Z"
+}

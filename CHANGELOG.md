@@ -6,6 +6,75 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the report planner writes a campaign's analysis, in place of the memo writer
+
+**Changed:** a generation is written by the report planner (`threetears.evals.analysis.planner`), not the memo
+writer. It writes a report plan in two calls, a structure then its prose, each repaired at most once, and code checks
+the plan (`validate_plan`) before it is stored. What a host must do:
+
+- **Register the planner's prompt.** `AnalysisGeneration.prompt_id` now defaults to `eval_report_plan`
+  (`REPORT_PLAN_PROMPT`). Seed that slot from `threetears.evals.analysis.EVAL_REPORT_PLAN_DEFAULT` and make
+  `resolve_prompt` return it. A host whose resolution still returns the memo writer's seed (`EVAL_ANALYSIS_GEN_DEFAULT`)
+  is refused before anything is sent: preparation raises `ValidationFailedError` and `generate_report_plan` raises
+  `RefusedInput`, each naming the prompt to register. The writer's prompt (`eval_analysis_gen`) stays registered for
+  memo reporter cases. The planner seed moved this release (its rule 9: the first evidence section draws the spine code
+  gives, and no section repeats a summary chart), so push it to the `eval_report_plan` store (`eval_prompt_reset`).
+- **Give a generation room for four calls.** `MAX_GENERATION_CALLS` goes from 2 to 4 (the structure, its repair, the
+  prose, its repair), which doubles `generation_ceiling_s`. A host that fixed `AnalysisGeneration.budget_s` below the
+  new ceiling cancels a repair mid-flight, after its calls were billed, and the attempt ends `timed_out`. The package
+  cannot check it when the config is built: the per-request ceiling is the host's client's. Derive `budget_s` from
+  `Ceilings().generation_ceiling_s` again.
+- **Storage.** A new regenerable document type, `eval_report_plan` (`EvalReportPlan`), holds each planned analysis's
+  plan. `AnalysisStore` gains `save_report_plan`, `load_report_plan` and `delete_report_plan`; `EvalStorage` implements
+  them over any `DocumentStore`, so only a host with its own `AnalysisStore` writes them. `EvalAnalysis.document` is now
+  optional (None for a planned analysis), and `EvalAnalysis` gains `report_plan_id` and `basis` (`memo` or `plan`).
+  Memo analyses read and render as before.
+- **The read surface.** `AnalysisLine` gains `basis` and `report_plan_id`, and its `needs_regeneration` is also set
+  for a planned analysis whose stored plan this build no longer reads (or whose plan was deleted apart from it).
+  `ReportDocument` gains `analysis_basis` and `plan`. `report_read`, `campaign_report` and `analysis_report` refuse
+  such an analysis with `RefusedInput`, naming `analysis_generate`, as they refuse an analysis frozen over a bundle of
+  another shape.
+- **Rolling deploys.** A pod built before the planner cannot read a planned analysis, so `analyses_list` and
+  `campaign_report` fail there outright. Upgrade every pod before the first planned analysis is generated.
+- **Reporter calibration.** `ReporterCalibration.rating_agreement` is now nullable: it is null when a run spans more
+  than one calibration group (kind version and prompt version), and each group's agreement is in `groups`.
+
+**Changed (the plan checks):** the shape's spine chart is code's fact (`report_plan_checks.spine`), handed to the
+planner, and a plan whose first evidence section is not it is refused. A recommended or lean option that does not
+survive the gates and guardrails is refused in every mode. A candidate a corrected contrast on an asked aspect
+separates (improved, regressed or equivalent) is no longer forced to a no call by an unclear pass-rate reading. See
+`packages/evals/MIGRATIONS.toml`.
+
+### evals: the reporter eval judges report plans
+
+**Added:** a reporter case may judge a report plan (`ReporterCase.kind_version` 2; durable v16.6). `reporter_case_freeze`
+accepts an analysis the report planner wrote, of a campaign of one aspect or several, and freezes the bundle frozen
+with it, the report input built from it, the plan in key form and the planner's prompt version. The judge reads the
+plan as `render_plan_for_judge` renders it (the planner's part of the plan, every figure key written out by the
+renderer the campaign's page uses) against what the planner read (`plan_user_message`). Memo cases are stored, read
+and judged as before. Receipts gain `kind_version`, `report_input_digest` and `planner_prompt_version`; calibration
+groups cases by kind version and prompt version and never pools agreement across groups. A generating reporter launch
+over a plan case is refused. See `packages/evals/MIGRATIONS.toml`.
+
+### evals: a template may declare the display name a page prints for each stratum
+
+**Added:** `EvalTemplate.stratum_names` (a stratum id to its name, each at most 32 characters, never blank, one per
+stratum; durable v16.5) is what a page prints for a stratum: the report input's `Stratum.name` (so a figure key's
+`strata.<id>.name` and a plan's stratum labels print it), and an aspect page's stratum columns and cases table. A
+stratum naming none prints as its id. It rides `AnalysisContextBundle.stratum_names`, written only when declared, and
+is settable through `template_update` like `goal_check_names`, which leaves the template's `updated_at`. It is in no
+digest or fingerprint and no bundle shape moves. See `packages/evals/MIGRATIONS.toml`.
+
+### evals: an arm may declare the short name a page prints for it
+
+**Added:** `CampaignArm.short_name` (at most 32 characters, no other arm's label or short name; durable v16.4) is
+what a campaign's page prints for an arm where space is tight: each outcome bar's short label, the cost/quality
+chart's point, and `{arm:<id>}` in a report plan's prose, through the report input's new `Arm.short_name`. A declared
+name wins over the arm's label and over the short name a page computes from what differs from the control, so only an
+arm declaring none takes the computed one. `campaign_create` takes `short_name` on each arm, adoption carries it, and
+`campaign_update` takes `arm_short_names`, which stays editable once runs have joined. No identity, digest or
+fingerprint moves. See `packages/evals/MIGRATIONS.toml`.
+
 ### evals: a page and the writer's view say once that a cost is its runs' provider routing's
 
 **Changed:** an eval's cost belongs to its provider routing, not its model (owner, 2026-10-25): one model routed

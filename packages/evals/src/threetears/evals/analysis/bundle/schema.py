@@ -55,7 +55,7 @@ from threetears.evals.analysis.stats import (
 )
 from threetears.evals.kernel.analysis_measures import BarAdjudication, MeasureCollection
 from threetears.evals.kernel.campaign import CampaignWindow, EvalInsight, VariantIndexEntry
-from threetears.evals.kernel.declaration import ASPECT_PRESENTATION_FIELDS
+from threetears.evals.kernel.declaration import ARM_PRESENTATION_FIELDS, ASPECT_PRESENTATION_FIELDS
 from threetears.evals.kernel.covariates import REASONING_RATIO_KEY
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.result_condition import ExclusionCause
@@ -1584,6 +1584,13 @@ class VerdictOrder(EvalDocumentModel):
 #: side), which is neither a separation nor its absence.
 ComparisonVerdict = Literal["improved", "regressed", "equivalent", "not_separated", "untested"]
 
+#: The comparison verdicts that separate an arm from the control, or establish it alike: what a corrected comparison
+#: settles. Every reader asking whether a comparison settled reads this one set: the writer's view and the report
+#: input's trims, the report decision's modes and spine, and a quick result's verdict line. The campaign verdict's
+#: line (``report.verdict``) reads only the directional two, improved and regressed, since it names the better arm and
+#: an ``equivalent`` verdict names none.
+SEPARATED_VERDICTS: frozenset[ComparisonVerdict] = frozenset({"improved", "regressed", "equivalent"})
+
 
 #: What a family comparison reads: a measure, a judged dimension, or how each trial ended (``trial``), which is
 #: neither: it conjoins every check and judged dimension a trial was graded on, so no measure or rubric names it.
@@ -2540,7 +2547,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # frontier point's delivered `depth`, `n_cases_short_of_k`, common-depth reading (`common_pass_hat_k`,
     # `n_common_cases`, `n_cases_left_out`) and each subject's `common_depth`, `shares_no_case` and `unmeasured_for`; a point's opt-in
     # `model_pass_hat_k` (`basis: "model"`), None unless the host asks for it.
-    # Unmoved by declared names: `short_name` and `goal_check_names` are written only when declared and are no part of
+    # Unmoved by declared names: `short_name`, `goal_check_names` and `stratum_names` are written only when declared and are no part of
     # the fingerprint, so a bundle naming nothing is this shape byte for byte and every fingerprint stays put.
     schema_version: int = Field(
         default=64, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
@@ -2581,6 +2588,15 @@ class AnalysisContextBundle(EvalDocumentModel):
             "(`EvalTemplate.goal_check_names`). A check absent here is printed as its whole expression. Presentation "
             "only: written only when a name is declared and no part of the bundle's fingerprint, and never in "
             "`measure_catalog`, whose names every reading is read under."
+        ),
+    )
+    stratum_names: dict[str, str] = Field(
+        default_factory=dict,
+        exclude_if=lambda names: not names,
+        description=(
+            "What a page prints for a stratum, by the stratum id a case declares, as the member runs' templates declare "
+            "it (`EvalTemplate.stratum_names`). A stratum absent here is printed as its id. Presentation only: written "
+            "only when a name is declared and no part of the bundle's fingerprint."
         ),
     )
     template_id: str | None = Field(default=None, description="Referenced eval_template (the Behavior), or None.")
@@ -3425,7 +3441,9 @@ def fingerprint_digest(payload: Any, *, like: str | None = None) -> str:
 
 
 def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> str:
-    """A bundle document's fingerprint: the digest of every field but what built it (``package_version``).
+    """A bundle document's fingerprint: the digest of every field but what built it (``package_version``) and how a page
+    prints it (:data:`_NOT_EVIDENCE`, and the declared control's
+    :data:`~threetears.evals.kernel.declaration.ARM_PRESENTATION_FIELDS`).
 
     The one derivation :meth:`AnalysisContextBundle.fingerprint` uses, for a reader that holds the stored document
     rather than the model — a frozen reporter case checks the bundle it holds against the fingerprint it recorded.
@@ -3438,7 +3456,14 @@ def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> 
     :return: The fingerprint.
     :rtype: str
     """
-    return fingerprint_digest({key: value for key, value in document.items() if key not in _NOT_EVIDENCE}, like=like)
+    evidence = {key: value for key, value in document.items() if key not in _NOT_EVIDENCE}
+    declared = evidence.get("declared")
+    if isinstance(declared, Mapping) and isinstance(control := declared.get("control"), Mapping):
+        # How a page prints the control (ARM_PRESENTATION_FIELDS) is no part of what the bundle read; a control naming
+        # none carries no key to drop.
+        unnamed = {key: value for key, value in control.items() if key not in ARM_PRESENTATION_FIELDS}
+        evidence["declared"] = {**declared, "control": unnamed}
+    return fingerprint_digest(evidence, like=like)
 
 
 class BundleInspection(EvalDocumentModel):
@@ -3694,6 +3719,7 @@ __all__ = [
     "ComparisonFamily",
     "ComparisonReading",
     "ComparisonVerdict",
+    "SEPARATED_VERDICTS",
     "Confound",
     "DeclaredCellCoverage",
     "DeclaredCrossing",

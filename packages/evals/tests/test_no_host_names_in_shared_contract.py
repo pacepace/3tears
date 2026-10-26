@@ -197,6 +197,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "kernel/carried_measures.py",
     "kernel/surface.py",
     "kernel/authored.py",
+    # The report plan the planner writes and the renderer draws: the engine's vocabulary for a campaign page.
+    "kernel/report_plan.py",
     "kernel/analysis_measures.py",
     # The engine's own Pydantic base. Shared contract by construction — it exists precisely so
     # that the models above it can be constructed in a host that has none of the first host installed —

@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261025-bb0dfb481054",
+  "input": "r4",
+  "input_digest": "96d0986057f2da9a09c4bccebf74c51e8c2731a2aab3e4e833b09505ff1fd5a8",
+  "plan_digest": "2adc9dbe7fa8cf0fde579df64fa1f6c2f3886f9f339a27be6b56f3bf76c75d7c",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "46b2691a55b6edc02a8d0b6fca8bf2ea60aeb6be0c4733bfe5575cf3bab4565f",
+    "contract_digest": "d633628a4bf781225146719e712eb941c001887b44ee7208a08a282fc8c5ff0d"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A trade with both sides, a 30% cost cut against a 6.1-point loss on character, matching the options table's lean arm and the persona forest.",
+      "quote": "Trade character consistency for unit cost: f64 (A) cuts reply cost by 30% while dropping character retention 6.1 points.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "fail",
+      "reason": "The first sentence restates the headline's two sides (the 30% saving and the persona drop) instead of a further supporting fact.",
+      "quote": "f64 (A) saves 30% per thousand replies while meeting all safety guardrails, but drops character consistency from 91.7% to 85.6%.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "The flag carries only the report-wide no-rule disclosure and says the guardrail measurements survive, and each interval caveat sits once beside its own chart or in Method's interval entry.",
+      "quote": "Product leadership must set the maximum acceptable drop in character retention per dollar saved; guardrail measurements remain binding.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "pass",
+      "reason": "Each section headline is a finding the chart shows: f64 holds facts but loses 6.1 persona points, the loss grows past turn five, and corrections and banter fall furthest for every candidate.",
+      "quote": "Persona degradation concentrates in extended dialogues beyond turn five",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results the plan uses the arms' reader names and plain-language measure names, with no run ids or keys.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "In tradeoff mode, Where the answer flips names the flip point, about ten cents per persona point ($0.63 saved per 6.1 points).",
+      "quote": "If preserving character consistency is worth more than ten cents per percentage point, stay on Production (P); below that threshold, f64 (A) is favored.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One measure goes by six names: character consistency, character retention, persona retention, persona consistency, persona degradation and persona loss.",
+      "quote": "Trade character consistency for unit cost: f64 (A) cuts reply cost by 30% while dropping character retention 6.1 points.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The headline and slots give the trade, its price per point, the flip rule and the long-session drift risk.",
+      "quote": "If preserving character consistency is worth more than ten cents per percentage point, stay on Production (P); below that threshold, f64 (A) is favored.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "What would settle it names a user study on drift past turn five, and the result decides the call either way: users noticing drift favours staying on Production.",
+      "quote": "A leadership ruling on persona loss tolerance, or a user study testing whether listeners notice drift in dialogues beyond turn five.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The confidence form is high and the plan has no confidence clauses.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Every figure checks out: 30% is the cost reduction, $2.10 to $1.47 are the two arms' costs, 6.1 (-7.3 to -4.9) is the persona contrast, and 92% against 95% is cor's speculation reading.",
+      "quote": "f64 (A) lowers cost from $2.10 to $1.47 per thousand replies, paying 6.1 points of persona retention (-7.3 to -4.9).",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-25T23:29:36Z"
+}

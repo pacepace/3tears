@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261026-40a27048a337",
+  "input": "r5",
+  "input_digest": "e369ab25f05eaf9a7f83d11329dc7ce4a5ffba9d557633b18ee33b82a2f59a96",
+  "plan_digest": "c8a208f4e689f5ae6eeed0a5f63986d0dd46cefcf647a1ee8e88c7704a4d1012",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "6bba1ddb689d701e14692afd45d9fe36f6004d86b031fb4a14209a94fe900416",
+    "contract_digest": "d633628a4bf781225146719e712eb941c001887b44ee7208a08a282fc8c5ff0d"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision with instruction (keep September) and reason (both candidates cost more and lose adherence), matching headline_kind decision, the options table's recommended row, and the forest of drops.",
+      "quote": "Keep September (P). Both candidates increase cost while reducing character adherence.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: September's pass rate and cost, then what a candidate would need to show to change the answer.",
+      "quote": "September (P) achieves the highest pass rate at 85.3% with the lowest production cost of $1.89 per 1,000 replies. A candidate would need to demonstrate both lower cost and superior character preservation to justify a migration.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "fail",
+      "reason": "The simulator settings caveat is said twice: in Watch and again in the Method entry Simulator apparatus, which is not one of Method's required definitions.",
+      "quote": "Confounding shifts in reasoning share and simulator settings qualify candidate regressions",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "pass",
+      "reason": "Each section headline is a finding its chart shows: both candidates within the margin but below September in the forest, losses largest in off-lane and multi strata in the diverging bars, and the examples show machinery explanations and out-of-lane help.",
+      "quote": "Character losses concentrate in off-lane and multi-turn conversations",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results the plan uses reader names for arms, measures and strata; runs are described without run ids.",
+      "quote": "two runs of qwen3.8-flash (A) dropped one cell each to infra errors",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the weakest margin under the call (qwen3.8-flash at -10.8 against -15, a 4.2-point gap), then the scoped confounds and short runs.",
+      "quote": "qwen3.8-flash (A) sits closest to the margin at -10.8 against -15, leaving a gap of +4.2.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "The same 85.3% is called pass rate in the lede and character adherence in Do, and character adherence also names the -4.7 and -6 point judged contrasts, so one measure has two names and one name covers two measures.",
+      "quote": "It leads character adherence at 85.3% and incurs the lowest cost at $1.89 per 1,000 replies.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "Headline, lede, decision slots and options table say what to do (keep September), why (both candidates cost more and lose adherence), and the main risk (qwen3.8-flash's 4.2-point gap to the margin and the reasoning confound).",
+      "quote": "Retain September (P) in production. It leads character adherence at 85.3% and incurs the lowest cost at $1.89 per 1,000 replies.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "The proposed test only diagnoses the cause of 1017's drop; since 1017 also costs more than September, no result of it could change the call to keep September, and no decisive direction is stated.",
+      "quote": "Test 1017 (B) with reasoning effort matched to September (P) to isolate whether character drops stem from model weights or budget truncation.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "fail",
+      "reason": "The late-control clause names a condition that could not change the call: September dominates both candidates on cost and adherence whichever arm is labeled the baseline.",
+      "quote": "The control assignment was designated after run start; material only if another variant was the baseline.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "fail",
+      "reason": "The delta is a per-reply figure attached to a per-1,000-replies comparison; the difference between $1.89 and $2.43 per 1,000 replies is about $0.54, not $0.000616.",
+      "quote": "qwen3.8-flash (A) increases production replicating cost relative to September (P) from $1.89 per 1,000 replies to $2.43 per 1,000 replies (delta +$0.000616).",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-26T00:34:57Z"
+}

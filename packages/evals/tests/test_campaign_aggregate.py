@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import json
 import math
+from html.parser import HTMLParser
 from typing import Any
 
 import pytest
 
 from threetears.evals.analysis import (
     assemble_campaign_bundle,
+    campaign_report,
     campaign_report_html,
     campaign_report_markdown,
     serialize_report,
@@ -47,9 +49,9 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_case_payload,
 )
 from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.ops import analysis_generate
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture, settled
+from packages.evals.tests.report_support import stored_memo_analysis
+from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture
 from packages.evals.tests.report_shapes_support import (
     SHAPES,
     ArmTrials,
@@ -333,8 +335,44 @@ def test_an_arm_is_one_tag_and_one_colour_on_every_chart_of_the_campaign_page(na
         assert row["color"] == colours[bar.short_name or bar.arm]
     if shape.readings.control is not None:
         assert colours[shape.readings.control_label] == "--ink-2"
+    assert set(worn) == set(tags) | ({"v2"} if name == "sparse" else set()), (worn, tags)
     if name == "sparse":
         assert sorted(tags) == ["production", "v3"] and worn == {"production": {"P"}, "v2": {"A"}, "v3": {"B"}}
+
+
+class _ChartData(HTMLParser):
+    """Every ``div.chart`` of a page's HTML as the kit reads it: its ``data-kind`` and its ``data-chart`` JSON."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.charts: list[tuple[str, dict[str, Any]]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        held = dict(attrs)
+        if tag == "div" and "data-chart" in held:
+            self.charts.append((held.get("data-kind") or "", json.loads(held["data-chart"] or "")))
+
+
+def test_the_service_page_draws_a_shared_arm_in_one_tag_and_one_colour_on_every_chart_though_an_aspect_lacks_an_arm() -> (
+    None
+):
+    """The page the service hands out (``campaign_report``, the door every caller reads) tags arms across the whole
+    campaign, not per aspect: on the sparse campaign v3 is B and one colour on ``billing``, on ``tone`` (where it is
+    the first candidate) and on the cost/quality chart."""
+    shape = _sparse()
+    page = campaign_report(shape.host(), shape.campaign.id, shape.campaign.scope_id)
+    drawn = _ChartData()
+    drawn.feed(campaign_report_html(page))
+    bars = [data for kind, data in drawn.charts if kind == "bars"]
+    (cost,) = (data for kind, data in drawn.charts if kind == "scatter_frontier")
+    assert len(bars) == 2, "billing and tone each draw an outcome bar"
+    dressed: dict[str, set[tuple[str, str]]] = {}
+    for data in [*bars, cost]:
+        for entry in data.get("rows", data.get("points", [])):
+            dressed.setdefault(entry["label"], set()).add((entry.get("tag") or entry["narrow_label"], entry["color"]))
+    assert dressed["production"] == {("P", "--ink-2")}, dressed
+    assert dressed["v3"] == {("B", "--s2")}, dressed
+    assert "v3" in {entry["label"] for entry in cost["points"]}, "the cost chart draws v3 too"
 
 
 def _outcome_rows(page: CampaignReport) -> list[dict[str, Any]]:
@@ -403,10 +441,10 @@ def test_a_bundle_and_a_frame_frozen_at_shape_2_read_as_this_shape_fingerprintin
 
 
 async def _analysis_id(fixture: OpsFixture) -> str:
-    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
-    analysis_id = (await settled(fixture.host, job.job_id)).analysis_id
-    assert analysis_id is not None
-    return analysis_id
+    """A memo analysis of the corpus campaign, stored: a reporter case pins a recorded memo, which the memo writer
+    writes (a generation through the host is the report planner's)."""
+    analysis, _ = await stored_memo_analysis(fixture.host.eval_host, fixture.campaign)
+    return analysis.id
 
 
 async def test_a_reporter_case_frozen_at_shape_2_still_generates_calibrates_and_keeps_its_labels() -> None:

@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261025-a94d2be04a65",
+  "input": "r4",
+  "input_digest": "96d0986057f2da9a09c4bccebf74c51e8c2731a2aab3e4e833b09505ff1fd5a8",
+  "plan_digest": "f50dd21003d73f55539a16dbdc2ce46cf5e1da8ee148efaa2f0b6c833590b3ee",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "f22320aad5cf7deb7d6e65c1fbdfd9bf3532240ce3a71df688126db1bd8bad60",
+    "contract_digest": "d633628a4bf781225146719e712eb941c001887b44ee7208a08a282fc8c5ff0d"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A trade headline naming both sides and placing the loss on persona fidelity; it matches the table's lean arm f64 and the first forest chart, which shows f64's persona regression.",
+      "quote": "Trade persona fidelity for serving cost: f64 (A) cuts cost but regresses on consistency.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "fail",
+      "reason": "The first sentence restates the headline (f64 cuts cost but loses persona) with one figure added, and gives no figure for the saving it calls a supporting fact.",
+      "quote": "f64 (A) saves cost over Production (P) while maintaining guardrails, but drops 6.1 points on persona adherence.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "fail",
+      "reason": "The flag for the report-wide no-rule disclosure does not say what it weakens or which findings survive; it only says the choice needs leadership judgment.",
+      "quote": "Because no explicit loss threshold was set in advance, the tradeoff between cost savings and persona drift requires product leadership judgment.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "pass",
+      "reason": "Each section headline is a finding with subject and direction that its chart shows: all candidates regress on the forest, Flash arms fall at deeper turns on the depth lines, and banter and corrections carry the largest drops on the scenario bars.",
+      "quote": "Drift is concentrated in banter and corrections.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results, arms appear by their reader names and tags and measures appear in reader words; no run id, hash or measure key shows.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "In tradeoff mode, Where the answer flips names concrete flip points: a persona loss above five points, or conversations that routinely go past five turns.",
+      "quote": "The switch flips to Production (P) if persona degradation greater than five points is unacceptable, or if conversations routinely exceed five turns.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One measure gets several names above the fold: persona fidelity and consistency in the headline, persona adherence in the lede, persona drift in the flag.",
+      "quote": "Trade persona fidelity for serving cost: f64 (A) cuts cost but regresses on consistency.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "Masthead to options table alone say what to do (lean f64 if budget is the constraint), why (cost falls from $2.10 to $1.47 per 1,000 replies), and the main risk (a 6.1-point persona loss that worsens in long conversations).",
+      "quote": "Lean toward f64 (A) if monthly serving budget is the primary constraint and prompt guardrails prevent major policy regressions.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "What would settle it names a concrete experiment, a human side-by-side trial on long sessions, and the flip slot makes its decisive direction clear: unacceptable long-session degradation sends the call to Production.",
+      "quote": "A human side-by-side trial on long sessions or an explicit minimum acceptable persona fidelity threshold will settle the choice.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The confidence form is high and the plan has no confidence clauses, so the item passes.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "fail",
+      "reason": "2400 is the control arm's trial count, not the evaluation's total (four arms of 2400 each), so the figure does not measure the total the sentence claims.",
+      "quote": "The evaluation ran 300 distinct dialogue cases across 2400 total trials.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-26T00:27:14Z"
+}

@@ -57,3 +57,8 @@ packages/evals/src/threetears/evals/providers/wire.py::provider-quirk regex for 
 # provider-shape tests: each id is the input whose request shape, routing or dated-suffix handling is under test.
 packages/evals/tests/test_providers_model.py::provider-shape tests naming real and malformed claude ids as the subject under test; not a default
 packages/evals/tests/test_providers_ceiling.py::price-ceiling and completion-pricing tests keyed by catalogue rows for real claude ids; the model id is the row under test, not a default
+
+# the plan-scoring dataset's scorer id: OPUS_SCORER names the model its committed score records were written under,
+# an identity those records pool by (dataset.pool_key), not a model any code calls; no threetears.models constant
+# names it, and a moved constant would silently relabel recorded calibration data.
+packages/evals/tests/fixtures/report_plans/dataset.py::scorer id recorded in committed calibration score records (an identity records pool by), not a model the code calls

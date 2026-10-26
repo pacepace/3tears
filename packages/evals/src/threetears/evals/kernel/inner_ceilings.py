@@ -23,15 +23,17 @@ if TYPE_CHECKING:
 #: reasoning budget plus its answer budget.
 PROPOSER_MAX_TOKENS = 16384
 
-#: Provider requests one generation can send: the generation, and the one repair round-trip a
-#: refused output buys. :func:`generate_analysis` bounds it structurally; a test pins the two.
-MAX_GENERATION_CALLS = 2
+#: Provider requests one analysis generation can send. A generation is written by the report planner
+#: (:func:`~threetears.evals.analysis.planner.generate_report_plan`) in two calls, a structure and then its prose, so
+#: neither contract grows with the page; a refused reply of either buys that call one repair round-trip. So: the
+#: structure, its repair, the prose, its repair. The planner bounds it structurally; a test pins the four.
+MAX_GENERATION_CALLS = 4
 
 
 def generation_ceiling_s(*, request_s: RequestCeiling, generator_max_tokens: int) -> float:
-    """The wall-clock ceiling of one :func:`generate_analysis`, derived from the ceilings it wraps.
+    """The wall-clock ceiling of one analysis generation, derived from the ceilings it wraps.
 
-    Up to :data:`MAX_GENERATION_CALLS` requests run back to back, each capped at ``generator_max_tokens``
+    Up to :data:`MAX_GENERATION_CALLS` requests (the planner's) run back to back, each capped at ``generator_max_tokens``
     and each bounded by the host's own answer for one such request (``request_s``), which counts every
     provider call and retry wait the host's client spends on it. A budget over a generation must sit
     ABOVE this: one below it cancels a repair round-trip that is still writing inside its cap, after

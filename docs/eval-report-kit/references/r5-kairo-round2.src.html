@@ -5,6 +5,9 @@
 <style>/*KIT_CSS*/
 .flag{display:flex;gap:.6rem;align-items:flex-start;font-size:var(--t-sm);color:var(--ink-2);background:var(--warn-wash);border-radius:var(--r);padding:.6rem .8rem;max-width:var(--col)}
 .flag b{color:var(--warn)}
+.flag ul{margin:.3rem 0 0;padding-left:1.1rem}
+.flag li{margin:.15rem 0}
+.flag li.checked{color:var(--muted);list-style:"✓  "}
 .keytbl td.spec{font-family:var(--f-mono);font-size:var(--t-xs);color:var(--ink-2);white-space:normal}
 .mini h3{font-size:var(--t-base);margin-bottom:.15rem}
 </style>
@@ -14,7 +17,7 @@
 <div class="bluf">
   <h1 id="h1"></h1>
   <p class="lede" id="lede"></p>
-  <div class="flag"><b aria-hidden="true">!</b><span id="flag"></span></div>
+  <div class="flag"><b aria-hidden="true">!</b><div id="flag"></div></div>
   <div class="decision">
     <div class="rec"><span class="k">Recommendation</span><span class="v" id="d-rec"></span></div>
     <div><span class="k">Why not the candidates</span><span class="v" id="d-why"></span></div>
@@ -42,19 +45,19 @@
 
 <section>
   <header><span class="eyebrow">Where character is lost</span><h2 id="st-h"></h2>
-  <p class="takeaway">Change in in-character rate against September, by kind of listener message. The twelve largest strata, by cases. Bold rows are separated from zero at 95%, before any correction; read them as leads.</p></header>
+  <p class="takeaway">Change in in-character rate against September, by kind of listener message. The twelve largest strata, by cases. Bold rows are separated from zero before any correction; read them as leads.</p></header>
   <div class="chart" id="strata" data-kind="diverging_bars"></div>
 </section>
 
 <section>
-  <header><span class="eyebrow">What the failures look like</span><h2>Off-lane failures answer the question instead of brushing it off</h2>
+  <header><span class="eyebrow">What the failures look like</span><h2>Most shown failures answer an off-topic ask, the landlord advice and the arithmetic; one narrates the question in its spoken line instead</h2>
   <p class="takeaway">Failed trials on in-character, with the judge's reason and the end of the reply.</p></header>
   <div class="chart" id="ex" data-kind="examples"></div>
 </section>
 
 <div class="part"><h2>Test the margin</h2><span>The margin was set after the results were seen</span></div>
 <section>
-  <header><p class="takeaway">The question allowed a 15-point drop. Move the margin to see where each candidate's reading changes, on the asked pass rate or on the judge's in-character rate.</p></header>
+  <header><p class="takeaway">The question allowed a 15-point drop. Move the margin to see where each candidate's reading changes, on the pass rate or on the judge's in-character rate.</p></header>
   <div class="controls">
     <div class="ctl"><label for="e-m">Margin (points)</label><input type="range" id="e-m" min="0" max="15" step="0.5" value="15"><output id="o-m"></output></div>
     <div class="ctl"><label>Measure</label><div class="seg" id="e-k"><button type="button" data-v="pass">Pass rate (95%)</button><button type="button" data-v="char">In-character (corrected)</button></div></div>
@@ -84,7 +87,10 @@ const SB=D.scoreboard;const pr=a=>SB[a].passed/SB[a].usable*100;
 const prim=D.primary_judged;const J=D.judged;const jm=(dim,a)=>J[dim].per_arm[a].mean;
 const cost=a=>D.measures.production_replicating_cost.per_arm[a];
 const C=(arm,meas)=>D.contrasts.find(c=>c.arm===arm&&c.measure===meas);
-const pts=v=>(v>0?"+":"")+v.toFixed(1);const fam=D.contrast_families[0];
+const pts=v=>(v>0?"+":"")+v.toFixed(1);
+// The plan's number rule (numbers.py) for every figure the page writes into the plan's prose: one decimal at most, a
+// whole value without it (-6.0 reads -6), a change signed.
+const num=v=>v.toFixed(1).replace(/\.0$/,"");const fig=v=>(v>0?"+":"")+num(v);const fam=D.contrast_families[0];
 const famLevel=fam?`${(100-fam.alpha/fam.family_size*100).toFixed(2)}%`:"95%";
 const usd=v=>"$"+v.toFixed(2);
 
@@ -93,14 +99,31 @@ const usd=v=>"$"+v.toFixed(2);
   const lo=Math.round(Math.min(...ups)*100),hi=Math.round(Math.max(...ups)*100);
   const sep=cands.filter(a=>R[a.id].within_interval[1]<0);const worst=cands.slice().sort((a,b)=>R[a.id].change-R[b.id].change)[0];
   document.getElementById("h1").textContent=`Keep ${ctl.name}. Both candidates cost ${lo===hi?lo:lo+"–"+hi}% more per reply and stay in character less often.`;
-  document.getElementById("lede").innerHTML=`${worst.name} is clearly worse on the asked pass rate: down ${(-R[worst.id].change).toFixed(1)} points (95% interval ${R[worst.id].within_interval.map(v=>v.toFixed(1)).join(" to ")}), inside the 15-point margin but not a tie. ${cands.filter(a=>a!==worst).map(a=>`${a.name}'s drop of ${(-R[a.id].change).toFixed(1)} points could be noise`).join("; ")}. Neither candidate improves anything this campaign measured.`;
-  const late=D.caveats.late_criteria.map(x=>x.criterion==="floor"?"floor":x.criterion);const tiersU=Object.values(D.caveats.judge_tiers).every(t=>t==="undetermined");
-  document.getElementById("flag").innerHTML=`<b>The criteria came after the results, and the judge is uncalibrated.</b> The ${late.join(", ").replace(/, ([^,]*)$/," and $1")} were all set on ${D.caveats.late_criteria[0].set_at}, after the readings were visible${tiersU?", and the judge has no human calibration yet (0 of 20 ratings)":""}. The cost finding is measured spend, not judged, so it supports keeping ${ctl.name} on its own.`;
-  document.getElementById("d-rec").innerHTML=`<strong>Keep ${ctl.name}</strong> (${ctl.served_model}). It has the highest pass rate (${pr(ctl.id).toFixed(1)}%), the highest in-character rate (${(jm(prim,ctl.id)*100).toFixed(1)}%) and the lowest cost (${usd(cc)} per 1,000 replies).`;
-  document.getElementById("d-why").innerHTML=cands.map(a=>{const c1=C(a.id,"production_replicating_cost"),c2=C(a.id,prim);return `<strong>${a.name}:</strong> ${Math.round((cost(a.id).mean*1000/cc-1)*100)}% more per reply${c2?`, in-character ${pts(c2.delta*100)} points`:""}${R[a.id].within_interval[1]<0?`, pass rate ${pts(R[a.id].change)}`:""}.`;}).join("<br>");
+  document.getElementById("lede").innerHTML=`${worst.name} has a lower pass rate, by ${num(-R[worst.id].within_interval[1])} to ${num(-R[worst.id].within_interval[0])} points, and neither candidate beats ${ctl.name} on anything this campaign measured. A candidate priced at or below ${ctl.name} whose pass rate stays within the margin would change the answer.`;
+  // The decision's confidence: one clause per open caveat (the plan's words), then code's checked line for each late
+  // criterion the call holds across: a reading flips at its worst drop (-lo), and every flip point lies under the margin
+  // the campaign set, and keeping the control holds at every margin either way.
+  const tiersU=Object.values(D.caveats.judge_tiers).every(t=>t==="undetermined");
+  const lateOf=k=>D.caveats.late_criteria.some(x=>x.criterion===k);
+  const clauses=[
+    tiersU&&`The judge is uncalibrated. Material only if it misreads in-character replies; cost, the deciding finding, is measured and doesn't depend on it.`,
+    lateOf("aspect")&&`The aspect was chosen after the results. Material only if a different aspect would have favored a candidate.`,
+    lateOf("control")&&`The control was chosen after the results. Material only if a different control would have favored a candidate.`].filter(Boolean);
+  const checked=[lateOf("margin")&&"The late margin was checked: the call holds at every margin.",
+    lateOf("floor")&&"The late floor was checked: the call holds at every margin the floor could take."].filter(Boolean);
+  document.getElementById("flag").innerHTML=`<b>Keep ${ctl.name}. Confidence: high, if the caveats below aren't material.</b><ul>${clauses.map(c=>`<li>${c}</li>`).join("")}${checked.map(c=>`<li class="checked">${c}</li>`).join("")}</ul>`;
+  document.getElementById("d-rec").innerHTML=`<strong>Keep ${ctl.name}</strong> (${ctl.served_model}). It has the highest pass rate (${num(pr(ctl.id))}%), the highest in-character rate (${num(jm(prim,ctl.id)*100)}%) and the lowest cost (${usd(cc)} per 1,000 replies).`;
+  document.getElementById("d-why").innerHTML=cands.map(a=>{const c1=C(a.id,"production_replicating_cost"),c2=C(a.id,prim);return `<strong>${a.name}:</strong> ${Math.round((cost(a.id).mean*1000/cc-1)*100)}% more per reply${c2?`, in-character ${fig(c2.delta*100)} points`:""}${R[a.id].within_interval[1]<0?`, pass rate ${fig(R[a.id].change)}`:""}.`;}).join("<br>");
   const conf=cands.filter(a=>Math.abs(a.reasoning_ratio-ctl.reasoning_ratio)>=0.2);
-  document.getElementById("d-watch").innerHTML=`${conf.map(a=>`${a.name} spent ${Math.round(a.reasoning_ratio*100)}% of its output reasoning against ${ctl.name}'s ${Math.round(ctl.reasoning_ratio*100)}%, so part of its result may be the effort budget, not the model.`).join(" ")} Latency was not compared: every run shared the machine.`;
-  document.getElementById("d-next").innerHTML=`Fix off-lane handling first: it is ${ctl.name}'s weakest stratum and where both candidates lose most. Then calibrate the judge with 20 human ratings, and find out why ${worst.name} cost more than the earlier campaign found.`;})();
+  // Watch opens with the weakest margin (report_margins.weakest_margin): the reading whose worst drop sits nearest the
+  // margin, and why the call holds past it.
+  const weak=cands.slice().sort((a,b)=>R[a.id].within_interval[0]-R[b.id].within_interval[0])[0];
+  const one=v=>v.toFixed(1).replace(/\.0$/,"");const drop=-R[weak.id].within_interval[0];
+  const weakText=`The weakest margin: ${weak.name}'s worst drop, ${one(drop)} points, sits ${one(asp.margin-drop)} points inside the margin on ${asp.name}; past that line ${ctl.name} is still cheaper, so the call holds. `;
+  document.getElementById("d-watch").innerHTML=`${weakText}${conf.map(a=>`${a.name} spent ${Math.round(a.reasoning_ratio*100)}% of its output reasoning against ${ctl.name}'s ${Math.round(ctl.reasoning_ratio*100)}%, and other swept levers varied with the model, so its result is not the model's alone.`).join(" ")} ${D.caveats.short_runs.length===2?"Two":D.caveats.short_runs.length} of ${D.arms.find(a=>a.id===D.caveats.short_runs[0].arm)?.name??"one candidate"}'s runs each lost one trial to the test setup.`;
+  // Next names the experiment that could change the answer, which way, and why off-lane asks are the stratum to oversample.
+  const lead=D.strata[0];const loss=cands.map(a=>{const tot=D.strata.reduce((s,st)=>s+st.n_cases*(st.per_arm[ctl.id][prim].mean-st.per_arm[a.id][prim].mean),0);return lead.n_cases*(lead.per_arm[ctl.id][prim].mean-lead.per_arm[a.id][prim].mean)/tot;});
+  document.getElementById("d-next").innerHTML=`Run a candidate priced at or below ${ctl.name} on the same cases, with off-lane asks oversampled, since they carry about ${Math.round(Math.min(...loss)*10)*10}% of each candidate's in-character loss: if its pass rate stays within the margin, it replaces ${ctl.name}; if not, ${ctl.name} stays.`;})();
 
 // ---- options table
 (function(){const cc=cost(ctl.id).mean*1000;const rows=[ctl,...cands];
@@ -124,7 +147,7 @@ document.getElementById("key").innerHTML=`<thead><tr><th>Arm</th><th>Role</th><t
 // ---- the asked question: forest against the margin
 (function(){const margin=asp.margin;
   document.getElementById("q-h").textContent=`Both candidates stay inside the ${margin}-point margin, but ${cands.filter(a=>R[a.id].within_interval[1]<0).map(a=>a.name).join(" and ")||"neither"} is separated as worse`;
-  document.getElementById("q-t").textContent=`The question: ${D.meta.question.replace(/^"|"$/g,"")} The shaded region is the margin; a candidate passes when its whole interval sits inside it.`;
+  document.getElementById("q-t").textContent=`The question: does either candidate's pass rate stay within ${margin} points of ${ctl.name}'s? The shaded region is the margin; a candidate passes when its whole interval sits inside it.`;
   document.getElementById("q-cap").textContent=`Pass rate on ${asp.name}: a trial passes when every check and judged dimension passes. Confirmatory 95% intervals on ${asp.readings[0].cases[0]} paired cases. The margin was set after the readings were visible.`;
   setChart(document.getElementById("question"),{domain:[-16,4],fmt:"+num:0",level:"95%",reference:{value:-margin,label:`margin −${margin}`,kind:"margin"},label_width:160,label_width_narrow:110,
     rows:cands.map(a=>{const r=R[a.id];return {id:a.id,label:nm(a),value:r.change,lo:r.within_interval[0],hi:r.within_interval[1],color:COL[a.id],strong:r.within_interval[1]<0,
@@ -133,8 +156,7 @@ document.getElementById("key").innerHTML=`<thead><tr><th>Arm</th><th>Role</th><t
 // ---- strata
 (function(){const top=D.strata.slice(0,12);const c0=ctl.id;
   const lead=top[0];const ds=cands.map(a=>lead.per_arm[a.id][prim].mean*100-lead.per_arm[c0][prim].mean*100);
-  const share=cands.map(a=>{const tot=D.strata.reduce((s,st)=>s+st.n_cases*(st.per_arm[c0][prim].mean-st.per_arm[a.id][prim].mean),0);const one=lead.n_cases*(lead.per_arm[c0][prim].mean-lead.per_arm[a.id][prim].mean);return one/tot;});
-  document.getElementById("st-h").textContent=`Off-lane asks, the largest stratum, carry about ${Math.round(Math.min(...share)*10)*10}% of each candidate's loss`;
+  document.getElementById("st-h").textContent="Off-lane asks, the largest stratum, show each candidate's deepest drop in in-character rate";
   setChart(document.getElementById("strata"),{domain:[-26,8],fmt:"+num:0",row_height:24,label_width:150,label_width_narrow:118,panel_min_rem:30,
     panels:cands.map(a=>({tag:a.tag,title:a.short,color:COL[a.id],subtitle:`Points against ${ctl.name}, whose rate is in brackets`,
       rows:top.map(st=>{const x=st.per_arm[a.id][prim],c=st.per_arm[c0][prim];const dv=(x.mean-c.mean)*100,se=Math.hypot(x.sem,c.sem)*100;const sig=Math.abs(dv)>1.96*se;
@@ -142,9 +164,10 @@ document.getElementById("key").innerHTML=`<thead><tr><th>Arm</th><th>Role</th><t
           tip:[`${st.id.replace(/_/g," ")} · ${st.n_cases} cases`,`${ctl.name} ${(c.mean*100).toFixed(1)}% · ${a.name} ${(x.mean*100).toFixed(1)}%`,`${pts(dv)} points (±${(1.96*se).toFixed(1)}, uncorrected)`]};})}))});})();
 
 // ---- examples (failed in-character trials, candidates first)
-(function(){const pick=[];const want=[["off_lane",cands[0]],["off_lane",cands[1]],["multi",cands[1]],["about",cands[0]]];
-  for(const [st,a] of want){const e=D.examples.find(x=>x.stratum===st&&x.arm===a.id&&!pick.includes(x));if(e)pick.push(e);}
-  for(const e of D.examples)if(pick.length<4&&!pick.includes(e))pick.push(e);
+// The plan's query for this section, as it selects rows (report_plan_checks: every example of the arms and strata it
+// names, in the input's order, to its limit), so the cards are the ones the headline speaks of.
+(function(){const q={arms:["qwen3.8-flash","1017","September"],strata:["off_lane","multi","about"],limit:4};
+  const pick=D.examples.filter(e=>(e.arm==null||!q.arms.length||q.arms.includes(e.arm))&&(!q.strata.length||q.strata.includes(e.stratum))).slice(0,q.limit);
   setChart(document.getElementById("ex"),{cards:pick.map(e=>({meta:[{text:e.trial,mono:true},{text:e.case,mono:true},{text:e.stratum.replace(/_/g," ")},{tag:A[e.arm].tag,label:A[e.arm].short,color:COL[e.arm]},{text:`repeat ${e.repeat}`}],
     reason:e.reason||"No judge reason recorded.",excerpt:e.excerpt}))});})();
 
@@ -154,7 +177,7 @@ document.querySelectorAll("#e-k button").forEach(b=>b.onclick=()=>{kind=b.datase
 function iv(a){if(kind==="pass"){const r=R[a.id];return {v:r.change,lo:r.within_interval[0],hi:r.within_interval[1]};}const c=C(a.id,prim);return {v:c.delta*100,lo:c.interval[0]*100,hi:c.interval[1]*100};}
 function explore(){const m=+em.value;document.getElementById("o-m").textContent=m.toFixed(1)+" points";document.querySelectorAll("#e-k button").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.v===kind)));
   const lines=cands.map(a=>{const x=iv(a);const holds=-x.lo<m;return `<strong>${a.name}</strong> ${holds?"holds":"fails"} (worst drop ${(-x.lo).toFixed(1)}; it holds for any margin above ${(-x.lo).toFixed(1)})`;});
-  document.getElementById("e-note").innerHTML=`At a ${m.toFixed(1)}-point margin on ${kind==="pass"?"the asked pass rate":"the in-character rate"}: ${lines.join("; ")}. ${ctl.name} stays the recommendation at any margin, because neither candidate improves on it.`;
+  document.getElementById("e-note").innerHTML=`At a ${m.toFixed(1)}-point margin on ${kind==="pass"?"the pass rate":"the in-character rate"}: ${lines.join("; ")}. ${ctl.name} stays the recommendation at any margin, because neither candidate improves on it.`;
   setChart(document.getElementById("e-chart"),{domain:[-16,4],fmt:"+num:0",level:kind==="pass"?"95%":famLevel,reference:{value:-m,label:`margin −${m.toFixed(1)}`,kind:"margin"},label_width:160,label_width_narrow:110,
     rows:cands.map(a=>{const x=iv(a);return {id:a.id,label:nm(a),value:x.v,lo:x.lo,hi:x.hi,color:COL[a.id],strong:-x.lo>=m,note:-x.lo<m?"within":"outside"};})});}
 explore();
@@ -173,12 +196,12 @@ explore();
   sortable(st,rows,s=>{st.querySelector("tbody").innerHTML=s.map(r=>`<tr><td>${r.id}</td><td class="r">${r.n}</td>${ar.map(a=>`<td class="r">${r[a.id].toFixed(1)}%</td>`).join("")}</tr>`).join("");},"n",-1);
   const jt=Object.entries(D.caveats.judge_tiers);
   document.getElementById("method").innerHTML=[
-    ["Cases",`${asp.readings[0].cases[0]} cases, each run ${asp.depth[ctl.id].repeats_per_case[1]} times per arm; ${cands.map(a=>`${a.name} ran ${asp.depth[a.id].repeats_per_case[0]} to ${asp.depth[a.id].repeats_per_case[2]}`).join(", ")}. Arms answered the same cases, so differences are paired.`],
-    ["Pass",`A trial passes when every check and every judged dimension passes. The asked reading uses confirmatory 95% intervals.`],
+    ["Cases",`${asp.readings[0].cases[0]} cases, each run ${asp.depth[ctl.id].repeats_per_case[1]} times per arm; arms answered the same cases, so differences are paired.`],
+    ["Pass",`A trial passes when every check and every judged dimension passes. The pass-rate reading uses confirmatory 95% intervals.`],
     ["Corrected comparisons",fam?fam.disclosure:"None."],
-    ["Judge",`${J[prim].judge_model||"Judge"}; evidence tier ${[...new Set(jt.map(x=>x[1]))].join(", ")} for all ${jt.length} dimensions: no human calibration and no test-retest yet.`],
+    ["Judge",`${J[prim].judge_model||"Judge"}; evidence tier ${[...new Set(jt.map(x=>x[1]))].join(", ")} for all dimensions: no human calibration and no test-retest yet.`],
     ["Cost","Production roles only, per reply, as each run's provider routing set it."],
     ["Latency",D.caveats.latency||"Compared."],
-    ["Strata","Per-stratum rates are descriptive. Their intervals are not corrected, and small strata move a lot on one case."],
+    ["Not compared",`Token counts and model calls were recorded but not reported. The simulator's request settings were not recorded on every run, so whether they varied between arms is unknown.`],
     ["Source",D.meta.provenance]].map(([t,v])=>`<dt>${t}</dt><dd>${v}</dd>`).join("");})();
 </script>

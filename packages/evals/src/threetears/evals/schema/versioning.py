@@ -382,6 +382,13 @@ MINOR_ADDITIVITY_SENTENCE: Final[str] = (
 #:   campaign's page opens on after code's warnings. A v12 analysis has no summary to read, so it is refused on read,
 #:   never given an empty one, and the operator step is v12's: ``EvalStorage.drop_derived(scopes)``, then generate
 #:   again. Insights and judge profiles are refused with it, as every regenerable bump refuses them.
+#:
+#:   Within v13, the report planner writes every new analysis, with no bump, because nothing stored changes: a planned
+#:   analysis holds no memo (``EvalAnalysis.document`` None) and names its plan (``EvalAnalysis.report_plan_id``, None
+#:   on every memo), a new regenerable type stored beside it (``eval_report_plan``, swept by ``drop_derived``). Every
+#:   v13 memo stored before it reads and renders as it did. A bump here would refuse them, so none is taken; a build
+#:   from before the planner refuses a planned analysis on read (a field it does not know), which is the regenerable
+#:   rule's own answer, and never misreads it.
 REGENERABLE_SCHEMA_VERSION: int = 13
 """The version every regenerable document but the cassette is written under, and the only one a read of one accepts.
 
@@ -639,7 +646,46 @@ DURABLE_SCHEMA_VERSION: int = 16
 #:   build refuses on read, by the name the two share. So during a rolling deploy across 16.2 and 16.3, declare no name
 #:   until every pod reading the store runs 16.3.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 3
+#: - **v16.4** — an arm's name is declared: a campaign's arm may name what a page prints for it where space is tight
+#:   (``CampaignArm.short_name``, default None), at most 32 characters and no other arm's label or short name, written
+#:   only when set, so a campaign naming no arm holds exactly what v16.3 stored. It is in no identity, key, digest or
+#:   fingerprint a run, a cell, a pool, a pairing, an analysis or a reporter case is read by (``ARM_PRESENTATION_FIELDS``:
+#:   a campaign bundle's fingerprint leaves it out of its arms and its declaration's, an aspect bundle's out of its
+#:   declared control), and a campaign has no edit time to stamp, so naming an arm changes no reading and stales no
+#:   analysis. An older build (v16.3, or v16.2 as 0.78.0 shipped it) reading a campaign at this minor keeps the names
+#:   opaquely, writes them back, and prints each arm by its label or a computed short name. One of its writes can leave
+#:   a name that no longer fits: adopting an arm whose label is another arm's short name, which this build refuses on
+#:   read, by the name the two share. So during a rolling deploy across 16.3 and 16.4, declare no arm name until every
+#:   pod reading the store runs 16.4.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v16.5** — a template's strata are named: a template may declare what a page prints for each stratum
+#:   (``EvalTemplate.stratum_names``, a stratum id to its display name, default empty), each name at most 32 characters,
+#:   never blank, one per stratum, written only when declared, so a template naming no stratum holds exactly what v16.4
+#:   stored. It is in no digest or fingerprint a run, a cell, a pool, an analysis or a reporter case is read by
+#:   (``TEMPLATE_PRESENTATION_FIELDS``, beside ``goal_check_names``: both template digests and every bundle
+#:   fingerprint leave it out), and a ``template_update`` of it alone leaves ``updated_at``, so naming a stratum stales
+#:   no analysis and cuts no run off from its criteria, rejudging or take-up. A bundle carries it as
+#:   ``AnalysisContextBundle.stratum_names``, written only when declared, so a bundle shape of a template naming no
+#:   stratum is shape 64 byte for byte. An older build (v16.4 and earlier) reading a template at this minor keeps the
+#:   names opaquely, writes them back, and prints each stratum by its id; it refuses an aspect bundle holding
+#:   ``stratum_names``, since the bundle's shape did not move. So during a rolling deploy across 16.4 and 16.5, declare
+#:   no stratum name until every pod reading the store runs 16.5.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v16.6** — a reporter case may judge a report plan: the reporter case a reporter template's test case carries
+#:   (``ReporterCase``, in ``EvalTestCase.host_payload``) gains ``kind_version`` (1, a memo, the default; 2, a plan)
+#:   and, on a plan case only, ``report_input`` (the report input built from the bundle frozen with the planned
+#:   analysis, whole), ``report_input_digest``, ``recorded_report_input_digest`` (the stored plan's), ``recorded_plan``
+#:   (the plan in key form) and ``planner_prompt_version``. A plan case's ``recorded_memo`` is the plan as the judge
+#:   reads it and its ``writer_message`` what the planner read. Each is written only on a plan case, so a memo case is
+#:   stored exactly as v16.5 stored it, and every case stored before reads as a memo case, judged as it was.
+#:   **The sentence below is false for the reporter kind's read of a plan case, as it was at v16.1 and v16.2.** A
+#:   v16.5 build's ``ReporterCase`` refuses a key it does not declare, so it cannot read a plan case, and a reporter
+#:   template's bank is undecidable while any of its cases is unreadable: on a v16.5 build, the first plan case frozen
+#:   into a template stops that whole template, refusing its launches, their prices, its freezes, its calibration
+#:   reads and its restores, until that build upgrades. So during a rolling deploy across 16.5 and 16.6, freeze no
+#:   plan case until every pod runs 16.6. A v16.5 build keeps the test case's payload verbatim on every write.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 6
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 
