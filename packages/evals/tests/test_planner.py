@@ -128,6 +128,14 @@ class TestTheRequests:
         assert checked["judge_uncalibrated"] == ""
         assert contract == structure_response_format()
 
+    def test_the_facts_tell_the_planner_to_name_each_id_by_its_one_reader_name(self) -> None:
+        _, user, _ = first_plan_request(_input(), PROMPT, toyhost_profile())
+        facts = json.loads(user.split(f"\n\n{FACTS_HEADING}\n", 1)[1])
+        rule = facts["reader_names_rule"]
+        assert "`reader_names`" in rule and "each measure" in rule and "the same name every time" in rule
+        assert list(facts).index("reader_names_rule") == list(facts).index("reader_names") - 1, "said beside them"
+        assert PROMPT not in user and rule not in PROMPT, "code's, outside the prompt and its budget"
+
     def test_the_allowed_modes_are_told(self) -> None:
         _, user, _ = first_plan_request(_input(), PROMPT, toyhost_profile(), allowed_modes=["decide"])
         assert json.loads(user.split(f"\n\n{FACTS_HEADING}\n", 1)[1])["allowed_modes"] == ["decide"]
