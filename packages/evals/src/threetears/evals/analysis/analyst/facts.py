@@ -269,6 +269,11 @@ class MeasureRow(_Fact):
     aspects: list[str] = Field(description="The aspects it is read on, where it is read on more than the lead one.")
     slices: list[str] = Field(description="Where measure_read can read it: arm, stratum, task, cell.")
     key_form: str = Field(description="The figure key that reads one arm's statistic on it.")
+    judge: list[CitedFigure] = Field(
+        description="For a judged dimension, its judge as the input states it: its evidence tier, model, calibration "
+        "state, the human ratings it was calibrated on and its agreement with them (`judged.<dimension>.<field>`); "
+        "empty for a measure, and a field the input leaves unstated is left out."
+    )
 
 
 class CriterionRow(_Fact):
@@ -404,7 +409,18 @@ def _measure_row(
         aspects=aspects,
         slices=_slices_of(report_input, key, table),
         key_form=form,
+        judge=[] if source == "measure" else _figures(_judge_keys(key), report_input),
     )
+
+
+#: What a judged dimension's judge is cited by, in the order a reader weighs it: how far its scores can be trusted,
+#: whose they are, and what it was calibrated on.
+_JUDGE_FIELDS = ("tier", "model", "calibration", "calibration_ratings", "agreement")
+
+
+def _judge_keys(dimension: str) -> list[str]:
+    """The keys of one judged dimension's judge figures."""
+    return [f"judged.{dimension}.{field}" for field in _JUDGE_FIELDS]
 
 
 def campaign_overview(report_input: ReportInput, snapshot_id: str) -> CampaignOverview:
@@ -1252,7 +1268,8 @@ def _touch(report_input: ReportInput, caveat: Caveat, unsettled: Mapping[str, tu
         return _late_touch(report_input, lates[caveat.id])
     head, _, rest = caveat.id.partition(":")
     if caveat.id == "judge_uncalibrated":
-        return _Touch(measures=_distinct([*report_input.judged, *caveats.judge_tiers]))
+        keys = [key for dimension in report_input.judged for key in _judge_keys(dimension)]
+        return _Touch(measures=_distinct([*report_input.judged, *caveats.judge_tiers]), keys=keys)
     if head == "confound":
         return _confound_touch(report_input, rest, caveats.confounds.get(rest))
     if head == "apparatus":
