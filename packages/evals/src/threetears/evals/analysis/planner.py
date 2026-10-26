@@ -111,6 +111,14 @@ REPORT_INPUT_HEADING = "REPORT INPUT"
 #: The heading code's facts follow under; the prompt names it.
 FACTS_HEADING = "WHAT CODE HAS ALREADY DECIDED"
 
+#: How prose names what ``reader_names`` names, stated beside it in code's facts: the one name code supplies for each
+#: id, which the page's own titles, headers and axes print too. Code's, outside the prompt's budget, and checked by the
+#: plan's judge, not by code: a list of a measure's other names would be a word list.
+_READER_NAMES_RULE = (
+    "Prose names each measure, judged dimension, aspect, stratum, task and criterion by its one name under "
+    "`reader_names`, the same name every time it appears: never its id, a shortening or another name for it."
+)
+
 #: The heading the checked structure follows under in the prose call.
 STRUCTURE_HEADING = "STRUCTURE"
 
@@ -221,6 +229,7 @@ def _prefix(report_input: ReportInput, facts: PlanFacts, modes: Sequence[str], b
         "disclosures": {mode: list(implied) for mode, implied in facts.disclosures.items()},
         "caveats": [caveat.model_dump(mode="json") for caveat in facts.caveats],
         "weakest_margin": facts.weakest.model_dump(mode="json") if facts.weakest is not None else None,
+        "reader_names_rule": _READER_NAMES_RULE,
         "reader_names": {kind: dict(names) for kind, names in facts.names.items()},
     }
     return f"{REPORT_INPUT_HEADING}\n{planner_view(report_input, budget=budget)}\n\n{FACTS_HEADING}\n{_compact(view)}"
@@ -243,7 +252,7 @@ def first_plan_request(
     evidence section draws, the allowed modes, the masthead, each arm with its tag, name and colour, whether the arms
     key shows, the options columns and full-results tables, every warning code raises on each arm, numbered as an
     answer is keyed, the disclosures each mode implies, the weakest margin with the keys that name it, and each id's
-    reader name.
+    reader name, with the rule that prose names each id by it.
 
     :param report_input: The campaign's report input.
     :ptype report_input: ReportInput

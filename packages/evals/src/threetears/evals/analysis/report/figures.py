@@ -52,6 +52,9 @@ REPLY_COST_FLOOR = 0.01
 PER_THOUSAND_REPLIES = "per 1,000 replies"
 PER_THOUSAND_LABEL = "($/1,000 replies)"
 
+#: The words a cost stated per 1,000,000 replies carries, as a measure in ``usd_per_1m`` declares it.
+PER_MILLION_REPLIES = "per 1,000,000 replies"
+
 
 def surface_order_sentence(*, has_control_row: bool) -> str:
     """The row-order sentence for a table laid out by :func:`~threetears.evals.analysis.arms.surface_order`.
@@ -235,6 +238,7 @@ def analysis_rulers(analysis: EvalAnalysis, aspect: str) -> Rulers:
 
 __all__ = [
     "NO_SUCCESSFUL_RESULTS",
+    "PER_MILLION_REPLIES",
     "PER_THOUSAND_LABEL",
     "PER_THOUSAND_REPLIES",
     "REFERENCE_MARK",

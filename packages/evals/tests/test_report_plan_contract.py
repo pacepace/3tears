@@ -15,6 +15,8 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from threetears.evals.analysis.report.charts import KIT_CHARTS
+from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_plan_facts import complete_plan, plan_facts
 from threetears.evals.analysis.report.charts import ChartReference as KitReference
 from threetears.evals.kernel import authored, report_plan
 from threetears.evals.kernel.report_plan import (
@@ -50,6 +52,7 @@ from packages.evals.tests.report_plan_support import (
     CODE_FILLED_PARTS,
     R5_PLAN,
     planned_reply,
+    r5_input,
 )
 
 DOCS_SCHEMA = KIT / "schema" / "report-plan.schema.json"
@@ -300,6 +303,39 @@ class TestTheStoredPlan:
         assert [clause.id for clause in confidence.caveats] == ["judge_uncalibrated", "late:aspect", "late:control"]
         assert all(clause.material_if for clause in confidence.caveats)
         assert plan.flag == []
+
+    def test_the_kairo_plans_code_filled_fields_are_what_code_completes_from_its_planned_part(self):
+        """The reference carries code's facts, not a copy of them: completing the planner's part of it against its
+        input gives back every field code fills (the masthead, the signals, each chart's level, unit and domain, the
+        options columns), so the reference cannot drift from code."""
+        stored = _r5()
+        report_input = ReportInput.model_validate(r5_input())
+        facts = plan_facts(report_input)
+        recommended = next(row["option"] for row in stored["options"]["rows"] if row["role"] == "recommended")
+        warnings = [warning.model_dump(mode="json") for warning in facts.warnings.get(recommended, ())]
+        planned = PlannedReport.model_validate(planned_reply(stored, warnings))
+        completed = complete_plan(planned, report_input, facts).model_dump(mode="json", by_alias=True)
+        assert _code_filled(stored) == _code_filled(completed)
+
+
+def _code_filled(plan: dict[str, Any]) -> dict[str, Any]:
+    """Every field code fills on a stored plan, by where it sits."""
+    charts = [*plan["summary"], *(section["chart"] for section in plan["sections"])]
+    return {
+        "top": {key: plan[key] for key in sorted(CODE_FILLED)},
+        "charts": [
+            {
+                **{key: chart[key] for key in sorted(CODE_FILLED_ON_A_CHART)},
+                "reference": [
+                    {key: reference[key] for key in sorted(CODE_FILLED_PARTS["ChartReference"])}
+                    for reference in chart["reference"]
+                ],
+            }
+            for chart in charts
+        ],
+        "options": {key: plan["options"][key] for key in sorted(CODE_FILLED_PARTS["Options"])},
+        "flag": [{key: flag[key] for key in sorted(CODE_FILLED_PARTS["Flag"])} for flag in plan["flag"]],
+    }
 
 
 #: A flag as a low-confidence tradeoff plan writes it: no rule set, and one report-wide caveat.
