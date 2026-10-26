@@ -11,6 +11,10 @@ Contracts held here (``threetears.evals.analysis.report.figure_keys``, the analy
   criterion figure's ``gap``) are computed from the input's point figures;
 - an unqualified key whose figure the input holds on more than one aspect (a contrast's arm and measure, a stratum id,
   a contrast family) is refused, naming the ``aspects.<aspect>.`` keys that read each one;
+- the keys the analyst's fact tools cite where no other key reads the input's field: a floor or bar on an aspect the
+  input holds no record for (keyed by the aspect its read names, with no aspect record invented), each of an arm's
+  settings as the input holds it (a number or text), one aspect's cases and repeats and each arm's depth on it, each
+  late criterion's own date, and any contrast family by its place in the input's families;
 - the grammar lists every family, each with an example rendered on its made-up input.
 """
 
@@ -21,6 +25,7 @@ from typing import Any
 import pytest
 
 from packages.evals.tests.fixtures.report_plans.dataset import kairo_bundle, report_input_of
+from packages.evals.tests.fixtures.report_plans.misfits import only_bars, reference_data
 from packages.evals.tests.report_shapes_support import SHAPES
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.errors import UnresolvableReference
@@ -32,6 +37,7 @@ from threetears.evals.analysis.report.figure_keys import (
 )
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.analysis.report_decision import report_caveats
 from threetears.evals.analysis.report_margins import criterion_figures, flip_margin, weakest_margin
 
 FIXTURES = ("r1", "r2", "r3", "r4", "r5")
@@ -543,6 +549,184 @@ def _spelled(report_input: ReportInput, cell_id: str) -> str:
     return f"{cell.row}.{cell.column}"
 
 
+# --- the keys the fact tools cite where no other key reads the field ------------------------------------------------
+
+
+class TestAFloorOrBarOnAnAspectWithNoRecord:
+    def test_each_bar_is_keyed_by_the_aspect_its_read_names_and_no_aspect_is_invented(self) -> None:
+        report_input = ReportInput.model_validate(only_bars())
+        assert report_input.aspects == [] and report_input.bars, "the control: bars on an aspect the input lacks"
+        for read in report_input.bars:
+            prefix = f"aspects.{read.aspect}.bar.{read.measure}.{read.arm}"
+            assert _value(f"{prefix}.bar", report_input) == read.bar
+            assert _value(f"{prefix}.status", report_input) == read.status
+            with pytest.raises(UnresolvableReference, match="does not state"):
+                resolve(f"{prefix}.value", report_input)
+            subjects = key_subjects(f"{prefix}.status", report_input)
+            assert (subjects.arms, subjects.aspects) == ((read.arm,), (read.aspect,))
+        aspect = report_input.bars[0].aspect
+        with pytest.raises(UnresolvableReference, match="names no figure"):
+            resolve(f"aspects.{aspect}.name", report_input)
+
+    def test_each_floor_on_an_aspect_with_no_record_reads_its_own_fields(self) -> None:
+        data = reference_data("r5")
+        for floor in data["floors"]:
+            floor["aspect"] = "unrecorded"
+        report_input = ReportInput.model_validate(data)
+        assert "unrecorded" not in {aspect.id for aspect in report_input.aspects}
+        for read in report_input.floors:
+            prefix = f"aspects.unrecorded.floor.{read.floor}.{read.arm}"
+            assert _value(f"{prefix}.status", report_input) == read.status
+            assert read.interval is not None
+            assert _value(f"{prefix}.interval", report_input) == tuple(read.interval)
+            assert _value(f"{prefix}.held_above", report_input) == -read.interval[0]
+
+
+class TestAnArmsSettings:
+    @pytest.mark.parametrize("name", FIXTURES)
+    def test_each_setting_reads_as_the_input_holds_it_a_number_or_its_text(self, name: str) -> None:
+        report_input = report_input_of(name)
+        kinds: set[str] = set()
+        for arm in report_input.arms:
+            for setting, held in arm.settings.items():
+                key = f"settings.{arm.id}.{setting}"
+                if held is None:
+                    with pytest.raises(UnresolvableReference, match="does not state"):
+                        resolve(key, report_input)
+                    continue
+                figure = resolve(key, report_input)
+                kinds.add(figure.kind)
+                if isinstance(held, str):
+                    assert (figure.kind, figure.value) == ("text", held)
+                else:
+                    assert (figure.kind, figure.value) == ("number", float(held))
+                assert key_subjects(key, report_input).arms == (arm.id,)
+        if name == "r2":
+            assert kinds == {"number", "text"}, "the control: r2's retry is a number, its reasoning text"
+
+
+def _depth(report_input: ReportInput, aspect: str, arm: str) -> tuple[int, int, float]:
+    held = next(a for a in report_input.aspects if a.id == aspect).depth
+    assert held is not None
+    return held[arm].cases, held[arm].trials, float(held[arm].repeats_per_case[1])
+
+
+class TestAnAspectsDepth:
+    @pytest.mark.parametrize("source", ["s1", "s3", "r5"])
+    def test_each_arms_depth_and_the_aspects_one_count_read_the_inputs_depth(
+        self, source: str, shapes: dict[str, ReportInput]
+    ) -> None:
+        report_input = shapes.get(source) or report_input_of(source)
+        control = _control(report_input)
+        checked = 0
+        for aspect in report_input.aspects:
+            assert aspect.depth
+            for arm in aspect.depth:
+                cases, trials, repeats = _depth(report_input, aspect.id, arm)
+                prefix = f"aspects.{aspect.id}.depth.{arm}"
+                assert _value(f"{prefix}.cases", report_input) == cases
+                assert _value(f"{prefix}.trials", report_input) == trials
+                assert _value(f"{prefix}.repeats", report_input) == repeats
+                assert key_subjects(f"{prefix}.cases", report_input).aspects == (aspect.id,)
+                checked += 1
+            by = control if control in aspect.depth else next(iter(aspect.depth))
+            cases, _trials, repeats = _depth(report_input, aspect.id, str(by))
+            assert _value(f"aspects.{aspect.id}.cases", report_input) == cases
+            assert _value(f"aspects.{aspect.id}.repeats", report_input) == repeats
+        assert checked
+
+    def test_s1s_tone_reads_the_controls_repeats_where_a_candidate_ran_twice(
+        self, shapes: dict[str, ReportInput]
+    ) -> None:
+        report_input = shapes["s1"]
+        tone = next(aspect for aspect in report_input.aspects if aspect.id == "tone")
+        assert tone.depth is not None and len({d.repeats_per_case[1] for d in tone.depth.values()}) > 1
+        control = _control(report_input)
+        assert _value("aspects.tone.repeats", report_input) == tone.depth[str(control)].repeats_per_case[1]
+        with pytest.raises(UnresolvableReference, match="reads the one asked aspect"):
+            resolve("repeats", report_input)
+
+    def test_arms_that_disagree_with_no_control_are_refused_naming_each_arms_key(
+        self, shapes: dict[str, ReportInput]
+    ) -> None:
+        data = shapes["s2"].model_dump(mode="json", by_alias=True)
+        (aspect,) = data["aspects"]
+        arm = next(iter(aspect["depth"]))
+        aspect["depth"][arm]["repeats_per_case"] = [1, 1.5, 2]
+        report_input = ReportInput.model_validate(data)
+        assert _control(report_input) is None
+        with pytest.raises(UnresolvableReference, match="does not state") as refused:
+            resolve(f"aspects.{aspect['id']}.repeats", report_input)
+        assert f"`aspects.{aspect['id']}.depth.<arm>.repeats`" in str(refused.value)
+        assert _value(f"aspects.{aspect['id']}.depth.{arm}.repeats", report_input) == 1.5
+        assert _value(f"aspects.{aspect['id']}.cases", report_input) == aspect["depth"][arm]["cases"]
+
+    def test_the_unqualified_repeats_names_the_asked_aspect_as_its_subject(self) -> None:
+        report_input = report_input_of("r5")
+        asked = [aspect.id for aspect in report_input.aspects if aspect.asked]
+        assert key_subjects("repeats", report_input).aspects == tuple(asked)
+        assert key_subjects("cases", report_input).aspects == tuple(asked)
+
+
+class TestEachLateCriterionsDate:
+    def test_each_late_criterion_reads_its_own_date_by_the_name_its_caveat_carries(self) -> None:
+        report_input = report_input_of("r5")
+        late_ids = {caveat.id for caveat in report_caveats(report_input) if caveat.kind == "late"}
+        assert report_input.caveats.late_criteria and any(late.name for late in report_input.caveats.late_criteria)
+        for late in report_input.caveats.late_criteria:
+            named = f"{late.criterion}:{late.name}" if late.name else late.criterion
+            assert f"late:{named}" in late_ids
+            assert _value(f"late_criteria.{named}.set_at", report_input) == late.set_at
+
+    def test_dates_that_differ_refuse_the_one_date_naming_each_criterions_key(self) -> None:
+        data = reference_data("r5")
+        data["caveats"]["late_criteria"][-1]["set_at"] = "26 Oct 2026"
+        report_input = ReportInput.model_validate(data)
+        with pytest.raises(UnresolvableReference, match="2 different times") as refused:
+            resolve("late_criteria.set_at", report_input)
+        for late in report_input.caveats.late_criteria:
+            named = f"{late.criterion}:{late.name}" if late.name else late.criterion
+            assert f"`late_criteria.{named}.set_at`" in str(refused.value)
+            assert _value(f"late_criteria.{named}.set_at", report_input) == late.set_at
+
+
+class TestAFamilyByItsPlace:
+    def test_r4s_one_family_naming_no_aspect_reads_by_its_place_and_unqualified(self) -> None:
+        report_input = report_input_of("r4")
+        (family,) = report_input.contrast_families
+        assert family.aspect is None
+        for field in ("correction", "alpha", "family_size", "disclosure"):
+            stated = getattr(family, field)
+            if stated is not None:
+                assert _value(f"families.0.{field}", report_input) == stated == _value(f"family.{field}", report_input)
+
+    def test_a_family_naming_no_aspect_beside_another_is_named_by_its_place(self) -> None:
+        report_input = _two_aspects(
+            contrast_families=[{"aspect": "one", "correction": "holm"}, {"correction": "none", "family_size": 3}]
+        )
+        with pytest.raises(UnresolvableReference) as refused:
+            resolve("family.correction", report_input)
+        assert "`aspects.one.family.correction`" in str(refused.value)
+        assert "`families.1.correction`" in str(refused.value)
+        assert _value("families.1.correction", report_input) == "none"
+        assert _value("families.1.family_size", report_input) == 3
+        assert _value("families.0.correction", report_input) == _value("aspects.one.family.correction", report_input)
+
+    def test_two_families_on_one_aspect_are_refused_by_it_naming_each_place(self) -> None:
+        report_input = _two_aspects(
+            contrast_families=[{"aspect": "one", "correction": "holm"}, {"aspect": "one", "correction": "none"}]
+        )
+        with pytest.raises(UnresolvableReference, match="holds 2 on it") as refused:
+            resolve("aspects.one.family.correction", report_input)
+        assert "`families.0.correction`" in str(refused.value) and "`families.1.correction`" in str(refused.value)
+
+    def test_each_s1_family_reads_by_its_place_as_by_its_aspect(self, shapes: dict[str, ReportInput]) -> None:
+        report_input = shapes["s1"]
+        for index, family in enumerate(report_input.contrast_families):
+            assert _value(f"families.{index}.correction", report_input) == family.correction
+            assert _value(f"aspects.{family.aspect}.family.correction", report_input) == family.correction
+
+
 # --- a figure says whether code computed it ----------------------------------------------------------------------
 
 
@@ -622,6 +806,12 @@ class TestTheGrammarTeachesTheAnalystsFamilies:
             "cells.<cell>.<arm>.<measure>.<statistic>",
             "criteria.<criterion>.<arm>.<field>",
             "criteria.<criterion>.<arm>.<place>.<field>",
+            "settings.<arm>.<setting>",
+            "aspects.<aspect>.cases",
+            "aspects.<aspect>.repeats",
+            "aspects.<aspect>.depth.<arm>.<field>",
+            "late_criteria.<late>.set_at",
+            "families.<family>.<field>",
         ):
             assert f"- `{form}`:" in grammar, form
 
@@ -663,6 +853,12 @@ class TestTheGrammarTeachesTheAnalystsFamilies:
             "cells.<cell>.<arm>.<measure>.<statistic>",
             "criteria.<criterion>.<arm>.<field>",
             "criteria.<criterion>.<arm>.<place>.<field>",
+            "settings.<arm>.<setting>",
+            "aspects.<aspect>.cases",
+            "aspects.<aspect>.repeats",
+            "aspects.<aspect>.depth.<arm>.<field>",
+            "late_criteria.<late>.set_at",
+            "families.<family>.<field>",
         ):
             line = lines[f"- `{form}"]
             assert '` reads "' in line, form

@@ -18,8 +18,9 @@ parameters:
 :func:`~.cited.cite_if`, where the input may leave it unstated) resolves it; no number here is computed. A figure the
 input holds on more than one aspect is named by its aspect (``aspects.<aspect>.``), as the grammar requires: a
 contrast whose arm and measure the input holds more than once, a stratum id held more than once, a measure held on
-more than one aspect, and the contrast families of an input holding more than one. A floor or bar on an aspect the
-input holds no aspect record for has no key, so it is listed by its own words alone, with a note saying so.
+more than one aspect, and the contrast families of an input holding more than one (a family naming no aspect, or
+sharing its aspect with another, by its place in the input's families). A floor or bar is keyed by the aspect its read
+names, whether or not the input holds a record for that aspect.
 
 **Conditions are on data**, never on what kind of eval the input is: whether a control exists, which slices hold a
 measure, which aspect a figure sits on. A filter naming nothing the input holds is refused with
@@ -47,7 +48,6 @@ from threetears.evals.analysis.report_input import (
     Aspect,
     BarRead,
     Contrast,
-    ContrastFamily,
     Example,
     FloorRead,
     Judged,
@@ -106,6 +106,9 @@ _META_FIELDS = (
     "provenance",
     "volume_per_month",
 )
+
+#: How deeply an arm ran an aspect, as the depth keys name each figure.
+_DEPTH = ("cases", "trials", "repeats")
 
 #: How an arm's trials came out, as the scoreboard keys name each count and cost.
 _SCOREBOARD = ("ran", "usable", "passed", "cases", "lost", "failed", "reply_cost_usd", "test_cost_usd")
@@ -236,7 +239,9 @@ class ArmRow(_Fact):
     role: str = Field(description="control, or challenger: a candidate measured against the control.")
     short_name: str | None = Field(description="The arm's short name, where the input gives one.")
     served_model: str | None = Field(description="The model that served its replies.")
-    settings: dict[str, str] = Field(description="Its settings as displayed, by name.")
+    settings: list[CitedFigure] = Field(
+        description="Its settings (`settings.<arm>.<setting>`): a number where the input holds one, else its text."
+    )
     scoreboard: list[CitedFigure] = Field(description="How its trials came out (`scoreboard.<arm>.<count>`).")
 
 
@@ -247,6 +252,16 @@ class AspectRow(_Fact):
     asked: bool | None = Field(description="Whether the campaign's question asks about it.")
     graded_by: str | None = Field(description="judged or checked.")
     margin: CitedFigure | None = Field(description="Its non-inferiority margin, in points, where one is declared.")
+    cases: CitedFigure | None = Field(
+        description="The cases it ran: the control's, else the count every arm agrees on; none where they differ."
+    )
+    repeats: CitedFigure | None = Field(
+        description="The mean repeats each case ran: the control's, else the figure every arm agrees on."
+    )
+    depth: list[CitedFigure] = Field(
+        description="Each arm's cases, trials and mean repeats on it (`aspects.<aspect>.depth.<arm>.<field>`), where "
+        "its arms ran it to different depths."
+    )
     holds: list[str] = Field(
         description="The rows the input holds on it: readings, pairs, floors, bars, contrasts, strata, scoreboard."
     )
@@ -262,7 +277,9 @@ class MeasureRow(_Fact):
     merit_axis: str | None = Field(description="The merit axis it counts toward.")
     grade: str | None = Field(description="A measure's grade, or a judged dimension's scale.")
     level: str | None = Field(description="The confidence level of its intervals.")
-    arms: list[str] = Field(description="The arms holding a figure on it, by id.")
+    arms_without: list[str] = Field(
+        description="The arms holding no figure on it, by id; empty where every arm holds one."
+    )
     aspects: list[str] = Field(description="The aspects it is read on, where it is read on more than the lead one.")
     slices: list[str] = Field(description="Where measure_read can read it: arm, stratum, task, cell.")
     key_form: str = Field(description="The figure key that reads one arm's statistic on it.")
@@ -279,6 +296,14 @@ class CriterionRow(_Fact):
     scope: str = Field(description="overall, each_task or each_cell.")
     task: str | None = Field(description="The one task it applies within, where it names one.")
     threshold: CitedFigure = Field(description="Its threshold, in its measure's units.")
+
+
+class LateRow(_Fact):
+    """One criterion set after the results were seen, and when."""
+
+    criterion: str = Field(description="What was set: aspect, control, margin, floor, gate.")
+    name: str | None = Field(description="Which one, where several could be.")
+    set_at: CitedFigure = Field(description="When it was set (`late_criteria.<late>.set_at`).")
 
 
 class CaveatRef(_Fact):
@@ -305,7 +330,7 @@ class CampaignOverview(_Fact):
     criteria: list[CriterionRow] = Field(description="Every declared criterion.")
     cells: list[CitedFigure] = Field(description="Each target-matrix cell's name, as `cells.<row>.<column>.name`.")
     caveats: list[CaveatRef] = Field(description="Every caveat, by id, with its reach.")
-    late_criteria: list[LateCriterion] = Field(description="The criteria set after the results were seen.")
+    late_criteria: list[LateRow] = Field(description="The criteria set after the results were seen, each when.")
     late_set_at: CitedFigure | None = Field(description="When they were set, where they share one date.")
     prior_insights: list[PriorInsight] = Field(description="What earlier campaigns concluded.")
     names: dict[str, dict[str, str]] = Field(
@@ -314,9 +339,18 @@ class CampaignOverview(_Fact):
     )
 
 
-def _settings(values: Mapping[str, str | int | float | None]) -> dict[str, str]:
-    """An arm's settings as the page displays them: each value as written."""
-    return {name: str(value) for name, value in values.items() if value is not None}
+def _late_name(late: LateCriterion) -> str:
+    """How a key names a late criterion, as its caveat's id names it after ``late:``: what was set, then which one."""
+    return f"{late.criterion}:{late.name}" if late.name else late.criterion
+
+
+def _depths(report_input: ReportInput, aspect: Aspect) -> list[CitedFigure]:
+    """Each arm's depth figures on an aspect, where its arms ran it to different depths; none where they agree."""
+    depth = aspect.depth or {}
+    if len({(d.cases, d.trials, tuple(d.repeats_per_case)) for d in depth.values()}) <= 1:
+        return []
+    keys = (f"aspects.{aspect.id}.depth.{arm}.{field}" for arm in depth for field in _DEPTH)
+    return _figures(keys, report_input)
 
 
 def _aspect_holds(report_input: ReportInput, aspect: Aspect) -> list[str]:
@@ -380,7 +414,7 @@ def _measure_row(
         merit_axis=axis,
         grade=grade,
         level=table.level,
-        arms=[arm for arm in _arm_ids(report_input) if arm in held],
+        arms_without=[arm for arm in _arm_ids(report_input) if arm not in held],
         aspects=aspects,
         slices=_slices_of(report_input, key, table),
         key_form=form,
@@ -405,7 +439,7 @@ def campaign_overview(report_input: ReportInput, snapshot_id: str) -> CampaignOv
             role=arm.role,
             short_name=arm.short_name,
             served_model=arm.served_model,
-            settings=_settings(arm.settings),
+            settings=_figures((f"settings.{arm.id}.{name}" for name in arm.settings), report_input),
             scoreboard=(
                 _figures((f"scoreboard.{arm.id}.{count}" for count in _SCOREBOARD), report_input)
                 if arm.id in report_input.scoreboard
@@ -420,6 +454,9 @@ def campaign_overview(report_input: ReportInput, snapshot_id: str) -> CampaignOv
             asked=aspect.asked,
             graded_by=aspect.graded_by,
             margin=cite_if(f"aspects.{aspect.id}.margin", report_input),
+            cases=cite_if(f"aspects.{aspect.id}.cases", report_input),
+            repeats=cite_if(f"aspects.{aspect.id}.repeats", report_input),
+            depth=_depths(report_input, aspect),
             holds=_aspect_holds(report_input, aspect),
         )
         for aspect in report_input.aspects
@@ -449,7 +486,14 @@ def campaign_overview(report_input: ReportInput, snapshot_id: str) -> CampaignOv
         criteria=criteria,
         cells=[cite(f"cells.{cell.row}.{cell.column}.name", report_input) for cell in report_input.cells.values()],
         caveats=[CaveatRef(id=caveat.id, kind=caveat.kind, reach=caveat.reach) for caveat in reaches],
-        late_criteria=list(late),
+        late_criteria=[
+            LateRow(
+                criterion=criterion.criterion,
+                name=criterion.name,
+                set_at=cite(f"late_criteria.{_late_name(criterion)}.set_at", report_input),
+            )
+            for criterion in late
+        ],
         late_set_at=_one_of("late_criteria.set_at", report_input) if late else None,
         prior_insights=list(report_input.prior_insights),
         names={kind: dict(names) for kind, names in reader_names(report_input).items()},
@@ -482,7 +526,7 @@ class FloorRow(_Fact):
     floor: str = Field(description="The floor's key.")
     arm: str = Field(description="The candidate, by id.")
     status: str = Field(description="broken, held or unclear.")
-    figures: list[CitedFigure] = Field(description="Its figures; empty where no key reads its aspect.")
+    figures: list[CitedFigure] = Field(description="Its figures, keyed by the aspect the read names.")
 
 
 class BarRow(_Fact):
@@ -492,7 +536,7 @@ class BarRow(_Fact):
     arm: str = Field(description="The arm, by id.")
     direction: str = Field(description="Which way clearing it runs.")
     status: str = Field(description="met, missed or unclear.")
-    figures: list[CitedFigure] = Field(description="Its figures; empty where no key reads its aspect.")
+    figures: list[CitedFigure] = Field(description="Its figures, keyed by the aspect the read names.")
 
 
 class AspectReadings(_Fact):
@@ -505,7 +549,10 @@ class AspectReadings(_Fact):
     pairs: list[PairRow] = Field(description="A choice's pair readings.")
     floors: list[FloorRow] = Field(description="Each floor read on each candidate.")
     bars: list[BarRow] = Field(description="Each arm against each absolute bar.")
-    note: str | None = Field(description="Why its rows carry no figures, where no key reads them.")
+    note: str | None = Field(
+        description="Where the input holds no record for the aspect its floors and bars name: why it has no margin or "
+        "family."
+    )
 
 
 class ReadingsListing(_Fact):
@@ -539,34 +586,34 @@ def _pair_row(report_input: ReportInput, aspect: str, pair: PairRead) -> PairRow
     )
 
 
-def _floor_row(report_input: ReportInput, read: FloorRead, keyed: bool) -> FloorRow:
+def _floor_row(report_input: ReportInput, read: FloorRead) -> FloorRow:
     prefix = f"aspects.{read.aspect}.floor.{read.floor}.{read.arm}"
-    figures = _figures((f"{prefix}.{field}" for field in _FLOOR), report_input) if keyed else []
+    figures = _figures((f"{prefix}.{field}" for field in _FLOOR), report_input)
     return FloorRow(floor=read.floor, arm=read.arm, status=read.status, figures=figures)
 
 
-def _bar_row(report_input: ReportInput, read: BarRead, keyed: bool) -> BarRow:
+def _bar_row(report_input: ReportInput, read: BarRead) -> BarRow:
     prefix = f"aspects.{read.aspect}.bar.{read.measure}.{read.arm}"
-    figures = _figures((f"{prefix}.{field}" for field in _BAR), report_input) if keyed else []
+    figures = _figures((f"{prefix}.{field}" for field in _BAR), report_input)
     return BarRow(measure=read.measure, arm=read.arm, direction=read.direction, status=read.status, figures=figures)
 
 
-def _family_keys(report_input: ReportInput, family: ContrastFamily) -> list[str] | None:
-    """The keys reading one contrast family: ``family.*`` for an input's one family, ``aspects.<a>.family.*`` where it
-    holds more; ``None`` where neither reads it (one of several families naming no aspect the input holds)."""
+def _family_keys(report_input: ReportInput, index: int) -> list[str]:
+    """The keys reading the contrast family at ``index``: ``family.*`` for an input's one family, else
+    ``aspects.<a>.family.*`` where it alone sits on its aspect, else ``families.<index>.*``."""
     families = report_input.contrast_families
     if len(families) == 1:
         return [f"family.{field}" for field in _FAMILY]
-    aspects = {aspect.id for aspect in report_input.aspects}
-    if family.aspect is None or family.aspect not in aspects:
-        return None
-    return [f"aspects.{family.aspect}.family.{field}" for field in _FAMILY]
+    aspect = families[index].aspect
+    if aspect is not None and sum(family.aspect == aspect for family in families) == 1:
+        return [f"aspects.{aspect}.family.{field}" for field in _FAMILY]
+    return [f"families.{index}.{field}" for field in _FAMILY]
 
 
 def _aspect_family(report_input: ReportInput, aspect: str) -> list[CitedFigure]:
-    family = next((held for held in report_input.contrast_families if held.aspect == aspect), None)
-    keys = _family_keys(report_input, family) if family is not None else None
-    return _figures(keys, report_input) if keys is not None else []
+    """The figures of each contrast family correcting one aspect's contrasts."""
+    held = [index for index, family in enumerate(report_input.contrast_families) if family.aspect == aspect]
+    return [figure for index in held for figure in _figures(_family_keys(report_input, index), report_input)]
 
 
 def _reading_rows(report_input: ReportInput, aspect_filter: str | None, arm_filter: str | None) -> list[_Placed]:
@@ -584,15 +631,15 @@ def _reading_rows(report_input: ReportInput, aspect_filter: str | None, arm_filt
         rows += [(aspect.id, _reading_row(report_input, aspect.id, r)) for r in aspect.readings if kept(r.arm)]
         rows += [(aspect.id, _pair_row(report_input, aspect.id, pair)) for pair in aspect.pairs if kept(*pair.arms)]
         floors = [read for read in report_input.floors if read.aspect == aspect.id and kept(read.arm)]
-        rows += [(aspect.id, _floor_row(report_input, read, keyed=True)) for read in floors]
+        rows += [(aspect.id, _floor_row(report_input, read)) for read in floors]
         bars = [read for read in report_input.bars if read.aspect == aspect.id and kept(read.arm)]
-        rows += [(aspect.id, _bar_row(report_input, read, keyed=True)) for read in bars]
+        rows += [(aspect.id, _bar_row(report_input, read)) for read in bars]
     for floor in report_input.floors:
         if floor.aspect not in held and aspect_filter in (None, floor.aspect) and kept(floor.arm):
-            rows.append((floor.aspect, _floor_row(report_input, floor, keyed=False)))
+            rows.append((floor.aspect, _floor_row(report_input, floor)))
     for bar in report_input.bars:
         if bar.aspect not in held and aspect_filter in (None, bar.aspect) and kept(bar.arm):
-            rows.append((bar.aspect, _bar_row(report_input, bar, keyed=False)))
+            rows.append((bar.aspect, _bar_row(report_input, bar)))
     return rows
 
 
@@ -614,7 +661,8 @@ def _grouped(report_input: ReportInput, page: Sequence[_Placed]) -> list[AspectR
                 bars=[row for row in rows if isinstance(row, BarRow)],
                 note=None
                 if keyed
-                else f"the input holds no aspect {aspect!r}, so no figure key reads these rows' figures",
+                else f"the input holds no record for aspect {aspect!r}: its reads are keyed by the aspect they name, "
+                "and it declares no margin or family",
             )
         )
     return groups
@@ -762,9 +810,9 @@ def contrasts_list(
         FamilyRow(
             aspect=family.aspect,
             merit_axes=list(family.merit_axes),
-            figures=_figures(keys, report_input) if (keys := _family_keys(report_input, family)) is not None else [],
+            figures=_figures(_family_keys(report_input, index), report_input),
         )
-        for family in report_input.contrast_families
+        for index, family in enumerate(report_input.contrast_families)
         if aspect_filter in (None, family.aspect)
     ]
     return ContrastListing(contrasts=rows, families=families, total=len(kept), offset=offset, next_offset=next_offset)
@@ -1159,22 +1207,25 @@ def _distinct(values: Iterable[str | None]) -> list[str]:
 
 
 def _late_touch(report_input: ReportInput, late: LateCriterion) -> _Touch:
-    """What a late criterion touches: the asked aspects, the control, the margined aspects, its floor's or bar's reads,
-    or the measure it names."""
+    """What a late criterion touches (the asked aspects, the control, the margined aspects, its floor's or bar's reads,
+    or the measure it names), and when it was set."""
     criterion, name = late.criterion, late.name
     said = f"the {criterion}{' ' + name if name else ''} was set after the results"
+    keys = [f"late_criteria.{_late_name(late)}.set_at"]
     if criterion == "aspect":
-        return _Touch(aspects=[a.id for a in report_input.aspects if a.asked], says=said)
+        return _Touch(aspects=[a.id for a in report_input.aspects if a.asked], says=said, keys=keys)
     if criterion == "control":
-        return _Touch(arms=_distinct([_control(report_input)]), says=said)
+        return _Touch(arms=_distinct([_control(report_input)]), says=said, keys=keys)
     if criterion == "margin":
         margined = [
             a.id for a in report_input.aspects if a.margin is not None or any(r.margin is not None for r in a.readings)
         ]
-        return _Touch(aspects=margined, says=said)
+        return _Touch(aspects=margined, says=said, keys=keys)
     if criterion == "floor":
         reads = [read for read in report_input.floors if read.floor == name]
-        return _Touch(arms=_distinct(r.arm for r in reads), aspects=_distinct(r.aspect for r in reads), says=said)
+        return _Touch(
+            arms=_distinct(r.arm for r in reads), aspects=_distinct(r.aspect for r in reads), says=said, keys=keys
+        )
     if criterion == "bar":
         bars = [read for read in report_input.bars if read.measure == name]
         return _Touch(
@@ -1182,9 +1233,10 @@ def _late_touch(report_input: ReportInput, late: LateCriterion) -> _Touch:
             aspects=_distinct(r.aspect for r in bars),
             measures=_distinct([name]),
             says=said,
+            keys=keys,
         )
     named = next((c for c in report_input.criteria if c.id == name), None)
-    return _Touch(measures=_distinct([named.measure if named is not None else name]), says=said)
+    return _Touch(measures=_distinct([named.measure if named is not None else name]), says=said, keys=keys)
 
 
 def _confound_touch(report_input: ReportInput, dimension: str, says: str | None) -> _Touch:
@@ -1200,7 +1252,7 @@ def _confound_touch(report_input: ReportInput, dimension: str, says: str | None)
 
 def _touch(report_input: ReportInput, caveat: Caveat, unsettled: Mapping[str, tuple[str, ...]]) -> _Touch:
     caveats = report_input.caveats
-    lates = {f"late:{late.criterion}" + (f":{late.name}" if late.name else ""): late for late in caveats.late_criteria}
+    lates = {f"late:{_late_name(late)}": late for late in caveats.late_criteria}
     if caveat.id in lates:
         return _late_touch(report_input, lates[caveat.id])
     head, _, rest = caveat.id.partition(":")
@@ -1237,13 +1289,10 @@ def caveats_list(report_input: ReportInput) -> CaveatListing:
     """
     materiality = caveat_materiality(report_input)
     unsettled = unsettled_arms(report_input)
-    late_at = _one_of("late_criteria.set_at", report_input) if report_input.caveats.late_criteria else None
     rows: list[CaveatRow] = []
     for caveat in report_caveats(report_input):
         touch = _touch(report_input, caveat, unsettled)
         figures = _figures(touch.keys, report_input)
-        if caveat.kind == "late" and late_at is not None:
-            figures.append(late_at)
         held = materiality[caveat.id]
         rows.append(
             CaveatRow(

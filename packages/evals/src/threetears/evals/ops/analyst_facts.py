@@ -2,7 +2,9 @@
 
 Each operation reads the snapshot's input (:func:`~threetears.evals.ops.analyst.snapshot_input`, refusing one whose
 input moved or no longer reads) and runs its computation (:mod:`threetears.evals.analysis.analyst.facts`) on the
-host's blocking executor. A computation's refusal of a filter naming nothing the snapshot holds reaches the caller as
+host's blocking executor. A paged operation given ``fits`` (a test of whether a page's text is short enough,
+supplied by the caller that renders it) returns the largest page within ``limit`` that passes it, so a page of long
+rows is shorter rather than overlong; the rows it leaves off are the next page's. A computation's refusal of a filter naming nothing the snapshot holds reaches the caller as
 a :class:`~threetears.evals.kernel.errors.ValidationFailedError` carrying its remedy. Every operation is a pure read:
 the same snapshot and parameters always return the same result.
 
@@ -68,6 +70,27 @@ def _refused[T](compute: Callable[[], T]) -> T:
         raise ValidationFailedError(refused.fault, remedy=refused.remedy) from refused
 
 
+def _sized[T](compute: Callable[[int], T], limit: int, fits: Callable[[T], bool] | None) -> T:
+    """The page of at most ``limit`` rows ``compute`` builds, as large as ``fits`` passes. Blocking.
+
+    A page grows with its rows, so the largest that fits is found by halving between one row and ``limit``. A page
+    of one row is returned even where it does not fit: one row is what a page always holds.
+    """
+    page = compute(limit)
+    if fits is None or fits(page):
+        return page
+    low, high = 1, limit - 1
+    best = compute(1)
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = compute(middle)
+        if fits(candidate):
+            best, low = candidate, middle + 1
+        else:
+            high = middle - 1
+    return best
+
+
 async def _read[T](host: OpsHost, scope_id: str, snapshot_id: str, compute: Callable[[ReportInput], T]) -> T:
     """One snapshot's input, and a computation run on it on the host's blocking executor."""
     held = await snapshot_input(host, scope_id, snapshot_id)
@@ -100,6 +123,7 @@ async def readings_list(
     arm_filter: str | None = None,
     limit: int = READINGS_LIMIT,
     offset: int = 0,
+    fits: Callable[[ReadingsListing], bool] | None = None,
 ) -> ReadingsListing:
     """A page of each aspect's readings against the control, pair readings, floors and bars.
 
@@ -117,6 +141,9 @@ async def readings_list(
     :ptype limit: int
     :param offset: The rows to skip.
     :ptype offset: int
+    :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
+        ``limit`` rows where none is given.
+    :ptype fits: Callable[[ReadingsListing], bool] | None
     :return: The page.
     :rtype: ReadingsListing
     :raises NotFoundError: No snapshot with that id in the scope.
@@ -126,8 +153,12 @@ async def readings_list(
         host,
         scope_id,
         snapshot_id,
-        lambda held: facts.readings_list(
-            held, aspect_filter=aspect_filter, arm_filter=arm_filter, limit=limit, offset=offset
+        lambda held: _sized(
+            lambda rows: facts.readings_list(
+                held, aspect_filter=aspect_filter, arm_filter=arm_filter, limit=rows, offset=offset
+            ),
+            limit,
+            fits,
         ),
     )
 
@@ -142,6 +173,7 @@ async def contrasts_list(
     aspect_filter: str | None = None,
     limit: int = CONTRASTS_LIMIT,
     offset: int = 0,
+    fits: Callable[[ContrastListing], bool] | None = None,
 ) -> ContrastListing:
     """A page of the corrected contrasts, and the contrast families correcting them.
 
@@ -161,6 +193,9 @@ async def contrasts_list(
     :ptype limit: int
     :param offset: The contrasts to skip.
     :ptype offset: int
+    :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
+        ``limit`` contrasts where none is given.
+    :ptype fits: Callable[[ContrastListing], bool] | None
     :return: The page.
     :rtype: ContrastListing
     :raises NotFoundError: No snapshot with that id in the scope.
@@ -170,13 +205,17 @@ async def contrasts_list(
         host,
         scope_id,
         snapshot_id,
-        lambda held: facts.contrasts_list(
-            held,
-            arm_filter=arm_filter,
-            measure_filter=measure_filter,
-            aspect_filter=aspect_filter,
-            limit=limit,
-            offset=offset,
+        lambda held: _sized(
+            lambda rows: facts.contrasts_list(
+                held,
+                arm_filter=arm_filter,
+                measure_filter=measure_filter,
+                aspect_filter=aspect_filter,
+                limit=rows,
+                offset=offset,
+            ),
+            limit,
+            fits,
         ),
     )
 
@@ -193,6 +232,7 @@ async def measure_read(
     arm_filter: str | None = None,
     limit: int = MEASURE_LIMIT,
     offset: int = 0,
+    fits: Callable[[MeasureFigures], bool] | None = None,
 ) -> MeasureFigures:
     """A page of one measure's or judged dimension's statistics, by arm or within each stratum, task or cell.
 
@@ -216,6 +256,9 @@ async def measure_read(
     :ptype limit: int
     :param offset: The rows to skip.
     :ptype offset: int
+    :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
+        ``limit`` rows where none is given.
+    :ptype fits: Callable[[MeasureFigures], bool] | None
     :return: The page.
     :rtype: MeasureFigures
     :raises NotFoundError: No snapshot with that id in the scope.
@@ -226,15 +269,19 @@ async def measure_read(
         host,
         scope_id,
         snapshot_id,
-        lambda held: facts.measure_read(
-            held,
-            measure_key,
-            by=by,
-            statistics=statistics,
-            aspect_filter=aspect_filter,
-            arm_filter=arm_filter,
-            limit=limit,
-            offset=offset,
+        lambda held: _sized(
+            lambda rows: facts.measure_read(
+                held,
+                measure_key,
+                by=by,
+                statistics=statistics,
+                aspect_filter=aspect_filter,
+                arm_filter=arm_filter,
+                limit=rows,
+                offset=offset,
+            ),
+            limit,
+            fits,
         ),
     )
 
@@ -250,6 +297,7 @@ async def examples_list(
     outcome_filter: str | None = None,
     limit: int = EXAMPLES_LIMIT,
     offset: int = 0,
+    fits: Callable[[ExampleListing], bool] | None = None,
 ) -> ExampleListing:
     """A page of the failed trials the snapshot froze, each with its stored result where the bundle named it.
 
@@ -271,6 +319,9 @@ async def examples_list(
     :ptype limit: int
     :param offset: The examples to skip.
     :ptype offset: int
+    :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
+        ``limit`` examples where none is given.
+    :ptype fits: Callable[[ExampleListing], bool] | None
     :return: The page.
     :rtype: ExampleListing
     :raises NotFoundError: No snapshot with that id in the scope.
@@ -287,15 +338,19 @@ async def examples_list(
     return await run_blocking(
         eval_host.blocking_executor,
         _refused,
-        lambda: facts.examples_list(
-            held,
-            results,
-            arm_filter=arm_filter,
-            stratum_filter=stratum_filter,
-            aspect_filter=aspect_filter,
-            outcome_filter=outcome_filter,
-            limit=limit,
-            offset=offset,
+        lambda: _sized(
+            lambda rows: facts.examples_list(
+                held,
+                results,
+                arm_filter=arm_filter,
+                stratum_filter=stratum_filter,
+                aspect_filter=aspect_filter,
+                outcome_filter=outcome_filter,
+                limit=rows,
+                offset=offset,
+            ),
+            limit,
+            fits,
         ),
     )
 

@@ -10,8 +10,11 @@ Contracts held here (``threetears.evals.analysis.analyst.facts``, ``ops.analyst_
   ``vs_control`` its mean minus the control's there; ``examples_list`` the frozen pool with each trial's stored
   result; ``caveats_list`` every caveat, its materiality, what it touches and the figures it rests on;
 - a figure the input holds on more than one aspect is keyed by its aspect: a contrast's arm and measure, a stratum
-  id, a contrast family, a measure read on two aspects; a floor or bar on an aspect the input holds no record for is
-  listed by its words, with no figure and a note;
+  id, a contrast family, a measure read on two aspects; a contrast family naming no aspect among several is keyed by
+  its place in the input's families; a floor or bar on an aspect the input holds no record for is keyed by the aspect
+  its read names, with a note that the aspect has no margin or family;
+- the overview cites each arm's settings as the input holds them, each aspect's cases and repeats, each arm's depth
+  where an aspect's arms ran it to different depths, and each late criterion's own date;
 - paging: following ``next_offset`` from the first page reads every row once, in order, and ``total`` counts them;
   filters keep only what they name;
 - a filter naming nothing the snapshot holds (an arm, an aspect, a measure key, a stratum, a failure class), a slice
@@ -19,7 +22,9 @@ Contracts held here (``threetears.evals.analysis.analyst.facts``, ``ops.analyst_
   naming what to read instead (``campaign_overview`` for an id);
 - each figure resolving to its own value, the text budget and determinism are held for every action by
   ``tests/test_analyst_contract.py``, through ``analyst_support.ANALYST_CALLS``, which calls these tools with the
-  filters each input supports.
+  filters each input supports; here the budget is held on the shape campaigns s1 to s3 as well (s1's three aspects
+  are the widest rows), where a page the caller does not size holds as many rows as fit one result and following
+  ``next_offset`` from it reads every row once.
 """
 
 from __future__ import annotations
@@ -30,10 +35,11 @@ from typing import Any
 
 import pytest
 
-from packages.evals.tests.analyst_support import ANALYST_CALLS, KAIRO, fixture_snapshots
+from packages.evals.tests.analyst_support import ANALYST_CALLS, KAIRO, TEXT_BUDGET, fixture_snapshots
 from packages.evals.tests.fixtures.report_plans.misfits import MISFITS, NAMES
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
+from packages.evals.tests.report_shapes_support import SHAPES
 from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, analyst_toolset, eval_catalogue
 from threetears.evals.analysis.analyst.cited import CitedFigure
 from threetears.evals.analysis.analyst.facts import (
@@ -44,10 +50,12 @@ from threetears.evals.analysis.analyst.facts import (
     measure_read,
     readings_list,
 )
-from threetears.evals.analysis.analyst.snapshot import frozen_input
+from threetears.evals.analysis.analyst.snapshot import frozen_input, report_snapshot
+from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.report.figure_keys import reader_names, resolve
 from threetears.evals.analysis.report_decision import caveat_materiality, report_caveats, unsettled_arms
-from threetears.evals.analysis.report_input import ReportInput, Stat
+from threetears.evals.analysis.report_input import Aspect, ReportInput, Stat
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel import EvalReportSnapshot
 from threetears.evals.kernel.errors import RefusedInput
 
@@ -96,6 +104,54 @@ def _pair(values: tuple[float, float] | None) -> tuple[float, float] | None:
 
 def _control(held: ReportInput) -> str | None:
     return next((arm.id for arm in held.arms if arm.role == "control"), None)
+
+
+#: The shape campaigns the budget is held on as well: s1 holds three aspects, s2 a choice, s3 a measurement.
+SHAPE_NAMES = ("s1", "s2", "s3")
+
+
+@cache
+def _shape_inputs() -> dict[str, ReportInput]:
+    """Each shape campaign's report input, built from its campaign bundle."""
+    built: dict[str, ReportInput] = {}
+    for name in SHAPE_NAMES:
+        shape = SHAPES[name]()
+        bundle = build_campaign_bundle(
+            shape.campaign, list(shape.bundles.values()), arms=shape.arms, readings=shape.readings
+        )
+        built[name] = report_input(bundle)
+    return built
+
+
+def _setting_values(held: ReportInput, arm_id: str) -> list[tuple[str, Any]]:
+    """Each setting an arm states, by its key, and its value as the input holds it."""
+    arm = next(arm for arm in held.arms if arm.id == arm_id)
+    return [
+        (f"settings.{arm.id}.{setting}", value if isinstance(value, str) else float(value))
+        for setting, value in arm.settings.items()
+        if value is not None
+    ]
+
+
+def _expected_depth(held: ReportInput, aspect: Aspect) -> tuple[float | None, float | None, list[tuple[str, Any]]]:
+    """An aspect's one count of cases and of repeats (the control's, else the arms' where they agree), and each arm's
+    depth figures where its arms ran it to different depths."""
+    depth = aspect.depth or {}
+    control = _control(held)
+    picked = [depth[control]] if control in depth else list(depth.values())
+    cases = {float(d.cases) for d in picked}
+    repeats = {float(d.repeats_per_case[1]) for d in picked}
+    differ = len({(d.cases, d.trials, tuple(d.repeats_per_case)) for d in depth.values()}) > 1
+    per_arm = [
+        (f"aspects.{aspect.id}.depth.{arm}.{field}", value)
+        for arm, d in depth.items()
+        for field, value in (("cases", d.cases), ("trials", d.trials), ("repeats", d.repeats_per_case[1]))
+    ]
+    return (
+        cases.pop() if len(cases) == 1 else None,
+        repeats.pop() if len(repeats) == 1 else None,
+        per_arm if differ else [],
+    )
 
 
 def _two_aspects() -> ReportInput:
@@ -158,7 +214,7 @@ def test_the_overview_lists_the_inputs_own_arms_aspects_measures_criteria_and_ca
     assert [row.arm.value for row in overview.arms] == [arm.id for arm in held.arms]
     for row, arm in zip(overview.arms, held.arms, strict=True):
         assert (row.role, row.short_name, row.served_model) == (arm.role, arm.short_name, arm.served_model)
-        assert row.settings == {setting: str(value) for setting, value in arm.settings.items() if value is not None}
+        assert [(figure.key, figure.value) for figure in row.settings] == _setting_values(held, arm.id)
         board = held.scoreboard.get(arm.id)
         if board is None:
             assert row.scoreboard == []
@@ -172,6 +228,10 @@ def test_the_overview_lists_the_inputs_own_arms_aspects_measures_criteria_and_ca
         assert (aspect_row.asked, aspect_row.graded_by) == (aspect.asked, aspect.graded_by)
         assert (aspect_row.margin.value if aspect_row.margin else None) == aspect.margin
         assert ("readings" in aspect_row.holds) == bool(aspect.readings)
+        cases, repeats, per_arm = _expected_depth(held, aspect)
+        assert (aspect_row.cases.value if aspect_row.cases else None) == cases
+        assert (aspect_row.repeats.value if aspect_row.repeats else None) == repeats
+        assert [(figure.key, figure.value) for figure in aspect_row.depth] == per_arm
 
     assert [(row.key, row.source) for row in overview.measures] == [
         *((key, "measure") for key in held.measures),
@@ -183,7 +243,9 @@ def test_the_overview_lists_the_inputs_own_arms_aspects_measures_criteria_and_ca
     assert [(ref.id, ref.kind, ref.reach) for ref in overview.caveats] == [
         (caveat.id, caveat.kind, caveat.reach) for caveat in report_caveats(held)
     ]
-    assert overview.late_criteria == held.caveats.late_criteria
+    assert [(row.criterion, row.name, row.set_at.value) for row in overview.late_criteria] == [
+        (late.criterion, late.name, late.set_at) for late in held.caveats.late_criteria
+    ]
     assert overview.prior_insights == held.prior_insights
     assert overview.names == {kind: dict(names) for kind, names in reader_names(held).items()}
     assert [figure.key for figure in overview.cells] == [
@@ -209,6 +271,34 @@ def test_the_overview_cites_when_the_late_criteria_were_set_where_they_share_one
     assert {late.set_at for late in r5.caveats.late_criteria} == {"25 Oct 2026"}
     assert overview.late_set_at is not None and overview.late_set_at.value == "25 Oct 2026"
     assert campaign_overview(_held("r4")[1], "s").late_set_at is None, "the control: r4 sets nothing late"
+
+
+def test_the_overview_cites_each_late_criterions_own_date_where_they_differ() -> None:
+    document = _held("r5")[1].model_dump(mode="json", by_alias=True)
+    document["caveats"]["late_criteria"][-1]["set_at"] = "26 Oct 2026"
+    held = ReportInput.model_validate(document)
+    overview = campaign_overview(held, "s")
+    assert overview.late_set_at is None, "the control: no one date"
+    assert [row.set_at.value for row in overview.late_criteria] == [l.set_at for l in held.caveats.late_criteria]
+    late_ids = {
+        f"late:{row.set_at.key.removeprefix('late_criteria.').removesuffix('.set_at')}"
+        for row in overview.late_criteria
+    }
+    assert late_ids == {ref.id for ref in overview.caveats if ref.kind == "late"}
+
+
+def test_the_overview_cites_s1s_depth_by_aspect_and_each_arms_where_one_ran_twice() -> None:
+    held = _shape_inputs()["s1"]
+    overview = campaign_overview(held, "s")
+    assert overview.cases is None and overview.repeats is None, "the control: s1 asks three aspects"
+    rows = {row.aspect: row for row in overview.aspects}
+    assert all(row.cases is not None and row.cases.value == 20 for row in rows.values())
+    assert rows["billing"].depth == [], "every arm ran billing once per case"
+    tone = next(aspect for aspect in held.aspects if aspect.id == "tone")
+    assert tone.depth is not None
+    assert {figure.key for figure in rows["tone"].depth} >= {"aspects.tone.depth.v3.repeats"}
+    v3 = next(figure for figure in rows["tone"].depth if figure.key == "aspects.tone.depth.v3.repeats")
+    assert v3.value == tone.depth["v3"].repeats_per_case[1] == 2
 
 
 # =============================================================================
@@ -251,19 +341,27 @@ def test_readings_list_every_reading_pair_floor_and_bar_by_its_aspect(name: str)
     unheld = [read for read in [*held.floors, *held.bars] if read.aspect not in held_ids]
     for read in unheld:
         group = groups[read.aspect]
-        assert group.note is not None and "no figure key reads" in group.note
-        assert all(row.figures == [] for row in [*group.floors, *group.bars])
+        assert group.note is not None and "no record for aspect" in group.note
+        assert (group.margin, group.family) == (None, [])
+        for row in [*group.floors, *group.bars]:
+            assert row.figures and all(figure.key.startswith(f"aspects.{read.aspect}.") for figure in row.figures)
+            assert _by_stat(row.figures)["status"] == row.status
     assert listing.total == total + len(unheld)
     assert listing.next_offset is None
 
 
-def test_a_bar_on_an_aspect_the_input_holds_no_record_for_is_listed_by_its_words_alone() -> None:
+def test_a_bar_on_an_aspect_the_input_holds_no_record_for_is_keyed_by_the_aspect_its_read_names() -> None:
     _snapshot, held = _held("r1 reading only bars")
     assert held.aspects == [] and held.bars, "the control: bars on an aspect the input does not hold"
     (group,) = readings_list(held).aspects
     assert [(row.measure, row.arm, row.status) for row in group.bars] == [
         (read.measure, read.arm, read.status) for read in held.bars
     ]
+    for row, read in zip(group.bars, held.bars, strict=True):
+        assert _by_stat(row.figures) == {"status": read.status, "bar": float(read.bar)}
+        assert all(
+            figure.key.startswith(f"aspects.{read.aspect}.bar.{read.measure}.{read.arm}.") for figure in row.figures
+        )
     assert group.margin is None and group.family == []
 
 
@@ -300,6 +398,29 @@ def test_contrasts_list_every_contrast_its_confounds_by_caveat_id_and_the_famili
     assert [family.aspect for family in listing.families] == [family.aspect for family in held.contrast_families]
     for row, family in zip(listing.families, held.contrast_families, strict=True):
         assert _by_stat(row.figures).get("correction") == family.correction
+
+
+def test_a_family_naming_no_aspect_among_several_is_keyed_by_its_place_and_each_reads_its_own() -> None:
+    document = _two_aspects().model_dump(mode="json", by_alias=True)
+    document["contrast_families"] = [
+        {"aspect": "one", "correction": "holm"},
+        {"correction": "none", "family_size": 2},
+        {"aspect": "two", "correction": "bonferroni"},
+        {"aspect": "two", "correction": "none"},
+    ]
+    document["aspects"][1]["readings"] = [{"arm": "a", "reading": "within_margin", "change": -1.0}]
+    held = ReportInput.model_validate(document)
+    families = contrasts_list(held).families
+    assert [[figure.key.rsplit(".", 1)[0] for figure in row.figures][0] for row in families] == [
+        "aspects.one.family",
+        "families.1",
+        "families.2",
+        "families.3",
+    ]
+    assert [_by_stat(row.figures)["correction"] for row in families] == [f.correction for f in held.contrast_families]
+    (group,) = readings_list(held, limit=200).aspects
+    assert group.aspect == "two"
+    assert {figure.key.rsplit(".", 1)[0] for figure in group.family} == {"families.2", "families.3"}
 
 
 def test_a_kairo_contrasts_confound_is_named_by_its_caveat() -> None:
@@ -498,8 +619,13 @@ def test_caveats_list_every_caveat_its_materiality_and_what_it_touches(name: str
             assert row.touches_arms == list(unsettled_arms(held)[row.id]) and row.touches_aspects == [rest]
         if row.id == "latency":
             assert [(figure.key, figure.value) for figure in row.figures] == [("caveats.latency", held.caveats.latency)]
-        if row.kind == "late" and len({late.set_at for late in held.caveats.late_criteria}) == 1:
-            assert ("late_criteria.set_at", held.caveats.late_criteria[0].set_at) in {
+        if row.kind == "late":
+            late = next(
+                late
+                for late in held.caveats.late_criteria
+                if row.id == f"late:{late.criterion}" + (f":{late.name}" if late.name else "")
+            )
+            assert (f"late_criteria.{row.id.removeprefix('late:')}.set_at", late.set_at) in {
                 (figure.key, figure.value) for figure in row.figures
             }
 
@@ -667,3 +793,102 @@ async def test_an_unknown_failure_class_is_refused_naming_the_ones_held() -> Non
     assert outcome.refusal is not None and outcome.refusal.kind == "validation_failed"
     held = {example.outcome for example in frozen_input(snapshot).examples if example.outcome}
     assert all(outcome_name in outcome.text for outcome_name in held)
+
+
+# =============================================================================
+# The budget on the shape campaigns, and a page sized to one result
+# =============================================================================
+
+#: The fact tools, each held to the budget at its default page.
+FACT_TOOLS = ("campaign_overview", "readings_list", "contrasts_list", "measure_read", "examples_list", "caveats_list")
+
+
+@cache
+def _shape_snapshots() -> dict[str, EvalReportSnapshot]:
+    return {
+        name: report_snapshot(held, scope_id=TOYHOST_SCOPE, campaign_id=None, source="report_input", created_by="me")
+        for name, held in _shape_inputs().items()
+    }
+
+
+def _seeded_shapes() -> OpsFixture:
+    fixture = ops_fixture()
+    for snapshot in _shape_snapshots().values():
+        fixture.host.eval_host.storage.save_report_snapshot(snapshot)
+    return fixture
+
+
+def _figure_nodes(node: Any) -> list[dict[str, Any]]:
+    """Every cited figure in a result's JSON."""
+    if isinstance(node, dict):
+        if {"key", "reads", "value", "kind"} <= node.keys():
+            return [node]
+        return [figure for item in node.values() for figure in _figure_nodes(item)]
+    if isinstance(node, list):
+        return [figure for item in node for figure in _figure_nodes(item)]
+    return []
+
+
+def _calls(action: str, held: ReportInput) -> list[dict[str, Any]]:
+    """How a fact tool is called on an input: its argument sets in ``ANALYST_CALLS``, else with none."""
+    build = ANALYST_CALLS.get(action)
+    return build(held) if build is not None else [{}]
+
+
+@pytest.mark.parametrize("name", SHAPE_NAMES)
+async def test_each_fact_tool_keeps_its_default_page_within_the_budget_on_the_shape_campaigns(name: str) -> None:
+    fixture = off_loop(_seeded_shapes)
+    snapshot = _shape_snapshots()[name]
+    held = frozen_input(snapshot)
+    for action in FACT_TOOLS:
+        for arguments in _calls(action, held):
+            outcome = await _call(fixture, {**arguments, "action": action, "snapshot_id": snapshot.id})
+            where = f"{action} {arguments} on {name}"
+            assert outcome.structured is not None, f"{where}: {outcome.text}"
+            assert len(outcome.text) <= TEXT_BUDGET, f"{where}: {len(outcome.text)} characters"
+            for figure in _figure_nodes(outcome.structured):
+                value = resolve(figure["key"], held).value
+                assert figure["value"] == (list(value) if isinstance(value, tuple) else value), figure["key"]
+
+
+def _listed_rows(action: str, structured: dict[str, Any]) -> list[Any]:
+    if action == "contrasts_list":
+        return list(structured["contrasts"])
+    return [
+        row
+        for group in structured["aspects"]
+        for kind in ("readings", "pairs", "floors", "bars")
+        for row in group[kind]
+    ]
+
+
+@pytest.mark.parametrize("action", ["readings_list", "contrasts_list"])
+async def test_a_page_sized_to_one_result_carries_the_rest_to_the_next_and_every_row_is_read_once(action: str) -> None:
+    fixture = off_loop(_seeded_shapes)
+    snapshot = _shape_snapshots()["s1"]
+    whole = await _call(fixture, {"action": action, "snapshot_id": snapshot.id, "limit": 200})
+    assert whole.structured is not None and whole.structured["next_offset"] is None
+    assert len(whole.text) > TEXT_BUDGET, "the control: every s1 row at once runs past one result"
+    rows: list[Any] = []
+    offset: int | None = 0
+    pages = 0
+    while offset is not None:
+        page = await _call(fixture, {"action": action, "snapshot_id": snapshot.id, "offset": offset})
+        assert page.structured is not None, page.text
+        assert len(page.text) <= TEXT_BUDGET and page.structured["total"] == whole.structured["total"]
+        rows += _listed_rows(action, page.structured)
+        offset = page.structured["next_offset"]
+        pages += 1
+    assert pages > 1
+    assert rows == _listed_rows(action, whole.structured)
+
+
+async def test_a_limit_the_caller_names_is_the_pages_size_as_named() -> None:
+    fixture = off_loop(_seeded_shapes)
+    snapshot = _shape_snapshots()["s1"]
+    held = frozen_input(snapshot)
+    named = await _call(fixture, {"action": "contrasts_list", "snapshot_id": snapshot.id, "limit": 50})
+    assert named.structured is not None
+    assert len(named.structured["contrasts"]) == len(held.contrasts) and named.structured["next_offset"] is None
+    small = await _call(fixture, {"action": "contrasts_list", "snapshot_id": snapshot.id, "limit": 2})
+    assert small.structured is not None and len(small.structured["contrasts"]) == 2
