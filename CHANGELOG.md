@@ -6,6 +6,49 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the report analyst's tool, evals_analyst, over a frozen report snapshot
+
+**Added:** `analyst_actions()` and `analyst_tools(prefix="evals", *, writes=True, role="analyst")`: one tool,
+`<prefix>_analyst`, that a campaign's report analyst investigates the campaign through, on a cut of its own, so the
+`evals` tool and its parameters stay the engine's. Its actions: `report_snapshot_freeze` (the one write), the facts
+(`campaign_overview`, `readings_list`, `contrasts_list`, `measure_read`, `examples_list`, `caveats_list`), the analyses
+(`options_dominance`, `decision_sensitivity`, `measure_breakdown`, `price_tradeoff`), the blocks (`block_catalog`,
+`block_render`) and `capability_gap`, which stores nothing. Every read takes a `snapshot_id` and returns each figure by
+the figure key that names it (`key = reads`). `writes=False` leaves the freeze out; `role="editor"` cuts the tool to
+the facts, the analyses and the gap note.
+
+**Added:** `EvalReportSnapshot` (`eval_report_snapshot`), a new stored document type: one campaign's report input
+frozen whole, with the bundle it was built from, its id derived from the campaign and the input's digest. It is
+derived and regenerable: `report_snapshot_freeze` makes it (from a campaign, or from a stored analysis's bundle),
+`EvalStorage.drop_derived` sweeps it, a regenerable bump refuses it on read, and freezing the same evidence again
+writes a fresh one in place of a stored one that no longer reads or no longer matches its digest
+(`SnapshotFrozen.replaced`). A freeze that finds the same evidence frozen soundly names that snapshot (`reused`), whose
+source, analysis and bundle are the earlier freeze's, as `SnapshotFrozen.note` says. `EvalStorage` gains
+`save_report_snapshot`, `load_report_snapshot` and `delete_report_snapshot`; `require_evidence(bundle, campaign_id,
+scope_id)` refuses a campaign that resolves no runs, for a freeze as for a generation.
+
+**Added:** a figure the input leaves unstated is refused as `UnstatedFigure`, a subclass of `UnresolvableReference`,
+which a listing reads as absent. `gate_findings(report_input, arm, ...)` returns the gate check's failing and
+borderline figures as data (`GateFinding`); `gate_check` reads its reasons off them, unchanged. The analyst cites each
+gate figure by its keys (`GateRead`): a survivor's `borders`, a removed option's `gates` (with `breached`
+guardrails), and a gated option's `gates` off `price_tradeoff`'s frontier. Each judged dimension in the overview cites
+its judge's tier, model, calibration, calibration ratings and agreement (`MeasureRow.judge`).
+
+**Added:** `ToolSpec.left_out`, required with `workflows`: one line saying why a cut tool's role goes without its cut's
+other workflows. A call naming a left-out action is refused with it, never sent to another tool, and a remedy needing
+one is served as it.
+
+**Changed:** every analyst result that grows with a campaign is paged and, without a `limit`, sized to one result:
+`campaign_overview` (its rows by section, the campaign's own figures on every page), `caveats_list`,
+`options_dominance` (options in the snapshot's arm order), and `decision_sensitivity` (each page holds the segments
+starting at its flips), `measure_breakdown` and `price_tradeoff`, whose `limit` is now optional.
+
+### evals: money is grouped by thousands
+
+**Changed:** `dollars_text` groups whole dollars from $1,000 up (`$7,560.00`) and writes a negative amount's sign
+before the dollar sign (`-$1,234.50`, where it wrote `$-1234.50`). Every rendered money figure of $1,000 or more moves:
+on pages, in judge text and in tool text. A host pinning rendered text, or a recording keyed on it, sees the change.
+
 ### evals: a refused call carries its corrected call as fields
 
 **Added:** a refusal whose call has a corrected form carries `Recovery` (`ActionOutcome.recovery`): the `parameters`
@@ -25,8 +68,8 @@ snapshot holds, or `block_catalog` for a block.
 **Added:** `catalogue_primer(tools)` writes what a client reads before its first call: how to get help, every reference
 topic, one line per tool, and the rules every call is held to (long work is a job to poll, a destructive action
 echoes what it destroys, a refusal's recovery line, and each tool's own `ToolSpec.constraints`, new, which its help
-index also lists). It is held to `PRIMER_BUDGET` (1,800 characters, inside what one client was measured to deliver
-whole) and refused past it. `mount_fastmcp(host, ...)` passes it as the instructions of the server it builds; a host
+index also lists). It is held to 1,800 characters, inside what one client was measured to deliver
+whole, and refused past it. `mount_fastmcp(host, ...)` passes it as the instructions of the server it builds; a host
 with its own server passes `instructions=catalogue_primer(...)` there.
 
 ### evals: help serves reference topics, and the analyst tool's figure_keys is the whole grammar
