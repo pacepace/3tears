@@ -11,7 +11,7 @@ with nothing added here; a chunk whose action needs arguments read off the input
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from functools import cache
 from typing import Any
 
@@ -46,9 +46,68 @@ _KAIRO_ASSEMBLED_AT = "2026-10-20T00:00:00+00:00"
 #: Who the fixture snapshots are frozen by.
 _FROZEN_BY = "agent:test"
 
+
+def _first[T](values: Iterable[T]) -> T | None:
+    return next(iter(values), None)
+
+
+def _read_in(held: ReportInput, key: str) -> list[str]:
+    """What one measure or judged dimension can be read by on an input: arm, and each slice kind holding it."""
+    table = held.measures.get(key) or held.judged[key]
+    slices = {
+        "arm": bool(table.per_arm) or any(table.by_aspect.values()),
+        "stratum": any(key in figures for s in held.strata for figures in s.per_arm.values()),
+        "task": any(key in figures for t in held.tasks for figures in t.per_arm.values()),
+        "cell": any(key in figures for c in held.cells.values() for figures in c.per_arm.values()),
+    }
+    return [by for by, holds in slices.items() if holds]
+
+
+def _measure_reads(held: ReportInput) -> list[dict[str, Any]]:
+    """For each kind a measure can be read by, the first measure read that way; vs_control within each slice kind
+    where a control exists; and the lead measure on its first aspect."""
+    keys = [*held.measures, *held.judged]
+    calls: list[dict[str, Any]] = []
+    for by in ("arm", "stratum", "task", "cell"):
+        key = _first(key for key in keys if by in _read_in(held, key))
+        if key is None:
+            continue
+        calls.append({"measure_key": key, "by": by})
+        control = any(arm.role == "control" for arm in held.arms)
+        if by != "arm" and control:
+            calls.append({"measure_key": key, "by": by, "statistics": ["mean", "vs_control", "n_cases"]})
+    aspect = _first(aspect.id for aspect in held.aspects)
+    if calls and aspect is not None:
+        calls.append({"measure_key": calls[0]["measure_key"], "aspect_filter": aspect})
+    return calls
+
+
+def _readings_calls(held: ReportInput) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = [{}, {"arm_filter": held.arms[-1].id}]
+    aspect = _first(aspect.id for aspect in held.aspects)
+    return calls + ([{"aspect_filter": aspect, "limit": 2}] if aspect is not None else [])
+
+
+def _contrasts_calls(held: ReportInput) -> list[dict[str, Any]]:
+    first = _first(held.contrasts)
+    if first is None:
+        return [{}]
+    return [{}, {"arm_filter": first.arm, "measure_filter": first.measure}, {"offset": 1, "limit": 3}]
+
+
+def _examples_calls(held: ReportInput) -> list[dict[str, Any]]:
+    arm = _first(example.arm for example in held.examples if example.arm is not None)
+    return [{}, {"offset": 10}] + ([{"arm_filter": arm}] if arm is not None else [])
+
+
 #: How each analyst action is called on one input, where its example's parameters will not do: the argument sets,
 #: without ``action`` or ``snapshot_id``.
-ANALYST_CALLS: dict[str, Callable[[ReportInput], list[dict[str, Any]]]] = {}
+ANALYST_CALLS: dict[str, Callable[[ReportInput], list[dict[str, Any]]]] = {
+    "readings_list": _readings_calls,
+    "contrasts_list": _contrasts_calls,
+    "measure_read": _measure_reads,
+    "examples_list": _examples_calls,
+}
 
 
 @cache
