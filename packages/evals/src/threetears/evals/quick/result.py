@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.analysis.bundle.schema import SEPARATED_VERDICTS
 from threetears.evals.analysis import (
     DEFAULT_FAIL_ON,
     ConfusionCount,
@@ -453,7 +454,7 @@ class Result:
             (arm,) = self.arms
             order = self._page_order()
             return f"{self.name}: {_cases_verdict(self.summary, order=lambda result: order(arm, result))}"
-        decided = [row for row in self.contrasts() if row["outcome"] in ("improved", "regressed", "equivalent")]
+        decided = [row for row in self.contrasts() if row["outcome"] in SEPARATED_VERDICTS]
         if not decided:
             others = " or ".join(arm for arm in self.arms if arm != self.control)
             return f"{self.name}: nothing separated {others} from {self.control}"

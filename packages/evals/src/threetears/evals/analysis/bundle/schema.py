@@ -1585,8 +1585,10 @@ class VerdictOrder(EvalDocumentModel):
 ComparisonVerdict = Literal["improved", "regressed", "equivalent", "not_separated", "untested"]
 
 #: The comparison verdicts that separate an arm from the control, or establish it alike: what a corrected comparison
-#: settles. The one set every reader of a verdict's separation uses (the writer's view, the report input's trim, the
-#: report decision's modes and spine).
+#: settles. Every reader asking whether a comparison settled reads this one set: the writer's view and the report
+#: input's trims, the report decision's modes and spine, and a quick result's verdict line. The campaign verdict's
+#: line (``report.verdict``) reads only the directional two, improved and regressed, since it names the better arm and
+#: an ``equivalent`` verdict names none.
 SEPARATED_VERDICTS: frozenset[ComparisonVerdict] = frozenset({"improved", "regressed", "equivalent"})
 
 
