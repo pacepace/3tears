@@ -111,7 +111,7 @@
   "shape": "D",
   "masthead": {
     "kind": "Change · control vs candidates",
-    "system": "Kairo persona model, round 2",
+    "system": "Kairo's character across persona models",
     "counts": "{control.name} vs {n_candidates} candidates · {aspect.name} · {cases} cases × {repeats} repeats",
     "run_date": "{meta.run_date}",
     "synthetic": false
@@ -176,10 +176,7 @@
       "emphasis": "",
       "level": "99.69%",
       "unit": "points",
-      "domain": [
-        -14.0,
-        4.0
-      ]
+      "domain": []
     },
     {
       "kind": "bars",
@@ -202,12 +199,9 @@
       },
       "reference": [],
       "emphasis": "",
-      "level": "",
+      "level": "95%",
       "unit": "usd",
-      "domain": [
-        0.0,
-        3.0
-      ]
+      "domain": []
     }
   ],
   "sections": [
@@ -240,7 +234,7 @@
         "unit": "points",
         "domain": [
           -16.0,
-          4.0
+          3.0
         ]
       },
       "caption": "Pass rate on {aspect.name}: a trial passes when every check and judged dimension passes. Confirmatory {reading.qwen3.8-flash.level} intervals on {cases} paired cases. The margin was set after the readings were visible.",
@@ -268,12 +262,9 @@
         },
         "reference": [],
         "emphasis": "",
-        "level": "95% uncorrected",
+        "level": "",
         "unit": "points",
-        "domain": [
-          -26.0,
-          8.0
-        ]
+        "domain": []
       },
       "caption": "",
       "caveats": []
