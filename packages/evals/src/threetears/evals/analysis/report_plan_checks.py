@@ -75,6 +75,10 @@ column factors and its tiles' cost and latency. The renderer reads those off the
   ``improved`` contrast on an asked aspect) or no worse (every floor on every asked aspect ``held``, each declaring
   one). A change in tradeoff mode or a no call recommends nothing: GENERATOR §1.1's modes replace the memo's "a
   change always recommends".
+- *Survivors*: a ``recommended`` or ``lean`` row naming an arm names one that survives every gate and guardrail
+  (:func:`~threetears.evals.analysis.report_decision.surviving_options`), in every mode: a decide plan picking by a
+  ranking rule, a tradeoff's lean, a change's candidate shown better that failed a gate, and a choice's low-confidence
+  pick a gate removed are all refused off the survivors.
 - *Answers*: every warning :func:`raised_warnings` raises on the recommended arm has exactly one answer, and no
   answer names a warning not raised.
 - *Confidence* (GENERATOR §2.5): plain ``high`` only while no open report-wide caveat remains, and listing none;
@@ -509,6 +513,7 @@ def validate_plan(plan: ReportPlan, report_input: ReportInput) -> None:
     faults += _allowed_mode_faults(plan, report_input)
     faults += _id_faults(plan)
     faults += _recommendation_faults(plan, report_input)
+    faults += _survivor_faults(plan, report_input)
     faults += _answer_faults(plan, report_input)
     faults += _confidence_faults(plan, report_input)
     faults += _flag_faults(plan, report_input)
@@ -617,6 +622,25 @@ def _recommendation_faults(plan: ReportPlan, report_input: ReportInput) -> Itera
             )
         return
     yield from _adoption_faults(row.option, path, report_input)
+
+
+def _survivor_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
+    """A recommended or lean row naming an arm names one that survives every gate and guardrail, in every mode."""
+    arms = {arm.id for arm in report_input.arms}
+    picked = [(index, row) for index, row in enumerate(plan.options.rows) if row.role in ("recommended", "lean")]
+    if not any(row.option in arms for _, row in picked):
+        return
+    survivors = surviving_options(report_input)
+    for index, row in picked:
+        if row.option in arms and row.option not in survivors:
+            yield (
+                f"options.rows[{index}].option",
+                (
+                    f"is {row.option!r}, marked {row.role!r}, and it does not survive the campaign's gates and "
+                    f"guardrails (the options that do are {survivors}): a plan recommends or leans toward a survivor "
+                    "only, and says in Why not what kept this one out"
+                ),
+            )
 
 
 def _settled_by_gates(report_input: ReportInput, arm: str) -> bool:

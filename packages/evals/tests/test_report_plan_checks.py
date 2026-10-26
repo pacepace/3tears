@@ -452,6 +452,68 @@ class TestIds:
 # --- the recommendation --------------------------------------------------------------------------------------------
 
 
+def _r4_plan() -> dict[str, Any]:
+    loaded: dict[str, Any] = json.loads((FIXTURES / "r4" / "anchor.plan.json").read_text(encoding="utf-8"))
+    return loaded
+
+
+def _cost_gate(threshold: float, direction: str = "lower_is_better") -> dict[str, Any]:
+    return {
+        "id": "cost",
+        "kind": "gate",
+        "measure": "production_replicating_cost",
+        "direction": direction,
+        "threshold": threshold,
+    }
+
+
+class TestOnlySurvivorsArePicked:
+    """A recommended or lean row naming an arm names a survivor of the gates and guardrails, in every mode."""
+
+    def test_a_decision_by_a_ranking_rule_recommends_a_survivor(self):
+        data = _input_dict("r4")
+        data["contrast_families"][0]["merit_axes"] = ["quality", "cost"]
+        plan = _r4_plan()
+        plan["options"]["rows"] = [
+            {"option": "f16", "role": "recommended"},
+            {"option": "prod", "role": "control"},
+            {"option": "f64", "role": "alternative"},
+        ]
+        plan.update(mode="decide", headline_kind="decision")
+        why = _why(plan, "options.rows[0].option", data)
+        assert "'f16', marked 'recommended', and it does not survive" in why and "['prod', 'f64']" in why
+        plan["options"]["rows"] = [
+            {"option": "prod", "role": "recommended"},
+            {"option": "f64", "role": "alternative"},
+            {"option": "f16", "role": "alternative"},
+        ]
+        assert "options.rows[0].option" not in _paths(plan, data), "the control survives, and the rule may pick it"
+
+    def test_a_tradeoffs_lean_is_a_survivor(self):
+        plan = _r4_plan()
+        _passes(plan, _input_dict("r4"))
+        rows = plan["options"]["rows"]
+        rows[1]["role"], rows[2]["role"] = "cheapest", "lean"
+        assert "'f16', marked 'lean', and it does not survive" in _why(plan, "options.rows[2].option", _input_dict("r4"))
+
+    def test_a_changes_candidate_shown_better_that_failed_a_gate_is_refused(self):
+        data = _input_dict()
+        data["criteria"] = [_cost_gate(0.0024)]
+        data["contrasts"].append(
+            {"arm": "qwen3.8-flash", "control": "September", "kind": "judged", "measure": "persona.holds_character",
+             "aspect": ASPECT, "verdict": "improved", "delta": 3.0, "interval": [1.0, 5.0], "p_adjusted": 0.01}
+        )  # fmt: skip
+        why = _why(_recommending_flash(_plan()), "options.rows[0].option", data)
+        assert "'qwen3.8-flash', marked 'recommended', and it does not survive" in why
+
+    def test_a_choices_low_confidence_pick_a_gate_removed_is_refused(self):
+        data = _input_dict()
+        data["arms"][0]["role"] = "challenger"
+        data["criteria"] = [_cost_gate(0.002, "higher_is_better")]
+        plan = _set(_plan(), "decision.confidence.form", "low")
+        assert "'September', marked 'recommended', and it does not survive" in _why(plan, "options.rows[0].option", data)
+
+
 class TestTheRecommendation:
     def test_a_measurement_recommends_nothing(self):
         data = _input_dict()
