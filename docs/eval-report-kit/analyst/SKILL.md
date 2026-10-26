@@ -56,7 +56,7 @@ One tool, `evals_analyst`; each call is `{"action": "<name>", ...}` and, but for
 | | `measure_breakdown` | `measure_key`, `slice_by` | Where a difference concentrates; exploratory |
 | | `price_tradeoff` | `gain_key`, `arm_filter` | Price per point among measured options; never a mix nobody ran |
 | blocks | `block_catalog` | | Block kinds, sources, figure key forms |
-| | `block_render` | `block_kind`, `query`, `reference` | One block's values table |
+| | `block_render` | `block_kind`, `query`, `reference`, `emphasis` | One block's values table, each figure's interval at the block's level where held; echoes `reference_line` and `emphasis` for the claim's evidence |
 | gaps | `capability_gap` | `need`, `why`, `workaround`, `claim_ids` | Record a workaround |
 
 **Help.** `action='help'` lists the actions; `topic='<action>'` gives one's parameters and an example; `topic='figure_keys'` the figure-key grammar's rules, filters and path groups, and `topic='figure_keys.<group>'` a group's forms. **Paging.** Every result that grows with the campaign is paged, the overview included, each page sized to one result. A page with more ends with `next: action=…, offset=N`: send that call. **Refusals** end with `recovery: {…}` (the parameters at fault, those accepted, an example, valid values): build the next call from it.
