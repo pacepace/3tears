@@ -140,7 +140,8 @@ reads every older pointer:
 - **0.72 fails closed.** It compares each table's schema entry with its own column digest before it
   loads anything. A marked entry never equals it, so 0.72 treats the scope as another code
   version's: it serves the scope from its own L1 rebuilt from L3, and it does not repoint the scope
-  at the same epoch (the rule in "Two code versions at once" below). It never decodes a piece as
+  at the same epoch (0.72's own rule; from 0.78.1 a rebuild does repoint it, see "Two code versions
+  at once" below). It never decodes a piece as
   rows. Nothing had to change in 0.72 for this.
 - **0.72 cannot sweep a piece.** It lists and judges only objects under `{snapshot}/`; pieces live
   under `{snapshot}.p/`. A snapshot's name holds no `.`, so no other snapshot's chunks share that
@@ -261,11 +262,13 @@ pointers. Each pointer names the columns its chunks hold (`schema`, per-table di
 
 - **A replica loads only chunks of its own columns.** One check (`_loadable`) sits in the fetch
   every load passes through, so no path can put another version's chunks in its L1.
-- **It does not repoint the other version's scopes.** A rebuild moves a scope's pointer only
-  forward: a same-epoch pointer of other columns stays until a write moves the scope to a later
-  epoch. Meanwhile the replica serves the scope from its own L1, rebuilt from L3, and its status
-  says how many scopes that is. Without this rule each version would
-  repoint the other's scopes on every rebuild, each round the slow path.
+- **A rebuild repoints a same-epoch pointer of other columns to its own.** Otherwise a scope no
+  write touched after a column change would keep the old version's pointer for good, and every
+  replica would rebuild every such scope from L3 at every start. A ready replica never takes a
+  same-epoch pointer of other columns (it is not ahead of what it holds), so the version still
+  running keeps serving its own L1 and is not made to rebuild; its status says how many scopes'
+  pointers carry other columns. Only a replica that starts while both run repoints, so the
+  repointing ends with the deploy.
 - **A write moves the pointer to the writer's columns.** A later epoch always moves it. A replica
   of the other columns cannot load it, so it rebuilds that scope from L3 and serves it.
 

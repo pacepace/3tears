@@ -1666,7 +1666,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     schema: TableSchema
     partition_exempt_methods: ClassVar[frozenset[str]] = frozenset()
     #: whether every L3 write this collection makes is a statement generated from :attr:`schema`,
-    #: so :meth:`complete_written_row` may fill in the columns those statements write ``NULL``.
+    #: so :meth:`complete_written_row` may name, as ``None``, the nullable columns a write that
+    #: reaches L2 before L3 leaves out: those statements write the ``None`` sent as ``NULL``.
     #: ``None`` infers it: ``True`` unless the subclass overrides :meth:`save_to_store`. A
     #: subclass whose override only wraps the generated write (calls ``super().save_to_store``
     #: for every row it writes) declares ``True``; one that writes its own SQL leaves it inferred.
@@ -1823,18 +1824,19 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         return self.schema.declares_l2_order and (store is None or isinstance(store, OrderedDurableStore))
 
     def complete_written_row(self, data: dict[str, Any]) -> dict[str, Any]:
-        """``data`` with each declared column every generated statement stores as ``NULL`` filled in.
+        """``data`` with each nullable column a write ahead of L3 leaves out named as ``None``.
 
-        see :meth:`BaseCollection.complete_written_row`. a nullable, mutable, non-key column with no
-        ``server_default`` that ``data`` leaves out is written ``NULL`` by every statement this
-        collection generates: the INSERT names it (:func:`~threetears.core.backends.schema_sql
-        .pull_value` answers ``None``), its ``DO UPDATE SET`` and the fenced UPDATE both set it. so
-        its stored value is known without reading it, and the row is completed with it.
+        see :meth:`BaseCollection.complete_written_row`: consulted only by a write that reaches L1
+        and L2 before L3, which sends L3 the completed row. a nullable, mutable, non-key column with
+        no ``server_default`` that ``data`` leaves out is named ``None``, and every statement this
+        collection generates writes a named ``None`` as ``NULL`` -- the INSERT, its ``DO UPDATE
+        SET`` and the fenced UPDATE alike -- so L3 stores the row the tiers cache. (a synchronous
+        write is never completed: its update rewrites only the columns the row names, and a column
+        it leaves out keeps its stored value, read back for the caches.)
 
         only while this collection's L3 writes are the generated statements
-        (:attr:`stores_through_generated_sql`): a subclass that writes its own SQL may leave such a
-        column out of an UPDATE and keep its stored value, so nothing is completed for it, and
-        :meth:`columns_decided_by_store` sends the row to a read back.
+        (:attr:`stores_through_generated_sql`): a subclass that writes its own SQL may not write a
+        ``None`` it is sent, so nothing is completed for it, and such a write is refused.
 
         :param data: the row as the write sends it, stamped
         :ptype data: dict[str, Any]
@@ -1865,11 +1867,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         answer. two shapes, both read off the schema:
 
         * a declared column ``data`` does not name. the generated INSERT drops it when it has a
-          ``server_default`` and the database fills the default in; an immutable one is kept by
-          any update of an existing row; a statement this collection writes itself may keep any
-          of them. none of those is knowable from ``data``. (the framework asks after
-          :meth:`complete_written_row`, so a column every generated statement writes ``NULL`` is
-          already present.)
+          ``server_default`` and the database fills the default in; any update of an existing row
+          keeps its stored value (the generated statements rewrite only the columns the row
+          names); a statement this collection writes itself may keep any of them. none of those
+          is knowable from ``data``. (a write ahead of L3 asks after
+          :meth:`complete_written_row`, so a nullable column it sends as ``None`` is present.)
         * a ``NOT NULL`` ``server_default`` column ``data`` names as ``None``. the fenced UPDATE
           skips it and keeps the stored value (:func:`~threetears.core.backends.schema_sql
           .cas_mutable_columns_for_data`).
@@ -2018,6 +2020,29 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         pk_values = self.normalize_pk(entity_id)
         pk = dict(zip(self.schema.pk_columns, pk_values, strict=True))
         return await store.fetch_one(self.schema.name, pk)
+
+    async def fetch_from_store_in_transaction(self, entity_id: Any, *, conn: Any) -> dict[str, Any] | None:
+        """fetch one row on a caller's open transaction, through the :class:`DurableStore` seam.
+
+        See :meth:`BaseCollection.fetch_from_store_in_transaction`. The same declared-columns
+        SELECT and read coercion as :meth:`fetch_from_store`, bound to ``conn`` so it sees the
+        transaction's uncommitted writes. A subclass that overrides :meth:`fetch_from_store` reads
+        its own way, which this cannot know, so it reads nothing here unless it overrides this too.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values (composite-pk)
+        :ptype entity_id: Any
+        :param conn: the caller's connection, with its transaction open
+        :ptype conn: Any
+        :return: row dict on hit; ``None`` on miss, with no durable store, or when a subclass reads
+            its own way
+        :rtype: dict[str, Any] | None
+        """
+        store = self._durable_store()
+        if store is None or type(self).fetch_from_store is not SchemaBackedCollection.fetch_from_store:
+            return None
+        pk_values = self.normalize_pk(entity_id)
+        pk = dict(zip(self.schema.pk_columns, pk_values, strict=True))
+        return await store.fetch_one(self.schema.name, pk, conn=conn)
 
     #: the most rows one bulk statement writes: well inside a broker's statement timeout for a
     #: row of a few dozen columns

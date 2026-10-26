@@ -15,6 +15,11 @@ inside one of them sees the other. So:
   same write generation. A concrete class of the trees' own whose table cannot be read off the class
   is listed with why, in ``named_per_instance``.
 
+- :func:`find_transaction_read_gaps` lists the trees' own classes that read their store their own
+  way (``fetch_from_store``), may leave columns of a write to the database
+  (``columns_decided_by_store``), and read nothing on a caller's transaction
+  (``fetch_from_store_in_transaction``): a save of theirs joining one hands back the row as sent.
+
 3tears runs it over its own packages; a product runs it over its own ``src`` with ``framework=True``.
 """
 
@@ -27,7 +32,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-__all__ = ["find_census_problems", "run_census"]
+__all__ = ["find_census_problems", "find_transaction_read_gaps", "run_census"]
 
 
 def run_census(roots: list[Path], *, framework: bool = False) -> dict[str, Any]:
@@ -110,3 +115,25 @@ def find_census_problems(census: dict[str, Any], named_per_instance: dict[str, s
                 f"{', '.join(sorted(members))}"
             )
     return problems
+
+
+def find_transaction_read_gaps(census: dict[str, Any]) -> list[str]:
+    """every class of the trees' own whose save inside a caller's transaction would hand back the row as sent.
+
+    Such a class overrides ``fetch_from_store`` and inherits a ``columns_decided_by_store`` that may
+    name columns, so a save of it reads the row back; inside a caller's transaction that read is
+    ``fetch_from_store_in_transaction``, which it must implement, over the caller's ``conn``, with
+    the SELECT and row shape of its ``fetch_from_store``. A class whose store decides no columns
+    keeps ``BaseCollection.columns_decided_by_store``, which answers none, and reads nothing back.
+
+    :param census: what :func:`run_census` found
+    :ptype census: dict[str, Any]
+    :return: one line per class, sorted
+    :rtype: list[str]
+    """
+    return [
+        f"{record['name']}: overrides fetch_from_store, and the database may decide columns of its "
+        f"writes, but it has no fetch_from_store_in_transaction of its own over the caller's conn"
+        for record in census["classes"]
+        if record.get("transaction_read_gap", False) and not record.get("framework", False)
+    ]

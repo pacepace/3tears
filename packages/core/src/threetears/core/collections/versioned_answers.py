@@ -75,6 +75,7 @@ import base64
 import gzip
 import hashlib
 import json
+import math
 import re
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from contextvars import ContextVar
@@ -331,16 +332,55 @@ def _json_default(value: Any) -> Any:
     """what an answer's JSON writes for a value ``json`` has no type for.
 
     A ``Decimal`` is a JSON number, the one its ``float`` writes: a reader parses a number into a
-    double either way, and an exact L1 hands back the ``Decimal`` a float copy used to hold. Anything
-    else is its ``str``.
+    double either way, and an exact L1 hands back the ``Decimal`` a float copy used to hold. A
+    ``NaN`` or infinite one, which JSON has no number for, is ``null``. Anything else is its ``str``.
 
     :param value: the value
     :ptype value: Any
     :return: the value ``json`` writes in its place
     :rtype: Any
     """
-    written: Any = float(value) if isinstance(value, Decimal) else str(value)
+    written: Any = str(value)
+    if isinstance(value, Decimal):
+        written = float(value) if value.is_finite() else None
     return written
+
+
+def _finite(value: Any) -> Any:
+    """``value`` with every ``NaN`` or infinite ``float`` in it, at any depth, replaced by ``None``.
+
+    :param value: an answer, or a part of one
+    :ptype value: Any
+    :return: the same structure, every float in it finite or ``None``
+    :rtype: Any
+    """
+    result: Any = value
+    if isinstance(value, float) and not math.isfinite(value):
+        result = None
+    elif isinstance(value, dict):
+        result = {key: _finite(item) for key, item in value.items()}
+    elif isinstance(value, (list, tuple)):
+        result = [_finite(item) for item in value]
+    return result
+
+
+def _dumps(value: Any) -> str:
+    """``value`` as JSON, written by :func:`_json_default`, with a non-finite float as ``null``.
+
+    ``json`` writes a ``NaN`` or infinite float as ``NaN`` or ``Infinity``, which no JSON parser
+    reads. The common answer holds none and is written in one pass; one that does is written again
+    with each replaced by ``null``.
+
+    :param value: the value
+    :ptype value: Any
+    :return: its JSON
+    :rtype: str
+    """
+    try:
+        text = json.dumps(value, default=_json_default, allow_nan=False)
+    except ValueError:
+        text = json.dumps(_finite(value), default=_json_default, allow_nan=False)
+    return text
 
 
 def answer_json(answer: Any) -> str:
@@ -353,19 +393,19 @@ def answer_json(answer: Any) -> str:
 
     :param answer: the answer
     :ptype answer: Any
-    :return: its JSON, exactly as ``json.dumps`` writes it with :func:`_json_default`
+    :return: its JSON, exactly as ``json.dumps`` writes it with :func:`_json_default`, but a ``NaN``
+        or infinite number, ``float`` or ``Decimal``, is ``null``: JSON has no number for it
     :rtype: str
     """
     if isinstance(answer, dict) and all(type(key) is str for key in answer):
         text = "{" + ", ".join(f"{json.dumps(key)}: {answer_json(value)}" for key, value in answer.items()) + "}"
     elif isinstance(answer, (list, tuple)) and len(answer) > _JSON_PIECE:
         pieces = (
-            json.dumps(list(answer[start : start + _JSON_PIECE]), default=_json_default)[1:-1]
-            for start in range(0, len(answer), _JSON_PIECE)
+            _dumps(list(answer[start : start + _JSON_PIECE]))[1:-1] for start in range(0, len(answer), _JSON_PIECE)
         )
         text = "[" + ", ".join(pieces) + "]"
     else:
-        text = json.dumps(answer, default=_json_default)
+        text = _dumps(answer)
     return text
 
 

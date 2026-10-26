@@ -99,6 +99,9 @@ INHERITED_UNFILTERED: dict[str, str] = {
     "reload_entity": "re-reads one cached entity by its key, for the writer that holds it",
     "fetch_from_store": "the L3 leg of get, by primary key",
     "fetch_from_store_with_tier": "fetch_from_store by primary key, with the tier that answered it, for the tier counts",
+    "fetch_from_store_in_transaction": (
+        "a save's own row by primary key, read back on the caller's transaction for the saving handle"
+    ),
     "l2_write_generation": "reads the table's write generation from L2, for a catch-up pass; reads no row",
     "read_rows_led_by": "the generic leading-key scan the framework's cascade and cache warmers use",
     "save_entity": "a write of an entity the caller already holds; it returns no other row",

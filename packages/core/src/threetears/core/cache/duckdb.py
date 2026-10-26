@@ -562,12 +562,84 @@ class DuckDBBackend:
             held = self._db.execute(f"SELECT count(*) FROM {relation}", params).fetchone()[0]  # noqa: S608
             return fetch_arrow(self._db.execute(sql, params), held)
 
+    def storage_arrow(self, table: str, rows: Any, primary_key: str | tuple[str, ...]) -> tuple[list[str], Any]:
+        """an Arrow table's rows in ``table``'s storage forms, the last row of each key kept: what
+        :meth:`export_rows` makes of dict rows, never making a row a Python object where the column
+        allows.
+
+        For a writer whose rows already are Arrow (an export read straight into Arrow), and for a
+        subclass whose own export types rows: the columns are those of the table the rows name (all
+        the rows name, for a table this backend did not create), as dict rows give them. A column
+        whose Arrow type an insert's cast stores exactly as its stored form (integers, floats,
+        booleans, strings, dates; a decimal at the column's own scale; a zoned timestamp into a zoned
+        timestamp column) is kept as it is; any other is stored value by value as
+        :meth:`serialize_value` stores a dict row's, so either form of the same rows is stored alike.
+
+        :param table: the table whose columns type them
+        :ptype table: str
+        :param rows: the rows
+        :ptype rows: pyarrow.Table
+        :param primary_key: the table's key, as :meth:`upsert_many` takes it
+        :ptype primary_key: str | tuple[str, ...]
+        :return: the columns written, and the rows in them, in that order
+        :rtype: tuple[list[str], pyarrow.Table]
+        :raises KeyError: when a key column is not among the rows' columns, as a dict row lacking it is refused
+        """
+        schema = self._schema_info.get(table, {})
+        named = set(rows.column_names)
+        columns = [c for c in schema if c in named] if schema else sorted(named)
+        key = list(self._pk_columns(primary_key))
+        # a key column every row lacks, as a dict row lacking it is refused (no rows: nothing to key)
+        absent = [c for c in key if c not in named] if rows.num_rows else []
+        if absent:
+            raise KeyError(absent[0])
+        if rows.num_rows and key:
+            # the last row of each key, as a batch of dict rows keeps it
+            indexed = rows.select(key).append_column("__row", pa.array(range(rows.num_rows), pa.int64()))
+            last = indexed.group_by(key, use_threads=False).aggregate([("__row", "max")]).column("__row_max")
+            if len(last) != rows.num_rows:
+                rows = rows.take(pa.array(sorted(last.to_pylist()), pa.int64()))
+        stored = [self._stored_column(rows.column(c), schema.get(c, "VARCHAR")) for c in columns]
+        return columns, pa.table(dict(zip(columns, stored, strict=True))) if columns else pa.table({})
+
+    def _stored_column(self, values: Any, code: str) -> Any:
+        """one Arrow column in its storage form for a column of type ``code``.
+
+        :param values: the column
+        :ptype values: pyarrow.ChunkedArray
+        :param code: the column's type code
+        :ptype code: str
+        :return: the column as an insert's cast stores it exactly
+        :rtype: pyarrow.ChunkedArray | pyarrow.Array
+        """
+        kind = values.type
+        ddl = _ddl_type(code).upper()
+        scale = _decimal_code_scale(code)
+        if scale is not None:
+            as_is = pa.types.is_decimal(kind) and kind.scale == scale
+        elif pa.types.is_timestamp(kind):
+            # an instant into an instant column; a naive one is read in another zone by the cast than by
+            # its isoformat text, so it is stored as a dict row's is
+            as_is = kind.tz is not None and ddl in ("TIMESTAMPTZ", "TIMESTAMP WITH TIME ZONE")
+        else:
+            as_is = (
+                pa.types.is_null(kind)
+                or pa.types.is_integer(kind)
+                or pa.types.is_floating(kind)
+                or pa.types.is_boolean(kind)
+                or pa.types.is_string(kind)
+                or pa.types.is_large_string(kind)
+                or pa.types.is_date(kind)
+            )
+        # one column made Python values, only where its Arrow type is not its stored form
+        return values if as_is else pa.array([self.serialize_value(v, code) for v in values.to_pylist()])
+
     def export_rows(
         self,
         table: str,
         column: str,
         value: Any,
-        rows: Sequence[Mapping[str, Any]],
+        rows: Sequence[Mapping[str, Any]] | Any,
         *,
         primary_key: str | tuple[str, ...],
         order_by: Sequence[str],
@@ -587,8 +659,9 @@ class DuckDBBackend:
         :ptype column: str
         :param value: the scope's value; ``None`` for the rows where the column is null
         :ptype value: Any
-        :param rows: every row the scope would hold, each keyed by column name
-        :ptype rows: Sequence[Mapping[str, Any]]
+        :param rows: every row the scope would hold: each keyed by column name, or one Arrow table, which is
+            typed alike (:meth:`storage_arrow`) and gives the same export as the same rows as dicts
+        :ptype rows: Sequence[Mapping[str, Any]] | pyarrow.Table
         :param primary_key: the table's key, as :meth:`upsert_many` takes it
         :ptype primary_key: str | tuple[str, ...]
         :param order_by: the columns ordering the rows, the table's key
@@ -596,13 +669,23 @@ class DuckDBBackend:
         :return: the rows
         :rtype: pyarrow.Table
         :raises ValueError: when the table or column is unknown
+        :raises KeyError: when an Arrow table lacks a key column
         :raises duckdb.ConstraintException: when a row's key column is null, as the table refuses it
         """
         condition, params = self._partition_filter(table, column, value)
         schema = self._schema_info[table]
-        columns, lists = self._serialized(table, rows, primary_key)
+        arrow: Any = None
+        if _PYARROW and isinstance(rows, pa.Table):
+            columns, stored = self.storage_arrow(table, rows, primary_key)
+            nulls = {name: stored.column(name).null_count > 0 for name in columns}
+            arrow = stored.rename_columns([f"c{index}" for index in range(len(columns))]) if rows.num_rows else None
+            lists: list[list[Any]] = []
+        else:
+            columns, lists = self._serialized(table, rows, primary_key)
+            nulls = {name: None in lists[index] for index, name in enumerate(columns)}
+            arrow = _as_arrow(f"an export of {table}", lists) if rows else None
         for key in self._pk_columns(primary_key):
-            if key in columns and None in lists[columns.index(key)]:
+            if nulls.get(key):
                 raise duckdb.ConstraintException(f"NOT NULL constraint failed: {table}.{key}")
         order = ", ".join(quote_identifier(c) for c in order_by)
         given = {name: f"c{index}" for index, name in enumerate(columns)}
@@ -612,7 +695,6 @@ class DuckDBBackend:
             f"CAST({given.get(name, 'NULL')} AS {_ddl_type(code)}) AS {quote_identifier(name)}"
             for name, code in schema.items()
         )
-        arrow = _as_arrow(f"an export of {table}", lists) if rows else None
         source = "_export_rows"
         bound: list[Any] = []
         if not rows:
