@@ -593,7 +593,9 @@ class MountedTool:
             action=named.name if named is not None else None,
         )
 
-    async def call(self, arguments: Mapping[str, Any], *, host: OpsHost, caller: Caller) -> ActionOutcome:
+    async def call(
+        self, arguments: Mapping[str, Any], *, host: OpsHost, caller: Caller, standalone: bool = False
+    ) -> ActionOutcome:
         """Carry out one call: select the action, hold it to its parameters, run it, render what it returns.
 
         A refusal the engine raises (:class:`~threetears.evals.kernel.EvalServiceError`) is a refused
@@ -607,6 +609,12 @@ class MountedTool:
         :ptype host: OpsHost
         :param caller: Who is calling, and their scope.
         :ptype caller: Caller
+        :param standalone: The call came to the action as a tool of its own
+            (:class:`~threetears.evals.actions.action_tools.ActionTool`), which named its action itself: a refusal of
+            its parameters, or the engine's, reads as that tool's — its example without ``action``, another action
+            its remedy names as the tool of that name (:mod:`~threetears.evals.actions.render`). The result, and
+            every text when ``False``, is the same.
+        :ptype standalone: bool
         :return: The outcome.
         :rtype: ActionOutcome
         """
@@ -621,16 +629,24 @@ class MountedTool:
             return ActionOutcome(render.refuse_unknown_action(self, name), refusal=_CALL_REFUSAL)
         undeclared = sorted(set(given) - set(action.params.model_fields))
         if undeclared:
-            return ActionOutcome(render.refuse_undeclared(self, action, undeclared), refusal=_CALL_REFUSAL, action=name)
+            return ActionOutcome(
+                render.refuse_undeclared(self, action, undeclared, standalone=standalone),
+                refusal=_CALL_REFUSAL,
+                action=name,
+            )
         try:
             params = action.params.model_validate(given)
         except ValidationError as invalid:
-            return ActionOutcome(render.refuse_invalid(self, action, invalid), refusal=_CALL_REFUSAL, action=name)
+            return ActionOutcome(
+                render.refuse_invalid(self, action, invalid, standalone=standalone), refusal=_CALL_REFUSAL, action=name
+            )
         try:
             result = await action.handler(host, caller, params)
         except EvalServiceError as refused:
             return ActionOutcome(
-                render.refuse_by_engine(self, action, refused), refusal=Refusal.of(refused), action=name
+                render.refuse_by_engine(self, action, refused, standalone=standalone),
+                refusal=Refusal.of(refused),
+                action=name,
             )
         return ActionOutcome(
             action.render(result), structured=result.model_dump(mode="json"), action=name, text_field=action.text_field
