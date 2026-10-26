@@ -29,9 +29,19 @@ in the routing scope its host names, under a ``doc_type`` no engine call names. 
 to, when a store's record names another store (two stores passed under each other's names), when the records
 disagree, and when no store holds a record at all, since a store adopted with documents already in it cannot be
 told from an empty one through the port. :meth:`RoutedDocumentStore.relocate` is the operation: it moves every
-document of the scopes its host names to its placement, then writes the record. A type the record does not name
-(new in this release) is read where the record's store for unregistered types is, so a new type changes nothing
-unless it is placed elsewhere.
+document of the scopes its host names to its placement, then writes the record.
+
+**A type new to the stores needs no relocation, wherever it is placed.** A record lists every type registered
+when it was written, and the engine writes only registered types, so a registered type the record does not name
+(new in this release) has no document in these stores: the router places it by the rule, rewrites every record to
+name it, and does not count it as moved. The one assumption is that no document of a type the engine registers was written by anyone else: a host
+that keeps its own documents under an ``eval_*`` name the engine later registers has them read from the type's
+placement rather than its store for unregistered types, and runs :meth:`RoutedDocumentStore.relocate` to move
+them. A rollback goes the same way: an older build cannot start on a newer build's record (it reads a type placed
+apart from its store for unregistered types as moved), so the operator runs the older build's
+:meth:`~RoutedDocumentStore.relocate`, which moves that type's documents to the store for unregistered types; relocate
+again once the newer build is back. A type the record does
+name still refuses to start when its placement moved, and so does a changed store for unregistered types.
 
 **A core baseline is one call, and the stores boot after it.** :meth:`RoutedDocumentStore.reset_core` deletes every
 core and regenerable document of the scopes its host names from every store, wherever it sits, never a durable
@@ -199,7 +209,7 @@ def _record(child: str, placements: Mapping[str, str], unregistered: str, routin
     """The placement record written to the store named ``child``: the placements whole, and their fingerprint.
 
     The placements are kept whole rather than as the digest alone so a start can tell a type that moved (refused)
-    from a type that is merely new (placed where unregistered types were, and recorded).
+    from a type that is merely new (placed by the rule, and recorded).
     """
     return {
         "id": _RECORD_ID,
@@ -297,8 +307,11 @@ class RoutedDocumentStore:
     def _check_records(self) -> None:
         """Refuse to start when a store's record says documents were placed otherwise, or no store has one.
 
-        When nothing moved but the record is not this router's whole — a type new in this release, placed where
-        unregistered types were, or a store added that holds no record yet — every store's record is rewritten.
+        Only a type the record names can have moved. A registered type it does not name is new to these stores
+        (registered after the record was written), so it is placed by the rule wherever that puts it, and is not
+        counted as moved; this assumes no document of it is already kept elsewhere (the module docstring). When
+        nothing moved but the record is not this router's whole — a new type, or a store added that holds no record
+        yet — every store's record is rewritten, so the next start finds the new type named at its placement.
 
         :raises RouteChanged: See the module docstring.
         """
@@ -324,10 +337,12 @@ class RoutedDocumentStore:
         first = next(iter(held.values()))
         was: Mapping[str, str] = first["placements"]
         was_unregistered: str = first["unregistered"]
+        # Only a type the record names can have moved. A registered type it does not name was not registered when
+        # it was written, so no earlier start wrote a document of it here (the module docstring's one assumption),
+        # and it is placed by the rule. A type it names that this build does not register is read from the store
+        # for unregistered types, so it moved when that store is not where the record kept it.
         moved = sorted(
-            doc_type
-            for doc_type in {*was, *self._placements}
-            if was.get(doc_type, was_unregistered) != self._placements.get(doc_type, self.unregistered)
+            doc_type for doc_type, store in was.items() if store != self._placements.get(doc_type, self.unregistered)
         )
         if was_unregistered != self.unregistered:
             moved.append("(unregistered types)")
