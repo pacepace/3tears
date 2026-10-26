@@ -18,7 +18,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from threetears.core.ddl.write_marks import MARK_FUNCTION, WRITE_MARK_TRIGGER, write_mark_trigger_sql
+from threetears.core.ddl.write_marks import (
+    MARK_FUNCTION,
+    WRITE_MARK_TRIGGER,
+    mark_function_sql,
+    replace_statement_trigger_sql,
+    write_mark_trigger_sql,
+)
 from threetears.observe import get_logger
 
 __all__ = ["give_switched_tables_their_trigger"]
@@ -69,8 +75,13 @@ async def give_switched_tables_their_trigger(store: Any, tables: Sequence[str]) 
             )
         return []
     created: list[str] = []
-    for row in await store.query(_MISSING_HERE, list(tables), WRITE_MARK_TRIGGER):
-        table = str(row["table_name"])
+    missing = [str(row["table_name"]) for row in await store.query(_MISSING_HERE, list(tables), WRITE_MARK_TRIGGER)]
+    if missing:
+        # the function the row trigger calls, replacing the one that marked every statement
+        await store.execute(mark_function_sql(marks_schema))
+    for table in missing:
+        # the statement trigger 0.78.0 gave the table goes first, so the two never both mark a write
+        await store.execute(replace_statement_trigger_sql(table_schema=here, table=table))
         await store.execute(write_mark_trigger_sql(marks_schema=marks_schema, table_schema=here, table=table))
         created.append(f"{here}.{table}")
     if created:

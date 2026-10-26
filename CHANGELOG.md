@@ -8,6 +8,21 @@ packages (bumped in lock-step).
 
 ## v0.78.1 -- 2026-10-26
 
+### core: a write that changes no row leaves no write mark
+
+**Fixed:** the write-mark trigger fired per statement, so a statement that changed no row marked too (the hub's
+idempotent `INSERT ... WHERE NOT EXISTS` of a namespace on every tool pod's handshake). Each mark is an advance
+of the table's generation that no follower heard, so every follower dropped the table: about twice a minute on
+cobalt dev, 1,017 times a day on prod's gateway. The trigger is now per row (`threetears_collection_row_write_mark`),
+and its function marks a table once per transaction, at the first changed row, behind a transaction-local
+setting; the rest of the rows pay one `current_setting` check. A statement that changes no row fires nothing.
+YugabyteDB has no transition tables, which a statement trigger would need to see whether it changed a row.
+Measured on YugabyteDB 2026.1: a 100,000-row `INSERT ... SELECT` takes 342 ms with the trigger, 282 ms without.
+
+**Upgrade.** The install backstop and the migration runner find every switched-on table missing the new trigger,
+replace the function, drop the old statement trigger (`threetears_collection_write_mark`) and create the row
+trigger, under the DDL lock, so the two never both fire. `drop_write_mark_triggers` drops either.
+
 ### core: a collection whose L1 holds no table of it reads through rather than raise
 
 **Fixed:** a registry hands its L1 to every collection it builds, but only a collection that creates its table

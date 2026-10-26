@@ -7,9 +7,10 @@ the advance, the row is committed and the generation is unmoved: every pod holdi
 absence for that key keeps answering "absent" -- for the revocation list, a revoked session still
 answering "not revoked". Nothing in the epoch system could see a commit that never moved it.
 
-So the database records the write itself. Each switched-on table carries a statement-level trigger
+So the database records the write itself. Each switched-on table carries a row trigger
 (:data:`WRITE_MARK_TRIGGER`) that inserts one row into :data:`WRITE_MARKS_TABLE` in the same
-transaction as the write: the mark commits exactly when the write does, whoever the writer is. The
+transaction as the write, at the transaction's first changed row of the table: the mark commits exactly
+when the write does, whoever the writer is, and a statement that changed no row marks nothing. The
 :class:`WriteMarkReconciler` drains the marks: it advances each marked table's generation once and
 deletes exactly the marks it read. A writer that advanced after its commit, as before, costs a
 second advance, which only makes followers re-read the table once more. Every process that owns a
@@ -37,7 +38,7 @@ and is excluded from the rest of the pass's pages, so every other table's marks 
 
 **Worst-case repair.** A commit whose own advance was lost is seen by a follower within the pass
 interval, plus the lease's lifetime when the replica holding it died mid-pass, plus the follower's
-own catch-up. ``TRUNCATE`` fires no statement-level row trigger and leaves no mark.
+own catch-up. ``TRUNCATE`` fires no row trigger and leaves no mark.
 """
 
 from __future__ import annotations
@@ -58,8 +59,11 @@ from threetears.core.ddl.errors import DdlLockTimeoutError
 from threetears.core.ddl.session import ConnectionSession
 from threetears.core.ddl.write_marks import (
     MARK_FUNCTION,
+    STATEMENT_WRITE_MARK_TRIGGER,
     WRITE_MARK_TRIGGER,
     WRITE_MARKS_TABLE,
+    mark_function_sql,
+    replace_statement_trigger_sql,
     write_mark_trigger_sql,
     write_marks_ddl,
 )
@@ -68,6 +72,7 @@ from threetears.core.sql_fragments import quote_identifier
 __all__ = [
     "INSTALL_LOCK_POLICY",
     "MARK_FUNCTION",
+    "STATEMENT_WRITE_MARK_TRIGGER",
     "WRITE_MARKS_TABLE",
     "WRITE_MARK_TRIGGER",
     "MarkPass",
@@ -163,7 +168,7 @@ SELECT n.nspname AS table_schema, c.relname AS table_name
 FROM pg_trigger g
 JOIN pg_class c ON c.oid = g.tgrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE g.tgname = $1
+WHERE g.tgname = ANY($1::text[])
 ORDER BY n.nspname, c.relname
 """
 
@@ -219,8 +224,14 @@ async def install_write_mark_triggers(
     async with pool.acquire() as conn:
         try:
             async with database_ddl_lock(ConnectionSession(conn), policy):
-                for schema, table in await tables_missing_the_trigger(conn, names):
+                missing = await tables_missing_the_trigger(conn, names)
+                if missing:
+                    # the function the row trigger calls, replacing the one that marked every statement
+                    await conn.execute(mark_function_sql(marks_schema))
+                for schema, table in missing:
                     try:
+                        # the statement trigger before the row one, so the two never both mark a write
+                        await conn.execute(replace_statement_trigger_sql(table_schema=schema, table=table))
                         await conn.execute(
                             write_mark_trigger_sql(marks_schema=marks_schema, table_schema=schema, table=table)
                         )
@@ -266,12 +277,13 @@ async def drop_write_mark_triggers(pool: SqlPool, *, policy: DdlLockPolicy | Non
     """
     dropped: list[str] = []
     async with pool.acquire() as conn, database_ddl_lock(ConnectionSession(conn), policy):
-        for row in await conn.fetch(_PRESENT_SQL, WRITE_MARK_TRIGGER):
+        for row in await conn.fetch(_PRESENT_SQL, [WRITE_MARK_TRIGGER, STATEMENT_WRITE_MARK_TRIGGER]):
             schema, table = row["table_schema"], row["table_name"]
-            await conn.execute(
-                f"DROP TRIGGER IF EXISTS {quote_identifier(WRITE_MARK_TRIGGER)} "
-                f"ON {quote_identifier(schema)}.{quote_identifier(table)}"
-            )
+            for trigger in (WRITE_MARK_TRIGGER, STATEMENT_WRITE_MARK_TRIGGER):
+                await conn.execute(
+                    f"DROP TRIGGER IF EXISTS {quote_identifier(trigger)} "
+                    f"ON {quote_identifier(schema)}.{quote_identifier(table)}"
+                )
             dropped.append(f"{schema}.{table}")
     log.warning("write-mark triggers dropped", extra={"extra_data": {"tables": dropped}})
     return dropped

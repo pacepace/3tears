@@ -21,6 +21,9 @@ import pytest
 from threetears.core.data.migrations.ddl_lock import DdlLockPolicy, database_ddl_lock
 from threetears.core.data.migrations.session import ConnectionSession
 from threetears.core.collections.write_marks import (
+    MARK_FUNCTION,
+    STATEMENT_WRITE_MARK_TRIGGER,
+    WRITE_MARK_TRIGGER,
     WRITE_MARKS_TABLE,
     WriteMarkReconciler,
     install_write_mark_triggers,
@@ -119,7 +122,7 @@ async def test_a_cancelled_writer_whose_commit_landed_still_leaves_its_mark(
     await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
 
     async def write_then_be_cancelled() -> None:
-        await pool.execute(f"UPDATE {agent}.{_TABLE} SET n = 3 WHERE id = 'none'")
+        await pool.execute(f"INSERT INTO {agent}.{_TABLE} VALUES ('c', 3)")
         await asyncio.sleep(3600)  # the advance it would have made after the commit
 
     task = asyncio.create_task(write_then_be_cancelled())
@@ -128,6 +131,83 @@ async def test_a_cancelled_writer_whose_commit_landed_still_leaves_its_mark(
     with pytest.raises(asyncio.CancelledError):
         await task
 
+    assert await _marks(pool, platform) == [_TABLE]
+
+
+async def test_a_statement_that_changes_no_row_leaves_no_mark(schemas: tuple[asyncpg.Pool, str, str]) -> None:
+    # the hub's idempotent namespace insert on every tool pod's handshake changed nothing and still marked, and
+    # each mark is an advance no follower heard, so every follower dropped the table about twice a minute
+    pool, platform, agent = schemas
+    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
+    await pool.execute(f"INSERT INTO {agent}.{_TABLE} VALUES ('a', 1)")
+    await pool.execute(f"DELETE FROM {platform}.{WRITE_MARKS_TABLE}")
+
+    await pool.execute(
+        f"INSERT INTO {agent}.{_TABLE} SELECT 'a', 1 WHERE NOT EXISTS (SELECT 1 FROM {agent}.{_TABLE} WHERE id = 'a')"
+    )
+    await pool.execute(f"UPDATE {agent}.{_TABLE} SET n = 2 WHERE false")
+    await pool.execute(f"DELETE FROM {agent}.{_TABLE} WHERE false")
+    await pool.execute(f"INSERT INTO {agent}.{_TABLE} VALUES ('a', 1) ON CONFLICT DO NOTHING")
+
+    assert await _marks(pool, platform) == []
+
+
+async def test_a_write_of_many_rows_in_one_transaction_leaves_one_mark(
+    schemas: tuple[asyncpg.Pool, str, str],
+) -> None:
+    pool, platform, agent = schemas
+    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
+
+    await pool.execute(f"INSERT INTO {agent}.{_TABLE} VALUES ('a', 1), ('b', 2), ('c', 3)")
+    assert await _marks(pool, platform) == [_TABLE]
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute(f"UPDATE {agent}.{_TABLE} SET n = n + 1")
+        await conn.execute(f"DELETE FROM {agent}.{_TABLE} WHERE id = 'c'")
+        await conn.execute(f"INSERT INTO {platform}.{_TABLE} VALUES ('z', 9)")  # another table: its own mark
+    assert await _marks(pool, platform) == [_TABLE, _TABLE, _TABLE]
+
+
+async def test_a_row_rolled_back_to_a_savepoint_takes_its_mark_back_and_a_later_row_marks_again(
+    schemas: tuple[asyncpg.Pool, str, str],
+) -> None:
+    pool, platform, agent = schemas
+    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
+
+    async with pool.acquire() as conn, conn.transaction():
+        savepoint = conn.transaction()
+        await savepoint.start()
+        await conn.execute(f"INSERT INTO {agent}.{_TABLE} VALUES ('a', 1)")
+        await savepoint.rollback()
+        await conn.execute(f"INSERT INTO {agent}.{_TABLE} VALUES ('b', 2)")
+
+    assert await _marks(pool, platform) == [_TABLE]
+
+
+async def test_an_install_over_the_statement_trigger_replaces_it_so_a_write_marks_once(
+    schemas: tuple[asyncpg.Pool, str, str],
+) -> None:
+    # a database 0.78.0 installed: the old function and a statement trigger on the table
+    pool, platform, agent = schemas
+    await pool.execute(
+        f"CREATE OR REPLACE FUNCTION {platform}.{MARK_FUNCTION}() RETURNS trigger LANGUAGE plpgsql AS $m$ "
+        f"BEGIN INSERT INTO {platform}.{WRITE_MARKS_TABLE} (table_name) VALUES (TG_TABLE_NAME); RETURN NULL; END $m$"
+    )
+    await pool.execute(
+        f"CREATE TRIGGER {STATEMENT_WRITE_MARK_TRIGGER} AFTER INSERT OR UPDATE OR DELETE ON {agent}.{_TABLE} "
+        f"FOR EACH STATEMENT EXECUTE FUNCTION {platform}.{MARK_FUNCTION}()"
+    )
+
+    await install_write_mark_triggers(pool, marks_schema=platform, tables=[_TABLE])
+
+    triggers = await pool.fetch(
+        "SELECT g.tgname FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2 AND NOT g.tgisinternal",
+        agent,
+        _TABLE,
+    )
+    assert [row["tgname"] for row in triggers] == [WRITE_MARK_TRIGGER]
+    await pool.execute(f"INSERT INTO {agent}.{_TABLE} VALUES ('a', 1), ('b', 2)")
+    await pool.execute(f"UPDATE {agent}.{_TABLE} SET n = 5 WHERE false")
     assert await _marks(pool, platform) == [_TABLE]
 
 
