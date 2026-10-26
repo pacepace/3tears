@@ -39,10 +39,14 @@ from threetears.evals.analysis.generator import user_message_digest
 from threetears.evals.analysis.planned_analysis import report_input_digest, report_plan_of
 from threetears.evals.analysis.planner import plan_user_message
 from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
+from threetears.evals.analysis.report.md_parts import table_lines
 from threetears.evals.analysis.report.plan_page.build import plan_page
+from threetears.evals.analysis.report.plan_page.drawable import plan_look
+from threetears.evals.analysis.report.plan_page.tables import arms_key
 from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_checks import validate_plan
+from threetears.evals.analysis.report_plan_facts import plan_facts
 from threetears.evals.analysis.reporter_bank import read_calibration
 from threetears.evals.analysis.reporter_kind import (
     AS_RECORDED_MODEL,
@@ -97,6 +101,11 @@ _ORDINAL = LabelCriterion(description="Every claim traces to the evidence.", sca
 # --- what the judge reads ---------------------------------------------------------------------------------------------
 
 
+def _judged_json(text: str) -> Any:
+    """The plan's JSON out of the judged text: it follows the arms key where the page shows one."""
+    return json.loads(text[text.index("\n{\n") + 1 :] if not text.startswith("{") else text)
+
+
 class TestWhatTheJudgeReads:
     @pytest.fixture
     def pair(self) -> tuple[ReportPlan, ReportInput]:
@@ -104,7 +113,7 @@ class TestWhatTheJudgeReads:
 
     def test_it_is_the_planners_part_and_nothing_code_fills(self, pair: tuple[ReportPlan, ReportInput]) -> None:
         plan, report = pair
-        read = json.loads(render_plan_for_judge(plan, report))
+        read = _judged_json(render_plan_for_judge(plan, report))
 
         assert list(read) == list(PlannedReport.model_fields)
         assert "columns" not in read["options"], "the options columns are code's"
@@ -113,7 +122,7 @@ class TestWhatTheJudgeReads:
 
     def test_every_prose_field_is_written_out_as_the_page_writes_it(self, pair: tuple[ReportPlan, ReportInput]) -> None:
         plan, report = pair
-        read = json.loads(render_plan_for_judge(plan, report))
+        read = _judged_json(render_plan_for_judge(plan, report))
         page = plan_page(plan, report)
 
         assert read["headline"] == page.headline == render(plan.headline, report, {})
@@ -121,6 +130,34 @@ class TestWhatTheJudgeReads:
         assert [slot["text"] for slot in read["decision"]["slots"]] == [slot.text for slot in page.decision]
         assert [slot.text for slot in page.decision] == [render(slot.text, report, {}) for slot in plan.decision.slots]
         assert [claim["keys"] for claim in read["durable_claims"]] == [claim.keys for claim in plan.durable_claims]
+
+    def test_the_arms_key_the_page_shows_leads_and_explains_every_tag(
+        self, pair: tuple[ReportPlan, ReportInput]
+    ) -> None:
+        plan, report = pair
+        plan = plan.model_copy(update={"show_arms_key": True})
+        text = render_plan_for_judge(plan, report)
+        facts = plan_facts(report)
+        key = arms_key(report, plan_look(plan, report, facts))
+        shown = "\n".join([f"## {key.eyebrow}", "", key.takeaway, "", *table_lines(key.table)])
+
+        assert text.startswith(shown + "\n\n{\n")
+        assert plan_page(plan, report).arms_key == key
+        for arm in facts.arms:
+            tag = plan_look(plan, report, facts).arm(arm.id).tag
+            assert f"| {tag} · " in shown, "the key says which arm each tag is"
+        assert any(
+            f"({plan_look(plan, report, facts).arm(arm.id).tag})" in text.split("\n{\n", 1)[1] for arm in facts.arms
+        ), "the prose cites a tagged arm, and the key above explains it"
+
+    def test_a_page_with_no_arms_key_renders_the_bare_json(self, pair: tuple[ReportPlan, ReportInput]) -> None:
+        plan, report = pair
+        plan = plan.model_copy(update={"show_arms_key": False})
+        text = render_plan_for_judge(plan, report)
+
+        assert text.startswith("{\n")
+        assert json.loads(text)["headline"] == render(plan.headline, report, {})
+        assert plan_page(plan, report).arms_key is None
 
     def test_one_plan_renders_to_one_string(self, pair: tuple[ReportPlan, ReportInput]) -> None:
         plan, report = pair
@@ -261,7 +298,7 @@ class TestTheFreeze:
         first = off_loop(freeze_corpus_campaign, fixture, recorded_analysis_id=planned)
         text = _stored_case(fixture, first.test_case_id).recorded_memo
         assert text is not None
-        excerpt = json.loads(text)["headline"]
+        excerpt = _judged_json(text)["headline"]
 
         again = off_loop(freeze_corpus_campaign, fixture, recorded_analysis_id=planned)
         assert again.test_case_id == first.test_case_id
@@ -560,8 +597,8 @@ async def test_a_two_aspect_campaign_planned_paged_read_and_frozen_agrees_on_eve
     assert frozen_plan == plan
     # The judged text is the plan rendered against the frozen input, and its headline is the page's.
     assert case.recorded_memo == render_plan_for_judge(frozen_plan, frozen_input)
-    assert json.loads(case.recorded_memo)["headline"] == page_text["answer"] == judged_headline
-    assert json.loads(case.recorded_memo)["lede"] == page_text["summary"]
+    assert _judged_json(case.recorded_memo)["headline"] == page_text["answer"] == judged_headline
+    assert _judged_json(case.recorded_memo)["lede"] == page_text["summary"]
     # Every number in it comes from a key resolved against the frozen input: the plan types no digit of its own and
     # every key resolves (the checks that refuse a typed number and an unresolvable key pass on the frozen pair).
     validate_plan(frozen_plan, frozen_input)

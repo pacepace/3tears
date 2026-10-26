@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the reporter judge reads the page's arms key
+
+**Fixed:** `render_plan_for_judge` omitted the arms key the planned page shows, so an arm written `{name} ({tag})`
+read to the reporter judge as an unexplained handle. Where the plan's page shows an arms key, the judged text now
+leads with that key (the page's own `arms_key` table, tag, name and role), then the plan's JSON; a plan whose page
+shows no key judges as before. A plan reporter case frozen before this change keeps its stored text.
+
 ### evals: a planned analysis's page is the page its report plan draws
 
 **Changed:** the campaign's page for an analysis the report planner wrote is now the report kit's page, built from
