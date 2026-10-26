@@ -227,17 +227,17 @@ async def test_a_generation_is_a_job_polled_to_the_analysis_it_stored() -> None:
     assert line.id == status.analysis_id
     markdown = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown")
     assert (markdown.basis, markdown.analysis_id) == ("analysis", line.id)
-    # The page is that campaign's: it opens on its title, its name, with nothing above it, and the question it
-    # declared quoted alone on the line under the title; then the plan's decision, its recommendation among it. The
-    # report planner wrote it, and the read says so and carries the plan.
-    assert fixture.campaign.question
-    asked = " ".join(fixture.campaign.question.split())
-    assert markdown.body.startswith(f'# {fixture.campaign.name}\n"{asked}"\n')
-    assert "**Recommendation:**" in markdown.body and line.findings >= 1
+    # The page is the one its plan draws: it opens on the plan's masthead, then its headline as the page's heading,
+    # then the decision, its recommendation among it; the HTML page is titled by the campaign's name. The report
+    # planner wrote it, and the read says so and carries the plan.
     assert (line.basis, markdown.analysis_basis) == ("plan", "plan") and line.report_plan_id is not None
     assert markdown.plan is not None and markdown.plan["schema"] == "report-plan/1"
+    opening, _, heading = markdown.body.split("\n", 3)[:3]
+    assert markdown.plan["masthead"]["kind"] in opening and heading.startswith("# ")
+    assert "**Recommendation.**" in markdown.body and line.findings >= 1
     html = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="html")
     assert what_runs(html.body) == [], "the page runs the kit's script and nothing else"
+    assert f"<title>{fixture.campaign.name}</title>" in html.body and 'data-page="planned"' in html.body
     canonical = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="json")
     document = json.loads(canonical.body)
     assert (document["kind"], document["campaign_id"], document["analysis_id"]) == (
