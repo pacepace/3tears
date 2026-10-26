@@ -154,18 +154,26 @@ def prose_reply(report_input: ReportInput, structure: dict[str, Any] | None = No
     :return: The prose call's reply.
     """
     chosen = PlanStructure.model_validate(structure or structure_reply(report_input))
-    recommended = next(row.option for row in chosen.options.rows if row.role == "recommended")
-    key = _claim_key(report_input, recommended)
-    claim = (
-        f"{{arm:{recommended}}} passed {{{key}|pct}} of its trials."
-        if key.startswith("pass_rate.")
-        else f"{{arm:{recommended}}} was the option recommended."
-    )
-    texts: dict[str, str] = {
-        "headline": f"Choose {{arm:{recommended}}}: it is the option the evidence favours.",
-        "lede": f"{{arm:{recommended}}} is ahead where it counts. More cases would settle it.",
-        "durable_claims.0": claim,
-    }
+    recommended = next((row.option for row in chosen.options.rows if row.role == "recommended"), None)
+    if recommended is None:
+        # A trade-off or a no-call sets no option apart: its prose names the first option the table lists.
+        named = chosen.options.rows[0].option
+        texts = {
+            "headline": f"{{arm:{named}}} and the others trade one strength for another.",
+            "lede": f"{{arm:{named}}} leads on one count and trails on another. More cases would settle it.",
+        }
+    else:
+        key = _claim_key(report_input, recommended)
+        claim = (
+            f"{{arm:{recommended}}} passed {{{key}|pct}} of its trials."
+            if key.startswith("pass_rate.")
+            else f"{{arm:{recommended}}} was the option recommended."
+        )
+        texts = {
+            "headline": f"Choose {{arm:{recommended}}}: it is the option the evidence favours.",
+            "lede": f"{{arm:{recommended}}} is ahead where it counts. More cases would settle it.",
+            "durable_claims.0": claim,
+        }
     facts = plan_facts(report_input)
     if facts.weakest is not None:
         money = resolve("weakest.margin", report_input).scale == "usd"

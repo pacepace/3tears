@@ -489,7 +489,7 @@ class ChartSpec(PlannedChart):
 
     reference: Sequence[ChartReference] = Field(max_length=1, description="At most one reference line.")
     level: str = Field(description="The interval level printed on the chart, e.g. 95%; empty without intervals.")
-    unit: str = Field(description="The chart's one unit.")
+    unit: str = Field(description="The unit its rows state; empty for several (a panel each) or none.")
     domain: list[float] = Field(max_length=2, description="The value axis, [low, high], or empty.")
 
     @field_validator("domain")

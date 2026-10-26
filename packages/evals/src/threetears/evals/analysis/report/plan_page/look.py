@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, signed_with_unit, with_unit
@@ -308,6 +308,9 @@ def page_look(
 class Quantity:
     """How one quantity is drawn on a chart (this module's table).
 
+    Two quantities are drawn alike, and share an axis, when everything but their factor agrees: a share and a percent
+    both draw as a percent, so equality (and a span keyed by quantity) ignores the factor.
+
     :ivar factor: What the input's figure is multiplied by to reach the drawn one.
     :ivar fmt: The kit's format for the drawn values.
     :ivar unit: The unit the package's number rule writes beside a drawn value (``%``, ``pts``, ``usd``, ``ms``…);
@@ -317,7 +320,7 @@ class Quantity:
     :ivar rate: Whether the values are a rate in percent (or a change in one), whose axis never runs past 0 to 100.
     """
 
-    factor: float
+    factor: float = field(compare=False)
     fmt: str
     unit: str
     tick_fmt: str | None = None

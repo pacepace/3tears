@@ -12,6 +12,13 @@ accept draws, each figure its key's in that key's unit.
   that the plan checks accept on that input draws on that input. Each figure a chart of figures draws is its key's,
   read through the figure keys, in that key's unit, and every axis's format is that key's. The checks include the
   page's own drawing (:mod:`~threetears.evals.analysis.report.plan_page.drawable`), so none is refused at render.
+- **The floor.** That inclusion makes "nothing accepted is refused" hold by construction, so the (kind, source) pairs
+  each input's charts were accepted and drawn on are pinned (``fixtures/report_plans/sweep_floor.json``): a pair the
+  page stops drawing fails here rather than quietly leaving the accepted set.
+- **Over figures by measure, at both ends.** A dot strip over measures in two units is accepted and drawn a strip per
+  unit; bars and diverging bars over them are refused by the checks and the page alike; a share and a percent are one
+  unit, drawn on one axis. A stored axis span on a chart drawn a panel per unit, and bars in two units that fall into
+  one panel, are refused by the page.
 
 The expected side is read from the input: the figure keys (:func:`~threetears.evals.analysis.report.figure_keys.resolve`)
 and each figure's unit as the page states it, never typed in.
@@ -33,7 +40,6 @@ from packages.evals.tests.fixtures.report_plans import dataset
 from packages.evals.tests.report_plan_support import planned_reply
 from threetears.evals.analysis import ChartBlock, TableBlock
 from threetears.evals.analysis.errors import PlanRefusal, UnresolvableReference
-from threetears.evals.kernel.report_plan import plan_recommended_arm
 from threetears.evals.analysis.report.charts import (
     BarsChart,
     DiffHeatmapChart,
@@ -45,9 +51,10 @@ from threetears.evals.analysis.report.charts import (
 )
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report.plan_page.charting import figure_unit
-from threetears.evals.analysis.report.plan_page.look import PageLook, page_look, quantity
+from threetears.evals.analysis.report.plan_page.drawable import plan_look
+from threetears.evals.analysis.report.plan_page.look import PageLook, quantity
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
-from threetears.evals.analysis.report_decision import control_arm, surviving_options
+from threetears.evals.analysis.report_decision import control_arm
 from threetears.evals.analysis.report_input import Cell, ReportInput, ScoreboardRow, Stat, Stratum, Task
 from threetears.evals.analysis.report_plan_checks import raised_warnings
 from threetears.evals.analysis.report_plan_facts import complete_plan, plan_facts
@@ -122,17 +129,10 @@ def _completes_on_itself(key: str) -> bool:
 
 @functools.cache
 def _look(key: str) -> PageLook:
+    """The look the anchor's page draws with on the input: the page's own (:func:`plan_look`)."""
     plan = dataset.load_plan(dataset.HERE / _base(key) / "anchor.plan.json")
     report_input = _input(key)
-    facts = plan_facts(report_input)
-    return page_look(
-        facts.arms,
-        {arm.id: arm.color_slot for arm in plan.arms},
-        order=[row.option for row in plan.options.rows],
-        survivors=surviving_options(report_input),
-        recommended=plan_recommended_arm(plan),
-        names=facts.names,
-    )
+    return plan_look(plan, report_input, plan_facts(report_input))
 
 
 # --- probing the checks ----------------------------------------------------------------------------------------------
@@ -374,13 +374,13 @@ def _accepted_and_drawn(kind: str, **query: Any) -> Any:
     return spec, block.data
 
 
-def _keys_of_each_panel(data: Any, keys: Sequence[str]) -> list[str]:
+def _keys_of_each_panel(data: Any, keys: Sequence[str], input_key: str = "r1") -> list[str]:
     """The one measure whose figures each panel draws, every value its figure in its unit, formatted as it is."""
-    report_input = _input("r1")
+    report_input = _input(input_key)
     found = []
     for axis in _axes(data):
         assert axis.values, "each panel draws values"
-        whose = [key for key in keys if all(_is_figure(value, _figures("r1", key)) for value in axis.values)]
+        whose = [key for key in keys if all(_is_figure(value, _figures(input_key, key)) for value in axis.values)]
         assert len(whose) == 1, f"one measure's figures in a panel, and {whose} hold them"
         assert axis.fmt == quantity(figure_unit(report_input, whose[0]), axis.values).fmt
         found.append(whose[0])
@@ -449,6 +449,143 @@ def test_a_chart_of_tasks_in_one_unit_shares_one_format_and_span_across_its_pane
     assert all(panel.fmt is None and panel.domain is None for panel in data.panels)
     assert data.fmt == quantity("percent").fmt
     assert not _figure_faults("r1", spec, data, rates)
+
+
+# --- one rule at both ends, over figures by measure -----------------------------------------------------------------
+
+
+def _accepted_on(name: str, report_input: ReportInput, chart: dict[str, Any]) -> ChartSpec:
+    """The chart as completion stores it on ``report_input``, beside ``name``'s anchor; refused if completion refuses
+    it anywhere."""
+    reply, first = _reply(name, [chart])
+    return complete_plan(PlannedReport.model_validate(reply), report_input).sections[first].chart
+
+
+def _refused_on(name: str, report_input: ReportInput, chart: dict[str, Any]) -> list[str]:
+    """Why completion refuses the chart on ``report_input``, at the chart's own field."""
+    reply, first = _reply(name, [chart])
+    with pytest.raises(PlanRefusal) as refused:
+        complete_plan(PlannedReport.model_validate(reply), report_input)
+    return [why for path, why in refused.value.faults if path.startswith(f"sections[{first}].chart")]
+
+
+def _drawn_on(name: str, report_input: ReportInput, spec: ChartSpec) -> Any:
+    plan = dataset.load_plan(dataset.HERE / name / "anchor.plan.json")
+    look = plan_look(plan, report_input, plan_facts(report_input))
+    return resolve_chart(spec, report_input, look, title="chart").chart
+
+
+def _stored(chart: dict[str, Any], **code: Any) -> ChartSpec:
+    """A chart as a stored plan could hold it, with code's fields as given (none by default)."""
+    return ChartSpec.model_validate(chart | {"level": "", "unit": "", "domain": []} | code)
+
+
+def test_r4s_overall_measures_hold_figures_in_two_units() -> None:
+    report_input = _input("r4")
+    assert len({figure_unit(report_input, key) for key in _TWO_UNITS}) == 2
+    assert all(report_input.measures[key].per_arm for key in _TWO_UNITS)
+
+
+def test_a_dot_strip_over_measures_in_two_units_is_accepted_and_drawn_a_panel_per_unit() -> None:
+    """The checks once refused any chart over measures in two units; the page draws a dot strip's strips each in its
+    measure's unit, and the checks now hold it by the page's rule alone."""
+    chart = _chart("dot_interval", "measures", measures=_TWO_UNITS)
+    assert _probe_faults("r4", [chart]) == {}
+    (spec,) = _completed("r4", [chart])
+    assert spec.unit == "", "rows in two units state none"
+    block = _draw("r4", spec)
+    assert isinstance(block, ChartBlock) and isinstance(block.data, DotIntervalChart)
+    assert block.data.panels is not None
+    assert set(_keys_of_each_panel(block.data, _TWO_UNITS, "r4")) == set(_TWO_UNITS)
+    assert not _figure_faults("r4", spec, block.data, _TWO_UNITS)
+
+
+@pytest.mark.parametrize("kind", ["bars", "diverging_bars"])
+def test_a_single_scale_chart_over_measures_in_two_units_is_refused_by_checks_and_page_alike(kind: str) -> None:
+    chart = _chart(kind, "measures", measures=_TWO_UNITS)
+    faults = _probe_faults("r4", [chart]).get(0, [])
+    assert any("more than one unit" in fault for fault in faults), faults
+    with pytest.raises(UnresolvableReference, match="more than one unit"):
+        _draw("r4", _stored(chart))
+
+
+def _as_share(data: dict[str, Any], key: str) -> dict[str, Any]:
+    """The input with ``key``, a rate declared in percent, stated as a share instead: every figure held for it (the
+    measure's, each stratum's) divided by 100, its criteria's thresholds too, and its unit left to be read off them."""
+
+    def scaled(stat: dict[str, Any]) -> dict[str, Any]:
+        out = dict(stat)
+        for name in ("mean", "p50", "p95", "sem", "half_width"):
+            if isinstance(out.get(name), int | float):
+                out[name] = out[name] / 100
+        if isinstance(out.get("ci"), list):
+            out["ci"] = [end / 100 for end in out["ci"]]
+        return out
+
+    def walk(node: Any) -> Any:
+        if isinstance(node, dict):
+            return {
+                name: {arm: scaled(stat) for arm, stat in value.items()}
+                if name == "per_arm" and node is data["measures"][key]
+                else (scaled(value) if name == key and isinstance(value, dict) and "mean" in value else walk(value))
+                for name, value in node.items()
+            }
+        if isinstance(node, list):
+            return [walk(item) for item in node]
+        return node
+
+    shared = walk(data)
+    shared["measures"][key]["unit"] = None
+    for criterion in shared["criteria"]:
+        if criterion.get("measure") == key and isinstance(criterion.get("threshold"), int | float):
+            criterion["threshold"] /= 100
+    return shared
+
+
+def test_a_share_and_a_percent_are_one_unit_drawn_on_one_axis_in_percent() -> None:
+    """r4's two rates, one stated as a share: both draw as a percent, so bars over them share one axis, each figure
+    at its own scale."""
+    data = _as_share(_input("r4").model_dump(by_alias=True, exclude_none=True), "specul")
+    report_input = ReportInput.model_validate(data)
+    assert (figure_unit(report_input, "task"), figure_unit(report_input, "specul")) == ("percent", "share")
+    chart = _chart("bars", "measures", measures=["task", "specul"])
+    block = _drawn_on("r4", report_input, _accepted_on("r4", report_input, chart))
+    assert isinstance(block, ChartBlock) and isinstance(block.data, BarsChart)
+    data_drawn = block.data
+    assert data_drawn.panels is None and data_drawn.fmt == quantity("percent").fmt
+    drawn = {round(row.value, _PLACES) for row in data_drawn.rows or [] if row.value is not None}
+    held = _input("r4").measures
+    expected = {round(float(stat.mean), _PLACES) for key in ("task", "specul") for stat in held[key].per_arm.values()}
+    assert drawn == expected, "each rate drawn in percent, the share at a hundred times its figure"
+
+
+# --- the refusals no generated plan reaches -------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("kind", "by"), [("heatmap", "none"), ("dot_interval", "none"), ("bars", "task")], ids=["heatmap", "strip", "bars"]
+)
+def test_a_stored_axis_span_over_measures_in_several_units_is_refused_by_the_page(kind: str, by: str) -> None:
+    """Code stores a span only for a forest of readings; a stored plan carrying one on a chart drawn a panel per unit
+    cannot give every panel that one span."""
+    chart = _chart(kind, "tasks", measures=_TWO_UNITS, small_multiples_by=by)
+    assert _probe_faults("r1", [chart]) == {}, "drawn without a stored span"
+    with pytest.raises(UnresolvableReference, match="its stored axis spans one unit"):
+        _draw("r1", _stored(chart, domain=[0.0, 10.0]))
+
+
+def test_bars_in_several_units_that_fall_into_one_panel_are_refused_at_both_ends() -> None:
+    """Bars in panels by measure where two measures in different units share a reader name: one group, so one
+    panel, so one axis for two units."""
+    data = _input("r4").model_dump(by_alias=True, exclude_none=True)
+    for key in _TWO_UNITS:
+        data["measures"][key]["label"] = "Overall"
+    report_input = ReportInput.model_validate(data)
+    chart = _chart("bars", "measures", measures=_TWO_UNITS, small_multiples_by="aspect")
+    why = "its measures are in more than one unit, and it draws them on one axis"
+    with pytest.raises(UnresolvableReference, match=why):
+        _drawn_on("r4", report_input, _stored(chart))
+    assert any(why in fault for fault in _refused_on("r4", report_input, chart))
 
 
 # --- the sweep ------------------------------------------------------------------------------------------------------
@@ -558,3 +695,25 @@ def test_the_sweep_reaches_charts_in_several_units_on_every_input_and_the_cases_
         if (kind, source) == ("heatmap", "tasks") and not spec.query.measures
     ]
     assert mixed, "r1's every-measure heatmap of tasks, in several units, is among the charts drawn"
+
+
+#: The floor under the sweep: each input's (kind, source) pairs, as ``kind/source``, that the checks accepted and the
+#: page drew when it was pinned. Without it the sweep's "nothing accepted is refused" holds by construction (the checks
+#: draw each chart through the page), and a page that came to refuse a chart it drew would only leave the accepted set.
+_FLOOR = dataset.HERE / "sweep_floor.json"
+
+
+def test_every_pair_the_floor_pins_is_still_accepted_and_drawn_on_its_input() -> None:
+    pinned: dict[str, list[str]] = json.loads(_FLOOR.read_text(encoding="utf-8"))["pairs"]
+    assert set(pinned) == set(_VARIANTS), "the floor pins every input the sweep probes, and only those"
+    lost: dict[str, list[str]] = {}
+    for input_key, pairs in pinned.items():
+        swept = _sweep(input_key)
+        broken = set(swept.refused_by_page) | set(swept.misdrawn)
+        drawn = {f"{kind}/{source}" for kind, source, _ in swept.accepted if (kind, source) not in broken}
+        if missing := sorted(set(pairs) - drawn):
+            lost[input_key] = missing
+    assert not lost, (
+        f"pairs the checks accepted and the page drew are no longer accepted and drawn: {lost}. A deliberate "
+        f"narrowing removes them from {_FLOOR.name} in the same change"
+    )

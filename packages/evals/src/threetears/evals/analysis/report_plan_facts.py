@@ -73,12 +73,13 @@ whose figures carry a standard error and no interval is drawn at the descriptive
 
 **A chart's axis** is computed only where code holds a rule: a forest of readings spans every interval it draws, zero
 and the margin line, one point beyond each end. Every other chart leaves its domain empty, which lets the renderer fit
-it. A chart that would mix units or interval levels (§5.2: one unit and one interval system per chart) is refused at
-its query. Which measures a chart draws, and whether it can draw them in their units, is the page's own rule
-(:func:`~threetears.evals.analysis.report.plan_page.charting.unit_refusal`): a chart of strata or tasks naming no
-measure where its slices hold several (a heatmap reads every one), or measures in more than one unit on one axis,
-is refused here by the same function the page refuses it by; a kind that draws each measure in its own panel (a
-heatmap's matrix, a dot strip's strip, bars in panels by slice or measure) may read several units.
+it. A chart that would mix interval levels (§5.2: one interval system per chart) is refused at its query. Which
+measures a chart draws, and whether it can draw them in their units, is the page's own rule and the only unit rule
+here (:func:`~threetears.evals.analysis.report.plan_page.charting.unit_refusal`, §5.2: one unit per axis): a chart of
+strata or tasks naming no measure where its slices hold several (a heatmap reads every one), or measures or contrasts
+in more than one unit on one axis, is refused here by the same function the page refuses it by; a kind that draws each
+measure in its own panel (a heatmap's matrix, a dot strip's strip, bars in panels by slice or measure) may read
+several units, and its stored unit is then empty.
 """
 
 from __future__ import annotations
@@ -798,27 +799,38 @@ def _judged_unit(report_input: ReportInput, measures: Sequence[str]) -> list[str
 
 
 def _unit(chart: PlannedChart, report_input: ReportInput, path: str, faults: list[_Fault]) -> str:
-    """The chart's one unit, from what it reads: a change from the control in points, else the rows' own unit. A
-    chart the page cannot draw in its units is refused by the rule the page draws by (this module's account)."""
+    """The unit the chart's rows are in: a change from the control in points, else the rows' own unit, empty where
+    they are in several (each drawn in its own panel) or none. Whether the page can draw the chart in its units is the
+    page's one rule, refused here by the same function and by no other (this module's account)."""
     query = chart.query
     source = query.source
     refusal = unit_refusal(chart.kind, query, report_input)
     if refusal:
-        faults.append((f"{path}.query", f"{_UNDRAWABLE} {refusal} (GENERATOR §5.2: one unit per axis)"))
+        faults.append(
+            (
+                f"{path}.query",
+                f"{_UNDRAWABLE} {refusal} (GENERATOR §5.2: one unit per axis, a panel each where the kind panels by measure)",
+            )
+        )
     if source in ("readings", "floors"):
         return "points"
     if source == "contrasts":
-        return _one(path, "unit", (unit for unit, _ in _selected_contrasts(chart, report_input)), faults)
+        return _only(unit for unit, _ in _selected_contrasts(chart, report_input))
     if source == "measures":
-        units = [
+        return _only(
             m.unit or "" for key, m in report_input.measures.items() if not query.measures or key in query.measures
-        ]
-        return _one(path, "unit", units, faults)
+        )
     if source in ("judged", "strata"):
         if query.transform == "arm_minus_control":
             return "points"
-        return _one(path, "unit", _judged_unit(report_input, query.measures), faults)
+        return _only(_judged_unit(report_input, query.measures))
     return ""
+
+
+def _only(values: Iterable[str]) -> str:
+    """The one value the rows agree on; empty for none, or for several."""
+    found = list(dict.fromkeys(value for value in values if value))
+    return found[0] if len(found) == 1 else ""
 
 
 def _domain(chart: PlannedChart, report_input: ReportInput, references: Sequence[ChartReference]) -> list[float]:

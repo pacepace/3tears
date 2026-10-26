@@ -17,6 +17,7 @@ The model is the one non-production part: replies written by code from the input
 
 from __future__ import annotations
 
+import functools
 import json
 from collections.abc import Callable
 from copy import deepcopy
@@ -217,9 +218,15 @@ def _plan(report: ReportInput, structure: dict[str, Any]) -> ReportPlan:
 # --- refuse or render ------------------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("first", ["spine", "bars"])
-@pytest.mark.parametrize("name", list(INPUTS))
-def test_a_plan_is_refused_at_its_chart_or_its_whole_page_builds(name: str, first: str) -> None:
+#: The two outcomes a plan may have: refused at generation at its first chart, or accepted with its whole page built.
+_REFUSED, _RENDERED = "refused", "rendered"
+_FIRSTS = ("spine", "bars")
+
+
+@functools.cache
+def _refuse_or_render(name: str, first: str) -> str:
+    """A plan opening on the spine code gives, or on a bar chart fitted to the data: refused at that chart, or
+    accepted with every section of its page built; never neither."""
     report = _input(name)
     chart = _spine(report) if first == "spine" else _bars(report)
     try:
@@ -227,9 +234,24 @@ def test_a_plan_is_refused_at_its_chart_or_its_whole_page_builds(name: str, firs
     except PlanRefusal as refused:
         paths = [path for path, _ in refused.faults]
         assert paths and all(path.startswith("sections[0]") for path in paths), paths
-        return
+        return _REFUSED
     page = plan_page(plan, report)
     assert [section.id for section in page.sections] == [section.id for section in plan.sections]
+    return _RENDERED
+
+
+@pytest.mark.parametrize("first", _FIRSTS)
+@pytest.mark.parametrize("name", list(INPUTS))
+def test_a_plan_is_refused_at_its_chart_or_its_whole_page_builds(name: str, first: str) -> None:
+    assert _refuse_or_render(name, first) in (_REFUSED, _RENDERED)
+
+
+def test_the_inputs_reach_both_outcomes_and_each_reference_inputs_spine_renders() -> None:
+    """Refusal is not the whole story: a check that refused every plan would pass the test above. Each reference
+    input's anchor draws on it, so a plan opening on its spine renders; the degenerate inputs are what refuse."""
+    outcomes = {(name, first): _refuse_or_render(name, first) for name in INPUTS for first in _FIRSTS}
+    assert set(outcomes.values()) == {_REFUSED, _RENDERED}, outcomes
+    assert {name: outcomes[name, "spine"] for name in NAMES} == dict.fromkeys(NAMES, _RENDERED)
 
 
 @pytest.mark.parametrize("name", list(DEGENERATE))

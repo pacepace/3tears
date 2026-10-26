@@ -177,7 +177,7 @@
         },
         "emphasis": {"type": "string", "description": "the one arm or row bolded or ringed, by id; empty for none"},
         "level": {"type": "string", "description": "Code-filled: the interval level printed on the chart, e.g. 95% or 99.69%; empty without intervals."},
-        "unit": {"type": "string", "description": "Code-filled: the chart's one unit, as its rows state it (points, percent, pct, usd, usd_per_1k, usd_per_1m, ms, s, score, or a measure's own)."},
+        "unit": {"type": "string", "description": "Code-filled: the unit the chart's rows state (points, percent, pct, usd, usd_per_1k, usd_per_1m, ms, s, score, or a measure's own); empty where they state several, each drawn in its own panel, or none."},
         "domain": {"type": "array", "items": {"type": "number"}, "maxItems": 2, "description": "Code-filled: [low, high], or empty for the renderer to fit."}
       }
     }
