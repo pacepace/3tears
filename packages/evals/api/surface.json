@@ -8096,6 +8096,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.actions.action_tools": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.actions.ActionCatalogue": {
       "kind": "class",
       "signature": "ActionCatalogue(actions: Iterable[Action] = ()) -> None",
@@ -8110,6 +8115,11 @@
       "kind": "dataclass",
       "signature": "ActionOutcome(text: str, structured: dict[str, Any] | None = None, refusal: Refusal | None = None, action: str | None = None, text_field: str | None = None)",
       "tier": "stable"
+    },
+    "threetears.evals.actions.ActionTool": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.actions.analyst_actions": {
       "kind": "function",

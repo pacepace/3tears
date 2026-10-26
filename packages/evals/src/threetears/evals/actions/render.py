@@ -9,6 +9,10 @@ Every string a mounted tool returns is made here, so the conventions hold in one
   action accepts with what each means, and an example call that validates. A call the engine or host
   failed to carry out (a store that failed, a provider that refused the account: a 5xx status,
   :func:`raised`) reads ``raised:``, never ``refused:``, since the call itself was not turned away.
+- **A standalone call reads as its own tool.** An action presented as a tool of its own
+  (:class:`~threetears.evals.actions.action_tools.ActionTool`) has no ``action`` key and no ``help`` to call, so a
+  refusal of one (``standalone=True``) shows its example as the tool's arguments alone, and a remedy naming another
+  action names it as the tool of that name. Without ``standalone`` every text is the mounted tool's, unchanged.
 - **A result reads as every fact it carries.** One generic renderer prints any result model field by field
   (:func:`render_model`); a few results keep their own: a started job says how to poll it and a finished one
   what to read next, a page of results how to read the next, one result its counted goal verdicts, and a report
@@ -81,8 +85,11 @@ def parameter_lines(action: Action) -> list[str]:
     return lines
 
 
-def example_call(action: Action) -> str:
-    """The action's example, as the JSON arguments of a call."""
+def example_call(action: Action, *, standalone: bool = False) -> str:
+    """The action's example, as the JSON arguments of a call: of the mounted tool, ``action`` first, or, standalone,
+    of the action's own tool, which takes no ``action``."""
+    if standalone:
+        return json.dumps(dict(action.example), sort_keys=False)
     return json.dumps({"action": action.name, **dict(action.example)}, sort_keys=False)
 
 
@@ -126,9 +133,9 @@ def _valid_actions(tool: MountedTool) -> str:
     return "valid actions: help, " + ", ".join(action.name for action in tool.actions)
 
 
-def _accepted(action: Action) -> str:
+def _accepted(action: Action, *, standalone: bool = False) -> str:
     lines = parameter_lines(action) or ["- none"]
-    return "\n".join([f"{action.name} accepts:", *lines, f"Example: {example_call(action)}"])
+    return "\n".join([f"{action.name} accepts:", *lines, f"Example: {example_call(action, standalone=standalone)}"])
 
 
 def refuse_no_action(tool: MountedTool) -> str:
@@ -165,30 +172,43 @@ def refuse_help_parameters(tool: MountedTool, undeclared: Sequence[str]) -> str:
     )
 
 
-def refuse_undeclared(tool: MountedTool, action: Action, undeclared: Sequence[str]) -> str:
-    """A call carrying parameters its action does not declare — refused rather than ignored."""
+def refuse_undeclared(tool: MountedTool, action: Action, undeclared: Sequence[str], *, standalone: bool = False) -> str:
+    """A call carrying parameters its action does not declare — refused rather than ignored.
+
+    ``standalone``: the action is a tool of its own, so its example is its arguments alone.
+    """
     del tool
-    return f"refused: {action.name} does not take {', '.join(undeclared)}.\n{_accepted(action)}"
+    return f"refused: {action.name} does not take {', '.join(undeclared)}.\n{_accepted(action, standalone=standalone)}"
 
 
-def refuse_invalid(tool: MountedTool, action: Action, invalid: ValidationError) -> str:
-    """A call whose values do not validate against the action's parameters."""
+def refuse_invalid(tool: MountedTool, action: Action, invalid: ValidationError, *, standalone: bool = False) -> str:
+    """A call whose values do not validate against the action's parameters.
+
+    ``standalone``: the action is a tool of its own, so its example is its arguments alone.
+    """
     del tool
     problems = []
     for error in invalid.errors():
         where = ".".join(str(part) for part in error["loc"]) or "(the call)"
         problems.append(f"- {where}: {error['msg']}")
-    return "\n".join([f"refused: {action.name} was called with values it cannot take:", *problems, _accepted(action)])
+    return "\n".join(
+        [
+            f"refused: {action.name} was called with values it cannot take:",
+            *problems,
+            _accepted(action, standalone=standalone),
+        ]
+    )
 
 
-def refuse_by_engine(tool: MountedTool, action: Action, refused: EvalServiceError) -> str:
+def refuse_by_engine(tool: MountedTool, action: Action, refused: EvalServiceError, *, standalone: bool = False) -> str:
     """A call the engine refused: the engine's own reason, then what to do next where the refusal names it.
 
     A remedy naming an action this tool does not carry says which tool does — the remedy is the engine's and
     names the catalogue's actions, while which of them a caller can reach here is this tool's — so an agent is
-    never sent to a call its tool would refuse as unknown.
+    never sent to a call its tool would refuse as unknown. ``standalone``: every action is a tool of its own, so a
+    remedy naming another action says that it is the tool of that name.
     """
-    return _refused_with_remedy(tool, action.name, refused)
+    return _refused_with_remedy(tool, action.name, refused, standalone=standalone)
 
 
 def refuse_by_resolver(tool: MountedTool, action: Action | None, refused: EvalServiceError) -> str:
@@ -224,10 +244,13 @@ def raised(status: int) -> bool:
     return status >= _RAISED_FROM
 
 
-def _refused_with_remedy(tool: MountedTool, subject: str, refused: EvalServiceError) -> str:
+def _refused_with_remedy(
+    tool: MountedTool, subject: str, refused: EvalServiceError, *, standalone: bool = False
+) -> str:
     """A refusal's reason under ``subject``, then its remedy, then where any action the remedy names is carried.
 
     Headed ``raised:`` when the error is the engine or host failing the call (:func:`raised`), ``refused:`` otherwise.
+    ``standalone``: each other action the remedy names is the tool of that name, whatever tool mounts it.
     """
     head = "raised" if raised(refused.status_code) else "refused"
     lines = [f"{head}: {subject}: {refused.message}"]
@@ -236,7 +259,10 @@ def _refused_with_remedy(tool: MountedTool, subject: str, refused: EvalServiceEr
         named = sorted(set(_ACTION_TOKEN.findall(refused.remedy)))
         for name in named:
             elsewhere = tool.catalogue.get(name)
-            if elsewhere is not None and tool.action(name) is None and elsewhere.cut != tool.spec.cut:
+            if standalone:
+                if elsewhere is not None and name != subject:
+                    lines.append(f"{name} is a tool of its own: call {name} with its own parameters")
+            elif elsewhere is not None and tool.action(name) is None and elsewhere.cut != tool.spec.cut:
                 lines.append(f"{name} is not an action of tool {tool.name}: {_cut_of(elsewhere)}")
             elif elsewhere is not None and tool.action(name) is None:
                 lines.append(
