@@ -22,6 +22,7 @@ from packages.evals.tests.report_shapes_support import SHAPES
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.actions import Action, analyst_actions
 from threetears.evals.analysis.analyst.blocks import block_catalog, block_render
+from threetears.evals.analysis.analyst.levers import lever_effects
 from threetears.evals.analysis.analyst.price import PriceTradeoff, price_tradeoff
 from threetears.evals.analysis.analyst.snapshot import analyst_input, report_snapshot
 from threetears.evals.analysis.report_input import ReportInput
@@ -361,3 +362,32 @@ def _price_calls(held: ReportInput) -> list[dict[str, Any]]:
 
 
 ANALYST_CALLS["price_tradeoff"] = _price_calls
+
+
+def _levers_calls(held: ReportInput) -> list[dict[str, Any]]:
+    """The first measure whose lever effects read overall, the same narrowed to its first setting, and the first
+    measure and place whose effects read within a place; none where the arms isolate no setting."""
+    places = [
+        *(task.id for task in held.tasks),
+        *(stratum.id for stratum in held.strata),
+        *(f"{cell.row}.{cell.column}" for cell in held.cells.values()),
+    ]
+    calls: list[dict[str, Any]] = []
+    for place in (None, *places):
+        for key in dict.fromkeys([*held.measures, *held.judged]):
+            try:
+                read = lever_effects(held, key, place_filter=place, limit=1)
+            except RefusedInput:
+                continue
+            call: dict[str, Any] = (
+                {"measure_key": key} if place is None else {"measure_key": key, "place_filter": place}
+            )
+            setting = next(row.setting for row in read.settings if row.isolated)
+            calls += [call, {**call, "setting_filter": setting}] if place is None else [call]
+            break
+        if calls and place is not None:
+            break
+    return calls
+
+
+ANALYST_CALLS["levers_effects"] = _levers_calls

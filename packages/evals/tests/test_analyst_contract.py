@@ -837,6 +837,7 @@ _PAGED_CALLS: dict[str, tuple[str, dict[str, Any]]] = {
     "measure_breakdown": (KAIRO, {"measure_key": "persona.holds_character", "limit": 2}),
     "price_tradeoff": (KAIRO, {"gain_key": "persona.holds_character", "limit": 1}),
     "block_render": (KAIRO, {"block_kind": "table", "query": {"source": "contrasts"}, "limit": 2}),
+    "levers_effects": ("r2", {"measure_key": "pass_rate", "setting_filter": "retry", "limit": 4}),
 }
 
 
@@ -919,6 +920,11 @@ def _page_rows(action: str, structured: dict[str, Any]) -> list[Any]:
         sections = ("arms", "aspects", "measures", "criteria", "cells", "caveats", "late_criteria", "prior_insights")
         named = [(kind, held, name) for kind, names in structured["names"].items() for held, name in names.items()]
         return [(section, row) for section in sections for row in structured[section]] + [("names", n) for n in named]
+    if action == "levers_effects":
+        # A page holds effects, then interactions once every effect is read: tagged by which.
+        return [("effect", row) for row in structured["effects"]] + [
+            ("interaction", row) for row in structured["interactions"]
+        ]
     if action == "price_tradeoff":
         # A page covers options in arm order, each priced against one or listed off the frontier: tagged by which.
         return sorted(
