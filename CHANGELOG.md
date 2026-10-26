@@ -4,9 +4,18 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
-
 ## v0.79.0 -- 2026-10-26
+
+### search: a placeholder frame is not named as the article
+
+A thin page whose only frame was `about:blank` (an ad or an embed filled in later) was answered "only the
+page's menu was readable; the article is at about:blank", with "fetch about:blank directly" as the next step;
+an agent fetched one site six times in an hour for that (metallm, 2026-10-26). A frame whose address is not
+http or https is now neither the pointer nor counted among the frames, so such a page is answered as it is, and
+a placeholder beside the article's own frame no longer stops that frame being followed. A `citation_pdf_url`
+that is not a web address is passed over for the frames in the same way, and a frame address that will not
+split is dropped rather than hiding a readable frame beside it; only a page none of whose frame addresses split
+still reads as "its frames could not be looked for".
 
 ### core: a compare-and-swap reads its bucket's creation time once, not twice
 
