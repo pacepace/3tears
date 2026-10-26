@@ -37,6 +37,22 @@ __all__ = [
     "SYNTHETIC",
     "STATISTIC_NOTE",
     "UNCORRECTED_NOTE",
+    "GATE_HEADERS",
+    "GATE_LINE_WORDS",
+    "GATE_PLACE_WORDS",
+    "CROSS_CUTTING_FLAG",
+    "FLOOR_ON_TEMPLATE",
+    "FLOOR_READS_TEMPLATE",
+    "FLOOR_REASON_TEMPLATE",
+    "FLOOR_WORDS",
+    "LOG_AXIS_NOTE",
+    "NO_READING",
+    "NOT_GATED",
+    "PASSES_EVERY_GATE",
+    "PICK_LABEL",
+    "REGION_LABEL",
+    "TASK_DETAIL_TEMPLATE",
+    "TASK_SHARE_TEMPLATE",
     "change_words",
     "reading_words",
     "slot_title",
@@ -220,3 +236,58 @@ def reading_words(direction: str, within: bool | None) -> str:
     """
     said = _READING_WORDS[direction]
     return said if within is None else f"{said}, {_MARGIN_WORDS[within]}"
+
+
+# --- the gate family's charts (GENERATOR §3, §5.1) ---------------------------------------------------------------
+
+#: A gate matrix's first column's heading, by what its rows are.
+GATE_HEADERS: dict[str, str] = {
+    "tasks": "Task",
+    "readings": "Aspect",
+    "floors": "Floor",
+    "measures": "Gate",
+    "configs": "Gate",
+}
+
+#: The pick on a gate matrix's routable row (GENERATOR §3 Routing).
+PICK_LABEL = "Cheapest passing"
+
+#: A cross-cutting task's row: its gates hold for every candidate that would take routed traffic (GENERATOR §3).
+CROSS_CUTTING_FLAG = "Applies to all traffic"
+
+#: A task row's line: its cases, then its share of traffic where it carries some.
+TASK_DETAIL_TEMPLATE = "{cases} cases"
+TASK_SHARE_TEMPLATE = "{share} of traffic"
+
+#: A cell where no gate is read in its task: no status to state, only the figures.
+NOT_GATED = "Not gated here"
+
+#: A readings cell for an arm the input holds no reading of on that aspect.
+NO_READING = "No reading"
+
+#: A floor's status as its pill says it: held is good, unclear borderline, broken a failure.
+FLOOR_WORDS: dict[str, str] = {"held": "Held", "unclear": "Unclear", "broken": "Broken"}
+
+#: Why a floor reads as it does: the worst drop its interval allows, against its margin.
+FLOOR_REASON_TEMPLATE = "worst drop {drop} against a {margin} margin"
+
+#: A floor that reads another rate than the pass rate (GENERATOR §3: shown apart, never merged with the reading).
+FLOOR_READS_TEMPLATE = "reads {rate}"
+
+#: Such a floor beside a reading: the rate it reads, and its status.
+FLOOR_ON_TEMPLATE = "Floor on {rate}: {status}"
+
+#: A gate's line as a row's detail says it, by the criterion's direction.
+GATE_LINE_WORDS: dict[str, str] = {"higher_is_better": "at least {line}", "lower_is_better": "at most {line}"}
+
+#: Where a gate is read, beyond the whole comparison, as a row's detail adds it.
+GATE_PLACE_WORDS: dict[str, str] = {"task": "in every task", "cell": "in every cell", "one_task": "in {task}"}
+
+#: A gate scatter's shaded region: where a point clears both gates.
+REGION_LABEL = "Meets both gates"
+
+#: A point's or tile's tooltip line where it clears every gate.
+PASSES_EVERY_GATE = "Passes every gate"
+
+#: A scatter's caption where an axis is drawn on a log scale (GENERATOR §5.2).
+LOG_AXIS_NOTE = "The {axis} axis is on a log scale: its values span more than ten times."

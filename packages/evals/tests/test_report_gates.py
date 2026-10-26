@@ -7,7 +7,13 @@ Contracts held here (``threetears.evals.analysis.report_gates``, GENERATOR.md §
   figure's ``Stat.ci``, else its ``half_width``, and only a mean carries one, so a p95 is never borderline;
 - a gate with no figure for the arm, at any place its scope reads (overall, its task, every task, every cell), is a
   failure there (GENERATOR §1.1), so an unnarrowed check agrees with each narrowed one, and the weakest margin reads
-  the same survivors;
+  the same survivors; a figure that is not a number (NaN, an infinity) reads as no figure, so it never passes;
+- an arm survives exactly when no check narrowed to one of its places (each task, each cell, and the criteria read
+  overall) fails it and no guardrail is breached on it: held both ways, over inputs where an arm fails in a task
+  alone, in a cell alone and overall alone;
+- a check narrowed to one criterion reads only that one, wherever it reads;
+- routing (GENERATOR §3) picks, for each routable task, the cheapest arm passing there among those passing every
+  cross-cutting task, each cost the task's own figure per 1,000 replies;
 - each reason is one code template: the criterion's reader name (or the statistic it reads, when that is not the
   mean), the figure and the line ("p95 3.6 s > 3 s", "Resolves the issue 90% ±4.4"), with where the figure sits when
   the check is not narrowed to a task or a cell;
@@ -19,13 +25,14 @@ Contracts held here (``threetears.evals.analysis.report_gates``, GENERATOR.md §
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from threetears.evals.analysis.report_decision import allowed_modes, surviving_options
-from threetears.evals.analysis.report_gates import GateCheck, gate_check
+from threetears.evals.analysis.report_gates import GateCheck, gate_check, routing_picks, task_costs
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import weakest_margin
 from threetears.evals.analysis.report_plan_checks import classify
@@ -116,6 +123,29 @@ def _input(data: dict[str, Any]) -> ReportInput:
     return ReportInput.model_validate(data)
 
 
+def _overall_only(report_input: ReportInput) -> ReportInput:
+    """The input with only the criteria read over the whole comparison, so an unnarrowed check reads those alone."""
+    kept = [
+        criterion
+        for criterion in report_input.criteria
+        if criterion.scope == "overall" and criterion.task is None  # prose-canary: allow — the declared scope enum
+    ]
+    return report_input.model_copy(update={"criteria": kept})
+
+
+def _failing_places(report_input: ReportInput, arm: str) -> list[tuple[str, str]]:
+    """Every place a check narrowed to it fails the arm: each task, each cell, and the criteria read overall."""
+    failing = [
+        ("task", task.id) for task in report_input.tasks if gate_check(report_input, arm, task=task.id).status == "fail"
+    ]
+    failing += [
+        ("cell", cell) for cell in report_input.cells if gate_check(report_input, arm, cell=cell).status == "fail"
+    ]
+    if gate_check(_overall_only(report_input), arm).status == "fail":
+        failing.append(("overall", ""))
+    return failing
+
+
 class TestSurvivorsAreUnchanged:
     @pytest.mark.parametrize(("case", "make", "survivors", "modes", "shape"), BEFORE, ids=[row[0] for row in BEFORE])
     def test_survivors_modes_and_shape_are_as_before(
@@ -129,17 +159,28 @@ class TestSurvivorsAreUnchanged:
         )
 
     @pytest.mark.parametrize(("case", "make", "survivors", "modes", "shape"), BEFORE, ids=[row[0] for row in BEFORE])
-    def test_an_arm_survives_exactly_when_the_gate_check_passes_it_and_no_guardrail_is_breached(
+    def test_an_arm_survives_exactly_when_no_place_fails_it_and_no_guardrail_is_breached(
         self, case: str, make: Any, survivors: list[str], modes: set[str], shape: str
     ):
+        """Both ways, from checks narrowed to each place the gates read: a survivor fails nowhere, and an arm that
+        fails nowhere (and is not breached) survives."""
         report_input = _input(make())
         breached = {str(read.get("arm")) for read in report_input.guardrails if read.get("decision") == "breached"}
-        passed = [
-            arm.id
-            for arm in report_input.arms
-            if arm.id not in breached and gate_check(report_input, arm.id).status != "fail"
-        ]
-        assert passed == survivors
+        failing = {arm.id: _failing_places(report_input, arm.id) for arm in report_input.arms}
+        kept = set(surviving_options(report_input))
+        for arm in report_input.arms:
+            fails_nowhere = not failing[arm.id] and arm.id not in breached
+            assert (arm.id in kept) == fails_nowhere, (arm.id, failing[arm.id])
+
+    def test_the_narrowed_survival_check_reaches_a_failure_in_a_task_a_cell_and_overall_alone(self):
+        """The cases above hold an arm out by one place each, so the both-ways check is not passing on survivors
+        alone: a task (r1, Atlas-M without billing quality), a cell (r3, a cell floor at 95), and the criteria read
+        overall (r2, no p95 for the pick)."""
+        assert {kind for kind, _ in _failing_places(_input(_r1_atlas_m_without_billing_quality()), "atlas-m")} == {
+            "task"
+        }
+        assert "cell" in {kind for kind, _ in _failing_places(_input(_r3_cell_floor_95()), "brisk-s.few")}
+        assert {kind for kind, _ in _failing_places(_input(_r2_no_p95()), "brisk-s.low.r1")} == {"overall"}
 
     @pytest.mark.parametrize("name", ["r1", "r2", "r3", "r4", "r5"])
     def test_no_task_or_cell_fails_a_reference_survivor(self, name: str):
@@ -252,3 +293,104 @@ class TestTheCheck:
     def test_a_place_the_input_does_not_hold_is_refused(self, place: str, value: str):
         with pytest.raises(ValueError, match="nowhere"):
             gate_check(_input(_data("r1")), "atlas-m", **{place: value})
+
+
+class TestAFigureThatIsNotANumber:
+    @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+    def test_a_gate_figure_that_is_not_finite_fails_as_no_figure(self, value: float):
+        """r1 Atlas-M resolves the issue in troubleshooting at 90%: read as NaN or infinite, it does not pass."""
+        data = _data("r1")
+        trouble = next(task for task in data["tasks"] if task["id"] == "trouble")
+        trouble["per_arm"]["atlas-m"]["resolves"]["mean"] = value
+        report_input = _input(data)
+        check = gate_check(report_input, "atlas-m", task="trouble")
+        name = next(criterion["label"] for criterion in data["criteria"] if criterion["id"] == "trouble.resolves")
+        assert check.status == "fail" and f"{name}: no figure" in check.fails
+        assert "atlas-m" not in surviving_options(report_input)
+
+    def test_an_interval_end_that_is_not_a_number_does_not_pass_clear(self):
+        """r4 prod's music facts sit clear of the guardrail; an interval end that is NaN cannot show them clear."""
+        data = _data("r4")
+        facts = data["judged"]["facts"]["per_arm"]["prod"]
+        assert gate_check(_input(data), "prod").status == "pass"
+        facts["ci"] = [math.nan, facts["mean"]]
+        assert gate_check(_input(data), "prod").status == "borderline"
+
+
+class TestOneCriterion:
+    @pytest.mark.parametrize("name", ["r1", "r2", "r3", "r4"])
+    def test_an_arm_fails_the_whole_check_exactly_when_it_fails_one_criterion_checked_alone(self, name: str):
+        report_input = _input(_data(name))
+        gating = [criterion.id for criterion in report_input.criteria if criterion.kind in ("gate", "guardrail")]
+        assert gating
+        for arm in report_input.arms:
+            alone = [gate_check(report_input, arm.id, criterion=criterion) for criterion in gating]
+            whole = gate_check(report_input, arm.id)
+            assert sorted(reason for check in alone for reason in check.fails) == sorted(whole.fails)
+            assert sorted(reason for check in alone for reason in check.borders) == sorted(whole.borders)
+
+    def test_a_criterion_checked_alone_reads_only_that_criterion(self):
+        report_input = _input(_data("r1"))
+        check = gate_check(report_input, "brisk-s", task="trouble", criterion="trouble.resolves")
+        label = next(criterion.label for criterion in report_input.criteria if criterion.id == "trouble.resolves")
+        assert check.status == "fail" and len(check.fails) == 1 and check.fails[0].startswith(f"{label} ")
+        assert check.borders == ()
+
+    def test_a_criterion_the_input_does_not_gate_on_is_refused(self):
+        with pytest.raises(ValueError, match="nowhere"):
+            gate_check(_input(_data("r1")), "atlas-m", criterion="nowhere")
+
+
+class TestRouting:
+    def test_each_routable_task_picks_the_cheapest_arm_passing_there_and_in_every_cross_cutting_task(self):
+        report_input = _input(_data("r1"))
+        arms = [arm.id for arm in report_input.arms]
+        cross_cutting = [task.id for task in report_input.tasks if task.cross_cutting]
+        assert cross_cutting, "the input holds a cross-cutting task, so the rule has something to hold"
+
+        def passes(arm: str, task: str) -> bool:
+            return gate_check(report_input, arm, task=task).status != "fail"
+
+        picks = routing_picks(report_input, arms)
+        for task in report_input.tasks:
+            if not task.routable:
+                assert task.id not in picks
+                continue
+            costs = task_costs(report_input, task.id)
+            eligible = [arm for arm in arms if passes(arm, task.id) and all(passes(arm, x) for x in cross_cutting)]
+            eligible = [arm for arm in eligible if arm in costs]
+            if not eligible:
+                assert task.id not in picks
+                continue
+            assert picks[task.id] in eligible
+            assert costs[picks[task.id]] == min(costs[arm] for arm in eligible)
+
+    def test_a_cross_cutting_failure_keeps_a_cheaper_task_passer_from_being_picked(self):
+        """The guard the rule exists for: in some routable task the cheapest arm passing there fails a cross-cutting
+        task, and is not the pick."""
+        report_input = _input(_data("r1"))
+        arms = [arm.id for arm in report_input.arms]
+        cross_cutting = [task.id for task in report_input.tasks if task.cross_cutting]
+        picks = routing_picks(report_input, arms)
+        kept_out = []
+        for task in report_input.tasks:
+            if not task.routable:
+                continue
+            costs = task_costs(report_input, task.id)
+            passing = [a for a in arms if a in costs and gate_check(report_input, a, task=task.id).status != "fail"]
+            cheapest = min(passing, key=lambda arm: costs[arm])
+            if any(gate_check(report_input, cheapest, task=x).status == "fail" for x in cross_cutting):
+                kept_out.append(task.id)
+                assert picks.get(task.id) != cheapest
+        assert kept_out
+
+    def test_a_task_cost_is_the_tasks_own_figure_per_1000_replies(self):
+        report_input = _input(_data("r1"))
+        task = report_input.tasks[0]
+        key = next(key for key, measure in report_input.measures.items() if measure.unit == "usd_per_1k")
+        expected = {arm: float(figures[key].mean or 0) for arm, figures in task.per_arm.items()}
+        assert task_costs(report_input, task.id) == expected
+
+    def test_a_task_the_input_does_not_hold_is_refused(self):
+        with pytest.raises(ValueError, match="nowhere"):
+            task_costs(_input(_data("r1")), "nowhere")

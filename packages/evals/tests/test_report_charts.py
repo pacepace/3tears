@@ -106,8 +106,12 @@ _BARS: dict[str, Any] = {"rows": [{"label": "a", "value": 2}], "domain": [0, 4],
         ("confusion", {"labels": ["a", "b"], "matrix": [[1, 0]]}, "2 × 2"),
         (
             "dot_interval",
-            {"domain": [0, 100], "fmt": "pct", "panels": [{"title": "P", "rows": [{"label": "a", "value": 50}]}]},
-            "panel 'P': 'level' required",
+            {
+                "domain": [0, 100],
+                "fmt": "pct",
+                "panels": [{"title": "P", "rows": [{"label": "a", "value": 50, "lo": 40, "hi": 60}]}],
+            },
+            "panel 'P': rows carry intervals, so \"level\" is required",
         ),
     ],
 )
@@ -129,6 +133,14 @@ def test_a_panel_takes_the_chart_s_fields_and_a_text_panel_needs_none() -> None:
     headers, rows = _block("dot_interval", data).values_table()
     assert headers == ["Panel", "Row", "Value", "95% interval"]
     assert rows == [["P", "a", "50%", "40% to 60%"], ["Q", "Nothing to draw here.", "", ""]]
+
+
+def test_a_dot_strip_of_figures_without_intervals_needs_no_level_and_prints_none() -> None:
+    """A rate per candidate against a floor, where the input states no interval: marks alone, no level to print."""
+    data = {"domain": [0, 100], "fmt": "pct", "rows": [{"label": "a", "value": 50}, {"label": "b", "value": 70}]}
+    headers, rows = _block("dot_interval", data).values_table()
+    assert headers == ["Row", "Value"]
+    assert rows == [["a", "50%"], ["b", "70%"]]
 
 
 def test_the_block_reads_its_data_as_its_own_kind_and_refuses_another() -> None:

@@ -51,7 +51,8 @@ A part the input does not settle is the planner's: a source where it holds none 
 kind draws), the measures where no rule names them, and on every spine the arms and their order, strata, limit,
 transform, small multiples and emphasis. Some of what a spine draws is no query field at all: a gate matrix's binding
 reasons and cheapest passing cell, a gate scatter's gate region and one path per factor level, a lattice's row and
-column factors and its tiles' cost and latency. The renderer reads those off the criteria and the configs (P4).
+column factors and its tiles' cost and latency. The page draws those from the criteria and the configs
+(:mod:`~threetears.evals.analysis.report.plan_page.resolve_gates`).
 
 **The checks** (:func:`validate_plan`), each refusing at the field it names. They run when a plan is generated
 (:func:`~threetears.evals.analysis.report_plan_facts.complete_plan`), never when a stored plan is read, so a check

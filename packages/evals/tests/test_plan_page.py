@@ -13,7 +13,9 @@ words, and the reference page's source, whose landmarks are parsed, never typed 
   bold by the descriptive 95% rule; a line per arm over the slices; a card per selected example; small multiples a
   panel per arm or per slice, as the plan asks. No note prints a signed zero. Every (kind, source) pair the
   resolvers draw that no committed plan draws is held too, on an anchor's chart redrawn as that kind and source, its
-  expected side computed from the input; and each arm less the control is refused on an input with no control. A kind no resolver draws yet (P4-21, P4-22) is refused, naming its kind and source; a whole page here
+  expected side computed from the input; and each arm less the control is refused on an input with no control. A
+  chart its kind's resolver cannot draw from the input is refused, naming its kind and source, never drawn empty; a
+  whole page here
   leaves those charts out by kind.
 - **Tables.** The options table is the plan's rows and code's column families, each cell what its figure key reads,
   the recommended (or leaned) row set apart; a column outside the families is refused. The arms key shows each arm
@@ -35,7 +37,7 @@ import math
 import re
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
@@ -83,23 +85,6 @@ REFERENCE_PLAN = KIT / "references" / "r5-kairo-round2.plan.json"
 REFERENCE_SOURCE = KIT / "references" / "r5-kairo-round2.src.html"
 GENERATOR = KIT / "GENERATOR.md"
 
-#: The kinds whose resolvers are later chunks' (P4-21 and P4-22). A whole page built here leaves a chart of one out,
-#: by kind; the dispatcher refuses one, which a test below holds.
-_LATER_KINDS = frozenset(
-    {
-        "gate_matrix",
-        "gate_scatter",
-        "lattice",
-        "dot_interval",
-        "range_bars",
-        "scatter_frontier",
-        "heatmap",
-        "diff_heatmap",
-        "confusion",
-        "table",
-    }
-)
-
 #: A signed zero, which the package's number rule never writes for a change it holds digits of.
 _SIGNED_ZERO = re.compile(r"(?<![\d.])[+-]0(?![\d.])")
 
@@ -125,38 +110,23 @@ def _plan(path: Path) -> ReportPlan:
     return dataset.load_plan(path)
 
 
-def _drawable(plan: ReportPlan) -> ReportPlan:
-    """The plan less every chart of a kind a later chunk resolves: the page builder never re-checks a plan."""
-    return plan.model_copy(
-        update={
-            "summary": [chart for chart in plan.summary if chart.kind not in _LATER_KINDS],
-            "sections": [section for section in plan.sections if section.chart.kind not in _LATER_KINDS],
-        }
-    )
-
-
-#: The plans whose page draws a chart of this chunk's kinds: a static page's test needs a figure to hold.
-_CHARTED = [
-    (name, label, path)
-    for name, label, path in _PLANS
-    if _drawable(_plan(path)).summary or _drawable(_plan(path)).sections
-]
+#: The plans whose page draws a chart: a static page's test needs a figure to hold.
+_CHARTED = [(name, label, path) for name, label, path in _PLANS if _plan(path).summary or _plan(path).sections]
 _CHARTED_IDS = [f"{name}-{label}" for name, label, _ in _CHARTED]
 
 
 @functools.cache
 def _page(name: str, path: Path) -> PlannedPage:
-    return plan_page(_drawable(_plan(path)), _input(name))
+    return plan_page(_plan(path), _input(name))
 
 
 def _charts(plan: ReportPlan, page: PlannedPage) -> list[tuple[ChartSpec, ChartBlock, list[str], bool]]:
     """Each drawn chart beside the stored chart it resolves, its notes, and whether it is a summary chart."""
-    drawable = _drawable(plan)
     pairs: list[tuple[ChartSpec, ChartBlock, list[str], bool]] = []
-    for spec, chart in zip(drawable.summary, page.summary, strict=True):
+    for spec, chart in zip(plan.summary, page.summary, strict=True):
         assert isinstance(chart.chart, ChartBlock)
         pairs.append((spec, chart.chart, chart.notes, True))
-    for section, drawn in zip(drawable.sections, page.sections, strict=True):
+    for section, drawn in zip(plan.sections, page.sections, strict=True):
         assert isinstance(drawn.chart.chart, ChartBlock)
         pairs.append((section.chart, drawn.chart.chart, drawn.chart.notes, False))
     return pairs
@@ -196,12 +166,30 @@ def test_every_chart_of_this_chunks_kinds_resolves_to_its_own_kind_with_values_t
         assert rows, f"{spec.kind} over {spec.query.source} drew nothing"
 
 
-def test_a_chart_kind_no_resolver_draws_is_refused_naming_its_kind_and_source() -> None:
-    plan = _plan(dataset.HERE / "r1" / "anchor.plan.json")
-    later = next(section.chart for section in plan.sections if section.chart.kind in _LATER_KINDS)
+#: Every chart kind a plan stores but the plain table, which draws any source.
+_DRAWN_KINDS = sorted(set(get_args(ChartSpec.model_fields["kind"].annotation)) - {"table"})
+
+
+def _undrawable_source(kind: str) -> str:
+    """A source the plan checks refuse for ``kind``, so its resolver never draws it: confusion axes for every kind
+    but the confusion matrix, which reads only those, and target-matrix cells for it and for example cards."""
+    return "cells" if kind in ("confusion", "examples") else "confusion"
+
+
+@pytest.mark.parametrize("kind", _DRAWN_KINDS)
+def test_a_chart_its_kind_cannot_draw_is_refused_naming_its_kind_and_source(kind: str) -> None:
+    """A stored chart over a source its kind does not draw (a plan the checks would refuse, read without them) is a
+    typed refusal naming both, never a chart drawn empty or a crash. r3 holds confusion axes and cells, so the source
+    has rows to draw."""
+    source = _undrawable_source(kind)
+    plan = _plan(dataset.HERE / "r3" / "anchor.plan.json")
+    section = plan.sections[0]
+    query = section.chart.query.model_copy(update={"source": source})
+    chart = section.chart.model_copy(update={"kind": kind, "query": query})
+    refused_plan = plan.model_copy(update={"summary": [], "sections": [section.model_copy(update={"chart": chart})]})
     with pytest.raises(UnresolvableReference) as refused:
-        plan_page(plan, _input("r1"))
-    assert repr(later.kind) in str(refused.value) and repr(later.query.source) in str(refused.value)
+        plan_page(refused_plan, _input("r3"))
+    assert repr(kind) in str(refused.value) and repr(source) in str(refused.value)
 
 
 @pytest.mark.parametrize(("name", "plan", "spec", "block", "notes", "summary"), _charts_of("forest", "readings"))
@@ -594,7 +582,7 @@ _PAGE_ORDER = (
 def test_the_page_lays_its_parts_out_in_generator_order_and_draws_none_the_plan_drops(
     name: str, label: str, path: Path
 ) -> None:
-    plan, page = _drawable(_plan(path)), _page(name, path)
+    plan, page = _plan(path), _page(name, path)
     html = planned_page_html(page)
     present = {
         'data-part="flag"': bool(plan.flag),
@@ -615,7 +603,7 @@ def test_the_page_lays_its_parts_out_in_generator_order_and_draws_none_the_plan_
 
 
 def test_a_page_whose_plan_drops_its_flag_summary_and_arms_key_draws_none_of_them() -> None:
-    plan = _drawable(_plan(dataset.HERE / "r4" / "anchor.plan.json"))
+    plan = _plan(dataset.HERE / "r4" / "anchor.plan.json")
     assert plan.flag and plan.summary and plan.show_arms_key
     dropped = plan.model_copy(update={"flag": [], "summary": [], "show_arms_key": False})
     html = planned_page_html(plan_page(dropped, _input("r4")))
@@ -693,7 +681,7 @@ def _hostile_prose(value: Any) -> Any:
     ("name", "path"), [("r5", REFERENCE_PLAN), ("r4", dataset.HERE / "r4" / "anchor.plan.json")], ids=["r5", "r4"]
 )
 def test_markup_in_plan_prose_and_input_names_is_text_on_the_page(name: str, path: Path) -> None:
-    plan = _drawable(_plan(path))
+    plan = _plan(path)
     data = _hostile_prose(plan.model_dump(by_alias=True))
     data["masthead"]["system"] = HOSTILE_LINE
     data["lede"] = HOSTILE.split("<iframe")[0]  # the lede holds two sentences at most

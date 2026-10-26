@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import functools
 import itertools
+import math
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any, Literal, get_args
 
 import pytest
 
@@ -34,6 +35,7 @@ from threetears.evals.analysis.errors import PlanRefusal, UnresolvableReference
 from threetears.evals.analysis.planned_analysis import plan_recommended_arm
 from threetears.evals.analysis.report.charts import (
     KIT_CHARTS,
+    ChartReference,
     ConfusionChart,
     DiffHeatmapChart,
     DotIntervalChart,
@@ -42,6 +44,7 @@ from threetears.evals.analysis.report.charts import (
     ScatterChart,
 )
 from threetears.evals.analysis.report.plan_page.build import plan_page
+from threetears.evals.analysis.report.plan_page.charting import misses_line
 from threetears.evals.analysis.report.plan_page.look import PageLook, page_look
 from threetears.evals.analysis.report.plan_page.model import PageChart
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
@@ -55,10 +58,6 @@ from threetears.evals.kernel.report_plan import ChartQuery, ChartSpec, ReportPla
 
 INPUTS = ("r1", "r2", "r3", "r4", "r5")
 REFERENCE_PLAN = KIT / "references" / "r5-kairo-round2.plan.json"
-
-#: The gate family's kinds, whose resolvers live in ``resolve_gates`` and are not merged on this branch yet. The pin
-#: marks their pairs xfail(strict), so the pin goes red, and this set must be emptied, once they resolve.
-_GATE_FAMILY_PENDING = frozenset({"gate_matrix", "gate_scatter", "lattice"})
 
 #: This module's kinds.
 _MINE = frozenset({"dot_interval", "range_bars", "scatter_frontier", "heatmap", "diff_heatmap", "confusion", "table"})
@@ -237,20 +236,7 @@ def _resolves_somewhere(kind: str, source: str) -> bool:
     return False
 
 
-@pytest.mark.parametrize(
-    ("kind", "source"),
-    [
-        pytest.param(
-            kind,
-            source,
-            marks=[pytest.mark.xfail(strict=True, reason="resolve_gates is not merged on this branch")]
-            if kind in _GATE_FAMILY_PENDING
-            else [],
-            id=f"{kind}-{source}",
-        )
-        for kind, source in _PAIRS
-    ],
-)
+@pytest.mark.parametrize(("kind", "source"), _PAIRS, ids=[f"{kind}-{source}" for kind, source in _PAIRS])
 def test_every_kind_source_pair_has_a_resolver(kind: str, source: str) -> None:
     assert _resolves_somewhere(kind, source), f"no r1–r5 input draws a {kind} over {source}"
 
@@ -686,3 +672,83 @@ def test_markup_in_input_names_is_text_on_a_page_of_this_modules_kinds() -> None
     assert HOSTILE_LINE not in html, "no name is written into the page as markup"
     assert_static(planned_page_html(page, static=True))
     assert planned_page_markdown(page)
+
+
+# --- the legend, the clipped interval, a config's colour and the labels -------------------------------------------
+
+
+def test_range_bars_carry_a_legend_of_the_arms_drawn_and_name_a_bar_over_its_budget() -> None:
+    report_input = _input("r1")
+    data = _data(_draw("r1", _spec("range_bars", _query("tasks", measures=["latency_s"]))))
+    assert isinstance(data, RangeBarsChart) and data.legend is not None
+    look = _look("r1")
+    drawn = {arm.id for arm in report_input.arms}
+    assert [(item.label, item.color, item.mark) for item in data.legend] == [
+        (look.arm(arm).name, look.arm(arm).token, look.arm(arm).shape) for arm in look.ordered(drawn)
+    ]
+    assert data.reference is not None and data.reference.kind == "budget"
+    over = [row for group in data.groups for row in group.rows if row.to > data.reference.value]
+    assert over, "some bar ends over the budget, so its tooltip line is reached"
+    for row in over:
+        assert row.hollow and row.tip and any((data.reference.label or "") in line for line in row.tip[2:])
+
+
+def test_a_rate_strips_interval_never_runs_past_0_or_100() -> None:
+    """r1's speculation task: Atlas-M declines 98% ±2.2, a half-width that runs past 100."""
+    report_input = _input("r1")
+    spec = _spec("dot_interval", _query("tasks", measures=["declines"], strata=["specul"]), level="95%")
+    data = _data(_draw("r1", spec))
+    assert isinstance(data, DotIntervalChart) and data.rows
+    task = next(task for task in report_input.tasks if task.id == "specul")
+    past = 0
+    for row in data.rows:
+        stat = task.per_arm[row.id or ""]["declines"]
+        assert stat.mean is not None and stat.half_width is not None
+        assert row.lo == max(stat.mean - stat.half_width, 0) and row.hi == min(stat.mean + stat.half_width, 100)
+        past += stat.mean + stat.half_width > 100
+    assert past, "some interval runs past 100, so the clip is reached"
+
+
+def test_a_config_frontier_colours_each_config_by_its_first_factors_level_and_names_the_levels() -> None:
+    report_input = _input("r2")
+    data = _data(_draw("r2", _spec("scatter_frontier", _query("configs", measures=["pass_rate", "cost_per_1k"]))))
+    assert isinstance(data, ScatterChart) and data.points and data.legend
+    first = report_input.factors[0]
+    levels = {config.arm: config.levels[first.id] for config in report_input.configs}
+    colours: dict[str, str] = {}
+    for point in data.points:
+        assert point.color is not None
+        assert colours.setdefault(levels[point.id or ""], point.color) == point.color
+    assert len(set(colours.values())) == len(colours) == len(first.levels)
+    assert [item.label for item in data.legend] == [level.name or level.id for level in first.levels]
+    assert [item.color for item in data.legend] == [colours[level.id] for level in first.levels]
+
+
+@pytest.mark.parametrize(
+    ("name", "source", "measures"),
+    [("r2", "configs", ["pass_rate", "cost_per_1k"]), ("r4", "judged", ["persona", "facts"])],
+    ids=["many-points", "few-points"],
+)
+def test_a_frontier_labels_every_point_up_to_eight_else_only_the_stressed_and_recommended(
+    name: str, source: str, measures: list[str]
+) -> None:
+    plan = _anchor(name)
+    data = _data(
+        _draw(
+            name, _spec("scatter_frontier", _query(source, measures=measures), emphasis=plan.sections[0].chart.emphasis)
+        )
+    )
+    assert isinstance(data, ScatterChart) and data.points
+    stressed = {data.emphasis, plan_recommended_arm(plan)} - {None, ""}
+    labelled = {point.id for point in data.points if point.label}
+    if len(data.points) <= 8:
+        assert labelled == {point.id for point in data.points}
+    else:
+        assert stressed and labelled == stressed & {point.id for point in data.points}
+
+
+@pytest.mark.parametrize("kind", ["floor", "budget"])
+def test_a_value_that_is_not_a_number_misses_its_line(kind: Literal["floor", "budget"]) -> None:
+    """A dot or bar end no comparison holds for is not drawn as meeting its floor or budget."""
+    line = ChartReference(value=90.0, kind=kind)
+    assert misses_line(math.nan, line)
