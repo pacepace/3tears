@@ -15,6 +15,8 @@ every field carries markup (:mod:`~packages.evals.tests.hostile_page_support`):
   which the no-script contract still holds, is the one it always was;
 - the package writes no script and no link into Markdown or JSON, and the option changes neither;
 - ``report_read`` returns it for a code-only report, a memo analysis and a planned one, and the action takes it.
+
+The first and the fourth are :mod:`~packages.evals.tests.static_page_support`'s, which every static page's test reads.
 """
 
 from __future__ import annotations
@@ -34,64 +36,16 @@ from threetears.evals.ops import analysis_generate, report_read
 from packages.evals.tests.hostile_page_support import HOSTILE, hostile_campaign_page, hostile_report
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, settled
-from packages.evals.tests.page_contract_support import FONT_LINK_MARKUP, KIT_JS, parsed, what_runs
+from packages.evals.tests.page_contract_support import parsed, what_runs
 from packages.evals.tests.report_support import stored_memo_analysis, toy_report
-
-#: The selectors, of every rule the page ships, that reach a chart's values table: its caption, which repeats the
-#: figure's own title for a screen reader, and the rule hiding the table beside a drawn chart.
-_TABLE_RULES = {".chart-values caption", ".chart:not(:empty) + .chart-values"}
-
-#: A chart the kit draws, as the default page writes it: every attribute double-quoted, its JSON escaped in them.
-_CHART_DIV = re.compile(r'<div class="chart" id="[^"]*" data-kind="[^"]*" data-chart="[^"]*"></div>')
-
-
-def _classes(attrs: list[tuple[str, str | None]]) -> list[str]:
-    return (dict(attrs).get("class") or "").split()
-
-
-def _selectors(styles: list[str]) -> set[str]:
-    """Every selector of every rule in ``styles`` that names ``chart-values``, its whitespace collapsed."""
-    css = re.sub(r"/\*.*?\*/", "", "".join(styles), flags=re.DOTALL)
-    found = {" ".join(one.split()) for head in re.findall(r"([^{}]+)\{", css) for one in head.split(",")}
-    return {selector for selector in found if "chart-values" in selector}
-
-
-def _assert_static(page: str) -> None:
-    """``page`` runs, embeds and loads nothing, and shows every chart as its table."""
-    read = parsed(page)
-    tags = [tag for tag, _ in read.tags]
-    assert what_runs(page) == []
-    assert "script" not in tags and "link" not in tags, "not even the kit's script or the package's font links"
-    assert "<script" not in page and "<link" not in page, "an author's markup is escaped text"
-    attributes = [(name, value or "") for _, attrs in read.tags for name, value in attrs]
-    assert not [name for name, _ in attributes if name.startswith("on")]
-    assert not [name for name, value in attributes if "javascript:" in "".join(value.split()).lower()]
-    assert not [name for name, _ in attributes if name == "data-chart"], "no chart data, so nothing for a script"
-    for style in read.styles:
-        compact = "".join(style.split()).lower()
-        assert "url(" not in compact and "@import" not in compact
-
-    figures = [at for at, (tag, attrs) in enumerate(read.tags) if tag == "figure" and "fig" in _classes(attrs)]
-    assert figures, "the page must draw charts for this to test anything"
-    assert not [tag for tag, attrs in read.tags if "chart" in _classes(attrs)], "no chart box, drawn or empty"
-    tables = [at for at, (tag, attrs) in enumerate(read.tags) if "chart-values" in _classes(attrs)]
-    assert len(tables) == len(figures), "every figure holds its table of values"
-    assert _selectors(read.styles) == _TABLE_RULES, "a rule that hides the table without a drawn chart beside it"
-
-
-def _less_what_static_leaves_out(page: str) -> str:
-    """The default ``page`` less the kit's script, the font links and each chart's ``div.chart``, each asserted
-    present first, so the comparison is about something."""
-    assert f"\n<script>{KIT_JS}</script>" in page and FONT_LINK_MARKUP + "\n" in page and _CHART_DIV.search(page)
-    page = page.replace(f"\n<script>{KIT_JS}</script>", "", 1).replace(FONT_LINK_MARKUP + "\n", "", 1)
-    return _CHART_DIV.sub("", page)
+from packages.evals.tests.static_page_support import assert_static, less_what_static_leaves_out
 
 
 def test_the_static_page_of_a_hostile_report_runs_and_loads_nothing_and_shows_every_chart_as_its_table() -> None:
     report = hostile_report()
     page = report_html(report, static=True)
 
-    _assert_static(page)
+    assert_static(page)
     charts = [block for block in report.blocks if isinstance(block, ChartBlock)]
     assert page.count('<figure class="fig"') == len(charts)
     words = [text for text in parsed(page).text if HOSTILE in text]
@@ -101,7 +55,7 @@ def test_the_static_page_of_a_hostile_report_runs_and_loads_nothing_and_shows_ev
 async def test_the_static_page_of_a_hostile_campaign_runs_and_loads_nothing_and_shows_every_chart_as_its_table() -> (
     None
 ):
-    _assert_static(campaign_report_html(await hostile_campaign_page(), static=True))
+    assert_static(campaign_report_html(await hostile_campaign_page(), static=True))
 
 
 def test_the_static_page_falls_back_to_the_system_faces_the_kit_names_after_each_plex_face() -> None:
@@ -126,7 +80,7 @@ async def test_the_default_pages_are_the_static_pages_plus_the_script_the_fonts_
     ]
     for default, unasked, static in pages:
         assert unasked == default
-        assert static == _less_what_static_leaves_out(default)
+        assert static == less_what_static_leaves_out(default)
         assert parsed(default).tags[-1] == ("script", []), "the default page still ends in the kit's script"
 
 
@@ -155,8 +109,8 @@ async def test_report_read_returns_the_static_page_for_a_code_only_report() -> N
     read = _read(fixture, static=True)
 
     assert read.analysis_id is None
-    _assert_static(read.body)
-    assert _without_instants(read.body) == _without_instants(_less_what_static_leaves_out(_read(fixture).body))
+    assert_static(read.body)
+    assert _without_instants(read.body) == _without_instants(less_what_static_leaves_out(_read(fixture).body))
 
 
 async def test_report_read_returns_the_static_page_for_a_memo_analysis() -> None:
@@ -165,8 +119,8 @@ async def test_report_read_returns_the_static_page_for_a_memo_analysis() -> None
     read = _read(fixture, static=True)
 
     assert (read.analysis_id, read.analysis_basis) == (memo.id, "memo")
-    _assert_static(read.body)
-    assert _without_instants(read.body) == _without_instants(_less_what_static_leaves_out(_read(fixture).body))
+    assert_static(read.body)
+    assert _without_instants(read.body) == _without_instants(less_what_static_leaves_out(_read(fixture).body))
 
 
 async def test_report_read_returns_the_static_page_for_a_planned_analysis() -> None:
@@ -176,8 +130,8 @@ async def test_report_read_returns_the_static_page_for_a_planned_analysis() -> N
     read = _read(fixture, static=True)
 
     assert planned is not None and (read.analysis_id, read.analysis_basis) == (planned, "plan")
-    _assert_static(read.body)
-    assert _without_instants(read.body) == _without_instants(_less_what_static_leaves_out(_read(fixture).body))
+    assert_static(read.body)
+    assert _without_instants(read.body) == _without_instants(less_what_static_leaves_out(_read(fixture).body))
 
 
 async def test_the_action_takes_static_and_defaults_to_the_page_it_always_read() -> None:
@@ -197,4 +151,4 @@ async def test_the_action_takes_static_and_defaults_to_the_page_it_always_read()
         host=fixture.host,
         caller=CALLER,
     )
-    _assert_static(static.text)
+    assert_static(static.text)
