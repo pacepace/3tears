@@ -3250,3 +3250,143 @@ async def test_every_staged_scope_that_fails_is_raised_or_recorded(caplog: pytes
     )
     await writer.stop()
     await replica.stop()
+
+
+# --- a stage given Arrow ---------------------------------------------------------------------------
+
+import uuid as _uuid  # noqa: E402
+from decimal import Decimal as _Decimal  # noqa: E402
+
+import pyarrow as _pa  # noqa: E402
+
+from threetears.core.collections.schema_backed import (  # noqa: E402
+    BOOL_TYPE,
+    BYTES_TYPE,
+    DATETIMETZ_TYPE,
+    INT_TYPE,
+    JSONB_TYPE,
+    NUMERIC_TYPE,
+    UUID_TYPE,
+)
+
+#: every kind of column a stage types: those kept as Arrow, and those stored value by value
+_WIDE = TableSchema(
+    name="wide",
+    primary_key=("id",),
+    columns=[
+        Column("id", STRING_TYPE),
+        Column("scope", STRING_TYPE),
+        Column("n", INT_TYPE, nullable=True),
+        Column("big", BIGINT_TYPE, nullable=True),
+        Column("share", NUMERIC_TYPE, nullable=True, precision=38, scale=4),
+        Column("won", BOOL_TYPE, nullable=True),
+        Column("at", DATETIMETZ_TYPE, nullable=True),
+        Column("doc", JSONB_TYPE, nullable=True),
+        Column("uid", UUID_TYPE, nullable=True),
+        Column("blob", BYTES_TYPE, nullable=True),
+    ],
+    on_conflict="update",
+)
+
+
+def _wide_backend() -> DuckDBBackend:
+    metadata = MetaData()
+    _WIDE.to_sqlalchemy_table(metadata)
+    backend = DuckDBBackend()
+    backend.initialize(metadata)
+    return backend
+
+
+def _wide_rows() -> list[dict[str, Any]]:
+    """rows of every kind, a key given twice (the last stays), a null in each nullable column, and a key no column holds."""
+    at = datetime(2026, 10, 26, 12, 30, 15, 123456, tzinfo=UTC)
+    rows = [
+        {
+            "id": f"r{i}",
+            "scope": "S",
+            "n": i,
+            "big": 2**40 + i,
+            "share": _Decimal(f"{i}.2500"),
+            "won": i % 2 == 0,
+            "at": at + timedelta(minutes=i),
+            "doc": {"name": f"n{i}", "tags": [i, i + 1]},
+            "uid": str(_uuid.UUID(int=i)),
+            "blob": bytes([i, 255 - i]),
+            "unknown": "a column the table does not hold",
+        }
+        for i in range(5)
+    ]
+    rows.append({**rows[1], "n": 99, "won": None})  # r1 again: the last row of a key stays
+    rows.append({key: (None if key not in ("id", "scope", "unknown") else value) for key, value in rows[3].items()})
+    rows[-1]["id"] = "r_nulls"
+    return rows
+
+
+class TestAStageGivenArrow:
+    """an Arrow table is typed, refused and staged exactly as the same rows given as dicts."""
+
+    def test_the_backend_exports_an_arrow_table_as_it_exports_the_same_rows_as_dicts(self) -> None:
+        backend = _wide_backend()
+        rows = _wide_rows()
+        exports = [
+            backend.export_rows("wide", "scope", "S", given, primary_key=("id",), order_by=("id",))
+            for given in (rows, _pa.Table.from_pylist(rows))
+        ]
+        assert exports[0].num_rows == 6
+        assert exports[1].equals(exports[0])
+        assert encode_chunk(exports[1]) == encode_chunk(exports[0])
+        assert exports[1].column("n").to_pylist()[1] == 99, "the last row of a key stays"
+
+    def test_an_arrow_table_of_no_rows_exports_the_table_s_own_empty_shape(self) -> None:
+        backend = _wide_backend()
+        empty = backend.export_rows("wide", "scope", "S", _pa.table({}), primary_key=("id",), order_by=("id",))
+        assert empty.equals(backend.export_rows("wide", "scope", "S", [], primary_key=("id",), order_by=("id",)))
+
+    @pytest.mark.parametrize(
+        ("broken", "refusal"),
+        [
+            ([{"id": None, "scope": "S"}], duckdb.ConstraintException),
+            ([{"scope": "S", "n": 1}], KeyError),
+        ],
+        ids=["a null key", "no key column"],
+    )
+    def test_arrow_rows_are_refused_as_the_same_dict_rows_are(
+        self, broken: list[dict[str, Any]], refusal: type
+    ) -> None:
+        backend = _wide_backend()
+        for given in (broken, _pa.Table.from_pylist(broken)):
+            with pytest.raises(refusal):
+                backend.export_rows("wide", "scope", "S", given, primary_key=("id",), order_by=("id",))
+
+    async def test_a_staged_arrow_table_is_the_same_chunk_bytes_as_its_rows_staged_as_dicts(self) -> None:
+        snapshot, pointers, store, _ = _snapshot()
+        await _started(snapshot, pointers)
+        rows = [
+            {"county": "c2", "state": "TX", "votes": 7},
+            {"county": "c1", "state": "TX", "votes": None},
+            {"county": "c2", "state": "TX", "votes": 8},
+        ]
+        as_dicts = await snapshot.stage("TX", 3, {"results": rows})
+        as_arrow = await snapshot.stage("TX", 4, {"results": _pa.Table.from_pylist(rows)})
+        assert as_arrow.rows == as_dicts.rows == {"results": 2}
+        assert store.objects[as_arrow.objects["results"]] == store.objects[as_dicts.objects["results"]]
+        await snapshot.discard_staged([as_dicts, as_arrow])
+        await snapshot.stop()
+
+    async def test_a_stage_given_arrow_for_a_table_it_does_not_hold_is_refused_as_dicts_are(self) -> None:
+        snapshot, pointers, _, _ = _snapshot()
+        await _started(snapshot, pointers)
+        for given in ([{"county": "c1"}], _pa.Table.from_pylist([{"county": "c1"}])):
+            with pytest.raises(ValueError, match="names tables the snapshot does not hold"):
+                await snapshot.stage("TX", 3, {"nowhere": given})
+        await snapshot.stop()
+
+    def test_naive_timestamps_type_as_their_dict_rows_do(self) -> None:
+        backend = _wide_backend()
+        # every column named: a column no row names is typed as all-null, whose bytes no export fixes
+        rows = [{**row, "at": None if row["at"] is None else row["at"].replace(tzinfo=None)} for row in _wide_rows()]
+        exports = [
+            backend.export_rows("wide", "scope", "S", given, primary_key=("id",), order_by=("id",))
+            for given in (rows, _pa.Table.from_pylist(rows))
+        ]
+        assert encode_chunk(exports[1]) == encode_chunk(exports[0])
