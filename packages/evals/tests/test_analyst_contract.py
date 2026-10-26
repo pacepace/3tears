@@ -836,6 +836,8 @@ _PAGED_CALLS: dict[str, tuple[str, dict[str, Any]]] = {
     "measure_breakdown": (KAIRO, {"measure_key": "persona.holds_character", "limit": 2}),
     "price_tradeoff": (KAIRO, {"gain_key": "persona.holds_character", "limit": 1}),
     "block_render": (KAIRO, {"block_kind": "table", "query": {"source": "contrasts"}, "limit": 2}),
+    "arms_compare": ("r1", {"arm_ids": ["atlas-l", "atlas-m"], "measure_key": "overall", "limit": 2}),
+    "settle_cases": ("r1", {"arm_ids": ["atlas-m"], "limit": 3}),
 }
 
 
@@ -896,6 +898,8 @@ _ROWS = {
     "examples_list": "examples",
     "measure_breakdown": "slices",
     "block_render": "rows",
+    "arms_compare": "rows",
+    "settle_cases": "rows",
 }
 
 

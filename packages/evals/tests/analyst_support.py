@@ -22,7 +22,9 @@ from packages.evals.tests.report_shapes_support import SHAPES
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.actions import Action, analyst_actions
 from threetears.evals.analysis.analyst.blocks import block_catalog, block_render
+from threetears.evals.analysis.analyst.compare import ArmsComparison, arms_compare
 from threetears.evals.analysis.analyst.price import PriceTradeoff, price_tradeoff
+from threetears.evals.analysis.analyst.settle import settle_cases
 from threetears.evals.analysis.analyst.snapshot import ANALYST_EXAMPLES, report_snapshot
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
@@ -37,6 +39,7 @@ __all__ = [
     "WIDE",
     "action_calls",
     "budget_inputs",
+    "compared_pair",
     "read_actions",
     "fixture_inputs",
     "fixture_snapshots",
@@ -362,3 +365,67 @@ def _price_calls(held: ReportInput) -> list[dict[str, Any]]:
 
 
 ANALYST_CALLS["price_tradeoff"] = _price_calls
+
+
+def compared_pair(held: ReportInput) -> tuple[str, str, str, ArmsComparison] | None:
+    """The first two arms, in the input's arm order, and the first measure or judged dimension on which arms_compare
+    reads them; None where no pair of arms has one.
+
+    :param held: The input.
+    :ptype held: ReportInput
+    :return: The two arms, the measure, and the comparison; None for none.
+    :rtype: tuple[str, str, str, ArmsComparison] | None
+    """
+    arms = [arm.id for arm in held.arms]
+    for index, first in enumerate(arms):
+        for second in arms[index + 1 :]:
+            for key in dict.fromkeys([*held.measures, *held.judged]):
+                try:
+                    return first, second, key, arms_compare(held, (first, second), key, limit=200)
+                except RefusedInput:
+                    continue
+    return None
+
+
+def _compare_calls(held: ReportInput) -> list[dict[str, Any]]:
+    """The first pair and measure arms_compare reads, then its places from the second, one to a page."""
+    found = compared_pair(held)
+    if found is None:
+        return []
+    first, second, key, comparison = found
+    call: dict[str, Any] = {"arm_ids": [first, second], "measure_key": key}
+    return [call] + ([{**call, "offset": 1, "limit": 1}] if comparison.total > 1 else [])
+
+
+def _settled(held: ReportInput, arms: list[str], **named: Any) -> bool:
+    try:
+        settle_cases(held, arms, **named)
+    except RefusedInput:
+        return False
+    return True
+
+
+def _settle_calls(held: ReportInput) -> list[dict[str, Any]]:
+    """The first arm settled against its criteria, against a hypothetical line a tenth below its first mean, and the
+    first pair arms_compare reads settled apart; each where the input lets it answer."""
+    calls: list[dict[str, Any]] = []
+    first = held.arms[0].id
+    if _settled(held, [first]):
+        calls.append({"arm_ids": [first]})
+    for key in dict.fromkeys([*held.judged, *held.measures]):
+        table = held.measures.get(key) or held.judged[key]
+        stat = table.per_arm.get(first)
+        if stat is None or not stat.mean:
+            continue
+        line = round(float(stat.mean) * 0.9, 3)
+        if _settled(held, [first], measure=key, line=line):
+            calls.append({"arm_ids": [first], "measure_key": key, "hypothetical_line": line})
+            break
+    pair = compared_pair(held)
+    if pair is not None and _settled(held, list(pair[:2]), measure=pair[2]):
+        calls.append({"arm_ids": list(pair[:2]), "measure_key": pair[2]})
+    return calls
+
+
+ANALYST_CALLS["arms_compare"] = _compare_calls
+ANALYST_CALLS["settle_cases"] = _settle_calls

@@ -25,6 +25,10 @@ from threetears.evals.analysis.analyst.analyses import (
     dominance,
     sensitivity,
 )
+from threetears.evals.analysis.analyst.compare import COMPARE_PAGE, ArmsComparison
+from threetears.evals.analysis.analyst.compare import arms_compare as compared
+from threetears.evals.analysis.analyst.settle import SETTLE_PAGE, Settle
+from threetears.evals.analysis.analyst.settle import settle_cases as settled
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import RefusedInput, ValidationFailedError
 from threetears.evals.kernel.offload import run_blocking
@@ -190,15 +194,127 @@ async def measure_breakdown(
     )
 
 
+async def arms_compare(
+    host: OpsHost,
+    scope_id: str,
+    *,
+    snapshot_id: str,
+    arms: Sequence[str],
+    measure_key: str,
+    limit: int = COMPARE_PAGE,
+    offset: int = 0,
+    fits: Callable[[ArmsComparison], bool] | None = None,
+) -> ArmsComparison:
+    """Two arms compared on one measure, overall and in each slice holding both, with an interval on the difference.
+
+    :param host: The host whose store holds the snapshot.
+    :ptype host: OpsHost
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param snapshot_id: The snapshot, as the freeze named it.
+    :ptype snapshot_id: str
+    :param arms: The two arms, by id: every difference is the first minus the second.
+    :ptype arms: Sequence[str]
+    :param measure_key: The measure or judged dimension, by key.
+    :ptype measure_key: str
+    :param limit: The most places one page holds.
+    :ptype limit: int
+    :param offset: The first place the page holds.
+    :ptype offset: int
+    :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
+        ``None`` takes ``limit`` as it is.
+    :ptype fits: Callable[[ArmsComparison], bool] | None
+    :return: A page of places, overall first.
+    :rtype: ArmsComparison
+    :raises NotFoundError: No snapshot with that id in the scope.
+    :raises ValidationFailedError: The snapshot does not read; not two distinct arms; a measure the two do not both
+        hold; or no spread to read an interval from.
+    """
+    return await _computed(
+        host,
+        scope_id,
+        snapshot_id,
+        lambda held: sized_page(lambda rows: compared(held, arms, measure_key, limit=rows, offset=offset), limit, fits),
+    )
+
+
+async def settle_cases(
+    host: OpsHost,
+    scope_id: str,
+    *,
+    snapshot_id: str,
+    arms: Sequence[str],
+    measure_key: str | None = None,
+    criterion_id: str | None = None,
+    hypothetical_line: float | None = None,
+    limit: int = SETTLE_PAGE,
+    offset: int = 0,
+    fits: Callable[[Settle], bool] | None = None,
+) -> Settle:
+    """The cases that would settle a reading: one arm against its criteria, one criterion or a hypothetical line, or
+    two arms apart on one measure.
+
+    :param host: The host whose store holds the snapshot.
+    :ptype host: OpsHost
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param snapshot_id: The snapshot, as the freeze named it.
+    :ptype snapshot_id: str
+    :param arms: One arm (against a line) or two (apart), by id.
+    :ptype arms: Sequence[str]
+    :param measure_key: The measure: for two arms, or a hypothetical line.
+    :ptype measure_key: str | None
+    :param criterion_id: For one arm, the one declared criterion to settle it against.
+    :ptype criterion_id: str | None
+    :param hypothetical_line: For one arm, a line on the measure the snapshot does not declare, in its own units.
+    :ptype hypothetical_line: float | None
+    :param limit: The most rows one page holds.
+    :ptype limit: int
+    :param offset: The first row the page holds.
+    :ptype offset: int
+    :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
+        ``None`` takes ``limit`` as it is.
+    :ptype fits: Callable[[Settle], bool] | None
+    :return: A page of rows.
+    :rtype: Settle
+    :raises NotFoundError: No snapshot with that id in the scope.
+    :raises ValidationFailedError: The snapshot does not read, or the arguments name nothing that can be settled.
+    """
+    return await _computed(
+        host,
+        scope_id,
+        snapshot_id,
+        lambda held: sized_page(
+            lambda rows: settled(
+                held,
+                arms,
+                measure=measure_key,
+                criterion=criterion_id,
+                line=hypothetical_line,
+                limit=rows,
+                offset=offset,
+            ),
+            limit,
+            fits,
+        ),
+    )
+
+
 __all__ = [
     "BREAKDOWN_PAGE",
+    "COMPARE_PAGE",
     "DOMINANCE_PAGE",
     "SENSITIVITY_PAGE",
+    "SETTLE_PAGE",
+    "ArmsComparison",
     "Breakdown",
     "Dominance",
     "Sensitivity",
+    "Settle",
     "SliceBy",
+    "arms_compare",
     "decision_sensitivity",
     "measure_breakdown",
     "options_dominance",
+    "settle_cases",
 ]
