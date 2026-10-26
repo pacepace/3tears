@@ -81,7 +81,7 @@ from threetears.evals.analysis.report.charts import (
     ScatterPath,
     ScatterPoint,
 )
-from threetears.evals.analysis.report.cost_unit import per_count
+from threetears.evals.analysis.report.cost_unit import per_count, per_noun
 from threetears.evals.analysis.report.figure_keys import cost_basis, format_figure, resolve
 from threetears.evals.analysis.report.plan_page.charting import (
     ChartContext,
@@ -268,8 +268,11 @@ def _task_matrix(context: ChartContext) -> Drawn:
     gating = _gating(report_input)
     rows: list[GateRow] = []
     costs_drawn: list[float] = []
+    cost_measures: set[str] = set()
     for task in tasks:
         costs = task_costs(report_input, task.id)
+        if any(arm in costs for arm in arms):
+            cost_measures.add(costs.measure)
         gated = any(_reads_in(criterion, task.id) for criterion in gating)
         cells = []
         for arm in arms:
@@ -293,12 +296,19 @@ def _task_matrix(context: ChartContext) -> Drawn:
             )
         )
     priced = quantity("usd_per_1k", costs_drawn)
+    # Each task's costs are its own figures on a cost measure: what they are per is that measure's, not the page's.
+    nouns = {per_noun(report_input.measures[key]) for key in cost_measures}
+    if len(nouns) > 1:
+        raise context.refuse(
+            f"its tasks' costs are read on measures counting different things ({', '.join(sorted(cost_measures))}), "
+            "and a matrix prints one cost unit"
+        )
     data = GateMatrixChart(
         columns=[ChartColumn(label=_arm_name(context, arm)) for arm in arms],
         rows=rows,
         row_header=GATE_HEADERS["tasks"],
         cost_fmt=priced.fmt if costs_drawn else None,
-        cost_unit=per_count(cost_basis(report_input).noun) if costs_drawn else None,
+        cost_unit=per_count(next(iter(nouns))) if costs_drawn else None,
         pick_label=PICK_LABEL if picks else None,
     )
     return Drawn(chart_block(context, data))

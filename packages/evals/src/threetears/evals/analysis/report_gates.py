@@ -38,13 +38,14 @@ account Q&A``. An unnarrowed check adds where the figure sits
 **Routing** (GENERATOR §3, read by the gate matrix, :func:`routing_picks`): for each routable task, the cheapest arm
 that passes there and in every cross-cutting task. Cost (:func:`task_costs`) is the task's figure on the input's one
 measure stated per 1,000 (of what its label counts), else on its one dollar measure on the cost merit axis, times
-1,000; an arm with no cost there is never the cheapest.
+1,000; an arm with no cost there is never the cheapest. The costs carry the measure they were read on, so what they are
+per is that measure's, never the page's cost basis.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -58,7 +59,16 @@ from threetears.evals.analysis.report_margins import (
     criterion_places,
 )
 
-__all__ = ["GateCheck", "GateFinding", "GateStatus", "gate_check", "gate_findings", "routing_picks", "task_costs"]
+__all__ = [
+    "GateCheck",
+    "GateFinding",
+    "GateStatus",
+    "TaskCosts",
+    "gate_check",
+    "gate_findings",
+    "routing_picks",
+    "task_costs",
+]
 
 #: An arm's status against the gates: every figure passes, one sits borderline and none fails, or one fails.
 GateStatus = Literal["pass", "borderline", "fail"]
@@ -283,16 +293,29 @@ def gate_check(
     return GateCheck(arm=arm, status=status, fails=fails, borders=borders)
 
 
-def task_costs(report_input: ReportInput, task_id: str) -> dict[str, float]:
+class TaskCosts(dict[str, float]):
+    """Each arm's cost per 1,000 (of what it counts) in one task, by arm, and the measure it was read on.
+
+    :ivar measure: The measure the costs were read on, by key; empty where the task states no cost.
+    """
+
+    def __init__(self, costs: Mapping[str, float] | None = None, measure: str = "") -> None:
+        super().__init__(costs or {})
+        self.measure = measure
+
+
+def task_costs(report_input: ReportInput, task_id: str) -> TaskCosts:
     """Each arm's cost per 1,000 (of what it counts) in one task (this module's Routing): what a gate matrix's cell
-    prices and routing picks the cheapest by.
+    prices and routing picks the cheapest by, with the measure it was read on (what the costs are per is that
+    measure's).
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
     :param task_id: The task, by id.
     :ptype task_id: str
-    :return: Each arm's cost per 1,000 (of what it counts) there, by arm; empty where the task states no cost.
-    :rtype: dict[str, float]
+    :return: Each arm's cost per 1,000 (of what it counts) there, by arm, and its measure; empty where the task states
+        no cost.
+    :rtype: TaskCosts
     :raises ValueError: The input holds no such task.
     """
     task = next((held for held in report_input.tasks if held.id == task_id), None)
@@ -309,8 +332,8 @@ def task_costs(report_input: ReportInput, task_id: str) -> dict[str, float]:
         means = {arm: figures[keys[0]].mean for arm, figures in task.per_arm.items() if keys[0] in figures}
         costs = {arm: float(mean) * factor for arm, mean in means.items() if mean is not None}
         if costs:
-            return costs
-    return {}
+            return TaskCosts(costs, keys[0])
+    return TaskCosts()
 
 
 def routing_picks(report_input: ReportInput, arms: Sequence[str]) -> dict[str, str]:
