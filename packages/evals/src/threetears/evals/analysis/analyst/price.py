@@ -12,22 +12,24 @@ Design note. What the spec left open and this module decided is marked *(inferre
 the one owner of that rule, so the count keys, a ``prices`` block and this tool read one frontier. Only options that
 survive the gates are priced: an option a gate or a guardrail removes is never priced beside the others, since a trade
 that includes it would weigh a broken policy as a cost. Of the survivors, an option is priced when the cost rule states
-its cost per 1,000 replies and the gain axis places it. An option is dominated when another costs no more and reads no
-worse, and is ahead on one of the two. Of the undominated options, ordered by cost, the frontier is the upper hull:
-the options that are best at some price per point. Each step from one frontier option to the next is priced by
-``price.<cheaper>.<dearer>.<gain>.per_point``, the price per point at which the best option moves from the one to the
-other: GENERATOR §4's flip points. An undominated option under the hull is best at no single price, and is listed off
-the frontier with the two step prices that pass it by.
+its cost per 1,000 of what the cost counts and the gain axis places it. An option is dominated when another costs no
+more and reads no worse, and is ahead on one of the two. Of the undominated options, ordered by cost, the frontier is
+the upper hull: the options that are best at some price per point. Each step from one frontier option to the next is
+priced by ``price.<cheaper>.<dearer>.<gain>.per_point``, the price per point at which the best option moves from the one
+to the other: GENERATOR §4's flip points. An undominated option under the hull is best at no single price, and is listed
+off the frontier with the two step prices that pass it by.
 
-**The two axes.** Cost is cost per 1,000 replies, read as exact: the input states no interval on it *(inferred: the
-pipeline's cost is tokens at list price, with no sampling error stated)*. The gain axis is the one measure or judged
+**The two axes.** Cost is cost per 1,000 of what the snapshot's cost counts
+(:func:`~threetears.evals.analysis.report.figure_keys.cost_basis`: ``per 1,000 conversations``, ``per 1,000 calls``;
+every text that names it says the snapshot's own count), read as exact: the input states no interval on it *(inferred:
+the pipeline's cost is tokens at list price, with no sampling error stated)*. The gain axis is the one measure or judged
 dimension the caller names (``gain_key``), read toward its better side; a measure that states no direction is refused.
 :func:`~threetears.evals.analysis.report.figure_keys.gain_axis` places each arm on it: on its contrast against the
-control where every arm holding a figure there holds exactly one; otherwise on its overall mean; and where no arm
-states an overall figure, on its figures **pooled** over the slices holding them (``pooled.<gain>.<arm>.*``): weighted
-by the traffic share the input states for every slice, else equally. An equal weighting is no traffic mix: the result
-says so as its basis and as a caveat in its notes, since a mix would move every price *(inferred: the owner asked for
-equal weights stated as such, with a caveat)*.
+control where every arm holding a figure there holds exactly one; otherwise on its overall mean; and where no arm states
+an overall figure, on its figures **pooled** over the slices holding them (``pooled.<gain>.<arm>.*``): weighted by the
+traffic share the input states for every slice, else equally. An equal weighting is no traffic mix: the result says so
+as its basis and as a caveat in its notes, since a mix would move every price *(inferred: the owner asked for equal
+weights stated as such, with a caveat)*.
 
 **Within one slice** (``slice_filter``: a task, a stratum or a cell), each option is placed by its mean there, at the
 slice's own cost where the slice states one for every option it places, else at each option's overall cost; the
@@ -85,11 +87,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from threetears.evals.analysis.analyst.analyses import GateRead, breached_guardrails, gate_reads
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
 from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.report.cost_unit import per_count
 from threetears.evals.analysis.report.figure_keys import (
     POOL_WEIGHT_WORDS,
     SLICE_COST_WORDS,
     PriceFrontier,
     SliceKind,
+    cost_basis,
     gain_axis,
     pooled_figures,
     price_frontier,
@@ -167,8 +171,8 @@ class FrontierOption(BaseModel):
 
     arm: str = Field(description="The option, as arm:<id>.")
     cost: CitedFigure = Field(
-        description="Its cost: per 1,000 replies, or within a slice its figure there on the cost measure, as the key "
-        "states it."
+        description="Its cost: per 1,000 of what the cost counts, or within a slice its figure there on the cost "
+        "measure, as the key states it."
     )
     monthly_cost: CitedFigure | None = Field(description="Its cost a month at the declared volume; None without one.")
     level: CitedFigure | None = Field(description="Its own figure on the gain axis, where the input states one.")
@@ -197,7 +201,7 @@ class Price(BaseModel):
     to_arm: str = Field(description="The dearer option, as arm:<id>.")
     gain: CitedFigure = Field(description="How much better the dearer reads on the gain axis, toward better.")
     gain_interval: CitedFigure | None = Field(description="The paired interval on the gain; None where none is stated.")
-    cost_gap: CitedFigure = Field(description="What the dearer costs more per 1,000 replies.")
+    cost_gap: CitedFigure = Field(description="What the dearer costs more per 1,000 of what the cost counts.")
     per_point: CitedFigure | None = Field(description="The cost gap per point gained; None where the move has none.")
     per_point_low: CitedFigure | None = Field(description="The least a point costs, as the paired interval allows.")
     per_point_high: CitedFigure | None = Field(
@@ -400,7 +404,7 @@ def _off(report_input: ReportInput, frontier: PriceFrontier, arm: str) -> OffFro
     if reason == "gated":
         return _gated(report_input, arm)
     if reason == "no_cost":
-        says = "the cost rule states no cost per 1,000 replies for it"
+        says = f"the cost rule states no cost {per_count(cost_basis(report_input).noun)} for it"
         return OffFrontier(arm=_arm(arm), reason="no_cost", by=[], says=[says], gates=[], figures=[])
     if reason == "no_gain_figure":
         says = f"it holds no figure on {gain_key} that the gain axis reads"
@@ -568,7 +572,8 @@ def price_tradeoff(
     frontier = price_frontier(report_input, gain_key, within=within)
     if not frontier.costs:
         raise RefusedInput(
-            "price_tradeoff prices each option's cost per 1,000 replies, and this snapshot states no arm's: no "
+            "price_tradeoff prices each option's cost per 1,000 of what the cost counts, and this snapshot states no "
+            "arm's: no "
             "measure in usd_per_1k or usd_per_1m, no dollar measure on the cost axis, and no scoreboard reply_cost_usd",
             remedy="compare the options without a price with options_dominance",
         )
@@ -590,8 +595,8 @@ def price_tradeoff(
         notes.append(f"priced within {frontier.within}: no monthly figure is stated, the volume being the campaign's")
     elif volume is None:
         notes.append(
-            "no monthly volume is declared (meta.volume_per_month): prices are per 1,000 replies, and no monthly "
-            "figure is stated"
+            "no monthly volume is declared (meta.volume_per_month): prices are "
+            f"{per_count(cost_basis(report_input).noun)}, and no monthly figure is stated"
         )
     if frontier.axis.basis == "pooled" and any(
         figure.weights == "equal" for figure in pooled_figures(report_input, gain_key).values()
@@ -658,7 +663,7 @@ def _frontier_option(report_input: ReportInput, frontier: PriceFrontier, arm: st
 
 def _slice_cost(report_input: ReportInput, frontier: PriceFrontier, arm: str) -> CitedFigure:
     """An option's cost within a slice, as the key the basis reads it by states it: its figure there on the cost
-    measure where the slice states every option's own, else its overall cost per 1,000 replies."""
+    measure where the slice states every option's own, else its overall cost per 1,000 of what the cost counts."""
     if frontier.cost_key:
         return cite(f"{frontier.within}.{arm}.{frontier.cost_key}.mean", report_input)
     return cite(f"cost_per_1k.{arm}", report_input)

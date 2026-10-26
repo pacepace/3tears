@@ -64,7 +64,14 @@ from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigu
 from threetears.evals.analysis.analyst.snapshot import analyst_input, frozen_input, report_snapshot
 from threetears.evals.analysis.planned_analysis import report_input_digest, report_input_document_digest
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
-from threetears.evals.analysis.report.figure_keys import figure_key_grammar, reader_names, render, resolve
+from threetears.evals.analysis.report.cost_unit import REPLIES, per_count
+from threetears.evals.analysis.report.figure_keys import (
+    cost_basis,
+    figure_key_grammar,
+    reader_names,
+    render,
+    resolve,
+)
 from threetears.evals.analysis.report.figures import PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel import EvalReportSnapshot, report_snapshot_id
@@ -436,8 +443,11 @@ _VERBATIM = re.compile(
 
 
 def _known_words(held: ReportInput) -> list[str]:
-    """Every id and reader name the input holds, longest first: words a text may name, digits and all."""
-    words = {arm.id for arm in held.arms} | {aspect.id for aspect in held.aspects} | {*held.measures, *held.judged}
+    """Every id and reader name the input holds, and the words its cost is counted in (``per 1,000 conversations``),
+    longest first: words a text may name, digits and all."""
+    noun = cost_basis(held).noun
+    words = {PER_THOUSAND_REPLIES, per_count(noun, 1_000), per_count(noun, 1_000_000)}
+    words |= {arm.id for arm in held.arms} | {aspect.id for aspect in held.aspects} | {*held.measures, *held.judged}
     words |= {stratum.id for stratum in held.strata} | {task.id for task in held.tasks} | set(held.cells)
     words |= {criterion.id for criterion in held.criteria} | {read.floor for read in held.floors}
     for names in reader_names(held).values():
@@ -458,7 +468,7 @@ def _typed_numbers(node: Any, known: list[str], path: str = "") -> Iterator[tupl
         for index, item in enumerate(node):
             yield from _typed_numbers(item, known, f"{path}[{index}]")
     elif isinstance(node, str) and not _VERBATIM.search(path):
-        text = _DATE.sub("", node).replace(PER_THOUSAND_REPLIES, "")
+        text = _DATE.sub("", node)
         for word in known:
             text = re.sub(rf"(?<!\w){re.escape(word)}(?!\w)", "", text)
         for typed in _TYPED_NUMBER.findall(text):
@@ -750,20 +760,25 @@ def _outcome_text(outcome: ActionOutcome) -> str:
 
 
 async def _called_texts(
-    tool: MountedTool, fixture: OpsFixture, snapshots: dict[str, EvalReportSnapshot], broken: str
+    tool: MountedTool,
+    fixture: OpsFixture,
+    snapshots: dict[str, EvalReportSnapshot],
+    broken: str,
+    *,
+    refused_on: str = "r4",
 ) -> AsyncIterator[tuple[str, str]]:
-    """Every text a call to the tool's actions returns: each on every fixture snapshot, on an unknown snapshot and a
-    broken one, with each text parameter naming nothing, an undeclared parameter and a value that does not
-    validate; then help on a topic that is none, and an action that is none."""
+    """Every text a call to the tool's actions returns: each on every fixture snapshot given; on ``refused_on``, on an
+    unknown snapshot and a broken one, with each text parameter naming nothing, an undeclared parameter and a value
+    that does not validate; then help on a topic that is none, and an action that is none."""
     for name, snapshot in snapshots.items():
         held = frozen_input(snapshot)
         for action in tool.actions:
             for arguments in action_calls(action, held, snapshot.id):
                 yield f"{action.name} on {name}", _outcome_text(await _call(tool, fixture, arguments))
-    held = frozen_input(snapshots["r4"])
+    held = frozen_input(snapshots[refused_on])
     for action in tool.actions:
-        (call, *_) = action_calls(action, held, snapshots["r4"].id) or [
-            {**action.example, "action": action.name, "snapshot_id": snapshots["r4"].id}
+        (call, *_) = action_calls(action, held, snapshots[refused_on].id) or [
+            {**action.example, "action": action.name, "snapshot_id": snapshots[refused_on].id}
         ]
         for snapshot_id in ("report-snapshot:unknown", broken):
             yield (
@@ -822,6 +837,66 @@ async def test_an_action_the_editor_goes_without_is_refused_with_why_and_sends_i
             assert head.startswith(f"refused: {name} is not on tool evals_analyst: {editor.spec.left_out}."), head
             assert "call it on" not in outcome.text, "the editor has no other tool to be sent to"
             assert _named_in(_outcome_text(outcome), left_out - {name}) == set(), (name, outcome.text)
+
+
+#: A cost said to be per reply: ``per reply``, ``per 1,000 replies`` and its other counts, and the column label.
+_REPLIES_COST = re.compile(
+    r"\bper\s+(?:(?:1,000(?:,000)?|1k|1m|thousand|million)\s+)?repl(?:y|ies)\b|\$/1,000 replies", re.IGNORECASE
+)
+
+#: The cost a sentence may say is per reply: the scoreboard's, which the input contract states per reply.
+_PER_REPLY_COST = "reply_cost_usd"
+
+
+def _replies_costs(text: str) -> list[str]:
+    """Each sentence of a text that says a cost is per reply, unless it names the scoreboard's cost per reply."""
+    sentences = re.split(r"(?<=[.;])\s+|\n", text)
+    return [sentence for sentence in sentences if _REPLIES_COST.search(sentence) and _PER_REPLY_COST not in sentence]
+
+
+def _result_schemas(tool: MountedTool) -> Iterator[tuple[str, str]]:
+    """Each action's result model as its JSON schema: every field's description."""
+    for action in tool.actions:
+        yield f"result {action.name}", json.dumps(action.result.model_json_schema())
+
+
+def test_the_replies_walk_finds_a_cost_said_per_reply_and_passes_the_scoreboards() -> None:
+    """The control for the walk below: each way a text says a cost is per reply is found; the scoreboard's is not."""
+    for written in (
+        "Its cost per 1,000 replies.",
+        "prices are per 1k replies",
+        "a cost per reply, then",
+        "Cost ($/1,000 replies)",
+        "per 1,000,000 replies",
+    ):
+        assert _replies_costs(written) == [written], written
+    assert _replies_costs("Money per reply (`reply_cost_usd`) reads per 1,000 replies.") == []
+    assert _replies_costs("costs $1.89 per 1,000 conversations; replies run long") == []
+
+
+@pytest.mark.parametrize("name", ["r1", "r2"])
+async def test_no_analyst_tool_text_says_a_cost_counts_replies_where_the_snapshots_cost_counts_something_else(
+    name: str,
+) -> None:
+    """r1's cost counts conversations and r2's calls: no text either role's tool serves on them, static or called,
+    refused or answered, says a cost is per reply, unless it names the scoreboard's cost per reply."""
+    fixture, snapshots = off_loop(_seeded)
+    held = frozen_input(snapshots[name])
+    basis = cost_basis(held)
+    assert basis.noun not in ("", REPLIES) and held.measures[basis.source].unit == "usd_per_1k", "the control"
+    assert all(row.reply_cost_usd is None for row in held.scoreboard.values()), "the control: nothing is per reply"
+    found: dict[str, list[str]] = {}
+    walked: list[str] = []
+    for role, tool in (("analyst", _analyst_tool()), ("editor", _editor_tool())):
+        texts = [*_static_texts(tool), *_result_schemas(tool)]
+        texts += [pair async for pair in _called_texts(tool, fixture, {name: snapshots[name]}, "", refused_on=name)]
+        for where, text in texts:
+            walked.append(where)
+            said = _replies_costs(text)
+            if said:
+                found[f"{role}: {where}"] = said[:3]
+    assert found == {}
+    assert {"price_tradeoff on", "block_render on", "options_dominance on"} <= {w.rsplit(" ", 1)[0] for w in walked}
 
 
 #: Every analyst listing, the fixture snapshot it is read on, and a call whose rows run to more than one small page.

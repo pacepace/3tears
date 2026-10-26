@@ -17,8 +17,8 @@ share           a rate on 0 to 1, as a percent (×100); a change, in points    `
 percent, pct    a percent as it is; a change, in points                      ``pct``; ``+num:0``
 points          points                                                       ``+num:0``
 usd             money per reply, always per 1,000 replies (×1000)            ``usd:2``, tick ``usd:1``
-usd_per_1k      dollars per 1,000 replies                                     ``usd:2`` under $10, else ``usd``
-usd_per_1m      dollars per 1,000,000 replies                                 ``usd``
+usd_per_1k      dollars per 1,000 of what the measure counts                  ``usd:2`` under $10, else ``usd``
+usd_per_1m      dollars per 1,000,000 of what the measure counts              ``usd``
 dollars         dollars as they are (a run's total)                           ``usd:2``
 ms, s           milliseconds, seconds                                        ``ms``, ``s:1``
 score           a judged score                                               ``num:2``
@@ -340,7 +340,7 @@ class Quantity:
 #: The money units a cost is stated in, per reply and per a number of replies, and dollars as they are (a run's total).
 _PER_REPLY, _PER_THOUSAND, _PER_MILLION, _DOLLARS = "usd", "usd_per_1k", "usd_per_1m", "dollars"
 
-#: The magnitude from which dollars per 1,000 replies drop their cents on a chart.
+#: The magnitude from which dollars per 1,000 (of what a cost counts) drop their cents on a chart.
 _WHOLE_DOLLARS_FROM = 10.0
 
 

@@ -100,7 +100,7 @@ asked aspect's own axis, not a gate.
 survivor on every axis that matters:
 
 - *Every gate*: every survivor passes every gate, so the gates tie among survivors.
-- *Cost*: cost per 1,000 replies as the ``cost_per_1k.<arm>`` figure key reads it, the one cost rule
+- *Cost*: cost per 1,000 of what the cost counts as the ``cost_per_1k.<arm>`` figure key reads it, the one cost rule
   (:mod:`~threetears.evals.analysis.report.figure_keys`: a dollar measure's overall figures or the scoreboard's, else
   a dollar measure blended over the tasks by traffic share), lower is better. Two arms with no cost tie; an arm with
   no cost is not at least as good as one with a cost, nor the reverse.
@@ -768,7 +768,8 @@ def _separable(report_input: ReportInput, arm: str, overrides: _Overrides) -> bo
 
 
 def _costs(report_input: ReportInput) -> dict[str, float]:
-    """Each arm's cost per 1,000 replies, as its ``cost_per_1k`` key reads it (this module's Dominance, cost)."""
+    """Each arm's cost per 1,000 of what it counts, as its ``cost_per_1k`` key reads it (this module's Dominance,
+    cost)."""
     costs: dict[str, float] = {}
     for arm in report_input.arms:
         try:

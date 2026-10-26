@@ -33,9 +33,9 @@ figure's ``ci``, a preference slice's half-width about its share, a price step's
 where every step's is, else unpaired; none on a step whose interval leaves its high end open).
 
 **A price step** is one move along the frontier of the options best at some price per point
-(:func:`~threetears.evals.analysis.report.figure_keys.price_frontier`), on each gain axis a ``prices`` query keeps
-(a block draws one, named in ``measures``): its price per point a month at the declared volume, else per 1,000 replies, each figure read through
-the key that states it. ``arms`` keeps the steps both of whose options it keeps.
+(:func:`~threetears.evals.analysis.report.figure_keys.price_frontier`), on each gain axis a ``prices`` query keeps (a
+block draws one, named in ``measures``): its price per point a month at the declared volume, else per 1,000 of what the
+cost counts, each figure read through the key that states it. ``arms`` keeps the steps both of whose options it keeps.
 
 **The filters.** An empty filter keeps everything (:class:`~threetears.evals.kernel.report_plan.ChartQuery`).
 ``arms`` keeps the rows of those arms, where a row is of one arm (an example with no arm is kept; a preference slice
@@ -87,7 +87,7 @@ class PriceStep:
     :ivar gain_key: The gain axis, by key.
     :ivar key: The key that states the price drawn: ``monthly_per_point`` at the declared volume, else ``per_point``.
     :ivar value: The price per point the key reads.
-    :ivar monthly: Whether it is a month's price at the declared volume (else per 1,000 replies).
+    :ivar monthly: Whether it is a month's price at the declared volume (else per 1,000 of what the cost counts).
     :ivar low_key: The key of the interval's low end; empty where the row carries no interval.
     :ivar high_key: The key of its high end; empty where the row carries no interval.
     :ivar paired: Whether the ends are read off the paired interval (a contrast's), else off the unpaired one.

@@ -31,7 +31,7 @@ tasks, more as many strata); else the strata, counted across every stratificatio
 for two to six, many strata past six). **Criteria** is hard gates where a criterion is a ``gate``; a margin where an
 aspect declares one, a floor was read, or a criterion is a floor or a guardrail; else none declared. A bar alone
 declares none: it warns and decides nothing. **Cross-cutting** aspects are the tasks marked so. The **cost axis** is
-logarithmic when the arms' cost per 1,000 replies spans more than ten times.
+logarithmic when the arms' cost per 1,000 (of what it counts) spans more than ten times.
 
 **Code reads the spine (GENERATOR §1).** :func:`spine` looks the shape's spine chart up (A a gate matrix, B a
 gate-space scatter, C a config lattice, D a forest, E lines) and names the parts of its query the input settles, which
