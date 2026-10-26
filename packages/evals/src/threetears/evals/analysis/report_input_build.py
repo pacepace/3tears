@@ -34,7 +34,7 @@ from typing import Any
 
 from threetears.evals.analysis.arms import writer_arms
 from threetears.evals.analysis.bundle.caps import capped_text
-from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TrialRow
+from threetears.evals.analysis.bundle.schema import SEPARATED_VERDICTS, AnalysisContextBundle, TrialRow
 from threetears.evals.analysis.campaign_bundle import CAMPAIGN_MESSAGE_CHARS_PER_ASPECT, KIND_MEANS, CampaignBundle
 from threetears.evals.analysis.campaign_readings import AspectReading, PairReading
 from threetears.evals.analysis.depth import REPEATS_FLOOR
@@ -105,9 +105,6 @@ PLANNER_FIGURES = 4
 #: A JSON escape left in a transcript's text, where a tool call's arguments were written as JSON: a surrogate pair, one
 #: code point, or a one-character escape.
 _ESCAPE = re.compile(r'\\u[dD][89abAB][0-9a-fA-F]{2}\\u[dD][c-fC-F][0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\[nrt"\\/]')
-
-#: The comparison verdicts that separate an arm from the control or show it alike: listed first.
-_SEPARATED = frozenset({"improved", "regressed", "equivalent"})
 
 
 # ---------------------------------------------------------------------- the report input
@@ -586,7 +583,7 @@ class _Builder:
                     rows.append(
                         (
                             (
-                                0 if comparison.verdict in _SEPARATED else 1,
+                                0 if comparison.verdict in SEPARATED_VERDICTS else 1,
                                 comparison.p_adjusted if comparison.p_adjusted is not None else 1.0,
                             ),
                             Contrast(

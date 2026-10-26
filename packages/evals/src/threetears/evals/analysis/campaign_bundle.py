@@ -60,6 +60,7 @@ from pydantic import Field, field_validator, model_validator
 from threetears.evals.analysis.arms import arm_names, multi_rig_variants, short_digest, writer_arms
 from threetears.evals.analysis.bundle.caps import capped_text
 from threetears.evals.analysis.bundle.schema import (
+    SEPARATED_VERDICTS,
     AnalysisContextBundle,
     evidence_digest,
     fingerprint_digest,
@@ -147,9 +148,6 @@ _MEANING_CHARS = 200
 #: The significant figures a figure in the writer's view keeps: enough to read, not to recompute.
 _FIGURES = 4
 
-#: The comparison verdicts that separate an arm from the control, or establish it alike: listed first, so a trim of
-#: the contrasts drops the unresolved ones before any of these.
-_SEPARATED = frozenset({"improved", "regressed", "equivalent"})
 
 #: What each kind of campaign asks of its memo, as the writer's view says it.
 KIND_MEANS: dict[str, str] = {
@@ -1422,7 +1420,7 @@ def _contrasts(aspect: AnalysisContextBundle, namer: _Namer) -> list[dict[str, A
                     [confound.model_dump(mode="json") for confound in comparison.mechanism_confounds], aspect.aspect
                 ),
             }
-            separated = comparison.verdict in _SEPARATED
+            separated = comparison.verdict in SEPARATED_VERDICTS
             p = comparison.p_adjusted if comparison.p_adjusted is not None else 1.0
             rows.append(
                 ((0 if separated else 1, p), {key: value for key, value in row.items() if value not in (None, [])})

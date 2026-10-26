@@ -91,6 +91,7 @@ from typing import Literal
 
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import resolve
+from threetears.evals.analysis.bundle.schema import SEPARATED_VERDICTS
 from threetears.evals.analysis.report_input import (
     Aspect,
     Contrast,
@@ -427,10 +428,6 @@ def _level(report_input: ReportInput, arm: str, control: str, overrides: _Overri
     return 1 if _shown_no_worse(report_input, arm, overrides) else 0
 
 
-#: The verdicts of a contrast that separates its arm from the control, corrected within its family.
-_SEPARATED = frozenset({"improved", "regressed", "equivalent"})
-
-
 def separating_contrasts(report_input: ReportInput, arm: str) -> list[Contrast]:
     """The contrasts on an asked aspect that separate a candidate from the control: verdict ``improved``,
     ``regressed`` or ``equivalent``, corrected within their family, in the input's order. How a question a measure
@@ -447,7 +444,7 @@ def separating_contrasts(report_input: ReportInput, arm: str) -> list[Contrast]:
     return [
         contrast
         for contrast in report_input.contrasts
-        if contrast.arm == arm and contrast.aspect in asked and contrast.verdict in _SEPARATED
+        if contrast.arm == arm and contrast.aspect in asked and contrast.verdict in SEPARATED_VERDICTS
     ]
 
 

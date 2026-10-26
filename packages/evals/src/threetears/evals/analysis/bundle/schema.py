@@ -1584,6 +1584,11 @@ class VerdictOrder(EvalDocumentModel):
 #: side), which is neither a separation nor its absence.
 ComparisonVerdict = Literal["improved", "regressed", "equivalent", "not_separated", "untested"]
 
+#: The comparison verdicts that separate an arm from the control, or establish it alike: what a corrected comparison
+#: settles. The one set every reader of a verdict's separation uses (the writer's view, the report input's trim, the
+#: report decision's modes and spine).
+SEPARATED_VERDICTS: frozenset[ComparisonVerdict] = frozenset({"improved", "regressed", "equivalent"})
+
 
 #: What a family comparison reads: a measure, a judged dimension, or how each trial ended (``trial``), which is
 #: neither: it conjoins every check and judged dimension a trial was graded on, so no measure or rubric names it.
@@ -3712,6 +3717,7 @@ __all__ = [
     "ComparisonFamily",
     "ComparisonReading",
     "ComparisonVerdict",
+    "SEPARATED_VERDICTS",
     "Confound",
     "DeclaredCellCoverage",
     "DeclaredCrossing",

@@ -657,8 +657,10 @@ async def prepare_analysis_generation(
     :rtype: PreparedGeneration
     :raises NotFoundError: No campaign with that id.
     :raises ValidationFailedError: The bundle has no resolvable runs, the preset does not exist, the writer model is
-        not one the host allows, or the first call
-        cannot be priced under an enforced cap or is priced above it — the client it built released.
+        not one the host allows, the resolved prompt is the memo writer's seed (``EVAL_ANALYSIS_GEN_DEFAULT``: the
+        remedy names the ``eval_report_plan`` prompt to register), the report input's view is over the planner's
+        budget once every trim is made, or the first call cannot be priced under an enforced cap or is priced above
+        it — the client it built released.
     :raises ValueError: The host supplies no completion clients.
     """
     assembled = await _assemble(host, campaign_id, scope_id, model=model, resolve_prompt=resolve_prompt)
