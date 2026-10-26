@@ -509,6 +509,16 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
+        class_name="ScopedSnapshot",
+        attr_name="_rebuilt",
+        rationale=(
+            "the scopes this replica's own rebuilds published from its own L1, scope -> epoch, kept across "
+            "the rebuild's waits; it names what this process's DuckDB L1 holds, which no other replica holds "
+            "and a restart loses with it, so it is checked against that L1 and the pointer at each use"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/registry/src/threetears/registry/catalog.py",
         class_name="ToolCatalog",
         attr_name="_entries",
