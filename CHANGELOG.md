@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.78.1 -- 2026-10-26
+
 ### core: a scoped snapshot's rebuild from L3 keeps its progress across waits
 
 **Fixed:** a rebuild from L3 publishes a scope only while no write is in progress or has committed since it
