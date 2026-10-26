@@ -8,6 +8,15 @@ packages (bumped in lock-step).
 
 ## v0.78.1 -- 2026-10-26
 
+### core: a collection whose L1 holds no table of it reads through rather than raise
+
+**Fixed:** a registry hands its L1 to every collection it builds, but only a collection that creates its table
+there, or whose table its owner declared, has one. A collection built later under a name of its own (the hub's
+tile source, `geo_tiles_<scope>`, and its feature cache) read and wrote a table its L1 never had, and every tile
+answered 500 with `sqlite3.OperationalError: no such table`. Every row of a collection's table enters, leaves
+and is read from L1 through one place, which now uses L1 only while it holds the table: until then the
+collection reads and writes through to L2 and L3, as one built with no L1, and says so once.
+
 ### core: a scoped snapshot's rebuild from L3 keeps its progress across waits
 
 **Fixed:** a rebuild from L3 publishes a scope only while no write is in progress or has committed since it

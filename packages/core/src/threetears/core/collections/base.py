@@ -1440,9 +1440,10 @@ class BaseCollection(ABC, Generic[EntityT]):
             cached, or (when ``expiring``) the row has expired
         :rtype: dict[str, Any] | None
         """
-        if self._l1 is None:
+        l1 = self._l1_holding_table()
+        if l1 is None:
             return None
-        row: dict[str, Any] | None = self._l1.select_by_id(
+        row: dict[str, Any] | None = l1.select_by_id(
             self.table_name,
             self.normalize_pk(entity_id),
             self.primary_key_columns,
@@ -2080,6 +2081,32 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         return tuple(str(value) for value in self.normalize_pk(entity_id))
 
+    def _l1_holding_table(self) -> Any:
+        """this collection's L1, while it holds the collection's table; ``None`` until then.
+
+        A registry hands its L1 to every collection it builds, but only one that creates its table
+        there, or whose table its owner declared, has a table to read: a collection built under a
+        name of its own after the L1 was set up (a tile source's ``geo_tiles_<scope>``) had none, and
+        every read of it raised ``no such table``. Every row of this table enters, leaves and is read
+        from L1 through here, so until the table is there the collection reads and writes through to
+        L2 and L3, as one built with no L1, and from the moment it is there L1 is used. Said once.
+
+        :return: the backend, or ``None``
+        :rtype: Any
+        """
+        l1 = self._l1
+        has_table = getattr(l1, "has_table", None)
+        if l1 is None or has_table is None or has_table(self.table_name):
+            return l1
+        if not self.__dict__.get("_l1_table_absence_said"):
+            self.__dict__["_l1_table_absence_said"] = True
+            log.warning(
+                "this collection's L1 holds no table of it: it reads and writes through to L2 and L3 "
+                "until the table is created there",
+                extra={"extra_data": {"table": self.table_name, "collection": type(self).__name__}},
+            )
+        return None
+
     def _evict_l1(self, entity_id: Any) -> None:
         """drop ``entity_id``'s row from this process's L1, and stop any read or write in flight caching it.
 
@@ -2092,8 +2119,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: None
         """
         self._l1_fence.changed(self._fence_key(entity_id))
-        if self._l1 is not None:
-            self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+        l1 = self._l1_holding_table()
+        if l1 is not None:
+            l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
         self._l1_changed(entity_id)
 
     def _l1_upsert(self, row: dict[str, Any], primary_key: str | tuple[str, ...]) -> None:
@@ -2110,13 +2138,16 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: nothing
         :rtype: None
         """
+        l1 = self._l1_holding_table()
+        if l1 is None:
+            return
         columns = (primary_key,) if isinstance(primary_key, str) else tuple(primary_key)
         key = tuple(row.get(column) for column in columns)
         entity_id = key if len(key) > 1 else key[0]
         try:
-            self._l1.upsert(self.table_name, row, primary_key)
+            l1.upsert(self.table_name, row, primary_key)
         except NonFiniteNumericError as exc:
-            self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), primary_key)
+            l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), primary_key)
             if not self.__dict__.get("_logged_non_finite_numeric"):
                 self.__dict__["_logged_non_finite_numeric"] = True
                 log.warning(
