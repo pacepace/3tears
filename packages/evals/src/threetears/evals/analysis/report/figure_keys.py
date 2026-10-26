@@ -99,9 +99,9 @@ _PER_THOUSAND_FACTORS: dict[str, float] = {"usd": 1000.0, "usd_per_1k": 1.0, "us
 
 #: The filters a key may carry. One spelling at most (``pct``, ``pts``, ``usd``, ``usd_per_1k``, ``int``,
 #: ``pct10``), plus ``abs`` and ``interval``, in any order.
-Filter = Literal["pct", "pts", "abs", "usd", "int", "pct10", "interval", "usd_per_1k"]
+Filter = Literal["pct", "pts", "abs", "usd", "int", "pct10", "interval", "usd_per_1k", "usd_whole"]
 _FILTERS: tuple[str, ...] = get_args(Filter)
-_SPELLINGS: frozenset[str] = frozenset({"pct", "pts", "usd", "usd_per_1k", "int", "pct10"})
+_SPELLINGS: frozenset[str] = frozenset({"pct", "pts", "usd", "usd_per_1k", "int", "pct10", "usd_whole"})
 
 #: How each filter reads, as the grammar teaches it.
 _FILTER_MEANS: dict[str, str] = {
@@ -114,7 +114,12 @@ _FILTER_MEANS: dict[str, str] = {
     "interval": "an interval's two ends, joined by 'to'",
     "usd_per_1k": "dollars per 1,000 of what the cost counts, with the words (`per 1,000 conversations` where the "
     "measure's label counts conversations)",
+    "usd_whole": "dollars to the whole dollar, thousands grouped, for a monthly or other large amount whose cents are "
+    "noise; refused under $10, which it would round away",
 }
+
+#: The least amount :data:`Filter` ``usd_whole`` reads: under it, whole dollars round away too much of the figure.
+_WHOLE_DOLLARS_FROM = 10.0
 
 #: The unit phrases a rendered figure is joined with, one template each, so a translation replaces them here; the
 #: phrase a cost's count reads in is :func:`~threetears.evals.analysis.report.cost_unit.per_count`'s.
@@ -2806,6 +2811,17 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
             return _Spelled(_money(value, signed))
         per_thousand = value * _PER_THOUSAND_FACTORS[figure.scale]
         return _Spelled(f"{_money(per_thousand, signed)} {per_count(figure.per, 1_000)}")
+    if spelling == "usd_whole":
+        if figure.scale not in _PER_THOUSAND_FACTORS:
+            raise _refuse(figure.path, f"cannot read as dollars: it is on the {figure.scale} scale")
+        if abs(value) < _WHOLE_DOLLARS_FROM:
+            raise _refuse(
+                figure.path,
+                f"is {_money(value, signed)}, under ${format_number(_WHOLE_DOLLARS_FROM)}, which whole dollars would "
+                "round away: write it with `usd`",
+            )
+        whole = "$" + group_thousands(format_number(float(round(abs(value)))))
+        return _Spelled(f"-{whole}" if value < 0 else _plus(whole, value) if signed else whole)
     if spelling == _PER_MILLION:
         # The package's money spelling (the scoreboard's): a price per million replies is whole dollars or near it,
         # and two decimals on it are noise.
@@ -3161,6 +3177,7 @@ _FILTER_EXAMPLES: dict[str, str] = {
     "pct10": "strata.off_topic.loss_share|pct10",
     "interval": "reading.fast.v2.interval|interval",
     "usd_per_1k": "scoreboard.base.reply_cost_usd|usd_per_1k",
+    "usd_whole": "cost_per_month.base|usd_whole",
 }
 
 

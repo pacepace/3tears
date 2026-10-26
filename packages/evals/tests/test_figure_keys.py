@@ -326,6 +326,19 @@ class TestFilters:
         assert _figure("measure.cost_per_1m.atlas-m.zero.mean", "int", name="r3") == "180"
         assert _figure("measure.cost_per_1m.atlas-m.zero.mean", "usd_per_1k", name="r3") == f"$0.18 per 1,000 {counted}"
 
+    def test_usd_whole_drops_a_large_amounts_cents_and_groups_its_thousands(self):
+        held = _input("r4")
+        month = resolve(f"cost_per_month.{held.arms[0].id}", held)
+        assert isinstance(month.value, float) and month.value >= 1000, "the control: a monthly amount in thousands"
+        assert format_figure(month, ("usd_whole",)) == f"${round(month.value):,}"
+
+    def test_usd_whole_refuses_an_amount_it_would_round_away_and_a_figure_that_is_no_money(self):
+        held = _input("r4")
+        with pytest.raises(UnresolvableReference, match="whole dollars would round away"):
+            format_figure(resolve(f"cost_per_1k.{held.arms[0].id}", held), ("usd_whole",))
+        with pytest.raises(UnresolvableReference, match="cannot read as dollars"):
+            format_figure(resolve("meta.volume_per_month", held), ("usd_whole",))
+
     def test_int_rounds_to_a_whole_number(self):
         assert _figure("flip_margin.qwen3.8-flash", "int") == "11"
         assert _figure("scoreboard.qwen3.8-flash.lost", "int") == "2"
@@ -560,7 +573,7 @@ class TestLiteralNumbers:
 class TestTheGrammar:
     def test_it_teaches_every_filter_with_a_rendered_example(self):
         grammar = figure_key_grammar()
-        for name in ("pct", "pts", "abs", "usd", "int", "pct10", "interval", "usd_per_1k"):
+        for name in ("pct", "pts", "abs", "usd", "int", "pct10", "interval", "usd_per_1k", "usd_whole"):
             assert f"- `{name}`:" in grammar, name
         assert '`{pass_rate.base|pct}` reads "85.3%"' in grammar
 
