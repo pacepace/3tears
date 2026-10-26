@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
+from types import TracebackType
+from typing import Self
 
 import pytest
 from pydantic import JsonValue, ValidationError
@@ -27,6 +29,8 @@ from threetears.search.contracts import (
     ScoreEntry,
     SearchTransport,
     Spend,
+    StreamedResponse,
+    StreamingTransport,
     TransportResponse,
 )
 from packages.search.tests.search_instances import PROVENANCE
@@ -160,6 +164,179 @@ async def test_fetch_transport_is_a_second_seam_not_a_widening() -> None:
     )
     response = await fetcher.fetch("GET", "https://example.org/page", max_bytes=4)
     assert len(response.body) <= 4
+
+
+class FakeStreamedResponse(StreamedResponse):  # parity-with: threetears.search.contracts.StreamedResponse
+    """An open stream over canned chunks, released by ``async with`` or ``aclose``."""
+
+    def __init__(self, url: str, chunks: tuple[bytes, ...]) -> None:
+        """Hold the chunks the body will yield.
+
+        :param url: the URL that answered
+        :ptype url: str
+        :param chunks: the body, chunk by chunk
+        :ptype chunks: tuple[bytes, ...]
+        """
+        self._url = url
+        self._chunks = list(chunks)
+        self.closed = False
+
+    @property
+    def status_code(self) -> int:
+        """Always 200.
+
+        :return: 200
+        :rtype: int
+        """
+        return 200
+
+    @property
+    def headers(self) -> Mapping[str, str]:
+        """An event-stream content type.
+
+        :return: the headers
+        :rtype: Mapping[str, str]
+        """
+        return {"content-type": "text/event-stream"}
+
+    @property
+    def final_url(self) -> str:
+        """The URL asked for.
+
+        :return: the URL
+        :rtype: str
+        """
+        return self._url
+
+    @property
+    def egress(self) -> str:
+        """Always ``direct``.
+
+        :return: the egress name
+        :rtype: str
+        """
+        return EGRESS_DIRECT
+
+    @property
+    def attempts(self) -> int:
+        """One attempt.
+
+        :return: 1
+        :rtype: int
+        """
+        return 1
+
+    @property
+    def elapsed_seconds(self) -> float:
+        """A token figure.
+
+        :return: elapsed seconds
+        :rtype: float
+        """
+        return 0.001
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        """Yield the canned chunks.
+
+        :return: the chunks
+        :rtype: AsyncIterator[bytes]
+        """
+        return self._iterate()
+
+    async def _iterate(self) -> AsyncIterator[bytes]:
+        """Yield the canned chunks until closed.
+
+        :return: the chunks
+        :rtype: AsyncIterator[bytes]
+        """
+        while self._chunks and not self.closed:
+            yield self._chunks.pop(0)
+
+    async def aclose(self) -> None:
+        """Mark the stream released."""
+        self.closed = True
+
+    async def __aenter__(self) -> Self:
+        """Enter the owning block.
+
+        :return: this stream
+        :rtype: Self
+        """
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Release on leaving the block.
+
+        :param exc_type: exception type, if any
+        :ptype exc_type: type[BaseException] | None
+        :param exc: the exception, if any
+        :ptype exc: BaseException | None
+        :param traceback: the traceback, if any
+        :ptype traceback: TracebackType | None
+        """
+        await self.aclose()
+
+
+class FakeStreamingTransport(StreamingTransport):  # parity-with: threetears.search.contracts.StreamingTransport
+    """Minimal in-memory implementer of the streaming seam."""
+
+    @property
+    def egress_name(self) -> str:
+        """Report the configured exit's name.
+
+        :return: always ``direct`` for this fake
+        :rtype: str
+        """
+        return EGRESS_DIRECT
+
+    async def stream(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        json_body: Mapping[str, JsonValue] | None = None,
+        timeout_seconds: float | None = None,
+        max_bytes: int,
+    ) -> StreamedResponse:
+        """Answer every stream with two canned chunks.
+
+        :param method: HTTP method
+        :ptype method: str
+        :param url: absolute URL
+        :ptype url: str
+        :param headers: ignored
+        :ptype headers: Mapping[str, str] | None
+        :param json_body: ignored
+        :ptype json_body: Mapping[str, JsonValue] | None
+        :param timeout_seconds: ignored
+        :ptype timeout_seconds: float | None
+        :param max_bytes: the per-call cap the seam requires
+        :ptype max_bytes: int
+        :return: an open stream
+        :rtype: StreamedResponse
+        """
+        return FakeStreamedResponse(url, (b"data: a", b"\n\n"))
+
+
+async def test_streaming_transport_is_a_third_seam_not_a_widening() -> None:
+    """AD11: a stream is its own protocol, so neither earlier seam's implementers become non-conformant."""
+    streamer = FakeStreamingTransport()
+    assert isinstance(streamer, StreamingTransport)
+    assert not isinstance(FakeSearchTransport(), StreamingTransport)
+    assert not isinstance(FakeFetchTransport(), StreamingTransport)
+    assert not isinstance(streamer, SearchTransport | FetchTransport), "streaming implies neither earlier seam"
+
+    response = await streamer.stream("POST", "https://answers.example/v1", max_bytes=64)
+    assert isinstance(response, StreamedResponse)
+    async with response:
+        assert response.status_code == 200, "the head is readable before the body"
+        assert b"".join([chunk async for chunk in response]) == b"data: a\n\n"
 
 
 def test_unknown_plain_criterion_key_is_rejected() -> None:

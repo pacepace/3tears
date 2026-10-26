@@ -65,7 +65,7 @@ JUDGE_IDENTITIES: dict[str, str] = {
 }
 
 #: The final release the table below was taken at: the ``since`` of ``MIGRATIONS.toml``'s ``unreleased`` section.
-RELEASED_AT = "v0.78.0"
+RELEASED_AT = "v0.79.0"
 
 #: Every judge fingerprint as :data:`RELEASED_AT` shipped it, the baseline a wording change is announced against.
 #: v0.71.0 through v0.78.0 shipped the judges v0.70.0 did, unchanged. A copy for the reader: what a wording change is
