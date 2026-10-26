@@ -1294,22 +1294,20 @@ def _reader_id_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_
 
 
 def _typed_ids(text: str, ids: Mapping[str, tuple[str, str]], shown: Iterable[str]) -> list[str]:
-    """The ids ``text`` types outside its keys and outside any name a reader is shown, each once, in order found."""
+    """The ids ``text`` types outside its keys and outside any name a reader is shown, each once, in order found.
+
+    Names and ids are matched in one pass, longest first, each masked where it matched, so a shown name that is a
+    bounded prefix of an id (``Tone`` in ``tone.kept``) never hides the id, and an id inside a longer shown name is
+    that name."""
     masked = list(_KEY_SPAN.sub(lambda match: "_" * len(match.group()), text))
-
-    def mask(pattern: re.Pattern[str]) -> None:
-        for match in pattern.finditer("".join(masked)):
+    candidates = {name: False for name in shown} | dict.fromkeys(ids, True)
+    found: dict[str, int] = {}
+    for name in sorted(candidates, key=len, reverse=True):
+        for match in _bounded(name).finditer("".join(masked)):
             masked[match.start() : match.end()] = "_" * (match.end() - match.start())
-
-    for name in sorted(shown, key=len, reverse=True):
-        mask(_bounded(name))
-    typed: list[str] = []
-    for identifier in sorted(ids, key=len, reverse=True):
-        pattern = _bounded(identifier)
-        if pattern.search("".join(masked)):
-            typed.append(identifier)
-            mask(pattern)
-    return sorted(typed, key=lambda identifier: text.lower().find(identifier.lower()))
+            if candidates[name]:
+                found.setdefault(name, match.start())
+    return sorted(found, key=found.__getitem__)
 
 
 #: A key as prose holds it, set aside before ids are looked for.

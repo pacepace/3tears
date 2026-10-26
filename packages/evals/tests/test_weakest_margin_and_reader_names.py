@@ -165,6 +165,22 @@ def test_an_id_shaped_id_above_full_results_is_refused_with_its_reader_name() ->
     ]
 
 
+def test_a_shown_name_that_is_a_bounded_prefix_of_an_id_does_not_hide_it() -> None:
+    """Names and ids match in one pass, longest first: the shown name ``Tone`` never masks the ``tone`` of the id
+    ``tone.kept``, so both ids the text types are found, in the order it types them."""
+    data = json.loads((HERE / "r5" / "input.json").read_text(encoding="utf-8"))
+    data["arms"][1]["short_name"] = "Tone"
+    data["strata"].append({**data["strata"][0], "id": "tone.kept"})
+    plan = _anchor("r5")
+    plan["sections"][1]["headline"] = "The tone.kept loss and off_lane."
+    with pytest.raises(PlanRefusal) as refused:
+        validate_plan(ReportPlan.model_validate(plan), ReportInput.model_validate(data))
+    assert [why for path, why in refused.value.faults if path == "sections[1].headline"] == [
+        "types the stratum id 'tone.kept' above Full results: write its reader name, 'tone kept'",
+        "types the stratum id 'off_lane' above Full results: write its reader name, 'off lane'",
+    ]
+
+
 def test_a_plain_word_id_a_percentile_a_key_and_method_are_not_refused() -> None:
     plan = _anchor("r5")
     _slot(plan, "next")["text"] += " The multi and about strata matter less."
@@ -184,8 +200,9 @@ def test_the_quoted_question_is_refused_above_full_results_and_allowed_in_method
     assert _faults(plan) == []
 
 
-def test_every_anchor_and_planner_run_cites_the_weakest_margin_in_a_decide_watch() -> None:
-    plans = [*HERE.glob("r*/anchor.plan.json"), *HERE.glob("r*/runs/*.plan.json")]
+def test_every_anchor_and_current_planner_run_cites_the_weakest_margin_in_a_decide_watch() -> None:
+    """The current runs only: a historical run predates the weakest margin, and is kept as it was recorded."""
+    plans = [*HERE.glob("r*/anchor.plan.json"), *(dataset.current_run(name) for name in dataset.current_runs())]
     assert plans
     for path in plans:
         plan = dataset.load_plan(Path(path))
