@@ -1655,7 +1655,9 @@ KAIRO_PROSE = [
     "durable_claims[1].text",
 ]
 
-#: The plan's prose fields, by model: the D3 field set this module documents.
+#: The plan's prose fields, each by the exported model that holds it and its place there (``[]`` a list's items):
+#: the D3 field set this module documents. A field of a part the module keeps private is named by where it sits in
+#: the exported model holding it, so the set reads the module's front door and never a private model's name.
 PROSE_FIELDS = {
     ("PlannedReport", "headline"),
     ("PlannedReport", "lede"),
@@ -1665,53 +1667,55 @@ PROSE_FIELDS = {
     ("CaveatClause", "material_if"),
     ("WarningAnswer", "text"),
     ("DurableClaim", "text"),
-    ("_PlannedSection", "eyebrow"),
-    ("_PlannedSection", "headline"),
-    ("_PlannedSection", "takeaway"),
-    ("_PlannedSection", "caption"),
+    ("PlannedReport", "sections[].eyebrow"),
+    ("PlannedReport", "sections[].headline"),
+    ("PlannedReport", "sections[].takeaway"),
+    ("PlannedReport", "sections[].caption"),
     ("PlannedChart", "title"),
     ("Explore", "title"),
     ("Explore", "recomputes"),
     ("ExploreControl", "title"),
     ("MethodItem", "term"),
     ("MethodItem", "text"),
-    # The planner's own models of the same prose, which the module keeps private and the walk reaches through the
-    # models holding them: the flag's words, an answer by its warning's position, and a prose call's text, which
-    # assembles into one of the fields above.
-    ("_PlannedFlag", "title"),
-    ("_PlannedFlag", "text"),
-    ("_PlannedAnswer", "text"),
-    ("_ProseItem", "text"),
+    # The planner's own parts of the same prose: the flag's words, an answer by its warning's position, and a prose
+    # call's text, which assembles into one of the fields above.
+    ("PlannedReport", "flag[].title"),
+    ("PlannedReport", "flag[].text"),
+    ("PlannedReport", "answers[].text"),
+    ("PlanProse", "prose[].text"),
 }
+
+
+def _held_models(annotation: Any) -> list[type[BaseModel]]:
+    return [arg for arg in (annotation, *get_args(annotation)) if isinstance(arg, type) and issubclass(arg, BaseModel)]
 
 
 class TestD3:
     def test_the_prose_fields_are_the_documented_set(self):
-        """D3 walks every field typed prose; this holds that set to the one the module documents. The models walked
-        are every one the module exports and every one their fields hold, the stored plan's completions of the
-        planner's parts aside (their prose is the parts')."""
+        """D3 walks every field typed prose; this holds that set to the one the module documents. Each exported model
+        is walked with every model its fields hold that the module does not export, a field named by its place in the
+        exported one; the stored plan's completions of the planner's parts aside (their prose is the parts')."""
         stored = (report_plan.ReportPlan, report_plan.ChartSpec, report_plan.Section)
-        models: list[type[BaseModel]] = []
-        unread = [
-            getattr(report_plan, name) for name in report_plan.__all__ if isinstance(getattr(report_plan, name), type)
+        exported = [
+            model
+            for name in report_plan.__all__
+            if isinstance(model := getattr(report_plan, name), type) and issubclass(model, BaseModel)
         ]
-        while unread:
-            model = unread.pop()
-            if model in models or model in stored:
-                continue
-            models.append(model)
-            for field in model.model_fields.values():
-                unread += [
-                    arg
-                    for arg in (field.annotation, *get_args(field.annotation))
-                    if isinstance(arg, type) and issubclass(arg, BaseModel)
-                ]
-        prose = {
-            (model.__name__, name)
-            for model in models
-            for name, field in model.model_fields.items()
-            if field_is_prose(field)
-        }
+        prose: set[tuple[str, str]] = set()
+
+        def walk(owner: type[BaseModel], model: type[BaseModel], place: str) -> None:
+            for name, field in model.model_fields.items():
+                at = f"{place}{name}"
+                if field_is_prose(field):
+                    prose.add((owner.__name__, at))
+                for held in _held_models(field.annotation):
+                    if held not in exported:
+                        many = held is not field.annotation
+                        walk(owner, held, f"{at}[]." if many else f"{at}.")
+
+        for model in exported:
+            if model not in stored:
+                walk(model, model, "")
         assert prose == PROSE_FIELDS
 
     def test_the_kairo_plan_holds_every_prose_field_listed(self):
