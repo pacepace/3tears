@@ -367,6 +367,70 @@
       "note": "The campaign's question quoted above Full results, in the campaign's own ids."
     },
     {
+      "plan": "anchors/weak/refused-units.plan.json",
+      "input": "r2",
+      "from": "r2/anchor.plan.json",
+      "expect": "refused",
+      "rule": "units",
+      "faults": [
+        [
+          "lede",
+          "writes 'ms' right after"
+        ]
+      ],
+      "plan_digest": "19e49e2e5025f4ccc9c603b1375c254e49b15ae1e1d19276d88a5fdb45a35346",
+      "labeled_by": "pending_owner",
+      "note": "A unit written right after a key that prints it (the key spells 513 ms, and the prose adds ms)."
+    },
+    {
+      "plan": "anchors/weak/refused-units-sub-cent.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "units",
+      "faults": [
+        [
+          "decision.slots[0].text",
+          "under one cent"
+        ]
+      ],
+      "plan_digest": "7f3895f652d7d2512d8c59903744fc41220a87c352eba9234c22a3ce335298dd",
+      "labeled_by": "pending_owner",
+      "note": "A cost per reply under one cent, on a page that states its costs per 1,000 replies."
+    },
+    {
+      "plan": "anchors/weak/refused-columns.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "columns",
+      "faults": [
+        [
+          "options.columns[5]",
+          "is no column family code renders"
+        ]
+      ],
+      "plan_digest": "cde4b104927e3db30fe09ab7333c96e16886c1f6eb97a6fea61a247ea7ea15a4",
+      "labeled_by": "pending_owner",
+      "note": "An options column outside the column families code renders."
+    },
+    {
+      "plan": "anchors/weak/refused-small-multiples.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "small_multiples",
+      "faults": [
+        [
+          "summary[0].query.small_multiples_by",
+          "draws no small multiples of a 'forest'"
+        ]
+      ],
+      "plan_digest": "434cdd76e467b133b869b8669eab2c77e6767a5c3e2b24c6a76189c8fbf59ec8",
+      "labeled_by": "pending_owner",
+      "note": "Small multiples asked of a forest, which the kit does not panel."
+    },
+    {
       "plan": "anchors/weak/item-R2.plan.json",
       "input": "r5",
       "from": "r5/anchor.plan.json",

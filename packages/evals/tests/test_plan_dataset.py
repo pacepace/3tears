@@ -57,8 +57,11 @@ RULES = frozenset(
         "flag",
         "coverage",
         "charts",
+        "small_multiples",
+        "columns",
         "keys",
         "literal_digits",
+        "units",
         "weakest",
         "reader_ids",
     }
