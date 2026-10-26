@@ -1102,6 +1102,21 @@ class TestUnsettledPastTheMargin:
         carried = _confident(_recommending_flash(_plan()), "high_if_immaterial", _UNSETTLED)
         assert _confidence_and_coverage(carried, data) == []
 
+    def test_a_flag_disclosing_it_weakens_the_measures_its_aspects_contrasts_read(self):
+        """A low plan leaves the open unsettled aspect to the flag, which weakens the measures read on that aspect and
+        leaves the others standing."""
+        data = _voice(_nothing_open(_flash_data()), "qwen3.8-flash")
+        on_voice = {**data["contrasts"][1], "arm": "1017", "aspect": "voice"}
+        data["contrasts"].append(on_voice)
+        plan = _confident(_recommending_flash(_plan()), "low")
+        plan["flag"] = [{**_NO_RULE_FLAG, "title": "Voice is unsettled.", "discloses": ["unsettled:voice"]}]
+        completed, faults = _completed("r5", plan, data)
+        assert faults == [] and completed is not None
+        (flag,) = completed.flag
+        assert flag.discloses == ["unsettled:voice"]
+        assert flag.weakens == [f"judged:{on_voice['measure']}"]
+        assert flag.weakens[0] not in flag.survives and flag.survives
+
 
 # --- coverage ------------------------------------------------------------------------------------------------------
 

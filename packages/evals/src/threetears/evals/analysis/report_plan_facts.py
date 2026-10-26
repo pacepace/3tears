@@ -46,7 +46,7 @@ them all.
 contrast reads; a criterion set after the results weakens the readings those criteria decide (every contrast that is
 not a measure's, which the margin and the floors are read on, and a named late criterion's own measure); a confound or
 an apparatus confound weakens the measures whose contrasts name it; a short run of the whole comparison weakens every
-measure. What survives is
+measure; an aspect left unsettled past its margin weakens the measures its contrasts read. What survives is
 every other measure a contrast reads. Judged dimensions are written ``judged:<dim>``, as the options columns write
 them.
 
@@ -526,6 +526,9 @@ def _weakened(report_input: ReportInput, discloses: Sequence[str]) -> list[str]:
             weak |= named(confound in c.confounds for c in contrasts)
         elif disclosure.startswith("short_run:"):
             weak |= set(_contrasted(report_input))
+        elif disclosure.startswith("unsettled:"):
+            aspect = disclosure.removeprefix("unsettled:")
+            weak |= named(c.aspect == aspect for c in contrasts)
     ordered = _contrasted(report_input)
     return [measure for measure in ordered if measure in weak] + sorted(weak - set(ordered))
 
