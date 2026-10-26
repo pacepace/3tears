@@ -10,7 +10,9 @@ Contracts held here:
   and lists every version there is. v1 holds R1 (code's) to R11, each once; v2 holds R1 to R12, changing only R4 and
   R10 and adding R12; the dataset reads the newest by default.
 - **Anchors.** ``anchors/LABELS.json`` labels every anchor and weakened copy, and nothing else; each is pending the
-  owner or the owner's. Each input's anchor passes the plan checks and R1. Each refused copy fails exactly the faults
+  owner or the owner's, and pins its plan's sha256. The five pass anchors are the owner's (signed off 2026-10-26), the
+  copies pending; an owner label holds only on the plan bytes it was given, and a regeneration that moves them drops
+  it back to pending. Each input's anchor passes the plan checks and R1. Each refused copy fails exactly the faults
   its label lists (one rule, nothing more), and every rule of the plan checks has one. Each copy weakened on an item
   passes the plan checks with its anchor's structure, only prose changed, and every model-scored item has one.
   ``weaken_anchors.py`` writes exactly the committed copies and labels.
@@ -190,6 +192,28 @@ def test_the_labels_cover_every_anchor_and_nothing_else() -> None:
     on_disk |= {path.relative_to(HERE).as_posix() for path in (HERE / "anchors" / "weak").glob("*.plan.json")}
     assert set(labeled) == on_disk
     assert {entry["labeled_by"] for entry in dataset.labels()} <= {"pending_owner", "owner"}
+
+
+def test_every_label_pins_the_digest_of_the_plan_it_labels() -> None:
+    for entry in dataset.labels():
+        assert entry["plan_digest"] == dataset.sha256_file(HERE / entry["plan"]), (
+            f"{entry['plan']} changed after it was labeled: an owner label belongs to the text the owner saw"
+        )
+
+
+def test_the_five_anchors_are_the_owners_and_the_copies_pending() -> None:
+    owner = {entry["plan"]: entry.get("labeled_at") for entry in dataset.labels() if entry["labeled_by"] == "owner"}
+    assert owner == {f"{name}/anchor.plan.json": "2026-10-26" for name in ("r1", "r2", "r3", "r4", "r5")}
+    assert all(entry["labeled_by"] == "pending_owner" for entry in dataset.labels() if entry["expect"] != "pass")
+
+
+def test_a_regeneration_keeps_an_owner_label_only_on_the_plan_it_was_given() -> None:
+    previous = dataset.labels()
+    r5 = next(entry for entry in previous if entry["plan"] == "r5/anchor.plan.json")
+    kept = weaken_anchors.carried_label(previous, r5["plan"], r5["plan_digest"])
+    assert kept == {"labeled_by": "owner", "labeled_at": "2026-10-26"}
+    assert weaken_anchors.carried_label(previous, r5["plan"], "0" * 64) == {"labeled_by": "pending_owner"}
+    assert weaken_anchors.carried_label([], r5["plan"], r5["plan_digest"]) == {"labeled_by": "pending_owner"}
 
 
 def test_each_inputs_anchor_passes_the_checks_and_r1() -> None:

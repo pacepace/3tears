@@ -13,14 +13,17 @@ Two kinds of copy:
 - **Weak on an item** (``item-<id>``): its prose is weakened on one model-scored rubric item, and it still passes the
   plan checks with the same structure as its anchor: only prose fields differ.
 
-Every entry, the anchors included, is labeled ``pending_owner``: the owner approves an anchor (and its expected verdict)
-before it counts as a human label.
+Every entry pins the sha256 of the plan it labels (``plan_digest``). An entry starts ``pending_owner``; the owner approves
+an anchor (and its expected verdict) before it counts as a human label, recorded as ``labeled_by: owner`` with the
+day (``labeled_at``). An owner label belongs to the text the owner saw, so a regeneration keeps it only while the
+plan's bytes are unchanged (:func:`carried_label`); a plan that moved drops back to ``pending_owner``.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,11 +34,13 @@ from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_checks import validate_plan
 from threetears.evals.kernel.report_plan import ReportPlan
 
-__all__ = ["ANCHORS", "WEAKENINGS", "Weakening", "build", "main"]
+__all__ = ["ANCHORS", "LABELS_SCHEMA", "WEAKENINGS", "Weakening", "build", "carried_label", "main"]
 
 HERE = Path(__file__).resolve().parent
 WEAK = HERE / "anchors" / "weak"
 LABELS = HERE / "anchors" / "LABELS.json"
+#: The labels file's schema id: each entry pins its plan's digest, and an owner label its day.
+LABELS_SCHEMA = "plan-anchor-labels/2"
 
 #: The anchors, by input, with what each note says about where it came from.
 ANCHORS = {
@@ -453,22 +458,52 @@ def _faults(plan: Plan, report_input: ReportInput) -> tuple[tuple[str, str], ...
     return ()
 
 
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def carried_label(previous: Sequence[Mapping[str, Any]], plan: str, digest: str) -> dict[str, Any]:
+    """Who labels ``plan`` now: the label it had, while its plan is the text that label was given on, else none yet.
+
+    :param previous: The entries the labels file held before this regeneration.
+    :param plan: The plan's path under this directory.
+    :param digest: The sha256 of the plan's bytes as written now.
+    :return: ``labeled_by`` (``owner`` or ``pending_owner``), with ``labeled_at`` for an owner label.
+    """
+    entry = next((entry for entry in previous if entry.get("plan") == plan), None)
+    if entry is not None and entry.get("labeled_by") == "owner" and entry.get("plan_digest") == digest:
+        return {"labeled_by": "owner", "labeled_at": entry["labeled_at"]}
+    return {"labeled_by": "pending_owner"}
+
+
+def _previous_labels() -> list[dict[str, Any]]:
+    if not LABELS.is_file():
+        return []
+    entries: list[dict[str, Any]] = json.loads(LABELS.read_text(encoding="utf-8"))["anchors"]
+    return entries
+
+
 def build() -> tuple[dict[str, str], dict[str, Any]]:
     """Every weakened copy as the text written, by path under this directory, and the labels file.
 
     :raises ValueError: A copy is not what its entry says.
     """
     files: dict[str, str] = {}
-    entries: list[dict[str, Any]] = [
-        {
-            "plan": f"{name}/anchor.plan.json",
-            "input": name,
-            "expect": "pass",
-            "labeled_by": "pending_owner",
-            "note": note,
-        }
-        for name, note in ANCHORS.items()
-    ]
+    previous = _previous_labels()
+    entries: list[dict[str, Any]] = []
+    for name, note in ANCHORS.items():
+        plan = f"{name}/anchor.plan.json"
+        digest = _digest((HERE / plan).read_text(encoding="utf-8"))
+        entries.append(
+            {
+                "plan": plan,
+                "input": name,
+                "expect": "pass",
+                "plan_digest": digest,
+                **carried_label(previous, plan, digest),
+                "note": note,
+            }
+        )
     for weakening in WEAKENINGS:
         anchor: Plan = json.loads((HERE / weakening.source / "anchor.plan.json").read_text(encoding="utf-8"))
         plan = deepcopy(anchor)
@@ -491,10 +526,12 @@ def build() -> tuple[dict[str, str], dict[str, Any]]:
             if faults:
                 raise ValueError(f"{weakening.name} weakens prose only, and the checks refuse it: {list(faults)}")
             entry |= {"expect": "fails_item", "item": weakening.item}
-        entry |= {"labeled_by": "pending_owner", "note": weakening.note}
+        text = json.dumps(plan, indent=2, ensure_ascii=False) + "\n"
+        digest = _digest(text)
+        entry |= {"plan_digest": digest, **carried_label(previous, entry["plan"], digest), "note": weakening.note}
         entries.append(entry)
-        files[entry["plan"]] = json.dumps(plan, indent=2, ensure_ascii=False) + "\n"
-    return files, {"schema": "plan-anchor-labels/1", "anchors": entries}
+        files[entry["plan"]] = text
+    return files, {"schema": LABELS_SCHEMA, "anchors": entries}
 
 
 def main() -> None:
