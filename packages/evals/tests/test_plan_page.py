@@ -11,7 +11,11 @@ words, and the reference page's source, whose landmarks are parsed, never typed 
   caption naming each asked comparison the input holds none of; a figure from zero, a summary chart in the options
   table's order with what fails the gates faded and the recommendation bold; each arm less the control per stratum,
   bold by the descriptive 95% rule; a line per arm over the slices; a card per selected example; small multiples a
-  panel per arm or per slice, as the plan asks. No note prints a signed zero. A kind no resolver draws yet (P4-22) is refused, naming its kind and source; a whole page here
+  panel per arm or per slice, as the plan asks. No note prints a signed zero. Every (kind, source) pair the
+  resolvers draw that no committed plan draws is held too, on an anchor's chart redrawn as that kind and source, its
+  expected side computed from the input; and each arm less the control is refused on an input with no control. A
+  chart its kind's resolver cannot draw from the input is refused, naming its kind and source, never drawn empty; a
+  whole page here
   leaves those charts out by kind.
 - **Tables.** The options table is the plan's rows and code's column families, each cell what its figure key reads,
   the recommended (or leaned) row set apart; a column outside the families is refused. The arms key shows each arm
@@ -33,7 +37,7 @@ import math
 import re
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
@@ -81,13 +85,6 @@ REFERENCE_PLAN = KIT / "references" / "r5-kairo-round2.plan.json"
 REFERENCE_SOURCE = KIT / "references" / "r5-kairo-round2.src.html"
 GENERATOR = KIT / "GENERATOR.md"
 
-#: The kinds whose resolvers are a later chunk's (P4-22). A whole page built here leaves a chart of one out, by kind;
-#: the dispatcher refuses one, which a test below holds. The gate family's charts (``test_plan_charts_gates.py``) are
-#: drawn on every page here.
-_LATER_KINDS = frozenset(
-    {"dot_interval", "range_bars", "scatter_frontier", "heatmap", "diff_heatmap", "confusion", "table"}
-)
-
 #: A signed zero, which the package's number rule never writes for a change it holds digits of.
 _SIGNED_ZERO = re.compile(r"(?<![\d.])[+-]0(?![\d.])")
 
@@ -113,38 +110,23 @@ def _plan(path: Path) -> ReportPlan:
     return dataset.load_plan(path)
 
 
-def _drawable(plan: ReportPlan) -> ReportPlan:
-    """The plan less every chart of a kind a later chunk resolves: the page builder never re-checks a plan."""
-    return plan.model_copy(
-        update={
-            "summary": [chart for chart in plan.summary if chart.kind not in _LATER_KINDS],
-            "sections": [section for section in plan.sections if section.chart.kind not in _LATER_KINDS],
-        }
-    )
-
-
-#: The plans whose page draws a chart of this chunk's kinds: a static page's test needs a figure to hold.
-_CHARTED = [
-    (name, label, path)
-    for name, label, path in _PLANS
-    if _drawable(_plan(path)).summary or _drawable(_plan(path)).sections
-]
+#: The plans whose page draws a chart: a static page's test needs a figure to hold.
+_CHARTED = [(name, label, path) for name, label, path in _PLANS if _plan(path).summary or _plan(path).sections]
 _CHARTED_IDS = [f"{name}-{label}" for name, label, _ in _CHARTED]
 
 
 @functools.cache
 def _page(name: str, path: Path) -> PlannedPage:
-    return plan_page(_drawable(_plan(path)), _input(name))
+    return plan_page(_plan(path), _input(name))
 
 
 def _charts(plan: ReportPlan, page: PlannedPage) -> list[tuple[ChartSpec, ChartBlock, list[str], bool]]:
     """Each drawn chart beside the stored chart it resolves, its notes, and whether it is a summary chart."""
-    drawable = _drawable(plan)
     pairs: list[tuple[ChartSpec, ChartBlock, list[str], bool]] = []
-    for spec, chart in zip(drawable.summary, page.summary, strict=True):
+    for spec, chart in zip(plan.summary, page.summary, strict=True):
         assert isinstance(chart.chart, ChartBlock)
         pairs.append((spec, chart.chart, chart.notes, True))
-    for section, drawn in zip(drawable.sections, page.sections, strict=True):
+    for section, drawn in zip(plan.sections, page.sections, strict=True):
         assert isinstance(drawn.chart.chart, ChartBlock)
         pairs.append((section.chart, drawn.chart.chart, drawn.chart.notes, False))
     return pairs
@@ -184,16 +166,30 @@ def test_every_chart_of_this_chunks_kinds_resolves_to_its_own_kind_with_values_t
         assert rows, f"{spec.kind} over {spec.query.source} drew nothing"
 
 
-def test_a_chart_kind_no_resolver_draws_is_refused_naming_its_kind_and_source() -> None:
-    name, plan = next(
-        (name, _plan(path))
-        for name, _, path in _PLANS
-        if any(section.chart.kind in _LATER_KINDS for section in _plan(path).sections)
-    )
-    later = next(section.chart for section in plan.sections if section.chart.kind in _LATER_KINDS)
+#: Every chart kind a plan stores but the plain table, which draws any source.
+_DRAWN_KINDS = sorted(set(get_args(ChartSpec.model_fields["kind"].annotation)) - {"table"})
+
+
+def _undrawable_source(kind: str) -> str:
+    """A source the plan checks refuse for ``kind``, so its resolver never draws it: confusion axes for every kind
+    but the confusion matrix, which reads only those, and target-matrix cells for it and for example cards."""
+    return "cells" if kind in ("confusion", "examples") else "confusion"
+
+
+@pytest.mark.parametrize("kind", _DRAWN_KINDS)
+def test_a_chart_its_kind_cannot_draw_is_refused_naming_its_kind_and_source(kind: str) -> None:
+    """A stored chart over a source its kind does not draw (a plan the checks would refuse, read without them) is a
+    typed refusal naming both, never a chart drawn empty or a crash. r3 holds confusion axes and cells, so the source
+    has rows to draw."""
+    source = _undrawable_source(kind)
+    plan = _plan(dataset.HERE / "r3" / "anchor.plan.json")
+    section = plan.sections[0]
+    query = section.chart.query.model_copy(update={"source": source})
+    chart = section.chart.model_copy(update={"kind": kind, "query": query})
+    refused_plan = plan.model_copy(update={"summary": [], "sections": [section.model_copy(update={"chart": chart})]})
     with pytest.raises(UnresolvableReference) as refused:
-        plan_page(plan, _input(name))
-    assert repr(later.kind) in str(refused.value) and repr(later.query.source) in str(refused.value)
+        plan_page(refused_plan, _input("r3"))
+    assert repr(kind) in str(refused.value) and repr(source) in str(refused.value)
 
 
 @pytest.mark.parametrize(("name", "plan", "spec", "block", "notes", "summary"), _charts_of("forest", "readings"))
@@ -586,7 +582,7 @@ _PAGE_ORDER = (
 def test_the_page_lays_its_parts_out_in_generator_order_and_draws_none_the_plan_drops(
     name: str, label: str, path: Path
 ) -> None:
-    plan, page = _drawable(_plan(path)), _page(name, path)
+    plan, page = _plan(path), _page(name, path)
     html = planned_page_html(page)
     present = {
         'data-part="flag"': bool(plan.flag),
@@ -607,7 +603,7 @@ def test_the_page_lays_its_parts_out_in_generator_order_and_draws_none_the_plan_
 
 
 def test_a_page_whose_plan_drops_its_flag_summary_and_arms_key_draws_none_of_them() -> None:
-    plan = _drawable(_plan(dataset.HERE / "r4" / "anchor.plan.json"))
+    plan = _plan(dataset.HERE / "r4" / "anchor.plan.json")
     assert plan.flag and plan.summary and plan.show_arms_key
     dropped = plan.model_copy(update={"flag": [], "summary": [], "show_arms_key": False})
     html = planned_page_html(plan_page(dropped, _input("r4")))
@@ -685,7 +681,7 @@ def _hostile_prose(value: Any) -> Any:
     ("name", "path"), [("r5", REFERENCE_PLAN), ("r4", dataset.HERE / "r4" / "anchor.plan.json")], ids=["r5", "r4"]
 )
 def test_markup_in_plan_prose_and_input_names_is_text_on_the_page(name: str, path: Path) -> None:
-    plan = _drawable(_plan(path))
+    plan = _plan(path)
     data = _hostile_prose(plan.model_dump(by_alias=True))
     data["masthead"]["system"] = HOSTILE_LINE
     data["lede"] = HOSTILE.split("<iframe")[0]  # the lede holds two sentences at most
@@ -860,3 +856,283 @@ def test_small_multiples_are_a_panel_per_arm_or_per_slice_as_the_plan_asks(
     else:
         assert [panel.title for panel in data.panels] == [item.name or item.id.replace("_", " ") for item in slices]
         assert all({row.id for row in panel.rows or []} <= set(names) for panel in data.panels)
+
+
+# --- every (kind, source) pair a resolver draws, beyond the ones a committed plan draws ---------------------------
+#
+# Each test takes an anchor's own chart, sets the kind and source, and computes what it should draw from the input
+# directly: never typed in, never through the resolver's own helpers.
+
+
+def _redrawn(plan: ReportPlan, chart: ChartSpec, *, kind: str, level: str = "", **query: Any) -> ReportPlan:
+    """The plan with one section only, drawing ``chart`` as ``kind`` with its query updated, its level set and its
+    stored axis and reference line cleared (they were the old kind's)."""
+    spec = chart.model_copy(
+        update={
+            "kind": kind,
+            "query": chart.query.model_copy(update=query),
+            "level": level,
+            "domain": [],
+            "reference": [],
+        }
+    )
+    shell = plan.sections[0].model_copy(update={"id": "redrawn", "chart": spec})
+    return plan.model_copy(update={"summary": [], "sections": [shell]})
+
+
+def _drawn(plan: ReportPlan, report_input: ReportInput) -> tuple[Any, list[str]]:
+    (section,) = plan_page(plan, report_input).sections
+    block = section.chart.chart
+    assert isinstance(block, ChartBlock)
+    return block.data, section.chart.notes
+
+
+def _bars_of(data: Any) -> list[Any]:
+    assert isinstance(data, BarsChart)
+    return [row for panel in data.panels or [] for row in panel.rows or []] + list(data.rows or [])
+
+
+def _section(plan: ReportPlan, section_id: str) -> ChartSpec:
+    return next(section.chart for section in plan.sections if section.id == section_id)
+
+
+def _with_control(report_input: ReportInput, arm: str) -> ReportInput:
+    """The input with ``arm`` as its control."""
+    data = report_input.model_dump(by_alias=True, exclude_none=True)
+    for held in data["arms"]:
+        if held["id"] == arm:
+            held["role"] = "control"
+    return ReportInput.model_validate(data)
+
+
+def test_diverging_bars_over_configs_draw_each_levers_effect_averaged_over_the_other_factors() -> None:
+    report_input = _input("r2")
+    plan = _plan(dataset.HERE / "r2" / "anchor.plan.json")
+    chart = _section(plan, "levers")
+    (key,) = chart.query.measures
+    data, notes = _drawn(_redrawn(plan, chart, kind="diverging_bars"), report_input)
+    value = {arm: stat.mean for arm, stat in report_input.measures[key].per_arm.items() if stat.mean is not None}
+    factor = _scale_factor(f"measure.{key}.{report_input.configs[0].arm}.mean", report_input)
+    expected: dict[tuple[str, str], float] = {}
+    for lever in report_input.factors:
+        base = lever.levels[0].id
+        for level in lever.levels[1:]:
+            effects = []
+            for config in report_input.configs:
+                if config.levels[lever.id] != level.id or config.arm not in value:
+                    continue
+                twins = [
+                    other.arm
+                    for other in report_input.configs
+                    if other.levels[lever.id] == base
+                    and all(other.levels[name] == held for name, held in config.levels.items() if name != lever.id)
+                ]
+                if twins and twins[0] in value:
+                    effects.append(value[config.arm] - value[twins[0]])
+            if effects:
+                expected[(lever.name or lever.id, level.name or level.id)] = sum(effects) / len(effects) * factor
+    rows = _bars_of(data)
+    assert {(row.group, row.label): row.value for row in rows} == pytest.approx(expected)
+    assert len(rows) == len(expected) and expected
+    assert any("descriptive" in note for note in notes)
+
+
+@pytest.mark.parametrize(
+    ("name", "path", "where", "source", "measures"),
+    [
+        ("r5", REFERENCE_PLAN, "summary", "measures", None),
+        ("r4", dataset.HERE / "r4" / "anchor.plan.json", "summary", "judged", ["persona"]),
+    ],
+    ids=["measures", "judged"],
+)
+def test_diverging_bars_over_measures_and_judged_draw_each_candidate_less_the_control(
+    name: str, path: Path, where: str, source: str, measures: list[str] | None
+) -> None:
+    report_input = _input(name)
+    plan = _plan(path)
+    chart = next(spec for spec in plan.summary if spec.kind == "bars")
+    update: dict[str, Any] = {"source": source, "arms": [], "transform": "arm_minus_control"}
+    if measures is not None:
+        update["measures"] = measures
+    redrawn = _redrawn(plan, chart, kind="diverging_bars", **update)
+    data, _ = _drawn(redrawn, report_input)
+    (key,) = redrawn.sections[0].chart.query.measures
+    table = report_input.measures if source == "measures" else report_input.judged
+    control = next(arm.id for arm in report_input.arms if arm.role == "control")
+    family = "measure" if source == "measures" else "judged"
+    path_of = f"measure.{key}.{control}.mean" if family == "measure" else f"judged.{key}.{control}"
+    factor = _scale_factor(path_of, report_input)
+    theirs = table[key].per_arm[control].mean
+    assert theirs is not None
+    expected = {
+        arm: ((stat.mean or 0.0) - theirs) * factor
+        for arm, stat in table[key].per_arm.items()
+        if arm != control and stat.mean is not None
+    }
+    rows = _bars_of(data)
+    assert {row.id: row.value for row in rows} == pytest.approx(expected)
+    assert data.domain[0] <= 0 <= data.domain[1]
+
+
+def test_diverging_bars_over_tasks_draw_each_arm_less_the_control_in_each_task() -> None:
+    plan = _plan(dataset.HERE / "r2" / "anchor.plan.json")
+    chart = _section(plan, "tasks")
+    control = chart.query.arms[0]
+    report_input = _with_control(_input("r2"), control)
+    redrawn = _redrawn(plan, chart, kind="diverging_bars", small_multiples_by="none", transform="arm_minus_control")
+    data, _ = _drawn(redrawn, report_input)
+    (key,) = chart.query.measures
+    expected = {}
+    for task in report_input.tasks:
+        for arm in chart.query.arms[1:]:
+            mine, theirs = task.per_arm[arm][key].mean, task.per_arm[control][key].mean
+            assert mine is not None and theirs is not None
+            expected[(arm, task.name)] = mine - theirs
+    assert {(row.id, row.label): row.value for row in _bars_of(data)} == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(("source", "section_id"), [("tasks", "tasks"), ("measures", "levers")])
+def test_a_chart_of_each_arm_less_the_control_is_refused_where_the_input_names_no_control(
+    source: str, section_id: str
+) -> None:
+    report_input = _input("r2")
+    assert not [arm for arm in report_input.arms if arm.role == "control"]
+    plan = _plan(dataset.HERE / "r2" / "anchor.plan.json")
+    redrawn = _redrawn(plan, _section(plan, section_id), kind="diverging_bars", source=source)
+    with pytest.raises(UnresolvableReference, match="no control") as refused:
+        plan_page(redrawn, report_input)
+    assert "'diverging_bars'" in str(refused.value) and repr(source) in str(refused.value)
+
+
+def test_diverging_bars_over_readings_bold_what_is_separated_and_mute_the_rest() -> None:
+    report_input = _input("r5")
+    plan = _plan(REFERENCE_PLAN)
+    chart = _section(plan, "question")
+    data, _ = _drawn(_redrawn(plan, chart, kind="diverging_bars", level=chart.level), report_input)
+    readings = {row.arm: row.item for row in query_rows(chart.query, report_input)}
+    rows = _bars_of(data)
+    assert sorted(row.id for row in rows) == sorted(readings)
+    for row in rows:
+        reading = readings[row.id]
+        assert isinstance(reading, Reading) and reading.within_interval is not None
+        low, high = reading.within_interval
+        assert (row.value, row.lo, row.hi) == (reading.change, low, high)
+        beyond = high < 0 or low > 0
+        assert (bool(row.strong), bool(row.muted)) == (beyond, not beyond)
+
+
+def test_diverging_bars_over_contrasts_bold_the_directed_verdicts_and_mute_the_rest() -> None:
+    report_input = _input("r5")
+    plan = _plan(REFERENCE_PLAN)
+    chart = next(spec for spec in plan.summary if spec.kind == "forest")
+    data, _ = _drawn(_redrawn(plan, chart, kind="diverging_bars", level=chart.level), report_input)
+    contrasts = [row.item for row in query_rows(chart.query, report_input) if isinstance(row.item, Contrast)]
+    expected = []
+    for contrast in contrasts:
+        assert contrast.delta is not None
+        factor = _scale_factor(f"contrast.{contrast.arm}.{contrast.measure}.delta", report_input)
+        expected.append((contrast.arm, contrast.delta * factor, contrast.verdict in ("regressed", "improved")))
+    drawn = [(row.id, row.value, bool(row.strong)) for row in _bars_of(data)]
+    assert sorted(drawn) == pytest.approx(sorted(expected))
+    assert all(bool(row.muted) != bool(row.strong) for row in _bars_of(data))
+
+
+def test_bars_over_a_judged_dimension_draw_each_arms_figure_from_zero() -> None:
+    report_input = _input("r4")
+    plan = _plan(dataset.HERE / "r4" / "anchor.plan.json")
+    chart = next(spec for spec in plan.summary if spec.kind == "bars")
+    data, _ = _drawn(_redrawn(plan, chart, kind="bars", source="judged", measures=["persona"]), report_input)
+    factor = _scale_factor(f"judged.persona.{report_input.arms[0].id}", report_input)
+    expected = {arm: (stat.mean or 0.0) * factor for arm, stat in report_input.judged["persona"].per_arm.items()}
+    assert {row.id: row.value for row in _bars_of(data)} == pytest.approx(expected)
+    assert data.domain[0] == 0
+
+
+@pytest.mark.parametrize("figure", ["passed", "reply_cost_usd"])
+def test_bars_over_the_scoreboard_draw_each_arms_figure_money_per_reply_per_thousand(figure: str) -> None:
+    report_input = _input("r5")
+    plan = _plan(REFERENCE_PLAN)
+    chart = next(spec for spec in plan.summary if spec.kind == "bars")
+    data, _ = _drawn(_redrawn(plan, chart, kind="bars", source="scoreboard", measures=[figure]), report_input)
+    expected = {
+        arm: getattr(row, figure) * _scale_factor(f"scoreboard.{arm}.{figure}", report_input)
+        for arm, row in report_input.scoreboard.items()
+    }
+    assert {row.id: row.value for row in _bars_of(data)} == pytest.approx(expected)
+
+
+def test_bars_over_strata_draw_each_arms_figure_in_each_stratum_grouped_by_stratum() -> None:
+    report_input = _input("r5")
+    plan = _plan(REFERENCE_PLAN)
+    chart = _section(plan, "strata")
+    data, _ = _drawn(_redrawn(plan, chart, kind="bars", transform="none", small_multiples_by="none"), report_input)
+    (key,) = chart.query.measures
+    control = next(arm.id for arm in report_input.arms if arm.role == "control")
+    factor = _scale_factor(f"judged.{key}.{control}", report_input)
+    kept = sorted(report_input.strata, key=lambda item: -(item.n_cases or 0))[: chart.query.limit]
+    expected = {
+        (item.name or item.id.replace("_", " "), arm): (figures[key].mean or 0.0) * factor
+        for item in kept
+        for arm, figures in item.per_arm.items()
+        if key in figures
+    }
+    assert {(row.group, row.id): row.value for row in _bars_of(data)} == pytest.approx(expected)
+
+
+def test_bars_over_human_preference_draw_the_share_preferring_the_control_in_each_slice() -> None:
+    report_input = _input("r4")
+    plan = _plan(dataset.HERE / "r4" / "anchor.plan.json")
+    data, _ = _drawn(_redrawn(plan, _section(plan, "users"), kind="bars"), report_input)
+    assert report_input.human_pref is not None
+    assert [(row.id, row.value) for row in _bars_of(data)] == [
+        (item.id, item.prefers_control) for item in report_input.human_pref.rows
+    ]
+
+
+def test_lines_over_tasks_draw_a_line_per_arm_over_the_tasks_in_their_order() -> None:
+    report_input = _input("r2")
+    plan = _plan(dataset.HERE / "r2" / "anchor.plan.json")
+    chart = _section(plan, "tasks")
+    data, _ = _drawn(_redrawn(plan, chart, kind="lines", small_multiples_by="none"), report_input)
+    assert isinstance(data, LinesChart)
+    (key,) = chart.query.measures
+    assert data.categories == [task.name or task.id for task in report_input.tasks]
+    names = {fact.name: fact.id for fact in plan_facts(report_input).arms}
+    assert [names[series.end_label or ""] for series in data.series] == list(chart.query.arms)
+    for series in data.series:
+        arm = names[series.end_label or ""]
+        assert series.values == [task.per_arm[arm][key].mean for task in report_input.tasks]
+
+
+def test_lines_over_a_measure_with_bins_draw_each_arms_share_in_each_bin() -> None:
+    report_input = _input("r2")
+    plan = _plan(dataset.HERE / "r2" / "anchor.plan.json")
+    key = next(key for key, measure in report_input.measures.items() if measure.bins)
+    chart = next(spec for spec in plan.summary if spec.kind == "bars")
+    data, _ = _drawn(_redrawn(plan, chart, kind="lines", measures=[key]), report_input)
+    assert isinstance(data, LinesChart)
+    bins = report_input.measures[key].bins or []
+    assert data.categories == [level.name or level.id for level in bins]
+    names = {fact.name: fact.id for fact in plan_facts(report_input).arms}
+    for series in data.series:
+        assert series.values == report_input.measures[key].per_arm[names[series.end_label or ""]].shares
+    assert len(data.series) == len(chart.query.arms)
+
+
+def test_lines_over_a_judged_dimension_draw_the_lead_aspect_then_each_aspect_it_holds_figures_on() -> None:
+    base = _input("r4")
+    lead = next(aspect for aspect in base.aspects if aspect.asked)
+    other = next(aspect for aspect in base.aspects if aspect.id != lead.id)
+    data_in = base.model_dump(by_alias=True, exclude_none=True)
+    persona = data_in["judged"]["persona"]
+    persona["by_aspect"] = {other.id: {arm: {"mean": stat["mean"] - 5} for arm, stat in persona["per_arm"].items()}}
+    report_input = ReportInput.model_validate(data_in)
+    plan = _plan(dataset.HERE / "r4" / "anchor.plan.json")
+    chart = next(spec for spec in plan.summary if spec.kind == "bars")
+    data, _ = _drawn(_redrawn(plan, chart, kind="lines", source="judged", measures=["persona"]), report_input)
+    assert isinstance(data, LinesChart)
+    assert data.categories == [lead.name or lead.id, other.name or other.id], "only aspects the figures sit on"
+    names = {fact.name: fact.id for fact in plan_facts(report_input).arms}
+    for series in data.series:
+        mean = base.judged["persona"].per_arm[names[series.end_label or ""]].mean
+        assert mean is not None and series.values == pytest.approx([mean, mean - 5])
