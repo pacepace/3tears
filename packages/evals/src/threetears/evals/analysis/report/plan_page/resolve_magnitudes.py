@@ -10,8 +10,10 @@
   per row grouped under each slice (a single slice needs no group);
 - *human_pref*: a row per slice, the share of ratings preferring the control.
 
-A summary chart's rows follow the options table, fade an arm that does not survive the gates and bold the
-recommended one (GENERATOR §5.3). A figure without a mean is drawn at the statistic a criterion on it reads, else its
+Bars share one axis, so the measures a chart reads are in one unit, each at its own scale; in panels by slice or by
+measure, where the plan asks for them, each panel is its measure's own, in its unit
+(:func:`~threetears.evals.analysis.report.plan_page.charting.unit_refusal`). A summary chart's rows follow the options
+table, fade an arm that does not survive the gates and bold the recommended one (GENERATOR §5.3). A figure without a mean is drawn at the statistic a criterion on it reads, else its
 p95, which a caption says. A floor or budget line sits at its criterion's threshold.
 
 **lines** draw a value over an ordered x, a line per arm:
@@ -26,15 +28,18 @@ Bands sit on at most two lines, and only where the chart states a level.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
-from threetears.evals.analysis.report.charts import BarRow, BarsChart, BarsPanel, LineSeries, LinesChart
+from threetears.evals.analysis.report.charts import BarRow, BarsChart, BarsPanel, ChartReference, LineSeries, LinesChart
 from threetears.evals.analysis.report.plan_page.charting import (
     ChartContext,
     Drawn,
     KindResolver,
+    STORED_SPAN_REFUSAL,
     chart_block,
+    drawn_keys,
     figure_stat,
     figure_unit,
     interval_words,
@@ -45,6 +50,8 @@ from threetears.evals.analysis.report.plan_page.charting import (
     slice_name,
     stat_interval,
     stat_value,
+    unit_quantities,
+    unit_refusal,
 )
 from threetears.evals.analysis.report.plan_page.look import (
     Quantity,
@@ -77,7 +84,8 @@ _BY_CAUSE = frozenset({"lost", "failed"})
 
 @dataclass(frozen=True)
 class _Bar:
-    """One drawn bar: its row's id, label, colour, tag and group, its value and interval, and how it reads."""
+    """One drawn bar: its row's id, label, colour, tag and group, its value and interval, how it reads, and the
+    quantity it is drawn as where that is its measure's own (None for the chart's)."""
 
     id: str
     label: str
@@ -88,6 +96,7 @@ class _Bar:
     group: str | None = None
     arm: str = ""
     tip: tuple[str, ...] = ()
+    drawn: Quantity | None = None
 
 
 def _statistic_note(statistics: set[str]) -> tuple[str, ...]:
@@ -119,10 +128,8 @@ def _figure_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[str]]
     several, or, for configs, by the first factor's level."""
     report_input = context.report_input
     rows = context.rows()
-    keys = list(dict.fromkeys(row.key for row in rows))
+    keys = drawn_keys(context.spec.kind, context.query, report_input)
     figures = {(row.key, row.arm): row.item for row in rows if isinstance(row.item, Stat)}
-    unit = figure_unit(report_input, keys[0]) if keys else ""
-    values: list[float] = []
     statistics: set[str] = set()
     picked: list[tuple[str, str, float, tuple[float, float] | None]] = []
     for key in keys:
@@ -135,24 +142,25 @@ def _figure_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[str]]
             statistics.add(read[1])
             interval = stat_interval(stat) if read[1] == "mean" else None
             picked.append((key, arm, read[0], interval))
-            values.append(read[0])
-    drawn = quantity(unit, values)
+    quantities = unit_quantities(report_input, {key: [one[2] for one in picked if one[0] == key] for key in keys})
     bars: list[_Bar] = []
     configs = {config.arm: config for config in report_input.configs} if context.query.source == "configs" else {}
     for key, arm, value, interval in picked:
+        drawn = quantities[key]
         shown = (interval[0] * drawn.factor, interval[1] * drawn.factor) if interval is not None else None
         group = measure_words(report_input, key) if len(keys) > 1 else None
         if arm in configs:
             first, *rest = _config_levels(context, arm)
             label = " · ".join(rest) or first
             bar = _arm_bar(context, arm, value * drawn.factor, shown, group=first if rest else (group or ""))
-            bars.append(_relabel(bar, label))
+            bars.append(dataclasses.replace(bar, label=label, drawn=drawn))
         else:
-            bars.append(_arm_bar(context, arm, value * drawn.factor, shown, group=group or ""))
+            bar = _arm_bar(context, arm, value * drawn.factor, shown, group=group or "")
+            bars.append(dataclasses.replace(bar, drawn=drawn))
     if configs:
         order = {arm: index for index, arm in enumerate(config.arm for config in report_input.configs)}
         bars.sort(key=lambda bar: (_first_level_place(context, bar.arm), order.get(bar.arm, len(order))))
-    return bars, drawn, statistics
+    return bars, quantities[keys[0]] if keys else quantity(""), statistics
 
 
 def _config_levels(context: ChartContext, arm: str) -> list[str]:
@@ -176,20 +184,6 @@ def _first_level_place(context: ChartContext, arm: str) -> int:
     ids = [level.id for level in factors[0].levels]
     level = config.levels.get(factors[0].id)
     return ids.index(level) if level in ids else len(ids)
-
-
-def _relabel(bar: _Bar, label: str) -> _Bar:
-    return _Bar(
-        id=bar.id,
-        label=label,
-        value=bar.value,
-        interval=bar.interval,
-        color=bar.color,
-        tag=bar.tag,
-        group=bar.group,
-        arm=bar.arm,
-        tip=bar.tip,
-    )
 
 
 def _scoreboard_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[str]]:
@@ -241,12 +235,13 @@ def _slice_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[str]]:
                 statistics.add(read[1])
                 interval = stat_interval(stat) if read[1] == "mean" else None
                 picked.append((where, key, arm, read[0], interval))
-    drawn = quantity(figure_unit(report_input, keys[0]), [value for *_, value, _ in picked])
+    quantities = unit_quantities(report_input, {key: [one[3] for one in picked if one[1] == key] for key in keys})
     bars = []
-    for where, _key, arm, value, interval in picked:
+    for where, key, arm, value, interval in picked:
+        drawn = quantities[key]
         shown = (interval[0] * drawn.factor, interval[1] * drawn.factor) if interval is not None else None
-        bars.append(_arm_bar(context, arm, value * drawn.factor, shown, group=where))
-    return bars, drawn, statistics
+        bars.append(dataclasses.replace(_arm_bar(context, arm, value * drawn.factor, shown, group=where), drawn=drawn))
+    return bars, quantities[keys[0]], statistics
 
 
 def _preference_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[str]]:
@@ -263,6 +258,7 @@ def _preference_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[s
 
 
 def _bar_row(context: ChartContext, bar: _Bar, drawn: Quantity) -> BarRow:
+    drawn = bar.drawn or drawn
     interval = bar.interval if context.level else None
     tip = [bar.label, figure_text(bar.value, drawn)]
     if interval is not None:
@@ -294,9 +290,12 @@ def _ends(bars: Sequence[_Bar], level: str) -> Iterator[float]:
             yield from bar.interval
 
 
-def _panels(context: ChartContext, bars: Sequence[_Bar], drawn: Quantity) -> list[BarsPanel] | None:
+def _panels(
+    context: ChartContext, bars: Sequence[_Bar], drawn: Quantity, spans: dict[Quantity, tuple[float, float]] | None
+) -> list[BarsPanel] | None:
     """Small multiples where the plan asks for them and the chart has more than one: by arm (a panel per arm, a row
-    per group), else by the bars' group (a panel per slice or task, a row per arm)."""
+    per group), else by the bars' group (a panel per slice or task, a row per arm); where the chart draws several
+    units (``spans``, each unit's span), each panel in its bars' own."""
     by = context.query.small_multiples_by
     if by == "none":
         return None
@@ -304,7 +303,7 @@ def _panels(context: ChartContext, bars: Sequence[_Bar], drawn: Quantity) -> lis
         keyed: dict[str, list[_Bar]] = {bar.arm: [] for bar in bars if bar.arm}
         for bar in bars:
             if bar.arm:
-                keyed[bar.arm].append(_relabel(_ungrouped(bar), bar.group or bar.label))
+                keyed[bar.arm].append(dataclasses.replace(bar, group=None, label=bar.group or bar.label))
         if len(keyed) < 2:
             return None
         return [
@@ -318,30 +317,43 @@ def _panels(context: ChartContext, bars: Sequence[_Bar], drawn: Quantity) -> lis
         ]
     grouped: dict[str, list[_Bar]] = {}
     for bar in bars:
-        grouped.setdefault(bar.group or "", []).append(_ungrouped(bar))
+        grouped.setdefault(bar.group or "", []).append(dataclasses.replace(bar, group=None))
     if len(grouped) < 2:
         return None
-    return [
-        BarsPanel(title=title, rows=[_bar_row(context, bar, drawn) for bar in rows]) for title, rows in grouped.items()
-    ]
+    panels = []
+    for title, rows in grouped.items():
+        own = rows[0].drawn or drawn
+        panels.append(
+            BarsPanel(
+                title=title,
+                rows=[_bar_row(context, bar, drawn) for bar in rows],
+                domain=spans[own] if spans is not None else None,
+                fmt=own.fmt if spans is not None else None,
+                tick_fmt=own.tick_fmt if spans is not None else None,
+            )
+        )
+    return panels
 
 
-def _ungrouped(bar: _Bar) -> _Bar:
-    return _Bar(
-        id=bar.id,
-        label=bar.label,
-        value=bar.value,
-        interval=bar.interval,
-        color=bar.color,
-        tag=bar.tag,
-        group=None,
-        arm=bar.arm,
-        tip=bar.tip,
-    )
+def _bar_spans(
+    context: ChartContext, bars: Sequence[_Bar], drawn: Quantity, reference: ChartReference | None
+) -> dict[Quantity, tuple[float, float]]:
+    """Each quantity's span: the stored one, else from zero past every bar (and interval, and the line) drawn in it."""
+    spans: dict[Quantity, tuple[float, float]] = {}
+    for own in dict.fromkeys(bar.drawn or drawn for bar in bars):
+        ends = list(_ends([bar for bar in bars if (bar.drawn or drawn) == own], context.level))
+        if reference is not None and own == drawn:
+            ends.append(reference.value)
+        domain = context.spec.domain or magnitude_domain(ends, rate=own.rate)
+        spans[own] = (domain[0], domain[1])
+    return spans
 
 
 def _bars(context: ChartContext) -> Drawn:
     source = context.query.source
+    refusal = unit_refusal(context.spec.kind, context.query, context.report_input)
+    if refusal:
+        raise context.refuse(refusal)
     if source in ("measures", "judged", "configs"):
         bars, drawn, statistics = _figure_bars(context)
     elif source == "scoreboard":
@@ -355,15 +367,20 @@ def _bars(context: ChartContext) -> Drawn:
     if not bars:
         raise context.refuse("it selects no figure to draw")
     if len({bar.group for bar in bars}) == 1:
-        bars = [_ungrouped(bar) for bar in bars]
+        bars = [dataclasses.replace(bar, group=None) for bar in bars]
     reference = reference_line(context, drawn)
-    ends = [*_ends(bars, context.level), *([reference.value] if reference is not None else [])]
-    domain = context.spec.domain or magnitude_domain(ends, rate=drawn.rate)
-    panels = _panels(context, bars, drawn)
+    spans = _bar_spans(context, bars, drawn, reference)
+    several = len(spans) > 1
+    if several and context.spec.domain:
+        raise context.refuse(STORED_SPAN_REFUSAL)
+    panels = _panels(context, bars, drawn, spans if several else None)
+    if several and panels is None:
+        raise context.refuse("its measures are in more than one unit, and it draws them on one axis")
+    domain = spans[drawn]
     data = BarsChart(
         rows=None if panels is not None else [_bar_row(context, bar, drawn) for bar in bars],
         panels=panels,
-        domain=(domain[0], domain[1]),
+        domain=domain,
         fmt=drawn.fmt,
         tick_fmt=drawn.tick_fmt,
         level=context.level or None,

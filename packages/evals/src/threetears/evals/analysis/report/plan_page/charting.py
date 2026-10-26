@@ -9,6 +9,11 @@ selects (:func:`~threetears.evals.analysis.report_rows.query_rows`, the one owne
   rate's scale read from every figure the input holds for it (a share where each lies in 0 to 1, a percent
   otherwise), as the figure keys read it; an ordinal judged dimension a ``score``; a contrast of how each trial ended,
   the pass rate, a share. :func:`~threetears.evals.analysis.report.plan_page.look.quantity` says how it is drawn.
+- **One unit per axis** (:func:`unit_refusal`, over the measures a chart draws, :func:`drawn_keys`): an axis draws
+  measures of one unit, each at its own scale. A kind that draws each measure in its own panel (a heatmap's matrix, a
+  dot strip's strip, bars in panels by slice or measure) gives each panel its measure's unit and format, panels of one
+  unit sharing an axis's span; any other chart reading measures in several units is refused. The plan checks refuse
+  the same charts, by the same function, so a plan they accept draws.
 - **A figure's value** (:func:`stat_value`): its mean; else the statistic a criterion on the measure reads; else its
   p95, else its p50. **Its interval** (:func:`stat_interval`): its ``ci``, else its mean plus or minus its half-width.
   **Intervals are drawn only where the chart states a level** (``ChartSpec.level``): the kit refuses intervals
@@ -36,7 +41,7 @@ maps to "generate the analysis again".
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -54,6 +59,7 @@ from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.report_plan import ChartQuery, ChartSpec
 
 __all__ = [
+    "STORED_SPAN_REFUSAL",
     "ChartContext",
     "CriterionWhere",
     "Drawn",
@@ -61,6 +67,7 @@ __all__ = [
     "chart_block",
     "count_text",
     "criterion_line",
+    "drawn_keys",
     "factor_legend",
     "factor_token",
     "figure_stat",
@@ -77,6 +84,8 @@ __all__ = [
     "spread",
     "stat_interval",
     "stat_value",
+    "unit_quantities",
+    "unit_refusal",
 ]
 
 #: The z a 95% interval spans either side, which the descriptive rule reads a change against (GENERATOR §5.2).
@@ -480,6 +489,19 @@ def slice_name(context: ChartContext, item: Stratum | Task) -> str:
     return item.name or context.look.reader(kind, item.id)
 
 
+def _held_keys(slices: Iterable[Stratum | Task | Cell]) -> list[str]:
+    """Every measure some arm holds a figure on in the slices (or cells), each once, in the order first held."""
+    return list(dict.fromkeys(key for item in slices for figures in item.per_arm.values() for key in figures))
+
+
+#: Why a chart of strata or tasks that names no measure cannot be drawn when its slices hold other than one.
+_ONE_HELD_TEMPLATE = "its query names no measure, and its slices hold {found}"
+#: Why a chart cannot draw the measures it reads on one axis.
+_UNITS_TEMPLATE = "its measures are in more than one unit ({units})"
+#: Why a chart drawing its measures in several units, a panel each, cannot take the one axis span a plan stores.
+STORED_SPAN_REFUSAL = "its stored axis spans one unit, and its measures are in more than one"
+
+
 def slice_keys(context: ChartContext, slices: Sequence[Stratum | Task]) -> list[str]:
     """The measures a chart of strata or tasks reads: the ones its query names, else the one its slices hold.
 
@@ -493,10 +515,139 @@ def slice_keys(context: ChartContext, slices: Sequence[Stratum | Task]) -> list[
     """
     if context.query.measures:
         return list(context.query.measures)
-    found = list(dict.fromkeys(key for item in slices for figures in item.per_arm.values() for key in figures))
+    found = _held_keys(slices)
     if len(found) != 1:
-        raise context.refuse(f"its query names no measure, and its slices hold {found}")
+        raise context.refuse(_ONE_HELD_TEMPLATE.format(found=found))
     return found
+
+
+#: The kinds whose chart of slices or cells reads every measure they hold where its query names none: a matrix each.
+_EVERY_HELD = frozenset({"heatmap", "diff_heatmap"})
+#: The sources whose rows are figures by measure, one arm's each; and those whose rows hold figures by measure per arm.
+_FIGURE_SOURCES = frozenset({"measures", "judged", "configs"})
+_SLICE_SOURCES = frozenset({"strata", "tasks", "cells"})
+
+#: The kinds the one-unit rule holds (:func:`unit_refusal`), each over the sources it draws figures by measure from.
+_UNIT_RULED: dict[str, frozenset[str]] = {
+    "bars": frozenset({"measures", "judged", "configs", "strata", "tasks"}),
+    "dot_interval": frozenset({"measures", "judged", "strata", "tasks"}),
+    "heatmap": frozenset({"cells", "strata", "tasks"}),
+    "diff_heatmap": frozenset({"cells", "strata", "tasks"}),
+    "range_bars": frozenset({"measures", "tasks"}),
+    "diverging_bars": frozenset({"measures", "judged", "strata", "tasks"}),
+    "lines": frozenset({"strata", "tasks"}),
+}
+
+
+def _has_p95(stat: Stat | None) -> bool:
+    return stat is not None and stat.p95 is not None
+
+
+def drawn_keys(kind: str, query: ChartQuery, report_input: ReportInput) -> list[str]:
+    """The measures a chart draws, by key, as its kind's resolver reads them (this module's Units), each once:
+
+    - over measures, judged dimensions or configs: the keys of the figures its query selects; range bars only those
+      holding a p95;
+    - over strata, tasks or cells: the measures its query names, else every one the slices hold for a heatmap or a
+      difference heatmap (a matrix each), and the one they hold for any other kind (:func:`slice_keys`); range bars
+      keep only those an arm the query keeps holds a p95 on in some slice;
+    - over any other source: none.
+
+    :param kind: The chart's kind.
+    :ptype kind: str
+    :param query: The chart's query.
+    :ptype query: ChartQuery
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The measures, by key, in the order the chart reads them.
+    :rtype: list[str]
+    """
+    rows = query_rows(query, report_input)
+    source = query.source
+    if source in _FIGURE_SOURCES:
+        return list(
+            dict.fromkeys(
+                row.key
+                for row in rows
+                if row.key and (kind != "range_bars" or (isinstance(row.item, Stat) and _has_p95(row.item)))
+            )
+        )
+    if source not in _SLICE_SOURCES:
+        return []
+    slices = [row.item for row in rows if isinstance(row.item, Stratum | Task | Cell)]
+    named = list(dict.fromkeys(query.measures))
+    held = _held_keys(slices)
+    if kind == "range_bars":
+        arms = set(query.arms) or {arm.id for arm in report_input.arms}
+        return [
+            key
+            for key in named or held
+            if any(_has_p95(item.per_arm.get(arm, {}).get(key)) for item in slices for arm in arms)
+        ]
+    if named or kind in _EVERY_HELD:
+        return named or held
+    return held if len(held) == 1 else []
+
+
+def unit_quantities(report_input: ReportInput, values: Mapping[str, Sequence[float]]) -> dict[str, Quantity]:
+    """Each measure's quantity on a chart that draws it in its own unit (this module's one unit per axis): its unit's
+    (:func:`figure_unit`), its format following every figure the chart draws in that unit, so the measures of one unit
+    read alike.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param values: Each measure the chart draws, by key, to the figures it draws of it, in the input's units.
+    :ptype values: Mapping[str, Sequence[float]]
+    :return: Each measure's quantity, by key.
+    :rtype: dict[str, Quantity]
+    """
+    units = {key: figure_unit(report_input, key) for key in values}
+    by_unit: dict[str, list[float]] = {}
+    for key, figures in values.items():
+        by_unit.setdefault(units[key], []).extend(figures)
+    return {key: quantity(units[key], by_unit[units[key]]) for key in values}
+
+
+def _a_panel_per_measure(kind: str, query: ChartQuery) -> bool:
+    """Whether a chart draws each measure it reads in its own panel, on its own axis: a heatmap's matrix per measure,
+    a dot strip's strip per measure (unless its panels are by arm), and bars in panels by slice or measure where the
+    plan asks for them (not over configs, whose panels are a factor's levels)."""
+    if kind == "heatmap":
+        return True
+    if kind == "dot_interval":
+        return query.source in ("measures", "judged") or query.small_multiples_by != "arm"
+    if kind == "bars":
+        return query.source != "configs" and query.small_multiples_by in ("aspect", "task")
+    return False
+
+
+def unit_refusal(kind: str, query: ChartQuery, report_input: ReportInput) -> str:
+    """Why a chart cannot draw the measures it reads (the one-unit rule the plan checks and the resolvers share): a
+    chart of strata or tasks that names no measure where its slices hold other than one (a heatmap and a difference
+    heatmap read every one), or measures in more than one unit (:func:`figure_unit`) on one axis. A kind that draws
+    each measure in its own panel gives each panel its measure's unit and may read several.
+
+    :param kind: The chart's kind.
+    :ptype kind: str
+    :param query: The chart's query.
+    :ptype query: ChartQuery
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: Why, as a clause; empty where the chart can be drawn in its units, or its kind reads no measure by key
+        over that source.
+    :rtype: str
+    """
+    source = query.source
+    if source not in _UNIT_RULED.get(kind, frozenset()):
+        return ""
+    if source in _SLICE_SOURCES and kind not in _EVERY_HELD and kind != "range_bars" and not query.measures:
+        held = _held_keys(row.item for row in query_rows(query, report_input) if isinstance(row.item, Stratum | Task))
+        if len(held) != 1:
+            return _ONE_HELD_TEMPLATE.format(found=held)
+    units = sorted({figure_unit(report_input, key) for key in drawn_keys(kind, query, report_input)})
+    if len(units) > 1 and not _a_panel_per_measure(kind, query):
+        return _UNITS_TEMPLATE.format(units=units)
+    return ""
 
 
 def missing_note(missing: Sequence[str]) -> tuple[str, ...]:

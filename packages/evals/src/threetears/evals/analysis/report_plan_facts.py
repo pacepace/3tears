@@ -74,7 +74,11 @@ whose figures carry a standard error and no interval is drawn at the descriptive
 **A chart's axis** is computed only where code holds a rule: a forest of readings spans every interval it draws, zero
 and the margin line, one point beyond each end. Every other chart leaves its domain empty, which lets the renderer fit
 it. A chart that would mix units or interval levels (§5.2: one unit and one interval system per chart) is refused at
-its query.
+its query. Which measures a chart draws, and whether it can draw them in their units, is the page's own rule
+(:func:`~threetears.evals.analysis.report.plan_page.charting.unit_refusal`): a chart of strata or tasks naming no
+measure where its slices hold several (a heatmap reads every one), or measures in more than one unit on one axis,
+is refused here by the same function the page refuses it by; a kind that draws each measure in its own panel (a
+heatmap's matrix, a dot strip's strip, bars in panels by slice or measure) may read several units.
 """
 
 from __future__ import annotations
@@ -87,6 +91,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.errors import PlanRefusal, SoundnessRefusal, UnresolvableReference
+from threetears.evals.analysis.report.plan_page.charting import unit_refusal
 from threetears.evals.analysis.report.figure_keys import (
     DIRECTION_WORDS,
     WEAKEST_PREFIX,
@@ -758,6 +763,9 @@ def _descriptive_level(chart: PlannedChart, report_input: ReportInput) -> str:
     return ""
 
 
+#: How a fault opens where the page cannot draw a chart in the units its query selects.
+_UNDRAWABLE = "cannot be drawn as it asks:"
+
 #: The sources a diverging chart may draw at the descriptive level, and the word that labels it.
 _DESCRIPTIVE_SOURCES = frozenset({"judged", "strata"})
 _UNCORRECTED = "uncorrected"
@@ -789,9 +797,13 @@ def _judged_unit(report_input: ReportInput, measures: Sequence[str]) -> list[str
 
 
 def _unit(chart: PlannedChart, report_input: ReportInput, path: str, faults: list[_Fault]) -> str:
-    """The chart's one unit, from what it reads: a change from the control in points, else the rows' own unit."""
+    """The chart's one unit, from what it reads: a change from the control in points, else the rows' own unit. A
+    chart the page cannot draw in its units is refused by the rule the page draws by (this module's account)."""
     query = chart.query
     source = query.source
+    refusal = unit_refusal(chart.kind, query, report_input)
+    if refusal:
+        faults.append((f"{path}.query", f"{_UNDRAWABLE} {refusal} (GENERATOR §5.2: one unit per axis)"))
     if source in ("readings", "floors"):
         return "points"
     if source == "contrasts":

@@ -16,7 +16,8 @@ about a centre).
   storing no transform is drawn so too), per slice for strata and tasks (the query's ``limit`` keeps the largest
   strata), in panels by arm, or by slice, where the plan asks for them, else grouped by arm; bold or muted by the
   descriptive 95% rule, uncorrected, which a caption says; a slice whose figure states only its change from the
-  control is drawn at that change, with no bold;
+  control is drawn at that change, with no bold; the bars share one axis, so the measures read are in one unit
+  (:func:`~threetears.evals.analysis.report.plan_page.charting.unit_refusal`);
 - *human_pref*: the share of blind ratings preferring the control, per slice, about the no-preference point (50%),
   bold where its interval excludes it;
 - *configs*: lever effects, each level of a factor against the factor's first level on the query's measure,
@@ -47,6 +48,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
     slice_name,
     spread,
     stat_value,
+    unit_refusal,
 )
 from threetears.evals.analysis.report.plan_page.look import Quantity, centred_domain, figure_text, quantity
 from threetears.evals.analysis.report.plan_page.words import (
@@ -471,6 +473,9 @@ def _bar_row(change: _Change, level: str) -> BarRow:
 
 def _diverging(context: ChartContext) -> Drawn:
     source = context.query.source
+    refusal = unit_refusal(context.spec.kind, context.query, context.report_input)
+    if refusal:
+        raise context.refuse(refusal)
     notes: tuple[str, ...] = ()
     centre = 0.0
     panels: list[_Panel] | None = None
