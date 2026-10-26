@@ -34,8 +34,9 @@ configs     on the query's measures)        named by its levels        it reads
 for a latency budget), with both gates' lines and the region meeting both shaded and named; a point that fails the
 gate check is hollow. Its axes are the two measures the query names, else the two the gates read; the one a gate
 reads as a floor is up. A config's point takes its first factor's colour, which a legend names, and a path joins the
-points along a factor: the first factor after that one with more than two levels, else the last, one path per
-combination of the other factors' levels, in the colouring factor's colour. Over tasks it panels by task, each panel
+points along a factor: the first factor after the colouring one with more than two levels, else the last factor, one
+path per combination of the other factors' levels, in the colouring factor's colour (models by a reasoning budget
+by retries: a path per model and retry setting, along the budget). Over tasks it panels by task, each panel
 at that task's gates. An x axis whose values span more than ten times is drawn on a log scale, which a caption says
 (GENERATOR §5.2).
 

@@ -57,12 +57,6 @@ from threetears.evals.kernel.report_plan import ChartSpec, ReportPlan
 #: The kinds this file holds.
 _KINDS = frozenset({"gate_matrix", "gate_scatter", "lattice"})
 
-#: The kinds another module's resolvers draw (``resolve_rates``, ``resolve_cells``, ``resolve_table``), left out of a
-#: page built here.
-_ELSEWHERE = frozenset(
-    {"dot_interval", "range_bars", "scatter_frontier", "heatmap", "diff_heatmap", "confusion", "table"}
-)
-
 #: GENERATOR §3: each gate status's colour.
 _STATUS_COLOUR = {"pass": "good", "borderline": "warn", "fail": "bad"}
 
@@ -87,25 +81,16 @@ def _plan(path: Path) -> ReportPlan:
     return dataset.load_plan(path)
 
 
-def _drawable(plan: ReportPlan) -> ReportPlan:
-    return plan.model_copy(
-        update={
-            "summary": [chart for chart in plan.summary if chart.kind not in _ELSEWHERE],
-            "sections": [section for section in plan.sections if section.chart.kind not in _ELSEWHERE],
-        }
-    )
-
-
 @functools.cache
 def _page(name: str, path: Path) -> PlannedPage:
-    return plan_page(_drawable(_plan(path)), _input(name))
+    return plan_page(_plan(path), _input(name))
 
 
 def _stored_charts() -> list[Any]:
     """Every chart of these kinds a committed plan draws, beside its input, as parameters."""
     found = []
     for name, label, path in _PLANS:
-        plan = _drawable(_plan(path))
+        plan = _plan(path)
         specs = [(chart, True) for chart in plan.summary] + [(section.chart, False) for section in plan.sections]
         page = _page(name, path)
         blocks = [chart.chart for chart in page.summary] + [section.chart.chart for section in page.sections]
@@ -158,7 +143,7 @@ def _spec(kind: str, source: str, **query: Any) -> ChartSpec:
 
 def _draw(name: str, spec: ChartSpec) -> tuple[ChartBlock, list[str]]:
     """The chart as the input's own anchor plan's page draws it in its first section."""
-    plan = _drawable(_plan(dataset.HERE / name / "anchor.plan.json"))
+    plan = _plan(dataset.HERE / name / "anchor.plan.json")
     section = plan.sections[0].model_copy(update={"chart": spec})
     page = plan_page(plan.model_copy(update={"summary": [], "sections": [section]}), _input(name))
     block = page.sections[0].chart.chart
@@ -499,7 +484,7 @@ def _hostile(report_input: ReportInput) -> ReportInput:
 
 @pytest.mark.parametrize("name", ["r1", "r2", "r3"])
 def test_markup_in_the_names_these_charts_print_is_text_on_the_page(name: str) -> None:
-    plan = _drawable(_plan(dataset.HERE / name / "anchor.plan.json"))
+    plan = _plan(dataset.HERE / name / "anchor.plan.json")
     page = plan_page(plan, _hostile(_input(name)))
     drawn = {chart.chart.chart for chart in [*page.summary, *(section.chart for section in page.sections)]}
     assert drawn & _KINDS
