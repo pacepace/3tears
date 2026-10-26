@@ -73,7 +73,7 @@ Reports can mix forms: for example, a decision on cost with a diagnosis on the j
    - What would settle an open question?
 3. **Outline.** The headline, then the claims in reading order, each with the evidence it needs. Decide what to omit and why.
 4. **Draft.** Write the report document (§5) with figure keys, never typed numbers.
-5. **Render and look.** Render the page. Read the check results and the screenshots at desktop and phone width. Fix what's unclear, crowded or misleading. Repeat until clean, at most three rounds.
+5. **Render and look.** Render the page. Read the check results and the screenshots at desktop and phone width. Fix what's unclear, crowded or misleading. Repeat until clean, at most three rounds. Not in MVP (owner, 2026-10-26): no browser at storage time; check.py runs in integration tests.
 6. **Critic.** Submit the report. If the critic returns findings, address them and resubmit, at most two rounds. Unresolved findings are stored with the report and shown in Method.
 
 ## 5. The report document
@@ -122,7 +122,7 @@ All read-only except rendering. Every tool returns figures with ids, so the anal
 | | `settle(question)` | Cases or calibration labels needed to separate a reading |
 | | `confound_check(arm, covariate)` | How much of a difference could come from the covariate |
 | Rendering | `render_block(kind, query, options)` | Drawn block, values table, warnings |
-| | `render_report(doc)` | The page, `check.py` results, screenshots at 1200 and 390 px |
+| | `render_report(doc)` | The page, `check.py` results, screenshots at 1200 and 390 px. Not in MVP (owner, 2026-10-26): no browser at storage time; check.py runs in integration tests. |
 | Reference | `block_catalog()`, `exemplar(name)` | The catalog with usage notes; a reasoning note and its rendered memo |
 
 Add a tool when an analyst run shows it reasoning around a missing capability. Never add one to handle a specific eval type.
@@ -139,7 +139,7 @@ This list is fixed. It doesn't grow with new eval types.
 4. The confidence form matches: no plain `high` while caveats are open.
 5. No internal id, hash or measure key appears above the appendix.
 6. The full-results appendix and Method are present.
-7. `check.py` passes at 1200 and 390 px, in light and dark.
+7. `check.py` passes at 1200 and 390 px, in light and dark. Not in MVP (owner, 2026-10-26): no browser at storage time; check.py runs in integration tests.
 
 ### Critic rubric (Opus; each item scored 0–2 with a reason)
 

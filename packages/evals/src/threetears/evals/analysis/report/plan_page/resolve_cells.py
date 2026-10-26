@@ -20,7 +20,8 @@ the slices by each measure): the query's second arm less its first where it name
 the control, else the recommended arm (or the page's first candidate) less the control. Each cell prints the compared
 arm's own figure under the difference (``detail``), and a caption says which arm is less which. A rate's difference
 is in points, grayed within the kit's half a point; another unit's is shaded to its largest difference. Its
-matrix is one scale, so measures in more than one unit are refused.
+matrix is one scale, so measures in more than one unit are refused; measures drawn alike (a share beside a percent)
+are one, each drawn at its own scale.
 
 **confusion** draws one matrix per label axis the query keeps and per arm (the query's, else every arm the axis holds),
 in panels where there is more than one: titled by the arm, with its chip, where there are several arms, else by the
@@ -409,17 +410,15 @@ def _diff_heatmap(context: ChartContext) -> Drawn:
         raise context.refuse("a difference heatmap draws cells, strata or tasks")
     if not keys or not places:
         raise context.refuse("it selects no figure to draw")
-    unit = figure_unit(report_input, keys[0])
-    # The figures' own format follows their magnitude, as every other chart's does (dollars past ten drop their cents).
-    figures = [
-        value
-        for _, line in places
-        for key, theirs, ours, _ in line
-        for stat in (theirs, ours)
-        if (value := _value(context, key, stat)) is not None
-    ]
-    level = quantity(unit, [value * quantity(unit).factor for value in figures])
-    change = quantity(unit, change=True)
+    # Each measure at its own scale, the measures drawn alike sharing one format (the one-unit rule has refused any
+    # other), which follows their magnitude, as every other chart's does (dollars past ten drop their cents).
+    figures: dict[str, list[float]] = {key: [] for key in keys}
+    for _, line in places:
+        for key, theirs, ours, _ in line:
+            figures[key] += [value for stat in (theirs, ours) if (value := _value(context, key, stat)) is not None]
+    levels = unit_quantities(report_input, figures)
+    level = levels[keys[0]]
+    change = quantity(figure_unit(report_input, keys[0]), change=True)
     base_name, compared_name = _arm_name(context, base), _arm_name(context, compared)
     rows: list[DiffHeatmapRow] = []
     for row_name, line in places:
@@ -428,7 +427,8 @@ def _diff_heatmap(context: ChartContext) -> Drawn:
             pair = _difference(context, key, theirs, ours)
             if pair is None:
                 raise context.refuse(f"{base_name} or {compared_name} holds no figure at {row_name} · {column}")
-            mine, other = pair[0] * level.factor, pair[1] * level.factor
+            factor = levels[key].factor
+            mine, other = pair[0] * factor, pair[1] * factor
             drawn_cells.append(
                 DiffHeatmapCell(
                     value=mine - other,

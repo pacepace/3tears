@@ -58,28 +58,36 @@ from packages.evals.tests.report_plan_support import (
 DOCS_SCHEMA = KIT / "schema" / "report-plan.schema.json"
 
 
-def _held(model: type[BaseModel], field: str) -> type[BaseModel]:
-    """The model one field of ``model`` holds (a list's element): how a test reaches the planner's own parts, which
-    the module keeps private, through the reply model that holds them."""
-    annotation = model.model_fields[field].annotation
-    held = [arg for arg in (annotation, *get_args(annotation)) if isinstance(arg, type) and issubclass(arg, BaseModel)]
-    assert len(held) == 1, (model.__name__, field)
-    return held[0]
+def _part(schema: dict[str, Any], path: tuple[str, ...]) -> dict[str, Any]:
+    """The object at ``path`` in a model's JSON schema: property names, ``[]`` for a list's items, references followed.
+    How a test reads the planner's parts: through the schema the planner is sent or the reply model holds, which is
+    the wire contract, never through the private models that produce it."""
+    node = schema
+    for step in path:
+        node = node["items"] if step == "[]" else node["properties"][step]
+        if "$ref" in node:
+            node = schema["$defs"][node["$ref"].rsplit("/", 1)[1]]
+    return node
 
 
-#: The planner's parts of the units code completes, and of a section and an answer, read off the reply that holds them.
-_PLANNED_FLAG = _held(PlannedReport, "flag")
-_PLANNED_OPTIONS = _held(PlannedReport, "options")
-_PLANNED_REFERENCE = _held(report_plan.PlannedChart, "reference")
-_PLANNED_SECTION = _held(PlannedReport, "sections")
-_PLANNED_ANSWER = _held(PlannedReport, "answers")
+def _reply_schema() -> dict[str, Any]:
+    """The planner's reply as one schema: what :class:`PlannedReport` validates."""
+    return PlannedReport.model_json_schema()
 
-#: Each unit code has a part of: the stored model, and the planner's model it completes.
-_COMPLETED: dict[type[BaseModel], type[BaseModel]] = {
-    Flag: _PLANNED_FLAG,
-    Options: _PLANNED_OPTIONS,
-    ChartReference: _PLANNED_REFERENCE,
+
+#: Each unit code has a part of: the stored model, and where the planner's part sits in its reply.
+_COMPLETED: dict[type[BaseModel], tuple[str, ...]] = {
+    Flag: ("flag", "[]"),
+    Options: ("options",),
+    ChartReference: ("summary", "[]", "reference", "[]"),
 }
+
+#: Where the structure call sends each unit code has a part of; the flag is written by the prose call alone.
+_SENT: dict[type[BaseModel], tuple[tuple[str, ...], ...]] = {
+    Options: (("options",),),
+    ChartReference: (("summary", "[]", "reference", "[]"), ("sections", "[]", "chart", "reference", "[]")),
+}
+
 
 #: Each object in the documentation schema, by where it sits, and the model it documents.
 DOCUMENTED: dict[tuple[str, ...], type[BaseModel]] = {
@@ -216,10 +224,12 @@ class TestThePlannersContracts:
         contract = _contract()
         assert not set(contract["properties"]) & CODE_FILLED
         assert not set(contract["$defs"]["StructureChart"]["properties"]) & CODE_FILLED_ON_A_CHART
-        for stored, planned in _COMPLETED.items():
-            if planned.__name__ in contract["$defs"]:
-                sent = set(contract["$defs"][planned.__name__]["properties"])
-                assert not sent & CODE_FILLED_PARTS[stored.__name__], planned.__name__
+        assert "flag" not in contract["properties"], "the flag's words are prose; code fills the rest"
+        assert set(_SENT) | {Flag} == set(_COMPLETED)
+        for stored, paths in _SENT.items():
+            for path in paths:
+                sent = set(_part(contract, path)["properties"])
+                assert not sent & CODE_FILLED_PARTS[stored.__name__], path
 
     def test_the_structure_holds_no_prose(self):
         """Every sentence goes through the prose call, so the structure's size never grows with the page's words."""
@@ -259,16 +269,15 @@ class TestThePlannersContracts:
         stored = {field.alias or name for name, field in ReportPlan.model_fields.items()}
         assert stored == planned | CODE_FILLED
         assert set(ChartSpec.model_fields) == set(report_plan.PlannedChart.model_fields) | CODE_FILLED_ON_A_CHART
-        for stored_unit, planned_unit in _COMPLETED.items():
-            assert (
-                set(stored_unit.model_fields)
-                == set(planned_unit.model_fields) | CODE_FILLED_PARTS[stored_unit.__name__]
-            ), stored_unit.__name__
+        for stored_unit, path in _COMPLETED.items():
+            planned_unit = set(_part(_reply_schema(), path)["properties"])
+            assert set(stored_unit.model_fields) == planned_unit | CODE_FILLED_PARTS[stored_unit.__name__], path
 
     def test_an_answer_names_its_warning_by_position_and_is_stored_by_the_warning(self):
-        assert _PLANNED_ANSWER.model_fields["warning"].annotation is int
+        planned = _part(_reply_schema(), ("answers", "[]"))
+        assert planned["properties"]["warning"]["type"] == "integer"
         assert WarningAnswer.model_fields["warning"].annotation is WarningRef
-        assert set(_PLANNED_ANSWER.model_fields) == set(WarningAnswer.model_fields)
+        assert set(planned["properties"]) == set(WarningAnswer.model_fields)
 
     def test_the_planners_part_of_the_kairo_plan_is_a_valid_reply(self):
         PlannedReport.model_validate(_planned(_r5()))
@@ -281,7 +290,7 @@ class TestThePlannersContracts:
     def test_the_prose_is_typed_as_prose(self):
         prose = {
             (model, name)
-            for model in (PlannedReport, Flag, DecisionSlot, CaveatClause, _PLANNED_SECTION, MethodItem, WarningAnswer)
+            for model in (PlannedReport, Flag, DecisionSlot, CaveatClause, Section, MethodItem, WarningAnswer)
             for name, field in model.model_fields.items()
             if field_is_prose(field)
         }
@@ -291,7 +300,7 @@ class TestThePlannersContracts:
             (Flag, "text"),
             (DecisionSlot, "text"),
             (CaveatClause, "material_if"),
-            (_PLANNED_SECTION, "headline"),
+            (Section, "headline"),
             (MethodItem, "text"),
             (WarningAnswer, "text"),
         } <= prose

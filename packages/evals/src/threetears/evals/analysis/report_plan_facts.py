@@ -92,7 +92,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.errors import PlanRefusal, SoundnessRefusal, UnresolvableReference
-from threetears.evals.analysis.report.plan_page.charting import unit_refusal
+from threetears.evals.analysis.report.plan_page.charting import contrast_unit, unit_refusal
 from threetears.evals.analysis.report.figure_keys import (
     DIRECTION_WORDS,
     WEAKEST_PREFIX,
@@ -110,7 +110,6 @@ from threetears.evals.analysis.report_plan_checks import (
     Spine,
     classify,
     contrast_level,
-    contrast_unit,
     implied_disclosures,
     raised_warnings,
     spine,
