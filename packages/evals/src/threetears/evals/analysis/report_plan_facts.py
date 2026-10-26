@@ -11,8 +11,8 @@ as :class:`PlanFacts`, so the planner's user message and the plan code completes
 - **The masthead** (§2.1): the campaign's kind, the system under test, the counts and the run date, counts and date
   as figure keys where the input holds the figure.
 - **The arms** (§5.2, §6.1): each arm's colour slot (-1 for the control, then series colours in the input's order),
-  its letter tag, and whether the arms key shows (§2.8: any arm's full configuration is longer than
-  :data:`ARMS_KEY_CHARS` characters, or a setting other than the model varied).
+  its letter tag, and whether the arms key shows (§2.8: any arm's full configuration is longer than 24 characters,
+  or a setting other than the model varied).
 - **The options table's columns** (§2.6: "the criteria plus cost"), each one of
   :data:`~threetears.evals.analysis.report_plan_checks.OPTION_COLUMN_FAMILIES`, the vocabulary the plan checks hold
   a stored plan's columns to: the pass rate where one resolves; the asked reading's change and verdict where an
@@ -133,11 +133,9 @@ from threetears.evals.kernel.report_plan import (
 )
 
 __all__ = [
-    "ARMS_KEY_CHARS",
     "PLAN_MODES",
     "FactArm",
     "FactCaveat",
-    "FactWeakest",
     "PlanFacts",
     "complete_plan",
     "flag_disclosures",
@@ -145,7 +143,7 @@ __all__ = [
 ]
 
 #: GENERATOR §2.8: the arms key shows when any arm's full configuration is longer than this.
-ARMS_KEY_CHARS = 24
+_ARMS_KEY_CHARS = 24
 
 #: The modes a plan may take, in the order the facts list what each implies.
 PLAN_MODES: tuple[str, ...] = ("decide", "tradeoff", "no_call")
@@ -183,7 +181,7 @@ class FactCaveat(BaseModel):
     checked: str = Field(description="The line code renders for a caveat it proved immaterial; empty for an open one.")
 
 
-class FactWeakest(BaseModel):
+class _FactWeakest(BaseModel):
     """The weakest margin as the planner is told of it: what it is, rendered, and the keys that name it."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -223,7 +221,7 @@ class PlanFacts(BaseModel):
     )
     allowed_modes: tuple[str, ...] = Field(description="The modes the evidence allows, in PLAN_MODES' order.")
     caveats: tuple[FactCaveat, ...] = Field(description="Every caveat the input carries, by id.")
-    weakest: FactWeakest | None = Field(
+    weakest: _FactWeakest | None = Field(
         description="The weakest margin under the call; None where the input reads no figure against a line."
     )
     names: Mapping[str, Mapping[str, str]] = Field(
@@ -275,10 +273,10 @@ def plan_facts(report_input: ReportInput) -> PlanFacts:
     )
 
 
-def _weakest(report_input: ReportInput) -> FactWeakest | None:
+def _weakest(report_input: ReportInput) -> _FactWeakest | None:
     if weakest_margin(report_input) is None:
         return None
-    return FactWeakest(said=render(_WEAKEST_SAID, report_input, {}), keys=_WEAKEST_KEYS)
+    return _FactWeakest(said=render(_WEAKEST_SAID, report_input, {}), keys=_WEAKEST_KEYS)
 
 
 def flag_disclosures(facts: PlanFacts, mode: str, listed: Iterable[str]) -> tuple[str, ...]:
@@ -344,13 +342,13 @@ def _masthead(report_input: ReportInput, control: str | None) -> Masthead:
 
 
 def _shows_arms_key(report_input: ReportInput) -> bool:
-    """GENERATOR §2.8: a full configuration over :data:`ARMS_KEY_CHARS` characters, or a setting beside the model
-    that varied."""
+    """GENERATOR §2.8: a full configuration over ``_ARMS_KEY_CHARS`` characters, or a setting beside the model that
+    varied."""
     for arm in report_input.arms:
         shown = " · ".join(
             str(value) if setting == "model" else f"{setting} {value}" for setting, value in arm.settings.items()
         )
-        if len(shown or arm.served_model or "") > ARMS_KEY_CHARS:
+        if len(shown or arm.served_model or "") > _ARMS_KEY_CHARS:
             return True
     others = {setting for arm in report_input.arms for setting in arm.settings if setting != "model"}
     return any(len({repr(arm.settings.get(setting)) for arm in report_input.arms}) > 1 for setting in others)

@@ -21,13 +21,26 @@ from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report_decision import dominant_options, surviving_options
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_facts import plan_facts
-from threetears.evals.kernel.report_plan import PROSE_SCHEMA_NAME, STRUCTURE_SCHEMA_NAME, PlanStructure
+from threetears.evals.kernel.report_plan import PlanStructure, prose_response_format, structure_response_format
 from packages.evals.tests.toyhost_memo import FixturedClient, FixturedCompletion
 
-__all__ = ["PLAN_CALLS", "PlanWriter", "contract_name", "prose_reply", "replies_for", "structure_reply"]
+__all__ = [
+    "PLAN_CALLS",
+    "PROSE_CONTRACT",
+    "STRUCTURE_CONTRACT",
+    "PlanWriter",
+    "contract_name",
+    "prose_reply",
+    "replies_for",
+    "structure_reply",
+]
 
 #: The calls an unrepaired plan takes: its structure and its prose.
 PLAN_CALLS = 2
+
+#: The names the planner's two contracts are sent under, read off the directives a generation sends.
+STRUCTURE_CONTRACT: str = structure_response_format()["json_schema"]["name"]
+PROSE_CONTRACT: str = prose_response_format()["json_schema"]["name"]
 
 #: Where a spine reads when code names no source: the first of these the input holds rows for.
 _SPINE_SOURCES = ("tasks", "floors", "measures", "configs", "strata")
@@ -176,9 +189,9 @@ def replies_for(report_input: Callable[[], ReportInput]) -> Callable[[Any], str]
     def reply(response_format: Any) -> str:
         name = contract_name(response_format)
         built = report_input()
-        if name == STRUCTURE_SCHEMA_NAME:
+        if name == STRUCTURE_CONTRACT:
             return json.dumps(structure_reply(built))
-        if name == PROSE_SCHEMA_NAME:
+        if name == PROSE_CONTRACT:
             return json.dumps(prose_reply(built))
         raise AssertionError(f"a planner call was sent under {name!r}, which is neither of the planner's contracts")
 

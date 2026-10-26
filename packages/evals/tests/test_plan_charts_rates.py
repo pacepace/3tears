@@ -32,7 +32,7 @@ from packages.evals.tests.report_kit_support import KIT
 from packages.evals.tests.static_page_support import assert_static
 from threetears.evals.analysis import ChartBlock, TableBlock, planned_page_html, planned_page_markdown
 from threetears.evals.analysis.errors import PlanRefusal, UnresolvableReference
-from threetears.evals.analysis.planned_analysis import plan_recommended_arm
+from threetears.evals.kernel.report_plan import plan_recommended_arm
 from threetears.evals.analysis.report.charts import (
     KIT_CHARTS,
     ChartReference,

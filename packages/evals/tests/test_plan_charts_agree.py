@@ -33,7 +33,7 @@ from packages.evals.tests.fixtures.report_plans import dataset
 from packages.evals.tests.report_plan_support import planned_reply
 from threetears.evals.analysis import ChartBlock, TableBlock
 from threetears.evals.analysis.errors import PlanRefusal, UnresolvableReference
-from threetears.evals.analysis.planned_analysis import plan_recommended_arm
+from threetears.evals.kernel.report_plan import plan_recommended_arm
 from threetears.evals.analysis.report.charts import (
     BarsChart,
     DiffHeatmapChart,

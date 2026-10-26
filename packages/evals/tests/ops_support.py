@@ -31,11 +31,10 @@ from packages.evals.tests.toyhost_memo import (
     memo_payload,
 )
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.toyhost_plan import contract_name, replies_for
+from packages.evals.tests.toyhost_plan import PROSE_CONTRACT, STRUCTURE_CONTRACT, contract_name, replies_for
 from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.prompts.catalogue import REPORT_PLAN_PROMPT
-from threetears.evals.kernel.report_plan import PROSE_SCHEMA_NAME, STRUCTURE_SCHEMA_NAME
 
 __all__ = [
     "CALLER",
@@ -86,7 +85,7 @@ class MemoWriter(FixturedClient):
             self.completion.content = self.first_output
             return await super().generate(system=system, user=user, response_format=response_format, tools=tools)
         bundle = off_loop(assemble_campaign_bundle, self._host, self._campaign.id, self._campaign.scope_id)
-        if contract_name(response_format) in (STRUCTURE_SCHEMA_NAME, PROSE_SCHEMA_NAME):
+        if contract_name(response_format) in (STRUCTURE_CONTRACT, PROSE_CONTRACT):
             self.completion.content = replies_for(lambda: report_input(bundle))(response_format)
         else:
             self.completion.content = json.dumps(memo_payload(bundle))
