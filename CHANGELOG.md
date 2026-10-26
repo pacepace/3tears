@@ -6,6 +6,45 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the report planner writes a campaign's analysis, in place of the memo writer
+
+**Changed:** a generation is written by the report planner (`threetears.evals.analysis.planner`), not the memo
+writer. It writes a report plan in two calls, a structure then its prose, each repaired at most once, and code checks
+the plan (`validate_plan`) before it is stored. What a host must do:
+
+- **Register the planner's prompt.** `AnalysisGeneration.prompt_id` now defaults to `eval_report_plan`
+  (`REPORT_PLAN_PROMPT`). Seed that slot from `threetears.evals.analysis.EVAL_REPORT_PLAN_DEFAULT` and make
+  `resolve_prompt` return it. A host whose resolution still returns the memo writer's seed (`EVAL_ANALYSIS_GEN_DEFAULT`)
+  is refused before anything is sent: preparation raises `ValidationFailedError` and `generate_report_plan` raises
+  `RefusedInput`, each naming the prompt to register. The writer's prompt (`eval_analysis_gen`) stays registered for
+  memo reporter cases. The planner seed moved this release (its rule 9: the first evidence section draws the spine code
+  gives, and no section repeats a summary chart), so push it to the `eval_report_plan` store (`eval_prompt_reset`).
+- **Give a generation room for four calls.** `MAX_GENERATION_CALLS` goes from 2 to 4 (the structure, its repair, the
+  prose, its repair), which doubles `generation_ceiling_s`. A host that fixed `AnalysisGeneration.budget_s` below the
+  new ceiling cancels a repair mid-flight, after its calls were billed, and the attempt ends `timed_out`. The package
+  cannot check it when the config is built: the per-request ceiling is the host's client's. Derive `budget_s` from
+  `Ceilings().generation_ceiling_s` again.
+- **Storage.** A new regenerable document type, `eval_report_plan` (`EvalReportPlan`), holds each planned analysis's
+  plan. `AnalysisStore` gains `save_report_plan`, `load_report_plan` and `delete_report_plan`; `EvalStorage` implements
+  them over any `DocumentStore`, so only a host with its own `AnalysisStore` writes them. `EvalAnalysis.document` is now
+  optional (None for a planned analysis), and `EvalAnalysis` gains `report_plan_id` and `basis` (`memo` or `plan`).
+  Memo analyses read and render as before.
+- **The read surface.** `AnalysisLine` gains `basis` and `report_plan_id`, and its `needs_regeneration` is also set
+  for a planned analysis whose stored plan this build no longer reads (or whose plan was deleted apart from it).
+  `ReportDocument` gains `analysis_basis` and `plan`. `report_read`, `campaign_report` and `analysis_report` refuse
+  such an analysis with `RefusedInput`, naming `analysis_generate`, as they refuse an analysis frozen over a bundle of
+  another shape.
+- **Rolling deploys.** A pod built before the planner cannot read a planned analysis, so `analyses_list` and
+  `campaign_report` fail there outright. Upgrade every pod before the first planned analysis is generated.
+- **Reporter calibration.** `ReporterCalibration.rating_agreement` is now nullable: it is null when a run spans more
+  than one calibration group (kind version and prompt version), and each group's agreement is in `groups`.
+
+**Changed (the plan checks):** the shape's spine chart is code's fact (`report_plan_checks.spine`), handed to the
+planner, and a plan whose first evidence section is not it is refused. A recommended or lean option that does not
+survive the gates and guardrails is refused in every mode. A candidate a corrected contrast on an asked aspect
+separates (improved, regressed or equivalent) is no longer forced to a no call by an unclear pass-rate reading. See
+`packages/evals/MIGRATIONS.toml`.
+
 ### evals: the reporter eval judges report plans
 
 **Added:** a reporter case may judge a report plan (`ReporterCase.kind_version` 2; durable v16.6). `reporter_case_freeze`

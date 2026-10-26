@@ -34,6 +34,7 @@ from packages.evals.tests.report_plan_support import (
 )
 from packages.evals.tests.toyhost_memo import MODEL, FixturedClient, FixturedCompletion
 from threetears.evals.analysis.errors import GenerationError, PlanRefusal, SoundnessRefusal
+from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.generator import GenerationTally
 from threetears.evals.analysis.plan_assembly import ProseSlot, read_prose
 from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
@@ -50,6 +51,7 @@ from threetears.evals.analysis.planner import (
 from threetears.evals.analysis.report.figure_keys import GRAMMAR_HEADING
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_checks import validate_plan
+from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.report_plan import (
     PlanProse,
@@ -153,6 +155,25 @@ class TestTheRequests:
         assert PlanStructure.model_validate_json(sent) == structure
         assert [slot["key"] for slot in json.loads(keys)] == [item["key"] for item in _prose()["prose"]]
         assert contract == prose_response_format()
+
+
+class TestTheMemoPromptIsRefused:
+    """A host whose prompt resolution still returns the memo writer's seed is told what to register, before any call."""
+
+    def test_the_structure_request_refuses_it_naming_the_planners_prompt(self) -> None:
+        with pytest.raises(RefusedInput) as refused:
+            first_plan_request(_input(), EVAL_ANALYSIS_GEN_DEFAULT, toyhost_profile())
+        assert "memo writer's prompt" in refused.value.fault
+        assert "register the `eval_report_plan` prompt" in refused.value.remedy
+        assert "EVAL_REPORT_PLAN_DEFAULT" in refused.value.remedy
+
+    async def test_a_generation_refuses_it_before_any_call(self) -> None:
+        client = _Replies(_reply(_structure()), _reply(_prose()))
+        with pytest.raises(RefusedInput, match="eval_report_plan"):
+            await generate_report_plan(
+                _input(), prompt=EVAL_ANALYSIS_GEN_DEFAULT, model=MODEL, client=client, profile=toyhost_profile()
+            )
+        assert client.calls == []
 
 
 class TestAValidPlan:

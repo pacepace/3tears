@@ -48,7 +48,8 @@ from threetears.evals.analysis.service import (
     run_analysis_generation,
 )
 from threetears.evals.kernel.campaign import EvalAnalysis, report_plan_id
-from threetears.evals.kernel.errors import RefusedInput
+from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
+from threetears.evals.kernel.errors import RefusedInput, ValidationFailedError
 from threetears.evals.kernel.prompts.catalogue import REPORT_PLAN_PROMPT
 from threetears.evals.ops import analyses_list, analysis_delete, analysis_generate, report_read
 from packages.evals.tests.off_loop import off_loop
@@ -235,6 +236,21 @@ def _validation_error() -> ValidationError:
     except ValidationError as invalid:
         return invalid
     raise AssertionError("an empty analysis validated")
+
+
+async def test_a_host_resolving_the_memo_prompt_is_refused_before_the_generation_starts() -> None:
+    """The planner is handed the memo writer's seed: refused while the generation is prepared, nothing sent, the
+    remedy naming the prompt to register."""
+
+    async def memo_prompt() -> str:
+        return EVAL_ANALYSIS_GEN_DEFAULT
+
+    host, campaign = off_loop(toy_campaign_host, lambda *_, **__: PlanWriter())
+    with pytest.raises(ValidationFailedError) as refused:
+        await prepare_analysis_generation(
+            host, campaign.id, campaign.scope_id, model=None, resolve_prompt=memo_prompt, out_of_run_cap_usd=None
+        )
+    assert "memo writer's prompt" in str(refused.value) and "eval_report_plan" in str(refused.value)
 
 
 class TestBuildingTheAnalysis:

@@ -38,6 +38,7 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.campaign_bundle import writer_view
 from threetears.evals.analysis.generator import generate_analysis
+from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TextBlock
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
@@ -594,7 +595,7 @@ async def test_a_campaign_asked_after_its_readings_reads_as_asked_and_names_each
     assert all(confirmatory for *_, confirmatory in rows(held, two))
 
     async def prompt() -> str:
-        return PROMPT
+        return EVAL_REPORT_PLAN_DEFAULT
 
     prepared = await prepare_analysis_generation(
         held.host, two.id, SCOPE, model=None, resolve_prompt=prompt, out_of_run_cap_usd=None
@@ -689,7 +690,7 @@ async def test_a_campaign_adopting_still_valid_runs_reads_exactly_as_one_declare
     assert stored.declared_at is not None and stored.declared_at < first_result, "declared before the runs"
 
     async def prompt() -> str:
-        return PROMPT
+        return EVAL_REPORT_PLAN_DEFAULT
 
     async def told(campaign: EvalCampaign) -> tuple[str, str]:
         prepared = await prepare_analysis_generation(

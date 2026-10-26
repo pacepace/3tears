@@ -51,6 +51,10 @@ the registry.
 
 from __future__ import annotations
 
+from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
+from threetears.evals.kernel.errors import RefusedInput
+from threetears.evals.kernel.prompts.catalogue import ANALYSIS_GEN_PROMPT, REPORT_PLAN_PROMPT
+
 #: The prompt's character ceiling, set just above the prompt as written. It only falls; making the prompt shorter is a
 #: measured change (an eval of the planner), not a cut by eye.
 PLAN_PROMPT_CHAR_BUDGET = 15_500
@@ -103,8 +107,31 @@ RULES — what separates a sound report from a plausible one.
 13. WRITE FOR A READER, THEN CHECK IT AND CUT IT. Headlines are findings, with subject and direction, never topic labels. Use reader names, not identifiers: each id by its name under `reader_names`, exactly, every time; ids appear only in Full results, and the campaign's question is never quoted above them. One name per measure: a judged rate and a pass rate on one aspect get different names. No statistician's grammar above the fold; that goes in Method. Sentences under 25 words, active voice, no hedging adverbs, no "worth noting", nothing about the page or yourself. Then reread as a skeptical reviewer: every claim is true of all it names; the headline, the options table and the first chart agree; every caveat is said once, where it applies; every warning on the recommended arm is answered; every figure is a key that resolves; the first screen alone says what to do, why and the main risk. Then cut whatever changes nothing. Be subject-agnostic: never assume the subject is of any particular kind."""
 
 
+def refuse_a_memo_prompt(prompt: str) -> None:
+    """Refuse the memo writer's seed prompt handed to the report planner: a host whose prompt resolution still returns
+    ``eval_analysis_gen``'s seed, which asks for a memo, not a plan. The planner calls it before it sends anything; it
+    lives here, beside the planner's own seed, so the generation path never names the writer's.
+
+    :param prompt: The prompt the planner was handed.
+    :ptype prompt: str
+    :raises RefusedInput: ``prompt`` is :data:`~threetears.evals.analysis.gen_prompt.EVAL_ANALYSIS_GEN_DEFAULT`; the
+        remedy says what to register.
+    """
+    if prompt.strip() == EVAL_ANALYSIS_GEN_DEFAULT.strip():
+        raise RefusedInput(
+            "the report planner was handed the memo writer's prompt (EVAL_ANALYSIS_GEN_DEFAULT, the "
+            f"`{ANALYSIS_GEN_PROMPT}` seed), which asks for a memo, not a report plan; nothing was sent",
+            remedy=(
+                f"register the `{REPORT_PLAN_PROMPT}` prompt, seeded from "
+                "threetears.evals.analysis.EVAL_REPORT_PLAN_DEFAULT, and resolve the planner's prompt from it "
+                "(AnalysisGeneration.prompt_id and resolve_prompt)"
+            ),
+        )
+
+
 __all__ = [
     "EVAL_REPORT_PLAN_DEFAULT",
     "PLAN_PROMPT_CHAR_BUDGET",
     "PLAN_PROMPT_RULE_BUDGET",
+    "refuse_a_memo_prompt",
 ]

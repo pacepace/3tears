@@ -27,14 +27,14 @@ from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
 from packages.evals.tests.toyhost_memo import (
     FIXTURED_CALL_CEILING_USD,
-    PROMPT,
-    PROMPT_ID,
     FixturedClient,
     memo_payload,
 )
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.toyhost_plan import contract_name, replies_for
+from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
 from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.kernel.prompts.catalogue import REPORT_PLAN_PROMPT
 from threetears.evals.kernel.report_plan import PROSE_SCHEMA_NAME, STRUCTURE_SCHEMA_NAME
 
 __all__ = [
@@ -160,9 +160,12 @@ def ops_fixture(
     hosts.append(launch.eval_host)
 
     async def prompt() -> str:
-        return PROMPT
+        # The planner's prompt, as a host registers it: a generation is written by the report planner.
+        return EVAL_REPORT_PLAN_DEFAULT
 
-    generating = AnalysisGeneration(prompt_id=PROMPT_ID, resolve_prompt=prompt, max_output_tokens=4000, budget_s=60.0)
+    generating = AnalysisGeneration(
+        prompt_id=REPORT_PLAN_PROMPT, resolve_prompt=prompt, max_output_tokens=4000, budget_s=60.0
+    )
 
     host = OpsHost(launch=launch, generation=generating if generation else None)
     return OpsFixture(host, campaign, writers)

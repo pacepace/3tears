@@ -75,7 +75,7 @@ from threetears.evals.analysis.generator import (
 )
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.plan_assembly import check_structure, planned_report, prose_slots, read_prose
-from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
+from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT, refuse_a_memo_prompt
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import planner_view
@@ -257,9 +257,11 @@ def first_plan_request(
     :ptype budget: int | None
     :return: ``(system, user, response_format)``.
     :rtype: tuple[str, str, dict[str, Any]]
-    :raises RefusedInput: The view is over its budget once every trim is made; nothing is sent.
+    :raises RefusedInput: The view is over its budget once every trim is made, or ``prompt`` is the memo writer's
+        seed (``EVAL_ANALYSIS_GEN_DEFAULT``); nothing is sent.
     :raises ValueError: ``allowed_modes`` is empty or names a mode no plan takes.
     """
+    refuse_a_memo_prompt(prompt)
     return (
         _system(prompt, profile, STRUCTURE_CALL),
         plan_user_message(report_input, allowed_modes=allowed_modes, budget=budget),
@@ -369,9 +371,11 @@ async def generate_report_plan(
     :raises SoundnessRefusal: A call's reply was refused both times (a
         :class:`~threetears.evals.analysis.errors.PlanRefusal` when the second refusal was faults the checks found);
         the message names both refusals and what was billed.
-    :raises RefusedInput: The report input's view is over its budget once every trim is made; nothing is sent.
+    :raises RefusedInput: The report input's view is over its budget once every trim is made, or ``prompt`` is the
+        memo writer's seed (``EVAL_ANALYSIS_GEN_DEFAULT``): register the ``eval_report_plan`` prompt. Nothing is sent.
     :raises ValueError: ``allowed_modes`` is empty or names a mode no plan takes.
     """
+    refuse_a_memo_prompt(prompt)
     tally = tally if tally is not None else GenerationTally()
     if not measuring_writers:
         refuse_an_unlisted_writer(profile, model)
