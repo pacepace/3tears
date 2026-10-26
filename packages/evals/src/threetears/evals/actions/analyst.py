@@ -28,9 +28,10 @@ from pydantic import Field, model_validator
 from threetears.evals.actions.analyst_analyses import ANALYSES_WORKFLOW, analyst_analyses_actions
 from threetears.evals.actions.analyst_facts import FACTS_WORKFLOW, analyst_facts_actions
 from threetears.evals.actions.analyst_render import analyst_render_actions
-from threetears.evals.actions.catalogue import DEFAULT_PREFIX, Action, Caller, PermissionClass, ToolSpec
+from threetears.evals.actions.catalogue import DEFAULT_PREFIX, Action, Caller, HelpTopic, PermissionClass, ToolSpec
 from threetears.evals.actions.params import AnalysisId, CampaignId, SnapshotId
 from threetears.evals.actions.render import render_cited
+from threetears.evals.ops.analyst_blocks import figure_key_grammar
 from threetears.evals.ops.analyst import GapNoted, SnapshotFrozen, capability_gap, report_snapshot_freeze
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
@@ -46,6 +47,14 @@ GAPS_WORKFLOW = "Investigate: gaps"
 
 #: The workflows whose actions the editor tests a report with: no blocks, since it reads the page it is given.
 _EDITOR_WORKFLOWS = frozenset({FACTS_WORKFLOW, ANALYSES_WORKFLOW, GAPS_WORKFLOW})
+
+#: The figure-key grammar as a help topic: what every figure an analyst tool returns is keyed by, and what a claim cites.
+FIGURE_KEYS_TOPIC = HelpTopic(
+    name="figure_keys",
+    summary="The figure-key grammar: every path a figure is cited by, its filters and examples (block_catalog lists the "
+    "paths alone).",
+    text=figure_key_grammar,
+)
 
 #: Each role's tool description.
 _DESCRIPTIONS = {
@@ -183,7 +192,8 @@ def analyst_tools(
     :param role: ``analyst``, every workflow of the cut; or ``editor``, the facts, the analyses and the gap note, with
         no blocks (the editor reads the page it is given) and no freeze, whatever ``writes`` says.
     :ptype role: Literal["analyst", "editor"]
-    :return: ``<prefix>_analyst``, read actions and, with ``writes``, the freeze.
+    :return: ``<prefix>_analyst``, read actions and, with ``writes``, the freeze; its help serves the figure-key grammar
+        as ``topic='figure_keys'`` (:data:`FIGURE_KEYS_TOPIC`).
     :rtype: tuple[ToolSpec]
     """
     classes: frozenset[PermissionClass] = frozenset({"read", "write"} if writes else {"read"})
@@ -194,11 +204,13 @@ def analyst_tools(
             permissions=classes,
             cut=ANALYST_CUT,
             workflows=_EDITOR_WORKFLOWS if role == "editor" else None,
+            topics=(FIGURE_KEYS_TOPIC,),
         ),
     )
 
 
 __all__ = [
+    "FIGURE_KEYS_TOPIC",
     "analyst_actions",
     "analyst_tools",
 ]

@@ -316,6 +316,31 @@ class Action:
 
 
 @dataclass(frozen=True, kw_only=True)
+class HelpTopic:
+    """A reference page a tool's ``help`` serves beside its actions' pages: text code writes, never a hand copy.
+
+    :ivar name: What ``help topic='<name>'`` names it by: a lowercase identifier, no action's name on its tool.
+    :ivar summary: One line, shown in the help index.
+    :ivar text: Writes the page when it is asked for, so a tool built with it reads nothing until then.
+    """
+
+    name: str
+    summary: str
+    text: Callable[[], str] = field(compare=False)
+
+    def __post_init__(self) -> None:
+        """Refuse a malformed name or a summary that is blank or more than one line.
+
+        :raises ValueError: As described.
+        """
+        if not TOOL_NAME.fullmatch(self.name) or self.name == HELP_ACTION:
+            raise ValueError(f"help topic {self.name!r} is not a lowercase identifier other than {HELP_ACTION!r}")
+        # prose-canary: allow — HelpTopic.summary is help text a host's code declares, not text a model wrote
+        if not self.summary.strip() or "\n" in self.summary.strip():
+            raise ValueError(f"help topic {self.name!r}: the summary is one non-blank line")
+
+
+@dataclass(frozen=True, kw_only=True)
 class ToolSpec:
     """One tool a transport mounts: its name, its short description and the classes of action it carries.
 
@@ -326,6 +351,8 @@ class ToolSpec:
         mounts the actions that name no cut.
     :ivar workflows: The workflows (:attr:`Action.workflow`) whose actions it mounts, a subset of its cut's for a tool
         one role uses (the report editor's, which reads no blocks); ``None``, the default, for every workflow.
+    :ivar topics: The reference pages its ``help`` serves beside its actions' (:class:`HelpTopic`), listed in its help
+        index; none, the default.
     """
 
     name: str
@@ -333,10 +360,11 @@ class ToolSpec:
     permissions: frozenset[PermissionClass]
     cut: str | None = None
     workflows: frozenset[str] | None = None
+    topics: tuple[HelpTopic, ...] = ()
 
     def __post_init__(self) -> None:
-        """Refuse a malformed name or cut, a blank description, a set of classes that is empty or unknown, or a set of
-        workflows that is empty or names a blank one.
+        """Refuse a malformed name or cut, a blank description, a set of classes that is empty or unknown, a set of
+        workflows that is empty or names a blank one, or two help topics of one name.
 
         :raises ValueError: As described.
         """
@@ -350,6 +378,9 @@ class ToolSpec:
             raise ValueError(
                 f"tool {self.name!r}: workflows names one or more workflows, none blank, or is None for all"
             )
+        topics = [topic.name for topic in self.topics]
+        if len(set(topics)) != len(topics):
+            raise ValueError(f"tool {self.name!r}: two help topics share a name among {topics}")
         unknown = sorted(set(self.permissions) - set(PERMISSION_CLASSES))
         if not self.permissions or unknown:
             raise ValueError(
@@ -576,6 +607,10 @@ class MountedTool:
         """This tool's action of that name, or ``None``."""
         return next((action for action in self.actions if action.name == name), None)
 
+    def topic(self, name: str) -> HelpTopic | None:
+        """This tool's help topic of that name (:attr:`ToolSpec.topics`), or ``None``."""
+        return next((topic for topic in self.spec.topics if topic.name == name), None)
+
     def input_schema(self) -> dict[str, Any]:
         """The tool's input: ``action`` and ``topic``, then every action's parameters, flat and described.
 
@@ -586,7 +621,7 @@ class MountedTool:
         names = [HELP_ACTION, *(action.name for action in self.actions)]
         properties: dict[str, Any] = {
             "action": {"type": "string", "enum": names, "description": "The action to run; 'help' lists them."},
-            "topic": {"type": "string", "description": "help only: the action to explain, by name."},
+            "topic": {"type": "string", "description": render.topic_description(self)},
         }
         properties.update(self.properties)
         return {"type": "object", "properties": properties, "required": ["action"], "additionalProperties": False}
@@ -695,9 +730,12 @@ class MountedTool:
         topic = given.get("topic")
         if topic is None:
             return ActionOutcome(self.help_index(), action=HELP_ACTION)
+        reference = self.topic(topic) if isinstance(topic, str) else None
+        if reference is not None:
+            return ActionOutcome(reference.text(), action=HELP_ACTION)
         if not isinstance(topic, str) or self.action(topic) is None:
             return ActionOutcome(
-                render.refuse_unknown_action(self, str(topic)), refusal=_CALL_REFUSAL, action=HELP_ACTION
+                render.refuse_unknown_topic(self, str(topic)), refusal=_CALL_REFUSAL, action=HELP_ACTION
             )
         return ActionOutcome(self.help_page(topic), action=HELP_ACTION)
 
@@ -772,6 +810,9 @@ class ActionCatalogue:
             raise ValueError(
                 f"tool {spec.name!r} mounts {sorted(spec.permissions)} and no action has those classes{where}"
             )
+        colliding = sorted({topic.name for topic in spec.topics} & {action.name for action in actions})
+        if colliding:
+            raise ValueError(f"tool {spec.name!r}: help topic {', '.join(colliding)} is named as one of its actions")
         properties: dict[str, dict[str, Any]] = {}
         declared_by: dict[str, str] = {}
         for action in actions:
@@ -818,6 +859,7 @@ __all__ = [
     "ConformanceSample",
     "ConformanceStage",
     "HappyPath",
+    "HelpTopic",
     "MountedTool",
     "PermissionClass",
     "Refusal",

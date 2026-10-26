@@ -58,7 +58,7 @@ from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.analyst.snapshot import ANALYST_EXAMPLES, frozen_input, report_snapshot
 from threetears.evals.analysis.planned_analysis import report_input_digest, report_input_document_digest
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
-from threetears.evals.analysis.report.figure_keys import render, resolve
+from threetears.evals.analysis.report.figure_keys import figure_key_grammar, render, resolve
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel import EvalReportSnapshot, report_snapshot_id
@@ -612,6 +612,23 @@ def _page_rows(action: str, structured: dict[str, Any]) -> list[Any]:
         return list(structured[_ROWS[action]])
     kinds = ("readings", "pairs", "floors", "bars")
     return [row for group in structured["aspects"] for kind in kinds for row in group[kind]]
+
+
+async def test_help_topic_figure_keys_is_the_whole_grammar_and_block_catalog_lists_its_paths() -> None:
+    fixture, snapshots = off_loop(_seeded)
+    grammar = figure_key_grammar()
+    for role in ("analyst", "editor"):
+        (spec,) = analyst_tools(role=role)
+        tool = eval_catalogue().mount(spec)
+        page = await _call(tool, fixture, {"action": "help", "topic": "figure_keys"})
+        assert (page.ending, page.text) == ("ok", grammar), role
+        assert "- figure_keys: " in tool.help_index() and "block_catalog" in tool.help_index(), role
+    catalog = await _call(_analyst_tool(), fixture, {"action": "block_catalog", "snapshot_id": snapshots["r1"].id})
+    assert catalog.structured is not None
+    forms = catalog.structured["figure_key_forms"]
+    assert forms and all(f"- `{form}`" in grammar for form in forms), "the catalog's paths are the grammar's"
+    detail = next(action.detail for action in analyst_actions() if action.name == "block_catalog")
+    assert "help topic='figure_keys'" in detail
 
 
 # =============================================================================

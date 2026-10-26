@@ -29,6 +29,7 @@ from threetears.evals.actions import (
     Action,
     ActionCatalogue,
     Caller,
+    HelpTopic,
     ToolSpec,
     engine_actions,
     eval_catalogue,
@@ -510,6 +511,51 @@ def test_a_tool_cut_to_workflows_mounts_their_actions_alone() -> None:
     with pytest.raises(ValueError, match=r"no action has those classes in workflows \['Elsewhere'\]"):
         catalogue.mount(
             ToolSpec(name="t", description="d", permissions=frozenset({"read"}), workflows=frozenset({"Elsewhere"}))
+        )
+
+
+async def test_help_serves_a_reference_topic_beside_the_actions_and_lists_it() -> None:
+    written: list[str] = []
+
+    def glossary() -> str:
+        written.append("written")
+        return "a note is what note_echo echoes"
+
+    topic = HelpTopic(name="glossary", summary="What the words mean.", text=glossary)
+    spec = ToolSpec(name="notes", description="d", permissions=frozenset({"read"}), topics=(topic,))
+    tool = ActionCatalogue([_action()]).mount(spec)
+    assert written == [], "a topic's page is written only when asked for"
+    assert "## Reference\n- glossary: What the words mean." in tool.help_index()
+    assert "a reference topic" in tool.input_schema()["properties"]["topic"]["description"]
+    page = await _call(tool, {"action": "help", "topic": "glossary"})
+    assert (page.text, page.is_error, written) == ("a note is what note_echo echoes", False, ["written"])
+    unknown = await _call(tool, {"action": "help", "topic": "glosary"})
+    assert unknown.is_error and unknown.text.endswith("Reference topics: glossary.")
+
+
+async def test_a_tool_with_no_topics_keeps_its_help_as_it_was(tools: dict[str, Any]) -> None:
+    index = tools["evals"].help_index()
+    assert "## Reference" not in index
+    assert index.endswith("For one action's parameters and an example: action='help', topic='<action>'.")
+    assert tools["evals"].input_schema()["properties"]["topic"]["description"] == (
+        "help only: the action to explain, by name."
+    )
+    unknown = await _call(tools["evals"], {"action": "help", "topic": "nothing_here"})
+    assert "Reference topics" not in unknown.text
+
+
+def test_a_malformed_or_colliding_help_topic_is_refused() -> None:
+    with pytest.raises(ValueError, match="is not a lowercase identifier other than 'help'"):
+        HelpTopic(name="help", summary="s", text=str)
+    with pytest.raises(ValueError, match="the summary is one non-blank line"):
+        HelpTopic(name="glossary", summary="two\nlines", text=str)
+    topic = HelpTopic(name="glossary", summary="s", text=str)
+    with pytest.raises(ValueError, match="two help topics share a name"):
+        ToolSpec(name="t", description="d", permissions=frozenset({"read"}), topics=(topic, topic))
+    named = HelpTopic(name="note_echo", summary="s", text=str)
+    with pytest.raises(ValueError, match="help topic note_echo is named as one of its actions"):
+        ActionCatalogue([_action()]).mount(
+            ToolSpec(name="t", description="d", permissions=frozenset({"read"}), topics=(named,))
         )
 
 

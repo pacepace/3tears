@@ -8166,6 +8166,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.actions.HelpTopic": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.actions.MountedTool": {
       "kind": "dataclass",
       "signature": "",

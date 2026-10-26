@@ -143,7 +143,8 @@ def analyst_render_actions() -> tuple[Action, ...]:
                 "Each kind says what it draws, the sources it reads, whether every row needs an interval, whether it "
                 "draws panels, and the reference lines code can key on it. Each source says what a row is, the query "
                 "fields that narrow its rows, and whether this snapshot holds any. The figure key forms are the paths "
-                "a claim cites a figure by."
+                "a claim cites a figure by; the whole grammar, with its filters and "
+                "examples, is help topic='figure_keys'."
             ),
         ),
         Action(

@@ -1634,6 +1634,7 @@
 "threetears.evals.actions.eval_catalogue": "stable",
 "threetears.evals.actions.HappyPath": "provisional",
 "threetears.evals.actions.HELP_ACTION": "provisional",
+"threetears.evals.actions.HelpTopic": "provisional",
 "threetears.evals.actions.MountedTool": "provisional",
 "threetears.evals.actions.PERMISSION_CLASSES": "provisional",
 "threetears.evals.actions.PermissionClass": "provisional",

@@ -151,7 +151,10 @@ class BlockCatalog(BaseModel):
     sources: list[BlockSource] = Field(description="Every source.")
     transforms: list[str] = Field(description="What query.transform may do to the values read.")
     small_multiples: list[str] = Field(description="What query.small_multiples_by may repeat a panel by.")
-    figure_key_forms: list[str] = Field(description="Every figure key's path form, as the figure key grammar lists it.")
+    figure_key_forms: list[str] = Field(
+        description="Every figure key's path form, as the figure key grammar lists it; the analyst tool's help topic "
+        "figure_keys is the whole grammar."
+    )
 
 
 #: What each source's rows are, how they are labelled and whether they carry an interval, and the query fields that

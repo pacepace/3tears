@@ -102,8 +102,23 @@ def render_help_index(tool: MountedTool) -> str:
             job = ", starts a job" if action.long_running else ""
             lines.append(f"- {action.name} ({action.permission}{job}): {one_line(action.summary)}")
         lines.append("")
-    lines.append("For one action's parameters and an example: action='help', topic='<action>'.")
+    if tool.spec.topics:
+        lines.append("## Reference")
+        lines += [f"- {topic.name}: {one_line(topic.summary)}" for topic in tool.spec.topics]
+        lines.append("")
+        lines.append(
+            "For one action's parameters and an example, or a reference page: action='help', topic='<action or topic>'."
+        )
+    else:
+        lines.append("For one action's parameters and an example: action='help', topic='<action>'.")
     return "\n".join(lines)
+
+
+def topic_description(tool: MountedTool) -> str:
+    """What the tool's ``topic`` parameter says it takes: an action's name, and a reference topic where it has one."""
+    if not tool.spec.topics:
+        return "help only: the action to explain, by name."
+    return "help only: the action to explain, or a reference topic the help index lists, by name."
 
 
 def render_help_page(tool: MountedTool, action: Action) -> str:
@@ -152,6 +167,14 @@ def refuse_unknown_action(tool: MountedTool, name: str) -> str:
             f"{elsewhere.permission} actions. {_valid_actions(tool)}."
         )
     return f"refused: there is no action {name!r}. {_valid_actions(tool)}."
+
+
+def refuse_unknown_topic(tool: MountedTool, topic: str) -> str:
+    """A help call naming a topic this tool has no page for: as an unknown action, with its reference topics named."""
+    refused = refuse_unknown_action(tool, topic)
+    if not tool.spec.topics:
+        return refused
+    return f"{refused} Reference topics: {', '.join(item.name for item in tool.spec.topics)}."
 
 
 def _cut_of(action: Action) -> str:
@@ -678,6 +701,7 @@ __all__ = [
     "refuse_no_action",
     "refuse_undeclared",
     "refuse_unknown_action",
+    "refuse_unknown_topic",
     "render_cited",
     "render_help_index",
     "render_help_page",
@@ -688,4 +712,5 @@ __all__ = [
     "render_report",
     "render_result",
     "render_results",
+    "topic_description",
 ]
