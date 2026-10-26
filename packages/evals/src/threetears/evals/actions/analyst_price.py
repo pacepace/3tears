@@ -72,7 +72,7 @@ def analyst_price_actions() -> tuple[Action, ...]:
             handler=_price_tradeoff,
             render=render_cited,
             paged=True,
-            example={"snapshot_id": _EXAMPLE_SNAPSHOT, "gain_key": "resolves"},
+            example={"snapshot_id": _EXAMPLE_SNAPSHOT, "gain_key": "facts"},
             detail=(
                 "Only options that survive the gates are priced; each other option is listed off the frontier with "
                 "why (gated, no cost, no figure on the axis, dominated, or best at no single price). The frontier is "
