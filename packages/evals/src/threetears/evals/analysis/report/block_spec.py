@@ -78,7 +78,7 @@ from threetears.evals.analysis.report.plan_page.look import PageLook, page_look
 from threetears.evals.analysis.report_decision import control_arm, surviving_options
 from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, Reading, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_margins import criterion_place
-from threetears.evals.analysis.report_rows import SourceRow, query_aspect, query_rows
+from threetears.evals.analysis.report_rows import PriceStep, SourceRow, query_aspect, query_rows
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.kernel.report_plan import ChartQuery, ChartReference, ChartSpec, PlannedChart
 
@@ -108,7 +108,7 @@ _SOURCES: tuple[str, ...] = get_args(ChartQuery.model_fields["source"].annotatio
 #: The sources each chart kind can draw (GENERATOR §5.1), in the kit's order; a table draws any.
 BLOCK_SOURCES: Mapping[str, frozenset[str]] = {
     "forest": frozenset({"readings", "contrasts"}),
-    "bars": frozenset({"measures", "judged", "scoreboard", "strata", "tasks", "configs", "human_pref"}),
+    "bars": frozenset({"measures", "judged", "scoreboard", "strata", "tasks", "configs", "human_pref", "prices"}),
     "diverging_bars": frozenset(
         {"readings", "contrasts", "measures", "judged", "strata", "tasks", "configs", "human_pref"}
     ),
@@ -155,6 +155,12 @@ _SCOREBOARD_FIGURES = frozenset(
 _LESS_THE_CONTROL = frozenset({"measures", "judged", "strata", "tasks"})
 #: The arms a difference heatmap names to draw its second less its first, needing no control.
 _COMPARED_PAIR = 2
+
+#: The sources whose query names exactly one measure: a price frontier is read on one gain axis.
+_ONE_MEASURE = frozenset({"prices"})
+
+#: The level a chart of price steps prints where its ends are read off the unpaired interval, after the gain's own.
+_UNPAIRED_LEVEL = "unpaired"
 
 #: How a fault opens where the page cannot draw a chart in the units its query selects.
 _UNDRAWABLE = "cannot be drawn as it asks:"
@@ -429,7 +435,28 @@ def _level(chart: PlannedChart, report_input: ReportInput, path: str, faults: li
     if source == "strata":
         level = _one(path, "interval level", _figure_levels(chart, report_input), faults)
         return f"{level} {_UNCORRECTED}" if level else _descriptive_level(chart, report_input)
+    if source == "prices":
+        return _price_level(chart, report_input, path, faults)
     return ""
+
+
+def _price_level(chart: PlannedChart, report_input: ReportInput, path: str, faults: list[_Fault]) -> str:
+    """The level a chart of price steps prints: its gain's contrasts' where its ends are read off the paired
+    interval, else its gain's own level marked unpaired; empty where no step carries an interval."""
+    steps = [
+        row.item
+        for row in query_rows(chart.query, report_input)
+        if isinstance(row.item, PriceStep) and row.interval is not None
+    ]
+    if not steps:
+        return ""
+    key = steps[0].gain_key
+    if steps[0].paired:
+        levels = (contrast_level(report_input, c) for c in report_input.contrasts if c.measure == key)
+        return _one(path, "interval level", levels, faults)
+    table = report_input.judged.get(key) or report_input.measures.get(key)
+    own = table.level if table is not None and table.level else ""
+    return f"{own} {_UNPAIRED_LEVEL}".strip()
 
 
 def _descriptive_level(chart: PlannedChart, report_input: ReportInput) -> str:
@@ -495,6 +522,8 @@ def _unit(chart: PlannedChart, report_input: ReportInput, path: str, faults: lis
         if query.transform == "arm_minus_control":
             return "points"
         return _only(_judged_unit(report_input, query.measures))
+    if source == "prices":
+        return "dollars" if report_input.meta.volume_per_month is not None else "usd_per_1k"
     return ""
 
 
@@ -629,6 +658,11 @@ def _query_faults(path: str, chart: ChartSpec, report_input: ReportInput, option
     if stray := [measure for measure in query.measures if measure not in measures]:
         held = f"it reads {sorted(measures)}" if measures else "it names none"
         yield f"{path}.query.measures", f"name {stray}, which the {source!r} source does not hold; {held}"
+    elif source in _ONE_MEASURE and len(query.measures) != 1:
+        yield (
+            f"{path}.query.measures",
+            f"name {list(query.measures)}, and a {source!r} block reads one gain axis: name one of {sorted(measures)}",
+        )
     strata = _strata_vocabulary(report_input)
     if stray := [stratum for stratum in query.strata if stratum not in strata]:
         yield f"{path}.query.strata", f"name {stray}, which are no strata or tasks of the report input"
@@ -663,6 +697,9 @@ def _measure_vocabulary(source: str, report_input: ReportInput) -> set[str]:
         return {floor.floor for floor in report_input.floors}
     if source == "confusion":
         return set(report_input.confusion)
+    if source == "prices":
+        directed = {key for key, measure in report_input.measures.items() if measure.higher_is_better is not None}
+        return set(report_input.judged) | directed
     holders: Iterable[Mapping[str, Mapping[str, object]]]
     if source == "strata":
         holders = [stratum.per_arm for stratum in report_input.strata]

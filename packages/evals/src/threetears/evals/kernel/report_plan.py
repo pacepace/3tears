@@ -112,6 +112,7 @@ _ChartSource = Literal[
     "cells",
     "confusion",
     "human_pref",
+    "prices",
 ]
 #: What a chart does to the values it reads: per 1,000 replies, each arm less the control, or nothing.
 _ChartTransform = Literal["none", "per_1k", "arm_minus_control"]

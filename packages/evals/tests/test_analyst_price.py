@@ -31,7 +31,9 @@ import pytest
 
 from packages.evals.tests.analyst_support import (
     TEXT_BUDGET,
+    WIDE_FRONTIER,
     action_calls,
+    budget_inputs,
     fixture_inputs,
     fixture_snapshots,
 )
@@ -42,6 +44,7 @@ from threetears.evals.actions import Action, MountedTool, analyst_actions, analy
 from threetears.evals.actions.analyst import ANALYST_CUT
 from threetears.evals.actions.analyst_analyses import ANALYSES_WORKFLOW
 from threetears.evals.actions.analyst_price import analyst_price_actions
+from threetears.evals.actions.render import render_cited
 from threetears.evals.analysis.analyst.analyses import gate_reads
 from threetears.evals.analysis.analyst.price import Price, PriceTradeoff, price_tradeoff
 from threetears.evals.analysis.report_gates import gate_findings
@@ -50,8 +53,13 @@ from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, key_subjects, render, resolve
 from threetears.evals.analysis.report_decision import surviving_options
+from threetears.evals.analysis.analyst.blocks import block_catalog, block_render
+from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES
+from threetears.evals.analysis.report_plan_facts import fact_arms
 from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_rows import PriceStep, query_rows
 from threetears.evals.kernel.errors import RefusedInput
+from threetears.evals.kernel.report_plan import ChartQuery
 
 #: The fields of a listing that page it, which are counts of rows and never figures.
 PAGING = frozenset({"total", "offset", "next_offset", "limit"})
@@ -303,9 +311,36 @@ def test_r4s_frontier_is_the_cheaper_option_and_the_control_and_the_guardrails_r
     assert trade.volume is not None and trade.volume.value == reference_data("r4")["meta"]["volume_per_month"]
 
 
+def _pooled_means(held: ReportInput, key: str) -> dict[str, float]:
+    """Each arm's figure on a key pooled over the slices holding it, off the input's own fields: the tasks holding it,
+    else the strata (of one stratification), else the cells; weighted by traffic share where every slice states one
+    and they sum above zero (a slice at zero weighing nothing), else equally; an arm missing a weighed slice left out."""
+
+    def holds(per_arm: Any) -> bool:
+        return any(key in figures and figures[key].mean is not None for figures in per_arm.values())
+
+    slices = [(task.share, task.per_arm) for task in held.tasks if holds(task.per_arm)]
+    strata = [stratum for stratum in held.strata if holds(stratum.per_arm)]
+    if not slices and strata and len({(stratum.aspect, stratum.dimension) for stratum in strata}) == 1:
+        slices = [(stratum.share, stratum.per_arm) for stratum in strata]
+    if not slices:
+        slices = [(None, cell.per_arm) for cell in held.cells.values() if holds(cell.per_arm)]
+    traffic = bool(slices) and all(share is not None for share, _ in slices) and sum(s or 0 for s, _ in slices) > 0
+    weighed = [(float(share or 0) if traffic else 1.0, per_arm) for share, per_arm in slices]
+    weighed = [(weight, per_arm) for weight, per_arm in weighed if weight > 0]
+    pooled: dict[str, float] = {}
+    for arm in {arm for _, per_arm in weighed for arm in per_arm}:
+        means = [per_arm.get(arm, {}).get(key) for _, per_arm in weighed]
+        if all(stat is not None and stat.mean is not None for stat in means):
+            total = sum(weight for weight, _ in weighed)
+            pooled[arm] = sum(w * float(s.mean) for (w, _), s in zip(weighed, means, strict=True)) / total  # type: ignore[union-attr,arg-type]
+    return pooled
+
+
 def _positions(held: ReportInput, key: str) -> dict[str, float]:
     """Each arm's place on an axis, off the input's own fields: its contrast against the control where every other
-    arm holds one, else its mean; signed so that higher is better."""
+    arm holds one, else its mean, else (no arm holding a mean) its figure pooled over its slices; signed so that
+    higher is better."""
     table = held.judged.get(key) or held.measures[key]
     higher = True if key in held.judged else held.measures[key].higher_is_better
     sign = 1.0 if higher else -1.0
@@ -315,6 +350,8 @@ def _positions(held: ReportInput, key: str) -> dict[str, float]:
     holders = ({*means} | {c.arm for c in contrasts}) - {control}
     if control is not None and contrasts and all([c.arm for c in contrasts].count(arm) == 1 for arm in holders):
         return {control: 0.0} | {c.arm: sign * float(c.delta or 0.0) for c in contrasts}
+    if not means:
+        return {arm: sign * mean for arm, mean in _pooled_means(held, key).items()}
     return {arm: sign * float(mean) for arm, mean in means.items()}
 
 
@@ -360,7 +397,7 @@ def _axes(held: ReportInput) -> list[str]:
 def test_each_fixtures_frontier_is_the_options_best_at_some_price(name: str) -> None:
     held = fixture_inputs()[name]
     for key in _axes(held):
-        trade = price_tradeoff(held, key)
+        trade = price_tradeoff(held, key, limit=len(held.arms))
         assert {row.arm.removeprefix("arm:") for row in trade.frontier} == _swept_frontier(held, key), key
         prices = [step.per_point for step in trade.steps]
         assert all(price is not None for price in prices), key
@@ -467,17 +504,23 @@ def _arms_shown(trade: PriceTradeoff) -> set[str]:
 def test_the_pages_cover_every_option_once(name: str) -> None:
     held = fixture_snapshots("s")[name]
     report_input = frozen_input(held)
-    key = next(key for key in _axes(report_input) if price_tradeoff(report_input, key).steps)
+    key = next(key for key in _axes(report_input) if price_tradeoff(report_input, key, limit=200).steps)
     whole = price_tradeoff(report_input, key, limit=200)
     seen: list[str] = []
+    frontier: list[Any] = []
+    steps: list[Any] = []
     offset: int | None = 0
     while offset is not None:
         page = price_tradeoff(report_input, key, limit=2, offset=offset)
-        assert page.frontier == whole.frontier and page.steps == whole.steps
+        assert (page.frontier_options, page.frontier_steps) == (whole.frontier_options, whole.frontier_steps)
+        frontier += page.frontier
+        steps += page.steps
         seen += sorted(_arms_shown(page))
         offset = page.next_offset
     assert sorted(seen) == sorted(_arms_shown(whole))
     assert len(seen) == len(set(seen))
+    assert sorted(frontier, key=repr) == sorted(whole.frontier, key=repr), "each frontier option on one page"
+    assert sorted(steps, key=repr) == sorted(whole.steps, key=repr), "each step on one page"
 
 
 def test_the_action_is_an_analysis_on_the_analysts_cut_once_gathered() -> None:
@@ -563,3 +606,326 @@ def test_a_move_reads_back_under_its_row() -> None:
     (step,) = price_tradeoff(_r4(), "persona").steps
     assert isinstance(step, Price)
     assert step.per_point is not None and step.per_point.key == "price.f64.prod.persona.per_point"
+
+
+# =============================================================================
+# W2 fixes: unpaired intervals, pooled gain axes, prices within a slice, what-ifs, a wide frontier paged
+# =============================================================================
+
+
+def _half_width(stat: Any) -> float | None:
+    if stat.half_width is not None:
+        return float(stat.half_width)
+    if stat.ci is not None:
+        return (float(stat.ci[1]) - float(stat.ci[0])) / 2
+    return None
+
+
+def _pooled_half_widths(held: ReportInput, key: str) -> dict[str, float]:
+    """Each pooled arm's half-width off the raw input: the weighed slices' half-widths, each times its weight's share,
+    combined as independent; only where every weighed slice states one."""
+    pooled = _pooled_means(held, key)
+
+    def holds(per_arm: Any) -> bool:
+        return any(key in figures and figures[key].mean is not None for figures in per_arm.values())
+
+    slices = [(task.share, task.per_arm) for task in held.tasks if holds(task.per_arm)]
+    if not slices:
+        slices = [(None, cell.per_arm) for cell in held.cells.values() if holds(cell.per_arm)]
+    traffic = bool(slices) and all(share is not None for share, _ in slices) and sum(s or 0 for s, _ in slices) > 0
+    weighed = [(float(share or 0) if traffic else 1.0, per_arm) for share, per_arm in slices]
+    weighed = [(weight, per_arm) for weight, per_arm in weighed if weight > 0]
+    total = sum(weight for weight, _ in weighed)
+    found: dict[str, float] = {}
+    for arm in pooled:
+        widths = [_half_width(per_arm[arm][key]) for _, per_arm in weighed]
+        if all(width is not None for width in widths):
+            found[arm] = math.sqrt(
+                sum((weight / total) ** 2 * width**2 for (weight, _), width in zip(weighed, widths, strict=True))  # type: ignore[operator]
+            )
+    return found
+
+
+def _own_half_widths(held: ReportInput, key: str) -> dict[str, float]:
+    """Each arm's own half-width on an axis off the raw input: its overall figure's, else (none overall) its pooled."""
+    table = held.judged.get(key) or held.measures[key]
+    if any(stat.mean is not None for stat in table.per_arm.values()):
+        return {arm: width for arm, stat in table.per_arm.items() if (width := _half_width(stat)) is not None}
+    return _pooled_half_widths(held, key)
+
+
+@pytest.mark.parametrize("name", sorted(fixture_inputs()))
+def test_an_unpaired_interval_is_the_gain_plus_or_minus_both_options_own_half_widths(name: str) -> None:
+    held = fixture_inputs()[name]
+    checked = 0
+    for key in _axes(held):
+        places = _positions(held, key)
+        widths = _own_half_widths(held, key)
+        arms = [arm.id for arm in held.arms if arm.id in places][:4]
+        for first in arms:
+            for second in arms:
+                if first == second:
+                    continue
+                path = f"price.{first}.{second}.{key}.gain_interval_unpaired"
+                if first not in widths or second not in widths:
+                    with pytest.raises(UnresolvableReference):
+                        resolve(path, held)
+                    continue
+                gain = places[second] - places[first]
+                width = math.hypot(widths[first], widths[second])
+                assert _value(path, held) == pytest.approx((gain - width, gain + width)), path
+                checked += 1
+    if name in ("r5", "r1", "r1 reading only bars"):
+        assert checked, "the control: an input whose arms state their own intervals prices an unpaired one"
+
+
+def test_a_move_between_two_candidates_carries_its_unpaired_interval_through_to_its_price() -> None:
+    held = fixture_inputs()["r1 reading only bars"]
+    key = next(key for key in _axes(held) if _own_half_widths(held, key) and price_tradeoff(held, key, limit=99).steps)
+    trade = price_tradeoff(held, key, limit=len(held.arms))
+    step = next(step for step in trade.steps if step.unpaired is not None and step.unpaired.bounds != "no_price")
+    assert step.unpaired is not None and "unpaired" in step.unpaired.says
+    first, second = step.from_arm.removeprefix("arm:"), step.to_arm.removeprefix("arm:")
+    gap = _value(f"price.{first}.{second}.{key}.cost_gap", held)
+    points = 100.0 if resolve(f"price.{first}.{second}.{key}.gain", held).scale == "share" else 1.0
+    low, high = (end * points for end in step.unpaired.gain_interval.value)  # type: ignore[union-attr]
+    assert step.unpaired.per_point_low is not None
+    assert step.unpaired.per_point_low.value == pytest.approx(gap / high)
+    if low > 0:
+        assert step.unpaired.bounds == "bounded" and step.unpaired.per_point_high is not None
+        assert step.unpaired.per_point_high.value == pytest.approx(gap / low)
+    else:
+        assert step.unpaired.bounds == "unbounded_above" and step.unpaired.per_point_high is None
+
+
+@pytest.mark.parametrize("name", ["r1", "r1 reading only bars", "r3"])
+def test_a_figure_held_only_per_slice_is_pooled_into_a_gain_axis_and_priced(name: str) -> None:
+    """r1 reading only bars: its quality is held per task, so the trade put every model off the frontier as
+    no_gain_figure (the W2 prototype's gap). Pooled, each is placed and the frontier is the swept one."""
+    held = fixture_inputs()[name]
+    pooled_keys = [
+        key
+        for key in _axes(held)
+        if not any(stat.mean is not None for stat in (held.judged.get(key) or held.measures[key]).per_arm.values())
+        and _pooled_means(held, key)
+    ]
+    assert pooled_keys, "the control: the input holds a gain axis only per slice"
+    for key in pooled_keys:
+        for arm, mean in _pooled_means(held, key).items():
+            assert _value(f"pooled.{key}.{arm}.mean", held) == pytest.approx(mean), (key, arm)
+        trade = price_tradeoff(held, key, limit=len(held.arms))
+        assert not [row for row in trade.off_frontier if row.reason == "no_gain_figure"], key
+        assert "pooled" in trade.basis
+        assert {row.arm.removeprefix("arm:") for row in trade.frontier} == _swept_frontier(held, key), key
+
+
+def test_pooled_weights_are_traffic_shares_where_stated_and_equal_weights_are_a_caveat() -> None:
+    by_task = fixture_inputs()["r1 reading only bars"]
+    assert all(task.share is not None for task in by_task.tasks), "the control: every task states its share"
+    key = next(key for key in _axes(by_task) if _pooled_means(by_task, key))
+    arm = next(iter(_pooled_means(by_task, key)))
+    assert "traffic share" in str(_value(f"pooled.{key}.{arm}.weights", by_task))
+    trade = price_tradeoff(by_task, key)
+    assert not any("weighted equally" in note for note in trade.notes)
+    by_cell = fixture_inputs()["r3"]
+    key = next(
+        key
+        for key in _axes(by_cell)
+        if _pooled_means(by_cell, key) and not by_cell.measures.get(key, by_cell.judged.get(key)).per_arm  # type: ignore[union-attr]
+    )
+    arm = next(iter(_pooled_means(by_cell, key)))
+    assert "weighted equally" in str(_value(f"pooled.{key}.{arm}.weights", by_cell))
+    assert _value(f"pooled.{key}.{arm}.slices", by_cell) == len(by_cell.cells)
+    trade = price_tradeoff(by_cell, key)
+    assert trade.notes[0].startswith("caveat:") or any(note.startswith("caveat:") for note in trade.notes)
+    assert any("weighted equally" in note for note in trade.notes)
+
+
+def _task_costs(held: ReportInput, task_id: str) -> dict[str, float]:
+    task = next(task for task in held.tasks if task.id == task_id)
+    return {
+        arm: float(figures["cost_per_1k"].mean)
+        for arm, figures in task.per_arm.items()
+        if "cost_per_1k" in figures and figures["cost_per_1k"].mean is not None
+    }  # type: ignore[arg-type]
+
+
+def test_a_price_within_a_task_reads_the_tasks_own_cost_and_figures() -> None:
+    held = fixture_inputs()["r1 reading only bars"]
+    task = next(task for task in held.tasks if _task_costs(held, task.id))
+    costs = _task_costs(held, task.id)
+    key = next(
+        key
+        for key in _axes(held)
+        if sum(key in figures and figures[key].mean is not None for figures in task.per_arm.values()) > 1
+    )
+    holding = [arm for arm, figures in task.per_arm.items() if key in figures and figures[key].mean is not None]
+    first, second = holding[:2]
+    sign = 1.0 if key in held.judged or held.measures[key].higher_is_better else -1.0
+    gain = sign * (float(task.per_arm[second][key].mean) - float(task.per_arm[first][key].mean))  # type: ignore[arg-type]
+    prefix = f"task.{task.id}.price.{first}.{second}.{key}"
+    assert _value(f"{prefix}.gain", held) == pytest.approx(gain)
+    assert _value(f"{prefix}.cost_gap", held) == pytest.approx(costs[second] - costs[first])
+    assert "own cost in this slice" in str(_value(f"{prefix}.cost_basis", held))
+    trade = price_tradeoff(held, key, slice_filter=task.id, limit=len(held.arms))
+    assert trade.within == f"task.{task.id}" and trade.volume is None
+    assert all(step.monthly_cost_gap is None and step.gain_interval is None for step in trade.steps)
+    assert all(
+        row.cost.key == f"task.{task.id}.{row.arm.removeprefix('arm:')}.cost_per_1k.mean" for row in trade.frontier
+    )
+
+
+def test_a_price_within_a_slice_holding_no_cost_reads_each_options_overall_cost() -> None:
+    held = fixture_inputs()["r5"]
+    stratum = held.strata[0]
+    key = next(
+        key
+        for key in _axes(held)
+        if sum(key in figures and figures[key].mean is not None for figures in stratum.per_arm.values()) > 1
+    )
+    arms = [arm for arm, figures in stratum.per_arm.items() if key in figures and figures[key].mean is not None]
+    prefix = f"strata.{stratum.id}.price.{arms[0]}.{arms[1]}.{key}"
+    assert "overall cost" in str(_value(f"{prefix}.cost_basis", held))
+    expected = _value(f"cost_per_1k.{arms[1]}", held) - _value(f"cost_per_1k.{arms[0]}", held)
+    assert _value(f"{prefix}.cost_gap", held) == pytest.approx(expected)
+
+
+def test_a_slice_naming_nothing_is_refused_naming_the_slices() -> None:
+    with pytest.raises(RefusedInput, match="names no task, stratum or cell") as refused:
+        price_tradeoff(fixture_inputs()["r1"], "overall", slice_filter="no such slice")
+    assert "'billing'" in (refused.value.remedy or "")
+
+
+def test_a_what_if_prices_an_option_the_gates_remove_labelled_never_a_recommendation() -> None:
+    held = _r4()
+    gated = [row.arm.removeprefix("arm:") for row in price_tradeoff(held, "persona").off_frontier]
+    assert gated, "the control: r4's guardrails remove options"
+    for arm in gated:
+        trade = price_tradeoff(held, "persona", what_if=arm)
+        what_if = trade.what_if
+        assert what_if is not None and what_if.arm == f"arm:{arm}"
+        assert "never a recommendation" in what_if.label and f"arm:{arm}" in what_if.label
+        assert what_if.gates == gate_reads(held, arm, "fail")
+        admitted = set(surviving_options(held)) | {arm}
+        assert {row.removeprefix("arm:") for row in what_if.frontier} == _swept_admitted(held, "persona", admitted)
+        assert all(arm in (step.from_arm[4:], step.to_arm[4:]) for step in what_if.steps)
+        assert what_if.against is not None and f"arm:{arm}" in (what_if.against.from_arm, what_if.against.to_arm)
+        assert [row.arm for row in trade.frontier] == ["arm:f64", "arm:prod"], "the trade itself is unchanged"
+
+
+def _swept_admitted(held: ReportInput, key: str, options: set[str]) -> set[str]:
+    """The options best at some price among ``options``, swept as :func:`_swept_frontier` sweeps the survivors."""
+    places = _positions(held, key)
+    costs = {arm: float(resolve(f"cost_per_1k.{arm}", held).value) for arm in options if arm in places}  # type: ignore[arg-type]
+    arms = sorted(costs)
+    breaks = sorted(
+        {
+            (costs[b] - costs[a]) / (places[b] - places[a])
+            for a in arms
+            for b in arms
+            if places[b] != places[a] and (costs[b] - costs[a]) / (places[b] - places[a]) > 0
+        }
+    )
+    prices = [breaks[0] / 2] if breaks else [1.0]
+    prices += [(low + high) / 2 for low, high in zip(breaks, breaks[1:], strict=False)]
+    prices += [breaks[-1] * 2] if breaks else []
+    best: set[str] = set()
+    order = [held_arm.id for held_arm in held.arms]
+    for price in prices:
+        values = {arm: price * places[arm] - costs[arm] for arm in arms}
+        top = max(values.values())
+        winners = [arm for arm in arms if math.isclose(values[arm], top, rel_tol=1e-12, abs_tol=1e-12)]
+        best.add(min(winners, key=order.index))
+    return best
+
+
+def test_a_what_if_naming_a_survivor_or_nothing_is_refused_naming_the_gated() -> None:
+    for named in ("prod", "no such arm"):
+        with pytest.raises(RefusedInput, match="a what-if prices an option the gates remove") as refused:
+            price_tradeoff(_r4(), "persona", what_if=named)
+        assert "'cor'" in (refused.value.remedy or "") or "'f16'" in (refused.value.remedy or "")
+
+
+def test_the_wide_frontier_runs_past_one_result_whole_and_its_pages_hold_it_each_within_the_budget() -> None:
+    """The control for the budget test over the wide frontier: read whole, its frontier and steps run past one
+    result; each default page stays within it, and following the pages reads every frontier option and step once."""
+    held = budget_inputs()[WIDE_FRONTIER]
+    whole = price_tradeoff(held, "pass_rate", limit=len(held.arms))
+    assert len(whole.frontier) >= 30 and len(whole.steps) == len(whole.frontier) - 1
+    assert len(render_cited(whole)) > TEXT_BUDGET
+    assert whole.frontier_options is not None and whole.frontier_options.value == len(whole.frontier)
+    frontier: list[str] = []
+    steps = 0
+    offset: int | None = 0
+    while offset is not None:
+        page = price_tradeoff(held, "pass_rate", offset=offset)
+        assert len(render_cited(page)) <= TEXT_BUDGET
+        frontier += [row.arm for row in page.frontier]
+        steps += len(page.steps)
+        offset = page.next_offset
+    assert frontier == [row.arm for row in whole.frontier] and steps == len(whole.steps)
+
+
+# =============================================================================
+# The prices block source: a step per row, drawn by bars and laid out by a table
+# =============================================================================
+
+
+def _prices_query(measures: list[str], arms: list[str] | None = None) -> ChartQuery:
+    return ChartQuery.model_validate(
+        {
+            "source": "prices",
+            "aspect": "",
+            "measures": measures,
+            "arms": arms or [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none",
+        }
+    )
+
+
+@pytest.mark.parametrize("name", sorted(fixture_inputs()))
+def test_each_price_row_is_a_frontier_step_at_the_price_its_key_reads(name: str) -> None:
+    held = fixture_inputs()[name]
+    monthly = held.meta.volume_per_month is not None
+    for key in _axes(held):
+        trade = price_tradeoff(held, key, limit=len(held.arms))
+        rows = query_rows(_prices_query([key]), held)
+        assert [row.label for row in rows] == [f"{s.from_arm[4:]}→{s.to_arm[4:]}" for s in trade.steps], key
+        for row, step in zip(rows, trade.steps, strict=True):
+            assert isinstance(row.item, PriceStep)
+            price = step.monthly_per_point if monthly else step.per_point
+            assert price is not None and (row.item.key, row.item.value) == (price.key, price.value)
+            if row.interval is not None:
+                assert row.interval == (_value(row.item.low_key, held), _value(row.item.high_key, held))
+
+
+def test_the_steps_draw_as_bars_and_lay_out_as_a_table_named_by_their_options_with_their_interval() -> None:
+    held = _r4()
+    (step,) = price_tradeoff(held, "persona").steps
+    for kind in ("bars", "table"):
+        block = block_render(held, block_kind=kind, query=_prices_query(["persona"]))
+        assert block.total == 1 and block.unit == "dollars", kind
+        (cells,) = (row.cells for row in block.rows)
+        names = {arm.id: arm.name for arm in fact_arms(held)}
+        assert names["f64"] in cells[0] and names["prod"] in cells[0], cells
+    bars = block_render(held, block_kind="bars", query=_prices_query(["persona"]))
+    assert bars.level, "the step's paired interval is drawn, at its contrast's level"
+    assert any("a month at the declared volume" in note for note in bars.notes)
+    assert step.monthly_per_point is not None
+    unpaired = block_render(
+        fixture_inputs()["r1 reading only bars"], block_kind="bars", query=_prices_query(["overall"])
+    )
+    assert "unpaired" in unpaired.level and unpaired.unit == "usd_per_1k"
+
+
+def test_a_prices_block_naming_no_gain_axis_or_two_is_refused_naming_the_axes() -> None:
+    held = _r4()
+    for measures in ([], ["persona", "facts"]):
+        with pytest.raises(RefusedInput, match="reads one gain axis") as refused:
+            block_render(held, block_kind="bars", query=_prices_query(measures))
+        assert "query.measures" in refused.value.parameters
+    catalog = {source.source: source for source in block_catalog(held, "s").sources}
+    assert catalog["prices"].holds_rows and "bars" in BLOCK_SOURCES and "prices" in BLOCK_SOURCES["bars"]

@@ -35,11 +35,13 @@ __all__ = [
     "KAIRO",
     "TEXT_BUDGET",
     "WIDE",
+    "WIDE_FRONTIER",
     "action_calls",
     "budget_inputs",
     "read_actions",
     "fixture_inputs",
     "fixture_snapshots",
+    "frontier_widened",
     "widened",
 ]
 
@@ -288,7 +290,35 @@ def budget_inputs() -> Mapping[str, ReportInput]:
     built[WIDE] = widened(fixture_inputs()[_GATES_IN_EACH_TASK], arms=1, tasks=1)
     built[f"{WIDE} choice"] = widened(fixture_inputs()["r1"], arms=3, tasks=1)
     built[f"{WIDE} {KAIRO}"] = widened(ReportInput.model_validate(_kairo_snapshot("s").report_input), arms=3, tasks=0)
+    built[WIDE_FRONTIER] = frontier_widened(fixture_inputs()["r2 without its gates"], arms=40)
     return built
+
+
+#: The budget input whose price frontier is wide: every added arm at its own cost and pass rate, on the frontier.
+WIDE_FRONTIER = f"{WIDE} frontier"
+
+
+def frontier_widened(held: ReportInput, *, arms: int) -> ReportInput:
+    """An input whose price frontier on ``pass_rate`` is wide: its first arm copied ``arms`` times, each copy at its
+    own cost per 1,000 replies (rising by a sixth each) and its own pass rate (rising by less each time, toward a
+    ceiling), so each copy is best at some price per point and nothing else changes.
+
+    :param held: The input to widen; it holds ``pass_rate`` and ``cost_per_1k`` by arm, and no gate.
+    :ptype held: ReportInput
+    :param arms: How many copies to add.
+    :ptype arms: int
+    :return: The wide input.
+    :rtype: ReportInput
+    """
+    document = held.model_dump(mode="json", by_alias=True)
+    source = document["arms"][0]
+    for number in range(arms):
+        copy = f"{source['id']}-step{number}"
+        document = _copied_arm(document, source["id"], copy)
+        document["arms"].append({**_copy(source), "id": copy, "short_name": None})
+        document["measures"]["cost_per_1k"]["per_arm"][copy]["mean"] = 0.01 * (7 / 6) ** number
+        document["measures"]["pass_rate"]["per_arm"][copy]["mean"] = 99.5 - 9 * 0.9**number
+    return ReportInput.model_validate(document)
 
 
 def action_calls(action: Action, held: ReportInput, snapshot_id: str) -> list[dict[str, Any]]:
@@ -346,11 +376,12 @@ ANALYST_CALLS["block_render"] = _block_calls
 
 def _price_calls(held: ReportInput) -> list[dict[str, Any]]:
     """On the first gain axis whose frontier has a step (else the first one priced): the trade, its options from the
-    second two at a time, and the trade priced against a frontier option other than the one it was priced against."""
+    second two at a time, the trade priced against a frontier option other than the one it was priced against, within
+    the first slice that prices it, and with the first option the gates remove priced as a what-if."""
     priced: list[tuple[str, PriceTradeoff]] = []
     for key in dict.fromkeys([*held.judged, *held.measures]):
         try:
-            priced.append((key, price_tradeoff(held, key)))
+            priced.append((key, price_tradeoff(held, key, limit=len(held.arms))))
         except RefusedInput:
             continue
     if not priced:
@@ -358,7 +389,19 @@ def _price_calls(held: ReportInput) -> list[dict[str, Any]]:
     key, trade = next(((key, trade) for key, trade in priced if trade.steps), priced[0])
     calls: list[dict[str, Any]] = [{"gain_key": key}, {"gain_key": key, "offset": 1, "limit": 2}]
     other = _first(row.arm.removeprefix("arm:") for row in trade.frontier if row.arm != trade.against_arm)
-    return calls + ([{"gain_key": key, "arm_filter": other}] if other is not None else [])
+    calls += [{"gain_key": key, "arm_filter": other}] if other is not None else []
+    slices = [task.id for task in held.tasks] + [stratum.id for stratum in held.strata]
+    slices += [f"{cell.row}.{cell.column}" for cell in held.cells.values()]
+    for slice_id in slices:
+        try:
+            within = price_tradeoff(held, key, slice_filter=slice_id, limit=len(held.arms))
+        except RefusedInput:
+            continue
+        if within.frontier:
+            calls.append({"gain_key": key, "slice_filter": slice_id})
+            break
+    gated = _first(row.arm.removeprefix("arm:") for row in trade.off_frontier if row.reason == "gated")
+    return calls + ([{"gain_key": key, "what_if": gated}] if gated is not None else [])
 
 
 ANALYST_CALLS["price_tradeoff"] = _price_calls

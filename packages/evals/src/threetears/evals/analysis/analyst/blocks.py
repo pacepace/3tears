@@ -178,6 +178,9 @@ _SOURCE_ROWS: dict[str, tuple[str, str, bool, tuple[str, ...]]] = {
     "cells": ("a target-matrix cell", "its id", False, ("strata",)),
     "confusion": ("a confusion table, one per axis", "the axis's key", False, ("measures",)),
     "human_pref": ("a slice of human preference for the arm rated against the control", "its id", True, ("arms",)),
+    "prices": ("a step along the price frontier on a gain axis (a block names one in query.measures): its price per "
+               "point a month at the declared volume, else per 1,000 replies, ends off its gain's interval",
+               "from→to", True, ("measures", "arms")),
 }  # fmt: skip
 
 

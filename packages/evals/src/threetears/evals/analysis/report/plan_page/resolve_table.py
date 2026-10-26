@@ -17,6 +17,8 @@ examples        the trial, the case, the stratum or task, the arm, the outcome, 
 cells           the cell (its row level and column level), the arm, the measure, its figure, its cases
 confusion       the axis, the arm, the true label, the predicted label, the share of the row (or the count)
 human_pref      the slice, the share of ratings preferring the control with its interval
+prices          the step along the price frontier (from one option to the next), its price per point with its
+                interval: a month's at the declared volume, else per 1,000 replies
 ==============  ===================================================================================================
 
 An arm is the kit's chip (its tag and name); every number is spelled by the package's number rule, an absent one a
@@ -54,7 +56,9 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Task,
 )
+from threetears.evals.analysis.report_rows import PriceStep
 from threetears.evals.analysis.report.plan_page.words import (
+    PRICE_STEP_TEMPLATE,
     CELL_TEMPLATE,
     TABLE_HEADERS,
     TABLE_ORDER,
@@ -274,6 +278,21 @@ def _human_pref(context: ChartContext) -> Iterator[_Row]:
         }
 
 
+def _prices(context: ChartContext) -> Iterator[_Row]:
+    steps = [(row.item, row.interval) for row in context.rows() if isinstance(row.item, PriceStep)]
+    monthly = any(step.monthly for step, _ in steps)
+    drawn = quantity("dollars" if monthly else "usd_per_1k", [step.value for step, _ in steps])
+
+    def name(arm: str) -> str:
+        return context.look.arm(arm).name if arm in context.look.arms else arm
+
+    for step, interval in steps:
+        yield {
+            "step": _words(PRICE_STEP_TEMPLATE.format(first=name(step.first), second=name(step.second))),
+            "per_point": _number(step.value * drawn.factor, drawn.unit, interval),
+        }
+
+
 #: Each source's rows, and its columns in order.
 _SOURCES: dict[str, tuple[Callable[[ChartContext], Iterator[_Row]], tuple[str, ...]]] = {
     "readings": (_readings, ("arm", "change", "reading")),
@@ -289,6 +308,7 @@ _SOURCES: dict[str, tuple[Callable[[ChartContext], Iterator[_Row]], tuple[str, .
     "cells": (_cells, ("cell", "arm", "measure", "value", "cases")),
     "confusion": (_confusion, ("axis", "arm", "expected", "predicted", "value")),
     "human_pref": (_human_pref, ("slice", "prefers_control")),
+    "prices": (_prices, ("step", "per_point")),
 }
 
 

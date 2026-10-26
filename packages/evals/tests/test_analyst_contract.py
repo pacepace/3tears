@@ -921,11 +921,13 @@ def _page_rows(action: str, structured: dict[str, Any]) -> list[Any]:
         named = [(kind, held, name) for kind, names in structured["names"].items() for held, name in names.items()]
         return [(section, row) for section in sections for row in structured[section]] + [("names", n) for n in named]
     if action == "price_tradeoff":
-        # A page covers options in arm order, each priced against one or listed off the frontier: tagged by which.
-        return sorted(
-            [("against", row) for row in structured["against"]] + [("off", row) for row in structured["off_frontier"]],
-            key=lambda tagged: tagged[0],
-        )
+        # A page covers a window of the options, each on the frontier (with the step from it), priced against one, or
+        # listed off the frontier: tagged by which.
+        tagged = [("against", row) for row in structured["against"]] + [
+            ("off", row) for row in structured["off_frontier"]
+        ]
+        tagged += [("frontier", row) for row in structured["frontier"]] + [("step", row) for row in structured["steps"]]
+        return sorted(tagged, key=lambda pair: pair[0])
     kinds = ("readings", "pairs", "floors", "bars")
     return [row for group in structured["aspects"] for kind in kinds for row in group[kind]]
 

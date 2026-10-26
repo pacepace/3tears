@@ -26,7 +26,8 @@ _EXAMPLE_SNAPSHOT = "report-snapshot:0193a1b2c3d4e5f60718293a4b5c6d7e"
 
 
 class PriceParams(EvalBaseModel):
-    """``price_tradeoff``: the snapshot, the gain axis, and the option to price the others against."""
+    """``price_tradeoff``: the snapshot, the gain axis, the option to price the others against, the slice to price
+    within, an option to price as a what-if, and the page."""
 
     snapshot_id: SnapshotId
     gain_key: Annotated[
@@ -38,6 +39,22 @@ class PriceParams(EvalBaseModel):
         ),
     ]
     arm_filter: ArmFilter = None
+    slice_filter: Annotated[
+        str | None,
+        Field(
+            min_length=1,
+            description="Price within this one task, stratum or cell only, by its id (a cell as <row>.<column>), on "
+            "the slice's own figures; omitted prices overall.",
+        ),
+    ] = None
+    what_if: Annotated[
+        str | None,
+        Field(
+            min_length=1,
+            description="Also price this option the gates remove, as if it survived: a labelled what-if, never a "
+            "recommendation; omitted for none.",
+        ),
+    ] = None
     limit: SizedLimit = None
     offset: Offset = 0
 
@@ -50,6 +67,8 @@ async def _price_tradeoff(host: OpsHost, caller: Caller, params: PriceParams) ->
         snapshot_id=params.snapshot_id,
         gain_key=params.gain_key,
         arm=params.arm_filter,
+        slice_filter=params.slice_filter,
+        what_if=params.what_if,
         limit=limit,
         offset=params.offset,
         fits=fits,
@@ -80,11 +99,16 @@ def analyst_price_actions() -> tuple[Action, ...]:
                 "why (gated, no cost, no figure on the axis, dominated, or best at no single price). The frontier is "
                 "the options best at some price per point, cheapest first; each step's per_point is the price per "
                 "point at which the best option moves from the cheaper to the dearer, with its low and high ends "
-                "read off the gain's interval (an end the interval leaves open is unbounded, said in words). Every "
-                "option is also priced against the control, or against arm_filter, paged with limit and offset; "
-                f"without a limit a page holds as many options as fit one result, up to {PRICE_PAGE}. "
-                "Monthly figures appear only at the declared monthly volume. Cost is read as exact. It prices the "
-                "trade and chooses nothing; a modeled hybrid is not priced."
+                "read off the gain's paired interval, and under unpaired off the two options' own half-widths "
+                "combined (an end an interval leaves open is unbounded, said in words). Where no option states an "
+                "overall figure on the axis, each is pooled over its slices, by traffic share where stated, else "
+                "equally (a caveat says so). slice_filter prices within one task, stratum or cell; what_if prices "
+                "one option the gates remove, labelled, never a recommendation. Every option is also priced against "
+                "the control, or against arm_filter. Pages cover a window of the options, the frontier and its "
+                "steps among them, and state the whole frontier's size; without a limit a page holds as many "
+                f"options as fit one result, up to {PRICE_PAGE}. Monthly figures appear only at the declared "
+                "monthly volume. Cost is read as exact. It prices the trade and chooses nothing; a mix nobody ran "
+                "is not priced."
             ),
         ),
     )
