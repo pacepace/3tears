@@ -322,13 +322,20 @@ def test_a_record_naming_an_input_the_dataset_does_not_keep_is_unsound() -> None
     assert any("names no input the dataset keeps" in fault for fault in dataset.score_faults(stale, plan))
 
 
-def test_a_historical_records_quotes_are_held_by_its_pin_not_by_todays_renderer() -> None:
+def test_a_historical_records_quotes_are_held_by_its_pin_not_by_todays_renderer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A historical run's record is sound with its quotes unchecked, whatever today's renderer makes of them, and is
+    held by its pin instead: its bytes are the bytes pinned, and any change to them is red."""
     plan = HERE / "r3" / "runs" / "gemini-3.8-flash-20261025-fbe870c655ce.plan.json"
     assert not dataset.is_current(plan)
-    scores = dataset.PlanScores.model_validate_json(dataset.scores_path(plan).read_text(encoding="utf-8"))
-    assert any("which no prose field of the plan holds" in fault for fault in dataset.score_faults(scores, plan))
+    record = dataset.scores_path(plan)
+    scores = dataset.PlanScores.model_validate_json(record.read_text(encoding="utf-8"))
     assert dataset.score_faults(scores, plan, quotes=False) == []
-    assert dataset.scores_path(plan).relative_to(HERE).as_posix() in dataset.pinned_records()
+    relative = record.relative_to(HERE).as_posix()
+    assert dataset.pinned_records()[relative] == dataset.sha256_file(record)
+    _pins(tmp_path, monkeypatch, dataset.pinned_records() | {relative: "0" * 64})
+    assert dataset.history_faults() == [f"{relative} changed after it was pinned: a historical record is immutable"]
 
 
 def _pins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, records: dict[str, str]) -> None:

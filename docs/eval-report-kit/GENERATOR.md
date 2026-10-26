@@ -169,7 +169,11 @@ Use it when §1.1 says so. The page prices the trade; it doesn't pretend to deci
 
 ### 5.2 Mechanics
 
-- **One unit per chart, one interval system per chart, and the level is printed on it** ("95% intervals", "99.69% intervals"). Don't mix confirmatory 95% readings and family-corrected contrasts in one chart.
+- **One unit per axis, one interval system per chart, and the level is printed on it** ("95% intervals", "99.69% intervals"). Don't mix confirmatory 95% readings and family-corrected contrasts in one chart.
+  - Every value on one axis is in one unit, each figure at its own scale. Two units drawn alike are one: a share and a percent are both drawn as a percent, and any rate's change is in points.
+  - A kind that draws each measure in its own panel gives each panel its measure's unit and format: a heatmap's matrix per measure, a dot strip's strip per measure (unless its panels are by arm), and bars in panels by slice or aspect (not over configs, whose panels are a factor's levels). Panels in one unit share one span.
+  - Every other kind that reads measures is single-scale, and refuses them in more than one unit: bars on one axis, diverging bars, lines, range bars, difference heatmaps, and every chart of contrasts, whose groups share one axis. A scatter gives each of its two axes its own measure. So does a chart of strata or tasks naming no measure where its kind draws only one.
+  - The plan checks and the page apply this one rule, so a chart the checks accept draws, and a chart the page draws is accepted.
 - **Log axes** when a measure spans more than 10×; the caption says so.
 - **A reference line sits at a declared line, and code fills its value.** The planner asks for the kind; code fills the figure key at completion:
   - a **margin** on a forest, at the chart's aspect's margin (`aspect.margin`, or `aspects.<id>.margin`);

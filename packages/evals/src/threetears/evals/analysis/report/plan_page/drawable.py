@@ -22,7 +22,7 @@ from threetears.evals.analysis.report.plan_page.look import PageLook, page_look
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report_decision import surviving_options
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.kernel.report_plan import ChartSpec, ReportPlan
+from threetears.evals.kernel.report_plan import ChartSpec, ReportPlan, plan_recommended_arm
 
 if TYPE_CHECKING:  # code's facts are read by type only: the completion step that computes them imports this module.
     from threetears.evals.analysis.report_plan_facts import PlanFacts
@@ -48,7 +48,7 @@ def plan_look(plan: ReportPlan, report_input: ReportInput, facts: PlanFacts) -> 
         {arm.id: arm.color_slot for arm in plan.arms},
         order=[row.option for row in plan.options.rows],
         survivors=surviving_options(report_input),
-        recommended=next((row.option for row in plan.options.rows if row.role == "recommended"), None),
+        recommended=plan_recommended_arm(plan),
         names=facts.names,
     )
 

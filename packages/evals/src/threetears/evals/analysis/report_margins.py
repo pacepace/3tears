@@ -42,7 +42,6 @@ __all__ = [
     "CriterionFigure",
     "CriterionPlace",
     "Margin",
-    "MarginKind",
     "criterion_figures",
     "criterion_places",
     "criterion_place",
@@ -52,7 +51,7 @@ __all__ = [
 ]
 
 #: What a margin is read against: a declared criterion, an aspect's margin, or a floor the pipeline read.
-MarginKind = Literal["criterion", "margin", "floor"]
+_MarginKind = Literal["criterion", "margin", "floor"]
 
 #: Where a criterion reads its figures: the arm's overall value, each task's (or its one task's), or each cell's.
 CriterionPlace = Literal["overall", "task", "cell"]
@@ -97,7 +96,7 @@ class Margin:
     """
 
     arm: str
-    kind: MarginKind
+    kind: _MarginKind
     source: str
     measure: str | None
     aspect: str | None

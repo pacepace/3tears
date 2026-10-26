@@ -213,7 +213,6 @@ from threetears.evals.schema.prose import field_is_prose
 __all__ = [
     "MODE_SLOTS",
     "OPTION_COLUMN_FAMILIES",
-    "SPINE_KINDS",
     "Spine",
     "classify",
     "contrast_level",
@@ -407,7 +406,7 @@ def _shape(signals: Signals) -> str:
 # --- the spine -----------------------------------------------------------------------------------------------------
 
 #: GENERATOR §1: the spine chart each shape opens its evidence on.
-SPINE_KINDS: dict[str, str] = {"A": "gate_matrix", "B": "gate_scatter", "C": "lattice", "D": "forest", "E": "lines"}
+_SPINE_KINDS: dict[str, str] = {"A": "gate_matrix", "B": "gate_scatter", "C": "lattice", "D": "forest", "E": "lines"}
 
 
 class Spine(BaseModel):
@@ -462,7 +461,7 @@ def spine(report_input: ReportInput) -> Spine:
     :rtype: Spine
     """
     _, shape = classify(report_input)
-    kind = SPINE_KINDS[shape]
+    kind = _SPINE_KINDS[shape]
     gates = [criterion for criterion in report_input.criteria if criterion.kind == "gate"]
     figures = set(report_input.measures) | set(report_input.judged)
     source, aspect = "", ""

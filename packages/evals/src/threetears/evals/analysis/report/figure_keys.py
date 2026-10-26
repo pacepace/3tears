@@ -882,7 +882,6 @@ def _flip_margin(report_input: ReportInput, values: tuple[str, ...], path: str) 
 
 #: The kinds of id a reader is given a name for (GENERATOR §6.3: reader names, not identifiers).
 NamedKind = Literal["aspect", "measure", "judged", "stratum", "task", "criterion"]
-NAMED_KINDS: tuple[NamedKind, ...] = get_args(NamedKind)
 
 
 def _measure_reader_name(key: str, report_input: ReportInput) -> str:
@@ -971,7 +970,7 @@ def _cell_name(report_input: ReportInput, cell_id: str) -> str:
     return f"{row} × {column}"
 
 
-def margin_name(margin: Margin, report_input: ReportInput) -> str:
+def _margin_name(margin: Margin, report_input: ReportInput) -> str:
     """What a margin is read against, in reader words: a criterion by its reader name and where its figure sits, or an
     aspect's margin or floor by the aspect's reader name.
 
@@ -1003,7 +1002,7 @@ def _weakest(report_input: ReportInput, values: tuple[str, ...], path: str) -> F
     if field == "arm":
         return Figure(path=path, kind="arm", value=found.arm)
     if field == "criterion":
-        return _text(path, margin_name(found, report_input), "what the weakest margin is read against")
+        return _text(path, _margin_name(found, report_input), "what the weakest margin is read against")
     if found.kind != "criterion":
         if field == "margin":
             return _number(path, found.gap, "the weakest margin", "points")
@@ -1428,7 +1427,8 @@ def key_subjects(key: str, report_input: ReportInput) -> KeySubjects:
     """The arms and aspects one key's path names, read off its one reading of the input.
 
     What a durable claim rests on is read from its keys: the runs behind each arm the key names on each aspect it
-    names (:func:`~threetears.evals.analysis.planned_analysis.planned_insights`).
+    names (each insight a planned analysis mints,
+    :func:`~threetears.evals.analysis.planned_analysis.generate_planned_analysis`).
 
     :param key: The path, without braces or filters.
     :ptype key: str
@@ -1853,7 +1853,6 @@ def figure_key_grammar() -> str:
 
 
 __all__ = [
-    "NAMED_KINDS",
     "PERCENTILE_NAMES",
     "WEAKEST_PREFIX",
     "Figure",
@@ -1866,7 +1865,6 @@ __all__ = [
     "key_subjects",
     "keys_in",
     "literal_numbers",
-    "margin_name",
     "parse_key",
     "reader_name",
     "reader_names",

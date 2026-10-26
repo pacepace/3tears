@@ -32,7 +32,15 @@ is public: each reading's flip margin, and whether the call holds at every margi
 own panel, in its own unit and format, where its kind panels by measure (a heatmap's matrix, a dot strip's strip, bars
 in panels by slice); any other such chart, and a chart of strata or tasks naming no measure where its kind draws one,
 is refused when the plan is generated, by the rule the page draws by, so no page draws one measure on another's
-scale. No stored shape moves.
+scale. That rule is now the plan checks' only unit rule, over every source (GENERATOR §5.2, one unit per axis): a dot
+strip, or bars in panels by aspect, over measures or judged dimensions in two units is accepted and drawn a panel per
+unit, where the checks refused it; a share and a percent count as one unit, both drawn as a percent; and a chart of
+contrasts whose changes are in more than one unit drawn (a rate's change in points beside a score's or a latency's) is
+refused by the checks and the page alike, where the checks compared each contrast's declared unit. A stored chart
+whose rows state several units stores an empty `unit`. A stored plan with a chart the page now refuses (a chart over
+tasks, strata or cells in several units on one axis, or a chart of contrasts mixing a rate's change with a score's)
+refuses its page with the "generate the analysis again" remedy, and generating it again writes one that draws. No
+stored shape moves.
 
 **Changed:** the kit's dot strip (`dot_interval`, in `kit.js`) needs an interval `level` only where its rows carry
 intervals: a strip of points alone draws with none, where it was refused. The script is inlined in every default-mode
@@ -47,12 +55,25 @@ refused there, at its field path with the page's reason, for the planner's repai
 plan passed the checks and was stored, and its page then refused with "generate the analysis again", which wrote the
 same plan again. Stored plans are read as before.
 
+**Changed:** names the report planner and its checks made public on this branch, which nothing outside their modules
+used, are private: in `kernel.report_plan` the planner's parts of the flag, options, chart reference, section and
+answer, the structure call's section, control, explore, claim and caveat landing, the prose item, and both contract
+names (`STRUCTURE_SCHEMA_NAME`, `PROSE_SCHEMA_NAME`); `plan_assembly.ProseSlot`; `planned_analysis.PlannedAnalysis`,
+`planned_analysis` and `planned_insights`; `figure_keys.margin_name` (and `NAMED_KINDS`, removed);
+`report_margins.MarginKind`; `report_plan_checks.SPINE_KINDS`; `report_plan_facts.ARMS_KEY_CHARS` and `FactWeakest`;
+and `plan_prompt.PLAN_PROMPT_CHAR_BUDGET` and `PLAN_PROMPT_RULE_BUDGET`, now the contract
+`tests/test_plan_prompt_budget.py` declares (15,500 characters, 13 rules). `plan_recommended_arm` moves from
+`planned_analysis` to `kernel.report_plan`. The planner's two contracts keep every field; the private parts' `$defs`
+names gain a leading underscore, so a recording of the planner's calls is recorded again. None of these was in a
+release.
+
 **Added:** a caveat kind, `unsettled:<aspect>` (#980): a surviving candidate's reading on an aspect declaring a margin,
 asked or not, whose interval allows both a loss past the margin and a change short of it. It is report-wide when the
 option code's decision names is among those candidates, and scoped otherwise; a plan recommending such a candidate
 (a ranking rule's pick included) may not state a plain `high` while it is open, and states `high_if_immaterial` with
 its `material_if` clause, or `low`. Code never proves it immaterial. `report_decision.unsettled_arms` is public, and
-the plan's caveat and flag id patterns accept the new kind, so every stored plan still reads.
+the plan's caveat and flag id patterns accept the new kind, so every stored plan still reads. A flag disclosing one weakens the
+measures that aspect's contrasts read.
 
 ### evals: a static report page, for a host whose policy runs and loads nothing
 

@@ -57,11 +57,28 @@ from packages.evals.tests.report_plan_support import (
 
 DOCS_SCHEMA = KIT / "schema" / "report-plan.schema.json"
 
+
+def _held(model: type[BaseModel], field: str) -> type[BaseModel]:
+    """The model one field of ``model`` holds (a list's element): how a test reaches the planner's own parts, which
+    the module keeps private, through the reply model that holds them."""
+    annotation = model.model_fields[field].annotation
+    held = [arg for arg in (annotation, *get_args(annotation)) if isinstance(arg, type) and issubclass(arg, BaseModel)]
+    assert len(held) == 1, (model.__name__, field)
+    return held[0]
+
+
+#: The planner's parts of the units code completes, and of a section and an answer, read off the reply that holds them.
+_PLANNED_FLAG = _held(PlannedReport, "flag")
+_PLANNED_OPTIONS = _held(PlannedReport, "options")
+_PLANNED_REFERENCE = _held(report_plan.PlannedChart, "reference")
+_PLANNED_SECTION = _held(PlannedReport, "sections")
+_PLANNED_ANSWER = _held(PlannedReport, "answers")
+
 #: Each unit code has a part of: the stored model, and the planner's model it completes.
 _COMPLETED: dict[type[BaseModel], type[BaseModel]] = {
-    Flag: report_plan.PlannedFlag,
-    Options: report_plan.PlannedOptions,
-    ChartReference: report_plan.PlannedChartReference,
+    Flag: _PLANNED_FLAG,
+    Options: _PLANNED_OPTIONS,
+    ChartReference: _PLANNED_REFERENCE,
 }
 
 #: Each object in the documentation schema, by where it sits, and the model it documents.
@@ -165,8 +182,8 @@ class TestThePlannersContracts:
     @pytest.mark.parametrize(
         ("directive", "name"),
         [
-            (report_plan.structure_response_format, report_plan.STRUCTURE_SCHEMA_NAME),
-            (report_plan.prose_response_format, report_plan.PROSE_SCHEMA_NAME),
+            (report_plan.structure_response_format, "report_plan_structure"),
+            (report_plan.prose_response_format, "report_plan_prose"),
         ],
     )
     def test_each_strict_projection_succeeds_and_is_sent_strictly(self, directive: Any, name: str):
@@ -249,9 +266,9 @@ class TestThePlannersContracts:
             ), stored_unit.__name__
 
     def test_an_answer_names_its_warning_by_position_and_is_stored_by_the_warning(self):
-        assert report_plan.PlannedAnswer.model_fields["warning"].annotation is int
+        assert _PLANNED_ANSWER.model_fields["warning"].annotation is int
         assert WarningAnswer.model_fields["warning"].annotation is WarningRef
-        assert set(report_plan.PlannedAnswer.model_fields) == set(WarningAnswer.model_fields)
+        assert set(_PLANNED_ANSWER.model_fields) == set(WarningAnswer.model_fields)
 
     def test_the_planners_part_of_the_kairo_plan_is_a_valid_reply(self):
         PlannedReport.model_validate(_planned(_r5()))
@@ -263,28 +280,20 @@ class TestThePlannersContracts:
 
     def test_the_prose_is_typed_as_prose(self):
         prose = {
-            (model.__name__, name)
-            for model in (
-                PlannedReport,
-                Flag,
-                DecisionSlot,
-                CaveatClause,
-                report_plan.PlannedSection,
-                MethodItem,
-                WarningAnswer,
-            )
+            (model, name)
+            for model in (PlannedReport, Flag, DecisionSlot, CaveatClause, _PLANNED_SECTION, MethodItem, WarningAnswer)
             for name, field in model.model_fields.items()
             if field_is_prose(field)
         }
         assert {
-            ("PlannedReport", "headline"),
-            ("PlannedReport", "lede"),
-            ("Flag", "text"),
-            ("DecisionSlot", "text"),
-            ("CaveatClause", "material_if"),
-            ("PlannedSection", "headline"),
-            ("MethodItem", "text"),
-            ("WarningAnswer", "text"),
+            (PlannedReport, "headline"),
+            (PlannedReport, "lede"),
+            (Flag, "text"),
+            (DecisionSlot, "text"),
+            (CaveatClause, "material_if"),
+            (_PLANNED_SECTION, "headline"),
+            (MethodItem, "text"),
+            (WarningAnswer, "text"),
         } <= prose
 
 
