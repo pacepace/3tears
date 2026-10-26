@@ -99,16 +99,17 @@ added later refuses no plan already stored:
   report-wide) in a Method pair's ``caveats``, beside a claim, or the confidence. A caveat code proved immaterial
   (:func:`~threetears.evals.analysis.report_decision.caveat_materiality`) lands nowhere: code renders its checked
   line. An id that names no caveat of the input is refused wherever it lands.
-- *Charts*: each chart's kind suits its source (a forest reads readings or contrasts, every row with an interval; a
-  lattice reads configs; …); its query names only arms, aspects, measures and strata the input holds, and selects at
-  least one row (the rows a page draws, :func:`~threetears.evals.analysis.report_rows.query_rows`); its reference
-  key and its emphasis name something present. The summary charts show the options
-  table's arm rows in its order, a change-from-control chart (readings, contrasts, or ``arm_minus_control``) leaving
-  the control out. A chart the page draws as each arm less the control (diverging bars over measures, judged
-  figures, strata or tasks; a difference heatmap naming fewer than two arms, which otherwise draws its second arm
-  less its first) is refused on an input that names no control: the page could not draw it.
-- *Small multiples*: ``small_multiples_by`` other than ``none`` only on a kind the kit draws as panels (its chart
-  model carries ``panels``: bars and diverging bars, the two scatters, dot intervals, heatmaps, confusion matrices).
+- *Charts*: each chart's own rules, apart from the plan
+  (:func:`~threetears.evals.analysis.report.block_spec.chart_faults`, the ones an analyst's ``block_render`` is held
+  to): its kind suits its source (a forest reads readings or contrasts, every row with an interval; a lattice reads
+  configs; …); its query names only arms, aspects, measures and strata the input holds, and selects at least one row
+  (the rows a page draws, :func:`~threetears.evals.analysis.report_rows.query_rows`); its reference key and its
+  emphasis (an option of the table too) name something present; a chart the page draws as each arm less the control
+  is refused on an input that names no control. The plan's own: the summary charts show the options table's arm rows
+  in its order, a change-from-control chart (readings, contrasts, or ``arm_minus_control``) leaving the control out.
+- *Small multiples*: ``small_multiples_by`` other than ``none`` only on a kind the kit draws as panels
+  (:func:`~threetears.evals.analysis.report.block_spec.small_multiple_faults`: bars and diverging bars, the two
+  scatters, dot intervals, heatmaps, confusion matrices).
 - *Options columns*: each is one of :data:`OPTION_COLUMN_FAMILIES`, a ``judged:<dim>`` naming a judged dimension the
   input holds and a ``measure:<key>`` a measure, or the measure a criterion reads.
 - *Ids*: section ids, explore control ids and option rows are each unique.
@@ -173,7 +174,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.errors import PlanRefusal, UnresolvableReference
 from threetears.evals.analysis.quantities import MONEY, UNIT_NAMES
-from threetears.evals.analysis.report.charts import KIT_CHARTS
+from threetears.evals.analysis.report.block_spec import (
+    bare_key_faults,
+    chart_faults,
+    contrast_level,
+    small_multiple_faults,
+)
 from threetears.evals.analysis.report.plan_page.charting import contrast_unit
 from threetears.evals.analysis.report.figure_keys import (
     INTERVAL_TEMPLATE,
@@ -184,7 +190,6 @@ from threetears.evals.analysis.report.figure_keys import (
     Figure,
     keys_in,
     literal_numbers,
-    parse_key,
     reader_names,
     render,
     resolve,
@@ -205,9 +210,9 @@ from threetears.evals.analysis.report_decision import (
     surviving_options,
     unsettled_arms,
 )
-from threetears.evals.analysis.report_input import Contrast, ReportInput
+from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import criterion_place, weakest_margin
-from threetears.evals.analysis.report_rows import SourceRow, query_aspect, query_rows
+from threetears.evals.analysis.report_rows import query_aspect
 from threetears.evals.kernel.report_plan import ChartSpec, OptionRow, ReportPlan, Signals, WarningRef
 from threetears.evals.schema.prose import field_is_prose
 
@@ -216,7 +221,6 @@ __all__ = [
     "OPTION_COLUMN_FAMILIES",
     "Spine",
     "classify",
-    "contrast_level",
     "implied_disclosures",
     "raised_warnings",
     "spine",
@@ -244,37 +248,8 @@ MODE_SLOTS: dict[str, tuple[str, ...]] = {
     "no_call": _DECIDE_SLOTS,
 }
 
-#: The sources each chart kind can draw (GENERATOR §5.1). A table draws any.
-_KIND_SOURCES: dict[str, frozenset[str]] = {
-    "forest": frozenset({"readings", "contrasts"}),
-    "bars": frozenset({"measures", "judged", "scoreboard", "strata", "tasks", "configs", "human_pref"}),
-    "diverging_bars": frozenset(
-        {"readings", "contrasts", "measures", "judged", "strata", "tasks", "configs", "human_pref"}
-    ),
-    "lines": frozenset({"measures", "judged", "strata", "tasks"}),
-    "scatter_frontier": frozenset({"measures", "judged", "scoreboard", "configs", "tasks"}),
-    "gate_scatter": frozenset({"measures", "judged", "configs", "tasks"}),
-    "dot_interval": frozenset({"readings", "contrasts", "measures", "judged", "floors", "tasks", "strata"}),
-    "range_bars": frozenset({"measures", "tasks"}),
-    "gate_matrix": frozenset({"tasks", "readings", "floors", "measures", "configs"}),
-    "lattice": frozenset({"configs"}),
-    "heatmap": frozenset({"cells", "strata", "tasks"}),
-    "diff_heatmap": frozenset({"cells", "strata", "tasks"}),
-    "confusion": frozenset({"confusion"}),
-    "examples": frozenset({"examples"}),
-}
 #: Sources whose chart shows each candidate's change from the control, so it leaves the control out.
 _FROM_CONTROL = frozenset({"readings", "contrasts"})
-#: Sources a query names no measure of.
-_NO_MEASURES = frozenset({"readings", "examples", "human_pref"})
-#: A scoreboard's figures, which a scoreboard chart's measures name.
-_SCOREBOARD_FIGURES = frozenset(
-    {"ran", "usable", "passed", "cases", "lost", "failed", "reply_cost_usd", "test_cost_usd"}
-)
-
-#: The kinds the kit draws as small multiples: those whose chart model carries ``panels``
-#: (:data:`~threetears.evals.analysis.report.charts.KIT_CHARTS`). A table is no kit chart, and panels nothing.
-_PANELLED_KINDS = frozenset(kind for kind, model in KIT_CHARTS.items() if "panels" in model.model_fields)
 
 #: The options table's column families (GENERATOR §2.6), the one list the options columns are written from
 #: (:func:`~threetears.evals.analysis.report_plan_facts.plan_facts` emits each where the input holds its figure) and
@@ -484,23 +459,6 @@ def spine(report_input: ReportInput) -> Spine:
     if source == "readings":
         measures = ()
     return Spine(shape=shape, kind=kind, source=source, aspect=aspect, measures=measures, reference=reference)
-
-
-def contrast_level(report_input: ReportInput, contrast: Contrast) -> str:
-    """The interval level a contrast is read at: its own, else its aspect's family's, else the one family's; empty
-    for none. A chart of contrasts carries one (GENERATOR §5.2).
-
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
-    :param contrast: One of its contrasts.
-    :ptype contrast: Contrast
-    :return: The level, as the input writes it.
-    :rtype: str
-    """
-    families = report_input.contrast_families
-    by_aspect = {family.aspect: family.level for family in families}
-    only = families[0].level if len(families) == 1 else None
-    return contrast.level or by_aspect.get(contrast.aspect) or only or ""
 
 
 def _forest_spine(report_input: ReportInput) -> tuple[str, str, tuple[str, ...] | None, tuple[str, ...]]:
@@ -1092,9 +1050,11 @@ def _charts(plan: ReportPlan) -> Iterator[tuple[str, ChartSpec]]:
 
 
 def _chart_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
+    """Each chart's own faults (:func:`~threetears.evals.analysis.report.block_spec.chart_faults`, an option of the
+    plan's table stressable too), then a summary chart's arms against the options table's rows."""
+    options = [row.option for row in plan.options.rows]
     for path, chart in _charts(plan):
-        yield from _query_faults(path, chart, plan, report_input)
-        yield from _no_control_faults(path, chart, report_input)
+        yield from chart_faults(path, chart, report_input, options=options)
     control = control_arm(report_input)
     arms = {arm.id for arm in report_input.arms}
     rows = [row.option for row in plan.options.rows if row.option in arms]
@@ -1114,83 +1074,14 @@ def _chart_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Faul
             )
 
 
-#: The sources a diverging chart draws as each arm less the control, computed from point figures.
-_LESS_THE_CONTROL = frozenset({"measures", "judged", "strata", "tasks"})
-#: The arms a difference heatmap names to draw its second less its first, needing no control.
-_COMPARED_PAIR = 2
-
-
-def _no_control_faults(path: str, chart: ChartSpec, report_input: ReportInput) -> Iterator[_Fault]:
-    """A chart drawn as each arm less the control, on an input that names no control (this module's Charts)."""
-    if control_arm(report_input) is not None:
-        return
-    if chart.kind == "diverging_bars" and chart.query.source in _LESS_THE_CONTROL:
-        yield (
-            f"{path}.kind",
-            (
-                f"is 'diverging_bars' over {chart.query.source!r}, which draws each arm less the control, and the "
-                "report input names no control"
-            ),
-        )
-    elif chart.kind == "diff_heatmap" and len(chart.query.arms) < _COMPARED_PAIR:
-        yield (
-            f"{path}.query.arms",
-            (
-                f"name {list(chart.query.arms)}, and a 'diff_heatmap' on an input with no control draws its second "
-                "arm less its first: name the two arms it compares"
-            ),
-        )
-
-
 def _from_control(chart: ChartSpec) -> bool:
     return chart.query.source in _FROM_CONTROL or chart.query.transform == "arm_minus_control"
-
-
-def _query_faults(path: str, chart: ChartSpec, plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
-    query = chart.query
-    source = query.source
-    if chart.kind != "table" and source not in _KIND_SOURCES[chart.kind]:
-        yield (
-            f"{path}.kind",
-            (f"is {chart.kind!r}, which cannot draw {source!r}; it draws {sorted(_KIND_SOURCES[chart.kind])}"),
-        )
-    arms = [arm.id for arm in report_input.arms]
-    if stray := [arm for arm in query.arms if arm not in arms]:
-        yield f"{path}.query.arms", f"name {stray}, which are no arms; the arms are {arms}"
-    aspects = [aspect.id for aspect in report_input.aspects]
-    if query.aspect and query.aspect not in aspects:
-        yield f"{path}.query.aspect", f"is {query.aspect!r}, which is no aspect; the aspects are {aspects}"
-        return
-    measures = _measure_vocabulary(source, report_input)
-    if stray := [measure for measure in query.measures if measure not in measures]:
-        held = f"it reads {sorted(measures)}" if measures else "it names none"
-        yield f"{path}.query.measures", f"name {stray}, which the {source!r} source does not hold; {held}"
-    strata = _strata_vocabulary(report_input)
-    if stray := [stratum for stratum in query.strata if stratum not in strata]:
-        yield f"{path}.query.strata", f"name {stray}, which are no strata or tasks of the report input"
-    rows: list[SourceRow] = query_rows(query, report_input)
-    if not rows:
-        yield f"{path}.query", f"selects nothing from {source!r}: the chart would be empty"
-    elif chart.kind == "forest" and any(row.interval is None for row in rows):
-        yield f"{path}.kind", "is 'forest', and some row it selects carries no interval: a forest draws intervals"
-    for index, reference in enumerate(chart.reference):
-        yield from _bare_key_faults(f"{path}.reference[{index}].key", reference.key, report_input)
-    if chart.emphasis and chart.emphasis not in _emphasizable(plan, report_input):
-        yield f"{path}.emphasis", f"is {chart.emphasis!r}, which is no arm, option, stratum or task to stress"
 
 
 def _small_multiple_faults(plan: ReportPlan) -> Iterator[_Fault]:
     """A chart repeats its panel only where the kit draws small multiples of its kind."""
     for path, chart in _charts(plan):
-        by = chart.query.small_multiples_by
-        if by != "none" and chart.kind not in _PANELLED_KINDS:
-            yield (
-                f"{path}.query.small_multiples_by",
-                (
-                    f"is {by!r}, and the kit draws no small multiples of a {chart.kind!r}; it panels "
-                    f"{sorted(_PANELLED_KINDS)}. Set it to 'none', or draw a kind that panels"
-                ),
-            )
+        yield from small_multiple_faults(path, chart)
 
 
 def _column_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
@@ -1214,50 +1105,6 @@ def _column_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fau
             f"options.columns[{index}]",
             f"is {column!r}, which {reason}; the families are {list(OPTION_COLUMN_FAMILIES)}",
         )
-
-
-def _measure_vocabulary(source: str, report_input: ReportInput) -> set[str]:
-    if source in _NO_MEASURES:
-        return set()
-    if source == "contrasts":
-        return {contrast.measure for contrast in report_input.contrasts}
-    if source == "measures":
-        return set(report_input.measures)
-    if source == "judged":
-        return set(report_input.judged)
-    if source == "configs":
-        return set(report_input.measures) | set(report_input.judged)
-    if source == "scoreboard":
-        return set(_SCOREBOARD_FIGURES)
-    if source == "floors":
-        return {floor.floor for floor in report_input.floors}
-    if source == "confusion":
-        return set(report_input.confusion)
-    holders: Iterable[Mapping[str, Mapping[str, object]]]
-    if source == "strata":
-        holders = [stratum.per_arm for stratum in report_input.strata]
-    elif source == "tasks":
-        holders = [task.per_arm for task in report_input.tasks]
-    else:
-        holders = [cell.per_arm for cell in report_input.cells.values()]
-    return {name for per_arm in holders for figures in per_arm.values() for name in figures}
-
-
-def _strata_vocabulary(report_input: ReportInput) -> set[str]:
-    names = {stratum.id for stratum in report_input.strata} | {task.id for task in report_input.tasks}
-    names |= {example.stratum for example in report_input.examples if example.stratum}
-    names |= set(report_input.cells)
-    if report_input.human_pref is not None:
-        names |= {row.id for row in report_input.human_pref.rows}
-    return names
-
-
-def _emphasizable(plan: ReportPlan, report_input: ReportInput) -> set[str]:
-    return (
-        {arm.id for arm in report_input.arms}
-        | {row.option for row in plan.options.rows}
-        | _strata_vocabulary(report_input)
-    )
 
 
 # --- figure keys and typed digits ----------------------------------------------------------------------------------
@@ -1302,20 +1149,10 @@ def _key_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]
                 yield path, str(refused)
     for index, claim in enumerate(plan.durable_claims):
         for number, claimed in enumerate(claim.keys):
-            yield from _bare_key_faults(f"durable_claims[{index}].keys[{number}]", claimed, report_input)
+            yield from bare_key_faults(f"durable_claims[{index}].keys[{number}]", claimed, report_input)
     for path, label in _option_labels(plan):
         if "{" in label or "}" in label:
             yield path, "is an option label, printed as written, so it holds no figure key: name the option in words"
-
-
-def _bare_key_faults(path: str, key: str, report_input: ReportInput) -> Iterator[_Fault]:
-    try:
-        parsed = parse_key(key)
-        figure = resolve(parsed.path, report_input)
-        if figure.kind != "arm":
-            format_figure(figure, parsed.filters)
-    except UnresolvableReference as refused:
-        yield path, str(refused)
 
 
 def _literal_faults(plan: ReportPlan, report_input: ReportInput) -> Iterator[_Fault]:
