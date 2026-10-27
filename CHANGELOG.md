@@ -68,7 +68,9 @@ case imply, labelled inferred and never a verdict), apart from the removed. A re
 apart from the figures it fails on. `count.failing` counts figures that miss only; `count.unknown.<criterion>.<arm>`
 counts places with no figure, `count.failed.<arm>` gates missed on a figure, and `count.undecided` the undecided
 options. A sweep names the options with no figure where its criterion reads, settle refuses a criterion with no figure
-for the arm as unknown there, and the weakest-margin refusal names the undecided options.
+for the arm as unknown there, and the weakest-margin refusal names the undecided options. `price_tradeoff` lists an
+undecided option off the frontier as `undecided` with its unknown places (`OffFrontier.unknown`), never as removed by
+the gates, and labels a what-if on one undecided.
 
 **Added:** `bars_as` (`warnings`, the default, or `gates`) on `options_dominance`, `decision_sensitivity` and
 `settle_cases`: the analyst's choice of reading the declared bars as gates, never code's. Read as gates, a bar removes an
