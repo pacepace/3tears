@@ -65,8 +65,8 @@ class IdentityVersionStatus(str, Enum):
     ``PROPOSED -> ACTIVE`` on user consent (tier 1) or immediately (tier
     2); the prior active flips ``ACTIVE -> SUPERSEDED``; ``PROPOSED ->
     REJECTED`` when the user declines. Exactly one ``ACTIVE`` version per
-    ``(agent_id, customer_id, user_id, block_key)`` (a partial unique
-    index enforces it).
+    ``(agent_id, customer_id, user_id, block_key, variant)`` (a partial unique
+    index enforces it), so each variant of a block has its own.
     """
 
     PROPOSED = "proposed"

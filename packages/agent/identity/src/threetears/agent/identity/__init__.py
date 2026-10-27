@@ -67,6 +67,7 @@ if TYPE_CHECKING:
         IdentityTier,
         IdentityVersionStatus,
         check_variant,
+        variant_label,
     )
 
 # public attribute -> (defining module, attribute name in that module)
@@ -78,6 +79,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "IDENTITY_NAMESPACE_TYPE": ("threetears.agent.identity.authorize", "IDENTITY_NAMESPACE_TYPE"),
     "IDENTITY_STATUS_VALUES": ("threetears.agent.identity.types", "IDENTITY_STATUS_VALUES"),
     "check_variant": ("threetears.agent.identity.types", "check_variant"),
+    "variant_label": ("threetears.agent.identity.types", "variant_label"),
     "IdentityAccessDenied": ("threetears.agent.identity.authorize", "IdentityAccessDenied"),
     "IdentityAppliedEvent": ("threetears.agent.identity.events", "IdentityAppliedEvent"),
     "IdentityAuthorizerDependencies": (
@@ -151,6 +153,7 @@ __all__ = [
     "reject",
     "rollback",
     "seed_active",
+    "variant_label",
 ]
 
 

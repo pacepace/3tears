@@ -91,9 +91,10 @@ class IdentityAppliedEvent(FrameworkEvent):
     """fired when a version becomes the active one for its block.
 
     Emitted on tier-1 consent AND tier-2 auto-apply (``auto_applied``
-    distinguishes). The consumer re-reads ``resolve_active(block_key)`` and
-    writes the content back to its prompt cache so the next turn picks it
-    up. One event per applied version.
+    distinguishes). The consumer re-reads ``resolve_active(block_key=...,
+    variant=...)`` with this event's ``variant`` and writes the content back
+    to its prompt cache so the next turn picks it up. One event per applied
+    version.
 
     :ivar agent_id: string-form uuid of the owning agent
     :ivar version_id: string-form uuid of the now-active version
