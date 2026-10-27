@@ -121,6 +121,28 @@ def group_thousands(text: str) -> str:
     return sign + THOUSANDS_SEPARATOR.join([whole, *groups]) + point + fraction
 
 
+def spell_dollars(amount: float) -> str:
+    """An amount of money as the package spells it: ``$0`` for zero, dollars and cents from ten cents up, three
+    significant figures below, the whole dollars grouped by thousands, a negative amount's sign before the dollar sign.
+
+    The one money rule a run's summary (:func:`~threetears.evals.analysis.summary.dollars_text`, which adds the word
+    for an amount no client priced) and a chart's notes read; why each spelling is chosen is said there.
+
+    :param amount: Dollars, as stored.
+    :ptype amount: float
+    :return: ``$0``, ``$0.50``, ``$1,234.50``, ``$0.0123``, ``-$1.20``.
+    :rtype: str
+    """
+    if amount == 0:
+        return "$0"
+    sign = "-" if amount < 0 else ""
+    amount = abs(amount)
+    if amount >= 0.1:
+        return f"{sign}${group_thousands(f'{amount:.2f}')}"
+    decimals = 2 - math.floor(math.log10(amount))
+    return f"{sign}${amount:.{decimals}f}"
+
+
 #: :data:`WRITTEN_FROM` as the bound a smaller value reads as.
 _WRITTEN_FROM_TEXT = f"{WRITTEN_FROM:.6f}"
 
@@ -140,4 +162,4 @@ def format_signed(value: float | None) -> str:
     return f"+{text}" if positive and not text.startswith("<") else text
 
 
-__all__ = ["ABSENT", "WHOLE_FROM", "WRITTEN_FROM", "format_number", "format_signed"]
+__all__ = ["ABSENT", "WHOLE_FROM", "WRITTEN_FROM", "format_number", "format_signed", "spell_dollars"]

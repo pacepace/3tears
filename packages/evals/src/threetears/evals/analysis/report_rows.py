@@ -77,15 +77,14 @@ the first, in the input's order. A limit on any other source keeps every row.
 
 from __future__ import annotations
 
-import functools
 import math
-import weakref
+import functools
+import hashlib
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any
 
-from threetears.evals.analysis.analyst.compare import ComparisonRow, arms_compare
-from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow, lever_effects
+from threetears.evals.analysis.analyst.compare import ArmsComparison, ComparisonRow, arms_compare
+from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow, LeverEffects, lever_effects
 from threetears.evals.analysis.analyst.settle import Settle, SettleRow, settle_cases
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import arm_settings, price_frontier, resolve
@@ -131,29 +130,6 @@ OVERALL = "overall"
 
 #: The most rows an analysis function is asked for at once: every row it has.
 _EVERY_ROW = 1_000_000
-
-#: Each analysis function's result on each input it was called on, by the input's identity, then the call: a chart's
-#: rows are selected by its checks, its completion and its resolver alike, and the analysis behind them is read once.
-#: An entry goes with its input (a finalizer drops it), so a later input reusing an identity never reads it.
-_ANALYSED: dict[int, dict[tuple[Any, ...], Any]] = {}
-
-
-def _analysed[T](report_input: ReportInput, call: tuple[Any, ...], read: Callable[[], T]) -> T:
-    """``read()`` once per input and call: its result, or its refusal raised again each time it is asked for."""
-    held = _ANALYSED.get(id(report_input))
-    if held is None:
-        held = _ANALYSED[id(report_input)] = {}
-        weakref.finalize(report_input, _ANALYSED.pop, id(report_input), None)
-    if call not in held:
-        try:
-            held[call] = read()
-        except RefusedInput as refused:
-            held[call] = refused
-    found = held[call]
-    if isinstance(found, RefusedInput):
-        raise found.with_traceback(None)
-    result: T = found
-    return result
 
 
 @dataclass(frozen=True)
@@ -552,6 +528,65 @@ def _cited_interval(figure: object) -> tuple[float, float] | None:
     return (float(value[0]), float(value[1])) if isinstance(value, tuple) else None
 
 
+@dataclass(frozen=True, eq=False)
+class _ByContent:
+    """A report input read by its content: equal to, and hashed as, any input whose JSON is the same, so a memo of a
+    pure analysis keyed by it answers an input from the result its content gives, whichever host holds it.
+
+    :ivar report_input: The input.
+    :ivar digest: The digest of its JSON.
+    """
+
+    report_input: ReportInput
+    digest: str
+
+    @classmethod
+    def of(cls, report_input: ReportInput) -> _ByContent:
+        return cls(report_input, hashlib.sha256(report_input.model_dump_json(by_alias=True).encode()).hexdigest())
+
+    def __hash__(self) -> int:
+        return hash(self.digest)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _ByContent) and other.digest == self.digest
+
+
+#: The analyses a chart's rows are read from, each read once per input content and call: a chart's checks, its
+#: completion and its resolver select its rows alike, and the analysis behind them is pure in its input.
+_MEMO = 256
+
+
+@functools.lru_cache(maxsize=_MEMO)
+def _compared(read: _ByContent, first: str, second: str, measure: str) -> ArmsComparison | RefusedInput:
+    try:
+        return arms_compare(read.report_input, (first, second), measure, limit=_EVERY_ROW)
+    except RefusedInput as refused:
+        return refused
+
+
+@functools.lru_cache(maxsize=_MEMO)
+def _settled(read: _ByContent, arm: str) -> Settle | RefusedInput:
+    try:
+        return settle_cases(read.report_input, [arm], limit=_EVERY_ROW)
+    except RefusedInput as refused:
+        return refused
+
+
+@functools.lru_cache(maxsize=_MEMO)
+def _levered(read: _ByContent, measure: str, place: str | None) -> LeverEffects | RefusedInput:
+    try:
+        return lever_effects(read.report_input, measure, place_filter=place, limit=_EVERY_ROW)
+    except RefusedInput as refused:
+        return refused
+
+
+def _refused_or[T](read: T | RefusedInput) -> T:
+    """An analysis's result, or its refusal raised."""
+    if isinstance(read, RefusedInput):
+        raise read.with_traceback(None)
+    return read
+
+
 def _compare(query: ChartQuery, report_input: ReportInput) -> Iterator[SourceRow]:
     """The query's first arm less its second on its one measure, at each place it keeps (``arms_compare``'s rows)."""
     if len(query.arms) != 2 or len(query.measures) != 1:
@@ -559,11 +594,7 @@ def _compare(query: ChartQuery, report_input: ReportInput) -> Iterator[SourceRow
     (measure,) = query.measures
     try:
         first, second = query.arms
-        read = _analysed(
-            report_input,
-            ("compare", first, second, measure),
-            lambda: arms_compare(report_input, (first, second), measure, limit=_EVERY_ROW),
-        )
+        read = _refused_or(_compared(_ByContent.of(report_input), first, second, measure))
     except RefusedInput:
         # NOSILENT: a pair the function refuses selects no row; the chart checks name its reason, read again there.
         return
@@ -572,17 +603,13 @@ def _compare(query: ChartQuery, report_input: ReportInput) -> Iterator[SourceRow
             yield SourceRow(place_of(row.where, report_input), row, key=measure, interval=_cited_interval(row.interval))
 
 
-def _settled(report_input: ReportInput, arm: str) -> Settle:
-    return settle_cases(report_input, [arm], limit=_EVERY_ROW)
-
-
 def _settle(query: ChartQuery, report_input: ReportInput) -> Iterator[SourceRow]:
     """Each kept arm against every criterion reading it (``settle_cases``' rows), on the measures and places kept."""
     measures = set(query.measures)
     by_id = {criterion.id: criterion for criterion in report_input.criteria}
     for arm in [held.id for held in report_input.arms if held.id in _arms(query, report_input)]:
         try:
-            read = _analysed(report_input, ("settle", arm), functools.partial(_settled, report_input, arm))
+            read = _refused_or(_settled(_ByContent.of(report_input), arm))
         except RefusedInput:
             # NOSILENT: an arm no criterion reads, or none of whose readings settles, has no row; the checks say why.
             continue
@@ -650,12 +677,7 @@ def _levers(query: ChartQuery, report_input: ReportInput) -> Iterator[SourceRow]
         return
     (measure,) = query.measures
     try:
-        place = lever_place(query, report_input)
-        read = _analysed(
-            report_input,
-            ("levers", measure, place),
-            lambda: lever_effects(report_input, measure, place_filter=place, limit=_EVERY_ROW),
-        )
+        read = _refused_or(_levered(_ByContent.of(report_input), measure, lever_place(query, report_input)))
     except RefusedInput:
         # NOSILENT: a measure or place the function refuses selects no row; the chart checks name its reason.
         return

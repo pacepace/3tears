@@ -27,7 +27,7 @@ score           a judged score                                               ``n
 
 **Money has one spelling within a chart, by its size** (the kit's ``usd``): its values, its notes and its ticks
 alike, thousands grouped (``$8,400``), an amount of :data:`_WHOLE_DOLLARS_FROM` or more in whole dollars and a smaller
-one as the package spells money (:func:`~threetears.evals.analysis.summary.dollars_text`: cents from ten cents up,
+one as the package spells money (:func:`~threetears.evals.analysis.numbers.spell_dollars`: cents from ten cents up,
 three significant figures below, never ``$0.00``). Cents on an axis of thousands are noise,
 and under ten dollars whole dollars round away the figure; a rule by each amount's size reads one amount alike on
 every chart and panel that draws it. Money per reply is its own quantity (``per`` ``reply``): drawn per 1,000 replies,
@@ -60,7 +60,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from threetears.evals.analysis.numbers import format_number, group_thousands
+from threetears.evals.analysis.numbers import format_number, group_thousands, spell_dollars
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, signed_with_unit, with_unit
 from threetears.evals.analysis.report.charts import ChartShape, ChartStatus
 from threetears.evals.analysis.style import humanize
@@ -365,15 +365,12 @@ _MONEY_FORMAT = "usd"
 def _money_text(value: float, drawn: Quantity) -> str:
     """An amount as the chart's money spelling writes it (this module's money), as the kit's ``usd`` draws it: whole
     dollars, grouped, from :data:`_WHOLE_DOLLARS_FROM`; under it the package's money spelling
-    (:func:`~threetears.evals.analysis.summary.dollars_text`)."""
-    # The run summary's module reads the report's blocks, which read this one: its money rule is imported where used.
-    from threetears.evals.analysis.summary import dollars_text
-
+    (:func:`~threetears.evals.analysis.numbers.spell_dollars`)."""
     size = abs(value)
     if size >= _WHOLE_DOLLARS_FROM:
         text = f"${group_thousands(format_number(float(round(size))))}"
     else:
-        text = dollars_text(size)
+        text = spell_dollars(size)
     sign = "-" if value < 0 and size else "+" if drawn.change and value > 0 else ""
     return f"{sign}{text}"
 

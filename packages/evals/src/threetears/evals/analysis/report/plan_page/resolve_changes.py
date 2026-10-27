@@ -80,7 +80,7 @@ from threetears.evals.analysis.report.plan_page.words import (
     change_words,
 )
 from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, Stat, Stratum, Task
-from threetears.evals.analysis.report_rows import lever_arms
+from threetears.evals.analysis.report_rows import lever_arms, place_of
 from threetears.evals.analysis.style import humanize
 
 __all__ = ["RESOLVERS"]
@@ -505,7 +505,7 @@ def _compare_changes(context: ChartContext) -> tuple[list[_Change], Quantity, tu
             bases.append(str(item.basis.value))
         changes.append(
             _analysed_change(
-                row_id=row.label,
+                row_id=place_of(item.where, context.report_input),
                 label=place,
                 short=place,
                 value=value,
