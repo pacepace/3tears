@@ -29,6 +29,7 @@ from threetears.evals.actions.params import ArmFilter, AspectFilter, MeasureKey,
 from threetears.evals.actions.render import page_sizing, render_cited
 from threetears.evals.ops.analyst_analyses import (
     BREAKDOWN_PAGE,
+    BarsAs,
     COMPARE_PAGE,
     DOMINANCE_PAGE,
     SENSITIVITY_PAGE,
@@ -61,6 +62,17 @@ _CODE_CALL = (
 )
 
 
+#: How the caller reads the declared bars: one meaning for every analysis that takes it.
+BarsAsParam = Annotated[
+    BarsAs,
+    Field(
+        description="How to read the snapshot's declared bars: warnings (the default, as declared: a bar never "
+        "removes an option) or gates (an option missing a bar is out). Your choice, from the question the report "
+        "answers; code never infers it, and the result says which reading it took."
+    ),
+]
+
+
 class DominanceParams(EvalBaseModel):
     """``options_dominance``: the snapshot, and any extra axes to compare the survivors on."""
 
@@ -70,6 +82,7 @@ class DominanceParams(EvalBaseModel):
         description="Extra measures or judged dimensions to compare the survivors on, by the keys campaign_overview "
         "lists; compared on point estimates, descriptively. Empty: the decision's own axes alone.",
     )
+    bars_as: BarsAsParam = "warnings"
     limit: SizedLimit = None
     offset: Offset = 0
 
@@ -82,9 +95,9 @@ class SensitivityParams(EvalBaseModel):
         str,
         Field(
             min_length=1,
-            description="The criterion to sweep: margin:<aspect>, floor:<aspect>/<floor> or threshold:<criterion>, "
-            "by the ids the snapshot holds; or hypothetical:<measure> (hypothetical:<measure>/<statistic> for a p50 "
-            "or p95), a gate the snapshot does not declare.",
+            description="The criterion to sweep: margin:<aspect>, floor:<aspect>/<floor> or threshold:<criterion> "
+            "(a gate's, guardrail's or bar's), by the ids the snapshot holds; or hypothetical:<measure> "
+            "(hypothetical:<measure>/<statistic> for a p50 or p95), a gate the snapshot does not declare.",
         ),
     ]
     range_low: float | None = Field(
@@ -95,6 +108,7 @@ class SensitivityParams(EvalBaseModel):
     range_high: float | None = Field(
         default=None, description="Where the sweep ends, in the criterion's units; omitted, no upper end."
     )
+    bars_as: BarsAsParam = "warnings"
     limit: SizedLimit = None
     offset: Offset = 0
 
@@ -152,6 +166,7 @@ class SettleParams(EvalBaseModel):
         description="For one arm, a line the snapshot does not declare, on measure_key, in the figure's own units "
         "(a rate on the scale measure_read prints it on); every figure read against it is keyed hypothetical.",
     )
+    bars_as: BarsAsParam = "warnings"
     limit: SizedLimit = None
     offset: Offset = 0
 
@@ -180,6 +195,7 @@ async def _settle_cases(host: OpsHost, caller: Caller, params: SettleParams) -> 
         measure_key=params.measure_key,
         criterion_id=params.criterion_id,
         hypothetical_line=params.hypothetical_line,
+        bars_as=params.bars_as,
         limit=limit,
         offset=params.offset,
         fits=fits,
@@ -193,6 +209,7 @@ async def _options_dominance(host: OpsHost, caller: Caller, params: DominancePar
         caller.scope_id,
         snapshot_id=params.snapshot_id,
         axes=params.axes,
+        bars_as=params.bars_as,
         limit=limit,
         offset=params.offset,
         fits=fits,
@@ -208,6 +225,7 @@ async def _decision_sensitivity(host: OpsHost, caller: Caller, params: Sensitivi
         parameter=params.parameter,
         range_low=params.range_low,
         range_high=params.range_high,
+        bars_as=params.bars_as,
         limit=limit,
         offset=params.offset,
         fits=fits,
@@ -252,8 +270,12 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
                 "Each survivor comes with its gate status, its standing on the asked aspects (shown better, shown no "
                 "worse, behind in a pair), which survivors are at least as good on every axis while it is not, and the "
                 "figures behind it: cost per 1,000 of what the cost counts, its gap from each gate, its asked "
-                "readings, pairs and separating contrasts. Options the gates removed are listed with each figure they "
-                "fail on, by its keys (gates), and each guardrail read breached. weighs names the axes the snapshot "
+                "readings, pairs and separating contrasts, and each bar or floor criterion it misses or borders on "
+                "the criterion's own aspect (warnings). Options the gates removed are listed with each figure they "
+                "fail on, by its keys (gates), and each guardrail read breached. An option a gate has no figure for "
+                "somewhere and no figure fails is undecided: listed apart with its unknown places, never as a fail, "
+                "with any fact its figures over every case imply, labelled inferred. bars_as=gates reads the "
+                "declared bars as gates, your choice; the result says which. weighs names the axes the snapshot "
                 "declares; where cost is the only one, code makes no dominance call (code_call.withheld says why) "
                 "rather than name the cheapest. axes adds measures or judged dimensions beside the decision's axes, "
                 "compared on point estimates and marked descriptive; dominant_with_axes says who would dominate with "
@@ -277,7 +299,8 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
             detail=(
                 "parameter names one criterion: margin:<aspect> (every reading on the aspect read against that "
                 "margin), floor:<aspect>/<floor> (that floor's margin, read on each candidate's interval) or "
-                "threshold:<criterion> (a gate's or guardrail's threshold). The range is cut at every value an "
+                "threshold:<criterion> (a gate's, guardrail's or bar's threshold; a bar moves the call only with "
+                "bars_as=gates, your choice, and otherwise lists where each arm's figure crosses it). The range is cut at every value an "
                 "arm's status flips at, each a figure key (a flip margin, a floor's held_above or broken_at, a "
                 "criterion's figure for an arm), and the call is read on each piece, with each routable task's pick "
                 "(the cheapest arm passing there and in every cross-cutting task) where the snapshot holds routable "
@@ -357,8 +380,9 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
                 "estimate sits wholly on today's side: half such designs do if the truth equals today's estimate), "
                 "cases_needed_80 (four in five do), wrong_side (how often a fresh run of today's size reads the "
                 "other way), level with its sidedness, and the count, what it counts (count_of: trials, not cases, "
-                "on a repeated design) and the spread basis it rests on, each a settle.* or spread.* key. A p50 or "
-                "p95, a figure with no spread or count, "
+                "on a repeated design) and the spread basis it rests on, each a settle.* or spread.* key; a "
+                "criterion declared on an aspect reads that aspect's figure, and each criterion row says whether it "
+                "gates as you read the bars (gates; bars_as). A p50 or p95, a figure with no spread or count, "
                 "and an estimate exactly on its line say why in unsettled. Without a limit a page holds as many "
                 f"rows as fit one result, up to {SETTLE_PAGE}."
             ),

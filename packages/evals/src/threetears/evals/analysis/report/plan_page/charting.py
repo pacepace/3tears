@@ -73,7 +73,7 @@ from threetears.evals.analysis.report.plan_page.words import (
     REFERENCE_TEMPLATE,
 )
 from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, ReportInput, Stat, Stratum, Task
-from threetears.evals.analysis.report_margins import criterion_place
+from threetears.evals.analysis.report_margins import criterion_aspect, criterion_place, lead_aspect
 from threetears.evals.analysis.report_rows import SourceRow, query_rows
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.metrics import goal_check_of
@@ -621,7 +621,8 @@ def criterion_line(
     context: ChartContext, key: str, drawn: Quantity, *, where: CriterionWhere, statistic: str = "mean"
 ) -> ChartReference | None:
     """The line a declared criterion draws on a chart that stores none: the threshold of the one criterion that reads
-    ``key`` at ``statistic`` where the chart reads it, in display units, a floor where higher is better and a budget
+    ``key`` at ``statistic`` where the chart reads it, on the chart's aspect (its query's, else the lead aspect), in
+    display units, a floor where higher is better and a budget
     where lower is, labelled in code's words.
 
     :param context: The chart being resolved.
@@ -637,10 +638,15 @@ def criterion_line(
     :return: The line; None where no criterion, or more than one line, reads it there.
     :rtype: ChartReference | None
     """
+    held = context.report_input
+    aspect = context.query.aspect or lead_aspect(held)
     lines = {
         (float(criterion.threshold), criterion.direction)
-        for criterion in context.report_input.criteria
-        if criterion.measure == key and criterion.statistic == statistic and _reads_there(criterion, where)
+        for criterion in held.criteria
+        if criterion.measure == key
+        and criterion.statistic == statistic
+        and criterion_aspect(held, criterion) == aspect
+        and _reads_there(criterion, where)
     }
     if len(lines) != 1:
         return None

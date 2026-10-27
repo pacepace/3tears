@@ -20,8 +20,8 @@ whole plan adds (a summary chart showing the options table's rows, the spine) st
 - a **margin** at the chart's aspect's margin (``aspect.margin`` for the one asked aspect, else
   ``aspects.<id>.margin``);
 - a **floor** or a **budget** at ``criteria.<id>.threshold``, the threshold of the one criterion that reads the chart's
-  one measure (the measures its query names, else the ones its rows read): a floor's criterion is higher-is-better and
-  a budget's lower-is-better, as the kit draws them (pass at or above a floor, at or below a budget); its statistic is
+  one measure (the measures its query names, else the ones its rows read) on the chart's aspect (``query.aspect``,
+  else the lead aspect): a floor's criterion is higher-is-better and a budget's lower-is-better, as the kit draws them (pass at or above a floor, at or below a budget); its statistic is
   one the chart draws (range bars draw p50 to p95, every other kind the mean); and it reads where the chart does, over
   the whole comparison or each task, or within the one task the chart keeps, or each cell on a chart of cells.
 
@@ -94,7 +94,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
 from threetears.evals.analysis.report.plan_page.look import PageLook, page_look
 from threetears.evals.analysis.report_decision import control_arm, surviving_options
 from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, Reading, ReportInput, Stat, Stratum, Task
-from threetears.evals.analysis.report_margins import criterion_place
+from threetears.evals.analysis.report_margins import criterion_aspect, criterion_place, lead_aspect
 from threetears.evals.analysis.report_rows import PriceStep, SourceRow, query_aspect, query_rows
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.kernel.report_plan import ChartQuery, ChartReference, ChartSpec, PlannedChart
@@ -373,12 +373,14 @@ def _criterion_key(
     (measure,) = measures
     drawn = line_statistics(chart.kind)
     direction = _LINE_DIRECTIONS[kind]
+    aspect = chart.query.aspect or lead_aspect(report_input)
     found = [
         criterion
         for criterion in report_input.criteria
         if criterion.measure == measure
         and criterion.direction == direction
         and criterion.statistic in drawn
+        and criterion_aspect(report_input, criterion) == aspect
         and _reads_where_the_chart_does(criterion, chart, report_input)
     ]
     if len(found) == 1:
@@ -399,7 +401,8 @@ def _criterion_key(
             where,
             f"is {kind!r}, and the criteria {[criterion.id for criterion in found]} all read {measure!r} where the "
             "chart does: a line sits at one criterion's threshold, so draw no line, or narrow the chart to where only "
-            "one reads (the one task a task's criterion reads)",
+            "one reads (the one task a task's criterion reads, or the one aspect a criterion declared on an aspect "
+            "reads, in query.aspect)",
         )
     )
     return None

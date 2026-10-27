@@ -25,18 +25,26 @@ A margin larger than any plausible result could fail is uninformative. If the ma
 
 ## Gates and borderline results
 
-A point estimate on the right side of a gate whose interval crosses the line is borderline. It passes for the call. Watch names it, with what would decide it in words (`settle` is not available; log a `capability_gap`). Decide which kind of "not settled" you have:
+A point estimate on the right side of a gate whose interval crosses the line is borderline. It passes for the call. Watch names it, with what would decide it: `settle_cases` sizes the run that would settle it and how often a run of today's size reads the other way. Its sizes against a line are one-sided; quote the two-sided size where the reader will compare it with a printed interval, and say whether it counts cases or trials. Decide which kind of "not settled" you have:
 
 - **The interval crosses the line:** more cases can settle it. Name how many.
 - **The interval is clear of the line on the wrong side:** more cases won't help. The candidate has to change.
+
+Read each line one way. Say once whether a line is read on the point estimate or on the whole interval, and use that reading everywhere it appears: the call, Watch, the explore controls and Omitted.
+
+Treat near options' noise even-handedly. If you size one option's thin clearance in standard errors, size the rival's thin miss the same way before leaning between them.
 
 When you pick the one option out of many that clears a line, its estimate is optimistic. The best of eighteen configurations near a gate is partly the luckiest of eighteen. The thinner the clearance, the more this matters. Say so in Watch.
 
 ## Corrected versus uncorrected
 
-Contrasts across many arms and measures are corrected for multiplicity, which widens their intervals. That is what lets you call one *improved* or *regressed* without being fooled by the number of comparisons. Breakdowns you request by stratum, task or cell (`measure_breakdown`) are uncorrected and exploratory. A separated stratum is a lead to follow up, not a finding. Phrase it that way once, then don't hedge every sentence.
+Contrasts across many arms and measures are corrected for multiplicity, which widens their intervals relative to the same contrast uncorrected. Compare like with like: a reading against the control may be unpaired and so wider than a corrected paired contrast. Check the two intervals before you say which is wider. That is what lets you call one *improved* or *regressed* without being fooled by the number of comparisons. Breakdowns you request by stratum, task or cell (`measure_breakdown`) are uncorrected and exploratory. A separated stratum is a lead to follow up, not a finding. Phrase it that way once, then don't hedge every sentence.
 
 Average effects over a crossed grid (what a retry buys, what more reasoning buys) are meaningful only when the factors don't interact. Check the grid before averaging. An interaction is a finding in itself, often the most important one.
+
+## Kept examples are a sample
+
+The snapshot keeps a few failures per slice. A sentence about all of a slice's failures needs the count of failures, not the kept few; say how many you read out of how many there are.
 
 ## Small strata and zero counts
 
@@ -55,7 +63,7 @@ A judged figure is only as good as the judge. Read its tier, calibration state, 
 - An **uncalibrated** judge is a report-wide caveat. Its `material_if` names how a misreading would change the call ("only if it misreads in-character replies"). If the deciding finding is measured telemetry (cost, latency, a tool-call check), say the call doesn't rest on the judge.
 - **Relative** comparisons on one judge are sturdier than **absolute** claims. "Lower than the control on the same cases" survives a biased judge better than "holds character 85% of the time". An absolute judged claim needs a calibrated judge.
 - When labels come from humans (classifiers), human agreement is the ceiling. Errors concentrated where annotators also disagree are partly label noise.
-- How many human ratings would turn a judge caveat into evidence is `settle`'s, which is not available: log a `capability_gap` and say it in words.
+- How many human ratings would turn a judge caveat into evidence: `settle_cases` sizes cases, not calibration labels, so log a `capability_gap` and say it in words.
 
 ## Derived figures
 
