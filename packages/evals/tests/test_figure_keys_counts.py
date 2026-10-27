@@ -5,9 +5,10 @@ Contracts held here (``threetears.evals.analysis.report.figure_keys``' count fam
 
 - **each count** reads, on every fixture input (r1 to r5, the misfits, Kairo round 2, s1 to s3), what is counted
   here off the input's own fields: its arms, aspects, tasks, strata, cells, configs, gates and criteria; the options
-  surviving every gate (the decision's own survivors), the options clearing each gate (the gate check's own findings),
-  the places a criterion reads and the places an arm misses there (each figure against its threshold, a place with no
-  figure missed), the gates an arm misses, a factor's levels;
+  surviving every gate (the decision's own survivors), the options clearing each gate (the gate check's own findings:
+  no figure failing, none unknown), the places a criterion reads, the places an arm misses there (each figure, on the
+  criterion's own aspect, against its threshold) and the places it has no figure at (unknown, never a miss), the
+  gates an arm misses on a figure, a factor's levels;
 - **the words filter** spells a count from zero to twenty as its word and a larger one in grouped digits, and is
   refused on a figure that is no count;
 - **a count is no typed number**: prose writing one through a key holds no digit the D3 check finds, and the grammar
@@ -84,8 +85,19 @@ def test_the_campaigns_counts_read_what_it_holds(name: str) -> None:
         assert _count(f"count.levels.{factor.id}", held) == len(factor.levels)
 
 
+def _lead(held: ReportInput) -> str | None:
+    asked = [aspect.id for aspect in held.aspects if aspect.asked]
+    return asked[0] if asked else next((aspect.id for aspect in held.aspects), None)
+
+
 def _stat(held: ReportInput, criterion: Criterion, arm: str, task: str | None, cell: str | None) -> Stat | None:
-    """The arm's figure a criterion reads at one place, off the input's own tables."""
+    """The arm's figure a criterion reads at one place, off the input's own tables, on the criterion's aspect: the
+    lead's in the by-arm maps, another's in ``by_aspect`` and in no task or cell."""
+    other = criterion.aspect if criterion.aspect not in (None, _lead(held)) else None
+    if other is not None:
+        table = held.measures.get(criterion.measure) or held.judged.get(criterion.measure)
+        overall = cell is None and task is None and table is not None
+        return table.by_aspect.get(other, {}).get(arm) if overall and table is not None else None
     if cell is not None:
         return held.cells[cell].per_arm.get(arm, {}).get(criterion.measure)
     if task is not None:
@@ -103,15 +115,25 @@ def _places(held: ReportInput, criterion: Criterion) -> list[tuple[str | None, s
     return [(None, None)]
 
 
+def _unknowns(held: ReportInput, criterion: Criterion, arm: str) -> int:
+    """The places a criterion reads an arm at that hold no finite figure for it."""
+    unknown = 0
+    for task, cell in _places(held, criterion):
+        stat = _stat(held, criterion, arm, task, cell)
+        value = getattr(stat, criterion.statistic) if stat is not None else None
+        unknown += value is None or value != value or abs(value) == float("inf")
+    return unknown
+
+
 def _misses(held: ReportInput, criterion: Criterion, arm: str) -> int:
-    """The places an arm misses a criterion at: no finite figure there, or one on the wrong side of the threshold."""
+    """The places an arm misses a criterion at: a figure there on the wrong side of the threshold."""
     missed = 0
     for task, cell in _places(held, criterion):
         stat = _stat(held, criterion, arm, task, cell)
         value = getattr(stat, criterion.statistic) if stat is not None else None
         if value is None or value != value or abs(value) == float("inf"):
-            missed += 1
-        elif criterion.direction == "higher_is_better":
+            continue
+        if criterion.direction == "higher_is_better":
             missed += value < criterion.threshold
         else:
             missed += value > criterion.threshold
@@ -126,6 +148,8 @@ def test_each_criterions_places_and_each_arms_misses_read_its_figures_against_th
         for arm in held.arms:
             key = f"count.failing.{criterion.id}.{arm.id}"
             assert _count(key, held) == _misses(held, criterion, arm.id), key
+            key = f"count.unknown.{criterion.id}.{arm.id}"
+            assert _count(key, held) == _unknowns(held, criterion, arm.id), key
 
 
 @pytest.mark.parametrize("name", sorted(INPUTS))
@@ -136,8 +160,12 @@ def test_the_options_clearing_each_gate_and_the_gates_each_arm_misses_agree_with
         arm.id: {finding.criterion for finding in gate_findings(held, arm.id) if finding.status == "fail"}
         for arm in held.arms
     }
+    unknown: dict[str, set[str]] = {
+        arm.id: {finding.criterion for finding in gate_findings(held, arm.id) if finding.status == "unknown"}
+        for arm in held.arms
+    }
     for gate in gates:
-        clearing = sum(gate.id not in failed[arm.id] for arm in held.arms)
+        clearing = sum(gate.id not in failed[arm.id] | unknown[arm.id] for arm in held.arms)
         assert _count(f"count.passing.{gate.id}", held) == clearing, gate.id
     for arm in held.arms:
         assert _count(f"count.failed.{arm.id}", held) == len(failed[arm.id]), arm.id

@@ -20,12 +20,15 @@ decision's to drop, not a figure here.
   ``half_width``. Only a mean carries one, so a p50 or p95 is never borderline;
 - else *passes*.
 
-A gate with no figure for the arm at a place the check reads it fails there (GENERATOR §1.1): a figure the input does
-not hold is not shown passed, and neither is one that is not a number (a NaN or an infinity), which reads as no
-figure. Each comparison is written as the figure *meeting* the line, so a value no comparison holds for meets none. Unnarrowed, a gate read in every task (or every cell) fails at each task (cell) that
-lacks the arm's figure, so the unnarrowed check agrees with every narrowed one.
+A gate with no figure for the arm at a place the check reads it is *unknown* there: a figure the input does not hold
+is not shown passed (GENERATOR §1.1), and neither is one that is not a number (a NaN or an infinity), which reads as no
+figure. Its finding (:func:`gate_findings`) says ``unknown``, never ``fail``, so a reader that keys each figure tells a
+place with no figure from a figure that misses; the check's status (:func:`gate_check`) counts it among the fails,
+since an arm not shown to pass a gate does not pass it. Each comparison is written as the figure *meeting* the line,
+so a value no comparison holds for meets none. Unnarrowed, a gate read in every task (or every cell) is unknown at
+each task (cell) that lacks the arm's figure, so the unnarrowed check agrees with every narrowed one.
 
-**The status** is ``fail`` when any figure fails, ``borderline`` when none fails and one is borderline, else
+**The status** is ``fail`` when any figure fails or is unknown, ``borderline`` when none fails and one is borderline, else
 ``pass``. Borderline counts as passing for the decision (GENERATOR §3).
 
 **Reasons** are code's templates, one per figure, in the criteria's order. Each names what it reads (the statistic
@@ -110,15 +113,16 @@ class GateFinding:
     """One figure a gate check fails or holds borderline, as data: which criterion, where, and its reason.
 
     :ivar criterion: The gate's or guardrail's id.
-    :ivar status: ``fail`` or ``borderline``.
+    :ivar status: ``fail`` (the figure misses), ``borderline`` (its interval crosses the line) or ``unknown`` (the input
+        states no figure there).
     :ivar task: The task the figure is read in; None when it is not read in a task.
     :ivar cell: The target-matrix cell it is read in, by id; None when it is not read in a cell.
-    :ivar figure: The arm's figure there; None where the input states none, which fails.
+    :ivar figure: The arm's figure there; None where the input states none (``unknown``).
     :ivar reason: The reason :func:`gate_check` gives for it, its figures written by the package's number rule.
     """
 
     criterion: str
-    status: Literal["fail", "borderline"]
+    status: Literal["fail", "borderline", "unknown"]
     task: str | None
     cell: str | None
     figure: CriterionFigure | None
@@ -203,7 +207,8 @@ def gate_findings(
     cell: str | None = None,
     criterion: str | None = None,
 ) -> tuple[GateFinding, ...]:
-    """Every figure one arm fails or holds borderline on, overall or in one task or cell, or on one criterion, as data:
+    """Every figure one arm fails, holds borderline or has none at, overall or in one task or cell, or on one criterion,
+    as data:
     what :func:`gate_check` reads its status and reasons off, for a reader that keys each figure rather than reading
     its reason.
 
@@ -217,7 +222,8 @@ def gate_findings(
     :ptype cell: str | None
     :param criterion: The one gate or guardrail to check against, by id; None for every one.
     :ptype criterion: str | None
-    :return: Each failing and each borderline figure, in the criteria's order and each criterion's places' order.
+    :return: Each failing, borderline and unknown figure, in the criteria's order and each criterion's places'
+        order.
     :rtype: tuple[GateFinding, ...]
     :raises ValueError: Both a task and a cell were named, or a task, cell or gating criterion the input does not hold.
     """
@@ -241,7 +247,7 @@ def gate_findings(
         ]
         no_figure = _NO_FIGURE_TEMPLATE.format(name=reader_name("criterion", held.id, report_input))
         if not places:
-            found.append(GateFinding(held.id, "fail", None, None, None, no_figure))
+            found.append(GateFinding(held.id, "unknown", None, None, None, no_figure))
             continue
         figures: dict[tuple[str | None, str | None], CriterionFigure] = {
             (figure.task, figure.cell): figure for figure in criterion_figures(report_input, held, arm)
@@ -251,7 +257,7 @@ def gate_findings(
             figure = figures.get((at_task, at_cell))
             if figure is None or not math.isfinite(figure.value):
                 reason = _placed(report_input, no_figure, at_task, at_cell, narrowed)
-                found.append(GateFinding(held.id, "fail", at_task, at_cell, None, reason))
+                found.append(GateFinding(held.id, "unknown", at_task, at_cell, None, reason))
                 continue
             read, reason = _read(report_input, held, figure, line)
             if read != "pass":
@@ -281,12 +287,12 @@ def gate_check(
     :ptype cell: str | None
     :param criterion: The one gate or guardrail to check against, by id; None for every one.
     :ptype criterion: str | None
-    :return: The arm's status, with a reason per failing and per borderline figure.
+    :return: The arm's status, with a reason per failing (an unknown figure among them) and per borderline figure.
     :rtype: GateCheck
     :raises ValueError: Both a task and a cell were named, or a task, cell or gating criterion the input does not hold.
     """
     found = gate_findings(report_input, arm, task=task, cell=cell, criterion=criterion)
-    fails = tuple(finding.reason for finding in found if finding.status == "fail")
+    fails = tuple(finding.reason for finding in found if finding.status in ("fail", "unknown"))
     borders = tuple(finding.reason for finding in found if finding.status == "borderline")
     status: GateStatus = "fail" if fails else "borderline" if borders else "pass"
     return GateCheck(arm=arm, status=status, fails=fails, borders=borders)
