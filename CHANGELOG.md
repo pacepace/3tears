@@ -129,9 +129,10 @@ transport. A `FetchTransport` outside this repo written to the old prefix-only r
 `threetears.search.contracts.media_type_accepted`, or it refuses JSON-LD, RSS, Atom, CSS, CSV and every other
 `text/` type.
 
-**Added:** `web_fetch`'s `source` argument (and `extract(..., source=True)`) returns a page's HTML as fetched
-instead of its article, for checking markup, scripts, forms and meta tags; through a `heavy_fetcher` it is the
-rendered page, and its note says the scripts ran. The method facet's values for these reads are exported as
+**Added:** `web_fetch`'s `source` argument (and `extract(..., source=True)`) returns a page's HTML as served,
+before any script runs, instead of its article, for checking markup, scripts, forms and meta tags. `extract()`
+given a `heavy_fetcher` returns the rendered page instead, and its note says the scripts ran. The method facet's
+values for these reads are exported as
 `EXTRACTION_METHOD_TEXT` and `EXTRACTION_METHOD_SOURCE`. A gate entry `<prefix>*<suffix>` matches a
 structured-syntax suffix within a family (`threetears.search.contracts.media_type_accepted`, used by both fetch
 transports and `CarrierReader.reads`).

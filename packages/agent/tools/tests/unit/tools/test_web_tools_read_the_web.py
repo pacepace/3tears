@@ -544,7 +544,7 @@ class TestSource:
 class TestAThinPageWithAPlaceholderFrame:
     @pytest.mark.asyncio
     async def test_what_the_page_holds_is_returned_and_about_blank_is_never_named(self) -> None:
-        """The bluelabs.com shape: a contact page whose only frame is an embed's placeholder."""
+        """A contact page whose only frame is an embed's placeholder."""
         page = (
             b"<html><head><title>Contact</title></head><body><nav><a href='/'>Home</a></nav>"
             b"<main><p>Write to us at hello@example.org or call 555 0100 between nine and five.</p></main>"
