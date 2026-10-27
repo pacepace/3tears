@@ -75,6 +75,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal, get_args
 
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.numbers import format_number, group_thousands
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, number_in, signed_with_unit, with_unit
@@ -3282,6 +3283,21 @@ def _family_level(report_input: ReportInput, contrast: Contrast) -> float | None
     return level_share(families[0].level) if len(families) == 1 else None
 
 
+def _correction_words(report_input: ReportInput, contrast: Contrast) -> str:
+    """Whether a contrast's interval is corrected, as the one family on its aspect states it (``correction``), never
+    asserted: corrected by the method it names, not corrected where it names ``none``, and unstated where it names none
+    or no one family is on the contrast's aspect."""
+    families = [family for family in report_input.contrast_families if family.aspect == contrast.aspect]
+    if len(families) != 1:
+        return "and no one contrast family on its aspect says whether it is corrected"
+    correction = (families[0].correction or "").strip()
+    if not correction:
+        return "and its family states no correction, so whether it is corrected is unstated"
+    if correction.lower() == "none":
+        return "not corrected across its family (the family's correction is none)"
+    return f"corrected within its family ({correction})"
+
+
 def _paired(report_input: ReportInput, arm_id: str, other: str, key: str) -> Contrast | None:
     """The one contrast stating one of the two arms against the other (the control) on ``key``, with its difference
     and interval, on the lead aspect whose figures ``overall`` reads (:func:`on_lead_aspect`): the paired estimate, which the
@@ -3378,8 +3394,8 @@ def _read_difference(report_input: ReportInput, arm_id: str, other: str, key: st
             high=high,
             level=_family_level(report_input, contrast),
             basis=(
-                f"paired: the contrast of {contrast.arm} against the control on {key!r}, its own interval, corrected "
-                "within its family"
+                f"paired: the contrast of {contrast.arm} against the control on {key!r}, its own interval, "
+                f"{_correction_words(report_input, contrast)}"
             ),
         )
     first = _read_spread(report_input, arm_id, key, where)
@@ -3762,6 +3778,217 @@ def _settle_floor_figure(report_input: ReportInput, values: tuple[str, ...], pat
     return _settle_line(report_input, path, spread, "", -float(read.margin), True, field, in_points=True)
 
 
+# --- settling two arms apart on an aspect's pass rate: trials passed over usable, on its scoreboard -------------------
+
+#: What settling two arms apart on an aspect's pass rate reads: each arm's rate, their difference, the sizes and trials
+#: (as two arms apart on a measure), how often a fresh run reads the other arm ahead, the level, the trials each case ran
+#: today, and what the spread was read from (its count basis).
+_PASSED_FIELDS = (
+    "first",
+    "second",
+    "difference",
+    "cases_needed",
+    "cases_needed_80",
+    "trials_needed",
+    "trials_needed_80",
+    "wrong_side",
+    "level",
+    "repeats",
+    "basis",
+)
+
+
+def _passing_board(report_input: ReportInput, aspect_id: str) -> dict[str, ScoreboardRow]:
+    """The arms an aspect's scoreboard states a pass rate for: trials passed, and usable trials above none."""
+    return {
+        arm: row
+        for arm, row in _aspect_board(report_input, aspect_id).items()
+        if row.passed is not None and row.usable is not None and row.usable > 0
+    }
+
+
+def _passed_aspects(report_input: ReportInput, _: tuple[str, ...] = ()) -> list[str]:
+    return [aspect.id for aspect in report_input.aspects if len(_passing_board(report_input, aspect.id)) >= 2]
+
+
+def _passed_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return list(_passing_board(report_input, prior[-1]))
+
+
+def _passed_others(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return [arm for arm in _passing_board(report_input, prior[-2]) if arm != prior[-1]]
+
+
+@dataclass(frozen=True)
+class _PassedApart:
+    """Two arms apart on an aspect's pass rate, in points: the difference, its spread, the level, today's repeats where
+    both arms ran each case alike, and what the spread was read from."""
+
+    difference: float
+    se: float
+    per_case: float | None
+    level: float
+    repeats: float | None
+    basis: str
+
+
+def _board_repeats(rows: Sequence[ScoreboardRow]) -> float | None:
+    """The trials each case ran today, where every arm states its cases and ran each as often; None otherwise."""
+    repeats = {
+        float(row.usable) / float(row.cases)
+        for row in rows
+        if row.usable is not None and row.cases is not None and row.cases > 0
+    }
+    return repeats.pop() if len(repeats) == 1 and all(row.cases for row in rows) else None
+
+
+def _passed_reading(
+    report_input: ReportInput, aspect_id: str, arm_id: str, other: str
+) -> tuple[Reading, tuple[float, float], float] | None:
+    """The reading that pairs the two arms on the aspect, its interval, and the sign that makes it the first minus the
+    second: one of them is the control, and the other's reading states an interval at a level; None otherwise."""
+    control = _control(report_input)
+    if control is None or control.id not in (arm_id, other):
+        return None
+    candidate = other if arm_id == control.id else arm_id
+    aspect = _aspect_by_id(report_input, aspect_id)
+    held = [
+        reading
+        for reading in aspect.readings
+        if reading.arm == candidate
+        and reading.gain_interval is not None
+        and level_share(reading.gain_confidence) is not None
+    ]
+    if len(held) != 1 or held[0].gain_interval is None:
+        return None
+    low, high = held[0].gain_interval
+    return held[0], (float(low), float(high)), 1.0 if candidate == arm_id else -1.0
+
+
+def _passed_apart(report_input: ReportInput, aspect_id: str, arm_id: str, other: str, path: str) -> _PassedApart:
+    """Two arms apart on an aspect's pass rate (its scoreboard's trials passed over usable), in points: paired where the
+    aspect's reading of a candidate against the control states its interval (its own change, interval and level, the
+    cases each arm ran), else each arm's binomial spread from its own count, read on its distinct cases where its
+    scoreboard states them, combined as independent."""
+    board = _passing_board(report_input, aspect_id)
+    rows = (board[arm_id], board[other])
+    repeats = _board_repeats(rows)
+    paired = _passed_reading(report_input, aspect_id, arm_id, other)
+    if paired is not None:
+        reading, interval, sign = paired
+        try:
+            spread = difference_spread(
+                float(reading.change),
+                interval,
+                level_share(reading.gain_confidence),
+                tuple(float(count) for count in reading.cases),
+            )
+        except NoSpread as none:
+            raise _unstated(
+                path, f"reads {reading.arm}'s reading on {aspect_id}, which has no spread: {none}"
+            ) from none
+        return _PassedApart(
+            difference=sign * spread.mean,
+            se=spread.se,
+            per_case=spread.per_case,
+            level=spread.level,
+            repeats=repeats,
+            basis=(
+                f"paired: {reading.arm}'s reading on {aspect_id} against the control, its own change and interval at "
+                "its stated level, over the cases each arm ran (the reading's cases); a size counts cases each arm "
+                "runs, each run as often as today"
+            ),
+        )
+    spreads = []
+    for arm, row in zip((arm_id, other), rows, strict=True):
+        try:
+            spreads.append(
+                stat_spread(
+                    float(row.passed or 0) / float(row.usable or 1),
+                    n=float(row.usable or 0),
+                    rate="share",
+                    cases=None if row.cases is None else float(row.cases),
+                )
+            )
+        except NoSpread as none:
+            raise _unstated(path, f"reads {arm}'s pass rate on {aspect_id}, which has no spread: {none}") from none
+    first, second = spreads
+    per_case = (
+        None if first.per_case is None or second.per_case is None else 100 * math.hypot(first.per_case, second.per_case)
+    )
+    on_cases = first.cases is not None and second.cases is not None
+    counted = (
+        f"read on its distinct cases, each counted once: {_REPEATS_BOUND}"
+        if on_cases
+        else "read on its usable trials as if each were independent, which reads narrower than its cases would where "
+        "a case ran more than once"
+    )
+    return _PassedApart(
+        difference=100 * (first.mean - second.mean),
+        se=100 * math.hypot(first.se, second.se),
+        per_case=per_case,
+        level=first.level,
+        repeats=repeats,
+        basis=(
+            f"independent: each arm's trials passed over usable on {aspect_id}'s scoreboard, a pass/fail rate's "
+            f"binomial spread {counted}; combined as if the arms ran different cases"
+        ),
+    )
+
+
+def _settle_passed_figure(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    aspect_id, arm_id, other, field = values
+    if arm_id == other:
+        raise _refuse(path, "settles an arm against itself; name two arms")
+    board = _passing_board(report_input, aspect_id)
+    if field in ("first", "second"):
+        row = board[arm_id if field == "first" else other]
+        rate = float(row.passed or 0) / float(row.usable or 1)
+        return _number(path, rate, "the arm's pass rate on the aspect: trials passed over usable", "share")
+    apart = _passed_apart(report_input, aspect_id, arm_id, other, path)
+    if field == "difference":
+        return _number(path, apart.difference, "the two arms' difference in pass rate", "points", change=True)
+    if field == "basis":
+        return Figure(path=path, kind="text", value=apart.basis)
+    if field == "level":
+        return _sided_level(path, apart.level, 2)
+    if field == "repeats":
+        return _number(path, apart.repeats, "the trials each case ran today, where both arms ran each alike", "plain")
+    if field == "wrong_side":
+        share = _settled(path, lambda: wrong_side_share(apart.difference, apart.se))
+        return _number(path, share, "how often a fresh run of today's size reads the other arm ahead", "share")
+    per_case = apart.per_case
+    if per_case is None:
+        raise _unstated(path, "names the cases a design needs, which needs the count each arm's rate rests on")
+    power = POWER if field.endswith("_80") else 0.5
+    cases = _settled(path, lambda: cases_to_separate(per_case, apart.difference, apart.level, sided=2, power=power))
+    if field.startswith("trials_"):
+        if apart.repeats is None:
+            raise _unstated(
+                path,
+                "names the trials a size takes, and the two arms' scoreboards state no cases, or ran them a different "
+                "number of times",
+            )
+        return _number(path, math.ceil(cases * apart.repeats - 1e-9), "the trials the cases take", "count")
+    return _number(path, cases, "the cases each arm needs", "count")
+
+
+def passed_aspects(report_input: ReportInput, arms: Sequence[str]) -> list[str]:
+    """The aspects whose scoreboard states a pass rate for every one of ``arms`` (trials passed over usable), which a
+    ``settle.passed.<aspect>.`` key settles them apart on, in the input's aspect order.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param arms: The arms, by id.
+    :ptype arms: Sequence[str]
+    :return: The aspects, by id; empty where none holds every arm's pass rate.
+    :rtype: list[str]
+    """
+    return [
+        aspect for aspect in _passed_aspects(report_input) if set(arms) <= set(_passing_board(report_input, aspect))
+    ]
+
+
 def separation_wheres(report_input: ReportInput, arms: Sequence[str], key: str) -> list[str]:
     """Where a ``spread.``, ``compare.`` or ``settle.`` key can read every one of ``arms`` on a measure or judged
     dimension, as its ``<where>`` slot spells it: ``overall`` first, then ``task.<task>``, ``cells.<row>.<column>`` and
@@ -3995,6 +4222,25 @@ _SEPARATION_FAMILIES: tuple[_Family, ...] = (
         derived=True,
         derived_note=_SEPARATION_NOTE,
         example="settle.floor.answers.answers/rate_drop/*.fast.v2.wrong_side",
+    ),
+    _family_of(
+        _Word("settle"),
+        _Word(TRIAL_PASS_NAME),
+        _Ids("<aspect>", _passed_aspects),
+        _Ids("<arm>", _passed_arms),
+        _Ids("<arm>", _passed_others),
+        _Statistic(_PASSED_FIELDS, "<field>"),
+        what="two arms apart on an aspect's pass rate (its scoreboard's trials passed over usable), the first minus "
+        "the second: `first` and `second` each arm's rate, `difference` in points, then what two arms' settle reads "
+        "(`cases_needed`, `cases_needed_80`, `trials_needed`, `trials_needed_80`, `wrong_side`, `level` two-sided); "
+        "`repeats` the trials each case ran today; `basis` the count basis: paired where the aspect's reading of a "
+        "candidate against the control states its interval (its own change and interval, over the cases each arm "
+        "ran), else each arm's binomial spread from its own trials, read on its distinct cases where its scoreboard "
+        "states them, combined as independent",
+        resolve=_settle_passed_figure,
+        derived=True,
+        derived_note=_SEPARATION_NOTE,
+        example="settle.passed.answers.fast.v2.base.cases_needed",
     ),
 )
 
@@ -6227,4 +6473,5 @@ __all__ = [
     "separation_wheres",
     "on_lead_aspect",
     "pairing_contrast",
+    "passed_aspects",
 ]

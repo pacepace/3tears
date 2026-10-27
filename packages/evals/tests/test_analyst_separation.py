@@ -15,8 +15,8 @@ actions):
   or zero (two-sided, each arm) at ``cases_needed`` and not one case fewer, and four in five such designs clear at
   ``cases_needed_80``; ``wrong_side`` is how often a run of today's size reads the other way; the W2 r2 editor's sum
   (the pick's pass rate against its gate) is reproduced from the input's own figures; a hypothetical line is keyed
-  hypothetical; a p95, a figure without a spread, and an estimate on its line say why, and a call where nothing can
-  be settled is refused;
+  hypothetical; a p95 and a figure without a spread say why, and a call where nothing can be settled is refused; an
+  estimate exactly on its line is answered (wrong side half the time, no finite size, and what would settle it);
 - **every fixture snapshot**: both actions answer or refuse with a remedy over the tool, and every figure resolves.
 """
 
@@ -31,7 +31,7 @@ from typing import Any
 
 import pytest
 
-from packages.evals.tests.analyst_support import aspect_tagged, compared_pair, fixture_snapshots
+from packages.evals.tests.analyst_support import aspect_tagged, compared_pair, fixture_inputs, fixture_snapshots
 from packages.evals.tests.fixtures.report_plans.misfits import reference_data
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
@@ -49,6 +49,7 @@ from threetears.evals.analysis.report.figure_keys import (
 )
 from threetears.evals.analysis.report_decision import dominant_options
 from threetears.evals.analysis.report_input import ReportInput, Stat
+from threetears.evals.analysis.report_margins import criterion_figures
 from threetears.evals.analysis.separation import (
     NoSpread,
     cases_to_separate,
@@ -612,7 +613,10 @@ def test_two_arms_are_settled_apart_two_sided_each_arm_running_the_cases() -> No
         assert len(row.counts) == len(row.basis) == 2
 
 
-def test_an_estimate_on_its_line_says_no_number_of_cases_separates_it_and_nothing_to_settle_is_refused() -> None:
+def test_an_estimate_on_its_line_is_answered_a_coin_flip_with_no_finite_size_and_what_would_settle_it() -> None:
+    """The W2 regression prototype's r1 finding: an estimate exactly on its line was refused. It is answered: a fresh
+    run of today's size reads the wrong side half the time, no finite size settles it at today's estimate, and the row
+    says what would, by a call that sizes it. A row with nothing to read (a p95) is still refused."""
     data = reference_data("r2")
     held = ReportInput.model_validate(data)
     pick = next(arm.id for arm in held.arms)
@@ -623,10 +627,45 @@ def test_an_estimate_on_its_line_says_no_number_of_cases_separates_it_and_nothin
             criterion["threshold"] = mean
     on_line = ReportInput.model_validate(data)
     gate = next(criterion.id for criterion in on_line.criteria if criterion.measure == "pass_rate")
-    with pytest.raises(RefusedInput, match="exactly on its line"):
-        settle_cases(on_line, [pick], criterion=gate)
+    (row,) = settle_cases(on_line, [pick], criterion=gate).rows
+    assert row.distance is not None and row.distance.value == 0
+    assert row.settles == "on_the_line"
+    assert row.wrong_side is not None and row.wrong_side.value == 0.5
+    assert row.cases_needed is None and row.cases_needed_80 is None and row.cases_needed_two_sided is None
+    assert "exactly on its line" in row.unsettled and "no finite number of cases" in row.unsettled
+    assert "settle_cases" in row.what_would and "hypothetical_line" in row.what_would and "pass_rate" in row.what_would
+    off_line = settle_cases(held, [pick], criterion=gate).rows[0]
+    assert off_line.settles in ("clears", "misses") and off_line.what_would == ""
     with pytest.raises(RefusedInput, match="p95"):
         settle_cases(held, [pick], criterion="p95")
+
+
+def test_wrong_side_reads_one_half_for_an_estimate_on_its_line_and_no_size_is_read() -> None:
+    assert wrong_side_share(0.0, 0.4) == 0.5
+    assert wrong_side_share(1e-12, 0.4) == pytest.approx(0.5)
+    with pytest.raises(NoSpread, match="no spread"):
+        wrong_side_share(0.0, 0.0)
+    with pytest.raises(NoSpread, match="exactly on its line"):
+        cases_to_separate(0.4, 0.0, 0.95, sided=1, power=0.5)
+
+
+def test_r1s_pick_on_its_gate_is_answered_where_its_own_rows_were_refused() -> None:
+    """r1's pick reads exactly its gate's threshold in one task: settling it against that gate answers."""
+    held = fixture_inputs()["r1"]
+    on_line = [
+        (criterion.id, arm.id)
+        for criterion in held.criteria
+        if criterion.statistic == "mean"
+        for arm in held.arms
+        for figure in criterion_figures(held, criterion, arm.id)
+        if figure.value == criterion.threshold
+    ]
+    assert on_line, "the fixture holds a figure exactly on its line"
+    for criterion_id, arm in on_line:
+        rows = settle_cases(held, [arm], criterion=criterion_id, limit=WHOLE).rows
+        hit = [row for row in rows if row.settles == "on_the_line"]
+        assert hit and all(row.wrong_side is not None and row.wrong_side.value == 0.5 for row in hit)
+        assert all(row.what_would for row in hit)
 
 
 @pytest.mark.parametrize(

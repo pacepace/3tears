@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: analyses say how far they reach: a sweep that stops short, an estimate on its line, an aspect's pass rate, a contrast's correction and unit, and an arm as any result prints it
+
+**Added:** `decision_sensitivity` names each side of a caller's range past which the call or a routable task's pick
+changes (`Sensitivity.unswept`: the nearest such flip by its key, how many, the call past it, and whether that side
+loosens the line), and each arm a cross-cutting task's gate holds back from every per-task pick, with the gates it fails
+there by their keys and the tasks whose own gates it passes (`Sensitivity.barred`); a margin sweep over an aspect with
+no reading of a candidate says code never reads that candidate against a margin. `settle_cases` settles two arms apart
+on an aspect's pass rate (`measure_key` `passed`; keys `settle.passed.<aspect>.<arm>.<other>.<field>`), paired on the
+aspect's reading where one pairs a candidate with the control, else on each arm's binomial spread from its own trials,
+each row citing the arms' usable trials and cases and a basis naming the count it rests on. `arms_compare` rows say what
+their interval counts (`counts`, `counted_unstated`) and mark one that may be too narrow where trials nest in fewer
+cases (`may_be_narrow`, `nested`), with a note saying why once. Every analyst action names an arm by its id, as
+`arm:<id>`, or as the key `{arm:<id>}` (`actions.params.written_arm`).
+
+**Changed:** an estimate exactly on its line is answered rather than refused: `settles` reads `on_the_line`,
+`wrong_side` one half, no size is read, and `what_would` says what would settle it and the call that sizes it
+(`separation.wrong_side_share` returns one half at a distance of zero).
+
+**Fixed:** a paired comparison's basis said "corrected within its family" whatever its family said; it now reads the
+family's own correction (not corrected where it says none, unstated where it says nothing).
+
 ### evals: a comparison says what pairs it, and the settle table says what its sizes count
 
 **Added:** `ComparisonRow.paired_with` on `arms_compare`'s rows: `arm:<id>` where a contrast pairs the two arms, else null; `figure_keys.pairing_contrast` is the one rule for what pairs two arms, read by the compare keys, `arms_compare` and the compare block's level.

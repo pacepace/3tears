@@ -10,9 +10,9 @@ parameters without a cycle.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
-from pydantic import Field
+from pydantic import BeforeValidator, Field
 
 #: The most rows one page of a listing may ask for: a page is read into an agent's context.
 _PAGE_MAX = 200
@@ -35,9 +35,42 @@ SnapshotId = Annotated[
         description="The snapshot every figure is read from, by the id its freeze returned.",
     ),
 ]
+#: The forms of an arm a result prints, any of which a call may name an arm by: its figure key (``{arm:<id>}``), the
+#: cited form (``arm:<id>``), or its bare id.
+_ARM_PREFIX = "arm:"
+
+
+def written_arm(written: Any) -> Any:
+    """An arm as a call names it, read to its id by the one rule every action's arm parameters share: an arm written
+    the way any result prints it (``<id>``, ``arm:<id>``, or the figure key ``{arm:<id>}``) is the arm of that id.
+    Anything else is passed on as given, for the parameter's own type to accept or refuse.
+
+    An arm id that itself begins with ``arm:`` would lose that prefix: no snapshot's arm is named so, since every
+    result cites an arm as ``arm:<id>``.
+
+    :param written: The value the call gave.
+    :ptype written: Any
+    :return: The arm's id, where ``written`` is a string; else ``written`` unchanged.
+    :rtype: Any
+    """
+    if not isinstance(written, str):
+        return written
+    text = written.strip()
+    if text.startswith("{" + _ARM_PREFIX) and text.endswith("}"):
+        text = text[1:-1].strip()
+    return text.removeprefix(_ARM_PREFIX).strip() if text.startswith(_ARM_PREFIX) else written
+
+
+#: How every action's arm parameter describes the forms it takes.
+ARM_FORMS = "by its id in the snapshot, or as results print it (arm:<id>, or the key {arm:<id>}): all name the same arm"
+
+#: One arm, as any action takes it: read to its id by :func:`written_arm`.
+ArmId = Annotated[str, BeforeValidator(written_arm), Field(min_length=1, description=f"An arm, {ARM_FORMS}.")]
+
 ArmFilter = Annotated[
     str | None,
-    Field(min_length=1, description="Read only this arm, by its id in the snapshot; omitted reads every arm."),
+    BeforeValidator(written_arm),
+    Field(min_length=1, description=f"Read only this arm, {ARM_FORMS}; omitted reads every arm."),
 ]
 AspectFilter = Annotated[
     str | None,
@@ -48,8 +81,10 @@ MeasureKey = Annotated[
 ]
 
 __all__ = [
+    "ARM_FORMS",
     "AnalysisId",
     "ArmFilter",
+    "ArmId",
     "AspectFilter",
     "CampaignId",
     "Limit",
@@ -57,4 +92,5 @@ __all__ = [
     "Offset",
     "SizedLimit",
     "SnapshotId",
+    "written_arm",
 ]
