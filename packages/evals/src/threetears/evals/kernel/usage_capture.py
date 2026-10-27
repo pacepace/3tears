@@ -606,6 +606,9 @@ def async_delivery_usage(
         ):
             inner.add(
                 model=entry.model,
+                # What the responses named, never the requested `model`: it keys the row beside it, so work one
+                # requested model had answered by another is a row of its own.
+                served_model=entry.served_model,
                 prompt_tokens=entry.input_tokens,
                 completion_tokens=entry.output_tokens,
                 reasoning_tokens=entry.reasoning_tokens,

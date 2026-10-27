@@ -102,6 +102,10 @@
   "case_overlap": {
    "anyOf": [{"type": "array", "items": {"$ref": "#/$defs/CaseOverlap"}}, {"type": "null"}],
    "description": "For each two aspects, the cases both ran and the cases only one ran; none where the input does not hold the aspects' case ids."
+  },
+  "apparatus": {
+   "anyOf": [{"type": "array", "items": {"$ref": "#/$defs/RunApparatus"}}, {"type": "null"}],
+   "description": "The rig each run was measured with, for each run that recorded one past a serial run pinning and declaring nothing; none where no run did, or the bundle carried none."
   }
  },
  "additionalProperties": false,
@@ -922,6 +926,61 @@
    "additionalProperties": false,
    "description": "One arm's reading on an aspect: its change from the control, with the interval it was read on."
   },
+  "RequestSettings": {
+   "type": "object",
+   "required": ["max_tokens"],
+   "properties": {
+    "max_tokens": {"type": "integer", "description": "The output cap."},
+    "reasoning_max_tokens": {"type": ["integer", "null"], "description": "The reasoning budget, in tokens."},
+    "reasoning_effort": {"type": ["string", "null"], "description": "The reasoning effort word."},
+    "strict_output": {"type": "boolean", "description": "Whether the request enforced every parameter it carried."}
+   },
+   "additionalProperties": false,
+   "description": "What a role's calls were asked for: the output cap, the reasoning asked, and whether every parameter was enforced."
+  },
+  "RunApparatus": {
+   "type": "object",
+   "required": ["run", "aspect", "cell_concurrency"],
+   "properties": {
+    "run": {"type": "string", "description": "The run's id."},
+    "arm": {"type": ["string", "null"], "description": "The arm it ran, by id; none for a run the design placed in no arm."},
+    "aspect": {"type": "string", "description": "The aspect it ran, by id."},
+    "judges": {
+     "anyOf": [{"type": "object", "additionalProperties": {"type": "string"}}, {"type": "null"}],
+     "description": "The model each judged dimension was asked of; none where not recorded."
+    },
+    "judge_asked": {
+     "anyOf": [{"$ref": "#/$defs/RequestSettings"}, {"type": "null"}],
+     "description": "What every judge call was asked for; none where not recorded."
+    },
+    "judge_temperature": {
+     "type": ["number", "null"],
+     "description": "The temperature judge calls were asked at; none where not recorded."
+    },
+    "simulator": {"type": ["string", "null"], "description": "The simulated user's model; none where none was pinned."},
+    "measure_latency": {
+     "type": ["boolean", "null"],
+     "description": "Whether latency was declared under test; none where nothing was declared."
+    },
+    "arm_schedule": {
+     "enum": ["interleaved", "sequential", "concurrent", null],
+     "description": "How the arm shared time with the other arms; none where not recorded."
+    },
+    "cell_concurrency": {"type": "integer", "description": "How many of the run's cells executed at once; 1 is serial."},
+    "execution_modes": {
+     "type": "object",
+     "additionalProperties": {"type": "integer"},
+     "description": "The run's results by the execution mode each recorded."
+    },
+    "rubric_scales": {
+     "type": "object",
+     "additionalProperties": {"enum": ["ordinal", "pass_fail"]},
+     "description": "The scale each rubric dimension was answered on."
+    }
+   },
+   "additionalProperties": false,
+   "description": "The rig one run of one arm was measured with, as the run recorded it at launch."
+  },
   "ScoreboardRow": {
    "type": "object",
    "properties": {
@@ -946,6 +1005,10 @@
     "test_cost_usd": {
      "type": ["number", "null"],
      "description": "What the arm's trials cost, dollars."
+    },
+    "unanswered": {
+     "anyOf": [{"type": "object", "additionalProperties": {"$ref": "#/$defs/Unanswered"}}, {"type": "null"}],
+     "description": "The arm's unanswered calls by usage role, for each role that counted them; none where no role did (not counted, never none)."
     }
    },
    "additionalProperties": false,
@@ -1065,6 +1128,37 @@
    },
    "additionalProperties": false,
    "description": "A named slice of the work, with each arm's figures in it.\n\nA routable task's traffic can go to its own arm; a cross-cutting one occurs inside every other task, so an arm\nserving any traffic must pass it."
+  },
+  "Unanswered": {
+   "type": "object",
+   "properties": {
+    "retried": {
+     "type": ["integer", "null"],
+     "description": "Calls a forced tool choice was refused on, answered unforced in the same call: attempts and latency, never a failure; none where nothing counted them."
+    },
+    "lost": {
+     "type": ["integer", "null"],
+     "description": "Calls sent and never answered, so their turn ended in error: failures the arm's trials already count; none where nothing counted them."
+    },
+    "reasons": {
+     "anyOf": [{"type": "object", "additionalProperties": {"type": "integer"}}, {"type": "null"}],
+     "description": "The calls each reason accounts for, by word."
+    },
+    "calls": {
+     "type": ["integer", "null"],
+     "description": "The answered calls beside them, which the cost counts; none where uncounted."
+    },
+    "share": {
+     "type": ["number", "null"],
+     "description": "Retried and lost as a share of every call sent, 0 to 1; none where uncounted."
+    },
+    "uncounted": {
+     "type": "integer",
+     "description": "Trials whose calls in the role counted none, absent from the sums: 'at least'."
+    }
+   },
+   "additionalProperties": false,
+   "description": "One role's calls of one arm's trials that went unanswered, beside the arm's cost and never inside it."
   }
  }
 }

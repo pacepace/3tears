@@ -28,6 +28,15 @@ kept from) and ``case_overlap`` (which cases each two aspects share, by stored c
 trials, not statistics: an analyst's snapshot counts them
 (:func:`~threetears.evals.analysis.analyst.snapshot.analyst_input`). A planner's input and a bare one leave them
 ``None``, which reads as not known, never as none.
+
+**The rig, and the calls nobody answered.** ``apparatus`` copies each run's apparatus off the bundle's run summary
+(``RunSummary.apparatus``): the judge each dimension was asked of and what it was asked for, the temperature, the
+simulated user, whether latency was under test, how the arms shared time, how many cells ran at once, each result's
+execution mode and each rubric dimension's scale. A run that recorded nothing past a serial run pinning and declaring
+nothing carries no entry, and an input none of whose runs recorded one carries no key. A scoreboard row's
+``unanswered`` copies the arm's unanswered calls by usage role (``ArmScoreboard.unanswered``), beside its cost and
+never inside it; a row no role counted them for carries none, which reads as not counted, never as none. Both are
+left out of the document when unset, so an input built before they existed digests as it did.
 """
 
 from __future__ import annotations
@@ -149,6 +158,31 @@ class PassK(_Part):
     said: list[str] = Field(default_factory=list, description="What the pipeline says about it.")
 
 
+class Unanswered(_Part):
+    """One role's calls of one arm's trials that went unanswered, beside the arm's cost and never inside it."""
+
+    retried: int | None = Field(
+        default=None,
+        description="Calls a forced tool choice was refused on, answered unforced in the same call: attempts and "
+        "latency, never a failure; none where nothing counted them.",
+    )
+    lost: int | None = Field(
+        default=None,
+        description="Calls sent and never answered, so their turn ended in error: failures the arm's trials already "
+        "count; none where nothing counted them.",
+    )
+    reasons: dict[str, int] | None = Field(default=None, description="The calls each reason accounts for, by word.")
+    calls: int | None = Field(
+        default=None, description="The answered calls beside them, which the cost counts; none where uncounted."
+    )
+    share: Number | None = Field(
+        default=None, description="Retried and lost as a share of every call sent, 0 to 1; none where uncounted."
+    )
+    uncounted: int = Field(
+        default=0, description="Trials whose calls in the role counted none, absent from the sums: 'at least'."
+    )
+
+
 class ScoreboardRow(_Part):
     """How one arm's trials came out."""
 
@@ -160,6 +194,13 @@ class ScoreboardRow(_Part):
     cases: int | None = Field(default=None, description="Distinct cases.")
     reply_cost_usd: Number | None = Field(default=None, description="Cost per reply, dollars.")
     test_cost_usd: Number | None = Field(default=None, description="What the arm's trials cost, dollars.")
+    # Left out of the document when unset, so an input whose usage counted no unanswered call digests as it did.
+    unanswered: dict[str, Unanswered] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The arm's unanswered calls by usage role, for each role that counted them; none where no role "
+        "did (not counted, never none).",
+    )
 
 
 class PairRead(_Part):
@@ -458,6 +499,49 @@ class Caveats(_Part):
     unreported: list[str] = Field(default_factory=list, description="Observations recorded but not reported.")
 
 
+class RequestSettings(_Part):
+    """What a role's calls were asked for: the output cap, the reasoning asked, and whether every parameter was
+    enforced."""
+
+    max_tokens: int = Field(description="The output cap.")
+    reasoning_max_tokens: int | None = Field(default=None, description="The reasoning budget, in tokens.")
+    reasoning_effort: str | None = Field(default=None, description="The reasoning effort word.")
+    strict_output: bool = Field(default=False, description="Whether the request enforced every parameter it carried.")
+
+
+class RunApparatus(_Part):
+    """The rig one run of one arm was measured with, as the run recorded it at launch."""
+
+    run: str = Field(description="The run's id.")
+    arm: str | None = Field(
+        default=None, description="The arm it ran, by id; none for a run the design placed in no arm."
+    )
+    aspect: str = Field(description="The aspect it ran, by id.")
+    judges: dict[str, str] | None = Field(
+        default=None, description="The model each judged dimension was asked of; none where not recorded."
+    )
+    judge_asked: RequestSettings | None = Field(
+        default=None, description="What every judge call was asked for; none where not recorded."
+    )
+    judge_temperature: Number | None = Field(
+        default=None, description="The temperature judge calls were asked at; none where not recorded."
+    )
+    simulator: str | None = Field(default=None, description="The simulated user's model; none where none was pinned.")
+    measure_latency: bool | None = Field(
+        default=None, description="Whether latency was declared under test; none where nothing was declared."
+    )
+    arm_schedule: Literal["interleaved", "sequential", "concurrent"] | None = Field(
+        default=None, description="How the arm shared time with the other arms; none where not recorded."
+    )
+    cell_concurrency: int = Field(description="How many of the run's cells executed at once; 1 is serial.")
+    execution_modes: dict[str, int] = Field(
+        default_factory=dict, description="The run's results by the execution mode each recorded."
+    )
+    rubric_scales: dict[str, Literal["ordinal", "pass_fail"]] = Field(
+        default_factory=dict, description="The scale each rubric dimension was answered on."
+    )
+
+
 class PriorInsight(_Part):
     """An insight an earlier campaign recorded."""
 
@@ -589,4 +673,12 @@ class ReportInput(_Part):
         exclude_if=lambda value: value is None,
         description="For each two aspects, the cases both ran and the cases only one ran; none where the input does "
         "not hold the aspects' case ids.",
+    )
+    # Left out of the document when unset, as an input over runs that recorded no apparatus leaves it, so its digest
+    # is as it was.
+    apparatus: list[RunApparatus] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The rig each run was measured with, for each run that recorded one past a serial run pinning and "
+        "declaring nothing; none where no run did, or the bundle carried none.",
     )

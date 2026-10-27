@@ -67,6 +67,12 @@ confusion; ``cost.gap.<arm>.<arm>.`` two arms' costs apart, per 1,000, per month
 does not hold (a planner's input counts no failures, a bare one holds no case ids) is refused as unstated, never read
 as none.
 
+**Calls that went unanswered, beside the cost.** ``calls.unanswered.<arm>`` (and ``aspects.<aspect>.`` before it)
+reads how many of an arm's calls went unanswered, retried and lost together, summed over every usage role that counted
+them, with ``.retried``, ``.lost``, ``.calls`` (the answered ones), ``.share`` (of every call sent), ``.reasons`` and
+``.uncounted`` (trials whose calls counted none) beside it. Copied where one role counted them; a share over several
+roles is computed here and marked derived. An arm no role counted for is no key at all: not counted is never none.
+
 **A figure held on more than one aspect is named by its aspect.** Every figure that sits on an aspect has an
 ``aspects.<aspect>.`` form. Where the input holds a contrast's arm and measure, a stratum id or a contrast family on
 more than one aspect, the unqualified form is refused, naming the qualified key for each aspect, rather than reading
@@ -120,6 +126,7 @@ from threetears.evals.analysis.report_input import (
     Stat,
     Stratum,
     Task,
+    Unanswered,
 )
 from threetears.evals.analysis.report_margins import (
     CriterionFigure,
@@ -2663,6 +2670,92 @@ def _confusion(report_input: ReportInput, values: tuple[str, ...], path: str) ->
     return Figure(path=path, kind="number", value=float(matrix[row][column]), scale=scale)
 
 
+# --- calls that went unanswered, beside an arm's cost ---------------------------------------------------------------
+
+#: What an arm's unanswered calls read beside the bare count (retried and lost together): each kind's count, the
+#: answered calls beside them, their share of every call sent, the reasons counted, and the trials that counted none.
+_UNANSWERED_FIELDS = ("retried", "lost", "calls", "share", "reasons", "uncounted")
+
+#: What every unanswered key says of an arm no role counted for, and of a count some trials left out.
+_UNANSWERED_RULE = (
+    "Only an arm a usage role counted unanswered calls for is keyed (not counted is never none); where some trials "
+    "counted none (`uncounted`), the counts read 'at least'"
+)
+
+
+def _unanswered_rows(report_input: ReportInput, aspect_id: str | None, arm_id: str) -> list[Unanswered]:
+    """The arm's unanswered calls by role, on one aspect (the lead's where none is named), in the input's role order."""
+    board = report_input.scoreboard if aspect_id is None else _aspect_board(report_input, aspect_id)
+    row = board.get(arm_id)
+    return list((row.unanswered or {}).values()) if row is not None else []
+
+
+def _unanswered_arms(report_input: ReportInput, _: tuple[str, ...] = ()) -> list[str]:
+    return [arm for arm, row in report_input.scoreboard.items() if row.unanswered]
+
+
+def _aspect_unanswered_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
+    return [arm for arm, row in _aspect_board(report_input, prior[0]).items() if row.unanswered]
+
+
+def _unanswered_sum(rows: Sequence[Unanswered], field: str) -> int | None:
+    """One count summed over the roles that counted it; None where no role did."""
+    counted = [value for row in rows if (value := getattr(row, field)) is not None]
+    return sum(counted) if counted else None
+
+
+def _unanswered_figure(rows: Sequence[Unanswered], field: str | None, path: str) -> Figure:
+    """One figure of an arm's unanswered calls, summed over every role that counted them: the bare count (retried and
+    lost), a kind's count, the answered calls, the share of every call sent, the reasons, or the trials uncounted."""
+    retried, lost = _unanswered_sum(rows, "retried"), _unanswered_sum(rows, "lost")
+    if field is None:
+        return _count(path, (retried or 0) + (lost or 0))
+    if field in ("retried", "lost"):
+        held = retried if field == "retried" else lost
+        if held is None:
+            raise _unstated(path, f"names the calls {field} unanswered, which no role of the arm counted")
+        return _count(path, held)
+    if field == "uncounted":
+        return _count(path, sum(row.uncounted for row in rows))
+    if field == "reasons":
+        reasons: dict[str, int] = {}
+        for row in rows:
+            for word, count in (row.reasons or {}).items():
+                reasons[word] = reasons.get(word, 0) + count
+        if not reasons:
+            raise _unstated(path, "names the reasons the arm's calls went unanswered, which no role counted")
+        ordered = sorted(reasons.items(), key=lambda item: (-item[1], item[0]))
+        return Figure(
+            path=path, kind="text", value=", ".join(f"{word} {group_thousands(str(count))}" for word, count in ordered)
+        )
+    if any(row.calls is None for row in rows):
+        raise _unstated(
+            path, f"names the arm's {field}, and a role that counted unanswered calls did not count its calls"
+        )
+    calls = sum(row.calls or 0 for row in rows)
+    if field == "calls":
+        return _count(path, calls)
+    sent = calls + (retried or 0) + (lost or 0)
+    if not sent:
+        raise _unstated(path, "names the share of the arm's calls unanswered, and it sent none")
+    # One role's share is the bundle's own; summed over several roles it is computed here, from their counts.
+    if len(rows) == 1 and rows[0].share is not None:
+        return _number(path, rows[0].share, "the share of calls unanswered", "share")
+    return replace(
+        _number(path, ((retried or 0) + (lost or 0)) / sent, "the share of calls unanswered", "share"), derived=True
+    )
+
+
+def _unanswered(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    arm_id, *field = values
+    return _unanswered_figure(_unanswered_rows(report_input, None, arm_id), field[0] if field else None, path)
+
+
+def _aspect_unanswered(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
+    aspect_id, arm_id, *field = values
+    return _unanswered_figure(_unanswered_rows(report_input, aspect_id, arm_id), field[0] if field else None, path)
+
+
 # --- two arms' costs apart ------------------------------------------------------------------------------------------
 
 #: What two arms' costs apart read: the first's cost per 1,000 of what the cost counts minus the second's, the same per
@@ -5040,6 +5133,25 @@ _FAMILIES: tuple[_Family, ...] = (
         resolve=_scoreboard,
     ),
     _family_of(
+        _Word("calls.unanswered"),
+        _keyed("<arm>", _unanswered_arms),
+        what="how many of an arm's calls went unanswered, retried and lost together, summed over every role that "
+        "counted them: beside its cost, never in it (the cost counts the answered calls). " + _UNANSWERED_RULE,
+        resolve=_unanswered,
+        example="calls.unanswered.fast.v2",
+    ),
+    _family_of(
+        _Word("calls.unanswered"),
+        _keyed("<arm>", _unanswered_arms),
+        _Statistic(_UNANSWERED_FIELDS, "<field>"),
+        what="the same, by field: `retried` (a forced tool choice refused, then answered unforced in the same call: "
+        "attempts and latency, never a failure), `lost` (sent and never answered, so the turn ended in error: failures "
+        "the arm's trials already count), `calls` the answered calls beside them, `share` retried and lost as a share "
+        "of every call sent, `reasons` the reasons counted, in words, `uncounted` the trials whose calls counted none",
+        resolve=_unanswered,
+        example="calls.unanswered.fast.v2.share|pct",
+    ),
+    _family_of(
         _Word("reasoning_ratio"),
         _Ids("<arm>", _reasoning_arms),
         what="the share of an arm's output spent reasoning",
@@ -5181,6 +5293,21 @@ _FAMILIES: tuple[_Family, ...] = (
         what="how an arm's trials came out on one aspect. " + _SCOREBOARD_FAILED,
         resolve=_aspect_scoreboard,
         example="aspects.speed.scoreboard.fast.v2.passed",
+    ),
+    _family_of(
+        *_ON_ASPECT,
+        _Word("calls.unanswered"),
+        _Ids("<arm>", _aspect_unanswered_arms),
+        what="how many of an arm's calls went unanswered on one aspect, retried and lost together",
+        resolve=_aspect_unanswered,
+    ),
+    _family_of(
+        *_ON_ASPECT,
+        _Word("calls.unanswered"),
+        _Ids("<arm>", _aspect_unanswered_arms),
+        _Statistic(_UNANSWERED_FIELDS, "<field>"),
+        what="the same, by field, as `calls.unanswered.<arm>.<field>` reads it",
+        resolve=_aspect_unanswered,
     ),
     _family_of(
         *_ON_ASPECT,
@@ -6393,7 +6520,20 @@ def _example_input() -> ReportInput:
             ],
             "scoreboard": {
                 "base": {"passed": 765, "usable": 897, "reply_cost_usd": 0.001892},
-                "fast.v2": {"passed": 731, "usable": 895, "reply_cost_usd": 0.002427},
+                "fast.v2": {
+                    "passed": 731,
+                    "usable": 895,
+                    "reply_cost_usd": 0.002427,
+                    "unanswered": {
+                        "candidate": {
+                            "retried": 9,
+                            "lost": 3,
+                            "reasons": {"timeout": 2, "tool_choice_refused": 9},
+                            "calls": 2685,
+                            "share": 12 / 2697,
+                        }
+                    },
+                },
             },
             "measures": {
                 "latency_ms": {
@@ -6632,9 +6772,9 @@ _FAMILY_GROUPS: tuple[tuple[str, str, frozenset[str]], ...] = (
     ),
     (
         "cost",
-        "cost per 1,000 of what the cost counts and per month, cost uplift, a cost some trials did not report, and a "
-        "move between options priced per point",
-        frozenset({"cost_per_1k", "cost", "price", "cost_per_month"}),
+        "cost per 1,000 of what the cost counts and per month, cost uplift, a cost some trials did not report, the calls "
+        "that went unanswered beside it, and a move between options priced per point",
+        frozenset({"cost_per_1k", "cost", "price", "cost_per_month", "calls"}),
     ),
     (
         "separation",

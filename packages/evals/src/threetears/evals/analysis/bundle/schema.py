@@ -73,10 +73,12 @@ from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.models import (
     TEMPLATE_PRESENTATION_FIELDS,
     ApparatusProvenance,
+    ArmSchedule,
     CaseSetRef,
     ClientRequestSettings,
     GoalCheckProof,
     RubricAxis,
+    RubricScale,
 )
 from threetears.evals.kernel.surface import (
     CellFacts,
@@ -1077,6 +1079,74 @@ class TokenRollup(EvalDocumentModel):
     )
 
 
+class RunApparatus(EvalDocumentModel):
+    """The rig one run was measured with, as the run recorded it at launch, beside the levers it ran at.
+
+    Copied off the run (:class:`~threetears.evals.schema.models.EvalRun`), never derived: which model each judged
+    dimension was asked of, what every judge call was asked for and at what temperature, the simulated user's model,
+    whether latency was under test, how the run's arm shared time with the others, how many cells ran at once, the
+    scale each rubric dimension was answered on, and the execution mode each result recorded. A field the run left
+    unset is None (or empty) here too: not recorded, never a default standing in for it.
+
+    Provisional: shaped by the first host that read a report's apparatus, and kept or removed by whether a second
+    host's adoption uses it (``docs/adopting-a-host.md``, "Provisional mechanisms").
+    """
+
+    effective_judges: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "The model each judged dimension was asked of (`EvalRun.effective_judges`); None = the run recorded none: "
+            "it pinned no judge, or its writer recorded no attribution."
+        ),
+    )
+    judge_asked_settings: ClientRequestSettings | None = Field(
+        default=None,
+        description="What every judge call was asked for (`EvalRun.judge_asked_settings`); None = not recorded.",
+    )
+    judge_temperature: float | None = Field(
+        default=None,
+        description=(
+            "The temperature judge calls with no JudgeConfig were asked at (`EvalRun.judge_temperature`); None = not "
+            "recorded, or no judge was pinned."
+        ),
+    )
+    simulator_model: str | None = Field(
+        default=None,
+        description="The simulated user's resolved model (`EvalRun.simulator_model`); None = none was pinned.",
+    )
+    measure_latency: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the launch declared latency under test (`EvalRun.measure_latency`); None = a run its host "
+            "assembled without a launch, which declared nothing."
+        ),
+    )
+    arm_schedule: ArmSchedule | None = Field(
+        default=None,
+        description="How the run's arm shared time with the comparison's other arms (`EvalRun.arm_schedule`); None = "
+        "not recorded.",
+    )
+    cell_concurrency: int = Field(ge=1, description="How many of the run's cells executed at once; 1 is serial.")
+    rubric_scales: dict[str, RubricScale] = Field(
+        default_factory=dict,
+        description="The scale each template rubric dimension was answered on (`EvalRun.rubric_scales`); empty for a "
+        "template with no rubric.",
+    )
+    execution_modes: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "The run's results by the execution mode each recorded (`serial`, `concurrent`); a result that recorded "
+            "none is counted under no mode. Empty = no result recorded one."
+        ),
+    )
+
+    @property
+    def recorded(self) -> bool:
+        """Whether the run recorded anything here past a serial run that pinned and declared nothing: the condition
+        on which a run summary carries its apparatus at all (``RunSummary.apparatus``)."""
+        return self != RunApparatus(cell_concurrency=1)
+
+
 class RunSummary(EvalDocumentModel):
     """One run's compact digest — the levers it RAN at + its key telemetry.
 
@@ -1206,6 +1276,18 @@ class RunSummary(EvalDocumentModel):
         description=(
             "Each model that both judged the run's answers and produced them, sorted: a model tends to rate its own "
             "output higher, so a judged reading of this run's arm may favour it for that reason alone. Empty when none."
+        ),
+    )
+    # Left out of the document when unset, so a run that recorded nothing past the defaults summarises, and is
+    # fingerprinted, as one did before the field existed.
+    apparatus: RunApparatus | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The rig the run was measured with, as it recorded it at launch (`RunApparatus`). None = it recorded "
+            "nothing past running its cells one at a time with no judge or simulated user pinned, no latency "
+            "declaration, no arm schedule, no rubric scale and no execution mode on any result; or the bundle was "
+            "assembled before the field existed (its shape names no apparatus, so read it as not carried)."
         ),
     )
 
@@ -2407,6 +2489,60 @@ class TrialRow(EvalDocumentModel):
     result_id: str = Field(min_length=1, description="The stored result, for `result_get`.")
 
 
+class RoleUnanswered(EvalDocumentModel):
+    """One role's unanswered calls over one arm's trials, summed off its usage rows (``RoleUsage.unanswered_*``).
+
+    Beside the arm's cost, never inside it: the cost, and ``calls`` here, count the answered calls. Summed from what
+    each row counted, a row that counted nothing adding nothing, so a sum some trials did not count is "at least this
+    many", and ``results_uncounted`` says how many trials those were.
+
+    Provisional: shaped by the first host that counted unanswered calls, and kept or removed by whether a second host's
+    adoption uses it (``docs/adopting-a-host.md``, "Provisional mechanisms").
+    """
+
+    role: str = Field(min_length=1, description="The usage role whose calls these are.")
+    retried: int | None = Field(
+        ge=0,
+        description="Calls a forced tool choice was refused on and that were answered unforced in the same call, summed; "
+        "None = no row of the role counted them.",
+    )
+    lost: int | None = Field(
+        ge=0, description="Calls sent and never answered, summed; None = no row of the role counted them."
+    )
+    reasons: dict[str, int] | None = Field(
+        default=None, description="The calls each host reason word accounts for, summed; None = no row counted any."
+    )
+    calls: int | None = Field(
+        ge=0,
+        description=(
+            "The answered calls of the rows that counted their unanswered ones (their `call_count`): with the counts, "
+            "every call those rows sent. None = some such row did not count its calls."
+        ),
+    )
+    share: float | None = Field(
+        ge=0.0,
+        le=1.0,
+        description=(
+            "The unanswered calls (retried and lost) as a share of every call the counting rows sent (answered and "
+            "unanswered). None where `calls` is, or nothing was sent."
+        ),
+    )
+    results_uncounted: int = Field(
+        ge=0,
+        description=(
+            "The arm's trials with a row in this role that counted no unanswered call: absent from the sums, not zero, "
+            "so a nonzero value reads the sums as 'at least this many'."
+        ),
+    )
+
+    @field_validator("reasons")
+    @classmethod
+    def _the_most_calls_first(cls, reasons: dict[str, int] | None) -> dict[str, int] | None:
+        """Each reason the most calls first, then by word: put back on every read, since a store keeps no mapping's
+        key order."""
+        return None if reasons is None else dict(sorted(reasons.items(), key=lambda item: (-item[1], item[0])))
+
+
 class ArmScoreboard(EvalDocumentModel):
     """One arm's census: how many trials it ran, lost, could use, passed and failed, and what it cost."""
 
@@ -2436,6 +2572,16 @@ class ArmScoreboard(EvalDocumentModel):
         description=(
             "How deep the arm was measured over every rig: its usable cases and trials, and its usable trials per "
             "case, fewest, median and most. None with no usable trial."
+        ),
+    )
+    # Left out of the document while empty, so an arm no row counted unanswered calls for is censused, and
+    # fingerprinted, as one was before the field existed.
+    unanswered: list[RoleUnanswered] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description=(
+            "Each role's unanswered calls over the arm's trials, in the order the roles are known, for every role a "
+            "usage row counted them in. Empty = no row counted any: not counted, never none."
         ),
     )
 
@@ -2560,6 +2706,10 @@ class AnalysisContextBundle(EvalDocumentModel):
     # `model_pass_hat_k` (`basis: "model"`), None unless the host asks for it.
     # Unmoved by declared names: `short_name`, `goal_check_names` and `stratum_names` are written only when declared and are no part of
     # the fingerprint, so a bundle naming nothing is this shape byte for byte and every fingerprint stays put.
+    # Unmoved by the run apparatus and the unanswered calls: each run summary's `apparatus` and each arm's
+    # `scoreboard[].unanswered` are written only when the run recorded one or a usage row counted them, so a bundle over
+    # runs that recorded neither is this shape byte for byte and its fingerprint stays put. A run recording either moves
+    # its bundle's fingerprint, as any evidence the bundle reads does.
     schema_version: int = Field(
         default=64, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
@@ -3815,6 +3965,8 @@ __all__ = [
     "QuestionScope",
     "ReadingScope",
     "RealizedDesign",
+    "RoleUnanswered",
+    "RunApparatus",
     "REASONING_SHARE_DIVERGENCE",
     "RunSummary",
     "ScopeDivergence",

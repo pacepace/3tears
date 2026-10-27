@@ -338,7 +338,16 @@ CORE_SCHEMA_VERSION: int = 15
 #:   again) records each holding of a sweep taken up again (``SweepLifetime``: holder, epoch, start, how it ended, the
 #:   cap its arms ran under). None is in any identity, key or digest.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 7
+#: - **v15.8** — a usage row counts the calls of its role that went unanswered, beside its spend and never inside it:
+#:   ``RoleUsage.unanswered_retried`` (a forced tool choice refused, then answered unforced in the same call),
+#:   ``RoleUsage.unanswered_lost`` (sent and never answered: the turn ended in error) and
+#:   ``RoleUsage.unanswered_reasons`` (each host reason word's count), each default None: not counted, or stored before
+#:   the field existed. A piece of background work names the model its responses named:
+#:   ``AsyncDelivery.served_model`` (default None: not recorded), folded into the ``inner_agent`` row's
+#:   ``served_model``. Each is left out of the document when unset, so a row or an entry setting none is stored byte
+#:   for byte as before. None is in any identity, key or digest; the cost readings never read the counts.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 8
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

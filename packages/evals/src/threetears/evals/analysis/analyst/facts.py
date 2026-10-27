@@ -76,6 +76,7 @@ from threetears.evals.analysis.report_input import (
     PriorInsight,
     Reading,
     ReportInput,
+    RunApparatus,
     Stat,
 )
 from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS
@@ -136,6 +137,9 @@ _DEPTH = ("cases", "trials", "repeats")
 
 #: How an arm's trials came out, as the scoreboard keys name each count and cost.
 _SCOREBOARD = ("ran", "usable", "passed", "cases", "lost", "failed", "reply_cost_usd", "test_cost_usd")
+
+#: An arm's unanswered calls beside its cost, as the unanswered keys name each figure after the bare count.
+_UNANSWERED = ("retried", "lost", "share", "reasons", "uncounted")
 
 #: A reading's figures: the change, its interval, the margin it is read against, the interval's level, the verdict,
 #: each arm's passes and why. An interval's ends are its ``low`` and ``high`` keys, which the interval carries.
@@ -262,6 +266,13 @@ class ArmRow(_Fact):
         description="Its settings (`settings.<arm>.<setting>`): a number where the input holds one, else its text."
     )
     scoreboard: list[CitedFigure] = Field(description="How its trials came out (`scoreboard.<arm>.<count>`).")
+    # Left out when empty, so an arm whose calls all came back reads as it did before the field existed.
+    unanswered: list[CitedFigure] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="Beside its cost, where any went unanswered: its calls unanswered (`calls.unanswered.<arm>`), "
+        "retried and lost, their share of the calls sent, the reasons, and the trials that counted none.",
+    )
 
 
 class AspectRow(_Fact):
@@ -384,6 +395,14 @@ class CampaignOverview(_Fact):
     late_criteria: list[LateRow] = Field(description="The criteria set after the results were seen, each when.")
     late_set_at: CitedFigure | None = Field(description="When they were set, where they share one date.")
     prior_insights: list[PriorInsight] = Field(description="What earlier campaigns concluded.")
+    # Left out when empty, so an input whose runs recorded no apparatus reads as it did before the field existed.
+    apparatus: list[RunApparatus] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="The rig each run was measured with: the judge each dimension was asked of and what it was asked "
+        "for, the simulated user, whether latency was under test, the arms' schedule, the cells run at once, each "
+        "result's execution mode and each rubric dimension's scale. On every page.",
+    )
     names: dict[str, dict[str, str]] = Field(
         description="The one name a reader is shown for each id, by kind (aspect, measure, judged, stratum, task, "
         "criterion), then id."
@@ -396,6 +415,18 @@ class CampaignOverview(_Fact):
     )
     offset: int = Field(description="The first row this page holds.")
     next_offset: int | None = Field(description="The offset of the next page of rows; None when this is the last.")
+
+
+def _unanswered(report_input: ReportInput, arm_id: str) -> list[CitedFigure]:
+    """An arm's unanswered calls, cited beside its cost where any went unanswered; none where none did or no role
+    counted them."""
+    row = report_input.scoreboard.get(arm_id)
+    if row is None or not row.unanswered:
+        return []
+    count = cite(f"calls.unanswered.{arm_id}", report_input)
+    if not count.value:
+        return []
+    return [count, *_figures((f"calls.unanswered.{arm_id}.{field}" for field in _UNANSWERED), report_input)]
 
 
 def _late_name(late: LateCriterion) -> str:
@@ -550,6 +581,7 @@ def campaign_overview(
                 if arm.id in report_input.scoreboard
                 else []
             ),
+            unanswered=_unanswered(report_input, arm.id),
         )
         for arm in report_input.arms
     ]
@@ -621,6 +653,7 @@ def campaign_overview(
         late_criteria=[late_rows[index] for index in paged[6]],
         late_set_at=cite_if("late_criteria.set_at", report_input) if late else None,
         prior_insights=[insights[index] for index in paged[7]],
+        apparatus=list(report_input.apparatus or ()),
         names=_names_of(names, [named[index] for index in paged[8]], whole=limit is None),
         total=total,
         offset=offset,

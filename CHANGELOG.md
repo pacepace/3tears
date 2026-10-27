@@ -17,6 +17,37 @@ as its public part; `threetears-release` still refuses to bump, sync or verify o
 labelled smoke assertion against a plain release. `docker-bake.hcl` keeps `v0.80.0`, since an image tag cannot
 carry `+`.
 
+### evals: the calls nobody answered, a run's rig and a background model's served name reach the report input; a rubric scale is never assumed
+
+**Added:** a usage row counts its role's calls that went unanswered, beside its spend and never inside it:
+`RoleUsage.unanswered_retried` (a forced tool choice refused, then answered unforced in the same call),
+`unanswered_lost` (sent and never answered, so the turn ended in error; a connect failure, an open circuit and an
+auth or payment failure are not counted) and `unanswered_reasons` (each host reason word's count). Each is None when
+not counted and left out of the stored row when unset; reasons need a count beside them and never outnumber it.
+A kind's rows pass through `CandidateTelemetry` unchanged, and no cost reading reads them. The bundle sums them per arm
+and role (`ArmScoreboard.unanswered`, `RoleUnanswered`: retried, lost, reasons, the answered calls, the share of every
+call sent, and the trials that counted none); the report input copies them (`ScoreboardRow.unanswered`, `Unanswered`);
+the keys `calls.unanswered.<arm>` (retried and lost together) and `.retried`, `.lost`, `.calls`, `.share`, `.reasons`,
+`.uncounted`, with an `aspects.<aspect>.` form, read them, a share over several roles derived; the analyst's overview
+cites them on the arm's row, and the options table flags them on the cost cell, only where any went unanswered.
+
+**Added:** a run's apparatus reaches the bundle and the report input: each run summary carries `apparatus`
+(`RunApparatus`: `effective_judges`, `judge_asked_settings`, `judge_temperature`, `simulator_model`, `measure_latency`,
+`arm_schedule`, `cell_concurrency`, `rubric_scales`, and the results by `execution_mode`), and the report input lists
+each run's (`apparatus`, `RunApparatus`, `RequestSettings`) by run, arm and aspect; `campaign_overview` shows it on
+every page. A run that recorded nothing past a serial run pinning and declaring nothing carries none.
+
+**Added:** `AsyncDelivery.served_model`, the model the work's responses named, folded into the `inner_agent` row's
+`served_model` (refused on a substituted entry). Core schema minor 15.8.
+
+**Fixed:** a rubric dimension's scale is read off what was recorded, never assumed
+(`threetears.evals.schema.rubric_dim_scale`): a trial's row showed a dimension the judge could not tell on as
+`ordinal` whatever its scale, so a pass/fail one read as 1 to 5; it now reads its run's `rubric_scales`, a reserved
+dual-score axis reads 1 to 5 by construction, and a dimension with no recorded scale is refused.
+
+Every new field is left out of its document when unset, so a bundle, report input, overview and stored row that set
+none is the one it was before, byte for byte, and its digest and fingerprint stay put.
+
 ### evals: an overall that is the plain mean of its cells reads an interval derived from theirs
 
 **Added:** an arm's overall figure that states no interval, and is by the numbers the input states the unweighted mean

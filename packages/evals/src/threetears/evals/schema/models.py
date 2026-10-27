@@ -845,6 +845,29 @@ OUTCOME_DIM_ID = "__outcome__"
 #: them — a judge service is built for these ids on every run.
 RESERVED_DIM_IDS: frozenset[str] = frozenset({TRANSCRIPT_DIM_ID, OUTCOME_DIM_ID})
 
+
+def rubric_dim_scale(dim: str, scales: Mapping[str, RubricScale]) -> RubricScale:
+    """The scale ``dim`` was answered on, read off what was recorded, never assumed.
+
+    A reserved dual-score axis (:data:`RESERVED_DIM_IDS`) is 1 to 5 by construction, and no run records a scale for
+    it, since it is no template dim. Every other dim's scale is the one recorded for it: a run's
+    ``EvalRun.rubric_scales``, captured at launch from its template, or the scales its scores carried.
+
+    :param dim: The dimension, or a reserved axis id.
+    :ptype dim: str
+    :param scales: The scales recorded for the template's dims, by dim.
+    :ptype scales: Mapping[str, RubricScale]
+    :return: The scale.
+    :rtype: RubricScale
+    :raises ValueError: ``dim`` is no reserved axis and no scale was recorded for it.
+    """
+    if dim in RESERVED_DIM_IDS:
+        return "ordinal"
+    if dim not in scales:
+        raise ValueError(f"no scale was recorded for rubric dim {dim!r}, and a scale is never assumed")
+    return scales[dim]
+
+
 #: Separator between a dim's scoring context and its bare name.
 DIM_NAMESPACE_SEPARATOR = "."
 
@@ -4855,6 +4878,18 @@ class AsyncDelivery(EvalDocumentModel, CoreShapeModel):
             "for work no model did."
         ),
     )
+    # Left out of the document when unset, so an entry naming none is stored as it was before the field existed.
+    served_model: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The model the provider's responses named as having answered the work's calls, as the work's client "
+            "reported it; folded into the inner_agent role's `RoleUsage.served_model`. None = not recorded: the "
+            "responses named none, or named more than one (one entry cannot name two; report each model's work as "
+            "its own entry). Never set on a substituted delivery, which ran on no model."
+        ),
+    )
     acknowledged_turn: int | None = Field(
         default=None,
         ge=0,
@@ -4938,6 +4973,8 @@ class AsyncDelivery(EvalDocumentModel, CoreShapeModel):
             defects.append(f"delivered_turn {self.delivered_turn} precedes acknowledged_turn {self.acknowledged_turn}")
         if self.substituted and self.model is not None:
             defects.append(f"a substituted delivery ran on no model, yet names {self.model!r}")
+        if self.substituted and self.served_model is not None:
+            defects.append(f"a substituted delivery was answered by no model, yet names {self.served_model!r}")
         if self.substituted and (spent := self.reported_spend):
             defects.append(f"a substituted delivery spent nothing, yet reports {', '.join(spent)}")
         if self.price_source is not None and self.cost_usd is None:
@@ -5150,6 +5187,63 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
             "it sent, or the row counts no completion a client reported on (background work, an external API)."
         ),
     )
+    # The unanswered calls stand beside the row's spend, never inside it: `call_count`, the tokens and the dollars count
+    # the answered calls, and a call sent and never answered neither adds to them nor unprices them. Left out of the
+    # document when unset, so a row that counted none is stored as it was before the fields existed.
+    unanswered_retried: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Calls of this row's that a forced tool choice was refused on and that were then asked again unforced and "
+            "answered in the same call: what they cost is in the row, so they explain attempts and latency, never a "
+            "failure. None = not counted (the engine counts none on its own rows); 0 = counted, and none."
+        ),
+    )
+    unanswered_lost: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Calls of this row's role that were sent and never answered, so the turn they belonged to ended in error: "
+            "a timeout, a cancel, a provider error after the request was sent, a stream cut mid-way. Not counted: a "
+            "call that never reached the provider (a connect failure, an open circuit), and an auth or payment "
+            "failure, which is the rig's. None = not counted; 0 = counted, and none."
+        ),
+    )
+    unanswered_reasons: dict[str, int] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "How many of the unanswered calls each reason accounts for, by the host's own reason word ('timeout', "
+            "'cancelled', 'http_529'). Set only beside a counted unanswered_retried or unanswered_lost, and summing to "
+            "no more than they do: a call whose host gave no reason is counted there and not here. None = no reasons "
+            "were counted."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _reasons_count_the_unanswered(self) -> RoleUsage:
+        """Refuse reasons with no unanswered count beside them, a reason counting no call, or more reasons than calls.
+
+        :return: The row, unchanged.
+        :rtype: RoleUsage
+        :raises ValueError: ``unanswered_reasons`` is set with neither count, counts a reason zero times or less, or
+            accounts for more calls than ``unanswered_retried`` and ``unanswered_lost`` count.
+        """
+        if self.unanswered_reasons is None:
+            return self
+        if self.unanswered_retried is None and self.unanswered_lost is None:
+            raise ValueError("unanswered_reasons counts the reasons of unanswered calls, and the row counts none")
+        if any(count < 1 for count in self.unanswered_reasons.values()):
+            raise ValueError("each unanswered reason counts the calls it accounts for, at least one")
+        counted = (self.unanswered_retried or 0) + (self.unanswered_lost or 0)
+        if sum(self.unanswered_reasons.values()) > counted:
+            raise ValueError(
+                f"unanswered_reasons accounts for {sum(self.unanswered_reasons.values())} calls, more than the "
+                f"{counted} the row counts unanswered"
+            )
+        return self
 
     @field_validator("sent_settings")
     @classmethod
@@ -6659,6 +6753,7 @@ __all__ = [
     "fingerprint_criterion",
     "fingerprint_judged_output",
     "label_key_of",
+    "rubric_dim_scale",
     "resolve_effective_judges",
     "scored_dim_ids",
 ]

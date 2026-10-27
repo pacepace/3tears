@@ -48,6 +48,7 @@ from threetears.evals.analysis.depth import depth_of
 from threetears.evals.analysis.bundle.schema import (
     ArmScoreboard,
     FailCause,
+    RoleUnanswered,
     TrialCheck,
     TrialJudgement,
     TrialRow,
@@ -61,10 +62,11 @@ from threetears.evals.kernel.result_condition import (
 )
 from threetears.evals.kernel.scoring import capability_scores, has_pass_criterion
 from threetears.evals.kernel.usage_capture import count_substituted_deliveries, production_replicating_cost
-from threetears.evals.schema.models import OUTCOME_DIM_ID, TRANSCRIPT_DIM_ID
+from threetears.evals.kernel.provider import sum_optional_tokens
+from threetears.evals.schema.models import OUTCOME_DIM_ID, TRANSCRIPT_DIM_ID, USAGE_ROLES, rubric_dim_scale
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
-    from threetears.evals.schema.models import EvalResult, JudgeEvidence, RubricScore
+    from threetears.evals.schema.models import EvalResult, JudgeEvidence, RoleUsage, RubricScale, RubricScore
 
 
 #: How a reserved judge axis is named on a trial, where a reader sees it: never by its stored id.
@@ -188,6 +190,7 @@ def trials_and_census(
     rubric_threshold: int,
     catalog: Mapping[str, MetricDescriptor],
     load_judge_evidence: Callable[[Sequence[str]], Mapping[str, JudgeEvidence]],
+    rubric_scales: Mapping[str, Mapping[str, RubricScale]],
     names: Mapping[str, str] | None = None,
 ) -> TrialsAndCensus:
     """Every trial's row and every arm's census, over the campaign's results.
@@ -212,6 +215,9 @@ def trials_and_census(
         none. Called once, with every kept result that records a trace (``EvalResult.has_trace``), so the trials cost
         one read however many are kept; not called when none does.
     :ptype load_judge_evidence: Callable[[Sequence[str]], Mapping[str, JudgeEvidence]]
+    :param rubric_scales: The scale each run's template dims were answered on (``EvalRun.rubric_scales``), by run id:
+        what a dim the judge could not tell on is shown on, since that answer carries no score of its own.
+    :ptype rubric_scales: Mapping[str, Mapping[str, RubricScale]]
     :return: The census, the kept rows and how many were left out. The losses by cause and the differential-loss flag
         are the bundle's ``exclusions`` and ``differential_exclusions``, which the assembler counts off the same
         :func:`~threetears.evals.kernel.result_condition.trial_exclusion`, never counted again here.
@@ -243,6 +249,7 @@ def trials_and_census(
             strata,
             criteria,
             evidence.get(result.id),
+            rubric_scales.get(result.eval_run_id, {}),
         )
         for index, result in enumerate(kept, start=1)
     ]
@@ -288,7 +295,63 @@ def _census(arm: str, results: Sequence[EvalResult], readings: Mapping[str, Tria
         n_cost_unpriced=len(results) - len(priced),
         reply_cost_usd=sum(replies) / len(replies) if replies else None,
         depth=depth_of(Counter(result.test_case_id for result in usable).values()),
+        unanswered=_unanswered(results),
     )
+
+
+def _unanswered(results: Sequence[EvalResult]) -> list[RoleUnanswered]:
+    """Each role's unanswered calls over one arm's trials, for every role a usage row counted them in.
+
+    Sums what each row counted (``RoleUsage.unanswered_retried``, ``unanswered_lost``, ``unanswered_reasons``) and
+    never adds a row that counted nothing as zero: a role no row counted in is absent, and a trial whose row in a
+    counting role counted nothing (any of its rows there) is ``results_uncounted``. ``calls`` sums the counting rows' answered calls, and is
+    None once one of them did not count its calls, since a share over a partial denominator would overstate.
+
+    :param results: The arm's trials.
+    :ptype results: Sequence[EvalResult]
+    :return: One entry per counting role, the roles in their known order, then any other by name.
+    :rtype: list[RoleUnanswered]
+    """
+    counting: dict[str, list[RoleUsage]] = {}
+    for result in results:
+        for row in result.usage or ():
+            if row.unanswered_retried is not None or row.unanswered_lost is not None:
+                counting.setdefault(row.role, []).append(row)
+    order = {role: index for index, role in enumerate(USAGE_ROLES)}
+    entries: list[RoleUnanswered] = []
+    for role in sorted(counting, key=lambda name: (order.get(name, len(order)), name)):
+        rows = counting[role]
+        retried: int | None = None
+        lost: int | None = None
+        calls: int | None = 0
+        reasons: Counter[str] = Counter()
+        for row in rows:
+            retried = sum_optional_tokens(retried, row.unanswered_retried)
+            lost = sum_optional_tokens(lost, row.unanswered_lost)
+            reasons.update(row.unanswered_reasons or {})
+            calls = None if calls is None or row.call_count is None else calls + row.call_count
+        uncounted = sum(
+            1
+            for result in results
+            if any(
+                row.role == role and row.unanswered_retried is None and row.unanswered_lost is None
+                for row in result.usage or ()
+            )
+        )
+        unanswered = (retried or 0) + (lost or 0)
+        sent = None if calls is None else calls + unanswered
+        entries.append(
+            RoleUnanswered(
+                role=role,
+                retried=retried,
+                lost=lost,
+                reasons=dict(reasons) or None,
+                calls=calls,
+                share=unanswered / sent if sent else None,
+                results_uncounted=uncounted,
+            )
+        )
+    return entries
 
 
 def _case_labels(
@@ -328,8 +391,10 @@ def _row(
     strata: Mapping[str, str | None],
     criteria: Mapping[str, str],
     evidence: JudgeEvidence | None,
+    scales: Mapping[str, RubricScale],
 ) -> TrialRow:
-    """One trial's row, every text in it capped."""
+    """One trial's row, every text in it capped; a dim the judge could not tell on is shown on the scale its run
+    recorded for it (:func:`~threetears.evals.schema.models.rubric_dim_scale`), never assumed."""
     scores: list[RubricScore] = [
         *result.rubric_scores,
         *(score for score in (result.transcript_score, result.outcome_score) if score is not None),
@@ -349,7 +414,7 @@ def _row(
             dim=_AXIS_NAMES.get(dim, dim),
             criterion=criteria.get(dim),
             score=None,
-            scale="ordinal",
+            scale=rubric_dim_scale(dim, scales),
             reason=capped_text("could not tell: " + " ".join(reason.split()), MAX_REASON_CHARS),
         )
         for dim, reason in sorted(result.judge_cannot_tell.items())

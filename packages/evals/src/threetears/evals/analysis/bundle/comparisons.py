@@ -57,6 +57,7 @@ from threetears.evals.kernel.metrics import (
 from threetears.evals.schema.models import (
     EvalResult,
     RubricScale,
+    rubric_dim_scale,
 )
 from threetears.evals.kernel.surface import (
     GuardrailCell,
@@ -198,7 +199,8 @@ def planning_readings(
     results = [result for run in runs for result in results_by_run[run.id]]
     projection = project_score_records(runs, results, known_run_ids=None, archived_run_ids=None, profile=profile)
     judged_rows: dict[str, list[ScoreRecord]] = {}
-    scales: dict[str, RubricScale] = {}
+    # The scale each template dim was answered on: what each run recorded at launch, then what its scores carried.
+    scales: dict[str, RubricScale] = {dim: scale for run in runs for dim, scale in run.rubric_scales.items()}
     for record in projection.records:
         judged_rows.setdefault(record.result_id, []).append(record)
         if record.metric == METRIC_SCORE and record.rubric_dim and record.rubric_scale is not None:
@@ -224,7 +226,7 @@ def planning_readings(
         else:
             if name in boundary:
                 continue
-            judged = describe_rubric_dim(name, scale=scales.get(name, "ordinal"))
+            judged = describe_rubric_dim(name, scale=rubric_dim_scale(name, scales))
             if judged.higher_is_better is None:
                 continue
             higher, value_range = judged.higher_is_better, judged.value_range

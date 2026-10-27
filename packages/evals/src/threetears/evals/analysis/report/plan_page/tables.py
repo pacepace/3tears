@@ -19,7 +19,8 @@ judged:<dim>     the arm's figure on the judged dimension
 gate             the arm's gate status (:func:`~threetears.evals.analysis.report_gates.gate_check`) as a pill, and
                  its first binding reason
 measure:<key>    the arm's figure on the measure: its mean, else the statistic a criterion on it reads
-cost_per_1k      dollars per 1,000 of what the cost counts, and the uplift against the control's
+cost_per_1k      dollars per 1,000 of what the cost counts, the uplift against the control's, and how many of the
+                 arm's calls went unanswered beside it, where any did (``calls.unanswered.<arm>``)
 ===============  ===================================================================================================
 
 A cell the input holds no figure for is a dash. A column outside these families is refused: it is no column the
@@ -152,10 +153,15 @@ def _cost(column: str, arm: str, report_input: ReportInput, look: PageLook) -> T
         if figure is not None and control is not None and arm != control.id
         else None
     )
-    flag = None
+    marks: list[str] = []
     if uplift is not None and isinstance(uplift.value, float):
-        flag = ("+" if uplift.value > 0 else "") + format_figure(uplift)
-    return TableCell(value=_said(figure, ("usd",)), flag=flag)
+        marks.append(("+" if uplift.value > 0 else "") + format_figure(uplift))
+    # Beside the cost, never in it: the cost counts the answered calls, so an arm whose calls went unanswered says how
+    # many, where any did.
+    unanswered = _figure(f"calls.unanswered.{arm}", report_input) if figure is not None else None
+    if unanswered is not None and unanswered.value:
+        marks.append(f"{format_figure(unanswered)} calls unanswered")
+    return TableCell(value=_said(figure, ("usd",)), flag="; ".join(marks) or None)
 
 
 #: Each column family's cell reader, keyed by the family exactly as
