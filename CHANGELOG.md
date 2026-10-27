@@ -21,7 +21,8 @@ margin above its estimate: `ArmPrice.predicted_usd`, the figure a launch holds t
 band's upper end and the estimate plus 3%, while `low_usd` and `central_usd` stay as computed and the band's own upper
 end rides along as `ArmPrice.band_high_usd` (new; also on `ArmEstimate`, and the end a cost pivot's plan reads). Where
 the margin binds, the basis states both: "the band from history is $a-$b (x% below to y% above $c); the cap reads $d,
-the 3% safety margin above the estimate, wider than the band". Where it does not, the basis names the band's upper end
+the 3% safety margin above the estimate, wider than the band by $g", the gap saying how far the cap stands above the
+band's end where four figures would spell the two alike. Where it does not, the basis names the band's upper end
 alone. An arm refused over its cap is said to have a "cap figure" above it, never to be "predicted to cost" it, and
 the cap figure and the cap are spelled by the number rule, not in cents, so a cap figure a hair above its cap never
 prints equal to it; the launch estimate's text labels each arm's figure and the total as cap figures. A log-scale end

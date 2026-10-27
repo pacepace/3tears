@@ -864,7 +864,8 @@ def test_the_history_pricer_caps_an_arm_whose_every_past_result_cost_the_same_a_
     assert cap > centre and cap == pytest.approx(centre * (1 + COST_BAND_SAFETY_MARGIN), rel=1e-12)
     assert (
         f"the band from history has no width, at {_dollars(centre)}; the cap reads {_dollars(cap)}, the "
-        f"{COST_BAND_SAFETY_MARGIN:.0%} safety margin above the estimate, wider than the band, method usage-history"
+        f"{COST_BAND_SAFETY_MARGIN:.0%} safety margin above the estimate, wider than the band by "
+        f"{_dollars(cap - centre)}, method usage-history"
     ) in price.basis
     assert f"No spread in {n_history} past observations" in price.basis
 
@@ -888,8 +889,26 @@ def test_the_history_pricer_shows_a_narrow_band_as_computed_and_caps_the_arm_a_s
     assert (
         f"the band from history is {_dollars(low)}-{_dollars(high)} ({below}% below to {above}% above "
         f"{_dollars(centre)}); the cap reads {_dollars(cap)}, the {COST_BAND_SAFETY_MARGIN:.0%} safety margin above "
-        "the estimate, wider than the band, method usage-history"
+        f"the estimate, wider than the band by {_dollars(cap - high)}, method usage-history"
     ) in price.basis
+
+
+def test_a_band_ending_just_under_the_margin_says_by_how_much_the_cap_is_wider_where_both_print_alike():
+    """A 1% spread over three results ends a ten-observation band at $10.2953 and the cap at $10.30: both "$10.3"."""
+    host, storage = _priced_host()
+    _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.99, 1.0, 1.01])
+
+    price = history_launch_pricer(host)(_quote(k_runs=2, case_count=5))
+
+    cap, high = price.predicted_usd, price.band_high_usd
+    assert cap is not None and high is not None and high < cap
+    assert _dollars(high) == _dollars(cap), "the edge this test is about: four figures spell both alike"
+    gap = _dollars(cap - high)
+    assert gap not in ("$0", "< $0.000001")
+    assert f"the cap reads {_dollars(cap)}, the {COST_BAND_SAFETY_MARGIN:.0%} safety margin above the estimate, " in (
+        price.basis
+    )
+    assert f"wider than the band by {gap}, method usage-history" in price.basis
 
 
 def test_the_history_pricer_caps_an_arm_at_its_bands_own_upper_end_where_that_is_above_the_margin():

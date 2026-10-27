@@ -1061,7 +1061,7 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
             held = (
                 f"the band from history {_band_from_history(low, centre, high)}; the cap reads "
                 f"{format_number(floor, prefix='$')}, the {COST_BAND_SAFETY_MARGIN:.0%} safety margin above the "
-                "estimate, wider than the band"
+                f"estimate, wider than the band by {format_number(floor - high, prefix='$')}"
             )
         else:
             held = (
