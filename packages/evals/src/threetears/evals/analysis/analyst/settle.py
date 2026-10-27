@@ -26,6 +26,14 @@ arithmetic and its design note are :mod:`~threetears.evals.analysis.separation`.
   same level, each arm running the cases named. Read as independent arms: a paired design over the same cases needs
   fewer where the arms agree case by case *(inferred: the snapshot holds no case-level differences to size a paired
   design by)*.
+- *Two arms apart on an aspect's pass rate* (two ``arm_ids`` and ``measure_key`` ``passed``, the name the snapshot's
+  contrasts give a trial's pass, where no measure of that key is held): a row per aspect whose scoreboard states both
+  arms' trials passed over usable (``where`` ``aspects.<aspect>``), keyed ``settle.passed.<aspect>.``, two-sided.
+  Paired where the aspect's reading of a candidate against the control states its interval (its own change and
+  interval, at its level, over the cases each arm ran); otherwise each arm's binomial spread from its own trials, read
+  on its distinct cases where its scoreboard states them (the widest its repeats allow), combined as independent. The
+  row cites each arm's usable trials and cases from the aspect's scoreboard, its repeats, and the basis: the count
+  basis the sizes rest on.
 - *An assumed count* (``assumed``, a what-if the caller states): a slice whose figure states no count has no spread to
   read; read as if each such slice held that many cases, or (``share``) the arm's own distinct cases times the
   slice's traffic share (and, on a repeated design, its trials times the share). Every figure read under it is keyed ``assumed.<cases>.`` or ``assumed.share.``, so it reads as an assumption
@@ -90,9 +98,11 @@ from threetears.evals.analysis.analyst.compare import (
     refuse_arms,
     unkeyed_strata,
 )
+from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.report.figure_keys import (
     assumable,
     criterion_wheres,
+    passed_aspects,
     separation_wheres,
 )
 from threetears.evals.analysis.report_input import ReportInput
@@ -203,7 +213,10 @@ class SettleRow(BaseModel):
 
     model_config = _MODEL
 
-    where: str = Field(description="overall, or the slice: task.<task>, cells.<row>.<column> or strata.<stratum>.")
+    where: str = Field(
+        description="overall, or the slice: task.<task>, cells.<row>.<column> or strata.<stratum>; aspects.<aspect> "
+        "for two arms apart on an aspect's pass rate."
+    )
     name: CitedFigure | None = Field(description="What a reader calls the slice; None overall.")
     against: str = Field(
         description="What the reading is settled against: criterion <id>, the hypothetical line, or arm:<id>."
@@ -520,12 +533,59 @@ def _margin_rows(report_input: ReportInput, arm: str, named: Sequence[str]) -> l
     return rows
 
 
+#: How two arms apart on an aspect's pass rate are read.
+_PASSED_SIDED = (
+    "two-sided at the level, on each aspect's pass rate (trials passed over usable, its scoreboard's): each arm running "
+    "cases_needed, an interval on the difference centred on today's excludes zero, half such designs at "
+    "cases_needed and four in five at cases_needed_80 if the truth equals today's difference; basis says the count "
+    "the spread rests on: paired, the aspect's reading of a candidate against the control (its own interval, over "
+    "the cases each arm ran), else each arm's binomial spread from its own trials, read on its distinct cases where "
+    "its scoreboard states them; trials_needed counts the trials that takes at today's repeats"
+)
+
+
+def _passed_rows(report_input: ReportInput, first: str, second: str) -> list[SettleRow]:
+    """A row per aspect stating both arms' pass rates: the two apart on it, by the ``settle.passed.`` keys, each arm's
+    trials and cases as its scoreboard on the aspect states them."""
+    rows: list[SettleRow] = []
+    for aspect in passed_aspects(report_input, (first, second)):
+        prefix = f"settle.{TRIAL_PASS_NAME}.{aspect}.{first}.{second}"
+        row = _row(
+            report_input,
+            prefix,
+            where=f"aspects.{aspect}",
+            against=_arm(second),
+            arms=(first, second),
+            key="",
+            estimate=[cite(f"{prefix}.first", report_input), cite(f"{prefix}.second", report_input)],
+            line=None,
+            fields=_PAIR_FIELDS,
+        )
+        boards = [f"aspects.{aspect}.scoreboard.{arm}" for arm in (first, second)]
+        counts = [figure for board in boards if (figure := cite_or_why(f"{board}.usable", report_input)[0])]
+        cases = [figure for board in boards if (figure := cite_or_why(f"{board}.cases", report_input)[0])]
+        repeats, _why = cite_or_why(f"{prefix}.repeats", report_input)
+        rows.append(
+            row.model_copy(
+                update={
+                    "counts": counts,
+                    "cases": cases,
+                    "repeats": [repeats] if repeats is not None else [],
+                    "basis": [cite(f"{prefix}.basis", report_input)],
+                }
+            )
+        )
+    return rows
+
+
 def _refuse_measure(
     report_input: ReportInput, measure: str | None, arms: Sequence[str], need: str
 ) -> tuple[str, list[str]]:
-    """The measure and the places the arms hold it at, refusing one that is absent or held nowhere by all of them."""
+    """The measure and the places the arms hold it at, refusing one that is absent or held nowhere by all of them;
+    for two arms whose aspect states both pass rates, the refusal names the pass rate (``passed``) among them."""
     known = list(dict.fromkeys([*report_input.measures, *report_input.judged]))
-    shared = [key for key in known if separation_wheres(report_input, arms, key)]
+    passed = [TRIAL_PASS_NAME] if len(arms) == 2 and passed_aspects(report_input, arms) else []
+    shared = [*passed, *(key for key in known if separation_wheres(report_input, arms, key))]
     wheres = separation_wheres(report_input, arms, measure) if measure in known else []
     if measure is None or not wheres:
         fault = "is not given" if measure is None else f"names {measure!r}, which the arms do not all state a mean on"
@@ -558,6 +618,9 @@ def _rows(
                 parameters=("criterion_id", "hypothetical_line", "against"),
             )
         first, second = arms
+        held = {*report_input.measures, *report_input.judged}
+        if measure == TRIAL_PASS_NAME and measure not in held and passed_aspects(report_input, arms):
+            return _passed_rows(report_input, first, second), _PASSED_SIDED, False
         key, wheres = _refuse_measure(report_input, measure, arms, "two arms are settled apart on one measure")
         rows = [
             _row(
